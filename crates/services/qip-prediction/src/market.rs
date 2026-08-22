@@ -90,7 +90,10 @@ impl ScalarBucket {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum MarketKind {
     /// Two outcomes, the second the complement of the first.
-    Binary { yes: Outcome, no: Outcome },
+    ///
+    /// Boxed so the binary case does not make every categorical market carry
+    /// its footprint.
+    Binary { yes: Box<Outcome>, no: Box<Outcome> },
     /// Mutually exclusive, jointly exhaustive outcomes.
     Categorical { outcomes: Vec<Outcome> },
     /// A continuous quantity, bucketed into ranges that partition it.
@@ -112,7 +115,10 @@ impl MarketKind {
             no_object,
             ResolutionCriteria::Not(Box::new(yes.criteria.clone())),
         );
-        Self::Binary { yes, no }
+        Self::Binary {
+            yes: Box::new(yes),
+            no: Box::new(no),
+        }
     }
 
     pub fn categorical(outcomes: Vec<Outcome>) -> Result<Self> {
@@ -204,7 +210,7 @@ impl MarketKind {
 
     pub fn outcomes(&self) -> Vec<&Outcome> {
         match self {
-            Self::Binary { yes, no } => vec![yes, no],
+            Self::Binary { yes, no } => vec![yes.as_ref(), no.as_ref()],
             Self::Categorical { outcomes } => outcomes.iter().collect(),
             Self::Scalar { buckets, .. } => buckets.iter().map(|bucket| &bucket.outcome).collect(),
         }
