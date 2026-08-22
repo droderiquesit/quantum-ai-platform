@@ -156,6 +156,7 @@ dependencies = [
 name = "qip-compliance"
 version = "0.1.0"
 dependencies = [
+ "qip-ai",
  "qip-contracts",
  "qip-core",
  "qip-events",
@@ -387,6 +388,7 @@ dependencies = [
  "qip-financial",
  "qip-market",
  "qip-numerics",
+ "qip-simulation-engine",
  "serde",
  "serde_json",
 ]

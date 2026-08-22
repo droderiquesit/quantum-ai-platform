@@ -13,3 +13,4 @@ no stated reversal condition cannot be revisited honestly.
 | [0005](0005-confidence-is-arithmetic.md) | Confidence is computed, never assigned |
 | [0006](0006-classical-baseline-always.md) | A classical baseline for every quantum result |
 | [0007](0007-exact-attribution.md) | Attribution must reconcile exactly |
+| [0008](0008-edge-cells-decide-alone.md) | Edge cells decide alone, on capital granted in advance |

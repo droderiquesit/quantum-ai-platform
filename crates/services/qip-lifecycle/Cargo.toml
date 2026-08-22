@@ -16,6 +16,10 @@ qip-financial.workspace = true
 qip-market.workspace = true
 qip-contracts.workspace = true
 qip-ai.workspace = true
+# The holdout gate re-runs the validation the simulation engine already
+# implements — deflated Sharpe, purged k-fold, overfitting assessment — rather
+# than trusting numbers a researcher submitted alongside the strategy.
+qip-simulation-engine.workspace = true
 
 
 [lints]

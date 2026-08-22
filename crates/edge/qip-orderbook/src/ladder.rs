@@ -67,14 +67,6 @@ impl Ladder {
         LevelWalk { inner }
     }
 
-    pub(crate) fn best(&self) -> Option<Level> {
-        let (price, level) = match self.side {
-            BookSide::Bid => self.levels.last_key_value()?,
-            BookSide::Ask => self.levels.first_key_value()?,
-        };
-        Some(level.to_level(*price))
-    }
-
     pub(crate) fn size_at(&self, price: Decimal) -> Decimal {
         self.levels.get(&price).map_or(Decimal::ZERO, |l| l.size)
     }
@@ -113,7 +105,8 @@ impl Ladder {
     /// in front of the real touch forever.
     pub(crate) fn prune_better_than(&mut self, price: Decimal) {
         let side = self.side;
-        self.levels.retain(|resting, _| !side.is_better(*resting, price));
+        self.levels
+            .retain(|resting, _| !side.is_better(*resting, price));
     }
 
     /// Append an order to the back of its level's queue.
