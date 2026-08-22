@@ -199,7 +199,7 @@ fn tripping_the_kill_switch_needs_no_authority() {
 fn clearing_the_kill_switch_needs_an_operator() {
     let mut switch = KillSwitch::new();
     switch.trip_global(now(), "risk-monitor", "drawdown limit breached");
-    switch.clear_global(&operator()).unwrap();
+    switch.clear_global(&operator(), now()).unwrap();
     assert!(!switch.is_globally_tripped());
 }
 
@@ -220,7 +220,7 @@ fn a_tripped_kill_switch_overrides_the_autonomy_level() {
 
     controller
         .kill_switch_mut()
-        .clear_global(&operator())
+        .clear_global(&operator(), now())
         .unwrap();
     assert_eq!(controller.level(), AutonomyLevel::PaperTrading);
 }
@@ -256,7 +256,7 @@ fn a_scoped_halt_stops_one_strategy_and_leaves_the_rest() {
     assert!(!switch.is_halted("carry"));
     assert_eq!(switch.halted_scopes(), vec!["momentum"]);
 
-    switch.clear_scope("momentum", &operator()).unwrap();
+    switch.clear_scope("momentum", &operator(), now()).unwrap();
     assert!(!switch.is_halted("momentum"));
 }
 

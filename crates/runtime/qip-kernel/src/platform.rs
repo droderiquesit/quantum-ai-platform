@@ -79,9 +79,22 @@ pub struct Platform {
     volume_history: BTreeMap<String, Vec<f64>>,
     /// Opportunities found and not yet worked through.
     queue: Vec<Opportunity>,
-    /// Proposals produced, most recent last.
+    /// Recent proposals, most recent last, capped at [`PROPOSAL_HISTORY`].
+    ///
+    /// A working window, not the record: the record is the event log, which is
+    /// append-only and durable. Keeping every proposal here as well would mean
+    /// a process that runs for a year holds a year of them in memory and
+    /// rescans all of them on every cycle.
     proposals: Vec<Proposal>,
+    /// Proposals produced since assembly, including those aged out above.
+    proposals_made: u64,
 }
+
+/// How many recent proposals the platform keeps in memory.
+///
+/// Large enough that a cycle can still see what the previous ones decided,
+/// small enough that the working set does not grow with uptime.
+const PROPOSAL_HISTORY: usize = 256;
 
 impl Platform {
     /// Assemble a platform.
@@ -169,6 +182,7 @@ impl Platform {
             volume_history: BTreeMap::new(),
             queue: Vec::new(),
             proposals: Vec::new(),
+            proposals_made: 0,
         })
     }
 
@@ -217,8 +231,17 @@ impl Platform {
         self.organisation.review_governance(now)
     }
 
+    /// The recent proposals still held in memory.
+    ///
+    /// Bounded by [`PROPOSAL_HISTORY`]. Use [`Platform::proposals_made`] to
+    /// tell "none were produced" from "the older ones have aged out".
     pub fn proposals(&self) -> &[Proposal] {
         &self.proposals
+    }
+
+    /// Total proposals produced since assembly, including aged-out ones.
+    pub fn proposals_made(&self) -> u64 {
+        self.proposals_made
     }
 
     pub fn queue(&self) -> &[Opportunity] {
@@ -597,6 +620,13 @@ impl Platform {
         );
         let legs = proposal.len();
         self.proposals.push(proposal);
+        self.proposals_made += 1;
+        // Age the oldest out rather than letting the working set grow with
+        // uptime. Nothing is lost: the event log keeps the full history.
+        if self.proposals.len() > PROPOSAL_HISTORY {
+            self.proposals
+                .drain(..self.proposals.len() - PROPOSAL_HISTORY);
+        }
         StageOutcome::ran(
             Stage::Decide,
             legs,

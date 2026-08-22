@@ -15,6 +15,7 @@ serde.workspace = true
 serde_json.workspace = true
 qip-core.workspace = true
 qip-agents.workspace = true
+qip-ai.workspace = true
 qip-events.workspace = true
 qip-financial.workspace = true
 qip-market.workspace = true

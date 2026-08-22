@@ -307,6 +307,68 @@ fn the_runbook_states_the_credential_freshness_the_code_requires() {
     );
 }
 
+#[test]
+fn the_runbook_states_the_freshness_and_the_record_that_lifting_a_halt_requires() {
+    // The same rule on the other control, and the rule that makes it
+    // reviewable afterwards. Both are asserted against the code rather than
+    // against a second copy of the prose, because prose is what drifts.
+    let runbook = read("docs/operations/kill-switch.md");
+    assert!(
+        runbook.contains("15 minutes"),
+        "the kill-switch runbook does not state the credential freshness"
+    );
+    assert!(
+        runbook.contains("Every lift is recorded"),
+        "the kill-switch runbook does not say that lifting a halt is recorded"
+    );
+
+    let now = qip_core::Timestamp::from_secs(1_000_000);
+    let mut switch = qip_risk_engine::autonomy::KillSwitch::new();
+    switch.trip_global(now, "test", "a halt to lift");
+
+    let stale = qip_risk_engine::autonomy::OperatorIdentity::verified("a", "token", now);
+    let much_later = now.saturating_add(qip_core::Duration::from_hours(1));
+    assert!(
+        switch.clear_global(&stale, much_later).is_err(),
+        "the code does not enforce the freshness the runbook promises"
+    );
+
+    let fresh = qip_risk_engine::autonomy::OperatorIdentity::verified("a", "token", much_later);
+    switch
+        .clear_global(&fresh, much_later)
+        .expect("a fresh credential lifts the halt");
+    let recorded = switch.clearances();
+    assert_eq!(recorded.len(), 1, "the lift was not recorded");
+    assert_eq!(recorded[0].operator, "a");
+    assert_eq!(recorded[0].cleared.reason, "a halt to lift");
+}
+
+#[test]
+fn the_reconciliation_runbook_names_a_field_the_api_actually_returns() {
+    // The runbook tells an operator at three in the morning to read the breaks
+    // off two endpoints. A runbook that names a field the API does not return
+    // is worse than no runbook, because it costs the reader the time to find
+    // out.
+    let runbook = read("docs/operations/reconciliation-break.md");
+    assert!(
+        runbook.contains("reconciliation_breaks"),
+        "the runbook does not name the field to look at"
+    );
+
+    let routes = read("crates/apps/qip-api/src/routes.rs");
+    for endpoint in ["fn health(", "fn orders("] {
+        let body = routes
+            .split(endpoint)
+            .nth(1)
+            .unwrap_or_else(|| panic!("{endpoint} exists"));
+        let body = &body[..body.find("\n}\n").unwrap_or(body.len())];
+        assert!(
+            body.contains("reconciliation_breaks"),
+            "{endpoint} does not return the field the runbook names"
+        );
+    }
+}
+
 // --- the documentation's own hygiene ----------------------------------------
 
 #[test]

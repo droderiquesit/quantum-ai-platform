@@ -39,7 +39,7 @@ expensive.
 
 ## Safety
 
-Six controls, each enforced by code rather than by policy:
+Seven controls, each enforced by code rather than by policy:
 
 1. **Paper trading by default.** `AutonomyLevel::DEFAULT` is `PaperTrading` and
    the deployment ceiling starts there. A platform never configured for live
@@ -57,7 +57,13 @@ Six controls, each enforced by code rather than by policy:
    or *computed*, and there is no third variant. A language model has nowhere
    to put a number.
 6. **An asymmetric kill switch.** Tripping needs no authority, because a false
-   stop costs far less than a missed one. Clearing needs an operator.
+   stop costs far less than a missed one. Clearing needs an operator with a
+   credential authenticated within the last fifteen minutes, and every lift is
+   recorded against the trip it lifted.
+7. **The book and the venue must agree.** A fill the order state machine
+   refuses is recorded as a reconciliation break rather than discarded, and
+   reported on `/health` and `/orders`. Positions that quietly diverge from the
+   venue's are the failure nothing else downstream would catch.
 
 The venue credential is unreadable in any environment whose autonomy ceiling is
 paper trading — not because the application declines, but because the IAM

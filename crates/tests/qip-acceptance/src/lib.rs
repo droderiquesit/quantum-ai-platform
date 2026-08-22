@@ -12,7 +12,12 @@
 //! * `documentation.rs` checks that what the documentation claims matches what
 //!   the code does. Documentation that has drifted is worse than none, because
 //!   someone will believe it.
+//! * `architecture.rs` reads the dependency graph and asserts the edges that
+//!   are *absent*. A present edge is visible in the code that uses it; an
+//!   absent one is invisible until someone adds it.
 //! * `acceptance.rs` is the end-to-end scenario.
+//! * `resilience.rs` is the same platform under load, a degraded feed and an
+//!   operator pulling things out from under it.
 
 /// The repository root, found by walking up from this crate.
 ///

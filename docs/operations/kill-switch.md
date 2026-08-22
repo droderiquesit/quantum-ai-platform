@@ -20,11 +20,15 @@
    ```
    Cancel them if the halt reason means they should not complete.
 4. Fix the cause.
-5. Clear the halt, which requires an operator credential:
+5. Clear the halt, which requires an operator credential authenticated within
+   the last 15 minutes:
    ```sh
    curl -X DELETE -H "Authorization: Bearer $QIP_TOKEN_OPERATOR" \
      .../api/v1/kill-switch
    ```
+   A credential older than that is refused with `409`. Re-authenticate and
+   repeat — the platform is asking you to prove you are still at the keyboard,
+   not merely that you were an hour ago.
 
 ## What tripped it
 
@@ -47,6 +51,12 @@ therefore free and restarting is not.
 Clearing restores the *configured* level, not whatever was set last. The switch
 overrides the level on read rather than mutating it, so a halt cannot silently
 change what the platform does when it resumes.
+
+Every lift is recorded: who did it, how they authenticated, when, and the trip
+they lifted. An incident review that can see what stopped the platform but not
+who decided it was safe to continue is missing the more consequential half.
+Clearing a halt that is not set is not an error and records nothing, because
+nothing happened.
 
 ## What it does not do
 

@@ -405,6 +405,103 @@ fn the_oms_does_not_take_the_brokers_word_for_the_simulation_flag() -> Result<()
     Ok(())
 }
 
+#[test]
+fn a_fill_the_order_refuses_is_recorded_rather_than_dropped() -> Result<()> {
+    // The most dangerous state an execution system can be in is one where the
+    // venue and the book disagree and nothing says so. An over-fill is the
+    // easiest way to get there: the order state machine refuses it, and if
+    // that refusal is discarded the platform quietly holds a position the
+    // venue does not agree with.
+    #[derive(Debug)]
+    struct OverFillingVenue;
+    impl Broker for OverFillingVenue {
+        fn name(&self) -> &str {
+            "over-filling-venue"
+        }
+        fn is_simulated(&self) -> bool {
+            true
+        }
+        fn is_available(&self) -> bool {
+            true
+        }
+        fn capabilities(&self) -> qip_execution_engine::broker::VenueCapabilities {
+            qip_execution_engine::broker::VenueCapabilities {
+                name: "over-filling-venue".to_string(),
+                supported_types: vec!["market".to_string()],
+                partial_fills: false,
+                lot_size: Decimal::from_int(1),
+                commission_rate: 0.0,
+            }
+        }
+        fn submit(&mut self, order: &Order, at: Timestamp) -> Result<Vec<Fill>> {
+            // Twice what was asked for.
+            Ok(vec![Fill {
+                fill_id: qip_core::ids::FillId::from_string("fill-over"),
+                order_id: order.order_id.clone(),
+                at,
+                quantity: order.quantity + order.quantity,
+                price: order.arrival_price,
+                costs: Decimal::ZERO,
+                venue: "over-filling-venue".to_string(),
+                simulated: true,
+            }])
+        }
+        fn cancel(&mut self, _order: &Order, _at: Timestamp) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut manager = manager();
+    let mut broker = OverFillingVenue;
+    let controller = AutonomyController::new();
+    let result = submit(
+        &mut manager,
+        order("AAA", Side::Buy, "1000"),
+        &mut broker,
+        &controller,
+    );
+
+    // The over-fill is not applied: the book stays at what the order allows.
+    assert!(
+        result.fills.is_empty(),
+        "an over-fill was applied to the book"
+    );
+
+    // And the disagreement is visible, both on the submission and on the
+    // manager, so a monitor reading either one can halt.
+    assert_eq!(
+        result.reconciliation_breaks.len(),
+        1,
+        "the refused fill was dropped without a word"
+    );
+    assert!(
+        result.reconciliation_breaks[0].contains("over-filling-venue"),
+        "the break does not name the venue: {:?}",
+        result.reconciliation_breaks
+    );
+    assert_eq!(manager.reconciliation_breaks().len(), 1);
+    Ok(())
+}
+
+#[test]
+fn an_ordinary_submission_records_no_disagreement() -> Result<()> {
+    // The other half: a signal that fires on a normal day is one nobody acts
+    // on when it matters.
+    let mut manager = manager();
+    let mut broker = simulator();
+    let controller = AutonomyController::new();
+    let result = submit(
+        &mut manager,
+        order("AAA", Side::Buy, "1000"),
+        &mut broker,
+        &controller,
+    );
+    assert!(result.accepted);
+    assert!(result.reconciliation_breaks.is_empty());
+    assert!(manager.reconciliation_breaks().is_empty());
+    Ok(())
+}
+
 // --- risk in the execution path ---------------------------------------------
 
 #[test]

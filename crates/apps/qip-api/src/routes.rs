@@ -78,7 +78,7 @@ pub const ROUTES: &[Route] = &[
         method: Method::Get,
         pattern: "/orders",
         required_role: Role::Viewer,
-        summary: "orders, fills and refusals",
+        summary: "orders, fills, refusals and any venue/book disagreement",
     },
     Route {
         method: Method::Get,
@@ -211,7 +211,7 @@ impl Api {
                 match platform
                     .autonomy_mut()
                     .kill_switch_mut()
-                    .clear_global(&operator)
+                    .clear_global(&operator, now)
                 {
                     Ok(()) => Response::json(
                         200,
@@ -321,12 +321,25 @@ fn discovery() -> String {
 
 fn health(platform: &Platform) -> String {
     let halted = platform.autonomy().kill_switch().is_globally_tripped();
+    // A book that disagrees with the venue is reported here as well as on
+    // `/orders`, because this is the endpoint a monitor polls and that
+    // disagreement is the one condition under which none of the platform's own
+    // numbers should be believed.
+    let breaks = platform.orders().reconciliation_breaks().len();
+    let status = if halted {
+        "halted"
+    } else if breaks > 0 {
+        "reconciliation-break"
+    } else {
+        "ok"
+    };
     format!(
-        r#"{{"status":{},"halted":{},"autonomy":{},"live_capable":{}}}"#,
-        json::string(if halted { "halted" } else { "ok" }),
+        r#"{{"status":{},"halted":{},"autonomy":{},"live_capable":{},"reconciliation_breaks":{}}}"#,
+        json::string(status),
         halted,
         json::string(platform.autonomy().level().as_str()),
-        platform.is_live_capable()
+        platform.is_live_capable(),
+        breaks
     )
 }
 
@@ -465,10 +478,17 @@ fn orders(platform: &Platform) -> String {
             )
         })
         .collect();
+    let breaks: Vec<String> = platform
+        .orders()
+        .reconciliation_breaks()
+        .iter()
+        .map(|reason| json::string(reason))
+        .collect();
     format!(
-        r#"{{"orders":[{}],"refusals":{}}}"#,
+        r#"{{"orders":[{}],"refusals":{},"reconciliation_breaks":[{}]}}"#,
         rendered.join(","),
-        platform.orders().refusals().len()
+        platform.orders().refusals().len(),
+        breaks.join(",")
     )
 }
 

@@ -28,6 +28,7 @@ name = "qip-acceptance"
 version = "0.1.0"
 dependencies = [
  "qip-agents",
+ "qip-ai",
  "qip-api",
  "qip-core",
  "qip-events",

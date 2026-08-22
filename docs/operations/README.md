@@ -8,6 +8,7 @@ needs the first line more than the reasoning.
 * [A risk limit is breached](limit-breach.md)
 * [Enabling live trading](enabling-live-trading.md)
 * [An agent attempted an ungranted capability](permission-violation.md)
+* [The book and the venue disagree](reconciliation-break.md)
 
 ## The one thing to know
 

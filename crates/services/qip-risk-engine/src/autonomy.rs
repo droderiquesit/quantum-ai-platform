@@ -223,16 +223,47 @@ pub struct KillSwitchTrip {
     pub scope: Option<String>,
 }
 
+/// One recorded clearing of a halt.
+///
+/// A halt that can be lifted without a record is a control with no
+/// accountability: the incident review can say what stopped the platform but
+/// not who started it again, which is the more consequential of the two.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct KillSwitchClearance {
+    pub at: Timestamp,
+    /// The operator who lifted it.
+    pub operator: String,
+    /// How that operator authenticated.
+    pub method: String,
+    /// Scope: `None` is the global stop, otherwise the scope lifted.
+    pub scope: Option<String>,
+    /// The trip that was lifted, so the record carries why it was halted.
+    pub cleared: KillSwitchTrip,
+}
+
+/// How stale an operator's credential may be when lifting a halt.
+///
+/// The same window the autonomy controller uses for a level change. Restarting
+/// a platform that stopped itself is at least as consequential, so it is not
+/// held to a looser standard.
+const MAXIMUM_CLEARANCE_CREDENTIAL_AGE: qip_core::Duration = qip_core::Duration::from_mins(15);
+
 /// The kill switch.
 ///
 /// Tripping requires no authority: any component that notices something wrong
 /// can stop the platform, because the cost of a false stop is far below the
-/// cost of a missed one. Clearing requires an authenticated operator.
+/// cost of a missed one.
+///
+/// Clearing requires an authenticated operator with a fresh credential, and
+/// leaves a [`KillSwitchClearance`] naming them. Both halves of the record
+/// matter: the trip says why the platform stopped, the clearance says who
+/// decided it was safe to continue.
 #[derive(Clone, Debug, Default)]
 pub struct KillSwitch {
     global: Option<KillSwitchTrip>,
     scoped: BTreeMap<String, KillSwitchTrip>,
     history: Vec<KillSwitchTrip>,
+    clearances: Vec<KillSwitchClearance>,
 }
 
 impl KillSwitch {
@@ -302,21 +333,64 @@ impl KillSwitch {
         &self.history
     }
 
-    /// Clear the global stop. Requires an operator.
-    pub fn clear_global(&mut self, operator: &OperatorIdentity) -> Result<()> {
-        if self.global.is_none() {
+    /// Clear the global stop.
+    ///
+    /// Refuses a stale credential and records who lifted it. Clearing a stop
+    /// that is not set is not an error — it is the idempotent case an operator
+    /// retrying a request will hit — but it records nothing either, because
+    /// nothing happened.
+    pub fn clear_global(&mut self, operator: &OperatorIdentity, at: Timestamp) -> Result<()> {
+        let Some(trip) = self.global.clone() else {
             return Ok(());
-        }
+        };
+        Self::check_credential(operator, at)?;
         self.global = None;
-        let _ = operator;
+        self.clearances.push(KillSwitchClearance {
+            at,
+            operator: operator.subject().to_string(),
+            method: operator.method().to_string(),
+            scope: None,
+            cleared: trip,
+        });
         Ok(())
     }
 
-    /// Clear one scope. Requires an operator.
-    pub fn clear_scope(&mut self, scope: &str, operator: &OperatorIdentity) -> Result<()> {
+    /// Clear one scope. Same rules as [`KillSwitch::clear_global`].
+    pub fn clear_scope(
+        &mut self,
+        scope: &str,
+        operator: &OperatorIdentity,
+        at: Timestamp,
+    ) -> Result<()> {
+        let Some(trip) = self.scoped.get(scope).cloned() else {
+            return Ok(());
+        };
+        Self::check_credential(operator, at)?;
         self.scoped.remove(scope);
-        let _ = operator;
+        self.clearances.push(KillSwitchClearance {
+            at,
+            operator: operator.subject().to_string(),
+            method: operator.method().to_string(),
+            scope: Some(scope.to_string()),
+            cleared: trip,
+        });
         Ok(())
+    }
+
+    /// Every halt that has been lifted, and by whom.
+    pub fn clearances(&self) -> &[KillSwitchClearance] {
+        &self.clearances
+    }
+
+    fn check_credential(operator: &OperatorIdentity, at: Timestamp) -> Result<()> {
+        if operator.is_fresh(at, MAXIMUM_CLEARANCE_CREDENTIAL_AGE) {
+            return Ok(());
+        }
+        Err(Error::denied(format!(
+            "operator {} authenticated too long ago to lift a halt; \
+             re-authenticate and try again",
+            operator.subject()
+        )))
     }
 
     /// Scopes currently halted, excluding a global stop.

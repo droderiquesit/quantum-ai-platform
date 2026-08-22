@@ -107,6 +107,14 @@ pub struct SubmissionResult {
     /// If the order was resized by risk, what it was resized to.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub reduced_to: Option<Decimal>,
+    /// Where the venue and the order disagreed about what happened.
+    ///
+    /// A venue that reports a fill the order refuses — an over-fill, a fill on
+    /// a closed order — puts the book out of step with reality. Discarding
+    /// that refusal is how the divergence becomes invisible, so it is carried
+    /// here and counted on the manager instead.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub reconciliation_breaks: Vec<String>,
 }
 
 impl SubmissionResult {
@@ -126,6 +134,8 @@ pub struct OrderManager {
     /// Submissions that were refused, kept so a missing position can be
     /// explained.
     refusals: Vec<SubmissionResult>,
+    /// Every venue/book disagreement seen, so a monitor can halt on one.
+    reconciliation_breaks: Vec<String>,
     sequence: u64,
 }
 
@@ -135,8 +145,17 @@ impl OrderManager {
             orders: BTreeMap::new(),
             checker,
             refusals: Vec::new(),
+            reconciliation_breaks: Vec::new(),
             sequence: 0,
         }
+    }
+
+    /// Every venue/book disagreement recorded since assembly.
+    ///
+    /// Non-empty means the platform's positions may not match the venue's, and
+    /// nothing downstream should be trusted until it is reconciled.
+    pub fn reconciliation_breaks(&self) -> &[String] {
+        &self.reconciliation_breaks
     }
 
     pub fn order(&self, order_id: &OrderId) -> Option<&Order> {
@@ -209,6 +228,7 @@ impl OrderManager {
             venue: None,
             simulated: broker.is_simulated(),
             reduced_to: None,
+            reconciliation_breaks: Vec::new(),
         };
 
         // 1. Well formed, and traceable.
@@ -344,13 +364,23 @@ impl OrderManager {
             self.record_refusal(order, at, result.clone());
             return result;
         }
-        let _ = order.transition(
+        // Every refused transition and every refused fill is recorded. The
+        // state machine says these cannot happen from here; a break that
+        // "cannot happen" and is discarded is one nobody ever finds out about.
+        let mut breaks: Vec<String> = Vec::new();
+        if let Err(error) = order.transition(
             OrderState::Working {
                 at,
                 venue: broker.name().to_string(),
             },
             at,
-        );
+        ) {
+            breaks.push(format!(
+                "order {} could not be marked working: {}",
+                order.order_id.as_str(),
+                error.message()
+            ));
+        }
 
         match broker.submit(&order, at) {
             Ok(fills) => {
@@ -360,8 +390,18 @@ impl OrderManager {
                     // take the broker's word for it.
                     let mut fill = fill.clone();
                     fill.simulated = broker.is_simulated();
-                    let _ = order.apply_fill(fill);
+                    let quantity = fill.quantity;
+                    if let Err(error) = order.apply_fill(fill) {
+                        breaks.push(format!(
+                            "venue {} reported a fill of {} on order {} that the order refused: {}",
+                            broker.name(),
+                            quantity,
+                            order.order_id.as_str(),
+                            error.message()
+                        ));
+                    }
                 }
+                self.reconciliation_breaks.extend(breaks.iter().cloned());
                 let result = SubmissionResult {
                     order_id: order.order_id.clone(),
                     at,
@@ -371,19 +411,27 @@ impl OrderManager {
                     venue: Some(broker.name().to_string()),
                     simulated: broker.is_simulated(),
                     reduced_to,
+                    reconciliation_breaks: breaks,
                 };
                 self.orders
                     .insert(order.order_id.as_str().to_string(), order);
                 result
             }
             Err(error) => {
-                let _ = order.transition(
+                if let Err(transition) = order.transition(
                     OrderState::Rejected {
                         at,
                         reason: error.message().to_string(),
                     },
                     at,
-                );
+                ) {
+                    breaks.push(format!(
+                        "order {} could not be marked rejected: {}",
+                        order.order_id.as_str(),
+                        transition.message()
+                    ));
+                }
+                self.reconciliation_breaks.extend(breaks.iter().cloned());
                 let result = SubmissionResult {
                     order_id: order.order_id.clone(),
                     at,
@@ -395,6 +443,7 @@ impl OrderManager {
                     venue: Some(broker.name().to_string()),
                     simulated: broker.is_simulated(),
                     reduced_to,
+                    reconciliation_breaks: breaks,
                 };
                 self.orders
                     .insert(order.order_id.as_str().to_string(), order);
