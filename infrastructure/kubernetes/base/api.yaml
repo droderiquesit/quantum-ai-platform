@@ -1,0 +1,143 @@
+# The API and operator interface.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: qip-api
+  namespace: qip
+  annotations:
+    # Bound to the Google service account by workload identity, so no key file
+    # ever exists on disk.
+    iam.gke.io/gcp-service-account: qip-api-ENVIRONMENT@PROJECT.iam.gserviceaccount.com
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qip-api
+  namespace: qip
+  labels:
+    app: qip-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: qip-api
+  template:
+    metadata:
+      labels:
+        app: qip-api
+    spec:
+      serviceAccountName: qip-api
+      # No automatic token mount: the workload authenticates through workload
+      # identity, and a mounted token is a credential nothing needs.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: qip-api
+          image: qip-api:IMAGE_TAG
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: QIP_API_ADDRESS
+              value: "0.0.0.0:8080"
+            # The autonomy ceiling. Set from a config map so that changing it
+            # is a visible change to a named resource rather than an argument
+            # buried in a command line.
+            - name: QIP_AUTONOMY_CEILING
+              valueFrom:
+                configMapKeyRef:
+                  name: qip-config
+                  key: autonomy_ceiling
+            # Credentials from mounted secrets, never from the image.
+            - name: QIP_TOKEN_OPERATOR
+              valueFrom:
+                secretKeyRef:
+                  name: qip-tokens
+                  key: operator
+            - name: QIP_TOKEN_APPROVER
+              valueFrom:
+                secretKeyRef:
+                  name: qip-tokens
+                  key: approver
+            - name: QIP_TOKEN_ANALYST
+              valueFrom:
+                secretKeyRef:
+                  name: qip-tokens
+                  key: analyst
+            - name: QIP_TOKEN_VIEWER
+              valueFrom:
+                secretKeyRef:
+                  name: qip-tokens
+                  key: viewer
+            - name: QIP_TOKEN_MONITOR
+              valueFrom:
+                secretKeyRef:
+                  name: qip-tokens
+                  key: monitor
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              # A memory limit without a CPU limit lets a busy pod starve its
+              # neighbours; a CPU limit without a memory limit lets a leak take
+              # down the node. Both, always.
+              cpu: "2"
+              memory: 1Gi
+          livenessProbe:
+            httpGet:
+              path: /api/v1
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /api/v1
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # The root filesystem is read-only, so anything needing to write gets
+        # an explicit, size-bounded volume.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qip-api
+  namespace: qip
+spec:
+  selector:
+    app: qip-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: qip-api
+  namespace: qip
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: qip-api

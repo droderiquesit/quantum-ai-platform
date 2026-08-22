@@ -1,0 +1,16 @@
+# The platform's configuration.
+#
+# The autonomy ceiling lives here rather than in an image or a command line,
+# so that changing what the platform is permitted to do is a change to a named
+# resource that appears in a diff and in an audit log.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qip-config
+  namespace: qip
+data:
+  # Paper trading. Raising this permits two authenticated operators to enable
+  # live trading; it does not enable it.
+  autonomy_ceiling: "paper_trading"
+  cycle_interval_seconds: "300"
+  log_level: "info"

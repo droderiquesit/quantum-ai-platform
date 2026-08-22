@@ -1,0 +1,140 @@
+# Continuous integration.
+#
+# The gates are ordered cheapest-first so a formatting mistake fails in seconds
+# rather than after the test suite. Every gate is a hard failure: a warning
+# nobody has to fix is a warning everybody stops reading.
+name: ci
+
+on:
+  push:
+    branches: ["main", "claude/**"]
+  pull_request:
+    branches: ["main"]
+
+# The default token can read the repository and nothing else. Any job needing
+# more asks for it explicitly, so the blast radius of a compromised action is
+# visible in the diff that granted it.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Fail on any warning. The workspace lint set already denies the ones that
+  # matter; this catches the rest before they accumulate.
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  format:
+    name: format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - run: cargo fmt --all --check
+
+  lint:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --all-features
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --all-features
+
+  # The build that would actually be deployed. Run separately from the tests
+  # because a release build catches optimisation-dependent problems the debug
+  # build does not, and because a green test suite that cannot be released is
+  # not a green build.
+  release-build:
+    name: release build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --release --locked
+
+  # The dependency policy, enforced. The platform depends on serde and
+  # serde_json and nothing else; a pull request adding a third dependency has
+  # to change this check deliberately rather than slip past review.
+  dependency-policy:
+    name: dependency policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - run: ./scripts/check-dependencies.sh
+
+  # Vulnerabilities in what we do depend on. `cargo audit` needs the advisory
+  # database, so this job is the one place the build reaches the network for
+  # anything other than the toolchain.
+  security-audit:
+    name: security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - run: cargo install cargo-audit --locked
+      - run: cargo audit --deny warnings
+
+  # A software bill of materials for every release build, so an operator can
+  # answer "is this affected" without guessing.
+  sbom:
+    name: sbom
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - run: cargo install cargo-cyclonedx --locked
+      - run: cargo cyclonedx --format json --all
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: "**/*.cdx.json"
+          retention-days: 90
+
+  # Infrastructure is code and gets the same treatment. `terraform validate`
+  # catches a malformed configuration; the structural checks in the Rust test
+  # suite catch a well-formed one that would deploy something unsafe.
+  infrastructure:
+    name: infrastructure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+      - name: format
+        run: terraform -chdir=infrastructure/terraform fmt -check -recursive
+      - name: validate
+        run: |
+          terraform -chdir=infrastructure/terraform init -backend=false
+          terraform -chdir=infrastructure/terraform validate
+
+  # The secrets check runs on the diff, not the history: a secret already
+  # committed needs rotating rather than a failing build, and a build that
+  # fails forever on an old commit is a build people learn to ignore.
+  secrets:
+    name: secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: ./scripts/check-secrets.sh

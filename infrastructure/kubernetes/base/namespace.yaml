@@ -1,0 +1,119 @@
+# The namespace, and the network policy that governs it.
+#
+# The default is deny. Every flow the platform needs is named below, and
+# anything not named cannot happen — which is what keeps a compromised research
+# pod from reaching the execution pod directly.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: qip
+  labels:
+    name: qip
+    # Enforce the restricted pod security standard: no privileged containers,
+    # no host namespaces, no running as root.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+# Deny everything, then permit what is needed. Declared first so that a
+# manifest applied out of order fails closed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: qip
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# DNS, which everything needs and which the default deny would otherwise break.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: qip
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# The API accepts traffic from the ingress controller and nothing else.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-api-ingress
+  namespace: qip
+spec:
+  podSelector:
+    matchLabels:
+      app: qip-api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# The deep brain may reach Google APIs for secrets and telemetry. It may not
+# reach a venue: it hosts no agent that could use one.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-deepbrain-egress
+  namespace: qip
+spec:
+  podSelector:
+    matchLabels:
+      app: qip-deepbrain
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            # Private Google access. Reaching Google APIs without leaving the
+            # VPC, and without a route to anywhere else.
+            cidr: 199.36.153.8/30
+      ports:
+        - protocol: TCP
+          port: 443
+---
+# The fast brain is the only workload permitted to reach a venue, and only
+# where the environment's egress policy allows it at the network level too.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-fastbrain-egress
+  namespace: qip
+spec:
+  podSelector:
+    matchLabels:
+      app: qip-fastbrain
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 199.36.153.8/30
+      ports:
+        - protocol: TCP
+          port: 443

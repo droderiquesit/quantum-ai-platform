@@ -24,6 +24,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "qip-acceptance"
+version = "0.1.0"
+dependencies = [
+ "qip-agents",
+ "qip-api",
+ "qip-core",
+ "qip-events",
+ "qip-execution-engine",
+ "qip-financial",
+ "qip-investment-agents",
+ "qip-kernel",
+ "qip-learning-engine",
+ "qip-market",
+ "qip-market-ingestion",
+ "qip-observability",
+ "qip-optimization-engine",
+ "qip-portfolio",
+ "qip-portfolio-engine",
+ "qip-reasoning-engine",
+ "qip-risk",
+ "qip-risk-engine",
+ "qip-simulation-engine",
+ "qip-web",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "qip-agents"
 version = "0.1.0"
 dependencies = [

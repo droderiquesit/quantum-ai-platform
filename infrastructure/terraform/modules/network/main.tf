@@ -1,0 +1,139 @@
+# The network.
+#
+# One VPC, one subnet with secondary ranges for pods and services, and no
+# route to the internet except through a NAT that logs. Nodes have no external
+# addresses at all: a node that cannot be reached from the internet cannot be
+# reached from the internet, which is a stronger statement than any firewall
+# rule.
+
+resource "google_compute_network" "vpc" {
+  project = var.project_id
+  name    = "qip-${var.environment}"
+
+  # Subnets are declared, not created automatically. An automatic subnet in
+  # every region is a lot of network nobody asked for.
+  auto_create_subnetworks = false
+
+  # Regional routing keeps a failure in one region from affecting another's
+  # routing table.
+  routing_mode = "REGIONAL"
+}
+
+resource "google_compute_subnetwork" "primary" {
+  project = var.project_id
+  name    = "qip-${var.environment}-primary"
+  region  = var.region
+  network = google_compute_network.vpc.id
+
+  ip_cidr_range = var.subnet_cidr
+
+  # Private Google access lets nodes reach Google APIs without a public
+  # address, which is what makes the no-external-address rule survivable.
+  private_ip_google_access = true
+
+  secondary_ip_range {
+    range_name    = "pods"
+    ip_cidr_range = var.pod_cidr
+  }
+
+  secondary_ip_range {
+    range_name    = "services"
+    ip_cidr_range = var.service_cidr
+  }
+
+  # Flow logs at a sampled rate. Full sampling is expensive and half a percent
+  # is enough to answer "what talked to what" after an incident.
+  log_config {
+    aggregation_interval = "INTERVAL_5_SEC"
+    flow_sampling        = 0.5
+    metadata             = "INCLUDE_ALL_METADATA"
+  }
+}
+
+# Egress through a NAT with logging, so a component reaching somewhere
+# unexpected is visible rather than silent.
+resource "google_compute_router" "router" {
+  project = var.project_id
+  name    = "qip-${var.environment}-router"
+  region  = var.region
+  network = google_compute_network.vpc.id
+}
+
+resource "google_compute_router_nat" "nat" {
+  project = var.project_id
+  name    = "qip-${var.environment}-nat"
+  router  = google_compute_router.router.name
+  region  = var.region
+
+  nat_ip_allocate_option             = "AUTO_ONLY"
+  source_subnetwork_ip_ranges_to_nat = "ALL_SUBNETWORKS_ALL_IP_RANGES"
+
+  log_config {
+    enable = true
+    filter = "ALL"
+  }
+}
+
+# Deny everything inbound that is not explicitly permitted. Declared even
+# though it is the default, because a reviewer should be able to see the
+# posture rather than infer it.
+resource "google_compute_firewall" "deny_ingress" {
+  project = var.project_id
+  name    = "qip-${var.environment}-deny-ingress"
+  network = google_compute_network.vpc.id
+
+  direction = "INGRESS"
+  priority  = 65534
+
+  deny {
+    protocol = "all"
+  }
+
+  source_ranges = ["0.0.0.0/0"]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
+}
+
+# Health checks from Google's own ranges, which load balancing needs.
+resource "google_compute_firewall" "allow_health_checks" {
+  project = var.project_id
+  name    = "qip-${var.environment}-allow-health-checks"
+  network = google_compute_network.vpc.id
+
+  direction = "INGRESS"
+  priority  = 1000
+
+  allow {
+    protocol = "tcp"
+    ports    = ["8080"]
+  }
+
+  # The documented ranges Google health checks originate from.
+  source_ranges = ["35.191.0.0/16", "130.211.0.0/22"]
+  target_tags   = ["qip-node"]
+}
+
+# Traffic between nodes in the cluster.
+resource "google_compute_firewall" "allow_internal" {
+  project = var.project_id
+  name    = "qip-${var.environment}-allow-internal"
+  network = google_compute_network.vpc.id
+
+  direction = "INGRESS"
+  priority  = 1000
+
+  allow {
+    protocol = "tcp"
+  }
+  allow {
+    protocol = "udp"
+  }
+  allow {
+    protocol = "icmp"
+  }
+
+  source_ranges = [var.subnet_cidr, var.pod_cidr]
+  target_tags   = ["qip-node"]
+}
