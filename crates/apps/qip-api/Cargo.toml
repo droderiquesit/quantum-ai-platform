@@ -17,6 +17,9 @@ qip-portfolio.workspace = true
 qip-risk.workspace = true
 qip-observability.workspace = true
 qip-storage.workspace = true
+qip-agents.workspace = true
+qip-risk-engine.workspace = true
+qip-opportunity-engine.workspace = true
 qip-kernel.workspace = true
 qip-web.workspace = true
 

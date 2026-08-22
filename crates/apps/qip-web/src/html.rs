@@ -1,0 +1,185 @@
+//! HTML rendering.
+//!
+//! Everything is escaped on the way in. [`Element::text`] takes a string and
+//! escapes it; there is deliberately no method that inserts raw markup, so a
+//! value that came from a rationale, an agent id or an error message cannot
+//! carry markup into the page. Cross-site scripting is not something this
+//! module tries to catch — it is something it has no way to express.
+//!
+//! The pages carry no JavaScript at all. That is a decision, not an omission:
+//! the content-security policy the API sets forbids script entirely, so a
+//! page that needed it would not work, and the interactions here are links and
+//! form submissions that a server can answer.
+
+use std::fmt::Write;
+
+/// Escape text for an HTML element body or attribute value.
+///
+/// Both contexts at once, which is stricter than either needs and removes the
+/// question of which one a given call site is in.
+pub fn escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            // A slash inside an attribute can close a tag in some parsers.
+            '/' => out.push_str("&#47;"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// A node in the tree.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Node {
+    /// Text, escaped when rendered.
+    Text(String),
+    Element(Element),
+}
+
+impl Node {
+    pub fn render(&self) -> String {
+        match self {
+            Self::Text(text) => escape(text),
+            Self::Element(element) => element.render(),
+        }
+    }
+}
+
+/// An HTML element.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Element {
+    tag: &'static str,
+    attributes: Vec<(String, String)>,
+    children: Vec<Node>,
+    /// Whether the tag closes itself.
+    void: bool,
+}
+
+impl Element {
+    pub fn new(tag: &'static str) -> Self {
+        Self {
+            tag,
+            attributes: Vec::new(),
+            children: Vec::new(),
+            void: matches!(tag, "meta" | "link" | "br" | "hr" | "img" | "input"),
+        }
+    }
+
+    pub fn attr(mut self, name: &str, value: &str) -> Self {
+        self.attributes.push((name.to_string(), value.to_string()));
+        self
+    }
+
+    pub fn class(self, value: &str) -> Self {
+        self.attr("class", value)
+    }
+
+    /// Add escaped text.
+    pub fn text(mut self, text: impl AsRef<str>) -> Self {
+        self.children.push(Node::Text(text.as_ref().to_string()));
+        self
+    }
+
+    pub fn child(mut self, element: Element) -> Self {
+        self.children.push(Node::Element(element));
+        self
+    }
+
+    pub fn children(mut self, elements: impl IntoIterator<Item = Element>) -> Self {
+        self.children
+            .extend(elements.into_iter().map(Node::Element));
+        self
+    }
+
+    /// Render to HTML.
+    pub fn render(&self) -> String {
+        let mut out = String::new();
+        let _ = write!(out, "<{}", self.tag);
+        for (name, value) in &self.attributes {
+            // The attribute name is a compile-time constant at every call
+            // site; the value is escaped because it often is not.
+            let _ = write!(out, " {}=\"{}\"", name, escape(value));
+        }
+        if self.void {
+            out.push_str(" />");
+            return out;
+        }
+        out.push('>');
+        for child in &self.children {
+            out.push_str(&child.render());
+        }
+        let _ = write!(out, "</{}>", self.tag);
+        out
+    }
+}
+
+/// Shorthands for the tags the pages actually use.
+pub fn div() -> Element {
+    Element::new("div")
+}
+pub fn span() -> Element {
+    Element::new("span")
+}
+pub fn p() -> Element {
+    Element::new("p")
+}
+pub fn h1() -> Element {
+    Element::new("h1")
+}
+pub fn h2() -> Element {
+    Element::new("h2")
+}
+pub fn h3() -> Element {
+    Element::new("h3")
+}
+pub fn table() -> Element {
+    Element::new("table")
+}
+pub fn thead() -> Element {
+    Element::new("thead")
+}
+pub fn tbody() -> Element {
+    Element::new("tbody")
+}
+pub fn tr() -> Element {
+    Element::new("tr")
+}
+pub fn th() -> Element {
+    Element::new("th")
+}
+pub fn td() -> Element {
+    Element::new("td")
+}
+pub fn a(href: &str) -> Element {
+    Element::new("a").attr("href", href)
+}
+pub fn ul() -> Element {
+    Element::new("ul")
+}
+pub fn li() -> Element {
+    Element::new("li")
+}
+pub fn section() -> Element {
+    Element::new("section")
+}
+pub fn nav() -> Element {
+    Element::new("nav")
+}
+pub fn header() -> Element {
+    Element::new("header")
+}
+pub fn main_element() -> Element {
+    Element::new("main")
+}
+pub fn code() -> Element {
+    Element::new("code")
+}
+pub fn strong() -> Element {
+    Element::new("strong")
+}

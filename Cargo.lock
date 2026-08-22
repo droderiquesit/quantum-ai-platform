@@ -48,13 +48,16 @@ dependencies = [
 name = "qip-api"
 version = "0.1.0"
 dependencies = [
+ "qip-agents",
  "qip-core",
  "qip-events",
  "qip-financial",
  "qip-kernel",
  "qip-observability",
+ "qip-opportunity-engine",
  "qip-portfolio",
  "qip-risk",
+ "qip-risk-engine",
  "qip-storage",
  "qip-web",
  "serde",
@@ -65,12 +68,14 @@ dependencies = [
 name = "qip-cli"
 version = "0.1.0"
 dependencies = [
+ "qip-agents",
  "qip-api",
  "qip-core",
  "qip-events",
  "qip-financial",
  "qip-kernel",
  "qip-observability",
+ "qip-risk",
  "qip-storage",
  "serde",
  "serde_json",
@@ -88,12 +93,15 @@ dependencies = [
 name = "qip-deepbrain"
 version = "0.1.0"
 dependencies = [
+ "qip-agents",
  "qip-api",
  "qip-core",
  "qip-events",
  "qip-financial",
+ "qip-investment-agents",
  "qip-kernel",
  "qip-observability",
+ "qip-risk",
  "qip-storage",
  "serde",
  "serde_json",
@@ -140,10 +148,12 @@ dependencies = [
 name = "qip-fastbrain"
 version = "0.1.0"
 dependencies = [
+ "qip-agents",
  "qip-api",
  "qip-core",
  "qip-events",
  "qip-financial",
+ "qip-investment-agents",
  "qip-kernel",
  "qip-observability",
  "qip-storage",

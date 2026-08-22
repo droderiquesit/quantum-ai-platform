@@ -19,6 +19,9 @@ qip-events.workspace = true
 qip-financial.workspace = true
 qip-observability.workspace = true
 qip-storage.workspace = true
+qip-agents.workspace = true
+qip-investment-agents.workspace = true
+qip-risk.workspace = true
 qip-kernel.workspace = true
 qip-api.workspace = true
 
