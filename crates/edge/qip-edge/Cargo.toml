@@ -1,0 +1,32 @@
+[package]
+name = "qip-edge"
+description = "An edge cell: the hot execution path, local state and the durable asynchronous mirror."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+qip-core.workspace = true
+qip-numerics.workspace = true
+qip-financial.workspace = true
+qip-market.workspace = true
+qip-contracts.workspace = true
+qip-compliance.workspace = true
+qip-protocols.workspace = true
+qip-sequencing.workspace = true
+qip-orderbook.workspace = true
+qip-feature-dag.workspace = true
+qip-strategy.workspace = true
+qip-arbitrage.workspace = true
+qip-routing.workspace = true
+qip-risk.workspace = true
+qip-portfolio.workspace = true
+qip-execution-engine.workspace = true
+qip-risk-engine.workspace = true
+
+[lints]
+workspace = true

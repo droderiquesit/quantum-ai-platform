@@ -1,0 +1,21 @@
+[package]
+name = "qip-feature-dag"
+description = "Incremental feature DAG: compute each changed feature once, share across strategies."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+qip-core.workspace = true
+qip-numerics.workspace = true
+qip-financial.workspace = true
+qip-market.workspace = true
+qip-contracts.workspace = true
+qip-quant.workspace = true
+
+[lints]
+workspace = true
