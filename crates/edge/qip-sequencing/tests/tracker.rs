@@ -39,10 +39,14 @@ fn at(step: i64) -> Timestamp {
     Timestamp::from_nanos(1_704_207_845_000_000_000 + step * 1_000_000)
 }
 
+/// The venue sequences a batch released, ignoring any reset the tracker
+/// synthesised — a reset occupies the position of the data it replaces, and
+/// counting it as delivered data would be exactly the confusion to avoid.
 fn sequences(batch: &SequencedBatch) -> Vec<u64> {
     batch
         .released
         .iter()
+        .filter(|message| !matches!(message.body, MessageBody::Reset { .. }))
         .map(|message| message.origin.sequence)
         .collect()
 }
@@ -282,11 +286,12 @@ fn reordered_delivery_produces_exactly_what_in_order_delivery_produces() {
 }
 
 #[test]
-fn a_watermark_never_covers_a_sequence_that_was_never_released() {
-    // Stated as the invariant rather than as a scenario: whatever arrives, in
-    // whatever order, with duplicates and holes, everything at or below the
-    // watermark has actually been handed over.
-    Property::new("the watermark only ever covers released sequences")
+fn a_watermark_only_covers_sequences_that_were_delivered_or_explicitly_disclaimed() {
+    // The watermark's promise, stated as an invariant rather than a scenario:
+    // for everything at or below it, the consumer has either been handed the
+    // message or been told, by a reset it received first, that the message is
+    // gone. Nothing in between — that in-between is the silently wrong book.
+    Property::new("the watermark covers only delivered or disclaimed sequences")
         .cases(200)
         .for_all(
             |rng: &mut Xoshiro256| {
@@ -297,26 +302,51 @@ fn a_watermark_never_covers_a_sequence_that_was_never_released() {
             |arrivals| {
                 let policy = ReorderPolicy::new(6, Duration::from_millis(5));
                 let mut tracker = SequenceTracker::new("XNAS/itch-a/1", policy);
-                let mut released: BTreeSet<u64> = BTreeSet::new();
+                let mut covered: BTreeSet<u64> = BTreeSet::new();
                 let mut start: Option<u64> = None;
 
                 for (step, sequence) in arrivals.iter().enumerate() {
                     let now = at(step as i64);
-                    let mut batch = tracker.accept_unit(*sequence, unit(*sequence), now);
-                    let polled = tracker.poll(now);
-                    batch.released.extend(polled.released);
-                    for message in &batch.released {
-                        if !matches!(message.body, MessageBody::Reset { .. }) {
-                            released.insert(message.origin.sequence);
+                    for batch in [
+                        tracker.accept_unit(*sequence, unit(*sequence), now),
+                        tracker.poll(now),
+                    ] {
+                        let abandoned: Vec<(u64, u64)> = batch
+                            .events
+                            .iter()
+                            .filter_map(|event| match event {
+                                SequenceEvent::GapAbandoned {
+                                    missing_from,
+                                    missing_to,
+                                    ..
+                                } => Some((*missing_from, *missing_to)),
+                                _ => None,
+                            })
+                            .collect();
+                        if !abandoned.is_empty()
+                            && !matches!(
+                                batch.released.first().map(|m| &m.body),
+                                Some(MessageBody::Reset { .. })
+                            )
+                        {
+                            return Err(
+                                "a gap was abandoned without a reset leading the batch".to_string()
+                            );
+                        }
+                        for (from, to) in abandoned {
+                            covered.extend(from..=to);
+                        }
+                        for message in &batch.released {
+                            covered.insert(message.origin.sequence);
                         }
                     }
                     start.get_or_insert(*sequence);
 
                     if let (Some(watermark), Some(start)) = (tracker.watermark(), start) {
-                        for covered in start..=watermark.position {
-                            if !released.contains(&covered) {
+                        for position in start..=watermark.position {
+                            if !covered.contains(&position) {
                                 return Err(format!(
-                                    "watermark at {} claims {covered}, which was never released",
+                                    "watermark at {} claims {position}, which was neither delivered nor disclaimed",
                                     watermark.position
                                 ));
                             }
