@@ -97,7 +97,11 @@ impl PathLeg {
                 self.object.as_str()
             )));
         }
-        div(adverse.max(Decimal::ZERO), self.mid_price, "spread fraction")
+        div(
+            adverse.max(Decimal::ZERO),
+            self.mid_price,
+            "spread fraction",
+        )
     }
 
     /// Cost of walking past the touch to fill the size, as a fraction of
@@ -230,9 +234,9 @@ pub fn price_path(
         return Err(Error::invalid("a path must be priced at a positive size"));
     }
 
-    let first = graph
-        .edge(candidate.edges[0])
-        .ok_or_else(|| Error::not_found("the candidate names a conversion that is not in the graph"))?;
+    let first = graph.edge(candidate.edges[0]).ok_or_else(|| {
+        Error::not_found("the candidate names a conversion that is not in the graph")
+    })?;
     let start = first.from.clone();
 
     let mut carried = start_quantity;
@@ -295,16 +299,17 @@ pub fn price_path(
             fewest = fewest.min(source.observations(&leg.venue, &leg.object));
         }
 
-        conversion.indicative_output =
-            mul(indicative_carried, edge.indicative_rate, "indicative output")?;
+        conversion.indicative_output = mul(
+            indicative_carried,
+            edge.indicative_rate,
+            "indicative output",
+        )?;
         indicative_carried = conversion.indicative_output;
         carried = conversion.output;
         conversions.push(conversion);
     }
 
-    let closes = conversions
-        .last()
-        .is_some_and(|last| last.to == start);
+    let closes = conversions.last().is_some_and(|last| last.to == start);
     if !closes {
         return Err(Error::invalid(
             "the candidate does not return to the instrument it started from",
@@ -330,12 +335,15 @@ pub fn price_path(
 }
 
 fn venue_class(graph: &ArbitrageGraph, venue: &VenueId) -> Result<VenueClass> {
-    graph.venue_facts(venue).map(|facts| facts.class).ok_or_else(|| {
-        Error::not_found(format!(
-            "venue {} has no recorded class, so its settlement assumptions are unknown",
-            venue.as_str()
-        ))
-    })
+    graph
+        .venue_facts(venue)
+        .map(|facts| facts.class)
+        .ok_or_else(|| {
+            Error::not_found(format!(
+                "venue {} has no recorded class, so its settlement assumptions are unknown",
+                venue.as_str()
+            ))
+        })
 }
 
 fn price_transfer(
@@ -527,11 +535,7 @@ fn price_synthetic(
             component.unwind_side
         };
         let class = venue_class(graph, &component.venue)?;
-        let requested = mul(
-            target_units,
-            component.units_per_unit,
-            "component quantity",
-        )?;
+        let requested = mul(target_units, component.units_per_unit, "component quantity")?;
         let (executable_price, available) = source
             .sweep_cost(&component.venue, &component.object, side, requested)
             .ok_or_else(|| {

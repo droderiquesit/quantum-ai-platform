@@ -23,10 +23,8 @@ static COUNTER: AtomicU32 = AtomicU32::new(0);
 /// A directory of this test's own, since these tests write real files.
 fn scratch(label: &str) -> PathBuf {
     let unique = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let path = std::env::temp_dir().join(format!(
-        "qip-mesh-{label}-{}-{unique}",
-        std::process::id()
-    ));
+    let path =
+        std::env::temp_dir().join(format!("qip-mesh-{label}-{}-{unique}", std::process::id()));
     let _ = std::fs::remove_dir_all(&path);
     path
 }
@@ -51,7 +49,10 @@ fn a_second_write_of_different_bytes_is_refused_and_names_the_conflict() -> Resu
 
     // And the original is untouched.
     let stored = evidence.get(KEY, now())?;
-    assert_eq!(stored.value().as_deref(), Some(b"the decision as taken".as_slice()));
+    assert_eq!(
+        stored.value().as_deref(),
+        Some(b"the decision as taken".as_slice())
+    );
     Ok(())
 }
 
@@ -141,7 +142,10 @@ fn keys_are_listed_by_prefix_and_only_those_already_written() -> Result<()> {
     evidence.put("decisions/b", b"b".to_vec(), later)?;
     evidence.put("models/c", b"c".to_vec(), now())?;
 
-    assert_eq!(evidence.keys("decisions/", now())?.value(), &["decisions/a"]);
+    assert_eq!(
+        evidence.keys("decisions/", now())?.value(),
+        &["decisions/a"]
+    );
     assert_eq!(
         evidence.keys("decisions/", later)?.value(),
         &["decisions/a", "decisions/b"]

@@ -48,7 +48,12 @@ fn severity_maps_to_the_right_halt_scope() -> Result<()> {
     assert!(!log.is_halted("stat-arb-eu", "frankfurt-1"));
 
     // A scoped incident stops that strategy wherever it runs.
-    let response = log.record(incident("i-2", Severity::Scoped, Some("stat-arb-eu"), None)?);
+    let response = log.record(incident(
+        "i-2",
+        Severity::Scoped,
+        Some("stat-arb-eu"),
+        None,
+    )?);
     assert_eq!(response, HaltScope::Scope("stat-arb-eu".to_string()));
     assert!(log.is_halted("stat-arb-eu", "frankfurt-1"));
     assert!(log.is_halted("stat-arb-eu", "london-1"));
@@ -136,7 +141,12 @@ fn clearing_without_a_stated_reason_is_refused() -> Result<()> {
 #[test]
 fn every_clearance_is_recorded_with_who_why_and_what_it_lifted() -> Result<()> {
     let mut log = IncidentLog::new(ResponsePolicy::standard());
-    log.record(incident("i-1", Severity::Scoped, Some("stat-arb-eu"), None)?);
+    log.record(incident(
+        "i-1",
+        Severity::Scoped,
+        Some("stat-arb-eu"),
+        None,
+    )?);
     log.record(incident("i-2", Severity::Cell, None, Some("london-1"))?);
 
     log.clear_scope(

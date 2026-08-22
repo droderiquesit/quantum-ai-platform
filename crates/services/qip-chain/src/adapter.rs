@@ -132,6 +132,10 @@ impl SyntheticChainConfig {
     }
 }
 
+/// How many pending transactions the synthetic mempool holds before the
+/// oldest is dropped unmined.
+const MEMPOOL_WINDOW: usize = 8;
+
 /// One produced block and the pool reserves it displaced.
 #[derive(Clone, Debug)]
 struct Produced {
@@ -155,10 +159,16 @@ pub struct SyntheticChain {
     next_block_at: Timestamp,
     nonce: u64,
     sender_nonces: BTreeMap<Address, u64>,
+    /// Pending transactions still believed to be in the mempool. A public
+    /// mempool forgets what it does not include, and a consumer that never
+    /// hears so keeps sizing against liquidity that has gone.
+    pending_window: Vec<TxHash>,
     started: bool,
 }
 
 impl SyntheticChain {
+    /// Start a chain at `start`, with the pool the config describes already
+    /// funded.
     pub fn new(config: SyntheticChainConfig, start: Timestamp) -> Result<Self> {
         let pool = Pool::new(
             config.pool.clone(),
@@ -180,6 +190,7 @@ impl SyntheticChain {
             next_block_at: start,
             nonce: 0,
             sender_nonces: BTreeMap::new(),
+            pending_window: Vec::new(),
             started: true,
         })
     }
@@ -192,6 +203,7 @@ impl SyntheticChain {
         &self.pool
     }
 
+    /// The height of the branch this chain is currently building on.
     pub fn head(&self) -> Option<BlockNumber> {
         self.branch.last().map(|produced| produced.block.number)
     }
@@ -231,9 +243,7 @@ impl SyntheticChain {
     }
 
     fn produce_block(&mut self) -> Result<Block> {
-        let number = self
-            .head()
-            .map_or(BlockNumber::new(1), |head| head.next());
+        let number = self.head().map_or(BlockNumber::new(1), |head| head.next());
         let parent = self.head_hash();
         let hash = self.next_hash(number, parent);
         let timestamp = self.next_block_at;
@@ -244,9 +254,15 @@ impl SyntheticChain {
 
         let mut transactions = Vec::new();
         if number.get() == 1 {
-            transactions.push(self.creation_transaction(number, reserve_base_before, reserve_quote_before));
+            transactions.push(self.creation_transaction(
+                number,
+                reserve_base_before,
+                reserve_quote_before,
+            ));
         }
-        let swaps = self.rng.below(u64::from(self.config.max_swaps_per_block) + 1);
+        let swaps = self
+            .rng
+            .below(u64::from(self.config.max_swaps_per_block) + 1);
         for _ in 0..swaps {
             if let Some(transaction) = self.swap_transaction(transactions.len() as u32)? {
                 transactions.push(transaction);
@@ -414,8 +430,8 @@ impl ChainAdapter for SyntheticChain {
         let mut updates = Vec::new();
         while self.next_block_at <= until {
             let depth = self.rng.below(u64::from(self.config.max_reorg_depth)) as usize + 1;
-            let reorg = self.rng.bernoulli(self.config.reorg_probability)
-                && self.branch.len() > depth;
+            let reorg =
+                self.rng.bernoulli(self.config.reorg_probability) && self.branch.len() > depth;
             if reorg {
                 // Rewind and build one block more than was withdrawn, so the
                 // branch is longer and a consumer must reorganise onto it.
@@ -431,7 +447,11 @@ impl ChainAdapter for SyntheticChain {
             let at = self.next_block_at;
             for _ in 0..self.config.pending_per_block {
                 let pending = self.pending_transaction(at);
+                self.pending_window.push(pending.hash);
                 updates.push(ChainUpdate::Pending(Box::new(pending)));
+                if self.pending_window.len() > MEMPOOL_WINDOW {
+                    updates.push(ChainUpdate::Dropped(self.pending_window.remove(0)));
+                }
             }
         }
         Ok(updates)

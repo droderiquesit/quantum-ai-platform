@@ -272,9 +272,11 @@ impl ParentOrder {
 
     /// Attach a child, refusing one that would oversubscribe the parent.
     ///
-    /// The quantity checked against is the outstanding one, not the parent's
-    /// total: quantity released by a failed child is available again, which is
-    /// what makes a re-route possible without inflating the order.
+    /// The quantity checked against is what is free to assign, not the
+    /// parent's total and not everything still outstanding: a share already
+    /// working at a venue is spoken for. Quantity released by a *failed* child
+    /// becomes free again, which is what makes a re-route possible without
+    /// inflating the order.
     pub fn attach(&mut self, child: ChildOrder) -> Result<()> {
         if child.parent != self.order_id {
             return Err(Error::invalid(format!(
@@ -290,12 +292,12 @@ impl ParentOrder {
                 child.client_id
             )));
         }
-        if child.quantity > self.outstanding() {
+        if child.quantity > self.available_to_assign() {
             return Err(Error::invalid(format!(
-                "child {} asks for {} but only {} of the parent is outstanding",
+                "child {} asks for {} but only {} of the parent is free to assign",
                 child.client_id,
                 child.quantity,
-                self.outstanding()
+                self.available_to_assign()
             )));
         }
         self.children.insert(child.client_id.clone(), child);
@@ -375,6 +377,16 @@ impl ParentOrder {
     /// Everything not yet filled: unassigned, orphaned, or still working.
     pub fn outstanding(&self) -> Decimal {
         self.unassigned() + self.orphaned() + self.working()
+    }
+
+    /// Quantity a new child may be given.
+    ///
+    /// Outstanding less what is already live at a venue. The distinction is the
+    /// whole of the double-send bug: a share working somewhere is outstanding,
+    /// and sending it again would put two orders in the market for one
+    /// intention.
+    pub fn available_to_assign(&self) -> Decimal {
+        self.unassigned() + self.orphaned()
     }
 
     pub fn average_price(&self) -> Option<Decimal> {

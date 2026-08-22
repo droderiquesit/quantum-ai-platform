@@ -243,7 +243,8 @@ impl CompliancePlane {
                 mechanism: "crate::pit::PointInTime discards facts whose known-time is after the \
                             as-of at construction, so no accessor can return one; restrict_to \
                             only narrows the horizon, and LeakageDetector names inputs that \
-                            arrived from outside a reader".to_string(),
+                            arrived from outside a reader"
+                    .to_string(),
                 evidence: vec![
                     "readers are built per read and hold no future facts".to_string(),
                     "widening a reader is refused rather than silently permitted".to_string(),
@@ -262,7 +263,8 @@ impl CompliancePlane {
                     mechanism: "crate::licensing::LicensedData holds its value privately and \
                                 every accessor takes a Usage and the registry, recording the \
                                 decision; derive() carries the originating dataset onto the \
-                                derived value so a licence cannot be laundered by a map".to_string(),
+                                derived value so a licence cannot be laundered by a map"
+                        .to_string(),
                     evidence: vec![
                         format!("{} entitlements registered", self.entitlements.len()),
                         format!("{refusals} refusals recorded"),
@@ -301,10 +303,14 @@ impl CompliancePlane {
                                 ModelRiskRegister::admit is the only source and requires the \
                                 qip-ai eligibility check, a current risk file, an in-boundary \
                                 operating point and an Explanation, which cannot exist unless \
-                                its contributions reconcile exactly to the output".to_string(),
+                                its contributions reconcile exactly to the output"
+                        .to_string(),
                     evidence: vec![
                         format!("{} risk files on record", self.model_risk.len()),
-                        format!("{} admission decisions recorded", self.model_risk.admissions().len()),
+                        format!(
+                            "{} admission decisions recorded",
+                            self.model_risk.admissions().len()
+                        ),
                         format!("{} overdue at {now}", overdue.len()),
                     ],
                     caveats,
@@ -316,7 +322,8 @@ impl CompliancePlane {
                 mechanism: "crate::approval::ApprovedCapital has no public constructor and does \
                             not deserialise; ApprovalChain::grant requires an Approval naming a \
                             human who is not the requester, a fresh credential per approver, and \
-                            two different approvers above the threshold".to_string(),
+                            two different approvers above the threshold"
+                    .to_string(),
                 evidence: vec![
                     format!(
                         "dual approval required above {}",
@@ -363,7 +370,8 @@ impl CompliancePlane {
                                 do not hash to its Provenance digest and whose signature does not \
                                 verify under the injected key; ProvenanceChain walks inputs back \
                                 to registered raw datasets and names the exact digest where it \
-                                cannot continue".to_string(),
+                                cannot continue"
+                        .to_string(),
                     evidence: vec![
                         format!("signing key {}", self.artifacts.key_id()),
                         format!("{} artifacts stored", self.artifacts.len()),
@@ -382,14 +390,15 @@ impl CompliancePlane {
                 mechanism: "crate::incident::IncidentLog::record needs no authority and applies \
                             ResponsePolicy, which maps Severity to a HaltScope that must name \
                             what it stops; clear_* refuse a stale credential and write a \
-                            Clearance naming the operator, the method and the reason".to_string(),
+                            Clearance naming the operator, the method and the reason"
+                    .to_string(),
                 evidence: vec![
-                    format!("response floor {}", self.incidents.policy().floor().as_str()),
-                    format!("{} incidents recorded", self.incidents.incidents().len()),
                     format!(
-                        "globally halted: {}",
-                        self.incidents.is_globally_halted()
+                        "response floor {}",
+                        self.incidents.policy().floor().as_str()
                     ),
+                    format!("{} incidents recorded", self.incidents.incidents().len()),
+                    format!("globally halted: {}", self.incidents.is_globally_halted()),
                     format!(
                         "{} scopes and {} cells halted",
                         self.incidents.halted_scopes().len(),

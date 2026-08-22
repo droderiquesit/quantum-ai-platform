@@ -14,13 +14,13 @@
 //! reported profit is what that quantity actually makes.
 
 use qip_contracts::{BookSide, Deduction, DeductionKind, LegPlan, LegStep, NetEdge};
-use qip_core::error::{Error, Result};
 use qip_core::Decimal;
+use qip_core::error::{Error, Result};
 use qip_market::book::{BookLevel, OrderBook};
 use serde::{Deserialize, Serialize};
 
 use crate::market::{EventMarket, OutcomeId};
-use crate::pricing::{implied_from_ask, implied_from_bid, SumDeviation};
+use crate::pricing::{SumDeviation, implied_from_ask, implied_from_bid};
 
 /// Which side of the complete set is mispriced.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,7 +73,10 @@ impl SetArbitrage {
 /// Reported rather than normalised: the deviation is the venue's fee model
 /// made visible, and a deviation that moves is either an opportunity or a
 /// broken assumption about the fees.
-pub fn implied_sum(market: &EventMarket, books: &[(OutcomeId, &OrderBook)]) -> Result<SumDeviation> {
+pub fn implied_sum(
+    market: &EventMarket,
+    books: &[(OutcomeId, &OrderBook)],
+) -> Result<SumDeviation> {
     let mut ask_sum = Decimal::ZERO;
     let mut bid_sum = Decimal::ZERO;
     for outcome in market.outcomes() {
@@ -188,8 +191,10 @@ fn walk(
 
         // Per contract of the complete set, before size.
         let (unit_gross, unit_fee) = match kind {
+            // Gross is the pre-fee edge; the settlement fee belongs in the
+            // deduction rather than in the payoff, or it is counted twice.
             SetArbitrageKind::UnderpricedSet => (
-                fees.net_payoff(payoff) - combined,
+                payoff - combined,
                 fees.taker_cost(combined) + fees.settlement_cost(payoff),
             ),
             SetArbitrageKind::OverpricedSet => (combined - payoff, fees.taker_cost(combined)),
@@ -298,7 +303,10 @@ fn walk(
     }))
 }
 
-fn book_for<'a>(books: &[(OutcomeId, &'a OrderBook)], outcome: &OutcomeId) -> Result<&'a OrderBook> {
+fn book_for<'a>(
+    books: &[(OutcomeId, &'a OrderBook)],
+    outcome: &OutcomeId,
+) -> Result<&'a OrderBook> {
     books
         .iter()
         .find(|(id, _)| id == outcome)

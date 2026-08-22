@@ -7,9 +7,9 @@
 //! three of those turn a venue that looks cheap into one that is not.
 
 use qip_contracts::venue::{VenueClass, VenueId};
+use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use qip_core::time::Duration;
-use qip_core::Decimal;
 use serde::{Deserialize, Serialize};
 
 /// Which side of the trade provided the liquidity.

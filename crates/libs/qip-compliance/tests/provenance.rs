@@ -42,7 +42,11 @@ fn tampered_bytes_are_rejected_and_the_rejection_names_both_digests() -> Result<
     assert_eq!(store.rejections().len(), 1);
 
     // The untampered bytes go in fine.
-    assert!(store.store("vol-forecast.bin", original, provenance, now()).is_ok());
+    assert!(
+        store
+            .store("vol-forecast.bin", original, provenance, now())
+            .is_ok()
+    );
     Ok(())
 }
 
@@ -116,8 +120,12 @@ fn a_provenance_chain_reaches_the_raw_datasets_it_was_built_from() -> Result<()>
     let feature_digest = store.store("features.parquet", features, feature_provenance, now())?;
 
     let model = b"model weights".to_vec();
-    let model_provenance =
-        store.seal(&model, "training-pipeline", now(), vec![feature_digest.clone()])?;
+    let model_provenance = store.seal(
+        &model,
+        "training-pipeline",
+        now(),
+        vec![feature_digest.clone()],
+    )?;
     let model_digest = store.store("vol-forecast.bin", model, model_provenance, now())?;
 
     let chain = store.provenance_chain(&model_digest)?;
@@ -127,7 +135,11 @@ fn a_provenance_chain_reaches_the_raw_datasets_it_was_built_from() -> Result<()>
     assert_eq!(chain.depth(), 1);
     assert_eq!(chain.nodes().len(), 2);
     assert_eq!(chain.raw_datasets().len(), 2);
-    let sources: Vec<&str> = chain.raw_datasets().iter().map(|d| d.name.as_str()).collect();
+    let sources: Vec<&str> = chain
+        .raw_datasets()
+        .iter()
+        .map(|d| d.name.as_str())
+        .collect();
     assert!(sources.contains(&"vendor.prices"));
     assert!(sources.contains(&"vendor.sentiment"));
     assert!(chain.breaks().is_empty());
@@ -204,12 +216,8 @@ fn a_diamond_is_walked_once_and_a_cycle_terminates() -> Result<()> {
     let right_digest = store.store("right.parquet", right, right_provenance, now())?;
 
     let model = b"model".to_vec();
-    let model_provenance = store.seal(
-        &model,
-        "training",
-        now(),
-        vec![left_digest, right_digest],
-    )?;
+    let model_provenance =
+        store.seal(&model, "training", now(), vec![left_digest, right_digest])?;
     let model_digest = store.store("model.bin", model, model_provenance, now())?;
 
     let chain = store.provenance_chain(&model_digest)?;
@@ -227,7 +235,11 @@ fn a_raw_dataset_with_no_named_source_is_not_an_origin() {
     let Ok(mut store) = store() else {
         panic!("the store must build");
     };
-    assert!(store.register_raw_dataset("x", b"bytes", "  ", now()).is_err());
+    assert!(
+        store
+            .register_raw_dataset("x", b"bytes", "  ", now())
+            .is_err()
+    );
 }
 
 #[test]

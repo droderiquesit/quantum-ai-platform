@@ -12,9 +12,9 @@
 //! that carries the residual, and a caller must decide — in code, visibly —
 //! whether to demand exactness or accept the rounding.
 
+use qip_core::Decimal;
 use qip_core::decimal::SCALE_DIGITS;
 use qip_core::error::{Error, Result};
-use qip_core::Decimal;
 use serde::{Deserialize, Serialize};
 
 /// The largest decimal exponent a token may declare.
@@ -196,6 +196,7 @@ pub struct Quantised {
 }
 
 impl Quantised {
+    /// Whether the token's precision carried every digit of the value.
     pub const fn is_exact(&self) -> bool {
         self.residual.raw() == 0
     }

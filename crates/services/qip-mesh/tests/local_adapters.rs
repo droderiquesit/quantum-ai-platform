@@ -30,10 +30,8 @@ static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 fn scratch(label: &str) -> PathBuf {
     let unique = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let path = std::env::temp_dir().join(format!(
-        "qip-mesh-{label}-{}-{unique}",
-        std::process::id()
-    ));
+    let path =
+        std::env::temp_dir().join(format!("qip-mesh-{label}-{}-{unique}", std::process::id()));
     let _ = std::fs::remove_dir_all(&path);
     path
 }
@@ -82,8 +80,7 @@ fn an_empty_batch_does_not_create_a_version() -> Result<()> {
 }
 
 #[test]
-fn the_file_backed_lakehouse_survives_a_restart_and_answers_identically()
--> Result<()> {
+fn the_file_backed_lakehouse_survives_a_restart_and_answers_identically() -> Result<()> {
     let root = scratch("lakehouse");
     std::fs::create_dir_all(&root)?;
     let path = root.join("lakehouse.json");
@@ -108,7 +105,9 @@ fn the_file_backed_lakehouse_survives_a_restart_and_answers_identically()
     let reopened = FileLakehouse::open(&path)?;
     for as_of in [t(5), t(15), t(25)] {
         let from_memory = memory.snapshot("quotes", as_of).map(|s| s.value().clone());
-        let from_file = reopened.snapshot("quotes", as_of).map(|s| s.value().clone());
+        let from_file = reopened
+            .snapshot("quotes", as_of)
+            .map(|s| s.value().clone());
         assert_eq!(from_memory.is_ok(), from_file.is_ok());
         if let (Ok(a), Ok(b)) = (from_memory, from_file) {
             assert_eq!(a, b, "adapters disagree as of {as_of}");
@@ -134,9 +133,18 @@ fn the_analytical_store_projects_filters_and_aggregates() -> Result<()> {
     analytics.load(
         "fills",
         vec![
-            Stamped::immediate(serde_json::json!({"venue": "XLON", "notional": "1000"}), t(10)),
-            Stamped::immediate(serde_json::json!({"venue": "XLON", "notional": "2000"}), t(11)),
-            Stamped::immediate(serde_json::json!({"venue": "XETR", "notional": "4000"}), t(12)),
+            Stamped::immediate(
+                serde_json::json!({"venue": "XLON", "notional": "1000"}),
+                t(10),
+            ),
+            Stamped::immediate(
+                serde_json::json!({"venue": "XLON", "notional": "2000"}),
+                t(11),
+            ),
+            Stamped::immediate(
+                serde_json::json!({"venue": "XETR", "notional": "4000"}),
+                t(12),
+            ),
         ],
     )?;
 
@@ -145,7 +153,12 @@ fn the_analytical_store_projects_filters_and_aggregates() -> Result<()> {
 
     let projected = analytics.scan("fills", &["notional".to_string()], &london, t(20))?;
     assert_eq!(projected.value().len(), 2);
-    assert!(projected.value().iter().all(|row| row.get("venue").is_none()));
+    assert!(
+        projected
+            .value()
+            .iter()
+            .all(|row| row.get("venue").is_none())
+    );
 
     let total = analytics.aggregate("fills", "notional", Aggregation::Sum, &london, t(20))?;
     assert_eq!(*total.value(), Some(3000.0));
@@ -170,7 +183,10 @@ fn a_filter_on_a_missing_column_never_matches() -> Result<()> {
         "fills",
         vec![
             Stamped::immediate(serde_json::json!({"venue": "XLON"}), t(10)),
-            Stamped::immediate(serde_json::json!({"venue": "XETR", "notional": "10"}), t(10)),
+            Stamped::immediate(
+                serde_json::json!({"venue": "XETR", "notional": "10"}),
+                t(10),
+            ),
         ],
     )?;
 
@@ -207,11 +223,17 @@ fn the_file_backed_analytics_survives_a_restart() -> Result<()> {
         let filed = FileAnalytics::open(&path)?;
         filed.load(
             "fills",
-            vec![Stamped::immediate(serde_json::json!({"venue": "XLON"}), t(10))],
+            vec![Stamped::immediate(
+                serde_json::json!({"venue": "XLON"}),
+                t(10),
+            )],
         )?;
     }
     let reopened = FileAnalytics::open(&path)?;
-    assert_eq!(*reopened.count("fills", &ColumnFilter::Any, t(20))?.value(), 1);
+    assert_eq!(
+        *reopened.count("fills", &ColumnFilter::Any, t(20))?.value(),
+        1
+    );
     std::fs::remove_dir_all(&root)?;
     Ok(())
 }
@@ -229,26 +251,39 @@ fn the_hot_series_keeps_a_bounded_window_and_says_so() -> Result<()> {
 
     hot.record("VOD.L.mid", Stamped::immediate(dec!("72.5"), t(0)))?;
     hot.record("VOD.L.mid", Stamped::immediate(dec!("72.6"), t(30)))?;
-    assert_eq!(hot.window("VOD.L.mid", Timestamp::EPOCH, t(30))?.value().len(), 2);
+    assert_eq!(
+        hot.window("VOD.L.mid", Timestamp::EPOCH, t(30))?
+            .value()
+            .len(),
+        2
+    );
 
     // A point two minutes on evicts everything older than one minute.
     hot.record("VOD.L.mid", Stamped::immediate(dec!("72.9"), t(120)))?;
     let window = hot.window("VOD.L.mid", Timestamp::EPOCH, t(120))?;
     assert_eq!(window.value().len(), 1);
-    assert_eq!(*hot.latest_as_of("VOD.L.mid", t(120))?.value(), Some(dec!("72.9")));
+    assert_eq!(
+        *hot.latest_as_of("VOD.L.mid", t(120))?.value(),
+        Some(dec!("72.9"))
+    );
     Ok(())
 }
 
 #[test]
-fn the_hot_series_returns_the_latest_point_knowable_not_the_latest_stored()
--> Result<()> {
+fn the_hot_series_returns_the_latest_point_knowable_not_the_latest_stored() -> Result<()> {
     let hot = MemoryHotSeries::new(Duration::from_hours(1));
     hot.record("VOD.L.mid", Stamped::new(dec!("72.5"), t(10), t(10)))?;
     // Valid at second 20, but the platform only heard about it at second 40.
     hot.record("VOD.L.mid", Stamped::new(dec!("72.9"), t(20), t(40)))?;
 
-    assert_eq!(*hot.latest_as_of("VOD.L.mid", t(30))?.value(), Some(dec!("72.5")));
-    assert_eq!(*hot.latest_as_of("VOD.L.mid", t(40))?.value(), Some(dec!("72.9")));
+    assert_eq!(
+        *hot.latest_as_of("VOD.L.mid", t(30))?.value(),
+        Some(dec!("72.5"))
+    );
+    assert_eq!(
+        *hot.latest_as_of("VOD.L.mid", t(40))?.value(),
+        Some(dec!("72.9"))
+    );
     Ok(())
 }
 
@@ -266,7 +301,10 @@ fn the_file_backed_hot_series_survives_a_restart_with_its_retention() -> Result<
     // silently widen or narrow the window.
     let reopened = FileHotSeries::open(&path, Duration::from_hours(24))?;
     assert_eq!(reopened.retention(), Duration::from_secs(60));
-    assert_eq!(*reopened.latest_as_of("VOD.L.mid", t(10))?.value(), Some(dec!("72.5")));
+    assert_eq!(
+        *reopened.latest_as_of("VOD.L.mid", t(10))?.value(),
+        Some(dec!("72.5"))
+    );
     std::fs::remove_dir_all(&root)?;
     Ok(())
 }
@@ -290,13 +328,25 @@ fn master_data_returns_the_definition_in_force_not_the_current_one() -> Result<(
     )?;
 
     let march = master.lookup("instrument", "VOD.L", t(50))?;
-    assert_eq!(march.value().as_ref().and_then(|r| r.get("lot_size")), Some(&serde_json::json!(1)));
+    assert_eq!(
+        march.value().as_ref().and_then(|r| r.get("lot_size")),
+        Some(&serde_json::json!(1))
+    );
 
     let today = master.lookup("instrument", "VOD.L", t(200))?;
-    assert_eq!(today.value().as_ref().and_then(|r| r.get("lot_size")), Some(&serde_json::json!(100)));
+    assert_eq!(
+        today.value().as_ref().and_then(|r| r.get("lot_size")),
+        Some(&serde_json::json!(100))
+    );
 
-    assert_eq!(master.history("instrument", "VOD.L", t(200))?.value().len(), 2);
-    assert_eq!(master.history("instrument", "VOD.L", t(50))?.value().len(), 1);
+    assert_eq!(
+        master.history("instrument", "VOD.L", t(200))?.value().len(),
+        2
+    );
+    assert_eq!(
+        master.history("instrument", "VOD.L", t(50))?.value().len(),
+        1
+    );
     Ok(())
 }
 
@@ -308,7 +358,12 @@ fn an_unknown_key_in_a_known_entity_is_absent_rather_than_an_error() -> Result<(
         "VOD.L",
         Stamped::immediate(serde_json::json!({"lot_size": 1}), t(0)),
     )?;
-    assert!(master.lookup("instrument", "NOT.A.THING", t(10))?.value().is_none());
+    assert!(
+        master
+            .lookup("instrument", "NOT.A.THING", t(10))?
+            .value()
+            .is_none()
+    );
     assert!(master.lookup("counterparty", "VOD.L", t(10)).is_err());
     Ok(())
 }
@@ -337,22 +392,41 @@ fn the_file_backed_master_survives_a_restart() -> Result<()> {
 #[test]
 fn the_graph_walks_relationships_by_kind_and_terminates_on_a_cycle() -> Result<()> {
     let graph = MemoryGraph::new();
-    graph.add_edge(Stamped::immediate(Edge::new("VOD", "VOD.L", "issues"), t(0)))?;
+    graph.add_edge(Stamped::immediate(
+        Edge::new("VOD", "VOD.L", "issues"),
+        t(0),
+    ))?;
     graph.add_edge(Stamped::immediate(
         Edge::new("VOD.L", "VOD.L.CALL", "pays_off_from"),
         t(0),
     ))?;
-    graph.add_edge(Stamped::immediate(Edge::new("VOD", "VOD.SUB", "owns"), t(0)))?;
+    graph.add_edge(Stamped::immediate(
+        Edge::new("VOD", "VOD.SUB", "owns"),
+        t(0),
+    ))?;
     // An issuer that guarantees its own subsidiary: a genuine cycle.
-    graph.add_edge(Stamped::immediate(Edge::new("VOD.SUB", "VOD", "guarantees"), t(0)))?;
+    graph.add_edge(Stamped::immediate(
+        Edge::new("VOD.SUB", "VOD", "guarantees"),
+        t(0),
+    ))?;
 
     assert_eq!(graph.neighbours("VOD", None, t(10))?.value().len(), 2);
-    assert_eq!(graph.neighbours("VOD", Some("issues"), t(10))?.value().len(), 1);
+    assert_eq!(
+        graph
+            .neighbours("VOD", Some("issues"), t(10))?
+            .value()
+            .len(),
+        1
+    );
 
     let reachable = graph.reachable("VOD", None, 10, t(10))?;
     assert_eq!(
         reachable.value(),
-        &["VOD.L".to_string(), "VOD.L.CALL".to_string(), "VOD.SUB".to_string()]
+        &[
+            "VOD.L".to_string(),
+            "VOD.L.CALL".to_string(),
+            "VOD.SUB".to_string()
+        ]
     );
 
     // Depth bounds the walk.
@@ -365,8 +439,16 @@ fn an_edge_with_no_kind_is_refused() -> Result<()> {
     // An untyped edge cannot be traversed selectively, so every traversal
     // becomes a whole-graph walk and the payoff graph stops being useful.
     let graph = MemoryGraph::new();
-    assert!(graph.add_edge(Stamped::immediate(Edge::new("a", "b", "  "), t(0))).is_err());
-    assert!(graph.add_edge(Stamped::immediate(Edge::new("", "b", "owns"), t(0))).is_err());
+    assert!(
+        graph
+            .add_edge(Stamped::immediate(Edge::new("a", "b", "  "), t(0)))
+            .is_err()
+    );
+    assert!(
+        graph
+            .add_edge(Stamped::immediate(Edge::new("", "b", "owns"), t(0)))
+            .is_err()
+    );
     Ok(())
 }
 
@@ -390,7 +472,10 @@ fn the_file_backed_graph_survives_a_restart() -> Result<()> {
     let path = root.join("graph.json");
     {
         let filed = FileGraph::open(&path)?;
-        filed.add_edge(Stamped::immediate(Edge::new("VOD", "VOD.L", "issues"), t(0)))?;
+        filed.add_edge(Stamped::immediate(
+            Edge::new("VOD", "VOD.L", "issues"),
+            t(0),
+        ))?;
     }
     let reopened = FileGraph::open(&path)?;
     assert_eq!(reopened.nodes(t(10))?.value().len(), 2);

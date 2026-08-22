@@ -59,6 +59,8 @@ pub struct OracleIdentity {
 }
 
 impl OracleIdentity {
+    /// Refuses a minimum confidence outside `[0, 1]`, which would either
+    /// accept everything or nothing.
     pub fn new(
         name: impl Into<String>,
         kind: OracleKind,
@@ -66,9 +68,7 @@ impl OracleIdentity {
         minimum_confidence: f64,
     ) -> Result<Self> {
         if !(0.0..=1.0).contains(&minimum_confidence) {
-            return Err(Error::invalid(
-                "a minimum confidence must lie in [0, 1]",
-            ));
+            return Err(Error::invalid("a minimum confidence must lie in [0, 1]"));
         }
         Ok(Self {
             name: name.into(),
@@ -166,6 +166,7 @@ pub struct MarketResolution {
 }
 
 impl MarketResolution {
+    /// Start tracking a market's resolution, before anything has been said.
     pub fn new(market: &EventMarket, oracle: OracleIdentity) -> Self {
         Self {
             market_id: market.market_id.clone(),
@@ -194,7 +195,11 @@ impl MarketResolution {
     /// A report the oracle is not confident enough about is refused rather
     /// than recorded: an under-confident resolution that becomes the default
     /// after a quiet dispute window is a resolution nobody agreed to.
-    pub fn observe(&mut self, report: Option<OracleReport>, now: Timestamp) -> Result<&ResolutionState> {
+    pub fn observe(
+        &mut self,
+        report: Option<OracleReport>,
+        now: Timestamp,
+    ) -> Result<&ResolutionState> {
         match report {
             None => {
                 if self.is_delayed(now) {
@@ -221,7 +226,9 @@ impl MarketResolution {
                         self.oracle.name, report.confidence, self.oracle.minimum_confidence
                     )));
                 }
-                let dispute_deadline = report.reported_at.saturating_add(self.oracle.dispute_window);
+                let dispute_deadline = report
+                    .reported_at
+                    .saturating_add(self.oracle.dispute_window);
                 self.state = ResolutionState::Proposed {
                     report,
                     dispute_deadline,

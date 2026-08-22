@@ -60,7 +60,15 @@ pub enum Finality {
 impl Finality {
     /// Classify a block's depth against a requirement.
     pub const fn of_block(number: BlockNumber, head: BlockNumber, required: Confirmations) -> Self {
-        let confirmations = number.depth_below(head) as u32;
+        // Saturating rather than truncating: a depth that does not fit in a
+        // u32 is deep enough for anyone, and wrapping it would report a
+        // buried block as young.
+        let depth = number.depth_below(head);
+        let confirmations = if depth > u32::MAX as u64 {
+            u32::MAX
+        } else {
+            depth as u32
+        };
         if confirmations >= required.depth() {
             Self::Confirmed {
                 confirmations,

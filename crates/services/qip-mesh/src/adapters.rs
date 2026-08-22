@@ -58,12 +58,7 @@ impl FileLakehouse {
 }
 
 impl<B: StateBacking<LakehouseState>> Lakehouse for MeshLakehouse<B> {
-    fn append(
-        &self,
-        table: &str,
-        rows: Vec<Stamped<Row>>,
-        at: Timestamp,
-    ) -> Result<TableVersion> {
+    fn append(&self, table: &str, rows: Vec<Stamped<Row>>, at: Timestamp) -> Result<TableVersion> {
         self.backing.write(|state| state.append(table, rows, at))
     }
 
@@ -209,8 +204,7 @@ impl<B: StateBacking<SeriesState>> HotSeries for MeshHotSeries<B> {
         from: Timestamp,
         as_of: Timestamp,
     ) -> Result<Stamped<Vec<(Timestamp, Decimal)>>> {
-        self.backing
-            .read(|state| state.window(series, from, as_of))
+        self.backing.read(|state| state.window(series, from, as_of))
     }
 
     fn series(&self, as_of: Timestamp) -> Result<Stamped<Vec<String>>> {
@@ -266,12 +260,7 @@ impl<B: StateBacking<MasterState>> MasterData for MeshMasterData<B> {
             .write(|state| state.upsert(entity, key, record))
     }
 
-    fn lookup(
-        &self,
-        entity: &str,
-        key: &str,
-        as_of: Timestamp,
-    ) -> Result<Stamped<Option<Row>>> {
+    fn lookup(&self, entity: &str, key: &str, as_of: Timestamp) -> Result<Stamped<Option<Row>>> {
         self.backing.read(|state| state.lookup(entity, key, as_of))
     }
 
@@ -279,12 +268,7 @@ impl<B: StateBacking<MasterState>> MasterData for MeshMasterData<B> {
         self.backing.read(|state| state.list(entity, as_of))
     }
 
-    fn history(
-        &self,
-        entity: &str,
-        key: &str,
-        as_of: Timestamp,
-    ) -> Result<Stamped<Vec<Row>>> {
+    fn history(&self, entity: &str, key: &str, as_of: Timestamp) -> Result<Stamped<Vec<Row>>> {
         self.backing.read(|state| state.history(entity, key, as_of))
     }
 
@@ -414,11 +398,7 @@ impl<B: StateBacking<EvidenceState>> EvidenceStore for MeshEvidence<B> {
         self.backing.read(|state| state.get(key, as_of))
     }
 
-    fn receipt(
-        &self,
-        key: &str,
-        as_of: Timestamp,
-    ) -> Result<Stamped<Option<EvidenceReceipt>>> {
+    fn receipt(&self, key: &str, as_of: Timestamp) -> Result<Stamped<Option<EvidenceReceipt>>> {
         self.backing.read(|state| state.receipt(key, as_of))
     }
 

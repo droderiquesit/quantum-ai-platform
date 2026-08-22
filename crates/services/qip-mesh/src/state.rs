@@ -100,7 +100,8 @@ impl LakehouseState {
             .last()
             .map_or_else(String::new, |v| v.digest.clone());
         let encoded = serde_json::to_vec(&rows)?;
-        let digest = sha256_hex(format!("{previous}|{}", to_hex(&sha256_bytes(&encoded))).as_bytes());
+        let digest =
+            sha256_hex(format!("{previous}|{}", to_hex(&sha256_bytes(&encoded))).as_bytes());
 
         state.rows.extend(rows);
         let version = TableVersion {
@@ -167,7 +168,9 @@ impl LakehouseState {
             .get(table)
             .filter(|s| s.versions.iter().any(|v| v.committed_at <= as_of))
             .ok_or_else(|| {
-                Error::not_found(format!("no lakehouse table `{table}` existed as of {as_of}"))
+                Error::not_found(format!(
+                    "no lakehouse table `{table}` existed as of {as_of}"
+                ))
             })
     }
 }
@@ -207,7 +210,9 @@ impl AnalyticalState {
             })
             .filter(|rows: &Vec<&Stamped<Row>>| !rows.is_empty())
             .ok_or_else(|| {
-                Error::not_found(format!("no dataset `{dataset}` held anything as of {as_of}"))
+                Error::not_found(format!(
+                    "no dataset `{dataset}` held anything as of {as_of}"
+                ))
             })?;
         Ok(rows)
     }
@@ -376,10 +381,8 @@ impl SeriesState {
             .filter(|p| p.was_known_by(as_of) && p.valid_at() >= from)
             .collect();
         let times = times_of(&visible);
-        let values: Vec<(Timestamp, Decimal)> = visible
-            .iter()
-            .map(|p| (p.valid_at(), *p.value()))
-            .collect();
+        let values: Vec<(Timestamp, Decimal)> =
+            visible.iter().map(|p| (p.valid_at(), *p.value())).collect();
         Ok(stamp(values, &times, as_of))
     }
 
@@ -405,7 +408,9 @@ impl SeriesState {
             .get(series)
             .filter(|points| points.iter().any(|p| p.was_known_by(as_of)))
             .ok_or_else(|| {
-                Error::not_found(format!("no hot series `{series}` was recorded as of {as_of}"))
+                Error::not_found(format!(
+                    "no hot series `{series}` was recorded as of {as_of}"
+                ))
             })
     }
 }
@@ -686,7 +691,9 @@ impl EvidenceState {
             return Ok(Stamped::immediate(None, as_of));
         };
         let bytes = from_hex(&entry.hex).ok_or_else(|| {
-            Error::io(format!("the stored bytes of evidence `{key}` are not readable"))
+            Error::io(format!(
+                "the stored bytes of evidence `{key}` are not readable"
+            ))
         })?;
         // Re-check on read. A content-addressed store that does not verify on
         // the way out is a store that reports whatever it happens to hold.

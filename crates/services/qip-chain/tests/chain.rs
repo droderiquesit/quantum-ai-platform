@@ -119,8 +119,18 @@ fn state_with_two_pools() -> (ChainState, PoolId, PoolId, BlockHash) {
         1,
         genesis,
         vec![
-            creation(0, &quiet, Decimal::from_int(1_000), Decimal::from_int(2_000_000)),
-            creation(1, &busy, Decimal::from_int(500), Decimal::from_int(1_000_000)),
+            creation(
+                0,
+                &quiet,
+                Decimal::from_int(1_000),
+                Decimal::from_int(2_000_000),
+            ),
+            creation(
+                1,
+                &busy,
+                Decimal::from_int(500),
+                Decimal::from_int(1_000_000),
+            ),
         ],
     );
     let one_hash = one.hash;
@@ -306,9 +316,7 @@ fn rolling_back_and_replaying_reaches_the_same_state_as_applying_the_canonical_c
                     .expect("every emitted block is applicable")
                 {
                     Applied::Reorganised(_) => reorgs += 1,
-                    Applied::Extended { .. }
-                    | Applied::SideBranch { .. }
-                    | Applied::Duplicate => {}
+                    Applied::Extended { .. } | Applied::SideBranch { .. } | Applied::Duplicate => {}
                 }
             }
         }
@@ -502,7 +510,10 @@ fn a_view_reflects_only_the_blocks_that_reached_the_depth_the_caller_required() 
     assert!(
         matches!(
             state.finality_of(&three_hash, Confirmations::exactly(2)),
-            Finality::Included { confirmations: 1, .. }
+            Finality::Included {
+                confirmations: 1,
+                ..
+            }
         ),
         "one confirmation does not satisfy a requirement of two"
     );
@@ -545,7 +556,11 @@ fn a_synthetic_chain_replays_identically_from_the_same_seed() {
             })
             .collect::<Vec<_>>()
     };
-    assert_eq!(render(5), render(5), "the same seed must replay identically");
+    assert_eq!(
+        render(5),
+        render(5),
+        "the same seed must replay identically"
+    );
     assert_ne!(
         render(5),
         render(6),
@@ -574,6 +589,42 @@ fn the_node_adapter_names_the_endpoint_credential_and_methods_it_is_missing() {
         assert!(
             message.contains(required),
             "the requirement should name {required}, got: {message}"
+        );
+    }
+}
+
+#[test]
+fn a_pending_transaction_that_is_never_mined_is_reported_as_dropped() {
+    let start = Timestamp::from_secs(1_700_000_000);
+    let mut adapter =
+        SyntheticChain::new(SyntheticChainConfig::demo(17).expect("demo config"), start)
+            .expect("synthetic chain");
+    let updates = adapter
+        .poll(start.saturating_add(Duration::from_mins(30)))
+        .expect("poll");
+
+    let pending: Vec<&TxHash> = updates
+        .iter()
+        .filter_map(|update| match update {
+            ChainUpdate::Pending(transaction) => Some(&transaction.hash),
+            _ => None,
+        })
+        .collect();
+    let dropped: Vec<&TxHash> = updates
+        .iter()
+        .filter_map(|update| match update {
+            ChainUpdate::Dropped(hash) => Some(hash),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !dropped.is_empty(),
+        "a mempool that never forgets is not a mempool"
+    );
+    for hash in &dropped {
+        assert!(
+            pending.contains(hash),
+            "a transaction can only be dropped if it was pending"
         );
     }
 }

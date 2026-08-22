@@ -6,8 +6,8 @@
 //! overflow there is data about a malformed graph rather than a bug in this
 //! crate. These wrappers turn it into an error a scan can record and move past.
 
-use qip_core::error::{Error, Result};
 use qip_core::Decimal;
+use qip_core::error::{Error, Result};
 
 pub(crate) fn mul(a: Decimal, b: Decimal, what: &str) -> Result<Decimal> {
     a.checked_mul(b)

@@ -118,7 +118,11 @@ impl SyntheticVenueConfig {
 ///
 /// The criteria are structured: a program decides which outcome won by reading
 /// one published number, and the three ranges partition it.
-pub fn demo_market(venue: VenueId, resolves_at: Timestamp, fees: FeeSchedule) -> Result<EventMarket> {
+pub fn demo_market(
+    venue: VenueId,
+    resolves_at: Timestamp,
+    fees: FeeSchedule,
+) -> Result<EventMarket> {
     let source = ResolutionSource::new(
         "central-bank-statistical-release",
         SourceKind::Official,
@@ -294,7 +298,9 @@ impl PredictionAdapter for SyntheticPredictionVenue {
         let mut updates = Vec::new();
         if !self.listed {
             self.listed = true;
-            updates.push(PredictionUpdate::MarketListed(Box::new(self.market.clone())));
+            updates.push(PredictionUpdate::MarketListed(Box::new(
+                self.market.clone(),
+            )));
         }
         while self.next_step_at <= until {
             let at = self.next_step_at;

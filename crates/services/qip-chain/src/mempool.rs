@@ -19,7 +19,7 @@ use qip_core::{Decimal, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use crate::block::{Address, Block, TraceKind, TxHash};
+use crate::block::{Address, Block, Hash32, TraceKind, TxHash};
 use crate::gas::effective_gas_price;
 
 /// A transaction seen in the mempool and not yet in a block.
@@ -42,7 +42,11 @@ pub struct PendingTransaction {
 impl PendingTransaction {
     /// What this transaction would pay per gas at the given base fee.
     pub fn effective_gas_price(&self, base_fee: Decimal) -> Result<Decimal> {
-        effective_gas_price(base_fee, self.max_fee_per_gas, self.max_priority_fee_per_gas)
+        effective_gas_price(
+            base_fee,
+            self.max_fee_per_gas,
+            self.max_priority_fee_per_gas,
+        )
     }
 
     /// The part of the gas price that a builder keeps, which is the only part
@@ -108,6 +112,7 @@ impl Mempool {
         self.pending.insert(transaction.hash, transaction)
     }
 
+    /// Forget a transaction the node says is gone, mined or dropped.
     pub fn remove(&mut self, hash: &TxHash) -> Option<PendingTransaction> {
         self.pending.remove(hash)
     }
@@ -328,10 +333,5 @@ fn ordering_digest(
     for entry in entries {
         hasher.update(entry.transaction.hash.hash().as_bytes());
     }
-    let digest = hasher.finish();
-    let mut out = String::with_capacity(64);
-    for byte in digest {
-        out.push_str(&format!("{byte:02x}"));
-    }
-    out
+    Hash32::from_bytes(hasher.finish()).to_hex()
 }

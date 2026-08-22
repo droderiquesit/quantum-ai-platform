@@ -15,8 +15,8 @@
 
 use crate::venue::{Liquidity, VenueProfile};
 use qip_contracts::message::BookSide;
-use qip_core::error::{Error, Result};
 use qip_core::Decimal;
+use qip_core::error::{Error, Result};
 use qip_market::book::OrderBook;
 use serde::{Deserialize, Serialize};
 
@@ -381,7 +381,7 @@ fn fallback_for(
             RoutedOrderType::Market,
         ]
     };
-    ladder
-        .into_iter()
-        .find(|candidate| candidate.kind() != preferred.kind() && profile.supports(candidate.kind()))
+    ladder.into_iter().find(|candidate| {
+        candidate.kind() != preferred.kind() && profile.supports(candidate.kind())
+    })
 }

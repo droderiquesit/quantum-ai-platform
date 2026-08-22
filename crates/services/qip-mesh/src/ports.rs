@@ -24,9 +24,9 @@
 //! Writes take the timestamp they happen at for the same reason: nothing in
 //! the platform reads an ambient clock, so a replay produces the same store.
 
+use qip_contracts::time::Stamped;
 use qip_core::error::Result;
 use qip_core::{Decimal, Duration, Timestamp};
-use qip_contracts::time::Stamped;
 use serde::{Deserialize, Serialize};
 
 /// A record. Opaque JSON, because the mesh is schema-on-read at this layer and
@@ -184,8 +184,7 @@ pub struct EvidenceReceipt {
 /// be rebuilt; this is the copy that cannot.
 pub trait Lakehouse: Send + Sync + std::fmt::Debug {
     /// Commit a batch of stamped rows, returning the version it created.
-    fn append(&self, table: &str, rows: Vec<Stamped<Row>>, at: Timestamp)
-    -> Result<TableVersion>;
+    fn append(&self, table: &str, rows: Vec<Stamped<Row>>, at: Timestamp) -> Result<TableVersion>;
 
     /// The table as it was knowable at `as_of` — the time-travel read.
     fn snapshot(&self, table: &str, as_of: Timestamp) -> Result<Stamped<Vec<Row>>>;
@@ -271,15 +270,13 @@ pub trait MasterData: Send + Sync + std::fmt::Debug {
     fn upsert(&self, entity: &str, key: &str, record: Stamped<Row>) -> Result<()>;
 
     /// The version in force at `as_of`.
-    fn lookup(&self, entity: &str, key: &str, as_of: Timestamp)
-    -> Result<Stamped<Option<Row>>>;
+    fn lookup(&self, entity: &str, key: &str, as_of: Timestamp) -> Result<Stamped<Option<Row>>>;
 
     /// Every key and its in-force version at `as_of`.
     fn list(&self, entity: &str, as_of: Timestamp) -> Result<Stamped<Vec<(String, Row)>>>;
 
     /// Every version of one key knowable at `as_of`, oldest first.
-    fn history(&self, entity: &str, key: &str, as_of: Timestamp)
-    -> Result<Stamped<Vec<Row>>>;
+    fn history(&self, entity: &str, key: &str, as_of: Timestamp) -> Result<Stamped<Vec<Row>>>;
 
     fn entities(&self, as_of: Timestamp) -> Result<Stamped<Vec<String>>>;
 }
@@ -329,8 +326,7 @@ pub trait EvidenceStore: Send + Sync + std::fmt::Debug {
     fn get(&self, key: &str, as_of: Timestamp) -> Result<Stamped<Option<Vec<u8>>>>;
 
     /// The receipt without the bytes — enough to prove what was written.
-    fn receipt(&self, key: &str, as_of: Timestamp)
-    -> Result<Stamped<Option<EvidenceReceipt>>>;
+    fn receipt(&self, key: &str, as_of: Timestamp) -> Result<Stamped<Option<EvidenceReceipt>>>;
 
     fn keys(&self, prefix: &str, as_of: Timestamp) -> Result<Stamped<Vec<String>>>;
 }

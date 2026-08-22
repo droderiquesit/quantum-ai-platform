@@ -18,8 +18,8 @@
 
 use crate::approval::{MAXIMUM_CREDENTIAL_AGE, OperatorCredential};
 use qip_contracts::governance::Severity;
-use qip_core::error::{Error, Result};
 use qip_core::Timestamp;
+use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 

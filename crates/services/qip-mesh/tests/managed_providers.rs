@@ -7,8 +7,8 @@
 
 #![allow(clippy::panic_in_result_fn)]
 
-use qip_core::error::{Error, Result};
 use qip_core::Duration;
+use qip_core::error::{Error, Result};
 use qip_mesh::{MeshPort, MeshProvider, MeshTarget};
 
 const MANAGED: [MeshTarget; 6] = [
@@ -35,7 +35,10 @@ fn every_port(provider: &MeshProvider) -> Vec<(MeshPort, Result<()>)> {
 #[test]
 fn an_unavailable_managed_adapter_errors_at_first_use_on_every_port() -> Result<()> {
     for target in MANAGED {
-        assert!(!target.is_implemented(), "{target:?} claims to be implemented");
+        assert!(
+            !target.is_implemented(),
+            "{target:?} claims to be implemented"
+        );
         let provider = MeshProvider::new(target, "/nonexistent", Duration::from_hours(1));
 
         for (port, outcome) in every_port(&provider) {
@@ -128,18 +131,27 @@ fn every_port_names_the_managed_service_the_architecture_intends() {
         assert!(!target.rationale().is_empty());
     }
     assert_eq!(MeshPort::Analytical.managed_target(), MeshTarget::BigQuery);
-    assert_eq!(MeshPort::Evidence.managed_target(), MeshTarget::CloudStorageWorm);
+    assert_eq!(
+        MeshPort::Evidence.managed_target(),
+        MeshTarget::CloudStorageWorm
+    );
 }
 
 #[test]
 fn a_providers_description_says_what_each_port_still_needs() {
     // For a start-up log line: an operator sees the whole mapping at once
     // rather than discovering it one failed call at a time.
-    let unavailable = MeshProvider::new(MeshTarget::Spanner, "/nonexistent", Duration::from_hours(1));
+    let unavailable =
+        MeshProvider::new(MeshTarget::Spanner, "/nonexistent", Duration::from_hours(1));
     let described = unavailable.describe();
     assert_eq!(described.len(), 6);
     assert!(described.iter().all(|(_, _, missing)| missing.is_some()));
 
     let local = MeshProvider::in_memory(Duration::from_hours(1));
-    assert!(local.describe().iter().all(|(_, _, missing)| missing.is_none()));
+    assert!(
+        local
+            .describe()
+            .iter()
+            .all(|(_, _, missing)| missing.is_none())
+    );
 }

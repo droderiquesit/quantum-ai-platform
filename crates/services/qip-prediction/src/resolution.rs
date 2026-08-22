@@ -95,7 +95,9 @@ pub enum Verdict {
     /// The source has not published what the criterion needs. Not the same as
     /// failing, and settling it as failure is how a market resolves against a
     /// position that was right.
-    Undetermined { missing: Vec<String> },
+    Undetermined {
+        missing: Vec<String>,
+    },
 }
 
 impl Verdict {
@@ -127,9 +129,15 @@ pub enum ResolutionCriteria {
         upper: Option<Decimal>,
     },
     /// A published category equals a stated value.
-    Category { metric: String, equals: String },
+    Category {
+        metric: String,
+        equals: String,
+    },
     /// A published flag has a stated value.
-    Flag { metric: String, expected: bool },
+    Flag {
+        metric: String,
+        expected: bool,
+    },
     All(Vec<ResolutionCriteria>),
     Any(Vec<ResolutionCriteria>),
     Not(Box<ResolutionCriteria>),
@@ -383,6 +391,8 @@ pub struct SettlementRule {
 }
 
 impl SettlementRule {
+    /// Refuses a non-positive payoff: a contract that pays nothing when it
+    /// wins is not a contract.
     pub fn new(payoff: Decimal, on_undetermined: UndeterminedRule) -> Result<Self> {
         if !payoff.is_positive() {
             return Err(Error::invalid("a settlement payoff must be positive"));

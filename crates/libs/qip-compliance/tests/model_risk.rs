@@ -129,7 +129,11 @@ fn an_overdue_review_blocks_use_until_somebody_reviews_it() -> Result<()> {
     register.file(current_risk_file()?);
 
     // Today it is fine.
-    assert!(register.admit(&models, honest_explanation()?, now()).is_ok());
+    assert!(
+        register
+            .admit(&models, honest_explanation()?, now())
+            .is_ok()
+    );
 
     // Two months on, the review has fallen due. Nothing about the model
     // changed; the obligation to look at it did.
@@ -150,7 +154,11 @@ fn an_overdue_review_blocks_use_until_somebody_reviews_it() -> Result<()> {
         later.saturating_add(Duration::from_days(180)),
         "re-validated against the last six months; limitations unchanged",
     )?;
-    assert!(register.admit(&models, honest_explanation()?, later).is_ok());
+    assert!(
+        register
+            .admit(&models, honest_explanation()?, later)
+            .is_ok()
+    );
     Ok(())
 }
 
@@ -159,10 +167,16 @@ fn a_review_that_names_nobody_or_finds_nothing_is_refused() -> Result<()> {
     let mut file = current_risk_file()?;
     let next = now().saturating_add(Duration::from_days(180));
 
-    assert!(file.reviewed("", now(), next, "everything is fine here").is_err());
+    assert!(
+        file.reviewed("", now(), next, "everything is fine here")
+            .is_err()
+    );
     assert!(file.reviewed("a.reviewer", now(), next, "ok").is_err());
     // The due date must actually move forward.
-    assert!(file.reviewed("a.reviewer", now(), now(), "reviewed and unchanged").is_err());
+    assert!(
+        file.reviewed("a.reviewer", now(), now(), "reviewed and unchanged")
+            .is_err()
+    );
     Ok(())
 }
 
@@ -314,7 +328,10 @@ fn every_admission_decision_is_recorded_whichever_way_it_went() -> Result<()> {
     assert_eq!(admitted.output(), dec!("0.18"));
     assert_eq!(admitted.model_reference(), REFERENCE);
     // The drivers are ordered by how much they moved the number.
-    assert_eq!(admitted.explanation().drivers()[0].input, "adv_participation");
+    assert_eq!(
+        admitted.explanation().drivers()[0].input,
+        "adv_participation"
+    );
 
     assert_eq!(register.admissions().len(), 2);
     assert!(!register.admissions()[0].admitted);

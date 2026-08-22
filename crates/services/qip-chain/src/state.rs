@@ -66,10 +66,12 @@ pub struct DerivedState {
 }
 
 impl DerivedState {
+    /// A pool's reserves and counters as of this state.
     pub fn pool(&self, id: &PoolId) -> Option<&PoolState> {
         self.pools.get(id)
     }
 
+    /// Every pool the chain has created, in identifier order.
     pub fn pools(&self) -> impl Iterator<Item = (&PoolId, &PoolState)> {
         self.pools.iter()
     }
@@ -171,11 +173,10 @@ impl Ledger {
                 ..
             } => {
                 self.record(undo, pool);
-                let state = self
-                    .derived
-                    .pools
-                    .get_mut(pool)
-                    .ok_or_else(|| Error::not_found(format!("swap against unknown pool {pool}")))?;
+                let state =
+                    self.derived.pools.get_mut(pool).ok_or_else(|| {
+                        Error::not_found(format!("swap against unknown pool {pool}"))
+                    })?;
                 // The taker's side decides which reserve grows: `Ask` means
                 // the taker bought base out of the pool.
                 let (base_after, quote_after) = match taker {
@@ -385,10 +386,9 @@ impl ChainState {
             return Ok(Applied::Extended { number });
         };
 
-        let follows_head = self
-            .seen
-            .get(&hash)
-            .is_some_and(|block| block.parent_hash == head.hash && block.number == head.number.next());
+        let follows_head = self.seen.get(&hash).is_some_and(|block| {
+            block.parent_hash == head.hash && block.number == head.number.next()
+        });
         if follows_head {
             self.adopt(&[hash])?;
             return Ok(Applied::Extended { number });
@@ -408,7 +408,8 @@ impl ChainState {
             // canonical chain does not move for a tie.
             return Ok(Applied::SideBranch { number });
         }
-        self.reorganise(ancestor_number, &branch).map(Applied::Reorganised)
+        self.reorganise(ancestor_number, &branch)
+            .map(Applied::Reorganised)
     }
 
     /// Reconstruct the branch ending at `tip` back to its canonical ancestor.
@@ -504,8 +505,7 @@ impl ChainState {
         let retention = self.retention as usize;
         if self.canonical.len() > retention {
             let excess = self.canonical.len() - retention;
-            let dropped: Vec<BlockHash> =
-                self.canonical.drain(..excess).map(|b| b.hash).collect();
+            let dropped: Vec<BlockHash> = self.canonical.drain(..excess).map(|b| b.hash).collect();
             for hash in dropped {
                 self.seen.remove(&hash);
             }

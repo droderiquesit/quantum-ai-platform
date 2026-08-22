@@ -15,7 +15,10 @@
 //! * **Triangular** — A to B to C to A at one venue. A three-edge cycle of
 //!   [`EdgeKind::Trade`] edges, the classic FX and crypto shape.
 //! * **Cross-instrument** — a synthetic against the components that replicate
-//!   it. A two-edge cycle through one [`EdgeKind::Synthetic`] edge.
+//!   it. A two-edge cycle through one [`EdgeKind::Synthetic`] edge. A basket
+//!   against its constituents is the many-component case; a future against
+//!   spot is the same edge with one component and the carry expressed as the
+//!   conversion's cost, which is then charged as funding on the net edge.
 //!
 //! Every one of them is a cycle whose product exceeds one, which is why the
 //! search in [`crate::search`] needs to know about only one of them.
@@ -217,12 +220,10 @@ impl ArbitrageGraph {
 
     /// Whether orders may be sent to both ends of an edge.
     pub fn edge_is_tradable(&self, edge: &ConversionEdge) -> bool {
-        [&edge.from.venue, &edge.to.venue]
-            .into_iter()
-            .all(|venue| {
-                self.venue_facts(venue)
-                    .is_some_and(|facts| facts.status.accepts_orders())
-            })
+        [&edge.from.venue, &edge.to.venue].into_iter().all(|venue| {
+            self.venue_facts(venue)
+                .is_some_and(|facts| facts.status.accepts_orders())
+        })
     }
 
     pub fn nodes(&self) -> &[Node] {

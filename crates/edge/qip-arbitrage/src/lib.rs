@@ -54,10 +54,10 @@ pub use graph::{
 pub use liquidity::{LiquiditySource, StaticLiquidity};
 pub use netedge::{EdgeAssumptions, NetEdgeCalculator};
 pub use plan::{LegPlanner, LegRanking, PlanSettings, PlannedTrade};
-pub use pricing::{price_path, PathLeg, PathPricing, PricedConversion};
+pub use pricing::{PathLeg, PathPricing, PricedConversion, price_path};
 pub use scan::{
     Opportunity, OpportunityScanner, Rejection, RejectionStage, ScanReport, SizePolicy,
 };
 pub use search::{
-    confirm_exact, search_candidates, ExactConfirmation, PathCandidate, SearchSettings,
+    ExactConfirmation, PathCandidate, SearchSettings, confirm_exact, search_candidates,
 };

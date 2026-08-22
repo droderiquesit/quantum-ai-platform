@@ -82,7 +82,8 @@ pub struct ScalarBucket {
 
 impl ScalarBucket {
     pub fn contains(&self, value: Decimal) -> bool {
-        self.lower.is_none_or(|bound| value >= bound) && self.upper.is_none_or(|bound| value < bound)
+        self.lower.is_none_or(|bound| value >= bound)
+            && self.upper.is_none_or(|bound| value < bound)
     }
 }
 
@@ -121,6 +122,9 @@ impl MarketKind {
         }
     }
 
+    /// Refuses fewer than two outcomes, a repeated identifier, and two
+    /// outcomes resolving on identical criteria — the last because outcomes
+    /// that can both win are not a market anyone can price.
     pub fn categorical(outcomes: Vec<Outcome>) -> Result<Self> {
         if outcomes.len() < 2 {
             return Err(Error::invalid(
@@ -254,6 +258,7 @@ pub struct FeeSchedule {
 }
 
 impl FeeSchedule {
+    /// Refuses a fee of a whole turn or more on any leg.
     pub fn new(taker_bps: u32, maker_bps: u32, settlement_bps: u32) -> Result<Self> {
         for (label, bps) in [
             ("taker", taker_bps),
@@ -392,7 +397,9 @@ impl EventMarket {
             .outcomes()
             .into_iter()
             .find(|outcome| &outcome.id == id)
-            .ok_or_else(|| Error::not_found(format!("market {} has no outcome {id}", self.market_id)))
+            .ok_or_else(|| {
+                Error::not_found(format!("market {} has no outcome {id}", self.market_id))
+            })
     }
 
     /// Evaluate every outcome against what the source published.

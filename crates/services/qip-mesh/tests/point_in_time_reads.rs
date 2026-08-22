@@ -66,20 +66,42 @@ fn the_analytical_store_scans_nothing_loaded_after_the_as_of() -> Result<()> {
         vec![Stamped::new(row("VOD.L", "72.5"), as_of(), later())],
     )?;
 
-    assert!(analytics.scan("fills", &[], &ColumnFilter::Any, as_of()).is_err());
-    assert!(analytics.count("fills", &ColumnFilter::Any, as_of()).is_err());
     assert!(
         analytics
-            .aggregate("fills", "price", Aggregation::Sum, &ColumnFilter::Any, as_of())
+            .scan("fills", &[], &ColumnFilter::Any, as_of())
+            .is_err()
+    );
+    assert!(
+        analytics
+            .count("fills", &ColumnFilter::Any, as_of())
+            .is_err()
+    );
+    assert!(
+        analytics
+            .aggregate(
+                "fills",
+                "price",
+                Aggregation::Sum,
+                &ColumnFilter::Any,
+                as_of()
+            )
             .is_err()
     );
     assert!(analytics.datasets(as_of())?.value().is_empty());
 
     assert_eq!(
-        analytics.scan("fills", &[], &ColumnFilter::Any, later())?.value().len(),
+        analytics
+            .scan("fills", &[], &ColumnFilter::Any, later())?
+            .value()
+            .len(),
         1
     );
-    assert_eq!(*analytics.count("fills", &ColumnFilter::Any, later())?.value(), 1);
+    assert_eq!(
+        *analytics
+            .count("fills", &ColumnFilter::Any, later())?
+            .value(),
+        1
+    );
     Ok(())
 }
 
@@ -113,7 +135,12 @@ fn master_data_returns_no_version_recorded_after_the_as_of() -> Result<()> {
     assert!(master.history("instrument", "VOD.L", as_of()).is_err());
     assert!(master.entities(as_of())?.value().is_empty());
 
-    assert!(master.lookup("instrument", "VOD.L", later())?.value().is_some());
+    assert!(
+        master
+            .lookup("instrument", "VOD.L", later())?
+            .value()
+            .is_some()
+    );
     Ok(())
 }
 
@@ -138,9 +165,18 @@ fn the_graph_traverses_no_edge_recorded_after_the_as_of() -> Result<()> {
 #[test]
 fn the_evidence_store_returns_nothing_written_after_the_as_of() -> Result<()> {
     let evidence = MemoryEvidence::new();
-    evidence.put("decisions/2026-08-22/d-1", b"the decision".to_vec(), later())?;
+    evidence.put(
+        "decisions/2026-08-22/d-1",
+        b"the decision".to_vec(),
+        later(),
+    )?;
 
-    assert!(evidence.get("decisions/2026-08-22/d-1", as_of())?.value().is_none());
+    assert!(
+        evidence
+            .get("decisions/2026-08-22/d-1", as_of())?
+            .value()
+            .is_none()
+    );
     assert!(
         evidence
             .receipt("decisions/2026-08-22/d-1", as_of())?
@@ -149,7 +185,12 @@ fn the_evidence_store_returns_nothing_written_after_the_as_of() -> Result<()> {
     );
     assert!(evidence.keys("decisions/", as_of())?.value().is_empty());
 
-    assert!(evidence.get("decisions/2026-08-22/d-1", later())?.value().is_some());
+    assert!(
+        evidence
+            .get("decisions/2026-08-22/d-1", later())?
+            .value()
+            .is_some()
+    );
     assert_eq!(evidence.keys("decisions/", later())?.value().len(), 1);
     Ok(())
 }

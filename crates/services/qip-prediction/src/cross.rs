@@ -14,8 +14,8 @@
 //! against a haircut the caller has to name.
 
 use qip_contracts::{BookSide, Deduction, DeductionKind, LegPlan, LegStep, NetEdge, VenueId};
-use qip_core::error::{Error, Result};
 use qip_core::Decimal;
+use qip_core::error::{Error, Result};
 use qip_market::book::OrderBook;
 use serde::{Deserialize, Serialize};
 
@@ -107,13 +107,18 @@ impl<'a> CrossMarketPair<'a> {
         right_book: &OrderBook,
     ) -> Result<Option<CrossVenueArbitrage>> {
         let left_outcome = self.left.outcome(outcome)?;
-        let right_outcome = self.right.outcome(outcome)?;
-        if left_outcome.digest() != right_outcome.digest() {
-            return Err(Error::invalid(format!(
-                "outcome {outcome} resolves on different criteria at {} and {}",
-                self.left.venue, self.right.venue
-            )));
-        }
+        let right_outcome = self
+            .right
+            .outcomes()
+            .into_iter()
+            .find(|candidate| candidate.digest() == left_outcome.digest())
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "market {} has no outcome resolving on the same criteria as {outcome}",
+                    self.right.market_id
+                ))
+            })?;
+        let (left_id, right_id) = (left_outcome.id.clone(), right_outcome.id.clone());
         if self.source_divergence.is_some() && self.haircut_per_contract.is_zero() {
             return Err(Error::invalid(format!(
                 "markets {} and {} resolve from different sources; state the haircut that divergence is worth before trading the spread",
@@ -122,8 +127,14 @@ impl<'a> CrossMarketPair<'a> {
         }
 
         // Both directions: buy left / sell right, and the reverse.
-        let forward = self.direction(outcome, self.left, left_book, self.right, right_book)?;
-        let reverse = self.direction(outcome, self.right, right_book, self.left, left_book)?;
+        let forward = self.direction(
+            Side::new(self.left, &left_id, left_book),
+            Side::new(self.right, &right_id, right_book),
+        )?;
+        let reverse = self.direction(
+            Side::new(self.right, &right_id, right_book),
+            Side::new(self.left, &left_id, left_book),
+        )?;
         Ok(match (forward, reverse) {
             (Some(forward), Some(reverse)) => {
                 if forward.edge.net() >= reverse.edge.net() {
@@ -136,16 +147,10 @@ impl<'a> CrossMarketPair<'a> {
         })
     }
 
-    fn direction(
-        &self,
-        outcome: &OutcomeId,
-        buy_market: &EventMarket,
-        buy_book: &OrderBook,
-        sell_market: &EventMarket,
-        sell_book: &OrderBook,
-    ) -> Result<Option<CrossVenueArbitrage>> {
-        let mut asks = Depth::new(&buy_book.asks);
-        let mut bids = Depth::new(&sell_book.bids);
+    fn direction(&self, buy: Side<'_>, sell: Side<'_>) -> Result<Option<CrossVenueArbitrage>> {
+        let (buy_market, sell_market) = (buy.market, sell.market);
+        let mut asks = Depth::new(&buy.book.asks);
+        let mut bids = Depth::new(&sell.book.bids);
 
         let mut quantity = Decimal::ZERO;
         let mut gross = Decimal::ZERO;
@@ -242,7 +247,7 @@ impl<'a> CrossMarketPair<'a> {
 
         let plan = LegPlan::new(vec![
             LegStep {
-                object_id: buy_market.outcome(outcome)?.object_id.clone(),
+                object_id: buy_market.outcome(buy.outcome)?.object_id.clone(),
                 venue: buy_market.venue.clone(),
                 side: BookSide::Ask,
                 quantity,
@@ -251,7 +256,7 @@ impl<'a> CrossMarketPair<'a> {
                 optional: false,
             },
             LegStep {
-                object_id: sell_market.outcome(outcome)?.object_id.clone(),
+                object_id: sell_market.outcome(sell.outcome)?.object_id.clone(),
                 venue: sell_market.venue.clone(),
                 side: BookSide::Bid,
                 quantity,
@@ -271,6 +276,27 @@ impl<'a> CrossMarketPair<'a> {
             edge,
             plan,
         }))
+    }
+}
+
+/// One venue's side of a cross-venue trade.
+///
+/// The outcome is carried alongside its market because the same outcome has a
+/// different identifier on each venue; only its criteria digest matches.
+#[derive(Clone, Copy, Debug)]
+struct Side<'a> {
+    market: &'a EventMarket,
+    outcome: &'a OutcomeId,
+    book: &'a OrderBook,
+}
+
+impl<'a> Side<'a> {
+    const fn new(market: &'a EventMarket, outcome: &'a OutcomeId, book: &'a OrderBook) -> Self {
+        Self {
+            market,
+            outcome,
+            book,
+        }
     }
 }
 

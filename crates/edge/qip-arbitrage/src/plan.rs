@@ -155,9 +155,8 @@ impl LegPlanner {
         let mut by_quote: BTreeMap<ObjectId, Decimal> = BTreeMap::new();
 
         for (position, (reversibility_f64, leg)) in scored.iter().enumerate() {
-            let order = u16::try_from(position).map_err(|_| {
-                Error::invalid("a plan with more than 65,535 legs is not a plan")
-            })?;
+            let order = u16::try_from(position)
+                .map_err(|_| Error::invalid("a plan with more than 65,535 legs is not a plan"))?;
             let optional = self.is_optional(pricing, leg)?;
             let entry = earliest.entry(leg.conversion).or_insert(order);
             *entry = (*entry).min(order);
@@ -292,9 +291,7 @@ impl LegPlanner {
                     .zip(earliest.get(&(index - 1)))
                     .is_some_and(|(own, produced)| own < produced)
                 {
-                    Some(
-                        "this leg runs before the leg that would produce its input".to_string(),
-                    )
+                    Some("this leg runs before the leg that would produce its input".to_string())
                 } else if !producer.settles_atomically {
                     Some(format!(
                         "the leg that produces its input runs at {}, which can revert after this one has landed",

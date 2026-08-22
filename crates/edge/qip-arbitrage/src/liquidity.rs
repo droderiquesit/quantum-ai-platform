@@ -57,8 +57,12 @@ pub trait LiquiditySource: fmt::Debug {
     /// the touch and walking past it are different costs charged to different
     /// people: everyone pays the spread, only size pays the slippage. Reporting
     /// them as one number hides which of the two a path is actually losing to.
-    fn touch(&self, venue: &VenueId, object: &ObjectId, side: BookSide)
-    -> Option<(Decimal, Decimal)>;
+    fn touch(
+        &self,
+        venue: &VenueId,
+        object: &ObjectId,
+        side: BookSide,
+    ) -> Option<(Decimal, Decimal)>;
 
     /// Mid price — the reference the spread deduction is measured from.
     fn mid(&self, venue: &VenueId, object: &ObjectId) -> Option<Decimal> {

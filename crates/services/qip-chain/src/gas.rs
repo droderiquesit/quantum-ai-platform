@@ -24,7 +24,13 @@ pub struct GasProfile {
 }
 
 impl GasProfile {
-    pub fn new(operation: impl Into<String>, expected_gas: u64, worst_case_gas: u64) -> Result<Self> {
+    /// Refuses a profile whose worst case is cheaper than its expectation,
+    /// which is a measurement error rather than a bargain.
+    pub fn new(
+        operation: impl Into<String>,
+        expected_gas: u64,
+        worst_case_gas: u64,
+    ) -> Result<Self> {
         let operation = operation.into();
         if expected_gas == 0 {
             return Err(Error::invalid(format!(
@@ -55,7 +61,9 @@ pub fn effective_gas_price(
     max_fee_per_gas: Decimal,
     max_priority_fee_per_gas: Decimal,
 ) -> Result<Decimal> {
-    if base_fee.is_negative() || max_fee_per_gas.is_negative() || max_priority_fee_per_gas.is_negative()
+    if base_fee.is_negative()
+        || max_fee_per_gas.is_negative()
+        || max_priority_fee_per_gas.is_negative()
     {
         return Err(Error::invalid("gas prices cannot be negative"));
     }
@@ -89,7 +97,13 @@ impl GasCost {
         native_price: Decimal,
         currency: Currency,
     ) -> Result<Self> {
-        Self::price(profile.operation.clone(), profile.expected_gas, price_per_gas, native_price, currency)
+        Self::price(
+            profile.operation.clone(),
+            profile.expected_gas,
+            price_per_gas,
+            native_price,
+            currency,
+        )
     }
 
     /// The same operation at its worst-case gas, which is what a limit is set

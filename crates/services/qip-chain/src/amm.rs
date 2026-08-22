@@ -221,7 +221,12 @@ impl Pool {
     }
 
     /// Overwrite the reserves, as a sync from a node would.
-    pub fn set_reserves(&mut self, base: Decimal, quote: Decimal, as_of: BlockNumber) -> Result<()> {
+    pub fn set_reserves(
+        &mut self,
+        base: Decimal,
+        quote: Decimal,
+        as_of: BlockNumber,
+    ) -> Result<()> {
         if !base.is_positive() || !quote.is_positive() {
             return Err(Error::invalid(format!(
                 "pool {} cannot hold reserves {base}/{quote}",
@@ -245,9 +250,7 @@ impl Pool {
             }
             PoolCurve::StableSwap { amplification } => {
                 let d = stable_d(base, quote, ann(amplification))?;
-                Ok(PoolInvariant::StableSwap {
-                    d: to_decimal(d)?,
-                })
+                Ok(PoolInvariant::StableSwap { d: to_decimal(d)? })
             }
         }
     }
@@ -573,7 +576,9 @@ fn stable_marginal_price(x: u128, y: u128, ann: u128) -> Option<u128> {
 
 fn positive_raw(value: Decimal, what: &str) -> Result<u128> {
     if !value.is_positive() {
-        return Err(Error::invalid(format!("{what} must be positive, got {value}")));
+        return Err(Error::invalid(format!(
+            "{what} must be positive, got {value}"
+        )));
     }
     Ok(value.raw().unsigned_abs())
 }

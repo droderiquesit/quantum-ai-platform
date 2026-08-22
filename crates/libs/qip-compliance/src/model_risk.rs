@@ -77,7 +77,9 @@ impl ValidationEvidence {
     ) -> Result<Self> {
         let performed_by = performed_by.into();
         if performed_by.trim().is_empty() {
-            return Err(Error::invalid("validation evidence must name who produced it"));
+            return Err(Error::invalid(
+                "validation evidence must name who produced it",
+            ));
         }
         Ok(Self {
             kind,
@@ -110,7 +112,9 @@ impl PerformanceBoundary {
     ) -> Result<Self> {
         let dimension = dimension.into();
         if dimension.trim().is_empty() {
-            return Err(Error::invalid("a performance boundary must name a dimension"));
+            return Err(Error::invalid(
+                "a performance boundary must name a dimension",
+            ));
         }
         if let (Some(lo), Some(hi)) = (minimum, maximum)
             && lo > hi
@@ -332,7 +336,10 @@ impl ModelRiskFile {
     }
 
     /// Boundaries the supplied conditions fall outside of.
-    pub fn breached_boundaries(&self, conditions: &BTreeMap<String, Decimal>) -> Vec<&PerformanceBoundary> {
+    pub fn breached_boundaries(
+        &self,
+        conditions: &BTreeMap<String, Decimal>,
+    ) -> Vec<&PerformanceBoundary> {
         self.boundaries
             .iter()
             .filter(|b| {

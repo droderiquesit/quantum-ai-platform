@@ -11,8 +11,8 @@
 use qip_contracts::governance::{Entitlement, Usage};
 use qip_core::error::Result;
 use qip_core::{Duration, Timestamp};
-use qip_mesh::catalog::{Catalog, DatasetRegistration, QualityState};
 use qip_mesh::MeshPort;
+use qip_mesh::catalog::{Catalog, DatasetRegistration, QualityState};
 
 fn now() -> Timestamp {
     Timestamp::from_secs(1_760_000_000)
@@ -40,7 +40,10 @@ fn pipeline() -> Result<Catalog> {
     let mut catalog = Catalog::new();
     catalog.register(dataset("vendor.prices", &[])?)?;
     catalog.register(dataset("vendor.sentiment", &[])?)?;
-    catalog.register(dataset("features.daily", &["vendor.prices", "vendor.sentiment"])?)?;
+    catalog.register(dataset(
+        "features.daily",
+        &["vendor.prices", "vendor.sentiment"],
+    )?)?;
     catalog.register(dataset("signals.momentum", &["features.daily"])?)?;
     Ok(catalog)
 }
@@ -67,7 +70,10 @@ fn a_broken_lineage_names_the_missing_parent_and_who_claimed_it() -> Result<()> 
     // The realistic break: a dataset was retired from the catalogue while
     // something downstream still declares it as a parent.
     let mut catalog = pipeline()?;
-    catalog.register(dataset("features.daily", &["vendor.prices", "vendor.gone"])?)?;
+    catalog.register(dataset(
+        "features.daily",
+        &["vendor.prices", "vendor.gone"],
+    )?)?;
 
     let lineage = catalog.lineage_of("signals.momentum")?;
     assert!(!lineage.is_resolved());
@@ -129,7 +135,10 @@ fn a_diamond_lineage_resolves_once_rather_than_twice() -> Result<()> {
     catalog.register(dataset("vendor.prices", &[])?)?;
     catalog.register(dataset("features.left", &["vendor.prices"])?)?;
     catalog.register(dataset("features.right", &["vendor.prices"])?)?;
-    catalog.register(dataset("model.input", &["features.left", "features.right"])?)?;
+    catalog.register(dataset(
+        "model.input",
+        &["features.left", "features.right"],
+    )?)?;
 
     let lineage = catalog.lineage_of("model.input")?;
     lineage.require_resolved()?;
@@ -142,7 +151,11 @@ fn a_quarantined_dataset_cannot_be_read_however_well_licensed_it_is() -> Result<
     // Quality is checked before licensing. A licence says what the platform
     // may do with correct data, not with data known to be wrong.
     let mut catalog = pipeline()?;
-    assert!(catalog.usable_for("vendor.prices", Usage::Research, now()).is_ok());
+    assert!(
+        catalog
+            .usable_for("vendor.prices", Usage::Research, now())
+            .is_ok()
+    );
 
     catalog.quarantine(
         "vendor.prices",
@@ -170,7 +183,11 @@ fn a_degraded_dataset_is_still_usable_because_the_two_states_are_different() -> 
             reason: "coverage fell to 80% of the universe".to_string(),
         },
     )?;
-    assert!(catalog.usable_for("vendor.sentiment", Usage::Research, now()).is_ok());
+    assert!(
+        catalog
+            .usable_for("vendor.sentiment", Usage::Research, now())
+            .is_ok()
+    );
     Ok(())
 }
 
@@ -179,7 +196,11 @@ fn a_dataset_not_licensed_for_a_use_is_refused_by_the_catalogue_too() -> Result<
     // The catalogue and `qip-compliance` speak the same vocabulary, so they
     // cannot disagree about what a licence says.
     let catalog = pipeline()?;
-    assert!(catalog.usable_for("vendor.prices", Usage::Derive, now()).is_ok());
+    assert!(
+        catalog
+            .usable_for("vendor.prices", Usage::Derive, now())
+            .is_ok()
+    );
 
     let error = catalog
         .usable_for("vendor.prices", Usage::Trade, now())
@@ -193,8 +214,16 @@ fn a_dataset_not_licensed_for_a_use_is_refused_by_the_catalogue_too() -> Result<
 fn an_expired_licence_stops_being_usable_without_anything_else_changing() -> Result<()> {
     let catalog = pipeline()?;
     let later = now().saturating_add(Duration::from_days(60));
-    assert!(catalog.usable_for("vendor.prices", Usage::Research, now()).is_ok());
-    assert!(catalog.usable_for("vendor.prices", Usage::Research, later).is_err());
+    assert!(
+        catalog
+            .usable_for("vendor.prices", Usage::Research, now())
+            .is_ok()
+    );
+    assert!(
+        catalog
+            .usable_for("vendor.prices", Usage::Research, later)
+            .is_err()
+    );
     Ok(())
 }
 
@@ -223,6 +252,10 @@ fn an_unowned_or_unnamed_dataset_cannot_be_registered() {
 fn quarantining_without_a_reason_is_refused() -> Result<()> {
     let mut catalog = pipeline()?;
     assert!(catalog.quarantine("vendor.prices", "bad", now()).is_err());
-    assert!(catalog.quarantine("no.such.dataset", "a perfectly good reason", now()).is_err());
+    assert!(
+        catalog
+            .quarantine("no.such.dataset", "a perfectly good reason", now())
+            .is_err()
+    );
     Ok(())
 }

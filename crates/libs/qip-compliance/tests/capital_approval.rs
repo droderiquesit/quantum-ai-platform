@@ -251,11 +251,7 @@ fn an_envelope_built_by_hand_cannot_become_approved_capital() -> Result<()> {
 
     assert!(!chain.verifies(&hand_rolled));
     let error = chain
-        .admit(
-            hand_rolled,
-            approval(dec!("99000000"), "k.almeida")?,
-            now(),
-        )
+        .admit(hand_rolled, approval(dec!("99000000"), "k.almeida")?, now())
         .expect_err("an unsigned envelope is not approved capital");
     assert!(error.message().contains("does not verify"));
     Ok(())

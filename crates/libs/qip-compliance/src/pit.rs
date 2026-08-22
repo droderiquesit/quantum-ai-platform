@@ -113,10 +113,7 @@ impl<T> PointInTime<T> {
     /// Both times are honoured. Filtering on valid-time alone is the classic
     /// leak; filtering on known-time alone answers a different question.
     pub fn in_force_at(&self, valid_at: Timestamp) -> Option<&Stamped<T>> {
-        self.facts
-            .iter()
-            .rev()
-            .find(|f| f.valid_at() <= valid_at)
+        self.facts.iter().rev().find(|f| f.valid_at() <= valid_at)
     }
 
     /// [`PointInTime::in_force_at`], or an error naming both times.

@@ -266,7 +266,9 @@ impl Router {
         at: Timestamp,
     ) -> Result<RoutingDecision> {
         if request.quantity <= Decimal::ZERO {
-            return Err(Error::invalid("a routing request needs a positive quantity"));
+            return Err(Error::invalid(
+                "a routing request needs a positive quantity",
+            ));
         }
 
         let mut exclusions: Vec<VenueExclusion> = Vec::new();
@@ -274,6 +276,7 @@ impl Router {
         let eligible = self.eligible(request, candidates, health, at, &mut exclusions)?;
 
         let mut allocation = vec![Decimal::ZERO; eligible.len()];
+        let mut price_limited: Vec<usize> = Vec::new();
         let mut remaining = request.quantity;
 
         let step = self.step_size(request.quantity);
@@ -284,7 +287,9 @@ impl Router {
                 break;
             }
             let take = step.min(remaining);
-            let Some(chosen) = self.cheapest_for(request, &eligible, &allocation, take)? else {
+            let Some(chosen) =
+                self.cheapest_for(request, &eligible, &allocation, take, &mut price_limited)?
+            else {
                 break;
             };
             allocation[chosen] += take;
@@ -318,7 +323,13 @@ impl Router {
 
         // Offer what the rounding freed to whoever is cheapest for it.
         if residual > Decimal::ZERO
-            && let Some(chosen) = self.cheapest_for(request, &eligible, &allocation, residual)?
+            && let Some(chosen) = self.cheapest_for(
+                request,
+                &eligible,
+                &allocation,
+                residual,
+                &mut price_limited,
+            )?
         {
             let profile = eligible[chosen].profile;
             let extra = profile.round_to_lot(residual);
@@ -326,6 +337,28 @@ impl Router {
                 allocation[chosen] += extra;
                 residual -= extra;
             }
+        }
+
+        // A venue the limit kept the order away from is a decision, and gets
+        // said out loud like every other one.
+        for index in &price_limited {
+            if allocation.get(*index).is_some_and(|q| *q > Decimal::ZERO) {
+                continue;
+            }
+            let profile = eligible[*index].profile;
+            if exclusions.iter().any(|e| e.venue == profile.venue) {
+                continue;
+            }
+            exclusions.push(VenueExclusion {
+                venue: profile.venue.clone(),
+                reason: ExclusionReason::PriceLimit,
+                detail: format!(
+                    "its all-in price is worse than the stated limit of {}",
+                    request
+                        .price_limit
+                        .map_or_else(|| "none".to_string(), |limit| limit.to_string())
+                ),
+            });
         }
 
         let mut slices: Vec<RouteSlice> = Vec::new();
@@ -435,10 +468,7 @@ impl Router {
                 exclusions.push(VenueExclusion {
                     venue,
                     reason: ExclusionReason::NoDepth,
-                    detail: format!(
-                        "nothing is resting on the {} side",
-                        request.side.as_str()
-                    ),
+                    detail: format!("nothing is resting on the {} side", request.side.as_str()),
                 });
                 continue;
             }
@@ -481,6 +511,7 @@ impl Router {
         eligible: &[Eligible<'_>],
         allocation: &[Decimal],
         take: Decimal,
+        price_limited: &mut Vec<usize>,
     ) -> Result<Option<usize>> {
         let mut best: Option<(usize, Decimal)> = None;
         for (index, candidate) in eligible.iter().enumerate() {
@@ -498,6 +529,9 @@ impl Router {
             if let Some(limit) = request.price_limit
                 && request.side.is_better(limit, price)
             {
+                if !price_limited.contains(&index) {
+                    price_limited.push(index);
+                }
                 continue;
             }
             // A signed cost, so one comparison serves both sides: buying wants
@@ -538,9 +572,7 @@ impl Router {
             // for and what child-order management picks up when it does not.
             candidate.touch.resting(request.side)
         } else {
-            let Some((vwap, filled)) = candidate
-                .book
-                .sweep(aggressor_for(request.side), quantity)
+            let Some((vwap, filled)) = candidate.book.sweep(aggressor_for(request.side), quantity)
             else {
                 return Ok(None);
             };

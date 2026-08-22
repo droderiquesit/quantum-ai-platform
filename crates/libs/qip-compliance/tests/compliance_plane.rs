@@ -115,7 +115,9 @@ fn a_control_that_stops_working_shows_as_unenforced() -> Result<()> {
     let mut plane = plane()?;
     let bytes = b"an artifact".to_vec();
     let provenance = plane.artifacts().seal(&bytes, "build", now(), vec![])?;
-    plane.artifacts_mut().store("out.bin", bytes, provenance, now())?;
+    plane
+        .artifacts_mut()
+        .store("out.bin", bytes, provenance, now())?;
 
     let report = plane.report(now());
     assert!(report.is_fully_enforced());
@@ -137,7 +139,11 @@ fn the_plane_gives_every_subsystem_a_point_in_time_reader_and_nothing_wider() ->
     );
     assert_eq!(reader.len(), 1);
     assert_eq!(reader.withheld(), 1);
-    assert!(reader.restrict_to(now().saturating_add(Duration::from_secs(60))).is_err());
+    assert!(
+        reader
+            .restrict_to(now().saturating_add(Duration::from_secs(60)))
+            .is_err()
+    );
 
     let detector = plane.leakage_detector(now());
     let future = Stamped::new(3_i64, now(), now().saturating_add(Duration::from_secs(1)));
@@ -210,7 +216,10 @@ fn the_planes_controls_compose_across_one_realistic_decision() -> Result<()> {
     let digest = plane
         .artifacts_mut()
         .store("features.parquet", features, provenance, now())?;
-    plane.artifacts().provenance_chain(&digest)?.require_complete()?;
+    plane
+        .artifacts()
+        .provenance_chain(&digest)?
+        .require_complete()?;
 
     // Bitemporal truth: nothing after the as-of is visible to the read.
     let reader = plane.reader(now(), [Stamped::new(dec!("101.25"), now(), now())]);
@@ -220,7 +229,11 @@ fn the_planes_controls_compose_across_one_realistic_decision() -> Result<()> {
     assert!(plane.may_act("stat-arb-eu", "frankfurt-1"));
 
     // And the licence still stops the last step, which is the whole point.
-    assert!(!plane.entitlements().permits("vendor.prices", Usage::Trade, now()));
+    assert!(
+        !plane
+            .entitlements()
+            .permits("vendor.prices", Usage::Trade, now())
+    );
 
     plane.report(now()).require_fully_enforced()?;
     Ok(())

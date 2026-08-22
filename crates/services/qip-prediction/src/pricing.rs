@@ -11,8 +11,8 @@
 //! the market's, but by less than the band is wide, produces no profitable
 //! trade. That is the number a strategy needs, and it is not the price.
 
-use qip_core::error::{Error, Result};
 use qip_core::Decimal;
+use qip_core::error::{Error, Result};
 use qip_market::book::OrderBook;
 use serde::{Deserialize, Serialize};
 
@@ -61,6 +61,8 @@ pub struct ProbabilityBand {
 }
 
 impl ProbabilityBand {
+    /// Refuses an inverted band, which would report a crossed book as an
+    /// opportunity of negative width.
     pub fn new(lower: Probability, upper: Probability) -> Result<Self> {
         if lower.value() > upper.value() {
             return Err(Error::invalid(format!(
@@ -154,7 +156,11 @@ pub fn implied_from_bid(bid: Decimal, fees: &FeeSchedule, payoff: Decimal) -> Re
 ///
 /// The touch is used deliberately: this is what the market believes, not what
 /// a given size can be done at. Sizing is [`crate::arbitrage`]'s problem.
-pub fn implied_band(book: &OrderBook, fees: &FeeSchedule, payoff: Decimal) -> Result<ProbabilityBand> {
+pub fn implied_band(
+    book: &OrderBook,
+    fees: &FeeSchedule,
+    payoff: Decimal,
+) -> Result<ProbabilityBand> {
     let ask = book
         .best_ask()
         .ok_or_else(|| Error::not_found("the book has no offer to imply a probability from"))?;

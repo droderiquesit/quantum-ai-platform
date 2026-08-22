@@ -18,8 +18,10 @@ use crate::graph::ArbitrageGraph;
 use crate::liquidity::LiquiditySource;
 use crate::netedge::{EdgeAssumptions, NetEdgeCalculator};
 use crate::plan::{LegPlanner, PlanSettings, PlannedTrade};
-use crate::pricing::{price_path, PathPricing};
-use crate::search::{confirm_exact, search_candidates, ExactConfirmation, PathCandidate, SearchSettings};
+use crate::pricing::{PathPricing, price_path};
+use crate::search::{
+    ExactConfirmation, PathCandidate, SearchSettings, confirm_exact, search_candidates,
+};
 use qip_contracts::edge::NetEdge;
 use qip_core::{Decimal, ObjectId, Timestamp};
 use std::collections::BTreeMap;
@@ -204,8 +206,9 @@ impl OpportunityScanner {
             detail,
         };
 
-        let confirmation = confirm_exact(graph, candidate)
-            .map_err(|error| reject(RejectionStage::ExactArithmetic, error.message().to_string()))?;
+        let confirmation = confirm_exact(graph, candidate).map_err(|error| {
+            reject(RejectionStage::ExactArithmetic, error.message().to_string())
+        })?;
         if !confirmation.is_profitable() {
             return Err(reject(
                 RejectionStage::ExactArithmetic,
@@ -255,10 +258,7 @@ impl OpportunityScanner {
             .calculate(&pricing, now)
             .map_err(|error| reject(RejectionStage::NetEdge, error.message().to_string()))?;
         if !net_edge.is_positive() {
-            return Err(reject(
-                RejectionStage::NetEdge,
-                net_edge.summarise(),
-            ));
+            return Err(reject(RejectionStage::NetEdge, net_edge.summarise()));
         }
 
         let planned = self

@@ -67,8 +67,8 @@ fn a_reader_cannot_be_widened_to_see_the_future() -> Result<()> {
     assert!(error.message().contains("cannot be widened"));
 
     // Narrowing is allowed, and takes effect.
-    let narrow = PointInTime::as_of(t(200), [fact(7, 10, 100), fact(9, 20, 190)])
-        .restrict_to(t(150))?;
+    let narrow =
+        PointInTime::as_of(t(200), [fact(7, 10, 100), fact(9, 20, 190)]).restrict_to(t(150))?;
     assert_eq!(narrow.horizon(), t(150));
     assert_eq!(narrow.len(), 1);
     assert_eq!(narrow.withheld(), 1);
@@ -79,10 +79,7 @@ fn a_reader_cannot_be_widened_to_see_the_future() -> Result<()> {
 fn a_reader_returns_the_fact_in_force_rather_than_the_latest_one() -> Result<()> {
     // Both times matter. The fact in force at second 15 is the one valid from
     // second 10, even though a later fact is also knowable.
-    let reader = PointInTime::as_of(
-        t(500),
-        [fact(1, 10, 12), fact(2, 30, 31), fact(3, 60, 61)],
-    );
+    let reader = PointInTime::as_of(t(500), [fact(1, 10, 12), fact(2, 30, 31), fact(3, 60, 61)]);
 
     assert_eq!(*reader.require_in_force_at(t(15))?.value(), 1);
     assert_eq!(*reader.require_in_force_at(t(45))?.value(), 2);
@@ -158,6 +155,14 @@ fn a_fact_known_exactly_at_the_as_of_is_knowable() {
     // most recent observation from every read.
     let reader = PointInTime::as_of(t(100), [fact(5, 10, 100)]);
     assert_eq!(reader.len(), 1);
-    assert!(LeakageDetector::new(t(100)).inspect("x", &fact(5, 10, 100)).is_none());
-    assert!(LeakageDetector::new(t(99)).inspect("x", &fact(5, 10, 100)).is_some());
+    assert!(
+        LeakageDetector::new(t(100))
+            .inspect("x", &fact(5, 10, 100))
+            .is_none()
+    );
+    assert!(
+        LeakageDetector::new(t(99))
+            .inspect("x", &fact(5, 10, 100))
+            .is_some()
+    );
 }

@@ -23,8 +23,8 @@ use crate::adapters::{
     MemoryMasterData,
 };
 use crate::ports::{AnalyticalStore, EvidenceStore, GraphStore, HotSeries, Lakehouse, MasterData};
-use qip_core::error::{Error, Result};
 use qip_core::Duration;
+use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;

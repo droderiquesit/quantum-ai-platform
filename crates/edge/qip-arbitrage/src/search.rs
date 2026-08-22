@@ -19,8 +19,8 @@
 //! not yet proved anything about the book, which is [`crate::pricing`]'s job.
 
 use crate::graph::{ArbitrageGraph, PathKind};
-use qip_core::error::{Error, Result};
 use qip_core::Decimal;
+use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 
 /// How hard to look, and how much rounding noise to tolerate.
@@ -137,18 +137,24 @@ pub fn search_candidates(graph: &ArbitrageGraph, settings: &SearchSettings) -> V
     let mut endpoints: Vec<Option<(usize, usize)>> = Vec::with_capacity(graph.edge_count());
     let mut weights: Vec<f64> = Vec::with_capacity(graph.edge_count());
     for edge in graph.edges() {
-        let usable = graph.edge_is_tradable(edge);
         let rate = edge.effective_rate().unwrap_or(Decimal::ZERO);
         let ends = match (
-            usable && rate > Decimal::ZERO,
+            rate > Decimal::ZERO && graph.edge_is_tradable(edge),
             graph.node_index(&edge.from),
             graph.node_index(&edge.to),
         ) {
             (true, Some(from), Some(to)) => Some((from, to)),
             _ => None,
         };
+        // An unusable edge is weighted zero rather than infinite. It is never
+        // relaxed across, and an infinity left lying in the array would
+        // propagate through any future change that forgot why it was there.
+        weights.push(if ends.is_some() {
+            -rate.to_f64().ln()
+        } else {
+            0.0
+        });
         endpoints.push(ends);
-        weights.push(-rate.to_f64().ln());
     }
 
     let mut excluded = vec![false; graph.edge_count()];

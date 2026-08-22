@@ -252,7 +252,18 @@ impl LegPlan {
 
     /// The exposure left behind if the plan stops after `completed` legs.
     ///
-    /// What the leg-risk budget is actually sized against.
+    /// What the leg-risk budget is sized against, and deliberately a
+    /// conservative **gross** bound: a cycle strands the value of the path
+    /// once, not once per remaining leg, so this errs toward refusing a plan.
+    /// That is the direction to err in.
+    ///
+    /// It has a limitation worth stating rather than discovering. A [`LegStep`]
+    /// carries no quote currency, so where a cycle prices its legs in more than
+    /// one, this sum spans them and the total is unitless. It remains a usable
+    /// bound for a single-currency plan and still errs toward refusal for a
+    /// mixed one — but a caller whose legs can have different quotes must break
+    /// the exposure out per currency itself and treat this figure as a screen
+    /// rather than a measurement.
     pub fn residual_after(&self, completed: usize) -> Decimal {
         self.steps
             .iter()

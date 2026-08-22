@@ -57,8 +57,12 @@ fn book(
         object(market),
         venue_name,
         stamped,
-        bids.iter().map(|(p, s)| BookLevel::new(d(p), d(s))).collect(),
-        asks.iter().map(|(p, s)| BookLevel::new(d(p), d(s))).collect(),
+        bids.iter()
+            .map(|(p, s)| BookLevel::new(d(p), d(s)))
+            .collect(),
+        asks.iter()
+            .map(|(p, s)| BookLevel::new(d(p), d(s)))
+            .collect(),
     )
 }
 
@@ -72,7 +76,11 @@ fn scanner(budget: &str) -> OpportunityScanner {
 
 /// One crypto exchange whose ETH/BTC cross is a percent away from the two dollar
 /// legs that imply it. A real triangular dislocation, with real spreads.
-fn triangular(class: VenueClass, asks: &[(&str, &str)], bids: &[(&str, &str)]) -> Result<(ArbitrageGraph, StaticLiquidity)> {
+fn triangular(
+    class: VenueClass,
+    asks: &[(&str, &str)],
+    bids: &[(&str, &str)],
+) -> Result<(ArbitrageGraph, StaticLiquidity)> {
     let cx = venue("CX");
     let mut graph = ArbitrageGraph::new();
     graph.register_venue(cx.clone(), VenueFacts::new(class, VenueStatus::Open));
@@ -114,10 +122,20 @@ fn triangular(class: VenueClass, asks: &[(&str, &str)], bids: &[(&str, &str)]) -
             book("ETHUSDT", "CX", &[("3000.0", "200")], asks, at()),
             20,
         )
-        .with_book(cx.clone(), book("ETHBTC", "CX", bids, &[("0.05051", "200")], at()), 20)
+        .with_book(
+            cx.clone(),
+            book("ETHBTC", "CX", bids, &[("0.05051", "200")], at()),
+            20,
+        )
         .with_book(
             cx,
-            book("BTCUSDT", "CX", &[("60000", "10")], &[("60001", "10")], at()),
+            book(
+                "BTCUSDT",
+                "CX",
+                &[("60000", "10")],
+                &[("60001", "10")],
+                at(),
+            ),
             20,
         );
     Ok((graph, depth))
@@ -167,17 +185,35 @@ fn consistent_market() -> Result<(ArbitrageGraph, StaticLiquidity)> {
     let depth = StaticLiquidity::new()
         .with_book(
             cx.clone(),
-            book("ETHUSDT", "CX", &[("2500", "1000")], &[("2500", "1000")], at()),
+            book(
+                "ETHUSDT",
+                "CX",
+                &[("2500", "1000")],
+                &[("2500", "1000")],
+                at(),
+            ),
             32,
         )
         .with_book(
             cx.clone(),
-            book("BTCUSDT", "CX", &[("50000", "100")], &[("50000", "100")], at()),
+            book(
+                "BTCUSDT",
+                "CX",
+                &[("50000", "100")],
+                &[("50000", "100")],
+                at(),
+            ),
             32,
         )
         .with_book(
             cx,
-            book("ETHBTC", "CX", &[("0.05", "1000")], &[("0.05", "1000")], at()),
+            book(
+                "ETHBTC",
+                "CX",
+                &[("0.05", "1000")],
+                &[("0.05", "1000")],
+                at(),
+            ),
             32,
         );
     Ok((graph, depth))
@@ -203,7 +239,14 @@ fn mid_only_dislocation() -> Result<(ArbitrageGraph, StaticLiquidity)> {
         at(),
         16,
     )?;
-    graph.add_transfer(object("TKN"), venue("XNAS"), venue("XLON"), Decimal::ZERO, at(), 16)?;
+    graph.add_transfer(
+        object("TKN"),
+        venue("XNAS"),
+        venue("XLON"),
+        Decimal::ZERO,
+        at(),
+        16,
+    )?;
     graph.add_trade(
         node("TKN", "XLON"),
         node("USD", "XLON"),
@@ -214,17 +257,36 @@ fn mid_only_dislocation() -> Result<(ArbitrageGraph, StaticLiquidity)> {
         at(),
         16,
     )?;
-    graph.add_transfer(object("USD"), venue("XLON"), venue("XNAS"), Decimal::ZERO, at(), 16)?;
+    graph.add_transfer(
+        object("USD"),
+        venue("XLON"),
+        venue("XNAS"),
+        Decimal::ZERO,
+        at(),
+        16,
+    )?;
 
     let depth = StaticLiquidity::new()
         .with_book(
             venue("XNAS"),
-            book("TKN.XNAS", "XNAS", &[("99.50", "1000")], &[("100.50", "1000")], at()),
+            book(
+                "TKN.XNAS",
+                "XNAS",
+                &[("99.50", "1000")],
+                &[("100.50", "1000")],
+                at(),
+            ),
             16,
         )
         .with_book(
             venue("XLON"),
-            book("TKN.XLON", "XLON", &[("99.70", "1000")], &[("100.70", "1000")], at()),
+            book(
+                "TKN.XLON",
+                "XLON",
+                &[("99.70", "1000")],
+                &[("100.70", "1000")],
+                at(),
+            ),
             16,
         );
     Ok((graph, depth))
@@ -253,7 +315,14 @@ fn cross_venue_with_a_chain() -> Result<(ArbitrageGraph, StaticLiquidity)> {
         at(),
         20,
     )?;
-    graph.add_transfer(object("TKN"), venue("XNAS"), venue("DEX1"), d("0.0002"), at(), 20)?;
+    graph.add_transfer(
+        object("TKN"),
+        venue("XNAS"),
+        venue("DEX1"),
+        d("0.0002"),
+        at(),
+        20,
+    )?;
     graph.add_trade(
         node("TKN", "DEX1"),
         node("USD", "DEX1"),
@@ -264,17 +333,36 @@ fn cross_venue_with_a_chain() -> Result<(ArbitrageGraph, StaticLiquidity)> {
         at(),
         20,
     )?;
-    graph.add_transfer(object("USD"), venue("DEX1"), venue("XNAS"), d("0.0001"), at(), 20)?;
+    graph.add_transfer(
+        object("USD"),
+        venue("DEX1"),
+        venue("XNAS"),
+        d("0.0001"),
+        at(),
+        20,
+    )?;
 
     let depth = StaticLiquidity::new()
         .with_book(
             venue("XNAS"),
-            book("TKN.XNAS", "XNAS", &[("100.00", "5000")], &[("100.10", "5000")], at()),
+            book(
+                "TKN.XNAS",
+                "XNAS",
+                &[("100.00", "5000")],
+                &[("100.10", "5000")],
+                at(),
+            ),
             20,
         )
         .with_book(
             venue("DEX1"),
-            book("TKN.DEX1", "DEX1", &[("101.00", "5000")], &[("101.10", "5000")], at()),
+            book(
+                "TKN.DEX1",
+                "DEX1",
+                &[("101.00", "5000")],
+                &[("101.10", "5000")],
+                at(),
+            ),
             20,
         );
     Ok((graph, depth))
@@ -284,7 +372,10 @@ fn cross_venue_with_a_chain() -> Result<(ArbitrageGraph, StaticLiquidity)> {
 fn synthetic_basket() -> Result<(ArbitrageGraph, StaticLiquidity)> {
     let xnas = venue("XNAS");
     let mut graph = ArbitrageGraph::new();
-    graph.register_venue(xnas.clone(), VenueFacts::new(VenueClass::Exchange, VenueStatus::Open));
+    graph.register_venue(
+        xnas.clone(),
+        VenueFacts::new(VenueClass::Exchange, VenueStatus::Open),
+    );
 
     let components = vec![
         SyntheticComponent {
@@ -324,17 +415,35 @@ fn synthetic_basket() -> Result<(ArbitrageGraph, StaticLiquidity)> {
     let depth = StaticLiquidity::new()
         .with_book(
             xnas.clone(),
-            book("ALPHA", "XNAS", &[("9.95", "10000")], &[("10.05", "10000")], at()),
+            book(
+                "ALPHA",
+                "XNAS",
+                &[("9.95", "10000")],
+                &[("10.05", "10000")],
+                at(),
+            ),
             12,
         )
         .with_book(
             xnas.clone(),
-            book("BETA", "XNAS", &[("19.90", "10000")], &[("20.10", "10000")], at()),
+            book(
+                "BETA",
+                "XNAS",
+                &[("19.90", "10000")],
+                &[("20.10", "10000")],
+                at(),
+            ),
             12,
         )
         .with_book(
             xnas,
-            book("BASKET", "XNAS", &[("40.60", "1000")], &[("40.80", "1000")], at()),
+            book(
+                "BASKET",
+                "XNAS",
+                &[("40.60", "1000")],
+                &[("40.80", "1000")],
+                at(),
+            ),
             12,
         );
     Ok((graph, depth))
@@ -438,7 +547,10 @@ fn a_path_that_pays_on_mid_prices_is_refused_once_the_book_is_walked() -> Result
     );
 
     let pricing = price_path(&graph, &depth, &candidates[0], d("10000"))?;
-    assert!(pricing.is_fully_available(), "depth is not the problem here");
+    assert!(
+        pricing.is_fully_available(),
+        "depth is not the problem here"
+    );
     assert!(
         pricing.indicative_gross_edge() > Decimal::ZERO,
         "profitable on mids"
@@ -475,12 +587,8 @@ fn sweeping_more_than_the_book_holds_never_reports_a_full_fill() -> Result<()> {
 #[test]
 fn a_path_larger_than_the_book_is_refused_rather_than_extrapolated() -> Result<()> {
     let (graph, depth) = liquid_triangular()?;
-    let report = scanner("100000000").scan(
-        &graph,
-        &depth,
-        &SizePolicy::uniform(d("10000000")),
-        at(),
-    );
+    let report =
+        scanner("100000000").scan(&graph, &depth, &SizePolicy::uniform(d("10000000")), at());
     assert!(report.opportunities.is_empty());
     assert_eq!(report.rejected_at(RejectionStage::Depth).len(), 1);
     Ok(())
@@ -614,17 +722,35 @@ fn the_uncertainty_haircut_grows_as_the_evidence_thins() -> Result<()> {
         let depth = StaticLiquidity::new()
             .with_book(
                 cx.clone(),
-                book("ETHUSDT", "CX", &[("3000.0", "200")], &[("3000.1", "200")], at()),
+                book(
+                    "ETHUSDT",
+                    "CX",
+                    &[("3000.0", "200")],
+                    &[("3000.1", "200")],
+                    at(),
+                ),
                 observations,
             )
             .with_book(
                 cx.clone(),
-                book("ETHBTC", "CX", &[("0.0505", "200")], &[("0.05051", "200")], at()),
+                book(
+                    "ETHBTC",
+                    "CX",
+                    &[("0.0505", "200")],
+                    &[("0.05051", "200")],
+                    at(),
+                ),
                 observations,
             )
             .with_book(
                 cx,
-                book("BTCUSDT", "CX", &[("60000", "10")], &[("60001", "10")], at()),
+                book(
+                    "BTCUSDT",
+                    "CX",
+                    &[("60000", "10")],
+                    &[("60001", "10")],
+                    at(),
+                ),
                 observations,
             );
         let pricing = price_path(&graph, &depth, &candidates[0], d("10000"))?;
@@ -800,7 +926,10 @@ fn a_synthetic_against_its_components_is_found_as_a_cross_instrument_path() -> R
 #[test]
 fn a_halted_venue_never_appears_in_a_candidate() -> Result<()> {
     let (mut graph, depth) = liquid_triangular()?;
-    assert_eq!(search_candidates(&graph, &SearchSettings::default()).len(), 1);
+    assert_eq!(
+        search_candidates(&graph, &SearchSettings::default()).len(),
+        1
+    );
 
     graph.register_venue(
         venue("CX"),

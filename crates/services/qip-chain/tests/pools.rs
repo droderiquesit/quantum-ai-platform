@@ -4,13 +4,15 @@
 //! than against recorded outputs: a golden number proves the code still does
 //! what it did, while the invariant proves it does what the pool does.
 
-use qip_chain::amm::{constant_product_holds, FeeBps, FeeSide, Pool, PoolCurve, PoolId, PoolInvariant};
-use qip_chain::block::{Address, Block, BlockNumber, ChainId, Hash32, BlockHash, TxHash};
+use qip_chain::amm::{
+    FeeBps, FeeSide, Pool, PoolCurve, PoolId, PoolInvariant, constant_product_holds,
+};
+use qip_chain::block::{Address, Block, BlockHash, BlockNumber, ChainId, Hash32, TxHash};
 use qip_chain::bridge::{
     BridgeFailure, BridgeLedger, BridgeRoute, BridgeTransfer, TransferId, TransferStatus,
 };
 use qip_chain::finality::{Confirmations, Finality};
-use qip_chain::gas::{effective_gas_price, GasCost, GasProfile};
+use qip_chain::gas::{GasCost, GasProfile, effective_gas_price};
 use qip_chain::mempool::{Mempool, PendingTransaction};
 use qip_chain::units::TokenAmount;
 use qip_contracts::{BookSide, DeductionKind, VenueClass, VenueId};
@@ -325,8 +327,14 @@ fn an_eighteen_decimal_amount_reports_the_precision_it_cannot_represent() {
     let converted = amount.to_decimal().expect("within range");
     assert!(!converted.is_exact(), "nine digits were dropped");
     assert_eq!(converted.residual(), 234_567_891);
-    assert_eq!(converted.truncated(), Decimal::parse("1.234567891").expect("parses"));
-    assert_eq!(converted.rounded(), Decimal::parse("1.234567891").expect("parses"));
+    assert_eq!(
+        converted.truncated(),
+        Decimal::parse("1.234567891").expect("parses")
+    );
+    assert_eq!(
+        converted.rounded(),
+        Decimal::parse("1.234567891").expect("parses")
+    );
 
     let error = converted
         .require_exact()
@@ -356,7 +364,10 @@ fn rounding_half_away_from_zero_is_visible_rather_than_silent() {
     let amount = TokenAmount::new(1_500_000_005, 10).expect("ten decimals");
     let converted = amount.to_decimal().expect("within range");
     assert!(!converted.is_exact());
-    assert_eq!(converted.truncated(), Decimal::parse("0.15").expect("parses"));
+    assert_eq!(
+        converted.truncated(),
+        Decimal::parse("0.15").expect("parses")
+    );
     assert_eq!(
         converted.rounded(),
         Decimal::parse("0.150000001").expect("parses")
@@ -398,7 +409,8 @@ fn every_exact_multiple_survives_a_conversion_round_trip() {
                 // A whole number of nano-units is exactly representable at any
                 // decimal exponent of nine or more.
                 let scale = 10i128.pow(u32::from(*decimals) - 9);
-                let amount = TokenAmount::new(units * scale, *decimals).map_err(|e| e.to_string())?;
+                let amount =
+                    TokenAmount::new(units * scale, *decimals).map_err(|e| e.to_string())?;
                 let converted = amount.to_decimal().map_err(|e| e.to_string())?;
                 let value = converted.require_exact().map_err(|e| e.to_string())?;
                 let back = TokenAmount::quantise(value, *decimals)
@@ -421,8 +433,8 @@ fn gas_becomes_a_funding_deduction_in_the_quote_currency() {
     // 25 gwei, with the native token at 2,000 quote units.
     let price_per_gas = Decimal::from_raw(25);
     let native_price = Decimal::from_int(2_000);
-    let cost = GasCost::estimate(&profile, price_per_gas, native_price, Currency::USD)
-        .expect("priceable");
+    let cost =
+        GasCost::estimate(&profile, price_per_gas, native_price, Currency::USD).expect("priceable");
 
     assert_eq!(cost.native_cost, Decimal::parse("0.0035").expect("parses"));
     assert_eq!(cost.cost.amount, Decimal::from_int(7));
@@ -453,14 +465,12 @@ fn gas_becomes_a_funding_deduction_in_the_quote_currency() {
 fn a_fee_ceiling_below_the_base_fee_is_not_a_price_but_an_exclusion() {
     let base = Decimal::from_raw(30);
     assert_eq!(
-        effective_gas_price(base, Decimal::from_raw(50), Decimal::from_raw(2))
-            .expect("includable"),
+        effective_gas_price(base, Decimal::from_raw(50), Decimal::from_raw(2)).expect("includable"),
         Decimal::from_raw(32),
         "the transaction pays base plus tip when its ceiling allows"
     );
     assert_eq!(
-        effective_gas_price(base, Decimal::from_raw(31), Decimal::from_raw(5))
-            .expect("includable"),
+        effective_gas_price(base, Decimal::from_raw(31), Decimal::from_raw(5)).expect("includable"),
         Decimal::from_raw(31),
         "the ceiling caps the price"
     );
@@ -485,11 +495,8 @@ fn pending(label: &str, sender: &str, nonce: u64, tip: i128, at: Timestamp) -> P
 }
 
 fn mempool() -> Mempool {
-    Mempool::new(
-        VenueId::new("TEST-DEX"),
-        VenueClass::DecentralisedExchange,
-    )
-    .expect("a chain venue has a mempool")
+    Mempool::new(VenueId::new("TEST-DEX"), VenueClass::DecentralisedExchange)
+        .expect("a chain venue has a mempool")
 }
 
 #[test]
@@ -519,7 +526,9 @@ fn the_predicted_ordering_cannot_be_read_without_acknowledging_it_can_change() {
     assert!(risk.can_be_front_run());
     assert_eq!(risk.worst_case_position(), 2, "three transactions compete");
 
-    let sequence = ordering.sequence(&risk).expect("the matching risk unlocks it");
+    let sequence = ordering
+        .sequence(&risk)
+        .expect("the matching risk unlocks it");
     let tips: Vec<Decimal> = sequence.iter().map(|entry| entry.tip).collect();
     assert_eq!(
         tips,
@@ -648,7 +657,11 @@ fn a_bridged_position_is_visible_as_exposure_until_it_is_credited() {
     let exposures = ledger.exposures(at.saturating_add(Duration::from_mins(5)));
     assert_eq!(exposures.len(), 1, "an in-flight transfer is a position");
     assert_eq!(exposures[0].amount, Decimal::from_int(100));
-    assert!(exposures[0].failure_modes.contains(&BridgeFailure::SourceReorg));
+    assert!(
+        exposures[0]
+            .failure_modes
+            .contains(&BridgeFailure::SourceReorg)
+    );
     assert_eq!(
         ledger
             .exposure_by_object(at)
@@ -679,7 +692,9 @@ fn a_bridged_position_is_visible_as_exposure_until_it_is_credited() {
         "the route's fee comes out of the delivered amount"
     );
     assert!(
-        ledger.exposures(at.saturating_add(Duration::from_mins(11))).is_empty(),
+        ledger
+            .exposures(at.saturating_add(Duration::from_mins(11)))
+            .is_empty(),
         "a credited transfer is no longer an exposure"
     );
 }
@@ -689,7 +704,10 @@ fn a_transfer_cannot_be_credited_before_its_source_side_is_confirmed() {
     let at = Timestamp::from_secs(1_700_000_000);
     let mut held = transfer(at);
     let error = held
-        .credit(at.saturating_add(Duration::from_mins(1)), BlockNumber::new(400))
+        .credit(
+            at.saturating_add(Duration::from_mins(1)),
+            BlockNumber::new(400),
+        )
         .expect_err("crediting an unconfirmed transfer must be refused");
     assert_eq!(error.code(), "denied");
     assert!(error.message().contains("12 confirmations"));

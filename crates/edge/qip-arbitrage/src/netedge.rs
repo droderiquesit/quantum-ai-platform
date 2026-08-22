@@ -251,7 +251,8 @@ impl NetEdgeCalculator {
             self.assumptions.collateral_fraction_f64.max(1.0)
         };
         let years_f64 = self.assumptions.holding_period.as_years_f64().max(0.0);
-        let cost_f64 = posted_f64 * self.assumptions.collateral_rate_annual_f64.max(0.0) * years_f64;
+        let cost_f64 =
+            posted_f64 * self.assumptions.collateral_rate_annual_f64.max(0.0) * years_f64;
         let fraction = from_statistic(cost_f64, "collateral cost")?;
         mul(size, fraction.max(Decimal::ZERO), "collateral deduction")
     }
@@ -284,7 +285,10 @@ impl NetEdgeCalculator {
         // Nothing to discount when the estimate is already a loss; the path is
         // refused on its own numbers rather than on its confidence.
         let exposed = before_uncertainty.max(Decimal::ZERO);
-        Ok((mul(exposed, haircut, "uncertainty deduction")?, confidence_f64))
+        Ok((
+            mul(exposed, haircut, "uncertainty deduction")?,
+            confidence_f64,
+        ))
     }
 }
 

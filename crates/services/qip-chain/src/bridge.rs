@@ -94,6 +94,9 @@ pub struct BridgeRoute {
 }
 
 impl BridgeRoute {
+    /// Refuses a route to the chain it starts on, and one whose timeout is
+    /// shorter than the latency it expects — both make the exposure
+    /// unmeasurable.
     pub fn new(
         name: impl Into<String>,
         source: ChainId,
@@ -190,6 +193,8 @@ pub struct BridgeTransfer {
 }
 
 impl BridgeTransfer {
+    /// Begin a transfer, which starts out waiting for the source side to
+    /// confirm rather than in flight.
     pub fn open(
         id: TransferId,
         route: BridgeRoute,
@@ -261,6 +266,8 @@ impl BridgeTransfer {
         }
     }
 
+    /// Record a failure. Only an open transfer can fail; one already credited
+    /// has to be unwound as a new transfer rather than edited into one.
     pub fn fail(&mut self, at: Timestamp, failure: BridgeFailure) -> Result<()> {
         if !self.status.is_open() {
             return Err(Error::denied(format!(
@@ -363,9 +370,7 @@ impl BridgeLedger {
                 continue;
             }
             if reorg.reverted.contains(&transfer.source_hash)
-                && transfer
-                    .fail(now, BridgeFailure::SourceReorg)
-                    .is_ok()
+                && transfer.fail(now, BridgeFailure::SourceReorg).is_ok()
             {
                 failed.push(transfer.id.clone());
             }

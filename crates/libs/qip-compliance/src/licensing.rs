@@ -20,8 +20,8 @@
 //! research-only. Without that, laundering a licence takes one `map`.
 
 use qip_contracts::governance::{Entitlement, Usage};
-use qip_core::error::{Error, Result};
 use qip_core::Timestamp;
+use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -131,10 +131,15 @@ impl EntitlementRegistry {
 
     /// Every usage a dataset is licensed for right now.
     pub fn permitted_usages(&self, dataset: &str, now: Timestamp) -> Vec<Usage> {
-        [Usage::Research, Usage::Derive, Usage::Trade, Usage::Redistribute]
-            .into_iter()
-            .filter(|u| self.permits(dataset, *u, now))
-            .collect()
+        [
+            Usage::Research,
+            Usage::Derive,
+            Usage::Trade,
+            Usage::Redistribute,
+        ]
+        .into_iter()
+        .filter(|u| self.permits(dataset, *u, now))
+        .collect()
     }
 
     /// Decide a use and record the decision.

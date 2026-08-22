@@ -57,7 +57,11 @@ fn there_is_no_way_to_read_the_value_without_stating_a_usage() -> Result<()> {
     let signal = LicensedData::from_dataset("vendor.sentiment", 7_i64);
 
     assert_eq!(signal.dataset(), "vendor.sentiment");
-    assert!(signal.into_inner(&mut registry, Usage::Trade, now()).is_err());
+    assert!(
+        signal
+            .into_inner(&mut registry, Usage::Trade, now())
+            .is_err()
+    );
     Ok(())
 }
 
@@ -133,7 +137,12 @@ fn a_dataset_nobody_recorded_a_licence_for_is_treated_as_unlicensed() -> Result<
     let mut registry = research_only_registry()?;
     let mystery = LicensedData::from_dataset("scraped.forum_posts", 1_i64);
 
-    for usage in [Usage::Research, Usage::Derive, Usage::Trade, Usage::Redistribute] {
+    for usage in [
+        Usage::Research,
+        Usage::Derive,
+        Usage::Trade,
+        Usage::Redistribute,
+    ] {
         let error = mystery
             .open(&mut registry, usage, now())
             .expect_err("an unrecorded dataset permits nothing");

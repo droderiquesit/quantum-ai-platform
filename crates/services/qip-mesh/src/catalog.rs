@@ -13,8 +13,8 @@
 
 use crate::provider::MeshPort;
 use qip_contracts::governance::{Entitlement, Usage};
-use qip_core::error::{Error, Result};
 use qip_core::Timestamp;
+use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -30,9 +30,15 @@ pub enum QualityState {
         checks: Vec<String>,
     },
     /// Known to be imperfect but still usable, with the caveat recorded.
-    Degraded { since: Timestamp, reason: String },
+    Degraded {
+        since: Timestamp,
+        reason: String,
+    },
     /// Not usable. Something is wrong that has not been characterised.
-    Quarantined { since: Timestamp, reason: String },
+    Quarantined {
+        since: Timestamp,
+        reason: String,
+    },
 }
 
 impl QualityState {
@@ -140,7 +146,10 @@ pub struct LineageBreak {
 
 impl LineageBreak {
     pub fn describe(&self) -> String {
-        format!("`{}` claims a parent `{}` that is not registered", self.referenced_by, self.missing)
+        format!(
+            "`{}` claims a parent `{}` that is not registered",
+            self.referenced_by, self.missing
+        )
     }
 }
 
