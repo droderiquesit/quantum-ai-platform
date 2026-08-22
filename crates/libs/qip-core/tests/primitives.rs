@@ -144,7 +144,8 @@ fn id_generation_is_deterministic_and_collision_free() {
         let idgen = IdGenerator::new(99);
         (0..1000)
             .map(|i| {
-                idgen.generate::<qip_core::ids::OrderKind>(Timestamp::from_millis(i))
+                idgen
+                    .generate::<qip_core::ids::OrderKind>(Timestamp::from_millis(i))
                     .into_string()
             })
             .collect::<Vec<_>>()
@@ -168,10 +169,16 @@ fn money_refuses_to_add_across_currencies() {
 
 #[test]
 fn money_rounds_to_currency_minor_units() {
-    let jpy = Money::new(Decimal::parse("1234.56").unwrap(), Currency::parse("JPY").unwrap());
+    let jpy = Money::new(
+        Decimal::parse("1234.56").unwrap(),
+        Currency::parse("JPY").unwrap(),
+    );
     assert_eq!(jpy.round_to_minor().amount, Decimal::from_int(1235));
     let usd = Money::usd(Decimal::parse("1234.567").unwrap());
-    assert_eq!(usd.round_to_minor().amount, Decimal::parse("1234.57").unwrap());
+    assert_eq!(
+        usd.round_to_minor().amount,
+        Decimal::parse("1234.57").unwrap()
+    );
 }
 
 #[test]
@@ -196,15 +203,20 @@ fn money_conversion_records_an_explicit_rate() {
 
 #[test]
 fn config_layers_file_then_environment() {
-    let base = Config::from_json(r#"{"risk":{"max_leverage":1.5,"max_position":100},"env":"local"}"#)
-        .unwrap();
+    let base =
+        Config::from_json(r#"{"risk":{"max_leverage":1.5,"max_position":100},"env":"local"}"#)
+            .unwrap();
     let merged = base.with_env_from(vec![
         ("QIP_RISK__MAX_LEVERAGE".to_string(), "2.5".to_string()),
         ("QIP_RISK__KILL_SWITCH".to_string(), "true".to_string()),
         ("UNRELATED".to_string(), "ignored".to_string()),
     ]);
     assert_eq!(merged.get_f64("risk.max_leverage"), Some(2.5));
-    assert_eq!(merged.get_i64("risk.max_position"), Some(100), "untouched keys survive");
+    assert_eq!(
+        merged.get_i64("risk.max_position"),
+        Some(100),
+        "untouched keys survive"
+    );
     assert_eq!(merged.get_bool("risk.kill_switch"), Some(true));
     assert_eq!(merged.get_str("env"), Some("local"));
     assert!(merged.get("nope.missing").is_none());

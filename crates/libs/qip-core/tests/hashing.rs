@@ -1,8 +1,6 @@
 //! SHA-256 against FIPS 180-4 and HMAC-SHA256 against RFC 4231.
 
-use qip_core::hash::{
-    Hasher256, constant_time_eq, from_hex, hmac_sha256, sha256_hex, to_hex,
-};
+use qip_core::hash::{Hasher256, constant_time_eq, from_hex, hmac_sha256, sha256_hex, to_hex};
 
 #[test]
 fn sha256_matches_fips_180_4_vectors() {

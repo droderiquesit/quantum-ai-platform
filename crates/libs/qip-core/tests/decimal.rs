@@ -1,13 +1,26 @@
 //! Exactness and rounding guarantees for the money type.
 
+// Exact float comparison is deliberate here: these assertions cover degenerate
+// cases and identities where the function must return an exact sentinel value,
+// not merely something close to it.
+#![allow(clippy::float_cmp)]
+
 use qip_core::decimal::{Decimal, SCALE};
 use qip_core::testing::{Property, any_decimal, any_positive_decimal, any_small_decimal};
 
 #[test]
 fn parses_and_renders_round_trip() {
     for text in [
-        "0", "1", "-1", "0.1", "-0.1", "123.456789", "0.000000001", "-0.000000001",
-        "1000000.000000001", "-99999.5",
+        "0",
+        "1",
+        "-1",
+        "0.1",
+        "-0.1",
+        "123.456789",
+        "0.000000001",
+        "-0.000000001",
+        "1000000.000000001",
+        "-99999.5",
     ] {
         let d = Decimal::parse(text).expect("parse");
         assert_eq!(d.to_string(), text, "round trip failed for {text}");
@@ -16,7 +29,9 @@ fn parses_and_renders_round_trip() {
 
 #[test]
 fn parse_rejects_malformed_input() {
-    for text in ["", " ", "abc", "1.2.3", "1e5", "--1", "1..2", "+", "-", "1,000", "0x1f"] {
+    for text in [
+        "", " ", "abc", "1.2.3", "1e5", "--1", "1..2", "+", "-", "1,000", "0x1f",
+    ] {
         assert!(Decimal::parse(text).is_none(), "should reject {text:?}");
     }
 }
@@ -32,9 +47,15 @@ fn parse_normalises_equivalent_spellings() {
 #[test]
 fn parse_rounds_beyond_nine_digits() {
     // Half away from zero at the tenth fractional digit.
-    assert_eq!(Decimal::parse("0.0000000005").unwrap(), Decimal::from_raw(1));
+    assert_eq!(
+        Decimal::parse("0.0000000005").unwrap(),
+        Decimal::from_raw(1)
+    );
     assert_eq!(Decimal::parse("0.0000000004").unwrap(), Decimal::ZERO);
-    assert_eq!(Decimal::parse("-0.0000000005").unwrap(), Decimal::from_raw(-1));
+    assert_eq!(
+        Decimal::parse("-0.0000000005").unwrap(),
+        Decimal::from_raw(-1)
+    );
 }
 
 #[test]
@@ -71,7 +92,12 @@ fn multiplication_matches_known_values() {
 
 #[test]
 fn division_matches_known_values() {
-    let cases = [("6", "3", "2"), ("1", "8", "0.125"), ("-9", "3", "-3"), ("1", "3", "0.333333333")];
+    let cases = [
+        ("6", "3", "2"),
+        ("1", "8", "0.125"),
+        ("-9", "3", "-3"),
+        ("1", "3", "0.333333333"),
+    ];
     for (a, b, expected) in cases {
         let got = Decimal::parse(a).unwrap() / Decimal::parse(b).unwrap();
         assert_eq!(got, Decimal::parse(expected).unwrap(), "{a} / {b}");
@@ -96,22 +122,38 @@ fn rounding_is_half_away_from_zero() {
     ];
     for (input, digits, expected) in cases {
         let got = Decimal::parse(input).unwrap().round_dp(digits);
-        assert_eq!(got, Decimal::parse(expected).unwrap(), "round({input}, {digits})");
+        assert_eq!(
+            got,
+            Decimal::parse(expected).unwrap(),
+            "round({input}, {digits})"
+        );
     }
 }
 
 #[test]
 fn truncation_always_moves_toward_zero() {
-    assert_eq!(Decimal::parse("1.999").unwrap().truncate_dp(0), Decimal::from_int(1));
-    assert_eq!(Decimal::parse("-1.999").unwrap().truncate_dp(0), Decimal::from_int(-1));
+    assert_eq!(
+        Decimal::parse("1.999").unwrap().truncate_dp(0),
+        Decimal::from_int(1)
+    );
+    assert_eq!(
+        Decimal::parse("-1.999").unwrap().truncate_dp(0),
+        Decimal::from_int(-1)
+    );
 }
 
 #[test]
 fn floor_to_step_never_grows_a_position() {
     let lot = Decimal::from_int(100);
-    assert_eq!(Decimal::from_int(250).floor_to_step(lot), Decimal::from_int(200));
+    assert_eq!(
+        Decimal::from_int(250).floor_to_step(lot),
+        Decimal::from_int(200)
+    );
     // A short position rounds toward flat, not further short.
-    assert_eq!(Decimal::from_int(-250).floor_to_step(lot), Decimal::from_int(-200));
+    assert_eq!(
+        Decimal::from_int(-250).floor_to_step(lot),
+        Decimal::from_int(-200)
+    );
 }
 
 // --- properties -------------------------------------------------------------
@@ -171,7 +213,9 @@ fn property_multiply_then_divide_returns_within_one_ulp() {
             // introduced by the intermediate rounding.
             let allowed = 2 + (a.raw().abs() / SCALE.max(1)) + (b.raw().abs() / SCALE.max(1));
             if delta > allowed {
-                return Err(format!("({a} * {b}) / {b} = {round_trip}, delta {delta} > {allowed}"));
+                return Err(format!(
+                    "({a} * {b}) / {b} = {round_trip}, delta {delta} > {allowed}"
+                ));
             }
             Ok(())
         },
@@ -180,11 +224,9 @@ fn property_multiply_then_divide_returns_within_one_ulp() {
 
 #[test]
 fn property_display_parse_is_lossless() {
-    Property::new("display/parse").for_all(any_decimal, |d| {
-        match Decimal::parse(&d.to_string()) {
-            Some(back) if back == *d => Ok(()),
-            other => Err(format!("{d} -> {} -> {other:?}", d.to_string())),
-        }
+    Property::new("display/parse").for_all(any_decimal, |d| match Decimal::parse(&d.to_string()) {
+        Some(back) if back == *d => Ok(()),
+        other => Err(format!("{d} -> {} -> {other:?}", d)),
     });
 }
 
@@ -193,7 +235,11 @@ fn property_json_round_trip_is_lossless() {
     Property::new("json round trip").for_all(any_decimal, |d| {
         let text = serde_json::to_string(d).map_err(|e| e.to_string())?;
         let back: Decimal = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-        if back == *d { Ok(()) } else { Err(format!("{d} -> {text} -> {back}")) }
+        if back == *d {
+            Ok(())
+        } else {
+            Err(format!("{d} -> {text} -> {back}"))
+        }
     });
 }
 
@@ -205,7 +251,9 @@ fn property_rounding_never_moves_more_than_half_a_step() {
             let step = 10i128.pow(9 - digits);
             let delta = (rounded.raw() - d.raw()).abs();
             if delta * 2 > step {
-                return Err(format!("round_dp({d}, {digits}) moved {delta} > half of {step}"));
+                return Err(format!(
+                    "round_dp({d}, {digits}) moved {delta} > half of {step}"
+                ));
             }
         }
         Ok(())

@@ -26,7 +26,12 @@ pub use config::{Config, ConfigError};
 pub use decimal::Decimal;
 pub use error::{Error, Result};
 pub use hash::{Hasher256, hmac_sha256, sha256, sha256_hex};
-pub use ids::{Id, IdGenerator};
+pub use ids::{
+    AgentRunId, AnomalyId, AttributionId, AuditId, ChallengeId, DecisionId, EntityId, EventId,
+    EvidenceId, ExecutionId, FillId, HypothesisId, Id, IdGenerator, JobId, LessonId, ModelId,
+    ObjectId, OpportunityId, OptimizationId, OrderId, PortfolioId, PositionId, ProposalId,
+    RequestId, ScenarioId, SignalId, SimulationId, StrategyId,
+};
 pub use lineage::{CausationId, CorrelationId, Lineage, TraceId};
 pub use money::{Currency, Money};
 pub use rng::{Rng, Xoshiro256};

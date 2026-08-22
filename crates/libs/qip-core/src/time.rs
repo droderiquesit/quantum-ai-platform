@@ -335,7 +335,9 @@ pub struct ManualClock {
 
 impl ManualClock {
     pub fn new(start: Timestamp) -> Self {
-        Self { nanos: AtomicI64::new(start.as_nanos()) }
+        Self {
+            nanos: AtomicI64::new(start.as_nanos()),
+        }
     }
 
     pub fn advance(&self, d: Duration) {
@@ -366,7 +368,9 @@ pub struct MonotonicClock {
 
 impl MonotonicClock {
     pub fn new(start: Timestamp) -> Self {
-        Self { inner: Mutex::new(start.as_nanos()) }
+        Self {
+            inner: Mutex::new(start.as_nanos()),
+        }
     }
 }
 

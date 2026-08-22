@@ -96,7 +96,10 @@ impl Lineage {
 
     /// Continue the chain from the same parent but a different producer.
     pub fn relabel(&self, producer: impl Into<String>) -> Self {
-        Self { producer: producer.into(), ..self.clone() }
+        Self {
+            producer: producer.into(),
+            ..self.clone()
+        }
     }
 
     pub fn with_trace(mut self, trace: TraceId) -> Self {

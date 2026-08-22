@@ -25,7 +25,11 @@ fn known_dates_convert_correctly() {
         (2026, 8, 22, 20687),
     ];
     for (y, m, d, days) in cases {
-        assert_eq!(days_from_civil(y, m, d), days, "days_from_civil({y},{m},{d})");
+        assert_eq!(
+            days_from_civil(y, m, d),
+            days,
+            "days_from_civil({y},{m},{d})"
+        );
         assert_eq!(civil_from_days(days), (y, m, d), "civil_from_days({days})");
     }
 }
@@ -40,7 +44,10 @@ fn property_civil_date_round_trips() {
         |days| {
             let (y, m, d) = civil_from_days(*days);
             if days_from_civil(y, m, d) != *days {
-                return Err(format!("{days} -> {y}-{m}-{d} -> {}", days_from_civil(y, m, d)));
+                return Err(format!(
+                    "{days} -> {y}-{m}-{d} -> {}",
+                    days_from_civil(y, m, d)
+                ));
             }
             if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
                 return Err(format!("out of range: {y}-{m}-{d}"));
@@ -70,15 +77,27 @@ fn rfc3339_accepts_shorter_forms() {
         Timestamp::from_civil(2026, 8, 22)
     );
     assert_eq!(
-        Timestamp::parse_rfc3339("2026-08-22T10:00:00").unwrap().to_rfc3339(),
+        Timestamp::parse_rfc3339("2026-08-22T10:00:00")
+            .unwrap()
+            .to_rfc3339(),
         "2026-08-22T10:00:00.000Z"
     );
 }
 
 #[test]
 fn rfc3339_rejects_malformed_input() {
-    for text in ["", "not-a-date", "2026-13-01", "2026-00-10", "2026-01-99", "2026/01/01"] {
-        assert!(Timestamp::parse_rfc3339(text).is_none(), "should reject {text:?}");
+    for text in [
+        "",
+        "not-a-date",
+        "2026-13-01",
+        "2026-00-10",
+        "2026-01-99",
+        "2026/01/01",
+    ] {
+        assert!(
+            Timestamp::parse_rfc3339(text).is_none(),
+            "should reject {text:?}"
+        );
     }
 }
 
@@ -90,7 +109,11 @@ fn property_timestamp_serde_round_trips_to_the_millisecond() {
         // RFC 3339 rendering keeps milliseconds, so sub-millisecond detail is
         // deliberately dropped on the wire.
         let expected = Timestamp::from_millis(t.as_millis());
-        if back == expected { Ok(()) } else { Err(format!("{t:?} -> {text} -> {back:?}")) }
+        if back == expected {
+            Ok(())
+        } else {
+            Err(format!("{t:?} -> {text} -> {back:?}"))
+        }
     });
 }
 
@@ -126,7 +149,11 @@ fn manual_clock_only_moves_forward() {
     clock.advance(Duration::from_hours(2));
     assert_eq!(clock.now().since(start), Duration::from_hours(2));
     clock.set(Timestamp::from_civil(2020, 1, 1));
-    assert_eq!(clock.now(), start.saturating_add(Duration::from_hours(2)), "must not rewind");
+    assert_eq!(
+        clock.now(),
+        start.saturating_add(Duration::from_hours(2)),
+        "must not rewind"
+    );
 }
 
 #[test]

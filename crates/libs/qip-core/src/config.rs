@@ -42,7 +42,14 @@ impl From<ConfigError> for crate::Error {
 }
 
 /// Keys whose values are masked wherever configuration is displayed.
-const SECRET_MARKERS: [&str; 6] = ["secret", "token", "password", "key", "credential", "api_key"];
+const SECRET_MARKERS: [&str; 6] = [
+    "secret",
+    "token",
+    "password",
+    "key",
+    "credential",
+    "api_key",
+];
 
 /// A merged configuration tree.
 #[derive(Debug, Clone, Default)]
@@ -141,7 +148,10 @@ impl Config {
         self.get(key)
             .ok_or_else(|| ConfigError::Missing(key.to_string()))?
             .as_str()
-            .ok_or(ConfigError::Type { key: key.to_string(), expected: "a string" })
+            .ok_or(ConfigError::Type {
+                key: key.to_string(),
+                expected: "a string",
+            })
     }
 
     /// Deserialize a subtree into a typed section.
@@ -239,9 +249,7 @@ fn parse_scalar(raw: &str) -> Value {
     }
     let looks_structured = (raw.starts_with('[') && raw.ends_with(']'))
         || (raw.starts_with('{') && raw.ends_with('}'));
-    if looks_structured
-        && let Ok(v) = serde_json::from_str::<Value>(raw)
-    {
+    if looks_structured && let Ok(v) = serde_json::from_str::<Value>(raw) {
         return v;
     }
     Value::String(raw.to_string())
@@ -264,7 +272,11 @@ fn redact_object(obj: &mut Map<String, Value>) {
 
 fn flatten_into(obj: &Map<String, Value>, prefix: String, out: &mut BTreeMap<String, Value>) {
     for (k, v) in obj {
-        let key = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
+        let key = if prefix.is_empty() {
+            k.clone()
+        } else {
+            format!("{prefix}.{k}")
+        };
         match v {
             Value::Object(inner) => flatten_into(inner, key, out),
             other => {

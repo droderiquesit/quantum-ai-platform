@@ -49,7 +49,10 @@ pub struct Id<K: IdKind> {
 impl<K: IdKind> Id<K> {
     /// Wrap an existing string. Used when reading persisted records.
     pub fn from_string(value: impl Into<String>) -> Self {
-        Self { value: value.into(), _kind: PhantomData }
+        Self {
+            value: value.into(),
+            _kind: PhantomData,
+        }
     }
 
     pub fn as_str(&self) -> &str {
@@ -74,7 +77,10 @@ impl<K: IdKind> Id<K> {
 
 impl<K: IdKind> Clone for Id<K> {
     fn clone(&self) -> Self {
-        Self { value: self.value.clone(), _kind: PhantomData }
+        Self {
+            value: self.value.clone(),
+            _kind: PhantomData,
+        }
     }
 }
 
@@ -134,7 +140,9 @@ pub struct IdGenerator {
 
 impl IdGenerator {
     pub fn new(seed: u64) -> Self {
-        Self { rng: Mutex::new(Xoshiro256::seeded(seed)) }
+        Self {
+            rng: Mutex::new(Xoshiro256::seeded(seed)),
+        }
     }
 
     /// Mint an id stamped with `at`.

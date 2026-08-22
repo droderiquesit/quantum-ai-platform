@@ -187,7 +187,11 @@ impl Decimal {
         let factor = 10i128.pow(SCALE_DIGITS - digits);
         let q = self.0 / factor;
         let r = (self.0 % factor).abs();
-        let bump = if r * 2 >= factor { i128::from(self.signum()) } else { 0 };
+        let bump = if r * 2 >= factor {
+            i128::from(self.signum())
+        } else {
+            0
+        };
         Self((q + bump) * factor)
     }
 

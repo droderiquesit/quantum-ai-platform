@@ -37,7 +37,12 @@ impl Default for Hasher256 {
 
 impl Hasher256 {
     pub fn new() -> Self {
-        Self { state: INIT, buffer: [0u8; 64], buffered: 0, length_bits: 0 }
+        Self {
+            state: INIT,
+            buffer: [0u8; 64],
+            buffered: 0,
+            length_bits: 0,
+        }
     }
 
     pub fn update(&mut self, mut data: &[u8]) {
@@ -194,7 +199,7 @@ pub fn to_hex(bytes: &[u8]) -> String {
 
 /// Decode lowercase or uppercase hex. `None` on any non-hex input.
 pub fn from_hex(s: &str) -> Option<Vec<u8>> {
-    if !s.len().is_multiple_of(2) {
+    if s.len() % 2 != 0 {
         return None;
     }
     let bytes = s.as_bytes();

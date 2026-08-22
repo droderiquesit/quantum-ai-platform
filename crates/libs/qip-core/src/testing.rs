@@ -19,7 +19,11 @@ pub struct Property {
 
 impl Property {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), seed: 0x5EED_1234_ABCD_0001, cases: 512 }
+        Self {
+            name: name.into(),
+            seed: 0x5EED_1234_ABCD_0001,
+            cases: 512,
+        }
     }
 
     pub fn seed(mut self, seed: u64) -> Self {

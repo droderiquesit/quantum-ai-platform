@@ -141,7 +141,9 @@ impl Xoshiro256 {
     /// even seeds 0, 1, 2 produce well-separated streams.
     pub fn seeded(seed: u64) -> Self {
         let mut sm = SplitMix64 { state: seed };
-        Self { s: [sm.next(), sm.next(), sm.next(), sm.next()] }
+        Self {
+            s: [sm.next(), sm.next(), sm.next(), sm.next()],
+        }
     }
 
     /// Derive an independent stream from this one, for a sub-component.

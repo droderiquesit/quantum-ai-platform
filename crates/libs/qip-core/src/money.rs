@@ -30,7 +30,10 @@ impl Currency {
     pub const CAD: Self = Self::literal(b"CAD");
 
     const fn literal(code: &[u8; 3]) -> Self {
-        Self { code: [code[0], code[1], code[2], 0], len: 3 }
+        Self {
+            code: [code[0], code[1], code[2], 0],
+            len: 3,
+        }
     }
 
     /// Parse a 2-to-4 character alphanumeric code, upper-cased.
@@ -43,7 +46,10 @@ impl Currency {
         for (i, b) in s.bytes().enumerate() {
             code[i] = b.to_ascii_uppercase();
         }
-        Ok(Self { code, len: s.len() as u8 })
+        Ok(Self {
+            code,
+            len: s.len() as u8,
+        })
     }
 
     pub fn as_str(&self) -> &str {
@@ -105,11 +111,17 @@ impl Money {
     }
 
     pub fn zero(currency: Currency) -> Self {
-        Self { amount: Decimal::ZERO, currency }
+        Self {
+            amount: Decimal::ZERO,
+            currency,
+        }
     }
 
     pub fn usd(amount: Decimal) -> Self {
-        Self { amount, currency: Currency::USD }
+        Self {
+            amount,
+            currency: Currency::USD,
+        }
     }
 
     pub fn is_zero(&self) -> bool {
@@ -119,30 +131,51 @@ impl Money {
     /// Add, rejecting a currency mismatch instead of silently coercing.
     pub fn checked_add(self, rhs: Self) -> Result<Self> {
         self.require_same(rhs)?;
-        Ok(Self { amount: self.amount + rhs.amount, currency: self.currency })
+        Ok(Self {
+            amount: self.amount + rhs.amount,
+            currency: self.currency,
+        })
     }
 
     pub fn checked_sub(self, rhs: Self) -> Result<Self> {
         self.require_same(rhs)?;
-        Ok(Self { amount: self.amount - rhs.amount, currency: self.currency })
+        Ok(Self {
+            amount: self.amount - rhs.amount,
+            currency: self.currency,
+        })
     }
 
     /// Scale by a dimensionless factor (a quantity, a weight, a ratio).
     pub fn scale(self, factor: Decimal) -> Self {
-        Self { amount: self.amount * factor, currency: self.currency }
+        Self {
+            amount: self.amount * factor,
+            currency: self.currency,
+        }
     }
 
-    pub fn neg(self) -> Self {
-        Self { amount: -self.amount, currency: self.currency }
+    /// Flip the sign. Named to avoid shadowing `std::ops::Neg::neg`, which
+    /// `Money` deliberately does not implement — negating an amount should be
+    /// an explicit act, not an operator that hides a sign error.
+    pub fn negated(self) -> Self {
+        Self {
+            amount: -self.amount,
+            currency: self.currency,
+        }
     }
 
     pub fn abs(self) -> Self {
-        Self { amount: self.amount.abs(), currency: self.currency }
+        Self {
+            amount: self.amount.abs(),
+            currency: self.currency,
+        }
     }
 
     /// Convert at an explicit rate quoted as `to` units per one `self.currency`.
     pub fn convert(self, to: Currency, rate: Decimal) -> Self {
-        Self { amount: self.amount * rate, currency: to }
+        Self {
+            amount: self.amount * rate,
+            currency: to,
+        }
     }
 
     /// Round to the currency's conventional minor units.
