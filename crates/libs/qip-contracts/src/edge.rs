@@ -293,7 +293,7 @@ impl LegPlan {
             let entry = totals
                 .entry(step.priced_in.clone())
                 .or_insert(Decimal::ZERO);
-            *entry = *entry + step.quantity * step.reference_price;
+            *entry += step.quantity * step.reference_price;
         }
         totals.into_iter().collect()
     }
