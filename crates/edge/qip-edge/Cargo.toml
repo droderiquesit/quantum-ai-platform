@@ -15,7 +15,6 @@ qip-numerics.workspace = true
 qip-financial.workspace = true
 qip-market.workspace = true
 qip-contracts.workspace = true
-qip-compliance.workspace = true
 qip-protocols.workspace = true
 qip-sequencing.workspace = true
 qip-orderbook.workspace = true

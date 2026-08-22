@@ -168,9 +168,35 @@ fn leg(venue: &str, order: u16, optional: bool, quantity: &str) -> LegStep {
         side: BookSide::Bid,
         quantity: Decimal::parse(quantity).expect("a decimal literal"),
         reference_price: dec!("100"),
+        priced_in: object("USD"),
         order,
         optional,
     }
+}
+
+#[test]
+fn a_mixed_currency_residual_is_reported_per_unit_rather_than_as_one_sum() -> Result<()> {
+    // The number a leg-risk budget is compared against must have units. The
+    // arbitrage planner found this the hard way: a EUR leg and a USD leg
+    // summed into one figure is a screen, not a measurement.
+    let mut eur_leg = leg("XETR", 2, false, "100");
+    eur_leg.priced_in = object("EUR");
+    let plan = LegPlan::new(vec![leg("XNYS", 1, false, "100"), eur_leg])?;
+
+    let by_unit = plan.residual_by_unit(0);
+    assert_eq!(by_unit.len(), 2, "two currencies collapsed into one figure");
+    for (_, amount) in &by_unit {
+        assert_eq!(*amount, dec!("10000"));
+    }
+    // The gross screen still spans both — usable as a refusal bound, and the
+    // per-unit breakdown is where the meaning is.
+    assert_eq!(plan.residual_after(0), dec!("20000"));
+    assert_eq!(
+        plan.residual_by_unit(2),
+        Vec::new(),
+        "a finished plan holds nothing"
+    );
+    Ok(())
 }
 
 #[test]

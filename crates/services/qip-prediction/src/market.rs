@@ -329,6 +329,18 @@ pub struct EventMarket {
 }
 
 impl EventMarket {
+    /// The unit this market's contracts settle in.
+    ///
+    /// The venue does not publish a tradeable settlement instrument, so this
+    /// names the venue's own collateral pool deterministically. That is not a
+    /// dodge: collateral posted at two venues is genuinely not fungible while
+    /// a position is open, so two markets on different venues *should* report
+    /// residual exposure in two units. When reference data supplies the real
+    /// settlement asset, it replaces this label — the shape stays the same.
+    pub fn settlement_unit(&self) -> ObjectId {
+        ObjectId::from_string(format!("collateral-{}", self.venue.as_str()))
+    }
+
     /// Refuses a venue that is not a prediction market: the pricing here
     /// assumes contracts that settle to a fixed payoff on a stated date, and
     /// nothing else behaves that way.

@@ -68,6 +68,7 @@ members = [
     "crates/apps/qip-cli",
     "crates/apps/qip-fastbrain",
     "crates/apps/qip-deepbrain",
+    "crates/apps/qip-edge-node",
 ]
 
 [workspace.package]

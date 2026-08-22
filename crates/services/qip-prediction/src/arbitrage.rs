@@ -238,6 +238,7 @@ fn walk(
             },
             quantity,
             reference_price: average,
+            priced_in: market.settlement_unit(),
             // Every leg is mandatory and simultaneous: a set missing a leg is
             // not a hedged position, it is a directional one nobody chose.
             order: 0,

@@ -221,6 +221,10 @@ fn the_execution_engine_is_reachable_from_almost_nothing() {
         "qip-web",
         "qip-fastbrain",
         "qip-deepbrain",
+        // The edge cell is the second composition root: it owns the hot
+        // order path, which is exactly what the execution engine is.
+        "qip-edge",
+        "qip-edge-node",
         "qip-acceptance",
     ]
     .into_iter()

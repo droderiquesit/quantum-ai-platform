@@ -198,6 +198,14 @@ pub struct LegStep {
     /// The price the plan assumes. The difference between this and the fill is
     /// what the latency and slippage deductions were estimating.
     pub reference_price: Decimal,
+    /// The instrument `reference_price` is denominated in: one unit of
+    /// `object_id` costs `reference_price` of this.
+    ///
+    /// Carried so residual exposure can be stated per unit of account.
+    /// Without it a mixed-currency cycle's residual is a sum across
+    /// incomparable units, which was found the hard way and is exactly the
+    /// number a leg-risk budget must not be compared against.
+    pub priced_in: ObjectId,
     /// Position in the sequence. Legs with the same order may go together.
     pub order: u16,
     /// Whether the plan can proceed if this leg fails.
@@ -270,6 +278,24 @@ impl LegPlan {
             .skip(completed)
             .filter(|s| !s.optional)
             .fold(Decimal::ZERO, |sum, s| sum + s.quantity * s.reference_price)
+    }
+
+    /// The residual exposure after `completed` legs, per unit of account.
+    ///
+    /// This is the measurement [`LegPlan::residual_after`] screens for: each
+    /// entry is a sum of like-denominated notionals, so a budget stated in one
+    /// unit can be compared against the entry in that unit instead of against
+    /// a total that quietly spans several.
+    pub fn residual_by_unit(&self, completed: usize) -> Vec<(ObjectId, Decimal)> {
+        let mut totals: std::collections::BTreeMap<ObjectId, Decimal> =
+            std::collections::BTreeMap::new();
+        for step in self.steps.iter().skip(completed).filter(|s| !s.optional) {
+            let entry = totals
+                .entry(step.priced_in.clone())
+                .or_insert(Decimal::ZERO);
+            *entry = *entry + step.quantity * step.reference_price;
+        }
+        totals.into_iter().collect()
     }
 
     /// Venues the plan touches, in first-use order.

@@ -211,7 +211,6 @@ name = "qip-edge"
 version = "0.1.0"
 dependencies = [
  "qip-arbitrage",
- "qip-compliance",
  "qip-contracts",
  "qip-core",
  "qip-execution-engine",
@@ -227,6 +226,18 @@ dependencies = [
  "qip-routing",
  "qip-sequencing",
  "qip-strategy",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "qip-edge-node"
+version = "0.1.0"
+dependencies = [
+ "qip-contracts",
+ "qip-core",
+ "qip-edge",
+ "qip-observability",
  "serde",
  "serde_json",
 ]

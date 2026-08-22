@@ -183,6 +183,7 @@ impl LegPlanner {
                 side: leg.side,
                 quantity: leg.quantity,
                 reference_price: leg.executable_price,
+                priced_in: leg.quote_object.clone(),
                 order,
                 optional,
             });
