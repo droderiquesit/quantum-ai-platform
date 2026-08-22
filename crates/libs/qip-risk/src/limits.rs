@@ -1,0 +1,663 @@
+//! The limit engine.
+//!
+//! Every limit here is a deterministic predicate over a proposed portfolio
+//! state. There is no model, no scoring and no judgement: a limit either binds
+//! or it does not, the same inputs always produce the same answer, and the
+//! answer names which limit bound and by how much.
+//!
+//! That rigidity is the point. The risk engine holds veto authority over the
+//! whole platform (charter section 5), and a veto that can be reasoned with is
+//! not a veto. The place for judgement is in *setting* the limits, which is a
+//! governance decision recorded in configuration.
+
+use qip_core::Decimal;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+/// How serious a breach is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Severity {
+    /// Approaching the limit. Reported, not blocking.
+    Warning,
+    /// The limit is breached. The action is blocked.
+    Breach,
+    /// Breached badly enough to require intervention beyond blocking one order.
+    Critical,
+}
+
+impl Severity {
+    pub fn blocks(&self) -> bool {
+        matches!(self, Self::Breach | Self::Critical)
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Warning => "warning",
+            Self::Breach => "breach",
+            Self::Critical => "critical",
+        }
+    }
+}
+
+/// What a limit constrains.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LimitKind {
+    /// Maximum notional of a single order.
+    MaxOrderNotional { limit: Decimal },
+    /// Maximum notional of a single position.
+    MaxPositionNotional { limit: Decimal },
+    /// Maximum position as a fraction of equity.
+    MaxPositionWeight { limit: f64 },
+    /// Maximum gross exposure as a multiple of equity.
+    MaxLeverage { limit: f64 },
+    /// Maximum net exposure as a multiple of equity.
+    MaxNetExposure { limit: f64 },
+    /// Maximum share of gross exposure in one bucket of a named axis.
+    MaxConcentration { axis: String, limit: f64 },
+    /// Maximum gross exposure to one named bucket, as a fraction of equity.
+    MaxBucketExposure {
+        axis: String,
+        bucket: String,
+        limit: f64,
+    },
+    /// Maximum portfolio volatility, annualised.
+    MaxVolatility { limit: f64 },
+    /// Maximum value at risk as a fraction of equity.
+    MaxValueAtRisk { confidence: f64, limit: f64 },
+    /// Maximum expected shortfall as a fraction of equity.
+    MaxExpectedShortfall { confidence: f64, limit: f64 },
+    /// Maximum drawdown from the running peak before trading halts.
+    MaxDrawdown { limit: f64 },
+    /// Maximum loss over a single day, as a fraction of equity.
+    MaxDailyLoss { limit: f64 },
+    /// Minimum fraction of the portfolio liquidatable within a horizon.
+    MinLiquidity { days: f64, fraction: f64 },
+    /// Maximum days to exit a single position.
+    MaxDaysToLiquidate { limit: f64 },
+    /// Maximum gross exposure to one counterparty, as a fraction of equity.
+    MaxCounterpartyExposure { limit: f64 },
+    /// Minimum cash as a fraction of equity.
+    MinCashBuffer { limit: f64 },
+}
+
+impl LimitKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::MaxOrderNotional { .. } => "max_order_notional",
+            Self::MaxPositionNotional { .. } => "max_position_notional",
+            Self::MaxPositionWeight { .. } => "max_position_weight",
+            Self::MaxLeverage { .. } => "max_leverage",
+            Self::MaxNetExposure { .. } => "max_net_exposure",
+            Self::MaxConcentration { .. } => "max_concentration",
+            Self::MaxBucketExposure { .. } => "max_bucket_exposure",
+            Self::MaxVolatility { .. } => "max_volatility",
+            Self::MaxValueAtRisk { .. } => "max_value_at_risk",
+            Self::MaxExpectedShortfall { .. } => "max_expected_shortfall",
+            Self::MaxDrawdown { .. } => "max_drawdown",
+            Self::MaxDailyLoss { .. } => "max_daily_loss",
+            Self::MinLiquidity { .. } => "min_liquidity",
+            Self::MaxDaysToLiquidate { .. } => "max_days_to_liquidate",
+            Self::MaxCounterpartyExposure { .. } => "max_counterparty_exposure",
+            Self::MinCashBuffer { .. } => "min_cash_buffer",
+        }
+    }
+
+    /// Whether the limit is a floor rather than a ceiling.
+    pub fn is_minimum(&self) -> bool {
+        matches!(self, Self::MinLiquidity { .. } | Self::MinCashBuffer { .. })
+    }
+}
+
+/// A configured limit.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Limit {
+    pub name: String,
+    pub kind: LimitKind,
+    /// Fraction of the limit at which a warning is raised. 0.8 warns at 80%.
+    pub warning_threshold: f64,
+    /// Multiple of the limit above which the breach is critical.
+    pub critical_multiple: f64,
+    /// Whether breaching this limit forces liquidation rather than just
+    /// blocking new risk.
+    pub forces_reduction: bool,
+    /// Why the limit exists, so a breach report explains itself.
+    pub rationale: String,
+}
+
+impl Limit {
+    pub fn new(name: impl Into<String>, kind: LimitKind) -> Self {
+        Self {
+            name: name.into(),
+            kind,
+            warning_threshold: 0.85,
+            critical_multiple: 1.25,
+            forces_reduction: false,
+            rationale: String::new(),
+        }
+    }
+
+    pub fn with_rationale(mut self, rationale: impl Into<String>) -> Self {
+        self.rationale = rationale.into();
+        self
+    }
+
+    pub fn forcing_reduction(mut self) -> Self {
+        self.forces_reduction = true;
+        self
+    }
+
+    /// Evaluate an observed value against the limit.
+    ///
+    /// `observed` and `bound` are in the limit's own units.
+    fn assess(&self, observed: f64, bound: f64) -> Option<Severity> {
+        if self.kind.is_minimum() {
+            if observed < bound {
+                let shortfall = if bound > 1e-12 {
+                    (bound - observed) / bound
+                } else {
+                    1.0
+                };
+                return Some(if shortfall > self.critical_multiple - 1.0 {
+                    Severity::Critical
+                } else {
+                    Severity::Breach
+                });
+            }
+            if bound > 1e-12 && observed < bound / self.warning_threshold.max(1e-9) {
+                return Some(Severity::Warning);
+            }
+            return None;
+        }
+
+        if observed > bound {
+            let ratio = if bound > 1e-12 {
+                observed / bound
+            } else {
+                f64::INFINITY
+            };
+            return Some(if ratio >= self.critical_multiple {
+                Severity::Critical
+            } else {
+                Severity::Breach
+            });
+        }
+        if bound > 1e-12 && observed > bound * self.warning_threshold {
+            return Some(Severity::Warning);
+        }
+        None
+    }
+}
+
+/// A limit that bound, and by how much.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LimitBreach {
+    pub limit_name: String,
+    pub limit_kind: String,
+    pub severity: Severity,
+    /// The value that was measured.
+    pub observed: f64,
+    /// The threshold it was measured against.
+    pub bound: f64,
+    /// Observed divided by bound. Above one for a ceiling breach.
+    pub utilisation: f64,
+    /// The bucket or instrument responsible, where the limit is per-bucket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    pub detail: String,
+    pub forces_reduction: bool,
+}
+
+impl LimitBreach {
+    pub fn blocks(&self) -> bool {
+        self.severity.blocks()
+    }
+}
+
+/// The state a limit set is evaluated against.
+#[derive(Clone, Debug, Default)]
+pub struct RiskState {
+    pub equity: Decimal,
+    pub cash: Decimal,
+    pub gross_exposure: Decimal,
+    pub net_exposure: Decimal,
+    /// Notional per position, keyed by instrument.
+    pub position_notionals: BTreeMap<String, Decimal>,
+    /// Gross exposure per bucket, keyed by axis then bucket.
+    pub axis_exposures: BTreeMap<String, BTreeMap<String, Decimal>>,
+    /// Annualised portfolio volatility.
+    pub volatility: f64,
+    /// Value at risk as a fraction of equity, by confidence.
+    pub value_at_risk: BTreeMap<String, f64>,
+    /// Expected shortfall as a fraction of equity, by confidence.
+    pub expected_shortfall: BTreeMap<String, f64>,
+    /// Current drawdown from the running peak.
+    pub drawdown: f64,
+    /// Loss today as a fraction of equity, positive for a loss.
+    pub daily_loss: f64,
+    /// Days to liquidate each position.
+    pub days_to_liquidate: BTreeMap<String, f64>,
+    /// Fraction of the portfolio liquidatable within a given number of days.
+    pub liquidatable_within: BTreeMap<String, f64>,
+    /// Gross exposure per counterparty.
+    pub counterparty_exposures: BTreeMap<String, Decimal>,
+    /// Notional of the order being checked, when checking one.
+    pub order_notional: Option<Decimal>,
+    /// Instrument the order concerns.
+    pub order_subject: Option<String>,
+}
+
+impl RiskState {
+    fn ratio(&self, value: Decimal) -> f64 {
+        if !self.equity.is_positive() {
+            return f64::INFINITY;
+        }
+        value.to_f64() / self.equity.to_f64()
+    }
+}
+
+/// The outcome of checking a state against a limit set.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LimitCheck {
+    pub breaches: Vec<LimitBreach>,
+    /// Number of limits evaluated, so a check against an empty set is visible.
+    pub evaluated: usize,
+}
+
+impl LimitCheck {
+    /// Whether anything blocks.
+    pub fn is_blocked(&self) -> bool {
+        self.breaches.iter().any(LimitBreach::blocks)
+    }
+
+    /// Whether the state requires reducing risk, not merely stopping.
+    pub fn requires_reduction(&self) -> bool {
+        self.breaches
+            .iter()
+            .any(|b| b.blocks() && b.forces_reduction)
+    }
+
+    /// Breaches that block, worst first.
+    pub fn blocking(&self) -> Vec<&LimitBreach> {
+        let mut blocking: Vec<&LimitBreach> = self.breaches.iter().filter(|b| b.blocks()).collect();
+        blocking.sort_by(|a, b| {
+            b.severity
+                .cmp(&a.severity)
+                .then_with(|| {
+                    b.utilisation
+                        .partial_cmp(&a.utilisation)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .then_with(|| a.limit_name.cmp(&b.limit_name))
+        });
+        blocking
+    }
+
+    pub fn warnings(&self) -> Vec<&LimitBreach> {
+        self.breaches
+            .iter()
+            .filter(|b| b.severity == Severity::Warning)
+            .collect()
+    }
+
+    /// A single sentence naming what blocked.
+    pub fn reason(&self) -> String {
+        match self.blocking().first() {
+            None => "within all limits".to_string(),
+            Some(worst) => format!(
+                "{} ({}): {} against a limit of {} — {}",
+                worst.limit_name,
+                worst.severity.as_str(),
+                format_number(worst.observed),
+                format_number(worst.bound),
+                worst.detail
+            ),
+        }
+    }
+}
+
+fn format_number(value: f64) -> String {
+    if value.abs() >= 1000.0 {
+        format!("{value:.0}")
+    } else {
+        format!("{value:.4}")
+    }
+}
+
+/// A named collection of limits.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LimitSet {
+    pub name: String,
+    pub limits: Vec<Limit>,
+}
+
+impl LimitSet {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            limits: Vec::new(),
+        }
+    }
+
+    pub fn with(mut self, limit: Limit) -> Self {
+        self.limits.push(limit);
+        self
+    }
+
+    pub fn len(&self) -> usize {
+        self.limits.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.limits.is_empty()
+    }
+
+    /// Evaluate every limit against a state.
+    pub fn check(&self, state: &RiskState) -> LimitCheck {
+        let mut breaches = Vec::new();
+        for limit in &self.limits {
+            breaches.extend(self.evaluate(limit, state));
+        }
+        LimitCheck {
+            breaches,
+            evaluated: self.limits.len(),
+        }
+    }
+
+    fn evaluate(&self, limit: &Limit, state: &RiskState) -> Vec<LimitBreach> {
+        let mut out = Vec::new();
+        let mut record = |observed: f64, bound: f64, subject: Option<String>, detail: String| {
+            if let Some(severity) = limit.assess(observed, bound) {
+                out.push(LimitBreach {
+                    limit_name: limit.name.clone(),
+                    limit_kind: limit.kind.label().to_string(),
+                    severity,
+                    observed,
+                    bound,
+                    utilisation: if bound.abs() > 1e-12 {
+                        observed / bound
+                    } else {
+                        f64::INFINITY
+                    },
+                    subject,
+                    detail,
+                    forces_reduction: limit.forces_reduction,
+                });
+            }
+        };
+
+        match &limit.kind {
+            LimitKind::MaxOrderNotional { limit: bound } => {
+                if let Some(notional) = state.order_notional {
+                    record(
+                        notional.abs().to_f64(),
+                        bound.to_f64(),
+                        state.order_subject.clone(),
+                        "single order notional".into(),
+                    );
+                }
+            }
+            LimitKind::MaxPositionNotional { limit: bound } => {
+                for (instrument, notional) in &state.position_notionals {
+                    record(
+                        notional.abs().to_f64(),
+                        bound.to_f64(),
+                        Some(instrument.clone()),
+                        format!("position notional in {instrument}"),
+                    );
+                }
+            }
+            LimitKind::MaxPositionWeight { limit: bound } => {
+                for (instrument, notional) in &state.position_notionals {
+                    record(
+                        state.ratio(notional.abs()),
+                        *bound,
+                        Some(instrument.clone()),
+                        format!("{instrument} as a fraction of equity"),
+                    );
+                }
+            }
+            LimitKind::MaxLeverage { limit: bound } => {
+                record(
+                    state.ratio(state.gross_exposure),
+                    *bound,
+                    None,
+                    "gross exposure over equity".into(),
+                );
+            }
+            LimitKind::MaxNetExposure { limit: bound } => {
+                record(
+                    state.ratio(state.net_exposure.abs()),
+                    *bound,
+                    None,
+                    "net exposure over equity".into(),
+                );
+            }
+            LimitKind::MaxConcentration { axis, limit: bound } => {
+                let Some(buckets) = state.axis_exposures.get(axis) else {
+                    return out;
+                };
+                let total: Decimal = buckets.values().map(|v| v.abs()).sum();
+                if !total.is_positive() {
+                    return out;
+                }
+                for (bucket, value) in buckets {
+                    record(
+                        value.abs().to_f64() / total.to_f64(),
+                        *bound,
+                        Some(bucket.clone()),
+                        format!("share of gross exposure in {axis} bucket {bucket}"),
+                    );
+                }
+            }
+            LimitKind::MaxBucketExposure {
+                axis,
+                bucket,
+                limit: bound,
+            } => {
+                let value = state
+                    .axis_exposures
+                    .get(axis)
+                    .and_then(|b| b.get(bucket))
+                    .copied()
+                    .unwrap_or(Decimal::ZERO);
+                record(
+                    state.ratio(value.abs()),
+                    *bound,
+                    Some(bucket.clone()),
+                    format!("exposure to {axis} bucket {bucket}"),
+                );
+            }
+            LimitKind::MaxVolatility { limit: bound } => {
+                record(
+                    state.volatility,
+                    *bound,
+                    None,
+                    "annualised portfolio volatility".into(),
+                );
+            }
+            LimitKind::MaxValueAtRisk {
+                confidence,
+                limit: bound,
+            } => {
+                let key = format!("{confidence:.2}");
+                if let Some(value) = state.value_at_risk.get(&key) {
+                    record(
+                        *value,
+                        *bound,
+                        None,
+                        format!("value at risk at {confidence:.0}%"),
+                    );
+                }
+            }
+            LimitKind::MaxExpectedShortfall {
+                confidence,
+                limit: bound,
+            } => {
+                let key = format!("{confidence:.2}");
+                if let Some(value) = state.expected_shortfall.get(&key) {
+                    record(
+                        *value,
+                        *bound,
+                        None,
+                        format!("expected shortfall at {confidence:.0}%"),
+                    );
+                }
+            }
+            LimitKind::MaxDrawdown { limit: bound } => {
+                record(
+                    state.drawdown,
+                    *bound,
+                    None,
+                    "drawdown from the running peak".into(),
+                );
+            }
+            LimitKind::MaxDailyLoss { limit: bound } => {
+                record(
+                    state.daily_loss,
+                    *bound,
+                    None,
+                    "loss today over equity".into(),
+                );
+            }
+            LimitKind::MinLiquidity { days, fraction } => {
+                let key = format!("{days:.0}");
+                if let Some(value) = state.liquidatable_within.get(&key) {
+                    record(
+                        *value,
+                        *fraction,
+                        None,
+                        format!("fraction liquidatable within {days:.0} days"),
+                    );
+                }
+            }
+            LimitKind::MaxDaysToLiquidate { limit: bound } => {
+                for (instrument, days) in &state.days_to_liquidate {
+                    record(
+                        *days,
+                        *bound,
+                        Some(instrument.clone()),
+                        format!("days to exit {instrument}"),
+                    );
+                }
+            }
+            LimitKind::MaxCounterpartyExposure { limit: bound } => {
+                for (counterparty, value) in &state.counterparty_exposures {
+                    record(
+                        state.ratio(value.abs()),
+                        *bound,
+                        Some(counterparty.clone()),
+                        format!("exposure to {counterparty}"),
+                    );
+                }
+            }
+            LimitKind::MinCashBuffer { limit: bound } => {
+                record(
+                    state.ratio(state.cash),
+                    *bound,
+                    None,
+                    "cash over equity".into(),
+                );
+            }
+        }
+        out
+    }
+
+    /// The limit set the platform ships with for paper trading.
+    ///
+    /// Deliberately conservative. These are the defaults a deployment starts
+    /// from and tightens; they are not calibrated to any particular mandate.
+    pub fn conservative_default() -> Self {
+        Self::new("conservative-paper")
+            .with(
+                Limit::new(
+                    "order-notional",
+                    LimitKind::MaxOrderNotional {
+                        limit: Decimal::from_int(250_000),
+                    },
+                )
+                .with_rationale("bounds the damage of a single mis-sized order"),
+            )
+            .with(
+                Limit::new(
+                    "position-weight",
+                    LimitKind::MaxPositionWeight { limit: 0.10 },
+                )
+                .with_rationale("no single name may dominate the book"),
+            )
+            .with(
+                Limit::new("leverage", LimitKind::MaxLeverage { limit: 1.5 })
+                    .forcing_reduction()
+                    .with_rationale("gross exposure beyond this cannot be unwound in a stress"),
+            )
+            .with(
+                Limit::new(
+                    "sector-concentration",
+                    LimitKind::MaxConcentration {
+                        axis: "sector".into(),
+                        limit: 0.35,
+                    },
+                )
+                .with_rationale("a sector bet must be deliberate, not accumulated"),
+            )
+            .with(
+                Limit::new(
+                    "country-concentration",
+                    LimitKind::MaxConcentration {
+                        axis: "country".into(),
+                        limit: 0.60,
+                    },
+                )
+                .with_rationale("bounds single-jurisdiction political and currency risk"),
+            )
+            .with(
+                Limit::new("volatility", LimitKind::MaxVolatility { limit: 0.25 })
+                    .with_rationale("keeps the book inside its stated risk profile"),
+            )
+            .with(
+                Limit::new(
+                    "value-at-risk",
+                    LimitKind::MaxValueAtRisk {
+                        confidence: 0.99,
+                        limit: 0.05,
+                    },
+                )
+                .with_rationale("a one-in-a-hundred day must not cost more than this"),
+            )
+            .with(
+                Limit::new(
+                    "expected-shortfall",
+                    LimitKind::MaxExpectedShortfall {
+                        confidence: 0.975,
+                        limit: 0.08,
+                    },
+                )
+                .with_rationale("bounds the average loss beyond the value-at-risk point"),
+            )
+            .with(
+                Limit::new("drawdown", LimitKind::MaxDrawdown { limit: 0.15 })
+                    .forcing_reduction()
+                    .with_rationale("halts trading before a drawdown becomes unrecoverable"),
+            )
+            .with(
+                Limit::new("daily-loss", LimitKind::MaxDailyLoss { limit: 0.04 })
+                    .forcing_reduction()
+                    .with_rationale("stops a bad day from becoming a bad quarter"),
+            )
+            .with(
+                Limit::new(
+                    "liquidity",
+                    LimitKind::MinLiquidity {
+                        days: 5.0,
+                        fraction: 0.80,
+                    },
+                )
+                .with_rationale("most of the book must be exitable within a week"),
+            )
+            .with(
+                Limit::new("cash-buffer", LimitKind::MinCashBuffer { limit: 0.02 })
+                    .with_rationale("settlement and margin need headroom"),
+            )
+    }
+}

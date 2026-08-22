@@ -498,3 +498,119 @@ fn property_normal_cdf_is_monotone_and_bounded() {
         },
     );
 }
+
+// --- hidden Markov model ----------------------------------------------------
+
+#[test]
+fn the_hmm_recovers_two_regimes_it_was_generated_from() {
+    use qip_core::rng::{Rng, Xoshiro256};
+    use qip_numerics::hmm::GaussianHmm;
+
+    // A calm regime and a volatile one, each persistent.
+    let mut rng = Xoshiro256::seeded(31);
+    let mut observations = Vec::with_capacity(1200);
+    let mut state = 0usize;
+    let mut truth = Vec::with_capacity(1200);
+    for _ in 0..1200 {
+        // Switch with 2% probability from calm, 6% from volatile.
+        let switch_probability = if state == 0 { 0.02 } else { 0.06 };
+        if rng.bernoulli(switch_probability) {
+            state = 1 - state;
+        }
+        truth.push(state);
+        observations.push(if state == 0 {
+            rng.normal_with(0.0005, 0.006)
+        } else {
+            rng.normal_with(-0.001, 0.025)
+        });
+    }
+
+    let model = GaussianHmm::fit(&observations, 200, 1e-7).unwrap();
+    assert!(model.converged, "the fit should converge in 200 iterations");
+
+    // State 1 is always the higher-variance one by construction.
+    assert!(model.variances[1] > model.variances[0]);
+    assert_eq!(model.high_volatility_state(), 1);
+    // The recovered volatilities should be near the generating ones.
+    assert!(
+        approx_eq(model.variances[0].sqrt(), 0.006, 0.004),
+        "calm sd {}",
+        model.variances[0].sqrt()
+    );
+    assert!(
+        approx_eq(model.variances[1].sqrt(), 0.025, 0.012),
+        "stress sd {}",
+        model.variances[1].sqrt()
+    );
+
+    // Both regimes should be persistent, not flickering.
+    assert!(
+        model.states_are_persistent(5.0),
+        "durations {:?}",
+        (model.expected_duration(0), model.expected_duration(1))
+    );
+
+    // Viterbi should recover most of the true sequence.
+    let decoded = model.decode(&observations);
+    let agreement =
+        decoded.iter().zip(&truth).filter(|(a, b)| a == b).count() as f64 / truth.len() as f64;
+    assert!(agreement > 0.75, "decoded agreement {agreement}");
+}
+
+#[test]
+fn the_filter_uses_no_future_information() {
+    use qip_core::rng::{Rng, Xoshiro256};
+    use qip_numerics::hmm::GaussianHmm;
+
+    let mut rng = Xoshiro256::seeded(37);
+    let observations: Vec<f64> = (0..600)
+        .map(|i| {
+            if i < 300 {
+                rng.normal_with(0.0, 0.005)
+            } else {
+                rng.normal_with(0.0, 0.03)
+            }
+        })
+        .collect();
+    let model = GaussianHmm::fit(&observations, 200, 1e-7).unwrap();
+
+    // Filtering a prefix must give the same answer as filtering the whole
+    // series and taking that point: the filter cannot see ahead.
+    let full = model.filter(&observations);
+    let prefix = model.filter(&observations[..200]);
+    for i in 0..200 {
+        assert!(
+            approx_eq(full[i][0], prefix[i][0], 1e-12),
+            "diverged at {i}"
+        );
+    }
+
+    // And it should be confident about the calm regime early on.
+    assert!(
+        full[150][0] > 0.8,
+        "early state probability {:?}",
+        full[150]
+    );
+    assert!(full[550][1] > 0.8, "late state probability {:?}", full[550]);
+}
+
+#[test]
+fn the_hmm_refuses_an_inadequate_sample() {
+    use qip_numerics::hmm::GaussianHmm;
+    assert!(GaussianHmm::fit(&[0.1, 0.2, 0.3], 100, 1e-7).is_err());
+    let with_nan: Vec<f64> = (0..50)
+        .map(|i| if i == 10 { f64::NAN } else { 0.01 })
+        .collect();
+    assert!(GaussianHmm::fit(&with_nan, 100, 1e-7).is_err());
+}
+
+#[test]
+fn a_variance_floor_prevents_a_degenerate_fit() {
+    use qip_numerics::hmm::GaussianHmm;
+    // A constant series would let a state collapse onto a point, sending the
+    // likelihood to infinity.
+    let constant = vec![0.01; 200];
+    let model = GaussianHmm::fit(&constant, 100, 1e-9).unwrap();
+    assert!(model.variances.iter().all(|v| *v > 0.0 && v.is_finite()));
+    assert!(model.log_likelihood.is_finite());
+}

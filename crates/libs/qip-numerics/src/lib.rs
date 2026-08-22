@@ -8,6 +8,7 @@
 
 pub mod anneal;
 pub mod distributions;
+pub mod hmm;
 pub mod interpolate;
 pub mod lp;
 pub mod matrix;

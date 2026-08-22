@@ -11,6 +11,7 @@ repository.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 qip-core.workspace = true
+qip-events.workspace = true
 qip-numerics.workspace = true
 qip-financial.workspace = true
 qip-market.workspace = true

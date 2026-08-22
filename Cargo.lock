@@ -322,6 +322,7 @@ name = "qip-portfolio"
 version = "0.1.0"
 dependencies = [
  "qip-core",
+ "qip-events",
  "qip-financial",
  "qip-market",
  "serde",
@@ -349,10 +350,12 @@ name = "qip-quant"
 version = "0.1.0"
 dependencies = [
  "qip-core",
+ "qip-events",
  "qip-financial",
  "qip-market",
  "qip-numerics",
  "qip-portfolio",
+ "qip-risk",
  "serde",
  "serde_json",
 ]
@@ -388,6 +391,7 @@ name = "qip-risk"
 version = "0.1.0"
 dependencies = [
  "qip-core",
+ "qip-events",
  "qip-financial",
  "qip-market",
  "qip-numerics",
