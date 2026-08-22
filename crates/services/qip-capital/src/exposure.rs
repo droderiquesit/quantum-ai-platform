@@ -203,8 +203,8 @@ impl AggregateExposure {
             .map(|(instrument, cells)| {
                 let per_cell = self.per_cell_instrument.get(instrument);
                 let cells_disagree = per_cell.is_some_and(|holdings| {
-                    holdings.values().any(Decimal::is_positive)
-                        && holdings.values().any(Decimal::is_negative)
+                    holdings.values().any(|v| v.is_positive())
+                        && holdings.values().any(|v| v.is_negative())
                 });
                 let gross = self.by_instrument.gross_of(instrument);
                 CrowdedPosition {
