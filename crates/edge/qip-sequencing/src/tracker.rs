@@ -11,7 +11,7 @@
 //!   applying an order-add twice puts size on the book that does not exist.
 //! * **Never** — say so. This is the case the whole module exists for. A
 //!   consumer trading off a book with a silent hole in it is the failure being
-//!   prevented, so an unrecoverable gap produces [`MessageBody::Reset`] for the
+//!   prevented, so an unrecoverable gap produces [`qip_contracts::MessageBody::Reset`] for the
 //!   stream and the watermark only moves past the hole behind that reset.
 //!
 //! **The reorder buffer is bounded, and the bound is not a detail.** The event
