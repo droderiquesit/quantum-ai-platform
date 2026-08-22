@@ -22,11 +22,14 @@ use std::collections::BTreeMap;
 /// A venue's feed, as the registry keys it.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FeedKey {
+    /// The venue publishing the feed.
     pub venue: VenueId,
+    /// The channel within the venue, e.g. `itch-a`.
     pub feed: String,
 }
 
 impl FeedKey {
+    /// The key for one venue's feed.
     pub fn new(venue: VenueId, feed: impl Into<String>) -> Self {
         Self {
             venue,
@@ -54,6 +57,7 @@ pub struct ProtocolRegistry {
 }
 
 impl ProtocolRegistry {
+    /// A registry with no feeds bound.
     pub fn new() -> Self {
         Self::default()
     }
@@ -82,10 +86,12 @@ impl ProtocolRegistry {
         Ok(())
     }
 
+    /// Whether no feed is registered.
     pub fn is_empty(&self) -> bool {
         self.feeds.is_empty()
     }
 
+    /// How many feeds are registered.
     pub fn len(&self) -> usize {
         self.feeds.len()
     }
@@ -98,6 +104,7 @@ impl ProtocolRegistry {
             .collect()
     }
 
+    /// The decoder serving a feed, for diagnostics and sequence alignment.
     pub fn decoder_mut(
         &mut self,
         venue: &VenueId,

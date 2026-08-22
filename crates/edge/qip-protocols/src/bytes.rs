@@ -17,7 +17,9 @@ use serde::{Deserialize, Serialize};
 /// copies of every reader keeps the two decoders honest about what they assume.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ByteOrder {
+    /// Most significant byte first: ITCH, and the SBE framing header.
     Big,
+    /// Least significant byte first: SBE message bodies, by convention.
     Little,
 }
 
@@ -48,14 +50,17 @@ pub struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
+    /// A reader over `bytes`, reading multi-byte integers in `order`.
     pub fn new(bytes: &'a [u8], order: ByteOrder) -> Self {
         Self { bytes, order }
     }
 
+    /// Bytes available to this reader.
     pub fn len(&self) -> usize {
         self.bytes.len()
     }
 
+    /// Whether there is nothing left to read.
     pub fn is_empty(&self) -> bool {
         self.bytes.is_empty()
     }
@@ -79,6 +84,7 @@ impl<'a> Reader<'a> {
         })
     }
 
+    /// An unsigned integer of `width` bytes at `offset`.
     pub fn uint(&self, offset: usize, width: usize) -> Result<u64> {
         if width == 0 || width > 8 {
             return Err(Error::schema(format!("unsupported integer width {width}")));
@@ -103,6 +109,7 @@ impl<'a> Reader<'a> {
         }
     }
 
+    /// The single byte at `offset`.
     pub fn u8_at(&self, offset: usize) -> Result<u8> {
         self.slice(offset, 1)?
             .first()

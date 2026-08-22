@@ -106,14 +106,17 @@ pub fn set_arbitrage(
 }
 
 /// A cursor over one side of one book.
-struct Depth<'a> {
+///
+/// Walking levels rather than reading the touch is what makes every size in
+/// this module executable: the cursor cannot hand out depth that is not there.
+pub(crate) struct Depth<'a> {
     levels: &'a [BookLevel],
     index: usize,
     consumed: Decimal,
 }
 
 impl<'a> Depth<'a> {
-    fn new(levels: &'a [BookLevel]) -> Self {
+    pub(crate) fn new(levels: &'a [BookLevel]) -> Self {
         Self {
             levels,
             index: 0,
@@ -121,16 +124,16 @@ impl<'a> Depth<'a> {
         }
     }
 
-    fn current(&self) -> Option<&BookLevel> {
+    pub(crate) fn current(&self) -> Option<&BookLevel> {
         self.levels.get(self.index)
     }
 
-    fn remaining(&self) -> Decimal {
+    pub(crate) fn remaining(&self) -> Decimal {
         self.current()
             .map_or(Decimal::ZERO, |level| level.size - self.consumed)
     }
 
-    fn take(&mut self, quantity: Decimal) {
+    pub(crate) fn take(&mut self, quantity: Decimal) {
         self.consumed += quantity;
         if self.remaining() <= Decimal::ZERO {
             self.index += 1;

@@ -82,7 +82,9 @@ impl SkipReason {
 /// One skipped message, kept so the gap in the output can be explained.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkipRecord {
+    /// The wire format the skipping decoder speaks.
     pub protocol: String,
+    /// What made the message unusable.
     pub reason: SkipReason,
     /// Offset of the skipped message within the buffer it arrived in.
     pub offset: usize,
@@ -93,8 +95,11 @@ pub struct SkipRecord {
 /// What a decoder has done since it was created.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Diagnostics {
+    /// Market messages produced.
     pub messages_decoded: u64,
+    /// Well-framed messages this build had no use for.
     pub messages_skipped: u64,
+    /// Bytes of whole messages consumed.
     pub bytes_consumed: u64,
     /// Frames refused outright for failing an integrity check.
     pub frames_refused: u64,
@@ -103,6 +108,7 @@ pub struct Diagnostics {
 }
 
 impl Diagnostics {
+    /// Record a skip, keeping the counters exact and the examples bounded.
     pub fn record_skip(&mut self, record: SkipRecord) {
         self.messages_skipped += 1;
         if self.recent_skips.len() == MAX_RETAINED_SKIPS {
@@ -170,6 +176,7 @@ pub struct InstrumentPartitions {
 }
 
 impl InstrumentPartitions {
+    /// A map that carries nothing until symbols are bound to partitions.
     pub fn new() -> Self {
         Self::default()
     }
@@ -188,14 +195,17 @@ impl InstrumentPartitions {
         self
     }
 
+    /// Bind one symbol to one partition.
     pub fn insert(&mut self, symbol: impl Into<String>, partition: u32) {
         self.map.insert(symbol.into(), partition);
     }
 
+    /// How many symbols are bound.
     pub fn len(&self) -> usize {
         self.map.len()
     }
 
+    /// Whether no symbol is bound yet.
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
@@ -218,12 +228,14 @@ impl InstrumentPartitions {
 /// The identity a decoder stamps on everything it produces.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FeedIdentity {
+    /// The venue whose messages this decoder is reading.
     pub venue: VenueId,
     /// The channel within the venue, e.g. `itch-a`.
     pub feed: String,
 }
 
 impl FeedIdentity {
+    /// The identity a decoder stamps on the messages it produces.
     pub fn new(venue: VenueId, feed: impl Into<String>) -> Self {
         Self {
             venue,
@@ -231,6 +243,7 @@ impl FeedIdentity {
         }
     }
 
+    /// An origin for one message of this feed.
     pub fn origin(&self, partition: u32, sequence: u64) -> Origin {
         Origin::new(self.venue.clone(), self.feed.clone(), partition, sequence)
     }

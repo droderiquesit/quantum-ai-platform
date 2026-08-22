@@ -29,6 +29,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// How a line performed, as far as arbitration can tell.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct LineHealth {
+    /// The physical line this describes.
     pub line: String,
     /// Units this line delivered, whether or not it delivered them first.
     pub delivered: u64,
@@ -103,6 +104,7 @@ struct Delivery {
 pub struct ArbitrationOutcome {
     /// The copies that were published, relabelled to the canonical feed.
     pub released: Vec<MarketMessage>,
+    /// What arbitration decided, in the order it decided it.
     pub events: Vec<ArbitrationEvent>,
 }
 
@@ -137,6 +139,7 @@ impl LineArbiter {
         self.lines.values().cloned().collect()
     }
 
+    /// Health of one line, if it is known to the arbiter.
     pub fn line_health(&self, line: &str) -> Option<&LineHealth> {
         self.lines.get(line)
     }

@@ -55,6 +55,7 @@ pub struct FixDecoder {
 }
 
 impl FixDecoder {
+    /// A decoder for one venue's FIX market data feed.
     pub fn new(venue: VenueId, feed: impl Into<String>, instruments: InstrumentPartitions) -> Self {
         Self {
             identity: FeedIdentity::new(venue, feed),

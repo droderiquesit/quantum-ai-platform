@@ -103,6 +103,7 @@ pub struct ItchDecoder {
 }
 
 impl ItchDecoder {
+    /// A decoder for one ITCH session, whose date the caller supplies.
     pub fn new(
         venue: VenueId,
         feed: impl Into<String>,

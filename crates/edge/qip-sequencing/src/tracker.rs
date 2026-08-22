@@ -57,6 +57,7 @@ impl Default for ReorderPolicy {
 }
 
 impl ReorderPolicy {
+    /// A policy holding at most `max_buffered_messages` for `gap_timeout`.
     pub fn new(max_buffered_messages: usize, gap_timeout: Duration) -> Self {
         Self {
             max_buffered_messages,
@@ -76,6 +77,7 @@ pub enum GapReason {
 }
 
 impl GapReason {
+    /// A stable label for metrics and log grouping.
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Deadline => "deadline",
@@ -116,11 +118,17 @@ pub enum SequenceEvent {
 /// Counters for one stream.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamStats {
+    /// Messages handed to consumers.
     pub released: u64,
+    /// Delivery units dropped because they had already been released or held.
     pub duplicates: u64,
+    /// Holes that opened.
     pub gaps_opened: u64,
+    /// Holes that filled before their deadline.
     pub gaps_filled: u64,
+    /// Holes given up on, each of which produced a reset.
     pub gaps_abandoned: u64,
+    /// Sequences an abandoned gap established were lost.
     pub messages_lost: u64,
     /// The most messages ever held out of order at once.
     pub peak_buffered: usize,
@@ -131,12 +139,14 @@ pub struct StreamStats {
 pub struct SequencedBatch {
     /// Messages in contiguous order, safe to apply as they stand.
     pub released: Vec<MarketMessage>,
+    /// What the tracker observed while producing this batch.
     pub events: Vec<SequenceEvent>,
     /// The updated watermark of every stream this call touched.
     pub watermarks: Vec<Watermark>,
 }
 
 impl SequencedBatch {
+    /// Whether the call produced nothing at all.
     pub fn is_empty(&self) -> bool {
         self.released.is_empty() && self.events.is_empty()
     }
@@ -179,6 +189,7 @@ pub struct SequenceTracker {
 }
 
 impl SequenceTracker {
+    /// A tracker for a stream whose starting position is not yet known.
     pub fn new(stream: impl Into<String>, policy: ReorderPolicy) -> Self {
         Self {
             stream: stream.into(),
@@ -208,10 +219,12 @@ impl SequenceTracker {
         tracker
     }
 
+    /// The stream this tracker is responsible for.
     pub fn stream(&self) -> &str {
         &self.stream
     }
 
+    /// Counters for this stream.
     pub fn stats(&self) -> StreamStats {
         self.stats
     }
@@ -439,6 +452,7 @@ pub struct Sequencer {
 }
 
 impl Sequencer {
+    /// A sequencer with no streams, applying `policy` to each it discovers.
     pub fn new(policy: ReorderPolicy) -> Self {
         Self {
             policy,
@@ -446,10 +460,12 @@ impl Sequencer {
         }
     }
 
+    /// Every stream seen so far.
     pub fn streams(&self) -> Vec<&str> {
         self.trackers.keys().map(String::as_str).collect()
     }
 
+    /// One stream's tracker, if it has been seen.
     pub fn tracker(&self, stream: &str) -> Option<&SequenceTracker> {
         self.trackers.get(stream)
     }

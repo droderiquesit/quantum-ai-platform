@@ -55,17 +55,24 @@ pub enum FailoverEvent {
 pub struct FailoverOutcome {
     /// Messages safe to apply, in order, with any reset already in place.
     pub applied: Vec<MarketMessage>,
+    /// What the reconciler decided, in order.
     pub events: Vec<FailoverEvent>,
 }
 
 /// Counters for a stream's failover history.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FailoverStats {
+    /// Switches that completed.
     pub switches: u64,
+    /// Delivery units applied.
     pub units_applied: u64,
+    /// Units dropped because their sequence was already applied.
     pub units_already_applied: u64,
+    /// Units from a source that was neither active nor the switch target.
     pub units_ignored: u64,
+    /// Times a source resumed past the last applied position.
     pub resyncs: u64,
+    /// Messages a resync established were lost.
     pub messages_lost: u64,
 }
 
@@ -84,6 +91,7 @@ pub struct FailoverReconciler {
 }
 
 impl FailoverReconciler {
+    /// A reconciler for one stream, starting on `active`.
     pub fn new(stream: impl Into<String>, active: impl Into<String>) -> Self {
         Self {
             stream: stream.into(),
@@ -100,10 +108,12 @@ impl FailoverReconciler {
         self
     }
 
+    /// The stream this reconciler is responsible for.
     pub fn stream(&self) -> &str {
         &self.stream
     }
 
+    /// The source currently being applied.
     pub fn active(&self) -> &str {
         &self.active
     }
@@ -113,6 +123,7 @@ impl FailoverReconciler {
         self.position
     }
 
+    /// Counters for this stream's failover history.
     pub fn stats(&self) -> FailoverStats {
         self.stats
     }

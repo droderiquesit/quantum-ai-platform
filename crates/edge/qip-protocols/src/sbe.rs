@@ -61,6 +61,7 @@ pub enum SbeEncoding {
 }
 
 impl SbeEncoding {
+    /// Bytes this encoding occupies on the wire.
     pub const fn width(&self) -> usize {
         match self {
             Self::Uint { width }
@@ -83,10 +84,15 @@ pub enum FieldRole {
     Sequence,
     /// Venue timestamp, nanoseconds since the Unix epoch.
     VenueTimeNanos,
+    /// The instrument the message concerns.
     Symbol,
+    /// Which side of the book a level or an order sits on.
     Side,
+    /// A price.
     Price,
+    /// A size, in the instrument's own units.
     Quantity,
+    /// How many resting orders make up a level.
     OrderCount,
     /// 0 new, 1 change, 2 delete — the FIX MDUpdateAction convention.
     UpdateAction,
@@ -101,13 +107,18 @@ pub enum FieldRole {
 /// One field of a fixed block or a group entry.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SbeField {
+    /// The venue's own name for the field, kept for diagnostics.
     pub name: String,
+    /// Byte offset within the block that contains it.
     pub offset: usize,
+    /// How the value is laid out.
     pub encoding: SbeEncoding,
+    /// What the value means to this platform.
     pub role: FieldRole,
 }
 
 impl SbeField {
+    /// One field of a block.
     pub fn new(
         name: impl Into<String>,
         offset: usize,
@@ -130,7 +141,9 @@ impl SbeField {
 /// A repeating group: a header with its own block length, then entries.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SbeGroup {
+    /// The venue's name for the group.
     pub name: String,
+    /// The fields of one entry.
     pub fields: Vec<SbeField>,
 }
 
@@ -149,23 +162,32 @@ pub enum SbeMessageKind {
 /// One template in the schema.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SbeMessage {
+    /// The template identifier carried in the message header.
     pub template_id: u16,
+    /// The venue's name for the template.
     pub name: String,
+    /// What the template says about the market.
     pub kind: SbeMessageKind,
+    /// Fields of the fixed block.
     pub fields: Vec<SbeField>,
+    /// The repeating group, where the template has one.
     pub group: Option<SbeGroup>,
 }
 
 /// The layout of one venue's binary feed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SbeSchema {
+    /// The schema identifier every message of this feed declares.
     pub id: u16,
+    /// The version this description was written against.
     pub version: u16,
+    /// Byte order of message bodies.
     pub byte_order: ByteOrder,
     messages: BTreeMap<u16, SbeMessage>,
 }
 
 impl SbeSchema {
+    /// An empty schema, to be filled with templates.
     pub fn new(id: u16, version: u16, byte_order: ByteOrder) -> Self {
         Self {
             id,
@@ -175,15 +197,18 @@ impl SbeSchema {
         }
     }
 
+    /// Add a template, replacing any template with the same identifier.
     pub fn with_message(mut self, message: SbeMessage) -> Self {
         self.messages.insert(message.template_id, message);
         self
     }
 
+    /// The template with this identifier, if the schema declares one.
     pub fn message(&self, template_id: u16) -> Option<&SbeMessage> {
         self.messages.get(&template_id)
     }
 
+    /// Every template identifier the schema declares.
     pub fn template_ids(&self) -> Vec<u16> {
         self.messages.keys().copied().collect()
     }
@@ -234,13 +259,18 @@ impl SbeSchema {
 /// A decoded field value.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SbeValue {
+    /// An unsigned integer field.
     Uint(u64),
+    /// A signed integer field.
     Int(i64),
+    /// A fixed-width ASCII field, trimmed.
     Text(String),
+    /// An exact fixed-point number, decoded from a mantissa and exponent.
     Number(Decimal),
 }
 
 impl SbeValue {
+    /// The value as an unsigned integer, where that conversion is exact.
     pub fn as_u64(&self) -> Option<u64> {
         match self {
             Self::Uint(value) => Some(*value),
@@ -250,6 +280,7 @@ impl SbeValue {
         }
     }
 
+    /// The value as an exact decimal.
     pub fn as_decimal(&self) -> Option<Decimal> {
         match self {
             Self::Number(value) => Some(*value),
@@ -259,6 +290,7 @@ impl SbeValue {
         }
     }
 
+    /// The value as text, for the encodings that carry it.
     pub fn as_text(&self) -> Option<&str> {
         match self {
             Self::Text(text) => Some(text),
@@ -307,6 +339,7 @@ pub struct SbeDecoder {
 }
 
 impl SbeDecoder {
+    /// A decoder for one feed, refusing a schema that cannot be used.
     pub fn new(
         venue: VenueId,
         feed: impl Into<String>,
@@ -324,10 +357,12 @@ impl SbeDecoder {
         })
     }
 
+    /// Align the decoder with the transport's sequence number.
     pub fn set_sequence(&mut self, sequence: u64) {
         self.next_sequence = sequence;
     }
 
+    /// The schema this decoder reads against.
     pub fn schema(&self) -> &SbeSchema {
         &self.schema
     }

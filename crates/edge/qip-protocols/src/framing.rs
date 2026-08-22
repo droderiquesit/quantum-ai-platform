@@ -149,6 +149,7 @@ pub struct JsonFrameDecoder {
 }
 
 impl JsonFrameDecoder {
+    /// A decoder for one venue's framed JSON feed.
     pub fn new(
         venue: VenueId,
         feed: impl Into<String>,
@@ -428,6 +429,7 @@ impl Default for StreamAssembler {
 }
 
 impl StreamAssembler {
+    /// An assembler holding nothing, bounded at [`crate::decoder::MAX_FRAME_BYTES`].
     pub fn new() -> Self {
         Self {
             pending: Vec::new(),
@@ -435,6 +437,7 @@ impl StreamAssembler {
         }
     }
 
+    /// Refuse a carry-over larger than `max_pending`.
     pub fn with_capacity_limit(mut self, max_pending: usize) -> Self {
         self.max_pending = max_pending;
         self

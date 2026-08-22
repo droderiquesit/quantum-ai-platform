@@ -28,8 +28,6 @@
 //! time. Nothing downstream ever sees a symbol string, which keeps the
 //! per-instrument state of every consumer keyed by an integer.
 
-#![deny(missing_docs)]
-
 pub mod bytes;
 pub mod decoder;
 pub mod fix;

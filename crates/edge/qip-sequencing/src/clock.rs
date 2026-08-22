@@ -36,11 +36,14 @@ use std::collections::VecDeque;
 /// One observation: what the venue said, and when this cell saw it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClockObservation {
+    /// What the venue said the time was.
     pub venue_time: Timestamp,
+    /// When this cell's hardware saw the message.
     pub capture_time: Timestamp,
 }
 
 impl ClockObservation {
+    /// One observation of the two clocks.
     pub fn new(venue_time: Timestamp, capture_time: Timestamp) -> Self {
         Self {
             venue_time,
@@ -65,6 +68,7 @@ pub struct ClockEstimate {
     pub drift_nanos_per_sec_f64: f64,
     /// How tightly the observations bound the offset, in nanoseconds.
     pub uncertainty_nanos_f64: f64,
+    /// Observations the estimate was drawn from.
     pub samples: usize,
     /// Whether the estimate clears both the sample-count and spread thresholds.
     pub trustworthy: bool,
@@ -126,6 +130,7 @@ impl ClockDiscipline {
         self.clamped
     }
 
+    /// Observations currently in the window.
     pub fn samples(&self) -> usize {
         self.observations.len()
     }
