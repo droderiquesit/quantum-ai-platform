@@ -20,6 +20,7 @@ pub mod constraints;
 pub mod costs;
 pub mod extensions;
 pub mod identifiers;
+pub mod intelligence;
 pub mod object;
 pub mod quality;
 pub mod risk_profile;
@@ -31,6 +32,9 @@ pub use constraints::{Jurisdiction, RegulatoryConstraints, TradingRestriction};
 pub use costs::{LiquidityProfile, TransactionCostModel};
 pub use extensions::Extension;
 pub use identifiers::{IdentifierKind, Identifiers};
+pub use intelligence::{
+    AlternativeDataPoint, EntityMention, FundamentalUpdate, MacroObservation, NewsItem, Sentiment,
+};
 pub use object::{FinancialObject, ObjectBuilder};
 pub use quality::{DataQuality, LicensingClass, Provenance};
 pub use risk_profile::{FactorExposures, Greeks, RiskCharacteristics};

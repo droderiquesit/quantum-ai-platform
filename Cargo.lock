@@ -156,6 +156,7 @@ name = "qip-financial"
 version = "0.1.0"
 dependencies = [
  "qip-core",
+ "qip-events",
  "serde",
  "serde_json",
 ]
@@ -233,6 +234,7 @@ name = "qip-market"
 version = "0.1.0"
 dependencies = [
  "qip-core",
+ "qip-events",
  "qip-financial",
  "qip-numerics",
  "serde",
@@ -261,6 +263,7 @@ dependencies = [
  "qip-events",
  "qip-financial",
  "qip-market",
+ "qip-market-ingestion",
  "serde",
  "serde_json",
 ]
