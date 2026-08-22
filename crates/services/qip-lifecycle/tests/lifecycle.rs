@@ -253,7 +253,11 @@ fn every_path_from_candidate_to_scaled_passes_through_shadow() -> Result<()> {
         if let Some(next) = stage.next() {
             let promotion = AuthorisedPromotion::advance(
                 stage,
-                Some(dual_approval("s", start(), "a stated reason for the record")?),
+                Some(dual_approval(
+                    "s",
+                    start(),
+                    "a stated reason for the record",
+                )?),
                 start(),
             )?;
             assert_eq!(promotion.to(), next);
@@ -405,7 +409,10 @@ fn a_sub_threshold_deflated_sharpe_is_read_as_a_failure_rather_than_a_score() ->
         .iter()
         .find(|(name, _, _)| name == "deflated_sharpe_credible")
         .ok_or_else(|| qip_core::error::Error::not_found("credibility finding"))?;
-    assert!(!credible.1, "a sub-threshold result cannot pass on probability");
+    assert!(
+        !credible.1,
+        "a sub-threshold result cannot pass on probability"
+    );
     assert!(
         credible.2.contains("not a confidence"),
         "the detail must say why the probability is not read: {}",
@@ -486,12 +493,13 @@ fn a_pilot_without_kill_conditions_or_a_bound_does_not_pass_its_gate() -> Result
         envelope: None,
         kill_conditions: Vec::new(),
     };
-    let outcome = PilotGate::default().evaluate(
-        &StrategyEvidence::new().with_pilot(bare),
-        start(),
-    );
+    let outcome = PilotGate::default().evaluate(&StrategyEvidence::new().with_pilot(bare), start());
     assert!(!outcome.passed);
-    let failed: Vec<&str> = outcome.failures().iter().map(|(n, _, _)| n.as_str()).collect();
+    let failed: Vec<&str> = outcome
+        .failures()
+        .iter()
+        .map(|(n, _, _)| n.as_str())
+        .collect();
     assert!(failed.contains(&"bounded_capital_envelope"), "{failed:?}");
     assert!(failed.contains(&"kill_conditions_stated"), "{failed:?}");
     Ok(())
@@ -505,8 +513,7 @@ fn scaling_on_the_pilots_own_approval_is_refused_because_scaling_is_a_new_decisi
     // Reuse the pilot's approval verbatim: nobody looked at the pilot results.
     scaled.scaling_approval = scaled.pilot_approval.clone();
 
-    let outcome =
-        ScaledGate::default().evaluate(&StrategyEvidence::new().with_scaled(scaled), now);
+    let outcome = ScaledGate::default().evaluate(&StrategyEvidence::new().with_scaled(scaled), now);
     assert!(!outcome.passed);
     assert!(
         outcome
@@ -526,8 +533,7 @@ fn scaling_beyond_modelled_capacity_is_refused() -> Result<()> {
     let mut scaled = strong_scaled(pilot_start, now)?;
     scaled.proposed_notional = scaled.modelled_capacity;
 
-    let outcome =
-        ScaledGate::default().evaluate(&StrategyEvidence::new().with_scaled(scaled), now);
+    let outcome = ScaledGate::default().evaluate(&StrategyEvidence::new().with_scaled(scaled), now);
     assert!(
         outcome
             .failures()
@@ -568,7 +574,13 @@ fn demotion_can_reach_any_lower_rung_from_anywhere() -> Result<()> {
     ] {
         let mut ledger = LifecycleLedger::new();
         walk_to_scaled(&mut ledger)?;
-        ledger.demote(&strategy(), target, "risk-monitor", "a stated reason", start())?;
+        ledger.demote(
+            &strategy(),
+            target,
+            "risk-monitor",
+            "a stated reason",
+            start(),
+        )?;
         assert_eq!(ledger.stage_of(&strategy()), target);
     }
     Ok(())
@@ -579,7 +591,12 @@ fn retirement_is_terminal_and_a_retired_strategy_must_be_re_proposed_as_a_new_ca
 -> Result<()> {
     let mut ledger = LifecycleLedger::new();
     walk_to_scaled(&mut ledger)?;
-    ledger.retire(&strategy(), "portfolio-committee", "the edge is gone", start())?;
+    ledger.retire(
+        &strategy(),
+        "portfolio-committee",
+        "the edge is gone",
+        start(),
+    )?;
     assert_eq!(ledger.stage_of(&strategy()), GateStage::Retired);
 
     // Nothing promotes out of retirement: the ladder has no rung above it…
@@ -641,7 +658,9 @@ fn the_ledger_reconstructs_the_full_path_with_its_evidence_and_approvers() -> Re
     }
 
     // The demotion carries neither.
-    let last = history.last().ok_or_else(|| qip_core::error::Error::not_found("entry"))?;
+    let last = history
+        .last()
+        .ok_or_else(|| qip_core::error::Error::not_found("entry"))?;
     assert!(last.outcome.is_none());
     assert!(last.approval.is_none());
     assert!(last.promotion.approver.is_none());
@@ -674,7 +693,11 @@ fn pilot_fixture() -> Result<(LifecycleLedger, PilotBaseline)> {
         GateStage::Pilot,
     ] {
         let approval = if target.requires_human_approval() {
-            Some(dual_approval("momentum-v3", pilot_start, "the gate checks all passed")?)
+            Some(dual_approval(
+                "momentum-v3",
+                pilot_start,
+                "the gate checks all passed",
+            )?)
         } else {
             None
         };
@@ -787,7 +810,10 @@ fn regime_drift_demotes_a_strategy_out_of_capital() -> Result<()> {
     let mut observation = healthy_observation(now);
     // Same edge per unit of risk, four times the realised volatility: the
     // market the strategy was sized in is gone.
-    observation.returns = good_returns(8, 60, 0.0015).iter().map(|r| r * 4.0).collect();
+    observation.returns = good_returns(8, 60, 0.0015)
+        .iter()
+        .map(|r| r * 4.0)
+        .collect();
 
     let (triggers, demotion) = DemotionMonitor::default().enforce(
         &mut ledger,
@@ -836,8 +862,7 @@ fn each_stated_kill_condition_fires_on_its_own_breach() -> Result<()> {
     for (label, breach) in breaches {
         let mut observation = healthy_observation(now);
         breach(&mut observation);
-        let triggers =
-            monitor.triggers(&baseline, &observation, Some(&healthy_registry(now)), now);
+        let triggers = monitor.triggers(&baseline, &observation, Some(&healthy_registry(now)), now);
         assert!(
             triggers
                 .iter()
@@ -966,7 +991,12 @@ fn every_gate_reports_each_check_it_ran_so_a_reviewer_can_see_the_whole_test() -
             gate.stage(),
             outcome.findings
         );
-        assert!(outcome.passed, "{:?}: {:?}", gate.stage(), outcome.failures());
+        assert!(
+            outcome.passed,
+            "{:?}: {:?}",
+            gate.stage(),
+            outcome.failures()
+        );
     }
     Ok(())
 }

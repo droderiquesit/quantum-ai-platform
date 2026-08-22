@@ -149,7 +149,10 @@ impl Gate for HoldoutGate {
                 .record(
                     "deflated_sharpe_above_selection",
                     false,
-                    format!("the Sharpe ratio could not be deflated: {}", error.message()),
+                    format!(
+                        "the Sharpe ratio could not be deflated: {}",
+                        error.message()
+                    ),
                 )
                 .record(
                     "deflated_sharpe_credible",
@@ -221,7 +224,10 @@ impl Gate for HoldoutGate {
             } else {
                 let findings = leakage.findings();
                 if findings.is_empty() {
-                    format!("{} feature timings audited, none leaking", leakage.timings.len())
+                    format!(
+                        "{} feature timings audited, none leaking",
+                        leakage.timings.len()
+                    )
                 } else {
                     findings.join("; ")
                 }
@@ -491,6 +497,11 @@ impl Default for PilotPolicy {
             // logic; two is the minimum that can cover both a loss path and a
             // behaviour path.
             minimum_kill_conditions: 2,
+            // A month is long enough to gather live evidence and short enough
+            // that renewing is a decision somebody makes rather than a
+            // formality. A ceiling on the grant itself, rather than only on
+            // what the allocator computes, means a mis-sized allocation cannot
+            // reach a pilot: the gate is the second, independent bound.
             maximum_envelope_life: Duration::from_days(30),
             maximum_pilot_gross: Decimal::from_int(1_000_000),
         }
@@ -714,7 +725,10 @@ impl Gate for ScaledGate {
         // The scaling approval must be its own decision. An approval reused
         // from the pilot would mean nobody looked at the pilot's results
         // before committing more capital against them.
-        let distinct = match (scaled.pilot_approval.as_ref(), scaled.scaling_approval.as_ref()) {
+        let distinct = match (
+            scaled.pilot_approval.as_ref(),
+            scaled.scaling_approval.as_ref(),
+        ) {
             (Some(pilot), Some(scaling)) => {
                 scaling.at > pilot.at && scaling.rationale != pilot.rationale
             }
@@ -723,17 +737,19 @@ impl Gate for ScaledGate {
         outcome.record(
             "scaling_decided_separately",
             distinct,
-            match (scaled.pilot_approval.as_ref(), scaled.scaling_approval.as_ref()) {
+            match (
+                scaled.pilot_approval.as_ref(),
+                scaled.scaling_approval.as_ref(),
+            ) {
                 (Some(pilot), Some(scaling)) if !distinct => format!(
                     "the scaling approval at {} does not postdate and restate the pilot \
                      approval at {}",
                     scaling.at.to_rfc3339(),
                     pilot.at.to_rfc3339()
                 ),
-                (Some(_), Some(scaling)) => format!(
-                    "scaling approved separately at {}",
-                    scaling.at.to_rfc3339()
-                ),
+                (Some(_), Some(scaling)) => {
+                    format!("scaling approved separately at {}", scaling.at.to_rfc3339())
+                }
                 _ => "both the pilot approval and a separate scaling approval are required"
                     .to_string(),
             },

@@ -43,10 +43,10 @@
 //! travels with the code that has it.
 
 use crate::allocation::Allocation;
+use qip_contracts::CapitalEnvelope;
 use qip_contracts::governance::Approval;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
-use qip_contracts::CapitalEnvelope;
 use qip_core::error::{Error, Result};
 use qip_core::hash::{constant_time_eq, from_hex, to_hex};
 use qip_core::{Decimal, Duration, Timestamp, hmac_sha256};
@@ -153,7 +153,10 @@ impl EnvelopeIssuer {
         if key_id.trim().is_empty() {
             return Err(Error::invalid("a signing key must be identifiable"));
         }
-        Ok(Self { signing_key, key_id })
+        Ok(Self {
+            signing_key,
+            key_id,
+        })
     }
 
     pub fn key_id(&self) -> &str {

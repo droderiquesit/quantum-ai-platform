@@ -32,9 +32,9 @@
 use crate::evidence::KillCondition;
 use crate::ledger::LifecycleLedger;
 use qip_ai::registry::ModelRegistry;
+use qip_contracts::CapitalEnvelope;
 use qip_contracts::gate::{GateStage, Promotion};
 use qip_contracts::signal::StrategyId;
-use qip_contracts::CapitalEnvelope;
 use qip_core::error::Result;
 use qip_core::{Decimal, Timestamp};
 use qip_numerics::stats;
@@ -90,15 +90,15 @@ impl KillCondition {
                     observation.realised_loss
                 )
             }),
-            Self::Drawdown(fraction) => (observation.peak_to_trough_drawdown >= *fraction).then(
-                || {
+            Self::Drawdown(fraction) => {
+                (observation.peak_to_trough_drawdown >= *fraction).then(|| {
                     format!(
                         "drawdown {:.2}% reached the {:.2}% kill condition",
                         observation.peak_to_trough_drawdown * 100.0,
                         fraction * 100.0
                     )
-                },
-            ),
+                })
+            }
             Self::ConsecutiveLosingDays(days) => (observation.consecutive_losing_days >= *days)
                 .then(|| {
                     format!(
@@ -273,12 +273,10 @@ impl DemotionMonitor {
         let mut triggers = Vec::new();
 
         if observation.returns.len() >= self.policy.minimum_live_observations {
-            if let Ok(report) =
-                assess_overfitting(
-                    std::slice::from_ref(&baseline.returns),
-                    std::slice::from_ref(&observation.returns),
-                )
-                && report.degradation < self.policy.minimum_retained_performance
+            if let Ok(report) = assess_overfitting(
+                std::slice::from_ref(&baseline.returns),
+                std::slice::from_ref(&observation.returns),
+            ) && report.degradation < self.policy.minimum_retained_performance
             {
                 triggers.push(DemotionTrigger::PerformanceDecay {
                     baseline_sharpe: report.in_sample_sharpe,

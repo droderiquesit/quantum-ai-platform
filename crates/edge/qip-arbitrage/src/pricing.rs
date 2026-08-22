@@ -17,6 +17,14 @@
 //!   fill is reported as short. It is never extrapolated to the size that was
 //!   asked for, because the extrapolated price is exactly the price that does
 //!   not exist.
+//!
+//! What comes out is gross of every conversion cost. Fees are not netted off
+//! here even though each edge knows its own: they are charged once, by name, in
+//! [`crate::netedge`], and a cost taken off in two places is a cost nobody can
+//! find. The rate the search worked from does include them — a search that
+//! chased cycles which only pay before fees would waste every stage after it —
+//! which is why [`crate::graph::ConversionEdge::effective_rate`] and the
+//! quantities here deliberately differ.
 
 use crate::arith::{div, mul};
 use crate::graph::{ArbitrageGraph, EdgeKind, Node, PathKind, SyntheticComponent};
@@ -123,10 +131,11 @@ pub struct PricedConversion {
     pub to: Node,
     /// Units of `from.object` going in.
     pub input: Decimal,
-    /// Units of `to.object` coming out, priced off the book.
+    /// Units of `to.object` coming out, priced off the book and gross of the
+    /// conversion's own cost.
     pub output: Decimal,
-    /// What the quoted rate said would come out. The gap between this and
-    /// `output` is what mid pricing would have missed.
+    /// What the quoted rate said would come out, on the same gross basis. The
+    /// gap between this and `output` is what mid pricing would have missed.
     pub indicative_output: Decimal,
     pub cost_fraction: Decimal,
     pub legs: Vec<PathLeg>,
@@ -286,11 +295,8 @@ pub fn price_path(
             fewest = fewest.min(source.observations(&leg.venue, &leg.object));
         }
 
-        conversion.indicative_output = mul(
-            indicative_carried,
-            edge.effective_rate()?,
-            "indicative output",
-        )?;
+        conversion.indicative_output =
+            mul(indicative_carried, edge.indicative_rate, "indicative output")?;
         indicative_carried = conversion.indicative_output;
         carried = conversion.output;
         conversions.push(conversion);
@@ -340,7 +346,8 @@ fn price_transfer(
 ) -> Result<PricedConversion> {
     let from_class = venue_class(graph, &edge.from.venue)?;
     let to_class = venue_class(graph, &edge.to.venue)?;
-    let output = mul(input, Decimal::ONE - edge.cost_fraction, "transfer output")?;
+    // Gross of the transfer's own cost, which the fee deduction charges once.
+    let output = input;
     Ok(PricedConversion {
         edge: edge_index,
         kind: edge.kind.as_str().to_string(),
@@ -412,19 +419,18 @@ fn price_trade(
         ))
     })?;
 
-    let net_of_cost = Decimal::ONE - edge.cost_fraction;
     let (quantity, output) = match side {
         BookSide::Bid => {
             let filled = available.min(requested);
             let proceeds = mul(filled, executable_price, "sale proceeds")?;
-            (filled, mul(proceeds, net_of_cost, "trade output")?)
+            (filled, proceeds)
         }
         BookSide::Ask => {
             // Cash is finite: a sweep that came back more expensive than the
             // quote buys less, not the same amount on credit.
             let affordable = div(input, executable_price, "affordable quantity")?;
             let acquired = available.min(requested).min(affordable);
-            (acquired, mul(acquired, net_of_cost, "trade output")?)
+            (acquired, acquired)
         }
     };
 
@@ -615,7 +621,6 @@ fn price_synthetic(
         reachable_units
     };
 
-    let net_of_cost = Decimal::ONE - edge.cost_fraction;
     let mut legs = Vec::with_capacity(quotes.len());
     let mut realised_flow = Decimal::ZERO;
     for quote in &quotes {
@@ -648,7 +653,7 @@ fn price_synthetic(
     }
 
     let output = if assembling {
-        mul(achieved_units, net_of_cost, "synthetic output")?
+        achieved_units
     } else {
         if realised_flow <= Decimal::ZERO {
             return Err(Error::numeric(format!(
@@ -656,7 +661,7 @@ fn price_synthetic(
                 synthetic_object.as_str()
             )));
         }
-        mul(realised_flow, net_of_cost, "synthetic output")?
+        realised_flow
     };
 
     let fully_available = legs.iter().all(PathLeg::has_depth);

@@ -23,8 +23,8 @@
 //! choice from being 30% for two days, and both are defensible.
 
 use crate::exposure::{AggregateExposure, CellPosition};
-use qip_core::error::{Error, Result};
 use qip_core::Decimal;
+use qip_core::error::{Error, Result};
 use qip_financial::costs::LiquidityProfile;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -235,10 +235,12 @@ pub fn assess_liquidity(
     let mut net_quantity: BTreeMap<String, Decimal> = BTreeMap::new();
     let mut gross_notional: BTreeMap<String, Decimal> = BTreeMap::new();
     for position in positions {
-        *net_quantity.entry(position.instrument.clone()).or_insert(Decimal::ZERO) +=
-            position.quantity;
-        *gross_notional.entry(position.instrument.clone()).or_insert(Decimal::ZERO) +=
-            position.signed_notional().abs();
+        *net_quantity
+            .entry(position.instrument.clone())
+            .or_insert(Decimal::ZERO) += position.quantity;
+        *gross_notional
+            .entry(position.instrument.clone())
+            .or_insert(Decimal::ZERO) += position.signed_notional().abs();
     }
 
     let mut horizons = Vec::with_capacity(net_quantity.len());
@@ -248,7 +250,10 @@ pub fn assess_liquidity(
     let mut weighted_denominator = 0.0;
 
     for (instrument, quantity) in &net_quantity {
-        let gross = gross_notional.get(instrument).copied().unwrap_or(Decimal::ZERO);
+        let gross = gross_notional
+            .get(instrument)
+            .copied()
+            .unwrap_or(Decimal::ZERO);
         // Reuse the profile's own arithmetic with the participation rate the
         // caller chose, rather than the profile's default policy rate.
         let days = liquidity.get(instrument).and_then(|profile| {

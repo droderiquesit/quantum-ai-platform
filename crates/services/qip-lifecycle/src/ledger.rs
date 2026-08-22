@@ -24,8 +24,8 @@ use crate::evidence::StrategyEvidence;
 use qip_contracts::gate::{GateOutcome, GateStage, Promotion};
 use qip_contracts::governance::Approval;
 use qip_contracts::signal::StrategyId;
-use qip_core::error::{Error, Result};
 use qip_core::Timestamp;
+use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -242,15 +242,21 @@ impl LifecycleLedger {
                 .findings
                 .iter()
                 .map(|(name, passed, detail)| {
-                    format!("{name}={} ({detail})", if *passed { "pass" } else { "fail" })
+                    format!(
+                        "{name}={} ({detail})",
+                        if *passed { "pass" } else { "fail" }
+                    )
                 })
                 .collect(),
         };
-        self.entries.entry(strategy.clone()).or_default().push(LedgerEntry {
-            promotion: record.clone(),
-            outcome: Some(outcome),
-            approval: promotion.approval().cloned(),
-        });
+        self.entries
+            .entry(strategy.clone())
+            .or_default()
+            .push(LedgerEntry {
+                promotion: record.clone(),
+                outcome: Some(outcome),
+                approval: promotion.approval().cloned(),
+            });
         Ok(record)
     }
 
@@ -274,9 +280,7 @@ impl LifecycleLedger {
     ) -> Result<Promotion> {
         let current = self.stage_of(strategy);
         if current == GateStage::Retired {
-            return Err(Error::denied(format!(
-                "{strategy} is already retired"
-            )));
+            return Err(Error::denied(format!("{strategy} is already retired")));
         }
         if to != GateStage::Retired && to >= current {
             return Err(Error::invalid(format!(
@@ -303,11 +307,14 @@ impl LifecycleLedger {
             rationale: format!("{}: {}", raised_by, reason.into()),
             evidence: Vec::new(),
         };
-        self.entries.entry(strategy.clone()).or_default().push(LedgerEntry {
-            promotion: record.clone(),
-            outcome: None,
-            approval: None,
-        });
+        self.entries
+            .entry(strategy.clone())
+            .or_default()
+            .push(LedgerEntry {
+                promotion: record.clone(),
+                outcome: None,
+                approval: None,
+            });
         Ok(record)
     }
 

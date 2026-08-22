@@ -109,7 +109,9 @@ impl AllocationLimits {
             ("per-venue", default_per_venue),
         ] {
             if limit.is_negative() {
-                return Err(Error::invalid(format!("the {label} limit cannot be negative")));
+                return Err(Error::invalid(format!(
+                    "the {label} limit cannot be negative"
+                )));
             }
         }
         Ok(Self {
@@ -135,11 +137,17 @@ impl AllocationLimits {
     }
 
     pub fn cell_limit(&self, cell: &str) -> Decimal {
-        self.per_cell.get(cell).copied().unwrap_or(self.default_per_cell)
+        self.per_cell
+            .get(cell)
+            .copied()
+            .unwrap_or(self.default_per_cell)
     }
 
     pub fn venue_limit(&self, venue: &VenueId) -> Decimal {
-        self.per_venue.get(venue).copied().unwrap_or(self.default_per_venue)
+        self.per_venue
+            .get(venue)
+            .copied()
+            .unwrap_or(self.default_per_venue)
     }
 }
 
@@ -185,19 +193,25 @@ impl DrawdownSchedule {
     /// broken by configuration.
     pub fn new(steps: Vec<(f64, Decimal)>) -> Result<Self> {
         if steps.is_empty() {
-            return Err(Error::invalid("a drawdown schedule needs at least one step"));
+            return Err(Error::invalid(
+                "a drawdown schedule needs at least one step",
+            ));
         }
         let mut previous_drawdown = f64::NEG_INFINITY;
         let mut previous_multiplier = Decimal::MAX;
         for (drawdown, multiplier) in &steps {
             if !drawdown.is_finite() || *drawdown < 0.0 {
-                return Err(Error::invalid("a drawdown step must be a non-negative fraction"));
+                return Err(Error::invalid(
+                    "a drawdown step must be a non-negative fraction",
+                ));
             }
             if *drawdown <= previous_drawdown {
                 return Err(Error::invalid("drawdown steps must ascend"));
             }
             if multiplier.is_negative() || *multiplier > Decimal::ONE {
-                return Err(Error::invalid("an allocation multiplier must lie in [0, 1]"));
+                return Err(Error::invalid(
+                    "an allocation multiplier must lie in [0, 1]",
+                ));
             }
             if *multiplier > previous_multiplier {
                 return Err(Error::invalid(
@@ -220,7 +234,11 @@ impl DrawdownSchedule {
     /// than the last step takes the last step's multiplier, which in the
     /// shipped schedule is zero.
     pub fn multiplier_at(&self, drawdown: f64) -> Decimal {
-        let drawdown = if drawdown.is_finite() { drawdown.max(0.0) } else { 1.0 };
+        let drawdown = if drawdown.is_finite() {
+            drawdown.max(0.0)
+        } else {
+            1.0
+        };
         let mut multiplier = Decimal::ONE;
         for (threshold, step) in &self.steps {
             if drawdown >= *threshold {
@@ -381,7 +399,12 @@ impl CapitalAllocator {
 
         let mut scored: Vec<(f64, &StrategyProposal)> = proposals
             .iter()
-            .map(|proposal| (proposal.risk_adjusted_edge(self.uncertainty_penalty), proposal))
+            .map(|proposal| {
+                (
+                    proposal.risk_adjusted_edge(self.uncertainty_penalty),
+                    proposal,
+                )
+            })
             .collect();
         // Descending edge, then ascending id. Sorting on a total order rather
         // than a partial one keeps the plan reproducible when two strategies
@@ -463,7 +486,10 @@ impl CapitalAllocator {
                 ),
                 (
                     cell_remaining,
-                    format!("headroom of {cell_remaining} left at cell {}", proposal.cell),
+                    format!(
+                        "headroom of {cell_remaining} left at cell {}",
+                        proposal.cell
+                    ),
                 ),
                 (
                     venue_remaining,
@@ -487,9 +513,10 @@ impl CapitalAllocator {
             if notional.is_zero() {
                 plan.refusals.push((
                     proposal.strategy.clone(),
-                    binding.last().cloned().unwrap_or_else(|| {
-                        "no headroom remained under any limit".to_string()
-                    }),
+                    binding
+                        .last()
+                        .cloned()
+                        .unwrap_or_else(|| "no headroom remained under any limit".to_string()),
                 ));
                 continue;
             }

@@ -423,6 +423,38 @@ impl Expr {
         }
     }
 
+    /// The subexpressions this one is built from.
+    pub fn children(&self) -> Vec<&Self> {
+        match self {
+            Self::Exact(_) | Self::Statistic(_) | Self::Count(_) | Self::Flag(_) | Self::Feature(_) => {
+                Vec::new()
+            }
+            Self::Negate(inner)
+            | Self::Magnitude(inner)
+            | Self::Invert(inner)
+            | Self::Widen(inner) => vec![inner.as_ref()],
+            Self::Ratio {
+                numerator: left,
+                denominator: right,
+            }
+            | Self::Arithmetic { left, right, .. }
+            | Self::Compare { left, right, .. }
+            | Self::Logical { left, right, .. }
+            | Self::Extremum { left, right, .. } => vec![left.as_ref(), right.as_ref()],
+            Self::Select {
+                condition: first,
+                when_true: second,
+                when_false: third,
+            }
+            | Self::Bounded {
+                value: first,
+                low: second,
+                high: third,
+            } => vec![first.as_ref(), second.as_ref(), third.as_ref()],
+            Self::Model { inputs, .. } => inputs.iter().collect(),
+        }
+    }
+
     /// Every feature this expression reads, in first-seen order.
     pub fn features(&self) -> Vec<FeatureKey> {
         let mut found = Vec::new();

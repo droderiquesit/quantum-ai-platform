@@ -42,7 +42,9 @@ pub struct CellPosition {
 impl CellPosition {
     /// Signed notional, in the position's own currency.
     pub fn signed_notional(&self) -> Decimal {
-        self.quantity.checked_mul(self.price).unwrap_or(Decimal::ZERO)
+        self.quantity
+            .checked_mul(self.price)
+            .unwrap_or(Decimal::ZERO)
     }
 
     pub fn is_short(&self) -> bool {
@@ -143,7 +145,9 @@ impl AggregateExposure {
             aggregate.by_instrument.add(&position.instrument, notional);
             aggregate.by_sector.add(position.sector.as_str(), notional);
             aggregate.by_venue.add(position.venue.as_str(), notional);
-            aggregate.by_currency.add(position.currency.as_str(), notional);
+            aggregate
+                .by_currency
+                .add(position.currency.as_str(), notional);
             aggregate.by_cell.add(&position.cell, notional);
             aggregate
                 .contributors
@@ -221,7 +225,11 @@ impl AggregateExposure {
                 }
             })
             .collect();
-        out.sort_by(|a, b| b.gross.cmp(&a.gross).then_with(|| a.instrument.cmp(&b.instrument)));
+        out.sort_by(|a, b| {
+            b.gross
+                .cmp(&a.gross)
+                .then_with(|| a.instrument.cmp(&b.instrument))
+        });
         out
     }
 

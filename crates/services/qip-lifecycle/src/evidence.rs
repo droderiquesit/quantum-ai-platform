@@ -219,14 +219,21 @@ impl ShadowEvidence {
         if self.decisions.is_empty() {
             return 0.0;
         }
-        let agreed = self.decisions.iter().filter(|d| d.directions_agree()).count();
+        let agreed = self
+            .decisions
+            .iter()
+            .filter(|d| d.directions_agree())
+            .count();
         agreed as f64 / self.decisions.len() as f64
     }
 
     /// Median relative size divergence over decisions where a size was wanted.
     pub fn median_size_divergence(&self) -> f64 {
-        let divergences: Vec<f64> =
-            self.decisions.iter().filter_map(ShadowDecision::size_divergence).collect();
+        let divergences: Vec<f64> = self
+            .decisions
+            .iter()
+            .filter_map(ShadowDecision::size_divergence)
+            .collect();
         if divergences.is_empty() {
             return 0.0;
         }
@@ -234,7 +241,10 @@ impl ShadowEvidence {
     }
 
     pub fn disagreements(&self) -> Vec<&ShadowDecision> {
-        self.decisions.iter().filter(|d| !d.directions_agree()).collect()
+        self.decisions
+            .iter()
+            .filter(|d| !d.directions_agree())
+            .collect()
     }
 }
 
@@ -252,7 +262,10 @@ pub enum KillCondition {
     /// Consecutive sessions closing down.
     ConsecutiveLosingDays(u32),
     /// Realised cost per fill running above what the strategy was priced on.
-    CostOverrun { modelled_bps: f64, tolerance_bps: f64 },
+    CostOverrun {
+        modelled_bps: f64,
+        tolerance_bps: f64,
+    },
 }
 
 impl KillCondition {

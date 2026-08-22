@@ -24,8 +24,8 @@
 //! asks for during an incident: how much unacknowledged risk is still out
 //! there, and when it stops on its own.
 
-use qip_contracts::signal::StrategyId;
 use qip_contracts::CapitalEnvelope;
+use qip_contracts::signal::StrategyId;
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Timestamp};
 use serde::{Deserialize, Serialize};

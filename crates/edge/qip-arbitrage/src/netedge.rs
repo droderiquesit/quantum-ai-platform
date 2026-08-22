@@ -2,7 +2,8 @@
 //!
 //! The gross figure is the easy part and the least interesting: it is the
 //! quantity that comes back at the end of the cycle, minus the quantity that
-//! went in. What decides whether the trade happens is everything taken off it,
+//! went in, before anything is charged for getting it. What decides whether the
+//! trade happens is everything taken off it,
 //! and [`NetEdge::require_complete`] is the reason each one has to be named
 //! rather than assumed away. A deduction that was never considered does not
 //! show up as zero here; it shows up as a refusal.

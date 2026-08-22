@@ -21,8 +21,8 @@
 //! strategy whose alpha could pay for more. Reporting which one bound matters,
 //! because only one of them can be relaxed by finding a better strategy.
 
-use qip_core::error::{Error, Result};
 use qip_core::Decimal;
+use qip_core::error::{Error, Result};
 use qip_financial::costs::{LiquidityProfile, TransactionCostModel};
 use serde::{Deserialize, Serialize};
 

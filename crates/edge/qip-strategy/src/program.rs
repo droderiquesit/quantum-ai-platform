@@ -188,6 +188,11 @@ impl Program {
         &self.nodes
     }
 
+    /// Drop everything after `length`, used to undo a failed compilation.
+    pub(crate) fn truncate(&mut self, length: usize) {
+        self.nodes.truncate(length);
+    }
+
     pub(crate) fn push(&mut self, node: Node) -> NodeRef {
         let index = self.nodes.len() as u32;
         self.nodes.push(node);
@@ -356,7 +361,7 @@ pub(crate) fn evaluate_op(op: &Op, values: &[Option<FeatureValue>]) -> Result<Fe
 fn mismatch(operation: &str, value: FeatureValue) -> Error {
     Error::invalid(format!(
         "{operation} was given a {} value, which the type checker should have refused",
-        Type::of(&value).map_or("undefined", Type::as_str)
+        Type::of(&value).map_or("undefined", |kind| kind.as_str())
     ))
 }
 
