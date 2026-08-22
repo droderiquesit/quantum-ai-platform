@@ -74,6 +74,37 @@ impl ComplianceReport {
 
     /// Every caveat across every control, for a reviewer who wants the honest
     /// list rather than the headline.
+    /// A copy of this report carrying one more caveat against a control.
+    ///
+    /// Consuming rather than mutating: a report is evidence, and evidence that
+    /// can be edited after it was generated is worth less than evidence that
+    /// cannot. This produces a *new* report instead, for the case where the
+    /// assembler knows something the plane cannot — most obviously how the
+    /// signing key it was handed was obtained, which no amount of inspecting
+    /// the key itself will reveal.
+    ///
+    /// A caveat against a control the report does not carry is an error rather
+    /// than a silent no-op: it means the caller is describing a control this
+    /// plane does not enforce, and dropping the note would hide that.
+    pub fn with_additional_caveat(
+        mut self,
+        control: Control,
+        caveat: impl Into<String>,
+    ) -> Result<Self> {
+        let status = self
+            .statuses
+            .iter_mut()
+            .find(|status| status.control == control)
+            .ok_or_else(|| {
+                Error::not_found(format!(
+                    "this report carries no {} status to caveat",
+                    control.as_str()
+                ))
+            })?;
+        status.caveats.push(caveat.into());
+        Ok(self)
+    }
+
     pub fn caveats(&self) -> Vec<(Control, &str)> {
         self.statuses
             .iter()

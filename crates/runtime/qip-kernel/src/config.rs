@@ -6,6 +6,7 @@
 //! platform assembled from `Default::default()` cannot trade live no matter
 //! what else is configured.
 
+use crate::central::CentralConfig;
 use qip_core::time::Duration;
 use qip_optimization_engine::router::RoutingPolicy;
 use qip_portfolio_engine::construction::Mandate;
@@ -37,6 +38,14 @@ pub struct PlatformConfig {
     pub licensed_datasets: Vec<String>,
     /// How long an agent authorisation is valid before review.
     pub agent_review_interval: Duration,
+    /// How the central plane is sized and bounded.
+    ///
+    /// `#[serde(default)]` so a configuration written before the central plane
+    /// existed still deserialises: an operator's stored config should not stop
+    /// being readable because the platform grew a subsystem it does not
+    /// mention.
+    #[serde(default)]
+    pub central: CentralConfig,
 }
 
 impl Default for PlatformConfig {
@@ -52,6 +61,7 @@ impl Default for PlatformConfig {
             cycle_interval: Duration::from_mins(5),
             licensed_datasets: Vec::new(),
             agent_review_interval: Duration::from_days(90),
+            central: CentralConfig::default(),
         }
     }
 }
@@ -78,6 +88,12 @@ impl PlatformConfig {
 
     pub fn with_licensed_datasets(mut self, datasets: Vec<String>) -> Self {
         self.licensed_datasets = datasets;
+        self
+    }
+
+    /// Size and bound the central plane.
+    pub fn with_central(mut self, central: CentralConfig) -> Self {
+        self.central = central;
         self
     }
 

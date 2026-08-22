@@ -10,6 +10,7 @@
 //! notice that REASON keeps failing. Every failure is recorded in the
 //! [`crate::cycle::CycleReport`] rather than propagated.
 
+use crate::central::{CellIngestion, CellOutcome, CellReport, CentralPlane, LearningReport};
 use crate::config::PlatformConfig;
 use crate::cycle::{CycleReport, Stage, StageOutcome};
 use qip_agents::memory::ResearchMemory;
@@ -20,7 +21,7 @@ use qip_core::ids::ProposalId;
 use qip_core::lineage::CorrelationId;
 use qip_core::lineage::Lineage;
 use qip_core::time::Timestamp;
-use qip_core::{Context, Currency, Decimal, Money, PortfolioId};
+use qip_core::{Context, Currency, Decimal, Hasher256, Money, PortfolioId};
 use qip_events::log::EventLog;
 use qip_execution_engine::broker::{Broker, SimulatedBroker, SimulationSettings};
 use qip_execution_engine::oms::OrderManager;
@@ -71,6 +72,14 @@ pub struct Platform {
     attributor: Attributor,
     evaluator: ThesisEvaluator,
     feedback: FeedbackEngine,
+
+    /// The central plane: the strategy factory, capital allocation, the
+    /// governance controls and cross-cell exposure. Assembled here so there is
+    /// still exactly one place that knows how the pieces fit together, and
+    /// touched by nothing in [`Platform::run_cycle`] — the loop above runs one
+    /// process against the market in front of it, and the centre reasons about
+    /// every cell on its own schedule.
+    central: CentralPlane,
 
     // State carried between cycles.
     cycle: u64,
@@ -154,7 +163,13 @@ impl Platform {
             router = router.with_quantum(Arc::new(SimulatedProvider::new(config.seed)));
         }
 
+        let central = CentralPlane::with_reproducible_key(
+            &central_signing_secret(config.seed),
+            config.central.clone(),
+        )?;
+
         Ok(Self {
+            central,
             constructor: PortfolioConstructor::new(config.mandate, router)?,
             reasoning: ReasoningEngine::new(config.review),
             opportunities: OpportunityEngine::new(
@@ -188,6 +203,82 @@ impl Platform {
 
     pub fn config(&self) -> &PlatformConfig {
         &self.config
+    }
+
+    /// The central plane.
+    ///
+    /// The half of the platform that is allowed to be slow: strategy research
+    /// and the approval ladder, capital allocation across cells, aggregate
+    /// exposure, and the six governance controls. See
+    /// `docs/adr/0008-edge-cells-decide-alone.md`.
+    pub fn central(&self) -> &CentralPlane {
+        &self.central
+    }
+
+    pub fn central_mut(&mut self) -> &mut CentralPlane {
+        &mut self.central
+    }
+
+    /// Replace the central plane with one built elsewhere.
+    ///
+    /// The escape hatch for the one thing [`PlatformConfig`] deliberately
+    /// cannot carry: real key material. The plane assembled by
+    /// [`Platform::new`] signs under a secret derived from
+    /// [`PlatformConfig::seed`], which is reproducible — exactly what a test
+    /// and a replay want, and exactly what a deployment must not have, because
+    /// anyone who knows the seed can mint an envelope. A deployment builds
+    /// [`CentralPlane::new`] with a secret from its key store and swaps it in
+    /// here.
+    pub fn set_central(&mut self, central: CentralPlane) {
+        self.central = central;
+    }
+
+    /// Enumerate the six governance controls and what enforces each.
+    ///
+    /// A platform that cannot produce this should not begin trading, which is
+    /// what [`qip_compliance::ComplianceReport::require_fully_enforced`] is
+    /// for. The report carries its caveats as well as its verdict: the honest
+    /// gaps are part of the compliance position, and a report that reported
+    /// only the headline would be the more dangerous artefact.
+    pub fn compliance_report(&self, now: Timestamp) -> Result<qip_compliance::ComplianceReport> {
+        self.central.compliance_report(now)
+    }
+
+    /// Absorb one edge cell's report into the central plane.
+    ///
+    /// Here rather than on [`CentralPlane`] alone because a reconciliation
+    /// break has to reach the platform's own kill switch: an operator reading
+    /// `qip_risk_engine::autonomy` must see every halt, and a second kill
+    /// switch inside the central plane would be a halt nobody was looking at.
+    /// The halt is scoped to the reporting cell — the other cells' books still
+    /// reconcile, and stopping them would turn one cell's bookkeeping failure
+    /// into the platform's outage.
+    pub fn ingest_cell_report(
+        &mut self,
+        report: CellReport,
+        now: Timestamp,
+    ) -> Result<CellIngestion> {
+        // Two disjoint fields, borrowed as fields rather than through
+        // accessors, which is what lets the central plane trip the platform's
+        // own switch instead of keeping one of its own.
+        let Self {
+            central, autonomy, ..
+        } = self;
+        central.ingest(report, autonomy.kill_switch_mut(), now)
+    }
+
+    /// Feed realised cell outcomes back into the ladder and the allocator.
+    ///
+    /// The learn edge for strategies, distinct from [`Platform::learn_from`],
+    /// which scores resolved theses. A thesis resolves on its own horizon; a
+    /// strategy is judged against the baseline it was promoted on, and the two
+    /// answer different questions with different evidence.
+    pub fn learn_from_cells(
+        &mut self,
+        outcomes: &[CellOutcome],
+        now: Timestamp,
+    ) -> Result<LearningReport> {
+        self.central.learn(outcomes, None, now)
     }
 
     pub fn context(&self) -> &Context {
@@ -806,6 +897,22 @@ impl Platform {
     pub fn last_correlation(&self) -> Option<CorrelationId> {
         None
     }
+}
+
+/// The signing secret the central plane is assembled with.
+///
+/// Derived from the configured seed rather than read from anywhere, because
+/// the platform has no ambient source of entropy and must not grow one: a
+/// replay of the same configuration has to produce the same signatures. That
+/// makes it reproducible and therefore useless as a production secret — anyone
+/// who knows the seed can mint an envelope. A deployment overrides it with
+/// [`Platform::set_central`], and until asymmetric signing arrives the gap is
+/// named here rather than in an issue tracker.
+fn central_signing_secret(seed: u64) -> [u8; 32] {
+    let mut hasher = Hasher256::new();
+    hasher.update(b"qip-kernel/central-plane-signing-key");
+    hasher.update(&seed.to_le_bytes());
+    hasher.finish()
 }
 
 /// The mechanism an anomaly implies, and the claim it supports.
