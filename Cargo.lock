@@ -459,6 +459,7 @@ dependencies = [
  "qip-entity-resolution",
  "qip-events",
  "qip-financial",
+ "qip-market",
  "qip-numerics",
  "serde",
  "serde_json",

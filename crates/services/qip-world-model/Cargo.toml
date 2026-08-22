@@ -14,6 +14,7 @@ qip-core.workspace = true
 qip-numerics.workspace = true
 qip-events.workspace = true
 qip-financial.workspace = true
+qip-market.workspace = true
 qip-ai.workspace = true
 qip-entity-resolution.workspace = true
 
