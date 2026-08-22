@@ -1,0 +1,17 @@
+[package]
+name = "qip-quantum"
+description = "Quantum provider port, in-tree statevector simulator, QUBO and QAOA."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+qip-core.workspace = true
+qip-numerics.workspace = true
+
+[lints]
+workspace = true

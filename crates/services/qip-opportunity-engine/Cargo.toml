@@ -1,0 +1,22 @@
+[package]
+name = "qip-opportunity-engine"
+description = "DISCOVER: anomaly, regime and structural-break detection feeding ranked opportunities."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+qip-core.workspace = true
+qip-numerics.workspace = true
+qip-events.workspace = true
+qip-financial.workspace = true
+qip-market.workspace = true
+qip-world-model.workspace = true
+qip-quant.workspace = true
+
+[lints]
+workspace = true

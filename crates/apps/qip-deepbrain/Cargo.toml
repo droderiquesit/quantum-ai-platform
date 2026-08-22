@@ -1,0 +1,26 @@
+[package]
+name = "qip-deepbrain"
+description = "Deep Brain node: world model, discovery, reasoning, simulation, optimisation and learning."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "qip-deepbrain"
+path = "src/main.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+qip-core.workspace = true
+qip-events.workspace = true
+qip-financial.workspace = true
+qip-observability.workspace = true
+qip-storage.workspace = true
+qip-kernel.workspace = true
+qip-api.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,2 @@
+# Financial code frequently needs many-argument constructors for value objects.
+too-many-arguments-threshold = 12

@@ -1,0 +1,23 @@
+[package]
+name = "qip-optimization-engine"
+description = "DECIDE: classical and quantum solvers behind a benchmarking compute router."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+qip-core.workspace = true
+qip-numerics.workspace = true
+qip-events.workspace = true
+qip-financial.workspace = true
+qip-portfolio.workspace = true
+qip-risk.workspace = true
+qip-quantum.workspace = true
+qip-observability.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,22 @@
+[package]
+name = "qip-risk-engine"
+description = "Risk authority: pre-trade, real-time and post-trade control with veto power."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+qip-core.workspace = true
+qip-numerics.workspace = true
+qip-events.workspace = true
+qip-financial.workspace = true
+qip-market.workspace = true
+qip-portfolio.workspace = true
+qip-risk.workspace = true
+
+[lints]
+workspace = true

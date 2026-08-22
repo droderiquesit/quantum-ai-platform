@@ -1,0 +1,21 @@
+/target
+**/*.rs.bk
+Cargo.lock.orig
+
+# Local platform state written by the demo / dev runtime
+/.qip-state/
+/artifacts/
+*.jsonl.tmp
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+*.tfvars.local
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

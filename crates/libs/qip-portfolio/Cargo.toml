@@ -1,0 +1,18 @@
+[package]
+name = "qip-portfolio"
+description = "Positions, portfolios and exact double-entry accounting."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+qip-core.workspace = true
+qip-financial.workspace = true
+qip-market.workspace = true
+
+[lints]
+workspace = true

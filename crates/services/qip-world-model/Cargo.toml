@@ -1,0 +1,21 @@
+[package]
+name = "qip-world-model"
+description = "UNDERSTAND: the bitemporal knowledge graph, causal graph and feature store."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+qip-core.workspace = true
+qip-numerics.workspace = true
+qip-events.workspace = true
+qip-financial.workspace = true
+qip-ai.workspace = true
+qip-entity-resolution.workspace = true
+
+[lints]
+workspace = true

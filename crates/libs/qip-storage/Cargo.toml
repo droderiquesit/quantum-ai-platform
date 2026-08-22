@@ -1,0 +1,17 @@
+[package]
+name = "qip-storage"
+description = "Persistence ports and the file/in-memory adapters used outside GCP."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+qip-core.workspace = true
+qip-events.workspace = true
+
+[lints]
+workspace = true

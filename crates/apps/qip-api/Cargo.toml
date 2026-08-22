@@ -1,0 +1,28 @@
+[package]
+name = "qip-api"
+description = "HTTP API and web server: routing, authn/authz, rate limits and audit logging."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+qip-core.workspace = true
+qip-events.workspace = true
+qip-financial.workspace = true
+qip-portfolio.workspace = true
+qip-risk.workspace = true
+qip-observability.workspace = true
+qip-storage.workspace = true
+qip-kernel.workspace = true
+qip-web.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "qip-api"
+path = "src/main.rs"

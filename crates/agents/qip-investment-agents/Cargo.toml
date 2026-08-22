@@ -1,0 +1,26 @@
+[package]
+name = "qip-investment-agents"
+description = "The machine investment organisation: eighteen governed specialist agents."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+qip-core.workspace = true
+qip-numerics.workspace = true
+qip-events.workspace = true
+qip-financial.workspace = true
+qip-market.workspace = true
+qip-portfolio.workspace = true
+qip-risk.workspace = true
+qip-ai.workspace = true
+qip-agents.workspace = true
+qip-world-model.workspace = true
+qip-quant.workspace = true
+
+[lints]
+workspace = true

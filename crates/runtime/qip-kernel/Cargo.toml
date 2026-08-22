@@ -1,0 +1,41 @@
+[package]
+name = "qip-kernel"
+description = "Composition root: wires services onto the bus and runs the intelligence loop."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+qip-core.workspace = true
+qip-numerics.workspace = true
+qip-events.workspace = true
+qip-financial.workspace = true
+qip-market.workspace = true
+qip-portfolio.workspace = true
+qip-risk.workspace = true
+qip-ai.workspace = true
+qip-agents.workspace = true
+qip-quantum.workspace = true
+qip-storage.workspace = true
+qip-observability.workspace = true
+qip-quant.workspace = true
+qip-market-ingestion.workspace = true
+qip-normalization.workspace = true
+qip-entity-resolution.workspace = true
+qip-world-model.workspace = true
+qip-opportunity-engine.workspace = true
+qip-reasoning-engine.workspace = true
+qip-simulation-engine.workspace = true
+qip-optimization-engine.workspace = true
+qip-portfolio-engine.workspace = true
+qip-risk-engine.workspace = true
+qip-execution-engine.workspace = true
+qip-learning-engine.workspace = true
+qip-investment-agents.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,18 @@
+[package]
+name = "qip-agents"
+description = "Agent runtime: governance, capability enforcement, memory and budgets."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+qip-core.workspace = true
+qip-ai.workspace = true
+qip-observability.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,20 @@
+[package]
+name = "qip-web"
+description = "Institutional web application, rendered server-side in Rust with no JavaScript."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+qip-core.workspace = true
+qip-financial.workspace = true
+qip-portfolio.workspace = true
+qip-risk.workspace = true
+qip-events.workspace = true
+
+[lints]
+workspace = true
