@@ -95,6 +95,19 @@ pub fn any_returns(rng: &mut Xoshiro256, n: usize) -> Vec<f64> {
 }
 
 /// Assert two floats agree within an absolute-or-relative tolerance.
+/// Whether a value is exactly zero.
+///
+/// For assertions on quantities the code returns as a literal rather than
+/// computes — a deferred agent's conviction, a rejected thesis's surviving
+/// confidence. There the exact comparison is the point: a tolerance would let
+/// a near-zero computed value pass a check that means "this carries no weight
+/// at all". Wrapped in a function so the `float_cmp` allow stays confined to
+/// the cases that have been thought about.
+#[allow(clippy::float_cmp)]
+pub fn is_exactly_zero(value: f64) -> bool {
+    value == 0.0
+}
+
 pub fn approx_eq(a: f64, b: f64, tol: f64) -> bool {
     if a.is_nan() || b.is_nan() {
         return false;

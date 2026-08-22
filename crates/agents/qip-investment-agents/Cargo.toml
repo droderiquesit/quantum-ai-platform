@@ -22,5 +22,8 @@ qip-agents.workspace = true
 qip-world-model.workspace = true
 qip-quant.workspace = true
 
+[dev-dependencies]
+qip-reasoning-engine.workspace = true
+
 [lints]
 workspace = true
