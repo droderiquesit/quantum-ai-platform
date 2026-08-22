@@ -702,7 +702,7 @@ fn absorbing_bars_builds_a_price_history_and_a_volatility_feature() {
     let mut price = 100.0;
     for day in 0..40 {
         price *= if day % 2 == 0 { 1.015 } else { 0.99 };
-        model.absorb_bar(&Bar {
+        let bar = Bar {
             object_id: object.clone(),
             venue: "XNYS".into(),
             interval: Interval::Day,
@@ -715,7 +715,11 @@ fn absorbing_bars_builds_a_price_history_and_a_volatility_feature() {
             vwap: None,
             trade_count: 5_000,
             quality: DataQuality::clean(),
-        });
+        };
+        // A daily bar this test builds itself is knowable the moment its
+        // period closes; a bar off a wire would pass its arrival time.
+        let known_at = bar.close_time();
+        model.absorb_bar(&bar, known_at);
     }
     model.recompute_volatility(object.as_str(), 20, now());
 
@@ -858,4 +862,84 @@ fn the_model_is_deterministic() {
             .collect::<Vec<_>>()
     };
     assert_eq!(build(), build());
+}
+
+#[test]
+fn a_bar_off_a_wire_is_not_knowable_when_it_closed() {
+    // The look-ahead this argument exists to prevent. A bar closes at the
+    // venue and arrives here later; stamping availability at the close makes
+    // every feature derived from it readable before it existed — and a
+    // point-in-time read cannot catch that, because the record itself claims
+    // to have been available.
+    let (mut model, _) = seeded_model();
+    let object = ObjectId::from_string("OBJ00000000000000000NWSC");
+    let bar = Bar {
+        object_id: object.clone(),
+        venue: "XNYS".into(),
+        interval: Interval::Day,
+        open_time: days_ago(1),
+        open: Decimal::from_int(100),
+        high: Decimal::from_int(101),
+        low: Decimal::from_int(99),
+        close: Decimal::from_int(100),
+        volume: Decimal::from_int(1_000_000),
+        vwap: None,
+        trade_count: 5_000,
+        quality: DataQuality::clean(),
+    };
+    let closed = bar.close_time();
+    let arrived = closed.saturating_add(qip_core::Duration::from_millis(250));
+    model.absorb_bar(&bar, arrived);
+
+    assert!(
+        model
+            .features()
+            .current("close", object.as_str(), closed)
+            .is_none(),
+        "the close was readable a quarter of a second before the platform had it"
+    );
+    let known = model
+        .features()
+        .current("close", object.as_str(), arrived)
+        .expect("readable once it had arrived");
+    assert_eq!(
+        known.availability_lag(),
+        qip_core::Duration::from_millis(250),
+        "the feed's latency was lost rather than recorded"
+    );
+    assert_eq!(known.valid_at, closed, "valid time is still the bar's own");
+}
+
+#[test]
+fn a_bar_cannot_be_known_before_the_period_it_summarises_ended() {
+    // The combination has no physical meaning and always means a clock or a
+    // parser rather than a very fast feed, so it is clamped rather than
+    // trusted.
+    let (mut model, _) = seeded_model();
+    let object = ObjectId::from_string("OBJ00000000000000000NWSC");
+    let bar = Bar {
+        object_id: object.clone(),
+        venue: "XNYS".into(),
+        interval: Interval::Day,
+        open_time: days_ago(1),
+        open: Decimal::from_int(100),
+        high: Decimal::from_int(101),
+        low: Decimal::from_int(99),
+        close: Decimal::from_int(100),
+        volume: Decimal::from_int(1_000_000),
+        vwap: None,
+        trade_count: 5_000,
+        quality: DataQuality::clean(),
+    };
+    let closed = bar.close_time();
+    model.absorb_bar(
+        &bar,
+        closed.saturating_sub(qip_core::Duration::from_hours(1)),
+    );
+
+    let value = model
+        .features()
+        .current("close", object.as_str(), closed)
+        .expect("clamped forward to the close rather than dropped");
+    assert_eq!(value.available_at, closed);
 }

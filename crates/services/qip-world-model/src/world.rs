@@ -379,19 +379,40 @@ impl WorldModel {
     }
 
     /// Absorb a bar as price and volume features.
-    pub fn absorb_bar(&mut self, bar: &Bar) {
+    /// Absorb a bar, stating when this platform could first have acted on it.
+    ///
+    /// `known_at` is not the bar's close time. A bar closes at the venue and
+    /// arrives here later — over a wire, through a vendor, after a batch — and
+    /// the gap is routinely hundreds of milliseconds. Stamping availability at
+    /// the close would make every feature derived from the bar readable before
+    /// it existed, which is a look-ahead a point-in-time read cannot catch
+    /// because the record itself claims to have been available.
+    ///
+    /// A caller computing a bar from ticks it has already absorbed passes the
+    /// close time and is right to; a caller reading a feed passes the arrival
+    /// time. Requiring the argument is what makes the difference a decision
+    /// rather than a default nobody revisits.
+    ///
+    /// A `known_at` before the close is clamped forward: a bar cannot have
+    /// been knowable before the period it summarises had finished, and the
+    /// combination always means a clock or a parser rather than a fast feed.
+    pub fn absorb_bar(&mut self, bar: &Bar, known_at: Timestamp) {
         let object = bar.object_id.as_str();
-        // A bar is knowable only once its bucket has closed.
-        let available_at = bar.close_time();
+        let valid_at = bar.close_time();
+        let available_at = if known_at < valid_at {
+            valid_at
+        } else {
+            known_at
+        };
         self.features.record(
             "close",
             object,
-            FeatureValue::new(bar.close.to_f64(), available_at, available_at),
+            FeatureValue::new(bar.close.to_f64(), valid_at, available_at),
         );
         self.features.record(
             "volume",
             object,
-            FeatureValue::new(bar.volume.to_f64(), available_at, available_at),
+            FeatureValue::new(bar.volume.to_f64(), valid_at, available_at),
         );
     }
 
