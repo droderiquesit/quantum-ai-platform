@@ -148,10 +148,7 @@ impl ClockDiscipline {
             .iter()
             .map(|observation| observation.raw().as_nanos() as f64)
             .collect();
-        let minimum = raw_nanos
-            .iter()
-            .copied()
-            .fold(f64::INFINITY, f64::min);
+        let minimum = raw_nanos.iter().copied().fold(f64::INFINITY, f64::min);
 
         // The spread between the quartiles: robust to one absurd sample, and it
         // is the honest bound on where the true constant term sits, since any
@@ -163,10 +160,17 @@ impl ClockDiscipline {
         // that it is reported as zero rather than as a number invented from two
         // observations.
         let drift_nanos_per_sec_f64 = if self.observations.len() >= 3 {
+            // Seconds since the window's first observation, not since the epoch.
+            // A regressor of 1.7e9 with a spread of a few seconds loses the
+            // spread to rounding, and the fitted slope comes back as noise.
+            let base = self
+                .observations
+                .front()
+                .map_or(0, |observation| observation.capture_time.as_nanos());
             let seconds: Vec<f64> = self
                 .observations
                 .iter()
-                .map(|observation| observation.capture_time.as_nanos() as f64 / 1e9)
+                .map(|observation| (observation.capture_time.as_nanos() - base) as f64 / 1e9)
                 .collect();
             stats::linear_fit(&seconds, &raw_nanos)
                 .ok()

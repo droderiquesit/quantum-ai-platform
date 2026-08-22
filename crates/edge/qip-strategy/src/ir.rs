@@ -426,9 +426,11 @@ impl Expr {
     /// The subexpressions this one is built from.
     pub fn children(&self) -> Vec<&Self> {
         match self {
-            Self::Exact(_) | Self::Statistic(_) | Self::Count(_) | Self::Flag(_) | Self::Feature(_) => {
-                Vec::new()
-            }
+            Self::Exact(_)
+            | Self::Statistic(_)
+            | Self::Count(_)
+            | Self::Flag(_)
+            | Self::Feature(_) => Vec::new(),
             Self::Negate(inner)
             | Self::Magnitude(inner)
             | Self::Invert(inner)

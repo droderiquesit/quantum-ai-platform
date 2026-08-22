@@ -157,8 +157,8 @@ impl MeshTarget {
                  Spanner Database User",
             ),
             Self::SpannerGraph => Some(
-                "the same Spanner instance and database with a property graph defined, and a \
-                 service account with Cloud Spanner Database User",
+                "the same GCP project, Spanner instance and database with a property graph \
+                 defined, and a service account with Cloud Spanner Database User",
             ),
             Self::CloudStorageWorm => Some(
                 "GCP project, a bucket with a locked retention policy, and a service account \

@@ -98,7 +98,10 @@ impl FeatureGraph {
             }
             if let Some(path) = self.path_to(dependency, id) {
                 let mut named = vec![canonical.clone()];
-                named.extend(path.into_iter().map(|node| self.nodes[node].key.canonical()));
+                named.extend(
+                    path.into_iter()
+                        .map(|node| self.nodes[node].key.canonical()),
+                );
                 return Err(Error::invalid(format!(
                     "feature cycle: {}",
                     named.join(" -> ")

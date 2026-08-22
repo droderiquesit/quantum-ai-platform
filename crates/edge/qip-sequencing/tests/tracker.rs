@@ -5,7 +5,7 @@ use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::testing::Property;
 use qip_core::{Decimal, Duration, ObjectId, Timestamp};
 use qip_sequencing::{
-    GapReason, ReorderPolicy, SequenceEvent, SequenceTracker, Sequencer, SequencedBatch,
+    GapReason, ReorderPolicy, SequenceEvent, SequenceTracker, SequencedBatch, Sequencer,
 };
 use std::collections::BTreeSet;
 
@@ -190,7 +190,10 @@ fn an_abandoned_gap_tells_the_consumer_to_discard_before_it_hands_over_anything_
     let MessageBody::Reset { reason } = &batch.released[0].body else {
         panic!("checked above");
     };
-    assert!(reason.contains("2..=4"), "the reason names what was lost: {reason}");
+    assert!(
+        reason.contains("2..=4"),
+        "the reason names what was lost: {reason}"
+    );
     assert!(matches!(
         batch.events.last(),
         Some(SequenceEvent::GapAbandoned {
@@ -366,12 +369,18 @@ fn two_streams_never_manufacture_gaps_in_each_other() {
         at(0),
     );
 
-    assert_eq!(batch.released.len(), 3, "each partition numbers from its own origin");
+    assert_eq!(
+        batch.released.len(),
+        3,
+        "each partition numbers from its own origin"
+    );
     assert_eq!(batch.watermarks.len(), 2);
-    assert!(batch.events.iter().all(|event| !matches!(
-        event,
-        SequenceEvent::GapOpened { .. }
-    )));
+    assert!(
+        batch
+            .events
+            .iter()
+            .all(|event| !matches!(event, SequenceEvent::GapOpened { .. }))
+    );
 }
 
 #[test]

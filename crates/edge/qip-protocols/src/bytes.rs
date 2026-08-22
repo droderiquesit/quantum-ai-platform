@@ -67,7 +67,9 @@ impl<'a> Reader<'a> {
     /// know which offset the decoder reached for.
     pub fn slice(&self, offset: usize, width: usize) -> Result<&'a [u8]> {
         let end = offset.checked_add(width).ok_or_else(|| {
-            Error::schema(format!("field extent {offset}+{width} overflows an address"))
+            Error::schema(format!(
+                "field extent {offset}+{width} overflows an address"
+            ))
         })?;
         self.bytes.get(offset..end).ok_or_else(|| {
             Error::schema(format!(
@@ -113,20 +115,35 @@ impl<'a> Reader<'a> {
         let raw = self.slice(offset, width)?;
         let text: String = raw
             .iter()
-            .map(|&b| if b.is_ascii_graphic() || b == b' ' { char::from(b) } else { '?' })
+            .map(|&b| {
+                if b.is_ascii_graphic() || b == b' ' {
+                    char::from(b)
+                } else {
+                    '?'
+                }
+            })
             .collect();
         Ok(text.trim().to_string())
     }
 
     /// A price transmitted as an integer with `exponent` implied decimals.
-    pub fn fixed(&self, offset: usize, width: usize, signed: bool, exponent: u32) -> Result<Decimal> {
+    pub fn fixed(
+        &self,
+        offset: usize,
+        width: usize,
+        signed: bool,
+        exponent: u32,
+    ) -> Result<Decimal> {
         let mantissa = if signed {
             i128::from(self.int(offset, width)?)
         } else {
             i128::from(self.uint(offset, width)?)
         };
-        Decimal::from_scaled(mantissa, exponent)
-            .ok_or_else(|| Error::numeric(format!("price mantissa {mantissa} with exponent {exponent} is out of range")))
+        Decimal::from_scaled(mantissa, exponent).ok_or_else(|| {
+            Error::numeric(format!(
+                "price mantissa {mantissa} with exponent {exponent} is out of range"
+            ))
+        })
     }
 }
 
@@ -138,7 +155,12 @@ impl<'a> Reader<'a> {
 /// what day it was would decode a recorded feed differently on replay, which is
 /// the one thing this platform is built not to do.
 pub fn since_midnight(session_midnight: Timestamp, nanos_of_day: u64) -> Result<Timestamp> {
-    let nanos = i64::try_from(nanos_of_day)
-        .map_err(|_| Error::schema(format!("nanoseconds-of-day {nanos_of_day} does not fit a timestamp")))?;
-    Ok(Timestamp::from_nanos(session_midnight.as_nanos().saturating_add(nanos)))
+    let nanos = i64::try_from(nanos_of_day).map_err(|_| {
+        Error::schema(format!(
+            "nanoseconds-of-day {nanos_of_day} does not fit a timestamp"
+        ))
+    })?;
+    Ok(Timestamp::from_nanos(
+        session_midnight.as_nanos().saturating_add(nanos),
+    ))
 }

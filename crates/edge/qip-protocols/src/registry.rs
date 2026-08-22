@@ -15,8 +15,8 @@
 use crate::decoder::Decoder;
 use crate::framing::StreamAssembler;
 use qip_contracts::{MarketMessage, VenueId};
-use qip_core::error::{Error, Result};
 use qip_core::Timestamp;
+use qip_core::error::{Error, Result};
 use std::collections::BTreeMap;
 
 /// A venue's feed, as the registry keys it.
@@ -98,7 +98,11 @@ impl ProtocolRegistry {
             .collect()
     }
 
-    pub fn decoder_mut(&mut self, venue: &VenueId, feed: &str) -> Result<&mut (dyn Decoder + 'static)> {
+    pub fn decoder_mut(
+        &mut self,
+        venue: &VenueId,
+        feed: &str,
+    ) -> Result<&mut (dyn Decoder + 'static)> {
         let key = FeedKey::new(venue.clone(), feed);
         self.feeds
             .get_mut(&key)
@@ -118,10 +122,9 @@ impl ProtocolRegistry {
         captured_at: Timestamp,
     ) -> Result<Vec<MarketMessage>> {
         let key = FeedKey::new(venue.clone(), feed);
-        let entry = self
-            .feeds
-            .get_mut(&key)
-            .ok_or_else(|| Error::not_found(format!("no decoder registered for {}", key.label())))?;
+        let entry = self.feeds.get_mut(&key).ok_or_else(|| {
+            Error::not_found(format!("no decoder registered for {}", key.label()))
+        })?;
         entry
             .assembler
             .push(entry.decoder.as_mut(), bytes, captured_at)
@@ -137,10 +140,9 @@ impl ProtocolRegistry {
     /// Drop the carry-over buffer for a feed after a resynchronisation.
     pub fn resynchronise(&mut self, venue: &VenueId, feed: &str) -> Result<()> {
         let key = FeedKey::new(venue.clone(), feed);
-        let entry = self
-            .feeds
-            .get_mut(&key)
-            .ok_or_else(|| Error::not_found(format!("no decoder registered for {}", key.label())))?;
+        let entry = self.feeds.get_mut(&key).ok_or_else(|| {
+            Error::not_found(format!("no decoder registered for {}", key.label()))
+        })?;
         entry.assembler.reset();
         Ok(())
     }

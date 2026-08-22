@@ -81,9 +81,7 @@ pub use compile::{
     CompiledRule, CompiledStrategy, CompilerLimits, CompilerReport, StrategyCompiler, Warning,
     WarningKind,
 };
-pub use ir::{
-    ArithmeticOp, CompareOp, Expr, ExtremumOp, LogicalOp, Rule, StrategySpec, Type,
-};
+pub use ir::{ArithmeticOp, CompareOp, Expr, ExtremumOp, LogicalOp, Rule, StrategySpec, Type};
 pub use model::{DistilledModel, ModelForm, TreeNode};
 pub use program::{Node, NodeRef, Op, Program};
 pub use runtime::StrategyRuntime;

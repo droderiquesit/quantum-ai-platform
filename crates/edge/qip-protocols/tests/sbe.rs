@@ -48,7 +48,12 @@ fn schema() -> SbeSchema {
             SbeEncoding::Uint { width: 4 },
             FieldRole::Quantity,
         ),
-        SbeField::new("Symbol", 12, SbeEncoding::Ascii { width: 8 }, FieldRole::Symbol),
+        SbeField::new(
+            "Symbol",
+            12,
+            SbeEncoding::Ascii { width: 8 },
+            FieldRole::Symbol,
+        ),
         SbeField::new("Side", 20, SbeEncoding::Uint { width: 1 }, FieldRole::Side),
         SbeField::new(
             "UpdateAction",
@@ -166,12 +171,16 @@ fn book_message(version: u16, block_padding: usize, entry_padding: usize) -> Vec
 #[test]
 fn a_repeating_group_becomes_one_message_per_entry_sharing_the_venue_sequence() {
     let mut decoder = decoder();
-    let messages = decoder.decode(&book_message(1, 0, 0), at()).expect("decodes");
+    let messages = decoder
+        .decode(&book_message(1, 0, 0), at())
+        .expect("decodes");
 
     assert_eq!(messages.len(), 2);
-    assert!(messages
-        .iter()
-        .all(|message| message.origin.sequence == 5_000 && message.origin.partition == 11));
+    assert!(
+        messages
+            .iter()
+            .all(|message| message.origin.sequence == 5_000 && message.origin.partition == 11)
+    );
     let MessageBody::LevelSet {
         side,
         price,
@@ -191,7 +200,9 @@ fn a_repeating_group_becomes_one_message_per_entry_sharing_the_venue_sequence() 
 fn a_newer_schema_with_extra_trailing_fields_decodes_identically_rather_than_failing() {
     // The whole point of reading the block length from the message: the venue
     // adds fields on a Sunday and this build keeps running on Monday.
-    let baseline = decoder().decode(&book_message(1, 0, 0), at()).expect("decodes");
+    let baseline = decoder()
+        .decode(&book_message(1, 0, 0), at())
+        .expect("decodes");
     let extended = decoder()
         .decode(&book_message(4, 12, 8), at())
         .expect("a message from a newer schema version must still decode");
@@ -285,7 +296,10 @@ fn a_message_that_has_not_finished_arriving_yields_nothing_and_consumes_nothing(
         let messages = decoder
             .decode(&bytes[..prefix], at())
             .unwrap_or_else(|error| panic!("prefix of {prefix} bytes errored: {error}"));
-        assert!(messages.is_empty(), "{prefix}-byte prefix produced a message");
+        assert!(
+            messages.is_empty(),
+            "{prefix}-byte prefix produced a message"
+        );
         assert_eq!(decoder.consumed(), 0, "{prefix}-byte prefix consumed bytes");
     }
 }

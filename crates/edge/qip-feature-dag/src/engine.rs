@@ -150,12 +150,8 @@ impl FeatureEngine {
             let declared = node.kind;
             let value = match &node.definition {
                 Some(definition) => {
-                    let ctx = FeatureContext::new(
-                        as_of,
-                        &self.state,
-                        &self.scratch,
-                        self.max_staleness,
-                    );
+                    let ctx =
+                        FeatureContext::new(as_of, &self.state, &self.scratch, self.max_staleness);
                     definition.compute(&ctx)?
                 }
                 // A feature nobody defined has no value, and saying so is the

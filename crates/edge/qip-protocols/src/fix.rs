@@ -161,9 +161,9 @@ impl FixDecoder {
         captured_at: Timestamp,
         out: &mut Vec<MarketMessage>,
     ) -> Result<()> {
-        let msg_type = fields.first(TAG_MSG_TYPE).ok_or_else(|| {
-            Error::schema(format!("{PROTOCOL}: message has no MsgType (35)"))
-        })?;
+        let msg_type = fields
+            .first(TAG_MSG_TYPE)
+            .ok_or_else(|| Error::schema(format!("{PROTOCOL}: message has no MsgType (35)")))?;
         let sequence = fields
             .first(TAG_MSG_SEQ_NUM)
             .and_then(parse_u64)
@@ -186,7 +186,9 @@ impl FixDecoder {
         match msg_type {
             "W" => self.decode_snapshot(fields, sequence, venue_time, captured_at, offset, out),
             "X" => self.decode_incremental(fields, sequence, venue_time, captured_at, offset, out),
-            "8" => self.decode_execution_report(fields, sequence, venue_time, captured_at, offset, out),
+            "8" => {
+                self.decode_execution_report(fields, sequence, venue_time, captured_at, offset, out)
+            }
             other => {
                 self.skip(
                     SkipReason::UnknownMessageType {
@@ -223,7 +225,11 @@ impl FixDecoder {
             }
         };
         let Some(partition) = self.instruments.resolve(&symbol) else {
-            self.skip(SkipReason::UnmappedInstrument { symbol }, offset, captured_at);
+            self.skip(
+                SkipReason::UnmappedInstrument { symbol },
+                offset,
+                captured_at,
+            );
             return Ok(());
         };
         let origin = self.identity.origin(partition, sequence);
@@ -292,7 +298,11 @@ impl FixDecoder {
                 }
             };
             let Some(partition) = self.instruments.resolve(&symbol) else {
-                self.skip(SkipReason::UnmappedInstrument { symbol }, offset, captured_at);
+                self.skip(
+                    SkipReason::UnmappedInstrument { symbol },
+                    offset,
+                    captured_at,
+                );
                 continue;
             };
             let action = entry.first(TAG_MD_UPDATE_ACTION).unwrap_or("0");
@@ -410,7 +420,11 @@ impl FixDecoder {
             }
         };
         let Some(partition) = self.instruments.resolve(&symbol) else {
-            self.skip(SkipReason::UnmappedInstrument { symbol }, offset, captured_at);
+            self.skip(
+                SkipReason::UnmappedInstrument { symbol },
+                offset,
+                captured_at,
+            );
             return Ok(());
         };
 
@@ -531,9 +545,9 @@ impl<'a> FixFields<'a> {
                 continue;
             }
             let text = as_text(chunk)?;
-            let (tag, value) = text.split_once('=').ok_or_else(|| {
-                Error::schema(format!("{PROTOCOL}: field `{text}` has no `=`"))
-            })?;
+            let (tag, value) = text
+                .split_once('=')
+                .ok_or_else(|| Error::schema(format!("{PROTOCOL}: field `{text}` has no `=`")))?;
             let tag = parse_u32(tag)
                 .ok_or_else(|| Error::schema(format!("{PROTOCOL}: `{tag}` is not a tag number")))?;
             entries.push((tag, value));
@@ -555,11 +569,7 @@ impl<'a> FixFields<'a> {
     /// tag, so the caller has to say which tag that is — it differs per group
     /// and getting it wrong silently merges entries.
     pub fn group(&self, count_tag: u32, delimiter_tag: u32) -> Vec<FixFields<'a>> {
-        let Some(start) = self
-            .entries
-            .iter()
-            .position(|(tag, _)| *tag == count_tag)
-        else {
+        let Some(start) = self.entries.iter().position(|(tag, _)| *tag == count_tag) else {
             return Vec::new();
         };
         let declared = self

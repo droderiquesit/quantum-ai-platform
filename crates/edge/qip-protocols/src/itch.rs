@@ -23,8 +23,7 @@
 
 use crate::bytes::{ByteOrder, Reader, since_midnight};
 use crate::decoder::{
-    Decoder, Diagnostics, FeedIdentity, InstrumentPartitions, SkipReason, SkipRecord,
-    build_message,
+    Decoder, Diagnostics, FeedIdentity, InstrumentPartitions, SkipReason, SkipRecord, build_message,
 };
 use qip_contracts::{BookSide, MarketMessage, MessageBody, TradeCondition, VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
@@ -165,7 +164,11 @@ impl ItchDecoder {
                 let symbol = reader.ascii(24, 8)?;
                 let price = reader.fixed(32, PRICE_WIDTH, false, PRICE_EXPONENT)?;
                 let Some(partition) = self.instruments.resolve(&symbol) else {
-                    self.skip(SkipReason::UnmappedInstrument { symbol }, offset, captured_at);
+                    self.skip(
+                        SkipReason::UnmappedInstrument { symbol },
+                        offset,
+                        captured_at,
+                    );
                     return Ok(());
                 };
                 self.open_orders.insert(
@@ -219,7 +222,15 @@ impl ItchDecoder {
             b'X' => {
                 let order_ref = reader.uint(11, 8)?;
                 let cancelled = reader.uint(19, 4)?;
-                self.reduce(order_ref, cancelled, sequence, venue_time, captured_at, offset, out);
+                self.reduce(
+                    order_ref,
+                    cancelled,
+                    sequence,
+                    venue_time,
+                    captured_at,
+                    offset,
+                    out,
+                );
             }
             b'D' => {
                 let order_ref = reader.uint(11, 8)?;
@@ -294,7 +305,11 @@ impl ItchDecoder {
                 let symbol = reader.ascii(24, 8)?;
                 let price = reader.fixed(32, PRICE_WIDTH, false, PRICE_EXPONENT)?;
                 let Some(partition) = self.instruments.resolve(&symbol) else {
-                    self.skip(SkipReason::UnmappedInstrument { symbol }, offset, captured_at);
+                    self.skip(
+                        SkipReason::UnmappedInstrument { symbol },
+                        offset,
+                        captured_at,
+                    );
                     return Ok(());
                 };
                 out.push(build_message(
@@ -317,7 +332,11 @@ impl ItchDecoder {
                 let symbol = reader.ascii(19, 8)?;
                 let price = reader.fixed(27, PRICE_WIDTH, false, PRICE_EXPONENT)?;
                 let Some(partition) = self.instruments.resolve(&symbol) else {
-                    self.skip(SkipReason::UnmappedInstrument { symbol }, offset, captured_at);
+                    self.skip(
+                        SkipReason::UnmappedInstrument { symbol },
+                        offset,
+                        captured_at,
+                    );
                     return Ok(());
                 };
                 out.push(build_message(
@@ -340,7 +359,11 @@ impl ItchDecoder {
                 let symbol = reader.ascii(11, 8)?;
                 let state = reader.u8_at(19)?;
                 let Some(partition) = self.instruments.resolve(&symbol) else {
-                    self.skip(SkipReason::UnmappedInstrument { symbol }, offset, captured_at);
+                    self.skip(
+                        SkipReason::UnmappedInstrument { symbol },
+                        offset,
+                        captured_at,
+                    );
                     return Ok(());
                 };
                 let status = match state {

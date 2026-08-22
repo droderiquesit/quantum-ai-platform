@@ -141,6 +141,15 @@ impl LineArbiter {
         self.lines.get(line)
     }
 
+    /// How many sequences the window is holding.
+    ///
+    /// Exposed because the bound is a property worth asserting rather than
+    /// trusting: this is the structure that would otherwise grow for the life of
+    /// the session.
+    pub fn tracked(&self) -> usize {
+        self.recent.len()
+    }
+
     /// Which line's copy of `sequence` was published, while it is still in the
     /// window. The question asked whenever a decoded message is reconciled
     /// against a packet capture.

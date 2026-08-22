@@ -202,9 +202,11 @@ fn a_non_printable_execution_moves_the_book_without_moving_the_last_price() {
     let messages = decoder.decode(&bytes, at()).expect("decodes");
 
     assert_eq!(messages.len(), 2, "the reduction, and no print");
-    assert!(messages
-        .iter()
-        .all(|message| !matches!(message.body, MessageBody::Trade { .. })));
+    assert!(
+        messages
+            .iter()
+            .all(|message| !matches!(message.body, MessageBody::Trade { .. }))
+    );
 }
 
 #[test]
@@ -334,7 +336,10 @@ fn a_message_that_has_not_finished_arriving_yields_nothing_and_consumes_nothing(
         let messages = decoder
             .decode(&bytes[..prefix], at())
             .unwrap_or_else(|error| panic!("prefix of {prefix} bytes errored: {error}"));
-        assert!(messages.is_empty(), "{prefix}-byte prefix produced a message");
+        assert!(
+            messages.is_empty(),
+            "{prefix}-byte prefix produced a message"
+        );
         assert_eq!(decoder.consumed(), 0, "{prefix}-byte prefix consumed bytes");
     }
 }
@@ -349,7 +354,11 @@ fn a_known_message_type_with_no_market_meaning_is_stepped_over_by_its_length() {
     let mut decoder = decoder();
     let messages = decoder.decode(&bytes, at()).expect("the batch survives");
 
-    assert_eq!(messages.len(), 1, "the add after the directory entry decodes");
+    assert_eq!(
+        messages.len(),
+        1,
+        "the add after the directory entry decodes"
+    );
     assert_eq!(decoder.consumed(), bytes.len());
     assert!(matches!(
         decoder.diagnostics().recent_skips[0].reason,
@@ -371,7 +380,9 @@ fn a_type_that_is_not_itch_at_all_is_refused_because_the_next_boundary_is_unknow
 #[test]
 fn an_execution_against_an_order_the_session_never_saw_is_recorded_as_lost_information() {
     let mut decoder = decoder();
-    let messages = decoder.decode(&executed(999, 100), at()).expect("framing is fine");
+    let messages = decoder
+        .decode(&executed(999, 100), at())
+        .expect("framing is fine");
     assert!(messages.is_empty());
     assert!(matches!(
         decoder.diagnostics().recent_skips[0].reason,

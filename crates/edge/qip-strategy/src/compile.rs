@@ -428,9 +428,7 @@ impl StrategyCompiler {
     ) -> Result<(NodeRef, Type)> {
         self.submitted += 1;
         match expr {
-            Expr::Exact(value) => {
-                Ok(self.literal(FeatureValue::Exact(*value), Type::Exact))
-            }
+            Expr::Exact(value) => Ok(self.literal(FeatureValue::Exact(*value), Type::Exact)),
             Expr::Statistic(value) => {
                 Ok(self.literal(FeatureValue::Statistic(*value), Type::Statistic))
             }
@@ -443,7 +441,10 @@ impl StrategyCompiler {
                         key.canonical()
                     )));
                 };
-                Ok((self.intern(Op::Feature(key.clone()), value_type), value_type))
+                Ok((
+                    self.intern(Op::Feature(key.clone()), value_type),
+                    value_type,
+                ))
             }
             Expr::Negate(inner) => {
                 let (node, value_type) = self.lower(inner, site, warnings)?;

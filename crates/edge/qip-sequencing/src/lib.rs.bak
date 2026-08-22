@@ -32,8 +32,6 @@
 //!    parameters, so a replay of a capture produces the same releases, the same
 //!    resets and the same watermarks as the live run did.
 
-#![deny(missing_docs)]
-
 pub mod arbitration;
 pub mod clock;
 pub mod failover;

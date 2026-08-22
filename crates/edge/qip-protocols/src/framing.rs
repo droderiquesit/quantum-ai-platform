@@ -19,11 +19,11 @@
 //! valid JSON costs exactly that frame, and the stream stays synchronised. So
 //! the batch survives, with a record of what was dropped.
 
+use crate::bytes::ByteOrder;
 use crate::decoder::{
     Decoder, Diagnostics, FeedIdentity, InstrumentPartitions, SkipReason, SkipRecord,
     build_message, check_frame_bound,
 };
-use crate::bytes::ByteOrder;
 use qip_contracts::{BookSide, MarketMessage, MessageBody, TradeCondition, VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Timestamp};

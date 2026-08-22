@@ -549,7 +549,9 @@ impl SbeDecoder {
             return Ok(());
         };
         let venue_time = Timestamp::from_nanos(i64::try_from(venue_nanos).map_err(|_| {
-            Error::schema(format!("{PROTOCOL}: venue timestamp {venue_nanos} is out of range"))
+            Error::schema(format!(
+                "{PROTOCOL}: venue timestamp {venue_nanos} is out of range"
+            ))
         })?);
 
         let sequence = header_values
@@ -566,7 +568,10 @@ impl SbeDecoder {
             let Some(group_header) = group_header else {
                 self.skip(
                     SkipReason::Malformed {
-                        detail: format!("template {template_id} declares group `{}` with no header", group.name),
+                        detail: format!(
+                            "template {template_id} declares group `{}` with no header",
+                            group.name
+                        ),
                     },
                     offset,
                     captured_at,
@@ -617,7 +622,11 @@ impl SbeDecoder {
                 continue;
             };
             let Some(partition) = self.instruments.resolve(&symbol) else {
-                self.skip(SkipReason::UnmappedInstrument { symbol }, offset, captured_at);
+                self.skip(
+                    SkipReason::UnmappedInstrument { symbol },
+                    offset,
+                    captured_at,
+                );
                 continue;
             };
             let Some(body) =
@@ -685,7 +694,12 @@ pub fn frame_message(
     }
 
     let mut out = Vec::new();
-    put_uint(&mut out, ByteOrder::Big, 4, (SOFH_LENGTH + body.len()) as u64);
+    put_uint(
+        &mut out,
+        ByteOrder::Big,
+        4,
+        (SOFH_LENGTH + body.len()) as u64,
+    );
     // 0x5BE0 is the SBE little-endian encoding identifier; the big-endian one is
     // 0xEB50. Recorded for completeness — the schema, not the frame, decides.
     put_uint(

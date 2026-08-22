@@ -18,8 +18,8 @@
 use crate::ir::{ArithmeticOp, CompareOp, ExtremumOp, LogicalOp, Type};
 use crate::model::DistilledModel;
 use qip_contracts::{FeatureKey, FeatureValue};
-use qip_core::error::{Error, Result};
 use qip_core::Decimal;
+use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 
 /// A node's position in the arena.
@@ -227,6 +227,15 @@ impl Program {
             .collect()
     }
 
+    /// Worst-case evaluation steps if every node were reached.
+    ///
+    /// The ceiling any strategy in this program can cost, and so the default
+    /// runtime budget. It is larger than the node count because a distilled
+    /// model costs its own size rather than one step.
+    pub fn total_cost(&self) -> usize {
+        self.nodes.iter().map(|node| node.op.cost()).sum()
+    }
+
     /// Worst-case evaluation steps for a set of roots.
     pub fn cost_of(&self, roots: &[NodeRef]) -> usize {
         self.reachable_from(roots)
@@ -243,11 +252,12 @@ impl Program {
 /// time and the same value computed at run time cannot disagree.
 pub(crate) fn evaluate_op(op: &Op, values: &[Option<FeatureValue>]) -> Result<FeatureValue> {
     let operand = |node: NodeRef| -> Result<FeatureValue> {
-        values
-            .get(node.index())
-            .copied()
-            .flatten()
-            .ok_or_else(|| Error::invalid(format!("node {} was read before it was computed", node.index())))
+        values.get(node.index()).copied().flatten().ok_or_else(|| {
+            Error::invalid(format!(
+                "node {} was read before it was computed",
+                node.index()
+            ))
+        })
     };
 
     match op {
@@ -300,15 +310,13 @@ pub(crate) fn evaluate_op(op: &Op, values: &[Option<FeatureValue>]) -> Result<Fe
             operand(*left)?,
             operand(*right)?,
         )?)),
-        Op::Logical { op, left, right } => {
-            match (operand(*left)?, operand(*right)?) {
-                (FeatureValue::Flag(a), FeatureValue::Flag(b)) => Ok(FeatureValue::Flag(match op {
-                    LogicalOp::And => a && b,
-                    LogicalOp::Or => a || b,
-                })),
-                (left, _) => Err(mismatch("logical", left)),
-            }
-        }
+        Op::Logical { op, left, right } => match (operand(*left)?, operand(*right)?) {
+            (FeatureValue::Flag(a), FeatureValue::Flag(b)) => Ok(FeatureValue::Flag(match op {
+                LogicalOp::And => a && b,
+                LogicalOp::Or => a || b,
+            })),
+            (left, _) => Err(mismatch("logical", left)),
+        },
         Op::Select {
             condition,
             when_true,
@@ -375,7 +383,10 @@ fn arithmetic(op: ArithmeticOp, left: FeatureValue, right: FeatureValue) -> Resu
                 ArithmeticOp::Divide => a.checked_div(b),
             };
             result.map(FeatureValue::Exact).ok_or_else(|| {
-                Error::numeric(format!("exact {} overflowed or divided by zero", op.as_str()))
+                Error::numeric(format!(
+                    "exact {} overflowed or divided by zero",
+                    op.as_str()
+                ))
             })
         }
         (FeatureValue::Statistic(a), FeatureValue::Statistic(b)) => {
@@ -402,7 +413,10 @@ fn arithmetic(op: ArithmeticOp, left: FeatureValue, right: FeatureValue) -> Resu
                 ArithmeticOp::Divide => a.checked_div(b),
             };
             result.map(FeatureValue::Count).ok_or_else(|| {
-                Error::numeric(format!("count {} overflowed or divided by zero", op.as_str()))
+                Error::numeric(format!(
+                    "count {} overflowed or divided by zero",
+                    op.as_str()
+                ))
             })
         }
         (left, _) => Err(mismatch("arithmetic", left)),
@@ -451,7 +465,9 @@ fn compare(op: CompareOp, left: FeatureValue, right: FeatureValue) -> Result<boo
         (left, _) => return Err(mismatch("compare", left)),
     };
     let Some(ordering) = ordering else {
-        return Err(Error::invalid("values of different types cannot be compared"));
+        return Err(Error::invalid(
+            "values of different types cannot be compared",
+        ));
     };
     Ok(match op {
         CompareOp::Equal => ordering.is_eq(),

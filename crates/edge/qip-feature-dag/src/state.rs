@@ -411,7 +411,11 @@ impl InstrumentState {
 
     /// Where `price` sits in a side kept in book order — bids descending,
     /// asks ascending.
-    fn locate(levels: &[BookLevel], side: BookSide, price: Decimal) -> std::result::Result<usize, usize> {
+    fn locate(
+        levels: &[BookLevel],
+        side: BookSide,
+        price: Decimal,
+    ) -> std::result::Result<usize, usize> {
         match side {
             BookSide::Bid => levels.binary_search_by(|level| price.cmp(&level.price)),
             BookSide::Ask => levels.binary_search_by(|level| level.price.cmp(&price)),

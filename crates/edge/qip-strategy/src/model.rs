@@ -60,11 +60,7 @@ impl DistilledModel {
     /// A linear model. Refuses non-finite coefficients: a NaN weight produces
     /// a NaN score, which compares false against every threshold and so reads
     /// as a quiet decision not to trade.
-    pub fn linear(
-        name: impl Into<String>,
-        intercept: f64,
-        coefficients: Vec<f64>,
-    ) -> Result<Self> {
+    pub fn linear(name: impl Into<String>, intercept: f64, coefficients: Vec<f64>) -> Result<Self> {
         if coefficients.is_empty() {
             return Err(Error::invalid("a linear model needs at least one input"));
         }

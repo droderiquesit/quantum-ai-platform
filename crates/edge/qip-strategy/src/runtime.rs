@@ -14,8 +14,8 @@
 use crate::compile::CompiledStrategy;
 use crate::program::{Op, Program, evaluate_op};
 use qip_contracts::{Conviction, FeatureValue, FeatureVector, Signal};
-use qip_core::error::{Error, Result};
 use qip_core::Timestamp;
+use qip_core::error::{Error, Result};
 
 /// Runs compiled strategies against feature vectors.
 #[derive(Debug)]
@@ -32,7 +32,7 @@ impl StrategyRuntime {
     /// evaluated in bounded time.
     pub fn new(program: Program) -> Result<Self> {
         program.validate()?;
-        let budget = program.len().max(1);
+        let budget = program.total_cost().max(1);
         let values = vec![None; program.len()];
         Ok(Self {
             program,
@@ -150,13 +150,13 @@ impl StrategyRuntime {
     }
 
     /// Compute every node the strategy reaches, in order.
-    fn evaluate_plan(
-        &mut self,
-        strategy: &CompiledStrategy,
-        vector: &FeatureVector,
-    ) -> Result<()> {
-        self.values.clear();
-        self.values.resize(self.program.len(), None);
+    fn evaluate_plan(&mut self, strategy: &CompiledStrategy, vector: &FeatureVector) -> Result<()> {
+        // Sized once at construction; refilled rather than reallocated, so a
+        // run on the hot path allocates nothing.
+        if self.values.len() != self.program.len() {
+            self.values.resize(self.program.len(), None);
+        }
+        self.values.fill(None);
 
         let mut spent = 0usize;
         for node in strategy.plan() {

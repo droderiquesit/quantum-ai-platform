@@ -63,11 +63,7 @@ fn length_prefixed_stream(width: usize, includes_prefix: bool) -> Vec<u8> {
 }
 
 /// Decode `bytes` delivered in the given chunk sizes, through the assembler.
-fn decode_in_chunks(
-    decoder: &mut dyn Decoder,
-    bytes: &[u8],
-    cuts: &[usize],
-) -> Vec<MarketMessage> {
+fn decode_in_chunks(decoder: &mut dyn Decoder, bytes: &[u8], cuts: &[usize]) -> Vec<MarketMessage> {
     let mut assembler = StreamAssembler::new();
     let mut messages = Vec::new();
     let mut start = 0usize;
@@ -103,11 +99,7 @@ fn a_newline_delimited_stream_decodes_to_one_message_per_frame() {
 #[test]
 fn a_stream_split_at_every_single_offset_decodes_to_exactly_what_the_whole_stream_does() {
     for (label, framing, bytes) in [
-        (
-            "newline",
-            Framing::NewlineDelimited,
-            newline_stream(),
-        ),
+        ("newline", Framing::NewlineDelimited, newline_stream()),
         (
             "length-prefixed",
             Framing::LengthPrefixed {
@@ -215,7 +207,11 @@ fn a_binary_stream_delivered_in_random_chunks_decodes_identically() {
                 if actual == expected {
                     Ok(())
                 } else {
-                    Err(format!("{} messages instead of {}", actual.len(), expected.len()))
+                    Err(format!(
+                        "{} messages instead of {}",
+                        actual.len(),
+                        expected.len()
+                    ))
                 }
             },
         );
@@ -310,7 +306,9 @@ fn a_registry_routes_a_read_to_the_decoder_registered_for_that_feed() {
         .push(&venue, "ws-1", &stream[..split], at())
         .expect("decodes");
     assert!(
-        registry.pending(&venue, "ws-1").is_some_and(|held| held > 0),
+        registry
+            .pending(&venue, "ws-1")
+            .is_some_and(|held| held > 0),
         "the frame straddling the split is held rather than decoded in halves"
     );
     let second = registry

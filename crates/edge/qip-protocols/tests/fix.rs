@@ -184,7 +184,9 @@ fn a_single_flipped_body_byte_is_caught_even_though_the_framing_still_looks_righ
         .expect("the snapshot quotes 100.25");
     bytes[position + 5] = b'9';
 
-    let error = decoder().decode(&bytes, at()).expect_err("corruption is refused");
+    let error = decoder()
+        .decode(&bytes, at())
+        .expect_err("corruption is refused");
     assert!(error.message().contains("checksum"));
 }
 
@@ -244,7 +246,9 @@ fn a_complete_message_followed_by_a_partial_one_consumes_exactly_the_complete_on
     let bytes = [first.clone(), second[..second.len() / 2].to_vec()].concat();
 
     let mut decoder = decoder();
-    let messages = decoder.decode(&bytes, at()).expect("the first message decodes");
+    let messages = decoder
+        .decode(&bytes, at())
+        .expect("the first message decodes");
     assert_eq!(messages.len(), 3);
     assert_eq!(
         decoder.consumed(),
@@ -263,7 +267,11 @@ fn an_unknown_message_type_is_recorded_and_the_rest_of_the_batch_still_decodes()
 
     let mut decoder = decoder();
     let messages = decoder.decode(&bytes, at()).expect("the batch survives");
-    assert_eq!(messages.len(), 3, "the snapshot after the heartbeat decodes");
+    assert_eq!(
+        messages.len(),
+        3,
+        "the snapshot after the heartbeat decodes"
+    );
     let skips = &decoder.diagnostics().recent_skips;
     assert_eq!(skips.len(), 1);
     assert!(matches!(
@@ -285,7 +293,9 @@ fn an_instrument_this_feed_does_not_carry_is_skipped_rather_than_given_a_partiti
         (271, "100"),
     ]);
     let mut decoder = decoder();
-    let messages = decoder.decode(&bytes, at()).expect("the frame is well formed");
+    let messages = decoder
+        .decode(&bytes, at())
+        .expect("the frame is well formed");
     assert!(messages.is_empty());
     assert!(matches!(
         decoder.diagnostics().recent_skips[0].reason,
@@ -302,7 +312,11 @@ fn decoding_the_same_bytes_twice_produces_identical_messages_including_identifie
         first, second,
         "replay must reproduce the run exactly, identifiers included"
     );
-    assert!(first.iter().all(|message| message.object_id.as_str().len() == 26));
+    assert!(
+        first
+            .iter()
+            .all(|message| message.object_id.as_str().len() == 26)
+    );
 }
 
 #[test]

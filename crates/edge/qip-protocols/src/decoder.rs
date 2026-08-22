@@ -72,7 +72,9 @@ impl SkipReason {
     pub const fn loses_information(&self) -> bool {
         matches!(
             self,
-            Self::Malformed { .. } | Self::UnknownOrderReference { .. } | Self::UnknownMessageType { .. }
+            Self::Malformed { .. }
+                | Self::UnknownOrderReference { .. }
+                | Self::UnknownMessageType { .. }
         )
     }
 }

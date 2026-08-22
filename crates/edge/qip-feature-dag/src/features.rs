@@ -205,9 +205,7 @@ impl FeatureDefinition for MicropriceDeviation {
             return Ok(FeatureValue::Undefined);
         }
         let half = spread.to_f64() / 2.0;
-        Ok(FeatureValue::Statistic(
-            (microprice - mid).to_f64() / half,
-        ))
+        Ok(FeatureValue::Statistic((microprice - mid).to_f64() / half))
     }
 }
 
@@ -369,7 +367,10 @@ impl FeatureDefinition for ExponentialMovingAverage {
         };
         let mut average = window[0].1;
         for (_, mid) in &window[1..] {
-            let Some(step) = mid.checked_sub(average).and_then(|gap| gap.checked_mul(alpha)) else {
+            let Some(step) = mid
+                .checked_sub(average)
+                .and_then(|gap| gap.checked_mul(alpha))
+            else {
                 return Ok(FeatureValue::Undefined);
             };
             let Some(next) = average.checked_add(step) else {
@@ -606,7 +607,10 @@ fn aligned_tail(
         return None;
     }
     let start = left_values.len() - count;
-    Some((left_values[start..].to_vec(), right_values[start..].to_vec()))
+    Some((
+        left_values[start..].to_vec(),
+        right_values[start..].to_vec(),
+    ))
 }
 
 /// Nanoseconds since the last print that updated the last sale.
@@ -719,9 +723,7 @@ impl FeatureDefinition for SpreadPercentile {
         }
         let recent = &spreads[spreads.len() - self.window..];
         let below = recent.iter().filter(|spread| **spread <= current).count();
-        Ok(FeatureValue::Statistic(
-            below as f64 / recent.len() as f64,
-        ))
+        Ok(FeatureValue::Statistic(below as f64 / recent.len() as f64))
     }
 }
 

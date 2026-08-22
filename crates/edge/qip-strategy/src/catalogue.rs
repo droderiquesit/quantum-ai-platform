@@ -45,7 +45,10 @@ impl FeatureCatalogue {
     }
 
     /// Declare several at once.
-    pub fn declaring(mut self, entries: impl IntoIterator<Item = (FeatureKey, Type)>) -> Result<Self> {
+    pub fn declaring(
+        mut self,
+        entries: impl IntoIterator<Item = (FeatureKey, Type)>,
+    ) -> Result<Self> {
         for (key, value_type) in entries {
             self.declare(key, value_type)?;
         }

@@ -5,15 +5,15 @@
 //! property that makes it correct.
 
 use qip_contracts::{
-    BookSide, FeatureKey, FeatureValue, MarketMessage, MessageBody, Origin, TradeCondition, VenueId,
-    VenueStatus,
+    BookSide, FeatureKey, FeatureValue, MarketMessage, MessageBody, Origin, TradeCondition,
+    VenueId, VenueStatus,
 };
 use qip_core::error::Result;
 use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::{Decimal, Duration, ObjectId, Timestamp};
 use qip_feature_dag::definition::{FeatureContext, FeatureDefinition, ValueKind};
 use qip_feature_dag::features::{
-    BookPressure, ExponentialMovingAverage, Mid, MicropriceDeviation, OrderFlowImbalance,
+    BookPressure, ExponentialMovingAverage, MicropriceDeviation, Mid, OrderFlowImbalance,
     RealisedVolatility, RollingCorrelation, Spread, SpreadPercentile, TimeSinceLastTrade,
     TradeSignAutocorrelation, standard_suite,
 };
@@ -171,7 +171,9 @@ fn a_key_built_independently_by_two_callers_names_the_same_node() {
     let forwards = FeatureKey::new("x", subject.clone())
         .with("window", 20)
         .with("lag", 1);
-    let backwards = FeatureKey::new("x", subject).with("lag", 1).with("window", 20);
+    let backwards = FeatureKey::new("x", subject)
+        .with("lag", 1)
+        .with("window", 20);
     assert_eq!(forwards.canonical(), backwards.canonical());
 }
 
@@ -180,7 +182,7 @@ fn a_key_built_independently_by_two_callers_names_the_same_node() {
 #[test]
 fn evaluating_twice_with_no_new_messages_recomputes_nothing() {
     let subject = object("AAA");
-    let mut engine = engine_for(&[subject.clone()]).unwrap();
+    let mut engine = engine_for(std::slice::from_ref(&subject)).unwrap();
     let at = Timestamp::from_secs(1_700_000_000);
     engine
         .ingest(&quote(&subject, "100.00", "100.02", 10, at, 1))
@@ -200,7 +202,7 @@ fn evaluating_twice_with_no_new_messages_recomputes_nothing() {
 #[test]
 fn only_a_feature_of_time_itself_recomputes_when_the_clock_moves() {
     let subject = object("AAA");
-    let mut engine = engine_for(&[subject.clone()]).unwrap();
+    let mut engine = engine_for(std::slice::from_ref(&subject)).unwrap();
     let at = Timestamp::from_secs(1_700_000_000);
     engine
         .ingest(&quote(&subject, "100.00", "100.02", 10, at, 1))
@@ -270,7 +272,7 @@ fn a_message_about_one_instrument_leaves_another_instruments_features_untouched(
 #[test]
 fn a_print_cannot_dirty_a_feature_that_only_reads_the_top_of_book() {
     let subject = object("AAA");
-    let mut engine = engine_for(&[subject.clone()]).unwrap();
+    let mut engine = engine_for(std::slice::from_ref(&subject)).unwrap();
     let at = Timestamp::from_secs(1_700_000_000);
     engine
         .ingest(&quote(&subject, "100.00", "100.02", 10, at, 1))
@@ -288,7 +290,10 @@ fn a_print_cannot_dirty_a_feature_that_only_reads_the_top_of_book() {
     assert!(engine.is_dirty(&TradeSignAutocorrelation::key(&subject, 20, 1)));
     engine.evaluate(at).unwrap();
 
-    assert_eq!(spread_before, engine.revision(&Spread::key(&subject)).unwrap());
+    assert_eq!(
+        spread_before,
+        engine.revision(&Spread::key(&subject)).unwrap()
+    );
     assert_eq!(
         pressure_before,
         engine.revision(&BookPressure::key(&subject, 5)).unwrap()
@@ -298,7 +303,7 @@ fn a_print_cannot_dirty_a_feature_that_only_reads_the_top_of_book() {
 #[test]
 fn dirtiness_reaches_every_feature_computed_from_a_changed_one() {
     let subject = object("AAA");
-    let mut engine = engine_for(&[subject.clone()]).unwrap();
+    let mut engine = engine_for(std::slice::from_ref(&subject)).unwrap();
     let at = Timestamp::from_secs(1_700_000_000);
     engine
         .ingest(&quote(&subject, "100.00", "100.02", 10, at, 1))
@@ -360,7 +365,11 @@ fn a_correlation_is_dirtied_by_either_instrument_it_reads() {
 // --- the equivalence property ----------------------------------------------
 
 /// A random but reproducible message sequence over three instruments.
-fn random_messages(rng: &mut Xoshiro256, subjects: &[ObjectId], count: usize) -> Vec<MarketMessage> {
+fn random_messages(
+    rng: &mut Xoshiro256,
+    subjects: &[ObjectId],
+    count: usize,
+) -> Vec<MarketMessage> {
     let mut at = Timestamp::from_secs(1_700_000_000);
     let mut bases: Vec<i64> = subjects.iter().map(|_| 10_000).collect();
     let mut messages = Vec::with_capacity(count);
@@ -375,8 +384,14 @@ fn random_messages(rng: &mut Xoshiro256, subjects: &[ObjectId], count: usize) ->
 
         let body = match rng.below(10) {
             0..=4 => MessageBody::Quote {
-                bid: Some((tick(base - half), Decimal::from_int(1 + rng.below(20) as i64))),
-                ask: Some((tick(base + half), Decimal::from_int(1 + rng.below(20) as i64))),
+                bid: Some((
+                    tick(base - half),
+                    Decimal::from_int(1 + rng.below(20) as i64),
+                )),
+                ask: Some((
+                    tick(base + half),
+                    Decimal::from_int(1 + rng.below(20) as i64),
+                )),
             },
             5..=6 => MessageBody::LevelSet {
                 side: if rng.bernoulli(0.5) {
@@ -384,7 +399,13 @@ fn random_messages(rng: &mut Xoshiro256, subjects: &[ObjectId], count: usize) ->
                 } else {
                     BookSide::Ask
                 },
-                price: tick(base + if rng.bernoulli(0.5) { half + 2 } else { -half - 2 }),
+                price: tick(
+                    base + if rng.bernoulli(0.5) {
+                        half + 2
+                    } else {
+                        -half - 2
+                    },
+                ),
                 quantity: Decimal::from_int(rng.below(15) as i64),
                 order_count: None,
             },
@@ -422,7 +443,7 @@ fn random_messages(rng: &mut Xoshiro256, subjects: &[ObjectId], count: usize) ->
 #[test]
 fn incremental_evaluation_equals_recomputing_every_feature_from_scratch() {
     let subjects = [object("AAA"), object("BBB"), object("CCC")];
-    let mut rng = Xoshiro256::seeded(0x00FE_A7E5_D46_0001);
+    let mut rng = Xoshiro256::seeded(0x000F_EA7E_5D46_0001);
     let messages = random_messages(&mut rng, &subjects, 400);
 
     let mut incremental = engine_for(&subjects).unwrap();
@@ -460,7 +481,10 @@ fn incremental_evaluation_equals_recomputing_every_feature_from_scratch() {
         }
     }
 
-    assert!(compared > 500, "the comparison must actually cover the graph");
+    assert!(
+        compared > 500,
+        "the comparison must actually cover the graph"
+    );
     assert!(
         defined_seen * 3 > compared,
         "a sequence where almost nothing is computable proves nothing: \
@@ -594,7 +618,7 @@ fn a_feature_referenced_but_never_registered_is_reported_rather_than_assumed() {
 #[test]
 fn insufficient_history_yields_undefined_rather_than_zero() {
     let subject = object("AAA");
-    let mut engine = engine_for(&[subject.clone()]).unwrap();
+    let mut engine = engine_for(std::slice::from_ref(&subject)).unwrap();
     let at = Timestamp::from_secs(1_700_000_000);
     engine
         .ingest(&quote(&subject, "100.00", "100.02", 10, at, 1))
@@ -667,7 +691,11 @@ fn a_one_sided_or_crossed_book_has_no_mid() {
         ))
         .unwrap();
     assert_eq!(
-        engine.evaluate(at).unwrap().get(&Mid::key(&subject)).unwrap(),
+        engine
+            .evaluate(at)
+            .unwrap()
+            .get(&Mid::key(&subject))
+            .unwrap(),
         FeatureValue::Undefined
     );
 
@@ -675,7 +703,11 @@ fn a_one_sided_or_crossed_book_has_no_mid() {
         .ingest(&quote(&subject, "100.05", "100.00", 5, at, 2))
         .unwrap();
     assert_eq!(
-        engine.evaluate(at).unwrap().get(&Mid::key(&subject)).unwrap(),
+        engine
+            .evaluate(at)
+            .unwrap()
+            .get(&Mid::key(&subject))
+            .unwrap(),
         FeatureValue::Undefined,
         "a crossed book is a book we know to be wrong"
     );
@@ -684,7 +716,7 @@ fn a_one_sided_or_crossed_book_has_no_mid() {
 #[test]
 fn a_reset_discards_the_history_it_invalidates() {
     let subject = object("AAA");
-    let mut engine = engine_for(&[subject.clone()]).unwrap();
+    let mut engine = engine_for(std::slice::from_ref(&subject)).unwrap();
     let mut at = Timestamp::from_secs(1_700_000_000);
     for sequence in 0..40u64 {
         at = at.saturating_add(Duration::from_millis(200));
@@ -725,7 +757,7 @@ fn a_reset_discards_the_history_it_invalidates() {
 #[test]
 fn one_evaluation_produces_one_consistent_view() {
     let subject = object("AAA");
-    let mut engine = engine_for(&[subject.clone()]).unwrap();
+    let mut engine = engine_for(std::slice::from_ref(&subject)).unwrap();
     let at = Timestamp::from_secs(1_700_000_000);
     engine
         .ingest(&quote(&subject, "100.00", "100.02", 10, at, 1))
@@ -746,7 +778,7 @@ fn one_evaluation_produces_one_consistent_view() {
 #[test]
 fn features_are_evaluated_after_everything_they_are_computed_from() {
     let subject = object("AAA");
-    let engine = engine_for(&[subject.clone()]).unwrap();
+    let engine = engine_for(std::slice::from_ref(&subject)).unwrap();
     let order: Vec<String> = engine
         .graph()
         .keys()
