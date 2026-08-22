@@ -90,9 +90,25 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+          # The node serves a health surface on QIP_HEALTH_PORT and nothing
+          # else. It is deliberately not the platform's HTTP server: a cell
+          # whose liveness probe depends on the API crate has coupled the two,
+          # and this probe is what tells the orchestrator the cell is alive.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
           env:
-            - name: QIP_API_ADDRESS
-              value: "0.0.0.0:8080"
+            - name: QIP_HEALTH_PORT
+              value: "8080"
             # The same config-map keys every other workload reads.
             - name: QIP_AUTONOMY_CEILING
               valueFrom:

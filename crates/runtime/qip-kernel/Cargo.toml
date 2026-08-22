@@ -23,6 +23,15 @@ qip-quantum.workspace = true
 qip-storage.workspace = true
 qip-observability.workspace = true
 qip-quant.workspace = true
+# The central plane: the shared vocabulary, the approval gates, the capital
+# machinery, the governance controls, and the strategy IR the centre ships.
+# Composed here rather than reimplemented — the kernel is the only crate that
+# knows these five fit together.
+qip-contracts.workspace = true
+qip-lifecycle.workspace = true
+qip-capital.workspace = true
+qip-compliance.workspace = true
+qip-strategy.workspace = true
 qip-market-ingestion.workspace = true
 qip-normalization.workspace = true
 qip-entity-resolution.workspace = true

@@ -127,6 +127,7 @@ jobs:
           - qip-api
           - qip-fastbrain
           - qip-deepbrain
+          - qip-edge-node
     steps:
       - uses: actions/checkout@v4
         with:

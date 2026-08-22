@@ -13,6 +13,7 @@ serde_json.workspace = true
 qip-core.workspace = true
 qip-contracts.workspace = true
 qip-edge.workspace = true
+qip-feature-dag.workspace = true
 qip-observability.workspace = true
 
 [lints]

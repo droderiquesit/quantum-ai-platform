@@ -499,11 +499,7 @@ const NOT_A_WORKLOAD: &[(&str, &str)] = &[(
 /// test fails the moment the crate lands, so the exemption is removed by
 /// whoever lands it rather than surviving as a permanent hole in the check
 /// above.
-const AWAITING_ITS_CRATE: &[(&str, &str)] = &[(
-    "qip-edge-node",
-    "the edge-cell binary is being written concurrently; crates/edge/qip-edge \
-     declares no [[bin]] yet",
-)];
+const AWAITING_ITS_CRATE: &[(&str, &str)] = &[];
 
 /// Workloads whose binary has no serving loop, so no probe can be written.
 ///
@@ -516,10 +512,6 @@ const DOES_NOT_SERVE_YET: &[(&str, &str)] = &[
         "`fn run` checks the agent roster and returns",
     ),
     ("qip-deepbrain", "`fn run` runs one cycle and returns"),
-    (
-        "qip-edge-node",
-        "the crate that produces it is still being written",
-    ),
 ];
 
 /// The binaries the workspace actually builds, by binary name.

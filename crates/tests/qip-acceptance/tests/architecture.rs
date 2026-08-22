@@ -108,12 +108,31 @@ fn reachable_from(graph: &BTreeMap<String, BTreeSet<String>>, root: &str) -> BTr
 ///
 /// A wrong answer here is a wrong trade, so nothing in them may be produced by
 /// asking a model.
-const SAFETY_CRITICAL: [&str; 5] = [
+///
+/// The four edge entries are here for the second of the two checks below
+/// rather than the first. `no_edge_cell_can_reach_a_language_model` already
+/// makes the manifest-transitive claim for every crate under `crates/edge`,
+/// whether it appears in this list or not, so their presence in the coarse
+/// check is free duplication and kept only because one list is easier to
+/// maintain than two. The source-level check is what their presence buys: a
+/// manifest edge is one line, and the grep is what makes the first line of
+/// *code* that reaches for a model fail in the same commit, next to what a
+/// reviewer is reading.
+///
+/// The other four edge crates are deliberately absent. Protocol decoders,
+/// sequencers, books and feature DAGs transform; they do not decide. Listing
+/// them would make this "the edge" rather than "the crates whose output is an
+/// order", and a list that means everything constrains nothing.
+const SAFETY_CRITICAL: [&str; 9] = [
     "crates/services/qip-execution-engine",
     "crates/services/qip-risk-engine",
     "crates/services/qip-portfolio-engine",
     "crates/services/qip-optimization-engine",
     "crates/services/qip-simulation-engine",
+    "crates/edge/qip-strategy",
+    "crates/edge/qip-arbitrage",
+    "crates/edge/qip-routing",
+    "crates/edge/qip-edge",
 ];
 
 #[test]
@@ -254,6 +273,107 @@ fn the_agent_organisation_cannot_reach_execution_at_all() {
     );
 }
 
+// --- the edge cells ---------------------------------------------------------
+
+/// Every crate that is part of an edge cell, including the deployable.
+///
+/// `qip-edge-node` lives under `crates/apps` rather than `crates/edge`, so a
+/// rule written against the directory would miss the one artifact that
+/// actually runs next to a venue. It is named here so it cannot.
+fn edge_crates() -> BTreeSet<String> {
+    let mut names = crates_under("crates/edge");
+    assert!(
+        names.len() >= 8,
+        "only {} crates were found under crates/edge",
+        names.len()
+    );
+    names.insert("qip-edge-node".to_string());
+    names
+}
+
+#[test]
+fn no_edge_cell_can_reach_a_language_model() {
+    // ADR 0008's third consequence, made total: nothing on the hot path can
+    // consult a model. The ADR states it of `qip-strategy`; a rule that held
+    // for one crate and not its neighbours would be defeated by putting the
+    // call one crate over, so it is asserted here of every crate in a cell.
+    //
+    // Transitively, because the route back in is not a direct edge to
+    // `qip-ai` — nobody would write that — but a plausible-looking edge to
+    // `qip-compliance`, which extends the model registry and therefore drags
+    // the whole language-model surface behind it. `qip-edge`'s manifest was
+    // stripped of exactly that dependency, and this test is what keeps it
+    // stripped once the reason has been forgotten.
+    let graph = dependency_graph();
+    for crate_name in edge_crates() {
+        let reachable = reachable_from(&graph, &crate_name);
+        assert!(
+            !reachable.contains("qip-ai"),
+            "the edge crate {crate_name} can reach a language model: {reachable:?}"
+        );
+    }
+}
+
+#[test]
+fn only_the_edge_cell_itself_holds_an_order_manager() {
+    // A cell is a composition root, and like the kernel it is the one place
+    // the pieces are allowed to meet. A protocol decoder, an order book, a
+    // feature DAG, a strategy, the arbitrage graph and the router all have
+    // legitimate work to do and none of it involves submitting an order:
+    // they hand their output to the cell, which is the thing that was
+    // reviewed as being allowed to act on it.
+    //
+    // Stated as reachability rather than as a direct edge, because an order
+    // manager acquired through a helper crate is still an order manager.
+    let graph = dependency_graph();
+    let mut roots = 0;
+    for crate_name in edge_crates() {
+        let reachable = reachable_from(&graph, &crate_name);
+        let is_root = matches!(crate_name.as_str(), "qip-edge" | "qip-edge-node");
+        if is_root {
+            roots += 1;
+            continue;
+        }
+        assert!(
+            !reachable.contains("qip-execution-engine"),
+            "{crate_name} can reach the order manager without being a cell: {reachable:?}"
+        );
+    }
+    // The vacuity guard. If the cell itself stopped reaching execution the
+    // loop above would pass while proving nothing, and the hot path would
+    // have quietly moved somewhere this file does not look.
+    assert_eq!(roots, 2, "the edge composition roots have been renamed");
+    assert!(
+        reachable_from(&graph, "qip-edge").contains("qip-execution-engine"),
+        "the edge cell no longer reaches execution, so this test constrains nothing"
+    );
+}
+
+#[test]
+fn no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy() {
+    // The core safety argument of ADR 0008. A cell is safe while disconnected
+    // precisely because its authority is a `CapitalEnvelope` somebody else
+    // signed and bounded: the worst a partitioned cell can do is spend an
+    // amount already approved, for as long as the envelope has left to run.
+    //
+    // That holds only while issuance stays central. A cell that could reach
+    // `qip-capital` could widen its own bound, and one that could reach
+    // `qip-lifecycle` could promote a strategy past the gates that exist to
+    // decide whether it may trade at all. Cells receive envelopes and
+    // promotions; they never mint them.
+    let graph = dependency_graph();
+    for crate_name in edge_crates() {
+        let reachable = reachable_from(&graph, &crate_name);
+        for issuer in ["qip-lifecycle", "qip-capital"] {
+            assert!(
+                !reachable.contains(issuer),
+                "the edge crate {crate_name} can reach {issuer}, so a cell could grant itself \
+                 what the central plane is supposed to grant it: {reachable:?}"
+            );
+        }
+    }
+}
+
 // --- layering ---------------------------------------------------------------
 
 #[test]
@@ -266,6 +386,63 @@ fn the_foundation_crate_depends_on_nothing_in_the_workspace() {
         core.is_empty(),
         "qip-core has grown in-tree dependencies: {core:?}"
     );
+}
+
+#[test]
+fn the_contract_layer_sits_at_the_bottom_of_everything_that_shares_it() {
+    // Fifteen crates across the edge stack and the central plane are written
+    // against `qip-contracts` rather than against each other, and that is the
+    // whole reason the graph is a fan-out from one vocabulary rather than a
+    // mesh: an order book does not know what a strategy is, and neither knows
+    // how capital is allocated. It only works while the vocabulary itself is
+    // at the bottom. A contract crate that reached a service would put that
+    // service behind every crate that speaks the language.
+    //
+    // "At the bottom" is not "depends on nothing" — that is `qip-core`'s job
+    // and the test above. The contract layer legitimately borrows the exact
+    // types the vocabulary is made of, so what is pinned here is the precise
+    // set it declares today. Pinning the exact set rather than a forbidden
+    // list is the point: it makes any growth of the contract layer a decision
+    // somebody takes deliberately rather than one that arrives with a commit
+    // about something else.
+    let graph = dependency_graph();
+    let declared = graph.get("qip-contracts").expect("qip-contracts exists");
+    let expected: BTreeSet<String> = [
+        "qip-core",
+        "qip-financial",
+        "qip-market",
+        "qip-numerics",
+        "qip-portfolio",
+        "qip-risk",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    assert_eq!(
+        *declared, expected,
+        "the contract layer's dependencies have changed, so every crate that speaks the \
+         vocabulary now reaches whatever was added"
+    );
+
+    // Transitively it stays inside the library layer: no service, no
+    // application, no cell, and above all no model — a shared vocabulary that
+    // dragged the language-model surface behind it would defeat every
+    // no-model rule in this file at once.
+    let reachable = reachable_from(&graph, "qip-contracts");
+    let above: BTreeSet<String> = crates_under("crates/services")
+        .into_iter()
+        .chain(crates_under("crates/apps"))
+        .chain(crates_under("crates/edge"))
+        .chain(crates_under("crates/runtime"))
+        .chain(crates_under("crates/agents"))
+        .chain(["qip-ai".to_string(), "qip-compliance".to_string()])
+        .collect();
+    for forbidden in &above {
+        assert!(
+            !reachable.contains(forbidden),
+            "the contract layer reaches {forbidden}, which is above it: {reachable:?}"
+        );
+    }
 }
 
 #[test]
@@ -410,6 +587,92 @@ fn no_crate_declares_a_third_party_dependency_beyond_the_two_permitted() {
         offenders.is_empty(),
         "third-party dependencies were declared: {offenders:?}"
     );
+}
+
+// --- the workspace itself ---------------------------------------------------
+
+#[test]
+fn every_crate_on_disk_is_a_member_of_the_workspace() {
+    // A directory holding a manifest that the workspace does not list is
+    // compiled by nobody, linted by nobody and tested by nobody, while
+    // looking in a file listing exactly like a crate that is. Every other
+    // test in this repository — including all of the ones above — is silent
+    // about it, because they read manifests rather than build outputs.
+    //
+    // Read as text rather than through `cargo metadata`, for the same reason
+    // as the graph above: the members list is the file a reviewer reads, and
+    // a crate is left out by editing that file and nothing else.
+    let manifest = qip_acceptance::read("Cargo.toml");
+    let members: BTreeSet<&str> = manifest
+        .split("members = [")
+        .nth(1)
+        .expect("the workspace declares its members")
+        .lines()
+        .take_while(|line| !line.trim().starts_with(']'))
+        .filter_map(|line| line.split('"').nth(1))
+        .collect();
+
+    let on_disk = crate_directories();
+    for directory in &on_disk {
+        assert!(
+            members.contains(directory.as_str()),
+            "{directory} holds a manifest but is not a workspace member, so nothing builds it"
+        );
+    }
+
+    // The vacuity guard, aimed at the newest crates because they are the ones
+    // a members list is most likely to be missing: a walk that found nothing
+    // would satisfy the loop above without checking anything.
+    for expected in [
+        "crates/edge/qip-protocols",
+        "crates/edge/qip-sequencing",
+        "crates/edge/qip-orderbook",
+        "crates/edge/qip-feature-dag",
+        "crates/edge/qip-strategy",
+        "crates/edge/qip-arbitrage",
+        "crates/edge/qip-routing",
+        "crates/edge/qip-edge",
+        "crates/apps/qip-edge-node",
+        "crates/services/qip-mesh",
+        "crates/services/qip-chain",
+        "crates/services/qip-prediction",
+        "crates/services/qip-lifecycle",
+        "crates/services/qip-capital",
+    ] {
+        assert!(
+            on_disk.contains(expected),
+            "{expected} was not found on disk, so the check above proved nothing about it"
+        );
+        assert!(
+            members.contains(expected),
+            "{expected} exists but is not a workspace member"
+        );
+    }
+}
+
+/// Every directory under `crates/` that holds a manifest, written the way the
+/// workspace members list writes it.
+fn crate_directories() -> BTreeSet<String> {
+    let root = repository_root();
+    let mut found = BTreeSet::new();
+    let mut stack = vec![root.join("crates")];
+    while let Some(directory) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.file_name().is_some_and(|name| name == "Cargo.toml") {
+                let relative = directory
+                    .strip_prefix(&root)
+                    .expect("the manifest is under the repository root");
+                found.insert(relative.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    found
 }
 
 /// Crate names declared under a workspace directory.
