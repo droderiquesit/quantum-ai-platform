@@ -121,3 +121,75 @@ variable "notification_channels" {
   type        = list(string)
   default     = []
 }
+
+variable "github_repository" {
+  description = <<-EOT
+    The GitHub repository permitted to deploy, as `owner/name`.
+
+    No default. A default here would be a repository somebody else could be
+    running, and the consequence of getting it wrong is that their pipeline can
+    push images and apply manifests in this project.
+  EOT
+
+  type = string
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$", var.github_repository))
+    error_message = "The repository is owner/name, with no scheme and no trailing path."
+  }
+}
+
+variable "edge_cells" {
+  description = <<-EOT
+    The edge cells this environment runs, keyed by cell id.
+
+    ADR 0008 calls for seven, next to the venues they trade. This is a map so
+    that the eighth is an entry rather than a directory: seven copies of a
+    network policy is seven places for one of them to be wrong, and the wrong
+    one is the one nobody reads.
+
+    Empty by default. A cell that has not been asked for is not created, and an
+    environment with no cells is a central plane on its own, which is a working
+    configuration rather than a broken one.
+
+    The seven planned locations, their cell ids and the regions they would run
+    in are in docs/operations/deploying-an-edge-cell.md, together with the two
+    of them that have no Google Cloud region in the right metropolitan area and
+    what that costs.
+
+    Every field is deliberate:
+
+      * `region` is chosen for its distance to the venues, not for convenience.
+      * The three CIDRs must not overlap another cell's. Overlapping ranges
+        route to whichever subnet was created first, silently.
+      * `venues` is empty until somebody has the venue's published address
+        ranges in front of them. An empty map is no venues, not all of them.
+  EOT
+
+  type = map(object({
+    region       = string
+    subnet_cidr  = string
+    pod_cidr     = string
+    service_cidr = string
+    venues = map(object({
+      cidr = string
+      port = number
+    }))
+  }))
+
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for cell in values(var.edge_cells) : alltrue([
+        for venue in values(cell.venues) : venue.cidr != "0.0.0.0/0" && venue.cidr != "::/0"
+      ])
+    ])
+    error_message = "A venue range of the whole internet is not a venue range. Name the ranges the venue publishes."
+  }
+
+  validation {
+    condition     = length(distinct([for cell in values(var.edge_cells) : cell.subnet_cidr])) == length(var.edge_cells)
+    error_message = "Two cells share a subnet range. Overlapping ranges route to whichever subnet was created first."
+  }
+}

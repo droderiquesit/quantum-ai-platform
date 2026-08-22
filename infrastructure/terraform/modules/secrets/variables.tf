@@ -33,6 +33,6 @@ variable "venue_credential_readable" {
     application, which is a stronger guarantee than one the application makes
     about itself.
   EOT
-  type    = bool
-  default = false
+  type        = bool
+  default     = false
 }

@@ -39,7 +39,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: qip-api
-          image: qip-api:IMAGE_TAG
+          image: IMAGE_PREFIX/qip-api:IMAGE_TAG
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

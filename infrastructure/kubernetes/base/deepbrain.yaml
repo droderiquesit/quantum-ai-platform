@@ -1,0 +1,147 @@
+# The Deep Brain: world model, discovery, reasoning, simulation, optimisation
+# and learning.
+#
+# The slow half of the platform. It is the one workload that may call a
+# language model, and the one that may not reach a venue — the binary checks
+# the second at start-up by refusing to run if any agent it hosts holds a
+# market-touching capability.
+#
+# One replica. The intelligence loop is not horizontally scalable as written:
+# two of these would each run the cycle and each write evidence, and the
+# duplicate records would be indistinguishable from a replay.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: qip-deepbrain
+  namespace: qip
+  annotations:
+    iam.gke.io/gcp-service-account: qip-deepbrain-ENVIRONMENT@PROJECT.iam.gserviceaccount.com
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qip-deepbrain
+  namespace: qip
+  labels:
+    app: qip-deepbrain
+spec:
+  replicas: 1
+  # Recreate rather than RollingUpdate: with one replica a rolling update would
+  # briefly run two, and two deep brains each running the cycle write two
+  # copies of the same evidence.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: qip-deepbrain
+  template:
+    metadata:
+      labels:
+        app: qip-deepbrain
+    spec:
+      serviceAccountName: qip-deepbrain
+      automountServiceAccountToken: false
+      # A cycle that is part way through should finish rather than leave a
+      # half-written run behind.
+      terminationGracePeriodSeconds: 120
+      # No liveness or readiness probe.
+      #
+      # This binary does not serve yet: `fn run` in crates/apps/qip-deepbrain runs one cycle and
+      # returns. A probe pointed at a port
+      # nothing is listening on would fail every time, and one written against
+      # an endpoint that does not exist is a probe that looks like coverage and
+      # is not. The port and the Service below are the shape the workload is
+      # being built towards; until the serving loop lands, Kubernetes restarts
+      # the container each time it exits, which is visible in the restart count
+      # and is recorded as a blocking gap in
+      # docs/operations/external-dependencies.md.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: qip-deepbrain
+          image: IMAGE_PREFIX/qip-deepbrain:IMAGE_TAG
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: QIP_API_ADDRESS
+              value: "0.0.0.0:8080"
+            - name: QIP_AUTONOMY_CEILING
+              valueFrom:
+                configMapKeyRef:
+                  name: qip-config
+                  key: autonomy_ceiling
+            - name: QIP_CYCLE_INTERVAL_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: qip-config
+                  key: cycle_interval_seconds
+            - name: QIP_LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: qip-config
+                  key: log_level
+          resources:
+            # Burstable rather than Guaranteed: a backtest wants whatever the
+            # node has spare, and unlike the fast path it does not care about
+            # being throttled for a few milliseconds.
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: work
+              mountPath: /var/lib/qip
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        # Scratch space for a simulation run. Bounded, and emptyDir rather than
+        # a claim on purpose: nothing written here is authoritative, and
+        # anything that is goes to the evidence bucket.
+        - name: work
+          emptyDir:
+            sizeLimit: 8Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qip-deepbrain
+  namespace: qip
+spec:
+  selector:
+    app: qip-deepbrain
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: qip-deepbrain
+  namespace: qip
+spec:
+  # maxUnavailable rather than minAvailable, because this workload has one
+  # replica: `minAvailable: 1` on a single replica means no voluntary eviction
+  # is ever allowed, which makes the node it lands on undrainable and turns
+  # every cluster upgrade into an incident.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: qip-deepbrain

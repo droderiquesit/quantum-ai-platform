@@ -1,0 +1,143 @@
+# The Fast Brain: market data, microstructure, real-time risk and execution.
+#
+# The latency-sensitive one, and the only workload permitted to reach a venue.
+# Two things about it are different from every other workload here, and both
+# are deliberate:
+#
+#   * Its requests equal its limits. That puts the pod in the Guaranteed
+#     quality-of-service class, which is what keeps the kubelet from evicting
+#     it under node pressure and stops the CFS quota throttling it at a
+#     boundary it did not choose. A fast path that is descheduled at the wrong
+#     moment is not a fast path.
+#   * It mounts no secret at all. The venue credential is read from Secret
+#     Manager through workload identity, so in an environment whose autonomy
+#     ceiling is paper trading — where that IAM binding does not exist — the
+#     read fails rather than the deployment quietly holding a credential it
+#     should not have.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: qip-fastbrain
+  namespace: qip
+  annotations:
+    # Bound to the Google service account by workload identity, so no key file
+    # ever exists on disk.
+    iam.gke.io/gcp-service-account: qip-fastbrain-ENVIRONMENT@PROJECT.iam.gserviceaccount.com
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qip-fastbrain
+  namespace: qip
+  labels:
+    app: qip-fastbrain
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: qip-fastbrain
+  template:
+    metadata:
+      labels:
+        app: qip-fastbrain
+    spec:
+      serviceAccountName: qip-fastbrain
+      # No automatic token mount: the workload authenticates through workload
+      # identity, and a mounted token is a credential nothing needs.
+      automountServiceAccountToken: false
+      # The fast path is not worth restarting slowly. Thirty seconds is enough
+      # to finish in-flight work and cancel resting orders.
+      terminationGracePeriodSeconds: 30
+      # No liveness or readiness probe.
+      #
+      # This binary does not serve yet: `fn run` in crates/apps/qip-fastbrain checks its agent
+      # roster and returns. A probe pointed at a port
+      # nothing is listening on would fail every time, and one written against
+      # an endpoint that does not exist is a probe that looks like coverage and
+      # is not. The port and the Service below are the shape the workload is
+      # being built towards; until the serving loop lands, Kubernetes restarts
+      # the container each time it exits, which is visible in the restart count
+      # and is recorded as a blocking gap in
+      # docs/operations/external-dependencies.md.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: qip-fastbrain
+          image: IMAGE_PREFIX/qip-fastbrain:IMAGE_TAG
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: QIP_API_ADDRESS
+              value: "0.0.0.0:8080"
+            # The autonomy ceiling. From the config map, so changing what the
+            # platform is permitted to do is a change to a named resource that
+            # appears in a diff and in an audit log.
+            - name: QIP_AUTONOMY_CEILING
+              valueFrom:
+                configMapKeyRef:
+                  name: qip-config
+                  key: autonomy_ceiling
+            - name: QIP_LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: qip-config
+                  key: log_level
+            # There is deliberately no model endpoint, no model credential and
+            # no secret of any kind here. Nothing on the fast path may consult
+            # a language model — ADR 0008, consequence 3 — and the binary
+            # refuses to start if an agent it would host holds
+            # `call_language_model`. This is the deployment saying the same
+            # thing: there is nothing here to call one with.
+          resources:
+            # Requests equal limits. See the note at the top of the file.
+            requests:
+              cpu: "2"
+              memory: 2Gi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # The root filesystem is read-only, so anything needing to write gets
+        # an explicit, size-bounded volume.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qip-fastbrain
+  namespace: qip
+spec:
+  selector:
+    app: qip-fastbrain
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: qip-fastbrain
+  namespace: qip
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: qip-fastbrain

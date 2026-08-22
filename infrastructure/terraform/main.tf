@@ -49,11 +49,37 @@ locals {
 
   # The service accounts, one per deployable, so a compromised component has
   # only its own permissions.
+  #
+  # The key is the deployable's short name and the value is both the Google
+  # account's prefix and the Kubernetes service account the workload identity
+  # binding names, so the three cannot drift apart.
+  #
+  # There is deliberately no entry for `qip-web`. It is a library the API links
+  # and renders from — `crates/apps/qip-web` declares no `[[bin]]` and has no
+  # `main.rs` — so an account for it would be an identity with nothing
+  # attached, which is the state this file is being changed to remove.
+  #
+  # Edge cells are not here either. Each gets its own account inside its own
+  # module, because a cell is created and destroyed as a unit and an account
+  # left behind by a removed cell is a credential nobody owns.
   service_accounts = {
     api       = "qip-api"
     fastbrain = "qip-fastbrain"
     deepbrain = "qip-deepbrain"
   }
+
+  # Where the central plane is, from a cell's point of view: the primary
+  # subnet, the pods in it, and the private Google API endpoint. Named as a
+  # local so every cell gets the same answer.
+  central_plane_ranges = [
+    var.subnet_cidr,
+    var.pod_cidr,
+    local.private_google_apis,
+  ]
+
+  # Private Google access. The one range through which a workload reaches
+  # Google APIs without leaving the VPC and without a route to anywhere else.
+  private_google_apis = "199.36.153.8/30"
 }
 
 module "network" {
@@ -89,10 +115,16 @@ module "cluster" {
   # cluster in name only.
   authorised_networks = var.authorised_networks
 
-  node_count      = var.node_count
-  machine_type    = var.machine_type
-  kms_key_id      = module.secrets.node_encryption_key_id
-  service_account = module.secrets.service_account_emails[local.service_accounts.deepbrain]
+  node_count   = var.node_count
+  machine_type = var.machine_type
+  kms_key_id   = module.secrets.node_encryption_key_id
+
+  # The nodes' own account. Previously this was the deep brain's workload
+  # account, which meant a node compromise yielded that workload's permissions
+  # and made the one-account-per-deployable rule untrue for the deployable that
+  # holds the most. It also indexed the account map by the account *name*
+  # rather than by the deployable's key, so the lookup found nothing.
+  service_account = module.secrets.node_service_account_email
 }
 
 module "secrets" {
@@ -117,6 +149,11 @@ module "secrets" {
     # uniform; readable only where the autonomy ceiling permits live trading.
     "qip-venue-credential",
     "qip-quantum-token",
+    # The key an edge cell verifies a capital envelope's signature against.
+    # Held as a secret for its integrity rather than its confidentiality:
+    # somebody who can replace it can mint envelopes, which is the one way a
+    # cell's bound can be widened without the central plane agreeing.
+    "qip-capital-envelope-key",
   ]
 
   # The venue credential is readable only by an environment that could use it.
@@ -134,4 +171,88 @@ module "observability" {
   # Alerting thresholds. The kill-switch alert has no threshold: any trip is
   # worth waking someone for.
   notification_channels = var.notification_channels
+}
+
+module "cicd" {
+  source = "./modules/cicd"
+
+  project_id  = var.project_id
+  environment = var.environment
+
+  # Which repository may impersonate the pipeline account. No default: see the
+  # variable.
+  github_repository = var.github_repository
+}
+
+module "registry" {
+  source = "./modules/registry"
+
+  project_id  = var.project_id
+  region      = var.region
+  environment = var.environment
+  labels      = local.labels
+
+  ci_service_account = module.cicd.service_account_email
+
+  # The nodes pull, because the kubelet does. The workloads are listed so a
+  # component can read the digest of the image it is running, which is what
+  # makes a provenance claim checkable from inside the cluster.
+  pull_service_accounts = concat(
+    [module.secrets.node_service_account_email],
+    values(module.secrets.service_account_emails),
+  )
+}
+
+module "evidence" {
+  source = "./modules/evidence"
+
+  project_id  = var.project_id
+  region      = var.region
+  environment = var.environment
+  labels      = local.labels
+
+  # The evidence key lives in the platform's existing key ring rather than in a
+  # second one nobody rotates.
+  key_ring_id = module.secrets.key_ring_id
+
+  # The deep brain produces the evidence for a decision; the API serves it to
+  # whoever is asking. Deliberately two identities: the component that writes
+  # the record and the component that shows it should not be the same one.
+  #
+  # Neither list may grow to include a role that can delete. See the module.
+  writer_service_accounts = [module.secrets.service_account_emails["deepbrain"]]
+  reader_service_accounts = [module.secrets.service_account_emails["api"]]
+}
+
+# The edge cells.
+#
+# One module, instantiated once per entry in `edge_cells`. The architecture
+# calls for seven; this ships with one, and the other six are entries in a
+# variable rather than six more directories. See the variable for the map, and
+# docs/operations/deploying-an-edge-cell.md for what else each one needs.
+module "edge_cell" {
+  source   = "./modules/edge-cell"
+  for_each = var.edge_cells
+
+  project_id  = var.project_id
+  environment = var.environment
+
+  cell_id = each.key
+  region  = each.value.region
+
+  network_id   = module.network.network_id
+  subnet_cidr  = each.value.subnet_cidr
+  pod_cidr     = each.value.pod_cidr
+  service_cidr = each.value.service_cidr
+
+  # What the cell may reach, and nothing else. An empty venue map is a cell
+  # that can reach no venue, which is the correct state for a cell whose
+  # connectivity has not been confirmed.
+  venues               = each.value.venues
+  central_plane_ranges = local.central_plane_ranges
+
+  capital_envelope_secret_id = module.secrets.secret_ids["qip-capital-envelope-key"]
+  evidence_bucket            = module.evidence.bucket_name
+  registry_location          = var.region
+  registry_repository        = module.registry.repository_name
 }

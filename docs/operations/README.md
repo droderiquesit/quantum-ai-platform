@@ -9,6 +9,14 @@ needs the first line more than the reasoning.
 * [Enabling live trading](enabling-live-trading.md)
 * [An agent attempted an ungranted capability](permission-violation.md)
 * [The book and the venue disagree](reconciliation-break.md)
+* [Deploying a new edge cell](deploying-an-edge-cell.md)
+
+And the standing list of what this build cannot reach:
+
+* [External dependencies](external-dependencies.md) — every managed service the
+  platform has a port for and no credentials to use, what each would need, and
+  the gaps in the infrastructure itself. Read it before deploying anything: it
+  names the things that would stop a deployment rather than degrade one.
 
 ## The one thing to know
 

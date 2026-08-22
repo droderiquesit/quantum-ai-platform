@@ -97,8 +97,25 @@ spec:
         - protocol: TCP
           port: 443
 ---
-# The fast brain is the only workload permitted to reach a venue, and only
-# where the environment's egress policy allows it at the network level too.
+# The fast brain is the only central-plane workload permitted to reach a venue,
+# and only where the environment's egress policy allows it at the network level
+# too.
+#
+# Note what is *not* here: no rule permits the fast brain to reach the deep
+# brain. The deep brain is the one workload that may call a language model, so
+# an egress rule to it would be a route from the fast path to a model by way of
+# a component that has one. ADR 0008, consequence 3: nothing on the hot path
+# consults a model.
+#
+# What this layer cannot promise, stated plainly rather than left to be
+# discovered: 199.36.153.8/30 is private Google access, and it is one address
+# range for *every* Google API, Vertex AI included. A network policy cannot
+# tell `secretmanager.googleapis.com` from `aiplatform.googleapis.com`. Closing
+# that needs a VPC Service Controls perimeter, which this configuration does
+# not create — see docs/operations/external-dependencies.md, which names the
+# exact perimeter and the services it must exclude. Until then the guarantee
+# rests on the binary's own start-up check and on there being no model
+# credential in this deployment to call one with.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -117,3 +134,90 @@ spec:
       ports:
         - protocol: TCP
           port: 443
+---
+# The API reaches the three workloads behind it, and Google's APIs. Nothing
+# else.
+#
+# Without this the API has no egress policy at all, which under the default
+# deny above means it can reach neither Secret Manager for its tokens nor the
+# workloads it fronts. A default-deny namespace with no matching egress rule
+# does not produce an error anywhere; it produces a connection that hangs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-api-egress
+  namespace: qip
+spec:
+  podSelector:
+    matchLabels:
+      app: qip-api
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: qip-fastbrain
+        - podSelector:
+            matchLabels:
+              app: qip-deepbrain
+        - podSelector:
+            matchLabels:
+              app: qip-edge-node
+      ports:
+        - protocol: TCP
+          port: 8080
+    - to:
+        - ipBlock:
+            # Private Google access: Google APIs without leaving the VPC, and
+            # without a route to anywhere else.
+            cidr: 199.36.153.8/30
+      ports:
+        - protocol: TCP
+          port: 443
+---
+# The fast brain accepts traffic from the API and nothing else.
+#
+# The API is how an operator trips the kill switch, so this is the path a halt
+# travels down. It is deliberately the only one: nothing else in the namespace
+# has any business instructing the execution path.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-fastbrain-ingress
+  namespace: qip
+spec:
+  podSelector:
+    matchLabels:
+      app: qip-fastbrain
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: qip-api
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# The deep brain accepts traffic from the API and nothing else.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-deepbrain-ingress
+  namespace: qip
+spec:
+  podSelector:
+    matchLabels:
+      app: qip-deepbrain
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: qip-api
+      ports:
+        - protocol: TCP
+          port: 8080

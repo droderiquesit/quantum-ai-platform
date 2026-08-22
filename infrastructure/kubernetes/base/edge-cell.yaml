@@ -1,0 +1,272 @@
+# An edge cell.
+#
+# One of these per cell. `CELL_ID` and `CELL_REGION` are substituted at deploy
+# time, the same way `ENVIRONMENT`, `PROJECT` and `IMAGE_TAG` are — see
+# docs/operations/deploying-an-edge-cell.md.
+#
+# ADR 0008: the cell holds the whole hot path and decides without asking the
+# central plane. What keeps that safe is that it never decides how much it may
+# risk — it acts inside a `CapitalEnvelope` that is signed, bounded,
+# venue-scoped and expiring. `QIP_CAPITAL_ENVELOPE_KEY` is the key it verifies
+# that signature against, and it is the single most security-relevant value in
+# this file: whoever can replace it can mint envelopes, which is the one way a
+# cell's bound widens without the central plane agreeing.
+#
+# A cell that has lost contact with the centre keeps trading inside the
+# envelope it already holds. The network policy therefore permits the central
+# plane rather than requiring it.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: qip-edge-CELL_ID
+  namespace: qip
+  annotations:
+    # Matches the workload identity binding the edge-cell Terraform module
+    # creates for `qip/qip-edge-CELL_ID`.
+    iam.gke.io/gcp-service-account: qip-edge-CELL_ID-ENVIRONMENT@PROJECT.iam.gserviceaccount.com
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qip-edge-CELL_ID
+  namespace: qip
+  labels:
+    app: qip-edge-node
+    qip.io/cell: CELL_ID
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: qip-edge-node
+      qip.io/cell: CELL_ID
+  template:
+    metadata:
+      labels:
+        app: qip-edge-node
+        qip.io/cell: CELL_ID
+    spec:
+      serviceAccountName: qip-edge-CELL_ID
+      automountServiceAccountToken: false
+      # Long enough to cancel every resting order and write the cell's closing
+      # evidence. A cell killed with orders live leaves the book holding risk
+      # nobody is watching.
+      terminationGracePeriodSeconds: 60
+      # Two replicas of a latency-sensitive workload on the same node share a
+      # failure and a network card, and gain nothing.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: qip-edge-node
+                  qip.io/cell: CELL_ID
+              topologyKey: kubernetes.io/hostname
+      # No liveness or readiness probe.
+      #
+      # This binary does not serve yet: the crate that produces it is still being written. A probe pointed at a port
+      # nothing is listening on would fail every time, and one written against
+      # an endpoint that does not exist is a probe that looks like coverage and
+      # is not. The port and the Service below are the shape the workload is
+      # being built towards; until the serving loop lands, Kubernetes restarts
+      # the container each time it exits, which is visible in the restart count
+      # and is recorded as a blocking gap in
+      # docs/operations/external-dependencies.md.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: qip-edge-node
+          image: IMAGE_PREFIX/qip-edge-node:IMAGE_TAG
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: QIP_API_ADDRESS
+              value: "0.0.0.0:8080"
+            # The same config-map keys every other workload reads.
+            - name: QIP_AUTONOMY_CEILING
+              valueFrom:
+                configMapKeyRef:
+                  name: qip-config
+                  key: autonomy_ceiling
+            - name: QIP_CYCLE_INTERVAL_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: qip-config
+                  key: cycle_interval_seconds
+            - name: QIP_LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: qip-config
+                  key: log_level
+            # Which cell this is. It must match the `cell` field of every
+            # envelope the central plane grants here, because the cell refuses
+            # one addressed elsewhere.
+            - name: QIP_CELL_ID
+              value: "CELL_ID"
+            - name: QIP_CELL_REGION
+              value: "CELL_REGION"
+            # The key capital envelopes are verified against. From a secret
+            # reference, never from the image and never from a literal.
+            - name: QIP_CAPITAL_ENVELOPE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: qip-capital-envelope-key
+                  key: verification_key
+          resources:
+            # Requests equal limits, for the same reason as the fast brain:
+            # this is a hot path, and a hot path that is throttled or evicted
+            # is not one.
+            requests:
+              cpu: "1"
+              memory: 1Gi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: state
+              mountPath: /var/lib/qip
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        # Local book and feature state. emptyDir on purpose: a cell rebuilds
+        # its books from the feed on start, and state that survived a restart
+        # would be state nobody reconciled against the venue.
+        - name: state
+          emptyDir:
+            sizeLimit: 4Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qip-edge-CELL_ID
+  namespace: qip
+spec:
+  selector:
+    app: qip-edge-node
+    qip.io/cell: CELL_ID
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: qip-edge-CELL_ID
+  namespace: qip
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: qip-edge-node
+      qip.io/cell: CELL_ID
+---
+# An edge cell accepts traffic from the API and nothing else.
+#
+# These two policies live here rather than in namespace.yaml because they
+# are per-cell: the egress rule names this cell's venues. namespace.yaml is
+# applied by the pipeline unrendered, and a placeholder in it would be
+# rejected by the API server.
+#
+# The central plane reaches a cell to deliver a capital envelope and to recall
+# one. Both are things the centre initiates; the cell asks for nothing, which
+# is what lets it keep trading when the centre is unreachable.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-edge-ingress
+  namespace: qip
+spec:
+  podSelector:
+    matchLabels:
+      app: qip-edge-node
+      # The cell as well as the workload. Two cells in one namespace selected
+      # only by `app` would each get the other's venue rule, which is a wider
+      # grant than either was given.
+      qip.io/cell: CELL_ID
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: qip-api
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# What an edge cell may reach. The most security-relevant rule in this file.
+#
+# A cell holds the whole hot path: feed handlers, books, compiled strategies,
+# local risk and the venue gateway. It decides without asking anyone. The only
+# things standing between a compromised cell and an arbitrary outbound
+# connection are this policy and the egress firewall the edge-cell Terraform
+# module writes for the same cell.
+#
+# Three destinations, and the list is exhaustive:
+#
+#   1. Its own venues. `VENUE_CIDR_*` and `VENUE_PORT_*` are substituted per
+#      cell from the same `venues` map the Terraform module takes, so the pod
+#      policy and the firewall rule cannot name different things. A cell whose
+#      venue map is empty ships with this rule absent and reaches no venue,
+#      which is the correct state for a cell nobody has confirmed
+#      connectivity for.
+#   2. The central plane, for evidence and aggregate exposure. Permitted, not
+#      required: a cell that cannot reach it keeps trading inside the envelope
+#      it holds.
+#   3. Google's private API endpoint, for the envelope verification key and
+#      for telemetry.
+#
+# It may not reach the deep brain, another cell, or the internet.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-edge-egress
+  namespace: qip
+spec:
+  podSelector:
+    matchLabels:
+      app: qip-edge-node
+      # The cell as well as the workload. Two cells in one namespace selected
+      # only by `app` would each get the other's venue rule, which is a wider
+      # grant than either was given.
+      qip.io/cell: CELL_ID
+  policyTypes:
+    - Egress
+  egress:
+    # 1. Its venues.
+    - to:
+        - ipBlock:
+            cidr: VENUE_CIDR
+      ports:
+        - protocol: TCP
+          port: VENUE_PORT
+    # 2. The central plane.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: qip-api
+      ports:
+        - protocol: TCP
+          port: 8080
+    # 3. Google APIs, through private access.
+    - to:
+        - ipBlock:
+            cidr: 199.36.153.8/30
+      ports:
+        - protocol: TCP
+          port: 443

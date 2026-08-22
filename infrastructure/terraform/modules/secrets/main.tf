@@ -54,6 +54,32 @@ resource "google_kms_crypto_key" "secrets" {
   labels = var.labels
 }
 
+# The nodes' identity.
+#
+# Separate from every workload account on purpose. The kubelet pulls images and
+# writes node telemetry as this account; a pod authenticates as its own through
+# workload identity. Reusing a workload's account for the node pool would mean a
+# node compromise yields that workload's permissions, which is precisely the
+# sharing the accounts below exist to avoid.
+resource "google_service_account" "nodes" {
+  project      = var.project_id
+  account_id   = "qip-nodes-${var.environment}"
+  display_name = "qip nodes (${var.environment})"
+  description  = "The node pool's identity. Pulls images and writes node telemetry; runs no workload."
+}
+
+resource "google_project_iam_member" "node_telemetry" {
+  for_each = toset([
+    "roles/monitoring.metricWriter",
+    "roles/logging.logWriter",
+    "roles/stackdriver.resourceMetadata.writer",
+  ])
+
+  project = var.project_id
+  role    = each.value
+  member  = "serviceAccount:${google_service_account.nodes.email}"
+}
+
 # One service account per deployable. A compromised component has only its own
 # permissions, which is the entire argument for not sharing one.
 resource "google_service_account" "workload" {

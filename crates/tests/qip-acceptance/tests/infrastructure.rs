@@ -467,3 +467,1105 @@ fn the_dependency_policy_is_enforced_rather_than_documented() {
     // transitive dependency cannot slip past.
     assert!(script.contains("Cargo.lock"));
 }
+
+// --- the workloads and the binaries they run --------------------------------
+//
+// The bug these exist to catch is already in the repository's history: an
+// `allow-deepbrain-egress` NetworkPolicy governing a pod that no Deployment
+// creates. A rule for a workload that does not exist is not harmless — it is a
+// reviewer reading the namespace and concluding the deep brain is deployed and
+// constrained, when it is neither.
+//
+// So the correspondence is checked in both directions. A test that only asked
+// "does every binary have a Deployment" would have passed on that namespace
+// without noticing, because the missing half was the Deployment.
+
+/// Binaries in the workspace that are deliberately not deployed as a workload.
+///
+/// Kept as a list with a reason attached rather than as a filter in the test,
+/// because "why is this one exempt" is the question the next person will have
+/// and a predicate cannot answer it.
+const NOT_A_WORKLOAD: &[(&str, &str)] = &[(
+    // `qip-cli` builds a binary called `qip`.
+    "qip",
+    "an operator's tool, run by a person against a cluster rather than \
+     scheduled in one",
+)];
+
+/// Deployments whose binary is not in the workspace yet.
+///
+/// This list has to shrink to nothing, and
+/// `every_pending_workload_is_still_actually_pending` is what makes it: that
+/// test fails the moment the crate lands, so the exemption is removed by
+/// whoever lands it rather than surviving as a permanent hole in the check
+/// above.
+const AWAITING_ITS_CRATE: &[(&str, &str)] = &[(
+    "qip-edge-node",
+    "the edge-cell binary is being written concurrently; crates/edge/qip-edge \
+     declares no [[bin]] yet",
+)];
+
+/// Workloads whose binary has no serving loop, so no probe can be written.
+///
+/// Same discipline: a probe pointed at an endpoint that does not exist looks
+/// like coverage and is not, and an exemption that cannot expire is a
+/// permanent one.
+const DOES_NOT_SERVE_YET: &[(&str, &str)] = &[
+    (
+        "qip-fastbrain",
+        "`fn run` checks the agent roster and returns",
+    ),
+    ("qip-deepbrain", "`fn run` runs one cycle and returns"),
+    (
+        "qip-edge-node",
+        "the crate that produces it is still being written",
+    ),
+];
+
+/// The binaries the workspace actually builds, by binary name.
+///
+/// Read from the manifests rather than from a list here, because a list here
+/// would be a second copy of the truth and the whole point of this section is
+/// that the two copies drift.
+fn workspace_binaries() -> Vec<String> {
+    let mut found = Vec::new();
+    for path in files_with_extension("crates", "toml") {
+        if path.file_name().is_none_or(|name| name != "Cargo.toml") {
+            continue;
+        }
+        let content = std::fs::read_to_string(&path).expect("readable");
+        let Some(directory) = path.parent() else {
+            continue;
+        };
+        // A `[[bin]]` section names the binary explicitly; a `src/main.rs`
+        // with no section produces one named after the package. Both count,
+        // because both are something a Deployment could run.
+        let declared: Vec<String> = content
+            .split("[[bin]]")
+            .skip(1)
+            .filter_map(|section| {
+                section
+                    .lines()
+                    .find(|line| line.trim_start().starts_with("name"))
+                    .and_then(|line| line.split('"').nth(1))
+                    .map(str::to_string)
+            })
+            .collect();
+        if !declared.is_empty() {
+            found.extend(declared);
+            continue;
+        }
+        if directory.join("src/main.rs").exists() {
+            let name = content
+                .lines()
+                .find(|line| line.trim_start().starts_with("name"))
+                .and_then(|line| line.split('"').nth(1))
+                .expect("a package declares a name");
+            found.push(name.to_string());
+        }
+    }
+    found.sort();
+    found.dedup();
+    assert!(
+        found.len() >= 4,
+        "only {found:?} were found; the manifest walk is not reaching the apps"
+    );
+    found
+}
+
+/// Every YAML document in every manifest, paired with the file it came from.
+fn manifest_documents() -> Vec<(std::path::PathBuf, String)> {
+    let mut documents = Vec::new();
+    for path in files_with_extension("infrastructure/kubernetes", "yaml") {
+        let content = std::fs::read_to_string(&path).expect("readable");
+        for document in content.split("\n---\n") {
+            documents.push((path.clone(), document.to_string()));
+        }
+    }
+    assert!(
+        documents.len() > 10,
+        "only {} documents were found; the manifest walk is not reaching them",
+        documents.len()
+    );
+    documents
+}
+
+/// Documents of one kind.
+fn documents_of_kind(kind: &str) -> Vec<(std::path::PathBuf, String)> {
+    manifest_documents()
+        .into_iter()
+        .filter(|(_, document)| {
+            document
+                .lines()
+                .any(|line| line.trim() == format!("kind: {kind}"))
+        })
+        .collect()
+}
+
+/// The value of the first `key:` in a document, at any indentation.
+fn first_value(document: &str, key: &str) -> Option<String> {
+    document.lines().find_map(|line| {
+        let trimmed = line.trim();
+        trimmed
+            .strip_prefix(&format!("{key}:"))
+            .map(|value| value.trim().trim_matches('"').to_string())
+    })
+}
+
+/// The lines nested under `key`, by indentation.
+///
+/// Splitting on a key and then on a fixed indent looks simpler and is wrong:
+/// the remainder begins with the newline the split left behind, so the first
+/// element is empty and the check quietly passes on nothing.
+fn block_under(text: &str, key: &str) -> String {
+    let mut lines = text.lines();
+    let opening = lines.find(|line| line.trim() == key);
+    let Some(opening) = opening else {
+        return String::new();
+    };
+    let indent = opening.len() - opening.trim_start().len();
+    lines
+        .take_while(|line| line.trim().is_empty() || line.len() - line.trim_start().len() > indent)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The container blocks inside a Deployment document.
+///
+/// Split on the fixed indentation these manifests use. That is brittle on
+/// purpose: a reindented manifest makes this return nothing, and every caller
+/// asserts it found at least one container, so the failure is loud rather than
+/// a check that quietly stops checking.
+fn containers(document: &str) -> Vec<String> {
+    let Some(start) = document.find("\n      containers:\n") else {
+        return Vec::new();
+    };
+    let body = &document[start..];
+    let body = body.split("\n      volumes:").next().unwrap_or(body);
+    body.split("\n        - name: ")
+        .skip(1)
+        .map(str::to_string)
+        .collect()
+}
+
+/// The binary a container runs, taken from its image reference.
+///
+/// The image is the honest link between a Deployment and a binary: a container
+/// name is a label somebody chose, and an image is the thing that will actually
+/// execute.
+fn container_binary(container: &str) -> String {
+    let image = container
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("image:"))
+        .unwrap_or_else(|| panic!("a container declares an image:\n{container}"))
+        .trim();
+    let without_tag = image.split(':').next().unwrap_or(image);
+    without_tag
+        .rsplit('/')
+        .next()
+        .unwrap_or(without_tag)
+        .to_string()
+}
+
+/// Every binary a Deployment in the manifests runs.
+fn deployed_binaries() -> Vec<String> {
+    let mut deployed: Vec<String> = documents_of_kind("Deployment")
+        .iter()
+        .flat_map(|(path, document)| {
+            let found = containers(document);
+            assert!(
+                !found.is_empty(),
+                "{} has a Deployment with no container the split could find; \
+                 the manifest's indentation has changed and this check has \
+                 stopped checking",
+                path.display()
+            );
+            found
+        })
+        .map(|container| container_binary(&container))
+        .collect();
+    deployed.sort();
+    deployed.dedup();
+    deployed
+}
+
+#[test]
+fn every_deployable_binary_in_the_workspace_has_a_deployment() {
+    let deployed = deployed_binaries();
+    for binary in workspace_binaries() {
+        if NOT_A_WORKLOAD.iter().any(|(name, _)| *name == binary) {
+            continue;
+        }
+        assert!(
+            deployed.contains(&binary),
+            "{binary} is a binary this workspace builds and nothing deploys it. \
+             Either give it a Deployment or add it to NOT_A_WORKLOAD with the \
+             reason it is not one."
+        );
+    }
+}
+
+#[test]
+fn every_deployment_runs_a_binary_that_exists() {
+    // The other direction, and the one the repository actually got wrong.
+    let binaries = workspace_binaries();
+    for binary in deployed_binaries() {
+        if AWAITING_ITS_CRATE.iter().any(|(name, _)| *name == binary) {
+            continue;
+        }
+        assert!(
+            binaries.contains(&binary),
+            "a Deployment runs {binary}, which no crate in this workspace \
+             builds. A manifest for a binary that does not exist reads to a \
+             reviewer as a component that is deployed and constrained."
+        );
+    }
+}
+
+#[test]
+fn every_pending_workload_is_still_actually_pending() {
+    // What keeps AWAITING_ITS_CRATE from becoming permanent. When the crate
+    // lands this fails, and the person who landed it deletes the entry — at
+    // which point `every_deployment_runs_a_binary_that_exists` starts covering
+    // it for real.
+    let binaries = workspace_binaries();
+    for (binary, reason) in AWAITING_ITS_CRATE {
+        assert!(
+            !binaries.contains(&(*binary).to_string()),
+            "{binary} now exists in the workspace, so the exemption \"{reason}\" \
+             is stale. Delete it from AWAITING_ITS_CRATE."
+        );
+    }
+}
+
+#[test]
+fn every_workload_that_cannot_be_probed_says_why_and_stops_being_exempt_when_it_can() {
+    // A Deployment with no liveness probe is normally a mistake. Here three of
+    // them are deliberate, because the binaries do not serve yet, and a probe
+    // written against an endpoint that does not exist is worse than none: it
+    // looks like coverage.
+    for (path, document) in documents_of_kind("Deployment") {
+        let workload = first_value(&document, "name").expect("a Deployment is named");
+        let binary = containers(&document)
+            .first()
+            .map(|container| container_binary(container))
+            .unwrap_or_else(|| panic!("{} has a Deployment with no container", path.display()));
+
+        let exempt = DOES_NOT_SERVE_YET.iter().any(|(name, _)| *name == binary);
+        let probed = document.contains("livenessProbe") && document.contains("readinessProbe");
+
+        if exempt {
+            assert!(
+                !probed,
+                "{binary} carries a probe and is still listed in \
+                 DOES_NOT_SERVE_YET. If it serves now, delete the entry."
+            );
+            assert!(
+                document.contains("No liveness or readiness probe"),
+                "{} does not say why {workload} has no probe",
+                path.display()
+            );
+        } else {
+            assert!(
+                probed,
+                "{workload} has no liveness and readiness probe, and is not \
+                 listed in DOES_NOT_SERVE_YET with a reason"
+            );
+        }
+    }
+}
+
+// --- identity ---------------------------------------------------------------
+
+#[test]
+fn every_service_account_terraform_creates_is_used_by_exactly_one_workload() {
+    // Two identities existed with nothing attached to them before this. An
+    // unused service account is not merely tidy-up: it is a set of permissions
+    // nobody is watching, and the first sign that it is being used is that
+    // something has used it.
+    let root = read("infrastructure/terraform/main.tf");
+    let block = root
+        .split("service_accounts = {")
+        .nth(1)
+        .expect("the root declares its service accounts")
+        .split('}')
+        .next()
+        .expect("the block closes");
+
+    let declared: Vec<String> = block
+        .lines()
+        .filter_map(|line| line.split('=').nth(1))
+        .map(|value| value.trim().trim_matches('"').to_string())
+        .filter(|value| !value.is_empty())
+        .collect();
+    assert!(
+        declared.len() >= 3,
+        "only {declared:?} were parsed out of the service-account map"
+    );
+
+    // Every account has a workload naming it, exactly once.
+    let service_accounts: Vec<String> = documents_of_kind("Deployment")
+        .iter()
+        .filter_map(|(_, document)| first_value(document, "serviceAccountName"))
+        .collect();
+
+    for account in &declared {
+        let uses = service_accounts
+            .iter()
+            .filter(|name| *name == account)
+            .count();
+        assert_eq!(
+            uses, 1,
+            "{account} is created in Terraform and used by {uses} workloads. \
+             An identity with nothing attached is permission nobody is watching."
+        );
+    }
+
+    // And every workload's account is one Terraform creates. An edge cell's
+    // account is created in its own module rather than in this map, because a
+    // cell is created and destroyed as a unit.
+    for account in &service_accounts {
+        assert!(
+            declared.contains(account) || account.starts_with("qip-edge-"),
+            "{account} is named by a workload and created by no Terraform"
+        );
+    }
+}
+
+#[test]
+fn every_workload_has_its_own_service_account_and_mounts_no_token() {
+    // Sharing an account would undo the entire argument for having several,
+    // and a mounted token is a credential nothing here needs: every workload
+    // authenticates to Google through workload identity and none of them talks
+    // to the Kubernetes API.
+    let mut seen: Vec<String> = Vec::new();
+    for (path, document) in documents_of_kind("Deployment") {
+        let workload = first_value(&document, "name").expect("a Deployment is named");
+        let account = first_value(&document, "serviceAccountName").unwrap_or_else(|| {
+            panic!("{workload} runs under the namespace's default service account")
+        });
+        assert!(
+            !seen.contains(&account),
+            "{workload} shares the service account {account} with another workload"
+        );
+        seen.push(account);
+
+        assert!(
+            document
+                .lines()
+                .any(|line| line.trim() == "automountServiceAccountToken: false"),
+            "{} mounts a service-account token for {workload}",
+            path.display()
+        );
+    }
+    assert!(
+        seen.len() >= 4,
+        "only {} workloads were checked",
+        seen.len()
+    );
+}
+
+// --- what a container may do ------------------------------------------------
+
+#[test]
+fn every_container_has_a_cpu_and_a_memory_request_as_well_as_a_limit() {
+    // The existing check reads the first `limits:` block in a file. This one
+    // reads every container, and checks requests too: a container with limits
+    // and no requests is scheduled as if it were free, which is how a node ends
+    // up with more promised to it than it has.
+    let mut checked = 0usize;
+    for (path, document) in documents_of_kind("Deployment") {
+        let found = containers(&document);
+        assert!(
+            !found.is_empty(),
+            "{} has a Deployment whose containers could not be read",
+            path.display()
+        );
+        for container in found {
+            let name = container.lines().next().unwrap_or("?").trim();
+            let resources = block_under(&container, "resources:");
+            assert!(
+                !resources.is_empty(),
+                "{name} in {} has no resources",
+                path.display()
+            );
+            for section in ["requests:", "limits:"] {
+                let block = block_under(&resources, section);
+                assert!(!block.is_empty(), "{name} has no {section}");
+                assert!(block.contains("cpu:"), "{name} has no cpu in {section}");
+                assert!(
+                    block.contains("memory:"),
+                    "{name} has no memory in {section}"
+                );
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked >= 4, "only {checked} containers were checked");
+}
+
+#[test]
+fn no_container_in_any_workload_runs_as_root_or_can_escalate() {
+    // The existing check asks whether the settings appear anywhere in a file.
+    // This one asks per container, so a second container added to a Deployment
+    // that already has the settings once cannot arrive without them.
+    for (path, document) in documents_of_kind("Deployment") {
+        assert!(
+            document.contains("runAsNonRoot: true"),
+            "{} does not set runAsNonRoot",
+            path.display()
+        );
+        assert!(
+            !document.contains("runAsUser: 0"),
+            "{} runs a container as uid 0",
+            path.display()
+        );
+        for container in containers(&document) {
+            let name = container.lines().next().unwrap_or("?").trim();
+            for (setting, why) in [
+                (
+                    "allowPrivilegeEscalation: false",
+                    "a setuid binary inside the container escalates without it",
+                ),
+                (
+                    "readOnlyRootFilesystem: true",
+                    "a writable root filesystem lets an attacker persist",
+                ),
+                (
+                    "drop: [\"ALL\"]",
+                    "a container needs none of the default capabilities",
+                ),
+            ] {
+                assert!(
+                    container.contains(setting),
+                    "the {name} container in {} is missing {setting}: {why}",
+                    path.display()
+                );
+            }
+        }
+    }
+}
+
+// --- what a workload may reach ----------------------------------------------
+
+/// The `app` label a NetworkPolicy selects, and which directions it governs.
+fn policy_targets() -> Vec<(String, bool, bool)> {
+    documents_of_kind("NetworkPolicy")
+        .iter()
+        .filter_map(|(_, document)| {
+            let selector = document
+                .split("podSelector:")
+                .nth(1)
+                .and_then(|rest| rest.split("policyTypes:").next())
+                .unwrap_or("");
+            let app = selector
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("app:"))
+                .map(|value| value.trim().to_string())?;
+            let types = block_under(document, "policyTypes:");
+            Some((app, types.contains("- Ingress"), types.contains("- Egress")))
+        })
+        .collect()
+}
+
+#[test]
+fn every_workload_is_covered_by_both_an_ingress_and_an_egress_policy() {
+    // The default is deny, so a workload with no matching policy cannot be
+    // reached and cannot reach anything — and it fails by hanging rather than
+    // by erroring, which is the failure that takes longest to diagnose. A
+    // missing egress rule for the API is exactly what was wrong here.
+    let policies = policy_targets();
+    let mut checked = 0usize;
+    for (_, document) in documents_of_kind("Deployment") {
+        let app = document
+            .split("labels:")
+            .nth(1)
+            .and_then(|rest| {
+                rest.lines()
+                    .find_map(|line| line.trim().strip_prefix("app:"))
+            })
+            .map(|value| value.trim().to_string())
+            .expect("a Deployment carries an app label");
+
+        assert!(
+            policies
+                .iter()
+                .any(|(target, ingress, _)| *target == app && *ingress),
+            "{app} is covered by no ingress policy, so nothing can reach it and \
+             the connection hangs rather than failing"
+        );
+        assert!(
+            policies
+                .iter()
+                .any(|(target, _, egress)| *target == app && *egress),
+            "{app} is covered by no egress policy, so it can reach nothing — \
+             not Secret Manager, not the API, not telemetry"
+        );
+        checked += 1;
+    }
+    assert!(checked >= 4, "only {checked} workloads were checked");
+
+    // And the default is still deny, so all of the above means something.
+    let namespace = read("infrastructure/kubernetes/base/namespace.yaml");
+    assert!(namespace.contains("name: default-deny"));
+    let deny = namespace
+        .split("name: default-deny")
+        .nth(1)
+        .expect("the default-deny policy exists")
+        .split("\n---")
+        .next()
+        .expect("the document ends");
+    assert!(
+        deny.contains("podSelector: {}"),
+        "the default deny does not select every pod"
+    );
+    assert!(
+        deny.contains("- Ingress") && deny.contains("- Egress"),
+        "the default deny does not cover both directions"
+    );
+}
+
+#[test]
+fn no_network_policy_permits_the_whole_internet() {
+    // A `0.0.0.0/0` in an egress rule undoes every other rule in the file, and
+    // it is one line that looks like the others.
+    for (path, document) in documents_of_kind("NetworkPolicy") {
+        let content = without_comments(&document);
+        assert!(
+            !content.contains("0.0.0.0/0"),
+            "{} permits the whole internet",
+            path.display()
+        );
+        assert!(
+            !content.contains("::/0"),
+            "{} permits the whole internet over IPv6",
+            path.display()
+        );
+    }
+}
+
+/// The `to:` destinations a named egress policy permits: `ipBlock` CIDRs and
+/// the `app` labels of the pods it names.
+///
+/// Searched across every manifest rather than in one file. A cell's policies
+/// live with the cell because they name that cell's venues, and a check that
+/// only looked in namespace.yaml would stop finding them the moment they moved.
+fn egress_destinations(policy: &str) -> (Vec<String>, Vec<String>) {
+    let document = manifest_documents()
+        .into_iter()
+        .find(|(_, document)| {
+            document
+                .lines()
+                .any(|line| line.trim() == format!("name: {policy}"))
+        })
+        .map(|(_, document)| document)
+        .unwrap_or_else(|| panic!("{policy} exists"));
+    let egress = document
+        .split("  egress:")
+        .nth(1)
+        .unwrap_or_else(|| panic!("{policy} has an egress section"))
+        .to_string();
+    let egress = without_comments(&egress);
+
+    let cidrs = egress
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("cidr:"))
+        .map(|value| value.trim().to_string())
+        .collect();
+    let apps = egress
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("app:"))
+        .map(|value| value.trim().to_string())
+        .collect();
+    (cidrs, apps)
+}
+
+#[test]
+fn an_edge_cell_may_reach_its_venues_and_the_central_plane_and_nothing_else() {
+    // The most security-relevant rule in the manifests. A cell holds the whole
+    // hot path and decides without asking anyone; this policy and the egress
+    // firewall in modules/edge-cell are the only two things between a
+    // compromised cell and an arbitrary outbound connection.
+    let (cidrs, apps) = egress_destinations("allow-edge-egress");
+
+    for cidr in &cidrs {
+        assert!(
+            cidr == "VENUE_CIDR" || cidr == "199.36.153.8/30",
+            "an edge cell may egress to {cidr}, which is neither one of its \
+             venues nor the private Google API endpoint"
+        );
+    }
+    assert!(
+        cidrs.iter().any(|cidr| cidr == "VENUE_CIDR"),
+        "the edge policy names no venue destination at all"
+    );
+
+    for app in &apps {
+        assert_eq!(
+            app, "qip-api",
+            "an edge cell may reach {app}. The central plane is the API; a cell \
+             that can reach anything else in the namespace is a cell that can \
+             reach what that thing can reach."
+        );
+    }
+
+    // Specifically not the deep brain, and specifically not another cell.
+    assert!(
+        !apps.iter().any(|app| app == "qip-deepbrain"),
+        "an edge cell may reach the deep brain, which can call a language model"
+    );
+    assert!(
+        !apps.iter().any(|app| app == "qip-edge-node"),
+        "an edge cell may reach another edge cell; cells are meant to be \
+         independent, and a path between them is a path a partition does not cut"
+    );
+}
+
+#[test]
+fn the_fast_brain_cannot_reach_anything_that_could_serve_a_language_model() {
+    // ADR 0008, consequence 3: nothing on the hot path consults a model. The
+    // binary refuses to start if an agent it hosts holds `call_language_model`;
+    // this is the deployment saying the same thing three more ways.
+    let (cidrs, apps) = egress_destinations("allow-fastbrain-egress");
+
+    // 1. It may not reach the one workload in the namespace that can call a
+    //    model. This is the check that would catch somebody "just letting the
+    //    fast brain ask the deep brain".
+    for app in &apps {
+        assert_ne!(
+            app, "qip-deepbrain",
+            "the fast brain may reach the deep brain, which is the workload \
+             that may call a language model"
+        );
+    }
+
+    // 2. It has no route off the VPC except private Google access — no
+    //    third-party model endpoint, no general egress.
+    for cidr in &cidrs {
+        assert_eq!(
+            cidr, "199.36.153.8/30",
+            "the fast brain may egress to {cidr}, which is not private Google \
+             access. Any other range is a route to something that could serve a \
+             model."
+        );
+    }
+
+    // 3. It carries nothing that could authenticate to one. No secret at all,
+    //    and no environment variable naming a provider or an endpoint.
+    let fastbrain = read("infrastructure/kubernetes/base/fastbrain.yaml");
+    assert!(
+        !fastbrain.contains("secretKeyRef"),
+        "the fast brain mounts a secret; it is meant to hold no credential it \
+         could call a model with, and to read the venue credential through \
+         workload identity where the IAM binding exists at all"
+    );
+    let stripped = without_comments(&fastbrain).to_lowercase();
+    for token in [
+        "openai",
+        "anthropic",
+        "vertex",
+        "aiplatform",
+        "model_endpoint",
+        "llm",
+    ] {
+        assert!(
+            !stripped.contains(token),
+            "the fast brain's manifest mentions {token}"
+        );
+    }
+
+    // 4. And the honest limit of all of the above is written down rather than
+    //    left for somebody to discover: private Google access is one range for
+    //    every Google API, Vertex AI included, so this layer cannot finish the
+    //    job on its own.
+    let gaps = read("docs/operations/external-dependencies.md");
+    assert!(
+        gaps.contains("VPC Service Controls"),
+        "the gap document does not name the control that would actually close \
+         the fast brain's egress to a model API"
+    );
+}
+
+// --- the evidence store -----------------------------------------------------
+
+#[test]
+fn the_evidence_bucket_is_versioned_and_retained() {
+    // `EvidenceStore` is write-once by construction: no delete, no overwrite,
+    // a second write of different bytes refused by digest. That guarantee is
+    // worth exactly as much as the bucket underneath it.
+    let evidence = read("infrastructure/terraform/modules/evidence/main.tf");
+    assert!(
+        evidence.contains("versioning {"),
+        "an overwrite that somehow happens would replace the original"
+    );
+    assert!(
+        evidence.contains("retention_policy {"),
+        "without a retention policy a delete is refused by an IAM binding \
+         somebody can change rather than by the storage service"
+    );
+    assert!(
+        sets(&evidence, "uniform_bucket_level_access", "true"),
+        "a per-object ACL could grant what the bucket policy refuses"
+    );
+    assert!(
+        sets(&evidence, "public_access_prevention", "\"enforced\""),
+        "the evidence store must not be reachable without authentication"
+    );
+    assert!(
+        sets(&evidence, "force_destroy", "false"),
+        "force_destroy empties the bucket before deleting it, which is a delete \
+         with extra steps"
+    );
+    assert!(
+        evidence.contains("default_kms_key_name"),
+        "the bucket is not encrypted with a key we control"
+    );
+
+    // And the restrictive defaults: the retention policy is locked, which is
+    // irreversible and is the point.
+    let variables = read("infrastructure/terraform/modules/evidence/variables.tf");
+    assert!(
+        sets(&variables, "default", "true"),
+        "the retention policy does not default to locked"
+    );
+}
+
+#[test]
+fn no_workload_identity_can_delete_from_the_evidence_bucket() {
+    // An append-only store whose writer holds a delete permission is not
+    // append-only; it is a store nobody has deleted from yet. Each of the roles
+    // below carries `storage.objects.delete`.
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        for role in [
+            "roles/storage.objectAdmin",
+            "roles/storage.objectUser",
+            "roles/storage.admin",
+            "roles/storage.legacyBucketOwner",
+            "roles/owner",
+            "roles/editor",
+        ] {
+            assert!(
+                !content.contains(role),
+                "{} grants {role}, which can delete an object from the evidence \
+                 store",
+                path.display()
+            );
+        }
+    }
+
+    // And what is granted is the narrow one.
+    let evidence = read("infrastructure/terraform/modules/evidence/main.tf");
+    assert!(
+        evidence.contains("roles/storage.objectCreator"),
+        "the evidence writers hold something other than object creation"
+    );
+}
+
+// --- the registry -----------------------------------------------------------
+
+#[test]
+fn the_image_registry_is_not_world_readable_and_nothing_can_delete_from_it() {
+    let registry = read("infrastructure/terraform/modules/registry/main.tf");
+    assert!(
+        sets(&registry, "immutable_tags", "true"),
+        "without immutable tags, the image that was tested and the image that \
+         was deployed can be different bytes under the same name"
+    );
+    assert!(
+        registry.contains("roles/artifactregistry.writer"),
+        "the pipeline cannot push"
+    );
+    assert!(
+        registry.contains("roles/artifactregistry.reader"),
+        "the cluster cannot pull"
+    );
+    assert!(
+        !registry.contains("roles/artifactregistry.repoAdmin"),
+        "repoAdmin can delete a version, and a pipeline that can delete a tag \
+         can delete the evidence of what it shipped"
+    );
+
+    // World-readable, in either of the two ways an IAM binding can be.
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        for member in ["allUsers", "allAuthenticatedUsers"] {
+            assert!(
+                !content.contains(member),
+                "{} grants a role to {member}, which tells an attacker exactly \
+                 what is running and lets them read it",
+                path.display()
+            );
+        }
+    }
+}
+
+// --- the edge-cell module ---------------------------------------------------
+
+#[test]
+fn the_edge_cells_are_one_module_rather_than_seven_copies() {
+    // Seven copies of a network policy is seven places for one of them to be
+    // wrong, and the wrong one is the one nobody reads.
+    let root = read("infrastructure/terraform/main.tf");
+    assert!(
+        root.contains("source   = \"./modules/edge-cell\""),
+        "there is no edge-cell module"
+    );
+    assert!(
+        root.contains("for_each = var.edge_cells"),
+        "the cells are not instantiated from a variable"
+    );
+
+    // One cell is configured, and adding the others is a variable change: the
+    // runbook carries the map, so the seventh cell is an entry rather than a
+    // directory.
+    for environment in ["development", "staging", "production"] {
+        let tfvars = read(&format!(
+            "infrastructure/environments/{environment}/terraform.tfvars"
+        ));
+        assert!(
+            tfvars.contains("edge_cells = {"),
+            "{environment} configures no edge cells"
+        );
+    }
+    let runbook = read("docs/operations/deploying-an-edge-cell.md");
+    for cell in [
+        "dallas-1",
+        "chicago-1",
+        "newyork-1",
+        "london-1",
+        "frankfurt-1",
+        "singapore-1",
+        "tokyo-1",
+    ] {
+        assert!(
+            runbook.contains(cell),
+            "the runbook does not name the {cell} cell"
+        );
+    }
+}
+
+#[test]
+fn a_cell_gets_its_own_subnet_its_own_identity_and_its_own_binding() {
+    // The point of a cell being a module is that a compromised one holds one
+    // cell's permissions and one cell's address range.
+    let module = read("infrastructure/terraform/modules/edge-cell/main.tf");
+    for (resource, why) in [
+        (
+            "google_compute_subnetwork",
+            "without its own subnet a cell's traffic is not separable in a flow log",
+        ),
+        (
+            "google_service_account",
+            "sharing an account means a compromised cell holds every cell's permissions",
+        ),
+        (
+            "google_service_account_iam_member",
+            "without a workload identity binding the pod needs a key file on disk",
+        ),
+        (
+            "google_compute_firewall",
+            "the network half of the constraint the NetworkPolicy makes at the pod level",
+        ),
+    ] {
+        assert!(
+            module.contains(resource),
+            "the edge-cell module has no {resource}: {why}"
+        );
+    }
+
+    // Egress is denied and then named, rather than named and then hoped about.
+    assert!(
+        module.contains("deny {"),
+        "the cell's egress is not denied by default"
+    );
+
+    // An empty venue map is no venues, not all of them — the same reading
+    // `CapitalEnvelope` takes of an empty venue list, for the same reason.
+    let variables = read("infrastructure/terraform/modules/edge-cell/variables.tf");
+    assert!(
+        variables.contains("default = {}"),
+        "the venue map does not default to empty"
+    );
+    assert!(
+        variables.contains("0.0.0.0/0"),
+        "nothing refuses a venue range of the whole internet"
+    );
+}
+
+// --- the deployment pipeline ------------------------------------------------
+
+#[test]
+fn nothing_deploys_that_has_not_passed_the_test_suite() {
+    let deploy = read(".github/workflows/deploy.yml");
+    assert!(
+        deploy.contains("workflows: [\"ci\"]"),
+        "the deploy workflow is not triggered by the test suite"
+    );
+    assert!(
+        deploy.contains("github.event.workflow_run.conclusion"),
+        "the automatic path does not check that ci succeeded"
+    );
+    assert!(
+        deploy.contains("actions/workflows/ci.yml/runs?head_sha="),
+        "the manual path does not check that ci succeeded for the commit; \
+         somebody pressing a button is not evidence"
+    );
+    // Both build and deploy hang off the gate.
+    assert!(
+        deploy.matches("needs: gate").count() >= 1 && deploy.contains("needs: images"),
+        "a job can run without the gate"
+    );
+}
+
+#[test]
+fn production_is_never_deployed_automatically() {
+    let deploy = read(".github/workflows/deploy.yml");
+    assert!(
+        deploy.contains("TARGET_ENVIRONMENT: ${{ inputs.environment || 'development' }}"),
+        "the automatic path does not default to development"
+    );
+    assert!(
+        deploy.contains("refuse a production deployment that nobody dispatched"),
+        "nothing refuses an automatic production deployment"
+    );
+    assert!(
+        deploy.contains(
+            "env.TARGET_ENVIRONMENT == 'production' && github.event_name != 'workflow_dispatch'"
+        ),
+        "the refusal does not test what it claims to"
+    );
+    assert!(
+        deploy.contains("environment: ${{ inputs.environment || 'development' }}"),
+        "the deploy job names no GitHub environment, so required reviewers have \
+         nothing to attach to"
+    );
+}
+
+#[test]
+fn the_pipeline_authenticates_without_a_long_lived_key() {
+    // A service-account key in a repository secret is a credential that never
+    // expires, is copied by anyone who can read the secret, and leaves no trace
+    // of which run used it.
+    let deploy = read(".github/workflows/deploy.yml");
+    assert!(
+        deploy.contains("id-token: write"),
+        "the pipeline cannot mint an OIDC token"
+    );
+    assert!(
+        deploy.contains("workload_identity_provider:"),
+        "the pipeline does not use workload identity federation"
+    );
+    assert!(
+        !deploy.contains("credentials_json"),
+        "the pipeline authenticates with a key"
+    );
+    assert!(
+        !deploy.contains("service_account_key"),
+        "the pipeline authenticates with a key"
+    );
+
+    // And the pool refuses every repository but this one. Without the
+    // condition, any GitHub repository in the world can present a valid token.
+    let cicd = read("infrastructure/terraform/modules/cicd/main.tf");
+    assert!(
+        cicd.contains("attribute_condition"),
+        "the workload identity pool accepts a token from any repository"
+    );
+    assert!(
+        cicd.contains("attribute.repository == '${var.github_repository}'"),
+        "the pool's condition does not pin the repository"
+    );
+    let variables = read("infrastructure/terraform/modules/cicd/variables.tf");
+    assert!(
+        !variables.contains("default     = \""),
+        "the repository has a default, and a default here is a repository \
+         somebody else could be running"
+    );
+
+    // What is missing is written down rather than invented.
+    let gaps = read("docs/operations/external-dependencies.md");
+    assert!(
+        gaps.contains("GCP_WORKLOAD_IDENTITY_PROVIDER"),
+        "the variables the pipeline needs are not documented anywhere"
+    );
+}
+
+#[test]
+fn the_pipeline_builds_an_image_for_every_workload_it_deploys() {
+    // A Deployment whose image nothing builds is a rollout that waits for a tag
+    // that will never exist.
+    let deploy = read(".github/workflows/deploy.yml");
+    let matrix = deploy
+        .split("binary:")
+        .nth(1)
+        .expect("the image job has a matrix")
+        .split("steps:")
+        .next()
+        .expect("the matrix ends");
+
+    for binary in deployed_binaries() {
+        if AWAITING_ITS_CRATE.iter().any(|(name, _)| *name == binary) {
+            continue;
+        }
+        assert!(
+            matrix.contains(&binary),
+            "{binary} has a Deployment and the pipeline builds no image for it"
+        );
+    }
+}
+
+// --- the safety property that outranks all of this --------------------------
+
+#[test]
+fn nothing_added_here_raises_the_autonomy_ceiling_anywhere() {
+    // Everything above adds workloads, identities and network paths. None of it
+    // is allowed to change the one line that decides whether the platform can
+    // reach a real venue — and the venue credential's IAM binding must stay
+    // absent wherever the ceiling is paper trading.
+    for environment in ["development", "staging", "production"] {
+        let tfvars = without_comments(&read(&format!(
+            "infrastructure/environments/{environment}/terraform.tfvars"
+        )));
+        assert!(
+            tfvars.contains(r#"autonomy_ceiling = "paper_trading""#),
+            "{environment} does not ship with a paper-trading ceiling"
+        );
+        for level in [
+            "supervised_live",
+            "limited_autonomous_live",
+            "autonomous_live",
+        ] {
+            assert!(
+                !tfvars.contains(level),
+                "{environment} names {level}, which is above paper trading"
+            );
+        }
+    }
+
+    // The config map the workloads read is paper trading too, and every new
+    // workload reads it from that config map rather than from its own default.
+    let config = read("infrastructure/kubernetes/base/config.yaml");
+    assert!(config.contains(r#"autonomy_ceiling: "paper_trading""#));
+    for manifest in ["fastbrain.yaml", "deepbrain.yaml", "edge-cell.yaml"] {
+        let content = read(&format!("infrastructure/kubernetes/base/{manifest}"));
+        assert!(
+            content.contains("key: autonomy_ceiling"),
+            "{manifest} does not take the ceiling from the config map"
+        );
+        assert!(
+            !content.contains("supervised_live"),
+            "{manifest} names a live autonomy level"
+        );
+    }
+
+    // And the binding is still conditional on the ceiling, with nothing new
+    // granting the venue credential unconditionally.
+    let secrets = read("infrastructure/terraform/modules/secrets/main.tf");
+    let bindings = secrets.matches("qip-venue-credential").count();
+    assert_eq!(
+        bindings, 1,
+        "the venue credential is named {bindings} times in the secrets module; \
+         exactly one of them is the conditional IAM binding"
+    );
+}

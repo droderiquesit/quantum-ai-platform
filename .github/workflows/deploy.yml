@@ -1,0 +1,243 @@
+# Build the images, then deploy them.
+#
+# Two rules shape everything below.
+#
+# **Nothing deploys that has not passed the test suite.** `ci.yml` is the gate;
+# this workflow does not re-run it and does not have its own weaker copy. On the
+# automatic path it is triggered by ci finishing and refuses to proceed unless
+# ci succeeded. On the manual path it asks GitHub whether ci succeeded for the
+# commit being deployed, because "somebody pressed the button" is not evidence.
+#
+# **Production is never automatic.** The automatic path deploys to development
+# and nowhere else. Staging and production need a person to dispatch the
+# workflow, and the `production` GitHub environment is expected to carry
+# required reviewers — a repository setting, not something this file can
+# create. See docs/operations/external-dependencies.md.
+#
+# There is no service-account key anywhere here. The pipeline authenticates by
+# exchanging the OIDC token GitHub mints for one job, through the workload
+# identity pool the `cicd` Terraform module creates. Two repository variables
+# carry the result of that Terraform, and until they are set this workflow
+# cannot authenticate and says so:
+#
+#   GCP_WORKLOAD_IDENTITY_PROVIDER   terraform output workload_identity_provider
+#   GCP_DEPLOY_SERVICE_ACCOUNT       terraform output deploy_service_account
+#   GCP_PROJECT                      the project the environment lives in
+#   GCP_REGION                       the region it lives in
+name: deploy
+
+on:
+  workflow_run:
+    workflows: ["ci"]
+    types: [completed]
+    branches: ["main"]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Which environment to deploy to. Production is never reached any other way."
+        required: true
+        default: "development"
+        type: choice
+        options:
+          - development
+          - staging
+          - production
+
+# Read-only by default. The jobs that need to mint an OIDC token ask for it
+# explicitly, so the blast radius of a compromised action is visible in the diff
+# that granted it.
+permissions:
+  contents: read
+
+concurrency:
+  # One deployment at a time per environment. Two applies racing each other
+  # produce a cluster in a state neither of them describes.
+  group: deploy-${{ inputs.environment || 'development' }}
+  cancel-in-progress: false
+
+env:
+  # The automatic path goes to development and nowhere else.
+  TARGET_ENVIRONMENT: ${{ inputs.environment || 'development' }}
+  DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+jobs:
+  # The gate. Everything else needs this job, so a failure here stops the
+  # pipeline rather than producing images nobody should deploy.
+  gate:
+    name: the test suite passed
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+    steps:
+      - name: refuse a production deployment that nobody dispatched
+        if: env.TARGET_ENVIRONMENT == 'production' && github.event_name != 'workflow_dispatch'
+        run: |
+          echo "production is not deployed automatically." >&2
+          exit 1
+
+      - name: the triggering ci run succeeded
+        if: github.event_name == 'workflow_run'
+        run: |
+          conclusion='${{ github.event.workflow_run.conclusion }}'
+          if [ "$conclusion" != "success" ]; then
+            echo "ci concluded '$conclusion'; nothing is deployed." >&2
+            exit 1
+          fi
+
+      # On the manual path there is no triggering run to inspect, so ask for
+      # the commit's own history. A dispatch against a commit whose tests never
+      # passed is exactly the case this exists to refuse.
+      - name: ci succeeded for this commit
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          runs=$(gh api \
+            "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?head_sha=${DEPLOY_SHA}&status=success" \
+            --jq '.total_count')
+          if [ "$runs" -lt 1 ]; then
+            echo "no successful ci run for ${DEPLOY_SHA}; nothing is deployed." >&2
+            exit 1
+          fi
+          echo "ci succeeded for ${DEPLOY_SHA}"
+
+  # One image per deployable binary, built from the one Dockerfile so the five
+  # cannot drift apart.
+  #
+  # `qip-cli` is absent on purpose: it is an operator's tool, run by a person
+  # against a cluster rather than scheduled in one. `qip-edge-node` joins this
+  # matrix when its crate does — see the pending list in
+  # crates/tests/qip-acceptance/tests/infrastructure.rs, which fails as soon as
+  # the crate lands.
+  images:
+    name: build and push ${{ matrix.binary }}
+    needs: gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The OIDC token. This is the whole reason there is no key.
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        binary:
+          - qip-api
+          - qip-fastbrain
+          - qip-deepbrain
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
+
+      - name: authenticate without a key
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: let docker push to artifact registry
+        run: gcloud auth configure-docker "${{ vars.GCP_REGION }}-docker.pkg.dev" --quiet
+
+      - name: build
+        run: |
+          set -euo pipefail
+          prefix="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/qip-${TARGET_ENVIRONMENT}"
+          docker build \
+            --file infrastructure/docker/Dockerfile \
+            --build-arg "BINARY=${{ matrix.binary }}" \
+            --tag "${prefix}/${{ matrix.binary }}:${DEPLOY_SHA}" \
+            .
+
+      # Tagged by commit and never by `latest`. The registry refuses to move a
+      # tag onto different bytes, so a tag names one image for ever and a
+      # rollback is a tag somebody can still find.
+      - name: push
+        run: |
+          set -euo pipefail
+          prefix="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/qip-${TARGET_ENVIRONMENT}"
+          docker push "${prefix}/${{ matrix.binary }}:${DEPLOY_SHA}"
+
+  deploy:
+    name: deploy to ${{ inputs.environment || 'development' }}
+    needs: images
+    runs-on: ubuntu-latest
+    # The GitHub environment. Where required reviewers and deployment branch
+    # rules are configured, which is why production names one at all.
+    environment: ${{ inputs.environment || 'development' }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
+
+      - name: authenticate without a key
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          install_components: gke-gcloud-auth-plugin
+
+      - name: credentials for the private cluster
+        run: |
+          gcloud container clusters get-credentials "qip-${TARGET_ENVIRONMENT}" \
+            --region "${{ vars.GCP_REGION }}" \
+            --project "${{ vars.GCP_PROJECT }}"
+
+      # The manifests carry placeholders rather than values, so the same files
+      # describe every environment and a diff between environments is a diff in
+      # this substitution rather than in five copies of a Deployment.
+      #
+      # edge-cell.yaml is not applied here. A cell needs its cell id, its region
+      # and its venue ranges, and bringing one up is a deliberate act with a
+      # runbook — docs/operations/deploying-an-edge-cell.md — rather than
+      # something a pipeline does unattended to a workload that trades.
+      - name: render the manifests
+        run: |
+          set -euo pipefail
+          prefix="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/qip-${TARGET_ENVIRONMENT}"
+          mkdir -p rendered
+          for manifest in infrastructure/kubernetes/base/*.yaml; do
+            case "$(basename "$manifest")" in
+              edge-cell.yaml) continue ;;
+            esac
+            sed \
+              -e "s#IMAGE_PREFIX#${prefix}#g" \
+              -e "s#IMAGE_TAG#${DEPLOY_SHA}#g" \
+              -e "s#ENVIRONMENT#${TARGET_ENVIRONMENT}#g" \
+              -e "s#PROJECT#${{ vars.GCP_PROJECT }}#g" \
+              "$manifest" > "rendered/$(basename "$manifest")"
+          done
+          # Nothing may reach the cluster with a placeholder still in it. A
+          # `cidr: VENUE_CIDR` would be rejected by the API server; a
+          # `PROJECT` in a workload identity annotation would not be, and would
+          # produce a pod that cannot authenticate.
+          ! grep -RnE 'IMAGE_PREFIX|IMAGE_TAG|PROJECT|ENVIRONMENT|CELL_ID|CELL_REGION|VENUE_CIDR|VENUE_PORT' rendered
+
+      # A dry run against the live API server first. It catches a manifest the
+      # cluster will reject — an admission policy, a bad field — without having
+      # applied half of it.
+      - name: check the manifests against the cluster
+        run: kubectl apply --server-side --dry-run=server -f rendered/
+
+      - name: apply
+        run: kubectl apply --server-side -f rendered/
+
+      # An apply that returns is not a deployment that worked. This is the step
+      # that fails when the image does not start.
+      - name: wait for the rollout
+        run: |
+          set -euo pipefail
+          for workload in qip-api qip-fastbrain qip-deepbrain; do
+            kubectl rollout status "deployment/${workload}" \
+              --namespace qip --timeout=5m
+          done
