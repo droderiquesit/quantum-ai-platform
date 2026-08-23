@@ -1,6 +1,11 @@
 # Development.
 #
 # Paper trading, small, and reachable only from the office network.
+# The project this environment lives in. An identifier, not a secret: it
+# appears in every resource name and in the pipeline's own configuration, so
+# keeping it out of version control would buy nothing and cost reproducibility.
+project_id = "project-d3f96b6b-852b-4460-b6d"
+
 environment      = "development"
 autonomy_ceiling = "paper_trading"
 
