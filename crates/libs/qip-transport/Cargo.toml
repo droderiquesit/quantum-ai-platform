@@ -12,6 +12,16 @@ serde.workspace = true
 serde_json.workspace = true
 qip-core.workspace = true
 qip-contracts.workspace = true
+# The mesh carries `qip_events::AnyEvent` — the platform's own type-erased
+# event — rather than inventing a second wire envelope. `qip-streaming` cannot
+# be a dependency here: it is a service and this is a library, and
+# `a_library_never_depends_on_a_service_or_an_application` in the acceptance
+# suite enforces that direction. It is a dev-dependency instead, so the tests
+# can prove that a `StreamEnvelope` crosses this transport unchanged.
+qip-events.workspace = true
+
+[dev-dependencies]
+qip-streaming.workspace = true
 
 [lints]
 workspace = true
