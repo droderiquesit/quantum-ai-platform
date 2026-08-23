@@ -24,7 +24,7 @@ DEV_TFVARS := ../environments/development/terraform.tfvars
 
 .PHONY: check all fmt fmt-check lint test test-release build release \
         deps secrets audit sbom tf-fmt tf-validate infra e2e acceptance \
-        doc clean help
+        count doc clean help
 
 # ---------------------------------------------------------------------------
 # The offline gate set. This is what `make` runs, and what must pass before a
@@ -53,6 +53,15 @@ lint:
 
 test:
 	cargo test --workspace --all-features
+
+# The same suite, reported honestly.
+#
+# Summing `test result: ok. N passed` misses a failing binary entirely — it
+# prints `FAILED` instead and contributes nothing — so the count comes back
+# lower and still looks clean. This target counts both columns and exits
+# non-zero if anything failed. Quote its output, not a grep.
+count:
+	./scripts/count-tests.sh
 
 # A green debug test suite that cannot be released is not a green build. The
 # release profile also catches the optimisation-dependent problems debug hides.
@@ -130,6 +139,7 @@ help:
 	@echo "fmt        rewrite formatting; fmt-check only reports"
 	@echo "lint       clippy across the workspace, all targets, warnings are errors"
 	@echo "test       the whole test suite"
+	@echo "count      the suite's passing AND failing counts; red exits non-zero"
 	@echo "e2e        the single end-to-end run through all seven layers"
 	@echo "acceptance the workspace-level acceptance suite"
 	@echo "build      release build, locked"
