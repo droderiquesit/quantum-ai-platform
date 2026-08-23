@@ -1,6 +1,6 @@
 [package]
-name = "qip-twin"
-description = "Counterfactual digital twin: every decision and the alternatives it did not take."
+name = "qip-brokers"
+description = "Broker and exchange adapter framework: one interface, sandbox and simulated venues."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,12 +12,10 @@ serde.workspace = true
 serde_json.workspace = true
 qip-core.workspace = true
 qip-contracts.workspace = true
-qip-numerics.workspace = true
 qip-financial.workspace = true
 qip-market.workspace = true
 qip-portfolio.workspace = true
-qip-simulation-engine.workspace = true
-qip-learning-engine.workspace = true
+qip-execution-engine.workspace = true
 
 [lints]
 workspace = true

@@ -15,6 +15,10 @@ qip-contracts.workspace = true
 qip-events.workspace = true
 qip-financial.workspace = true
 qip-market.workspace = true
+# Gap detection, reordering and watermark discipline are already solved in the
+# edge stack. This crate composes that tracker rather than growing a second
+# implementation of it — see `sequencing.rs`.
+qip-sequencing.workspace = true
 
 [lints]
 workspace = true

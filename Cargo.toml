@@ -55,6 +55,8 @@ members = [
     "crates/services/qip-capital-fabric",
     "crates/services/qip-streaming",
     "crates/services/qip-training",
+    "crates/services/qip-brokers",
+    "crates/services/qip-evolution",
 
     # --- investment agent organization ---
     "crates/agents/qip-investment-agents",
@@ -140,6 +142,8 @@ qip-twin = { path = "crates/services/qip-twin" }
 qip-capital-fabric = { path = "crates/services/qip-capital-fabric" }
 qip-streaming = { path = "crates/services/qip-streaming" }
 qip-training = { path = "crates/services/qip-training" }
+qip-brokers = { path = "crates/services/qip-brokers" }
+qip-evolution = { path = "crates/services/qip-evolution" }
 
 qip-investment-agents = { path = "crates/agents/qip-investment-agents" }
 qip-quant = { path = "crates/quant/qip-quant" }
