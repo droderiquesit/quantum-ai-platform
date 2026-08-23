@@ -96,10 +96,21 @@ impl FeedFault {
 pub enum MarketCondition {
     /// The quoted spread widens by a multiple of its calm width.
     SpreadRegime { multiplier: f64 },
-    /// Everything a taker pays beyond the touch is multiplied.
+    /// Everything a taker pays beyond the reference mid is multiplied.
     ///
     /// The "ten times slippage" a scenario asks for, expressed once rather
-    /// than smeared across a spread assumption and an impact coefficient.
+    /// than smeared across a spread assumption and an impact coefficient. Read
+    /// it as the obvious thing: at `multiplier: 10.0` a fill that cost 3bp
+    /// against the arrival mid costs 30bp, and
+    /// [`crate::execution::ExecutionReport::slippage_bps`] is ten times what
+    /// the same order paid in the calm market.
+    ///
+    /// *All three* components of that cost scale, because all three are things
+    /// the taker pays beyond the mid it is measured against: the half-spread
+    /// crossed to reach the touch, the walk into the levels behind it, and the
+    /// impact term. A multiplier that scaled only some of them would be a
+    /// "ten-times slippage regime" that multiplied slippage by something else,
+    /// and the number in the scenario would stop meaning what it says.
     SlippageRegime { multiplier: f64 },
     /// Displayed depth collapses to a fraction of what it was.
     ///
@@ -129,10 +140,12 @@ pub enum MarketCondition {
     VenueOutage,
     /// The bid prints above the ask.
     ///
-    /// Surfaced rather than normalised. A crossed market is either a data
-    /// error or an arbitrage and the simulator cannot tell which, so it
-    /// reports the condition, refuses to derive a mid from it, and fills the
-    /// taker at the worse of the two touch prices.
+    /// A data fault rather than a market state: the two quotes cannot both be
+    /// true, and the book is saying it does not know its own price. Surfaced
+    /// rather than normalised — the condition is reported and no mid is
+    /// derived from it — and an order that meets it is *refused* rather than
+    /// filled at either side, which is the only answer that does not require
+    /// deciding which of the two quotes is the error.
     CrossedMarket { by_bps: f64 },
     /// The feed runs behind the market by a fixed delay.
     DelayedFeed { delay: Duration },
@@ -268,7 +281,7 @@ impl MarketCondition {
                 format!("the quoted spread is {multiplier:.2}x its calm width")
             }
             Self::SlippageRegime { multiplier } => format!(
-                "everything paid beyond the touch is multiplied by {multiplier:.2}, so a size chosen at calm slippage is the wrong size"
+                "everything paid beyond the reference mid — spread, walk and impact alike — is multiplied by {multiplier:.2}, so a size chosen at calm slippage is the wrong size"
             ),
             Self::Illiquidity { depth_fraction } => format!(
                 "displayed depth collapses to {:.1}% of normal, so an order sized against normal depth partially fills",
@@ -289,7 +302,7 @@ impl MarketCondition {
                 "the venue stops responding: an order in flight is neither filled nor rejected, and the residual is the caller's".to_string()
             }
             Self::CrossedMarket { by_bps } => format!(
-                "the bid prints {by_bps:.1}bp above the ask; reported rather than normalised, and a taker is filled at the worse touch"
+                "the bid prints {by_bps:.1}bp above the ask; reported rather than normalised, and an order meeting it is refused rather than filled off a book that contradicts itself"
             ),
             Self::DelayedFeed { delay } => format!(
                 "the feed runs {delay:?} behind the market, so every mark is a last-known value rather than a current one"
@@ -439,7 +452,8 @@ impl ConditionWindow {
 pub struct Regime {
     /// Multiplier on the calm half-spread. Never below one.
     pub spread_multiplier: f64,
-    /// Multiplier on everything paid beyond the touch. Never below one.
+    /// Multiplier on everything paid beyond the reference mid — the spread
+    /// crossed, the walk and the impact alike. Never below one.
     pub slippage_multiplier: f64,
     /// Surviving fraction of displayed depth. Never above one.
     pub depth_fraction: f64,

@@ -492,46 +492,130 @@ fn a_crossed_market_is_surfaced_rather_than_silently_normalised() -> Result<()> 
     Ok(())
 }
 
+/// A crossed book is a data fault, not a market state, and the simulator
+/// refuses to trade against one.
+///
+/// This test used to assert something weaker and, as it turned out, false:
+/// that a taker on a crossed book is *charged the worse of the two touch
+/// prices*. That holds only while the cross is wide. The simulated cross
+/// inverts the touch symmetrically about the mid, so at a cross narrower than
+/// twice the calm half-spread **both** quotes — the buyer's "worse" one
+/// included — sit inside the orderly touch, and charging the worse of them
+/// hands the buyer a better fill than an orderly market would have. The old
+/// test passed only because it happened to check a 40bp cross; the property
+/// test below caught it at 5bp.
+///
+/// The property asserted here is strictly stronger, and holds at every cross
+/// width rather than at one: there is no crossed fill price at all. Neither
+/// side of a book that contradicts itself is a price the simulator will
+/// publish, so no cross width can be found at which a taker is paid for one.
 #[test]
-fn a_taker_on_a_crossed_book_is_charged_the_worse_touch_rather_than_paid_the_better_one()
--> Result<()> {
+fn a_taker_on_a_crossed_book_is_refused_rather_than_filled_at_either_side() -> Result<()> {
     let at = trade_time(&calm(41)?);
-    let orderly = calm(41)?.execute(&buy(dec!("500")), at)?;
-    let crossed = simulator(
-        ConditionSchedule::new().with(ConditionWindow::always(MarketCondition::CrossedMarket {
-            by_bps: 40.0,
-        })),
-        41,
-    )?
-    .execute(&buy(dec!("500")), at)?;
+    let orderly_buy = calm(41)?.execute(&buy(dec!("500")), at)?;
+    let sell = SimOrder::market(SYMBOL, VENUE, Side::Sell, dec!("500"));
+    let orderly_sale = calm(41)?.execute(&sell, at)?;
+    assert_eq!(orderly_buy.status, FillStatus::Complete);
+    assert_eq!(orderly_sale.status, FillStatus::Complete);
 
+    // Deliberately spanning a cross narrower than the calm spread (the case
+    // that was paying the taker) as well as one far wider than it.
+    for by_bps in [0.5, 1.0, 2.0, 5.0, 25.0, 40.0, 200.0] {
+        let crossed = simulator(
+            ConditionSchedule::new().with(ConditionWindow::always(
+                MarketCondition::CrossedMarket { by_bps },
+            )),
+            41,
+        )?;
+        for (order, orderly) in [
+            (buy(dec!("500")), &orderly_buy),
+            (sell.clone(), &orderly_sale),
+        ] {
+            let report = crossed.execute(&order, at)?;
+            let side = order.side.as_str();
+
+            // Nothing traded, and the reason is on the report rather than
+            // buried in a price.
+            assert_eq!(
+                report.status,
+                FillStatus::CrossedBook,
+                "a {side} at a book crossed by {by_bps}bp came back {:?}",
+                report.status
+            );
+            assert!(report.was_crossed(), "the report did not carry the cross");
+            assert!(report.crossed_by.is_some_and(Decimal::is_positive));
+
+            // No fill, and no price of any kind derived from the inverted
+            // touch — neither a fill price nor a reference to measure one
+            // against.
+            assert_eq!(report.filled, Decimal::ZERO);
+            assert_eq!(
+                report.average_price(),
+                None,
+                "the simulator published a {side} price off a book crossed by {by_bps}bp"
+            );
+            assert_eq!(
+                report.reference, None,
+                "the simulator published a reference derived from an inverted touch"
+            );
+            assert_eq!(report.notional, Decimal::ZERO);
+            assert_eq!(report.commission, Decimal::ZERO);
+
+            // The residual is exact and known to still be the caller's: the
+            // venue was answering, it was the book that could not be trusted.
+            assert_eq!(report.residual, report.requested);
+            assert!(report.status.residual_is_certain());
+            assert!(!report.status.traded());
+
+            // And the execution is worse than the orderly one, by the only
+            // scalar that compares them: a request that did not trade at all.
+            assert!(
+                report.adversity_bps() > orderly.adversity_bps(),
+                "a {side} at a book crossed by {by_bps}bp scored {:.6}bp against {:.6}bp in an orderly market",
+                report.adversity_bps(),
+                orderly.adversity_bps()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The narrow cross specifically: the shape of the old defect.
+///
+/// A cross of a fraction of a basis point leaves a book whose two quotes are
+/// all but touching, and whose every price is better than the orderly touch.
+/// That is the configuration in which "fill at the worse side" paid the taker,
+/// so it gets an assertion of its own rather than only a place in a loop.
+#[test]
+fn a_cross_narrower_than_the_spread_still_cannot_improve_on_an_orderly_fill() -> Result<()> {
+    let at = trade_time(&calm(43)?);
+    let orderly = calm(43)?.execute(&buy(dec!("2500")), at)?;
     let orderly_price = orderly
         .average_price()
         .expect("the orderly book filled the order");
-    let crossed_price = crossed
-        .average_price()
-        .expect("the crossed book filled the order");
-    assert!(
-        crossed_price > orderly_price,
-        "a buyer paid {crossed_price} through a crossed market against {orderly_price} in an orderly one, which is the simulator handing out free money"
-    );
-    assert!(crossed.adversity_bps() > orderly.adversity_bps());
 
-    // And the same for a seller, whose good side is the one the cross would
-    // otherwise have improved.
-    let sell = SimOrder::market(SYMBOL, VENUE, Side::Sell, dec!("500"));
-    let orderly_sale = calm(41)?.execute(&sell, at)?;
-    let crossed_sale = simulator(
+    let sim = simulator(
         ConditionSchedule::new().with(ConditionWindow::always(MarketCondition::CrossedMarket {
-            by_bps: 40.0,
+            by_bps: 0.25,
         })),
-        41,
-    )?
-    .execute(&sell, at)?;
+        43,
+    )?;
+    let book = sim.book_at(SYMBOL, VENUE, at, 0)?;
+    let bid = book.best_bid().expect("a crossed book has a bid").price;
+    let ask = book.best_ask().expect("a crossed book has an ask").price;
+    assert_eq!(book.condition(), BookCondition::Crossed);
+    // The premise: on this book even the buyer's worse quote is inside the
+    // orderly fill, so any fill off it would be a subsidy.
     assert!(
-        crossed_sale.average_price() < orderly_sale.average_price(),
-        "a seller was paid more through a crossed market than through an orderly one"
+        bid.max(ask) < orderly_price,
+        "the premise no longer holds: the worse touch {} is not inside the orderly fill {orderly_price}",
+        bid.max(ask)
     );
+
+    let report = sim.execute(&buy(dec!("2500")), at)?;
+    assert_eq!(report.status, FillStatus::CrossedBook);
+    assert_eq!(report.average_price(), None);
+    assert!(report.adversity_bps() > orderly.adversity_bps());
     Ok(())
 }
 

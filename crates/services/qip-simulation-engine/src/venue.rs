@@ -17,11 +17,14 @@
 //!   best price first, and within a price the order that arrived first. An
 //!   order joining a level does not jump the queue, which is what makes a
 //!   partial fill land where it actually would.
-//! * A crossed book is reported, never repaired. [`SimBook::mid`] withholds a
-//!   number computed from an inverted touch, [`SimBook::crossed_by`] says how
-//!   far through it is, and a taker crossing it is filled at the *worse* of
-//!   the two touch prices. Where the simulator cannot tell a data error from
-//!   an arbitrage, it takes the reading that costs the strategy money.
+//! * A crossed book is reported, never repaired and never priced off.
+//!   [`SimBook::mid`] withholds a number computed from an inverted touch and
+//!   [`SimBook::crossed_by`] says how far through it is. Where the simulator
+//!   cannot tell a data error from an arbitrage it declines to trade: an order
+//!   meeting a crossed book comes back
+//!   [`crate::execution::FillStatus::CrossedBook`] with its residual intact,
+//!   because every available fill price there is one of two quotes that cannot
+//!   both be true.
 //!
 //! [`Mark`] carries the same discipline for prices rather than fills. A mark
 //! knows the instant it was observed on the feed and the instant it is being
@@ -392,29 +395,19 @@ impl SimBook {
         (bid.price + ask.price).checked_div(Decimal::from_int(2))
     }
 
-    /// The arithmetic midpoint of the two touch prices, whatever their order.
+    /// The worse of the two touch prices for a taker on this side.
     ///
-    /// A *measurement anchor*, never a tradeable price — [`Self::mid`] is the
-    /// tradeable one and it withholds a number on a crossed book. This exists
-    /// because execution quality has to be measured against something that
-    /// does not itself move when a condition is injected: the simulated cross
-    /// is built symmetrically about the true mid, so this stays put while the
-    /// touch inverts around it, and the extra cost a crossed market imposes
-    /// shows up as extra slippage rather than as a shifted yardstick.
-    pub fn touch_midpoint(&self) -> Option<Decimal> {
-        let bid = self.best_bid()?;
-        let ask = self.best_ask()?;
-        (bid.price + ask.price).checked_div(Decimal::from_int(2))
-    }
-
-    /// The price a taker crossing this book should be assumed to get at the
-    /// touch, including when the touch is inverted.
+    /// On a normal book this is simply the far touch, and it is the floor a
+    /// simulated fill price is held to: no sweep may print better than the
+    /// price the touch was showing.
     ///
-    /// On a normal book this is the far touch. On a crossed book it is the
-    /// *worse* of the two, because a crossed market is as likely to be a bad
-    /// print as an arbitrage, and a simulator that took the good side would
-    /// hand every strategy free money in exactly the conditions where a real
-    /// one loses it.
+    /// On a crossed book it is the higher of the two for a buyer and the lower
+    /// for a seller — but that is a description of an inverted touch, not a
+    /// fill model. The simulator does not fill against a crossed book at all
+    /// ([`crate::execution::FillStatus::CrossedBook`]), because "the worse of
+    /// two contradictory quotes" is still a price neither of them offered, and
+    /// on a book crossed by less than the calm spread it is a *better* price
+    /// than the orderly market would have given.
     pub fn taker_touch(&self, side: Side) -> Option<Decimal> {
         let bid = self.best_bid();
         let ask = self.best_ask();

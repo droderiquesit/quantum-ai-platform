@@ -14,8 +14,11 @@
 //! * `status` distinguishes *nothing was there* from *the venue stopped
 //!   answering*. A strategy can retry the first; the second means an order may
 //!   or may not exist somewhere and the residual is the only thing known.
-//! * `crossed_by` is on the report, so a strategy that traded through a crossed
-//!   market can see that it was crossed after the fact and not only during it.
+//! * `crossed_by` is on the report, so an order that met a crossed market can
+//!   see that it was crossed after the fact and not only during it. It met it
+//!   rather than traded through it: a crossed book is refused
+//!   ([`FillStatus::CrossedBook`]) rather than filled at a price neither of
+//!   its two contradictory quotes justifies.
 //! * `mark` carries the observation the decision was priced off, with its age.
 //!
 //! [`ExecutionReport::adversity_bps`] is the single scalar in which a worse
@@ -140,6 +143,16 @@ pub enum FillStatus {
     /// The feed could not be trusted at the instant the order would have
     /// priced, so nothing was sent.
     FeedUnusable,
+    /// The book was crossed at the instant the order would have priced.
+    ///
+    /// The bid was above the ask, so the two quotes contradict each other and
+    /// there is no price the simulator can defend. Filling at either side is a
+    /// decision about which of the two is the data error, and filling at the
+    /// worse of them is still a price the book never offered — one that, for a
+    /// cross narrower than the calm spread, is *better* than an orderly
+    /// market's. So nothing is sent: the residual is exact and
+    /// [`ExecutionReport::crossed_by`] says how far through the touch was.
+    CrossedBook,
 }
 
 impl FillStatus {
@@ -151,6 +164,7 @@ impl FillStatus {
             Self::NotMarketable => "not_marketable",
             Self::VenueUnreachable => "venue_unreachable",
             Self::FeedUnusable => "feed_unusable",
+            Self::CrossedBook => "crossed_book",
         }
     }
 
@@ -212,7 +226,13 @@ pub struct ExecutionReport {
     pub commission: Decimal,
     pub status: FillStatus,
     /// The price the execution is measured against: the book's own mid at
-    /// arrival, or the taker touch when the book is crossed and has no mid.
+    /// arrival, *before* this order traded against it.
+    ///
+    /// `None` when the book had no mid to give — one side missing, or a
+    /// crossed touch, where the two quotes contradict each other. A reference
+    /// derived from an inverted touch is a yardstick invented for the
+    /// occasion, and an execution measured against an invented yardstick can
+    /// be made to read however the invention chose.
     pub reference: Option<Decimal>,
     pub slices: Vec<FillSlice>,
     /// The observation the order priced off, with its age.

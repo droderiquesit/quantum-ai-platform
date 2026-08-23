@@ -728,7 +728,7 @@ impl MarketSimulator {
             notional: Decimal::ZERO,
             commission: Decimal::ZERO,
             status: FillStatus::NoLiquidity,
-            reference: arrival_book.touch_midpoint(),
+            reference: arrival_book.mid(),
             slices: Vec::new(),
             mark,
             book_condition: arrival_book.condition(),
@@ -761,6 +761,7 @@ impl MarketSimulator {
         let slices = order.slices.max(1);
         let mut remaining = order.quantity;
         let mut hit_outage = false;
+        let mut hit_crossed = false;
         let mut not_marketable = false;
 
         for index in 0..slices {
@@ -787,6 +788,38 @@ impl MarketSimulator {
             }
 
             let mut book = self.build_book(&order.object_id, &order.venue, slice_at, &regime)?;
+            if book.is_crossed() {
+                // The bid is above the ask, so the book is contradicting
+                // itself, and there is no price here that the simulator can
+                // defend to whoever reads the backtest.
+                //
+                // Filling at the ask means believing the bid is the bad print;
+                // filling at the bid means believing the ask is; the simulator
+                // cannot tell a stale quote from a real arbitrage and is not
+                // entitled to guess. Charging the worse of the two looks
+                // conservative and is not: a book crossed by less than twice
+                // the calm half-spread has *both* of its quotes inside the
+                // orderly touch, so the "worse" one is still a better price
+                // than the same market uncrossed. That is how a data fault
+                // turns into a subsidy — and a backtest that gets paid for
+                // crossed quotes will go looking for them.
+                //
+                // So the slice does not trade. The venue is answering, which
+                // is why this is not an outage, and the residual stays exactly
+                // the caller's. A later slice may still fill if the book
+                // uncrosses, because a cross is an instant, not a state.
+                hit_crossed = true;
+                report.slices.push(FillSlice {
+                    at: slice_at,
+                    filled: Decimal::ZERO,
+                    notional: Decimal::ZERO,
+                    worst_price: None,
+                    levels_consumed: 0,
+                    depth_available: book.depth(taking),
+                    venue_responding: true,
+                });
+                continue;
+            }
             let available = book.depth(taking);
             let target =
                 self.slice_target(remaining, slices - index, &regime, available, &book, order);
@@ -806,6 +839,9 @@ impl MarketSimulator {
                 continue;
             }
 
+            // Read before the fill: `take` removes what it consumed, so after
+            // it the book no longer shows the market this slice arrived into.
+            let before = PreTradeTouch::of(&book, order.side);
             let outcome = book.take(order.side, target, slice_at);
             if !outcome.filled.is_positive() {
                 report.slices.push(FillSlice {
@@ -820,7 +856,7 @@ impl MarketSimulator {
                 continue;
             }
 
-            let priced = self.price_of(&spec, &book, order.side, &outcome, &regime);
+            let priced = self.price_of(&spec, before, order.side, &outcome, &regime);
             let notional = priced
                 .checked_mul(outcome.filled)
                 .unwrap_or(outcome.notional);
@@ -842,7 +878,12 @@ impl MarketSimulator {
         report.status = if hit_outage {
             FillStatus::VenueUnreachable
         } else if !report.filled.is_positive() {
-            if not_marketable {
+            if hit_crossed {
+                // Reported ahead of the other two because it is the reason
+                // nothing traded: the book was showing depth and a limit was
+                // marketable against it, and the simulator still declined.
+                FillStatus::CrossedBook
+            } else if not_marketable {
                 FillStatus::NotMarketable
             } else {
                 FillStatus::NoLiquidity
@@ -1013,10 +1054,14 @@ impl MarketSimulator {
 
         let half_spread = displaced.apply_bps(spec.half_spread_bps * regime.spread_multiplier);
         // A crossed market is built symmetrically about the true mid: the bid
-        // rises by half the cross and the ask falls by half. The touch inverts
-        // and the *midpoint of the touch does not move*, which is what lets an
-        // execution measured against it show the cross as a cost rather than
-        // as a shifted yardstick.
+        // rises by half the cross and the ask falls by half, so the touch
+        // inverts around the price rather than being dragged off it. Note what
+        // that does to the spread — at any cross width both quotes sit inside
+        // the calm touch, the buyer's "worse" side included. That is why a
+        // crossed book cannot be filled against at a defensible price and why
+        // `execute` refuses one outright: there is no side of this book that
+        // is reliably worse than an orderly market, only two quotes that
+        // cannot both be true.
         let cross_half = if regime.crossed_by_bps > 0.0 {
             displaced.apply_bps(regime.crossed_by_bps / 2.0) + half_spread
         } else {
@@ -1088,21 +1133,38 @@ impl MarketSimulator {
 
     /// The price a slice actually prints at.
     ///
+    /// `before` is the touch as it stood *before* this slice traded against
+    /// it, and taking it as an argument rather than reading it back off the
+    /// book is the point. [`SimBook::take`] removes what it consumed, so the
+    /// book handed back after a sweep already shows the hole the order made in
+    /// it. Measuring the walk from the post-trade touch would measure it from
+    /// a yardstick the order itself moved: the cost of getting to the touch,
+    /// and of every level the sweep ate, would sit *inside* the reference
+    /// instead of beyond it. Two things then go wrong at once. The impact
+    /// term, which exists precisely to charge for the move the order causes,
+    /// double-counts part of it. And the reference here stops agreeing with
+    /// the one [`ExecutionReport::reference`] carries, so
+    /// [`ExecutionReport::slippage_bps`] reports a number that is partly
+    /// scaled by the regime's slippage multiplier and partly not — a "ten
+    /// times slippage" regime that visibly multiplies by something else.
+    ///
     /// Three things happen here and every one of them can only make the price
     /// worse for the taker:
     ///
     /// 1. The book is swept, so the price is the volume-weighted walk rather
     ///    than the touch.
-    /// 2. The result is floored at the *worse* of the two touch prices, which
-    ///    is a no-op on a normal book and is what stops a crossed market being
-    ///    read as free money.
-    /// 3. Everything beyond the reference — the walk plus a square-root impact
-    ///    term for the size the book does not show — is scaled by the regime's
-    ///    slippage multiplier.
+    /// 2. The result is floored at the pre-trade taker touch, which is a no-op
+    ///    whenever the sweep reached past it.
+    /// 3. Everything beyond the reference — the half-spread crossed to reach
+    ///    the touch, the walk into the book, and a square-root impact term for
+    ///    the size the book does not show — is scaled by the regime's slippage
+    ///    multiplier. The reference is the pre-trade mid, the same one the
+    ///    report is measured against, so the multiplier scales exactly the
+    ///    quantity [`ExecutionReport::slippage_bps`] reports and nothing else.
     fn price_of(
         &self,
         spec: &InstrumentSpec,
-        book: &SimBook,
+        before: PreTradeTouch,
         side: Side,
         outcome: &crate::venue::SweepOutcome,
         regime: &Regime,
@@ -1110,12 +1172,12 @@ impl MarketSimulator {
         let Some(swept) = outcome.average_price() else {
             return Decimal::ZERO;
         };
-        let touch = book.taker_touch(side).unwrap_or(swept);
+        let touch = before.taker.unwrap_or(swept);
         let walked = match side {
             Side::Buy => swept.max(touch),
             Side::Sell => swept.min(touch),
         };
-        let Some(reference) = book.touch_midpoint() else {
+        let Some(reference) = before.reference else {
             return walked;
         };
         if !reference.is_positive() {
@@ -1150,6 +1212,31 @@ impl MarketSimulator {
         let charged =
             (notional.to_f64() * self.costs.commission_rate).max(self.costs.minimum_commission);
         Decimal::from_f64(charged).unwrap_or(Decimal::ZERO)
+    }
+}
+
+/// The touch as it stood before an order traded against it.
+///
+/// A snapshot rather than a borrow of the book, because [`SimBook::take`]
+/// mutates the book and the entire purpose of these two numbers is to describe
+/// the market the order arrived into rather than the one it left behind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PreTradeTouch {
+    /// The mid the fill is measured against. `None` when the book had no mid
+    /// to give: a missing side, or a crossed touch, which the simulator
+    /// refuses to derive any price from.
+    reference: Option<Decimal>,
+    /// The price a taker at the touch would have got — the floor a fill price
+    /// can never be better than.
+    taker: Option<Decimal>,
+}
+
+impl PreTradeTouch {
+    fn of(book: &SimBook, side: Side) -> Self {
+        Self {
+            reference: book.mid(),
+            taker: book.taker_touch(side),
+        }
     }
 }
 
