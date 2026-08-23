@@ -531,10 +531,11 @@ const AWAITING_ITS_CRATE: &[(&str, &str)] = &[];
 /// like coverage and is not, and an exemption that cannot expire is a
 /// permanent one.
 const DOES_NOT_SERVE_YET: &[(&str, &str)] = &[
-    (
-        "qip-fastbrain",
-        "`fn run` checks the agent roster and returns",
-    ),
+    // `qip-fastbrain` used to sit here. It now runs an ingest-and-cycle loop
+    // behind its roster validation and serves `/health` and `/ready`, so its
+    // Deployment carries real probes and the exemption would be describing a
+    // binary that no longer exists. An exemption nobody removes is how a
+    // manifest keeps claiming a limitation the code has outgrown.
     ("qip-deepbrain", "`fn run` runs one cycle and returns"),
 ];
 

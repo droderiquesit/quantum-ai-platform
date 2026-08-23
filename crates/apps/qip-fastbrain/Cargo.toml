@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "qip_fastbrain"
+path = "src/lib.rs"
+
 [[bin]]
 name = "qip-fastbrain"
 path = "src/main.rs"
@@ -23,6 +27,17 @@ qip-agents.workspace = true
 qip-investment-agents.workspace = true
 qip-kernel.workspace = true
 qip-api.workspace = true
+# The risk limits the platform is assembled with. Held here rather than
+# defaulted inside the kernel so the node states the limits it runs under.
+qip-risk.workspace = true
+# The bar interval the synthetic exchange is asked for. A node cycling ten
+# times a second fed minute bars is blind between minutes, so the cadence is
+# chosen from the cycle interval rather than left at the environment's default.
+qip-market.workspace = true
+# Where records come from in this build. The node polls a `DataAdapter`, so the
+# synthetic exchange and a recorded replay are the same seam, and a licensed
+# feed would be a third implementation rather than a rewrite of the loop.
+qip-market-ingestion.workspace = true
 
 [lints]
 workspace = true

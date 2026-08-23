@@ -78,8 +78,30 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+          # Liveness and readiness are deliberately different endpoints, because
+          # for this node they answer different questions. /health says the
+          # process is alive and answers 200 even while a cycle is running
+          # slowly — restarting a node that is merely slow makes the problem
+          # worse. /ready says it is fast enough to be sent work, and returns
+          # 503 once cycles have breached the fast-path ceiling for longer than
+          # the breach tolerance, so a node that is alive and not fast leaves
+          # rotation instead of being killed.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
           env:
-            - name: QIP_API_ADDRESS
+            # The health surface this node serves. QIP_API_ADDRESS is not read
+            # by this binary — it serves its own listener, not the API's.
+            - name: QIP_FASTBRAIN_HEALTH_ADDRESS
               value: "0.0.0.0:8080"
             # The autonomy ceiling. From the config map, so changing what the
             # platform is permitted to do is a change to a named resource that

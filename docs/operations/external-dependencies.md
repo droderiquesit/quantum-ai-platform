@@ -153,10 +153,18 @@ refused at admission.
 Closing it needs a Binary Authorization policy, an attestor backed by a KMS
 signing key, and a signing step in the pipeline after the push.
 
-### Two of the four workloads do not serve
+### One of the four workloads does not serve
 
-`qip-fastbrain` checks its agent roster and returns. `qip-deepbrain` runs one
-cycle and returns.
+`qip-deepbrain` runs one cycle and returns.
+
+`qip-fastbrain` used to be the other. It now validates its agent roster, then
+runs an ingest-and-cycle loop and serves `/health` and `/ready` on its own
+listener, so its Deployment carries real probes. The two endpoints answer
+different questions on purpose: liveness stays 200 while a cycle is merely
+slow, because restarting a slow node makes the problem worse, and readiness
+turns 503 once cycles have breached the fast-path ceiling for longer than the
+breach tolerance, so a node that is alive and not fast leaves rotation instead
+of being killed.
 
 Their Deployments, Services and ports describe the shape they are being built
 towards. Applied today, Kubernetes would restart each container as it exits,
