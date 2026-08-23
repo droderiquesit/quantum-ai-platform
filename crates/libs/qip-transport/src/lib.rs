@@ -90,12 +90,15 @@
 //! the machinery to do that without blocking a thread would cost more in
 //! dependencies and in unreviewable complexity than it saves.
 
+pub mod breaker;
 pub mod deadletter;
 pub mod error;
 pub mod http;
 pub mod mesh;
 pub mod queue;
 pub mod retry;
+pub mod spool;
+pub mod stream;
 
 pub use deadletter::{DeadLetter, DeadLetterReason, DeadLetterSink, MemoryDeadLetters};
 pub use error::TransportError;
