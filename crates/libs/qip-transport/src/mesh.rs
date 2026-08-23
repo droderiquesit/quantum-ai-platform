@@ -741,8 +741,10 @@ impl MeshPublisher {
          this transport speaks plaintext HTTP and authenticates nobody",
         "a NetworkPolicy that denies egress by default and permits only the mesh peers by name, \
          since without authentication the network is the whole access control",
-        "a durable outbound spool and a durable dead-letter sink, because the queue and the \
-         default sink are in memory and a pod restart loses both",
+        "wiring `spool::DurableSpool` and `spool::DurableDeadLetters` over a persistent \
+         KeyValueStore, because this publisher's own queue and default sink are in memory and \
+         a pod restart loses both: the durable versions exist, and using them is a deployment \
+         decision this type cannot make for itself",
         "an alert on the dead-letter count and on the outbound queue's refusal count, which are \
          the two numbers that say a delta never arrived",
     ];

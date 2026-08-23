@@ -861,6 +861,7 @@ dependencies = [
  "qip-contracts",
  "qip-core",
  "qip-events",
+ "qip-storage",
  "qip-streaming",
  "serde",
  "serde_json",

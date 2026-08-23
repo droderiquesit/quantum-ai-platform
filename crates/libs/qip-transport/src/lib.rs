@@ -98,7 +98,6 @@ pub mod mesh;
 pub mod queue;
 pub mod retry;
 pub mod spool;
-pub mod stream;
 
 pub use deadletter::{DeadLetter, DeadLetterReason, DeadLetterSink, MemoryDeadLetters};
 pub use error::TransportError;

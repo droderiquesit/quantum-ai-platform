@@ -19,6 +19,10 @@ qip-contracts.workspace = true
 # suite enforces that direction. It is a dev-dependency instead, so the tests
 # can prove that a `StreamEnvelope` crosses this transport unchanged.
 qip-events.workspace = true
+# The spool persists through the `KeyValueStore` port rather than reaching for
+# the filesystem, so a test runs it in memory and a deployment chooses the
+# adapter. Both crates are libraries, so the dependency edge is legal.
+qip-storage.workspace = true
 
 [dev-dependencies]
 qip-streaming.workspace = true
