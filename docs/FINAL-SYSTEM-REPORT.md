@@ -54,7 +54,7 @@ is a real thing and it is most of the work. It is not a running system.
 | Crates | 57 |
 | Source lines | 120,864 |
 | Test lines | 63,527 |
-| Tests passing | **2,052** |
+| Tests passing | **2,086** |
 | Tests failing | **0** — `make count`, which exits non-zero if any do |
 | `unsafe` blocks | **0** — `unsafe_code = "forbid"` workspace-wide; the thirteen occurrences of the word are all prose |
 | Third-party packages in the lockfile | 11, all permitted (`serde`, `serde_json` and their closure) |
@@ -121,8 +121,8 @@ several rows.
 
 | Subsystem | Verdict | Tests | Evidence and caveat |
 |---|---|---:|---|
-| World model | **PASS** | 33 | Bitemporal. A bar becomes known no earlier than its close, which is a look-ahead defect that was found and fixed. |
-| Opportunity engine | **PASS** | 22 | Detectors find an 8.5% jump in a 0.9% series in the end-to-end run. |
+| World model | **PASS** | 50 | Bitemporal. A bar becomes known no earlier than its close, which is a look-ahead defect that was found and fixed. The liquidity topology maps where depth actually lives per instrument: a stale map degrades to unknown rather than being presented as current, concentration always carries the venue count it was computed over, and halted-venue depth is visible in the total but never in the tradeable figure. |
+| Opportunity engine | **PASS** | 39 | Eight detectors. The catalyst module joins events to the moves that follow them under a no-look-ahead constructor, refuses an impact estimate below eight observations, and ranks an *unexplained* move above an explained one — the move nobody can account for is the one worth escalating. Detectors find an 8.5% jump in a 0.9% series in the end-to-end run. |
 | Reasoning engine | **PASS** | 41 | |
 | Investment agents | **PASS** | 33 | The organisation reaches the desk; the desk is read-only, and no agent crate can reach the execution engine — asserted over the parsed dependency graph. |
 | Prediction | **PASS** | 36 | |

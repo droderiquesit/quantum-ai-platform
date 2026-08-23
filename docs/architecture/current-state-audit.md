@@ -28,7 +28,7 @@ file was.
 | Crates | 57 | 49 |
 | Rust source | 120,864 lines | 87,496 |
 | Rust tests | 63,601 lines | 43,680 |
-| Tests passing | 2,052 | 1,554 |
+| Tests passing | 2,086 | 1,554 |
 | Tests failing | 0 | 0 |
 | Terraform | 26 files, 2,191 lines | unchanged |
 | Kubernetes manifests | 6 | unchanged |
@@ -43,7 +43,7 @@ composition root, 6 applications, 1 workspace test crate.
 The whole platform is Rust. There is no JavaScript, no Python, and no build
 step outside `cargo`.
 
-**The workspace is green**, at 2,052 passing and none failing. It was not when
+**The workspace is green**, at 2,086 passing and none failing. It was not when
 this audit was first written: two market-condition tests failed
 deterministically, and both are now fixed — see section 6, which keeps the
 account because the diagnosis is the useful part. Count the suite with
