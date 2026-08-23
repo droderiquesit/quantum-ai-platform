@@ -4,9 +4,11 @@
 //! in prose:
 //!
 //! * **The simulator is never more generous than reality.** A fill cannot
-//!   exceed the depth the book was showing, under any condition; a crossed
-//!   touch costs the taker rather than paying it; and adding any condition to
-//!   a run never improves the execution.
+//!   exceed the depth the book was showing, under any condition; adding any
+//!   condition to a run never improves the execution; and where no honest
+//!   price exists — a crossed touch, a book with one side, a fill past the
+//!   participation the cost model will quote — the order comes back refused
+//!   with its residual exact rather than filled at an invented one.
 //! * **Determinism is the product.** The same seed and the same conditions
 //!   produce a byte-identical outcome, including when the conditions
 //!   themselves were drawn from a seeded generator.
@@ -31,7 +33,8 @@ use qip_simulation_engine::execution::{ExecutionPlan, FillStatus, SimOrder};
 use qip_simulation_engine::market::{
     InstrumentSpec, MarketSimulator, MarketView, SimStrategy, SyntheticMarket,
 };
-use qip_simulation_engine::venue::{BookCondition, SimBook};
+use qip_simulation_engine::venue::{BookCondition, MarkSource, SimBook};
+use qip_simulation_engine::{CostModel, Unfillable};
 
 const VENUE: &str = "XSIM";
 const OTHER_VENUE: &str = "XALT";
@@ -1204,5 +1207,431 @@ fn a_run_reports_the_conditions_it_met_rather_than_burying_them() -> Result<()> 
     assert!(run.conditions.contains(&"delayed_feed".to_string()));
     assert!(run.conditions.contains(&"crossed_market".to_string()));
     assert!(run.summarise().contains("crossed"));
+    Ok(())
+}
+
+// -------------------------------------- what the simulator declines to price
+
+/// A book with one side is not a market this simulator will trade in.
+///
+/// Reachable, and it used to be the best execution in the suite. Compose
+/// enough spread regimes and the widened half-spread puts the bid at a
+/// negative price; those levels are skipped, the book comes back with offers
+/// and no bids, and there is no mid. Everything the fill engine charges — the
+/// spread crossed, the walk, the impact, the slippage multiplier over all
+/// three — is a distance from that mid, so the fill used to be handed back at
+/// the raw swept price with no reference against it: adversity 0.0bp, a
+/// flawless execution, produced by injecting a spread thirty thousand times
+/// the calm one.
+#[test]
+fn a_book_with_one_side_is_refused_rather_than_filled_against_nothing() -> Result<()> {
+    let mut schedule = ConditionSchedule::new();
+    for _ in 0..5 {
+        schedule.push(ConditionWindow::always(MarketCondition::SpreadRegime {
+            multiplier: 8.0,
+        }));
+    }
+    let sim = simulator(schedule, 151)?;
+    let at = trade_time(&sim);
+    let book = sim.book_at(SYMBOL, VENUE, at, 0)?;
+    assert_eq!(
+        book.condition(),
+        BookCondition::OneSided,
+        "the premise no longer holds: this spread no longer removes a side"
+    );
+    assert_eq!(book.mid(), None);
+
+    let order = buy(dec!("2000"));
+    let report = sim.execute(&order, at)?;
+    assert_eq!(report.status, FillStatus::Unpriceable);
+    assert_eq!(report.filled, Decimal::ZERO);
+    assert_eq!(report.residual, report.requested);
+    assert_eq!(report.average_price(), None);
+    assert_eq!(report.reference, None);
+
+    let calm_report = calm(151)?.execute(&order, at)?;
+    assert_eq!(calm_report.status, FillStatus::Complete);
+    assert!(
+        report.adversity_bps() > calm_report.adversity_bps(),
+        "a spread regime of 32768x scored {:.6}bp against {:.6}bp in the calm market",
+        report.adversity_bps(),
+        calm_report.adversity_bps()
+    );
+    Ok(())
+}
+
+/// The participation limit the cost model documents is the one the fill engine
+/// enforces.
+///
+/// [`CostModel::cost_of`] refuses to quote an order past
+/// `maximum_participation` — "the impact model is not calibrated that far and
+/// would return a number rather than an answer". The fill engine reimplements
+/// the same square-root law inline and inherited none of that: an order for
+/// eighty per cent of a day's volume came back a complete fill at a
+/// comfortable forty basis points. The two now agree, and this test is what
+/// keeps them agreeing.
+#[test]
+fn a_fill_past_the_participation_the_cost_model_will_quote_is_refused_in_the_same_terms()
+-> Result<()> {
+    let mut shape = spec();
+    // A book far deeper than the instrument's daily volume, which is the only
+    // way a single fill reaches a large share of it.
+    shape.daily_volume = 10_000.0;
+    let market = SyntheticMarket {
+        start: start(),
+        step: step(),
+        steps: 64,
+        venues: vec![VENUE.to_string()],
+        instruments: vec![shape.clone()],
+    };
+    let sim = MarketSimulator::synthetic(market, 5)?;
+    let at = trade_time(&sim);
+    let price = sim
+        .reference_price(SYMBOL, at)
+        .expect("the path has a price at the trade instant");
+    let costs = CostModel::default();
+
+    // Modest participation: both price it.
+    let modest = dec!("500");
+    assert!(
+        costs
+            .cost_of(modest, price, shape.daily_volume, shape.step_volatility)
+            .is_ok()
+    );
+    let filled = sim.execute(&buy(modest), at)?;
+    assert_eq!(filled.status, FillStatus::Complete);
+
+    // Past the limit: the cost model refuses, and so does the fill.
+    let excessive = dec!("8000");
+    assert!(
+        matches!(
+            costs.cost_of(excessive, price, shape.daily_volume, shape.step_volatility),
+            Err(Unfillable::ExceedsParticipation { .. })
+        ),
+        "the premise no longer holds: the cost model now quotes this order"
+    );
+    let refused = sim.execute(&buy(excessive), at)?;
+    assert_eq!(
+        refused.status,
+        FillStatus::Unpriceable,
+        "the fill engine priced an order the cost model refuses to quote"
+    );
+    assert_eq!(refused.filled, Decimal::ZERO);
+    assert_eq!(refused.residual, excessive);
+    assert!(refused.depth_available.is_positive(), "the depth was there");
+    assert_eq!(refused.slippage_bps(), None);
+    Ok(())
+}
+
+/// A mark taken on a crossed book carries the cross and no price.
+///
+/// It used to carry the bid, tagged `OneSidedBook`. Nothing about a cross
+/// makes a mark stale, so `current_price` served that bid as a *current*
+/// price: a strategy reading the market got a number off a book that had just
+/// finished saying it did not know its own price.
+#[test]
+fn a_mark_on_a_crossed_book_carries_the_cross_and_no_price() -> Result<()> {
+    let sim = simulator(
+        ConditionSchedule::new().with(ConditionWindow::always(MarketCondition::CrossedMarket {
+            by_bps: 18.0,
+        })),
+        61,
+    )?;
+    let at = trade_time(&sim);
+    let mark = sim.mark_at(SYMBOL, VENUE, at, 0);
+
+    assert!(mark.is_crossed(), "the mark did not carry the cross");
+    assert!(mark.crossed_by.is_some_and(Decimal::is_positive));
+    assert_eq!(mark.condition, BookCondition::Crossed);
+    assert_eq!(
+        mark.price, None,
+        "a price was published off an inverted touch"
+    );
+    assert_eq!(mark.current_price(), None);
+    assert_eq!(
+        mark.last_known_price(),
+        None,
+        "the inverted touch was still reachable as a last known value"
+    );
+    assert_eq!(mark.source, MarkSource::Unavailable);
+
+    // A calm mark at the same instant still has one, so the absence is the
+    // cross rather than the harness.
+    assert!(calm(61)?.mark_at(SYMBOL, VENUE, at, 0).price.is_some());
+    Ok(())
+}
+
+/// A cross that appears part way through a worked order stops it there.
+#[test]
+fn a_cross_appearing_mid_order_leaves_the_earlier_slices_filled_and_an_exact_residual() -> Result<()>
+{
+    let interval = Duration::from_secs(60);
+    let sim = simulator(
+        ConditionSchedule::new().with(ConditionWindow::starting(
+            MarketCondition::CrossedMarket { by_bps: 30.0 },
+            start().saturating_add(step() * 12),
+        )),
+        67,
+    )?;
+    let at = trade_time(&sim);
+    let order = buy(dec!("2000")).worked_in(4, interval);
+    let report = sim.execute(&order, at)?;
+
+    assert_eq!(report.status, FillStatus::Partial);
+    assert!(
+        report.filled.is_positive(),
+        "no slice filled before the cross"
+    );
+    assert_eq!(report.residual, order.quantity - report.filled);
+    assert_eq!(report.slices.len(), 4);
+    let traded: Vec<bool> = report
+        .slices
+        .iter()
+        .map(|slice| slice.filled.is_positive())
+        .collect();
+    assert_eq!(
+        traded,
+        vec![true, true, false, false],
+        "the cross did not stop the slices that met it"
+    );
+    Ok(())
+}
+
+/// A collapsed level rests exactly the depth it was left with.
+///
+/// [`displayed_size`] rounds a depth collapse *down* on purpose — rounding it
+/// up hands back liquidity the condition removed. Splitting the level into two
+/// resting orders then rounded it back up: a level too small to halve rested
+/// two orders of a raw unit each, doubling a book the condition had all but
+/// emptied.
+#[test]
+fn a_depth_collapse_is_never_rounded_back_up_by_the_queue_it_rests_in() -> Result<()> {
+    let calm_book = calm(71)?.book_at(SYMBOL, VENUE, trade_time(&calm(71)?), 0)?;
+    let calm_depth = calm_book.depth(Side::Sell);
+    assert!(calm_depth.is_positive());
+
+    for depth_fraction in [0.5, 0.1, 0.01, 1e-9, 1e-12] {
+        let sim = simulator(
+            ConditionSchedule::new().with(ConditionWindow::always(MarketCondition::Illiquidity {
+                depth_fraction,
+            })),
+            71,
+        )?;
+        let at = trade_time(&sim);
+        let book = sim.book_at(SYMBOL, VENUE, at, 0)?;
+        for side in [Side::Buy, Side::Sell] {
+            let collapsed = book.depth(side);
+            let ceiling = Decimal::from_f64(calm_depth.to_f64() * depth_fraction)
+                .expect("the collapsed depth is representable");
+            assert!(
+                collapsed <= ceiling,
+                "a {depth_fraction} depth collapse left {collapsed} showing against a ceiling of {ceiling}"
+            );
+        }
+    }
+    Ok(())
+}
+
+// ------------------------------------------------- what a run is marked at
+
+/// A flash event still in progress cannot improve a run's profit and loss.
+///
+/// The run used to mark its closing position at the *undisturbed* path price
+/// while the fills happened at the crashed one, so a strategy that bought
+/// into a crash booked the whole displacement as profit: the same run that
+/// scored a calm P&L of about fifteen thousand scored ninety-six thousand
+/// once a twenty-five per cent flash event was injected under it. The mark now
+/// comes off the book the conditions actually left.
+#[test]
+fn a_flash_event_still_in_progress_cannot_improve_a_runs_profit_and_loss() -> Result<()> {
+    let flash = MarketCondition::FlashEvent {
+        magnitude: 0.25,
+        // Long enough that the run ends with the price still in the hole.
+        down: Duration::from_secs(60 * 60),
+        recovery: Duration::from_secs(60 * 60 * 24),
+    };
+    let schedule = ConditionSchedule::new().with(ConditionWindow::starting(
+        flash,
+        start().saturating_add(step() * 2),
+    ));
+
+    let calm_run = calm(9)?.run(&mut MetronomeBuyer::new(dec!("400"), 4))?;
+    let flash_run = simulator(schedule, 9)?.run(&mut MetronomeBuyer::new(dec!("400"), 4))?;
+
+    assert_eq!(
+        calm_run.positions, flash_run.positions,
+        "the two runs did not end up holding the same thing, so their P&Ls are not comparable"
+    );
+    assert!(
+        flash_run.cash > calm_run.cash,
+        "the premise no longer holds: buying through the crash was not cheaper in cash"
+    );
+    let calm_mark = calm_run.final_marks[SYMBOL];
+    let flash_mark = flash_run.final_marks[SYMBOL];
+    assert!(
+        flash_mark < calm_mark,
+        "the closing mark ignored the flash event: {flash_mark} against {calm_mark}"
+    );
+    assert!(
+        flash_run.profit_and_loss < calm_run.profit_and_loss,
+        "a flash event improved the run's P&L from {} to {}",
+        calm_run.profit_and_loss,
+        flash_run.profit_and_loss
+    );
+    assert!(flash_run.unmarked_positions.is_empty());
+    Ok(())
+}
+
+/// A position nobody can price is reported, not folded into the P&L.
+#[test]
+fn a_position_no_venue_can_mark_is_named_rather_than_valued() -> Result<()> {
+    let schedule =
+        ConditionSchedule::new().with(ConditionWindow::always(MarketCondition::CrossedMarket {
+            by_bps: 20.0,
+        }));
+    // Every book crossed at every venue for the whole run: the buyer fills
+    // nothing, so there is no position, and there is nothing to report.
+    let run = simulator(schedule, 83)?.run(&mut MetronomeBuyer::new(dec!("400"), 4))?;
+    assert!(run.positions.values().all(|quantity| quantity.is_zero()));
+    assert!(run.unmarked_positions.is_empty());
+    assert!(run.final_marks.is_empty(), "a crossed book supplied a mark");
+    assert!(
+        !run.reports.is_empty()
+            && run
+                .reports
+                .iter()
+                .all(|report| report.status == FillStatus::CrossedBook)
+    );
+    assert_eq!(run.profit_and_loss, run.cash);
+    Ok(())
+}
+
+// ------------------------------------------- the direction, for worked orders
+
+/// A worked order is measured against the market each slice met, not against a
+/// reference frozen at arrival.
+///
+/// The order above executes in one slice, so its arrival mid and its fill's
+/// mid are the same instant and the distinction never shows. Work it over
+/// several minutes and they come apart: a flash event drops the price between
+/// the slices, the later ones print far below the arrival mid, and the
+/// shortfall against that mid goes deeply negative. Adversity was computed
+/// from it, so the worst crash in the schedule scored as the best execution in
+/// the run — several hundred basis points *better* than the calm market.
+///
+/// The fill is worse in every way that is actually about the fill: wider
+/// spread, thinner book, more paid over the mid it traded into. That is what
+/// adversity now measures, and `slippage_bps` keeps the shortfall — an honest
+/// number about the trade, which is not the same question.
+#[test]
+fn a_flash_event_cannot_flatter_a_worked_order() -> Result<()> {
+    let schedule = ConditionSchedule::new().with(ConditionWindow::starting(
+        MarketCondition::FlashEvent {
+            magnitude: 0.25,
+            down: Duration::from_secs(60 * 30),
+            recovery: Duration::from_secs(60 * 60 * 6),
+        },
+        start().saturating_add(step() * 4),
+    ));
+    let order = buy(dec!("1200")).worked_in(6, Duration::from_secs(60));
+    let at = trade_time(&calm(97)?);
+
+    let baseline = calm(97)?.execute(&order, at)?;
+    let crashed = simulator(schedule, 97)?.execute(&order, at)?;
+
+    assert!(baseline.filled.is_positive() && crashed.filled.is_positive());
+    // The premise: the flash event really did make the cash cheaper, and the
+    // shortfall against the arrival mid really did go negative on it.
+    assert!(
+        crashed.average_price() < baseline.average_price(),
+        "the premise no longer holds: buying through the crash was not cheaper"
+    );
+    assert!(
+        crashed.slippage_bps().unwrap_or_default() < 0.0,
+        "the premise no longer holds: the shortfall against arrival did not go negative"
+    );
+
+    // And the claim: none of that is an improvement in the execution.
+    assert!(
+        crashed.adversity_bps() >= baseline.adversity_bps(),
+        "a flash event improved a worked order from {:.6}bp to {:.6}bp\n  baseline: {}\n  crashed:  {}",
+        baseline.adversity_bps(),
+        crashed.adversity_bps(),
+        baseline.summarise(),
+        crashed.summarise()
+    );
+    assert!(
+        crashed.execution_cost_bps().unwrap_or_default()
+            > baseline.execution_cost_bps().unwrap_or_default(),
+        "the crash cost no more against the books it actually traded into"
+    );
+    Ok(())
+}
+
+/// The same direction property as above, over generated schedules, but for the
+/// orders the single-slice case cannot reach: worked orders, sells, and orders
+/// carrying a limit.
+///
+/// Worth its own test rather than a widening of the one above, because these
+/// are the orders whose fills happen at instants the arrival snapshot knows
+/// nothing about — which is exactly where a condition found room to flatter.
+#[test]
+fn injecting_a_condition_never_improves_a_worked_or_a_sold_execution() -> Result<()> {
+    const TOLERANCE_BPS: f64 = 1e-6;
+
+    for case in 0..96u64 {
+        let seed = 0x_C0DE_0000u64 ^ case;
+        let mut rng = Xoshiro256::seeded(seed);
+        let schedule = chaotic_schedule(&mut rng, start());
+        let names: Vec<String> = schedule
+            .windows()
+            .iter()
+            .map(|window| window.condition.as_str().to_string())
+            .collect();
+
+        let side = if case % 2 == 0 { Side::Buy } else { Side::Sell };
+        let mut order = SimOrder::market(SYMBOL, VENUE, side, dec!("1500"))
+            .worked_in(1 + (case % 4) as usize, Duration::from_secs(60));
+        if case % 5 == 0 {
+            // Marketable in the calm market by a wide margin, so the limit is
+            // not itself what stops the fill.
+            order = order.with_limit(match side {
+                Side::Buy => dec!("160"),
+                Side::Sell => dec!("40"),
+            });
+        }
+
+        let baseline_sim = calm(seed)?;
+        let at = trade_time(&baseline_sim);
+        let baseline = baseline_sim.execute(&order, at)?;
+        let conditioned = simulator(schedule, seed)?.execute(&order, at)?;
+
+        assert!(
+            conditioned.adversity_bps() >= baseline.adversity_bps() - TOLERANCE_BPS,
+            "case {case}: {names:?} improved a {} of {} slice(s) from {:.6}bp to {:.6}bp\n  baseline:    {}\n  conditioned: {}",
+            side.as_str(),
+            order.slices,
+            baseline.adversity_bps(),
+            conditioned.adversity_bps(),
+            baseline.summarise(),
+            conditioned.summarise()
+        );
+        assert!(
+            conditioned.filled <= baseline.filled,
+            "case {case}: {names:?} supplied more liquidity than the calm market"
+        );
+
+        // And the invariant the measure rests on: anything that filled can be
+        // costed. A fill the simulator cannot measure is one it should not
+        // have made.
+        for report in [&baseline, &conditioned] {
+            assert_eq!(
+                report.filled.is_positive(),
+                report.execution_cost_bps().is_some(),
+                "case {case}: a fill with no cost anyone can state: {}",
+                report.summarise()
+            );
+        }
+    }
     Ok(())
 }

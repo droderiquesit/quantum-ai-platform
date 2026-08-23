@@ -10,11 +10,18 @@
 //!
 //! **The simulator is never more generous than reality.** An order is filled
 //! by sweeping the book, never at the touch regardless of size; a fill can
-//! never exceed the depth the book is showing; where the touch is inverted the
-//! taker is charged the *worse* of the two prices; and everything paid beyond
-//! the reference is scaled by the regime rather than discounted by it. The
+//! never exceed the depth the book is showing; and everything paid beyond the
+//! reference is scaled by the regime rather than discounted by it. The
 //! direction is asserted, not asserted-to: see
 //! [`crate::execution::ExecutionReport::adversity_bps`].
+//!
+//! Where it cannot be generous or stingy honestly, it declines. A crossed book
+//! has no price either of its two contradictory quotes justifies; a book with
+//! one side has no mid to measure a fill against, and a fill measured against
+//! nothing escapes every cost the conditions impose; a fill that is a large
+//! share of a day's volume is past where the impact law was calibrated. All
+//! three come back unfilled with the residual exact, rather than filled at a
+//! number nobody could defend.
 //!
 //! **Determinism is the product.** There is no clock and no ambient RNG here.
 //! Instants arrive as [`Timestamp`] parameters; every draw comes from a stream
@@ -23,15 +30,23 @@
 //! as asking in order, and [`SimulationRun::digest`] turns "the same run"
 //! into something a test can compare byte for byte.
 //!
-//! One detail is worth stating because a property depends on it: the simulated
-//! book's *shape* is scale-free. The half-spread and the level spacing are
-//! basis points of the mid and the level sizes are in units, so moving the
-//! price level — which is exactly what a flash event does — leaves slippage in
-//! basis points unchanged. That is what makes "injecting a condition never
-//! improves the execution" an exact statement rather than an approximate one:
-//! a condition that only moves the price cannot flatter the execution, and
-//! every condition that touches the spread, the depth or the fill does so in
-//! one direction.
+//! Two details are worth stating because a property depends on them.
+//!
+//! The simulated book's *shape* is scale-free. The half-spread and the level
+//! spacing are basis points of the mid and the level sizes are in units, so
+//! moving the price level — which is exactly what a flash event does — leaves
+//! the cost of trading, in basis points, unchanged.
+//!
+//! And a fill is measured against the mid of the book *it* traded into, at the
+//! instant it traded, not against a mid snapshotted when the order arrived.
+//! For an order that executes in one slice these are the same number. For a
+//! worked order they are not, and the difference is the market moving between
+//! the slices — which belongs to the trade rather than to the fill engine, and
+//! which a condition can move as far as it likes. Together these are what make
+//! "injecting a condition never improves the execution" an exact statement
+//! rather than an approximate one: a condition that only moves the price
+//! cannot flatter the execution, and every condition that touches the spread,
+//! the depth or the fill does so in one direction.
 
 use crate::conditions::{ConditionSchedule, FeedFault, Regime};
 use crate::costs::CostModel;
@@ -316,10 +331,18 @@ pub struct SimulationRun {
     /// Cash from trading, before marking the residual position.
     pub cash: Decimal,
     pub commission: Decimal,
-    /// Last known price per instrument at the end of the run.
+    /// Closing mark per instrument: the mid of the book as the conditions
+    /// left it at the last step, not the undisturbed path price.
     pub final_marks: BTreeMap<String, Decimal>,
-    /// Cash plus the position marked at the last known price.
+    /// Cash plus every position that could be marked, at its closing mark.
+    ///
+    /// Read it next to `unmarked_positions`: this is not the whole P&L when
+    /// that list is non-empty, and it says so rather than quietly valuing an
+    /// unmarkable position at a price no book was showing.
     pub profit_and_loss: Decimal,
+    /// Instruments the run ended holding and could not mark, because no venue
+    /// published a mid at the last step.
+    pub unmarked_positions: Vec<String>,
     /// Orders that met a venue that had stopped answering.
     pub unreachable_orders: usize,
     /// Steps at which some mark was a last-known value rather than a current
@@ -400,6 +423,10 @@ impl SimulationRun {
             bytes.extend_from_slice(object_id.as_bytes());
             bytes.extend_from_slice(&price.raw().to_le_bytes());
         }
+        for object_id in &self.unmarked_positions {
+            bytes.extend_from_slice(b"unmarked:");
+            bytes.extend_from_slice(object_id.as_bytes());
+        }
         bytes.extend_from_slice(&self.cash.raw().to_le_bytes());
         bytes.extend_from_slice(&self.commission.raw().to_le_bytes());
         bytes.extend_from_slice(&self.profit_and_loss.raw().to_le_bytes());
@@ -408,7 +435,7 @@ impl SimulationRun {
 
     pub fn summarise(&self) -> String {
         format!(
-            "{} over {} step(s) of {} market [{}]: {} order(s), {} filled, {} residual, P&L {}, mean adversity {:.1}bp, {} unreachable, stale marks on {} step(s), crossed on {}",
+            "{} over {} step(s) of {} market [{}]: {} order(s), {} filled, {} residual, P&L {}{}, mean adversity {:.1}bp, {} unreachable, stale marks on {} step(s), crossed on {}",
             self.strategy,
             self.steps,
             self.source.as_str(),
@@ -421,6 +448,15 @@ impl SimulationRun {
             self.filled_quantity(),
             self.residual_quantity(),
             self.profit_and_loss,
+            if self.unmarked_positions.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " (EXCLUDING {} unmarkable position(s): {})",
+                    self.unmarked_positions.len(),
+                    self.unmarked_positions.join(", ")
+                )
+            },
             self.mean_adversity_bps(),
             self.unreachable_orders,
             self.stale_mark_steps,
@@ -469,14 +505,20 @@ impl MarketSimulator {
             let mut price = spec.initial_price.to_f64();
             let mut points = Vec::with_capacity(steps.len());
             for at in &steps {
-                let decimal = Decimal::from_f64(price).unwrap_or(spec.initial_price);
+                // Refused rather than substituted. Quietly writing the initial
+                // price into a point the generator could not represent puts a
+                // number nobody generated into the middle of a path, and every
+                // fill priced off it inherits it.
+                let decimal = Decimal::from_f64(price).filter(|price| price.is_positive()).ok_or_else(
+                    || {
+                        Error::invalid(format!(
+                            "the generated path for {object_id} left the range a price can be held in at {at}"
+                        ))
+                    },
+                )?;
                 points.push(PathPoint {
                     at: *at,
-                    price: if decimal.is_positive() {
-                        decimal
-                    } else {
-                        spec.initial_price
-                    },
+                    price: decimal,
                     volume: spec.daily_volume,
                 });
                 let shock = spec.step_drift + spec.step_volatility * stream.normal();
@@ -669,10 +711,21 @@ impl MarketSimulator {
                 mark.price = Some(mid);
                 mark.source = MarkSource::Book;
             }
+            None if book.is_crossed() => {
+                // A crossed book is not a book with one side; it is a book
+                // whose two sides contradict each other, and there is no
+                // reading of it that yields a price. Publishing the bid — as
+                // this once did — hands a strategy a number that
+                // `Mark::current_price` will serve as *current*, because
+                // nothing about a cross makes a mark stale. The condition
+                // travels on the mark instead — `condition` and `crossed_by`
+                // are already set above — because that is the part that is
+                // actually known.
+            }
             None => {
-                // A crossed or one-sided book still has a touch. It is reported
-                // as coming from one side so a reader cannot mistake it for a
-                // mid, and the crossed condition travels with it.
+                // A genuinely one-sided book does have an observation: one
+                // side of it. Reported as coming from one side so a reader
+                // cannot mistake it for a mid.
                 mark.price = book
                     .best_bid()
                     .map(|level| level.price)
@@ -754,6 +807,7 @@ impl MarketSimulator {
                 levels_consumed: 0,
                 depth_available: report.depth_available,
                 venue_responding: false,
+                reference: arrival_book.mid(),
             });
             return Ok(report);
         }
@@ -762,6 +816,7 @@ impl MarketSimulator {
         let mut remaining = order.quantity;
         let mut hit_outage = false;
         let mut hit_crossed = false;
+        let mut unpriceable = false;
         let mut not_marketable = false;
 
         for index in 0..slices {
@@ -783,6 +838,7 @@ impl MarketSimulator {
                     levels_consumed: 0,
                     depth_available: Decimal::ZERO,
                     venue_responding: false,
+                    reference: None,
                 });
                 break;
             }
@@ -817,6 +873,9 @@ impl MarketSimulator {
                     levels_consumed: 0,
                     depth_available: book.depth(taking),
                     venue_responding: true,
+                    // A crossed book has no mid, and that is the whole reason
+                    // this slice did not trade.
+                    reference: None,
                 });
                 continue;
             }
@@ -835,6 +894,27 @@ impl MarketSimulator {
                     levels_consumed: 0,
                     depth_available: available,
                     venue_responding: true,
+                    reference: book.mid(),
+                });
+                continue;
+            }
+
+            if !self.participation_is_priceable(target, &spec) {
+                // Refused before the book is touched: the depth is there, the
+                // cost model simply will not quote a fill this large a share of
+                // the day's volume. Filling it and reporting the extrapolated
+                // impact as though it meant something is the failure this
+                // check exists to prevent.
+                unpriceable = true;
+                report.slices.push(FillSlice {
+                    at: slice_at,
+                    filled: Decimal::ZERO,
+                    notional: Decimal::ZERO,
+                    worst_price: None,
+                    levels_consumed: 0,
+                    depth_available: available,
+                    venue_responding: true,
+                    reference: book.mid(),
                 });
                 continue;
             }
@@ -852,14 +932,33 @@ impl MarketSimulator {
                     levels_consumed: 0,
                     depth_available: available,
                     venue_responding: true,
+                    reference: before.reference,
                 });
                 continue;
             }
 
+            // `book` is this slice's own copy and is dropped at the end of the
+            // iteration, so declining after the sweep leaves nothing consumed:
+            // the quantity is only committed to the report below.
             let priced = self.price_of(&spec, before, order.side, &outcome, &regime);
-            let notional = priced
-                .checked_mul(outcome.filled)
-                .unwrap_or(outcome.notional);
+            let Some(notional) = priced.and_then(|price| price.checked_mul(outcome.filled)) else {
+                // Falling back to the sweep's own notional here — as this once
+                // did — would fill the order at the price the book showed
+                // before the regime was applied, so an overflow in the
+                // conditioned price would be paid out as an unconditioned fill.
+                unpriceable = true;
+                report.slices.push(FillSlice {
+                    at: slice_at,
+                    filled: Decimal::ZERO,
+                    notional: Decimal::ZERO,
+                    worst_price: None,
+                    levels_consumed: 0,
+                    depth_available: available,
+                    venue_responding: true,
+                    reference: before.reference,
+                });
+                continue;
+            };
             remaining -= outcome.filled;
             report.filled += outcome.filled;
             report.notional += notional;
@@ -871,6 +970,9 @@ impl MarketSimulator {
                 levels_consumed: outcome.levels_consumed,
                 depth_available: available,
                 venue_responding: true,
+                // The mid this slice traded into, which is what its cost is
+                // measured against: see `ExecutionReport::execution_cost_bps`.
+                reference: before.reference,
             });
         }
 
@@ -879,10 +981,12 @@ impl MarketSimulator {
             FillStatus::VenueUnreachable
         } else if !report.filled.is_positive() {
             if hit_crossed {
-                // Reported ahead of the other two because it is the reason
-                // nothing traded: the book was showing depth and a limit was
-                // marketable against it, and the simulator still declined.
+                // The refusals are reported ahead of the other two because
+                // they are the reason nothing traded: the book was showing
+                // depth, and the simulator declined it anyway.
                 FillStatus::CrossedBook
+            } else if unpriceable {
+                FillStatus::Unpriceable
             } else if not_marketable {
                 FillStatus::NotMarketable
             } else {
@@ -965,15 +1069,25 @@ impl MarketSimulator {
         }
 
         let mut final_marks = BTreeMap::new();
+        let mut unmarked_positions = Vec::new();
         let mut profit_and_loss = cash;
         if let Some(last) = self.steps.last() {
             for object_id in self.instruments.keys() {
-                let Some(price) = self.reference_price(object_id, *last) else {
+                let quantity = positions.get(object_id).copied().unwrap_or(Decimal::ZERO);
+                let Some(price) = self.closing_mark(object_id, *last, quantity) else {
+                    if !quantity.is_zero() {
+                        // A position nobody can put a price on is reported as
+                        // one, not folded into the P&L at whatever the last
+                        // undisturbed path point happened to be.
+                        unmarked_positions.push(object_id.clone());
+                    }
                     continue;
                 };
                 final_marks.insert(object_id.clone(), price);
-                if let Some(quantity) = positions.get(object_id) {
-                    profit_and_loss += price.checked_mul(*quantity).unwrap_or(Decimal::ZERO);
+                if let Some(marked) = price.checked_mul(quantity) {
+                    profit_and_loss += marked;
+                } else if !quantity.is_zero() {
+                    unmarked_positions.push(object_id.clone());
                 }
             }
         }
@@ -996,6 +1110,7 @@ impl MarketSimulator {
             commission,
             final_marks,
             profit_and_loss,
+            unmarked_positions,
             unreachable_orders,
             stale_mark_steps,
             crossed_market_steps,
@@ -1044,10 +1159,16 @@ impl MarketSimulator {
         let Some(point) = self.path_point(object_id, at) else {
             return Ok(book);
         };
-        let displaced = point
-            .price
-            .checked_mul(Decimal::from_f64(regime.price_multiplier).unwrap_or(Decimal::ONE))
-            .unwrap_or(point.price);
+        // An empty book rather than the undisplaced price when the
+        // displacement cannot be applied. Falling back to `point.price` — as
+        // this did — quietly served the book the flash event was supposed to
+        // have moved, so the condition would be reported as injected and would
+        // not be there.
+        let Some(displaced) = Decimal::from_f64(regime.price_multiplier)
+            .and_then(|multiplier| point.price.checked_mul(multiplier))
+        else {
+            return Ok(book);
+        };
         if !displaced.is_positive() {
             return Ok(book);
         }
@@ -1075,11 +1196,16 @@ impl MarketSimulator {
             return Ok(book);
         }
         // Two resting orders per level, so time priority is a fact about the
-        // book rather than a property of a queue of one.
-        let per_order = size
+        // book rather than a property of a queue of one. They sum to exactly
+        // `size`: a level too small to split into two positive quantities
+        // rests as one order rather than as two rounded up to a raw unit
+        // each, which would put back more depth than the collapse left —
+        // small in absolute terms, and in the wrong direction, which is the
+        // part that matters.
+        let first = size
             .checked_div(Decimal::from_int(2))
-            .unwrap_or(size)
-            .max(Decimal::from_raw(1));
+            .unwrap_or(Decimal::ZERO);
+        let second = size - first;
 
         let mut entered = at.saturating_sub(Duration::from_nanos((spec.levels as i64) * 4));
         for index in 0..spec.levels {
@@ -1088,8 +1214,11 @@ impl MarketSimulator {
                 if !price.is_positive() {
                     continue;
                 }
-                for _ in 0..2 {
-                    book.rest(side, price, per_order, entered)?;
+                for quantity in [first, second] {
+                    if !quantity.is_positive() {
+                        continue;
+                    }
+                    book.rest(side, price, quantity, entered)?;
                     entered = entered.saturating_add(Duration::from_nanos(1));
                 }
             }
@@ -1168,20 +1297,26 @@ impl MarketSimulator {
         side: Side,
         outcome: &crate::venue::SweepOutcome,
         regime: &Regime,
-    ) -> Decimal {
-        let Some(swept) = outcome.average_price() else {
-            return Decimal::ZERO;
-        };
+    ) -> Option<Decimal> {
+        // No average price means nothing was swept, and a fill with no price
+        // is the one number this module must never hand back. It is returned
+        // as an absence rather than as a zero, because a zero here is a buy
+        // that cost nothing.
+        let swept = outcome.average_price()?;
         let touch = before.taker.unwrap_or(swept);
         let walked = match side {
             Side::Buy => swept.max(touch),
             Side::Sell => swept.min(touch),
         };
-        let Some(reference) = before.reference else {
-            return walked;
-        };
+        // No mid, no fill. Every charge below is a distance from the reference,
+        // so pricing without one would quietly drop the spread, the walk, the
+        // impact and the regime's slippage multiplier all at once, and hand
+        // back `walked` as though the conditions had never been injected. A
+        // one-sided book is a market the simulator declines to trade in, not a
+        // market with no costs in it.
+        let reference = before.reference?;
         if !reference.is_positive() {
-            return walked;
+            return None;
         }
 
         let walk_bps = match side {
@@ -1197,11 +1332,79 @@ impl MarketSimulator {
             0.0
         };
         let total_bps = (walk_bps.max(0.0) + impact_bps) * regime.slippage_multiplier;
+        if !total_bps.is_finite() {
+            // A multiplier large enough to overflow the arithmetic is a
+            // multiplier the model cannot price with. Saying so beats printing
+            // whatever the arithmetic degenerated into.
+            return None;
+        }
         let adjustment = reference.apply_bps(total_bps);
-        match side {
+        Some(match side {
             Side::Buy => reference + adjustment,
             Side::Sell => (reference - adjustment).max(Decimal::from_raw(1)),
+        })
+    }
+
+    /// Whether the cost model will price a fill of this size at all.
+    ///
+    /// The same limit [`CostModel::cost_of`] enforces, applied where fills are
+    /// actually priced. The square-root impact law is calibrated on modest
+    /// participation; run out to a large share of a day's volume it keeps
+    /// returning a number, and the number is not an answer. The fill engine
+    /// reimplemented the law inline and inherited none of the guard, so an
+    /// order for eighty per cent of a day's volume was quoted a cheerful forty
+    /// basis points and reported as a complete fill.
+    fn participation_is_priceable(&self, quantity: Decimal, spec: &InstrumentSpec) -> bool {
+        if !quantity.is_positive() {
+            return true;
         }
+        if !(spec.daily_volume.is_finite() && spec.daily_volume > 0.0) {
+            return false;
+        }
+        quantity.to_f64() / spec.daily_volume <= self.costs.maximum_participation
+    }
+
+    /// The price a position still open at the end of a run is marked at.
+    ///
+    /// The mid of the book **as the conditions left it**, not the undisturbed
+    /// path point. Marking at the path was a hole big enough to drive a
+    /// strategy through: a flash event lowers what a buyer pays and the calm
+    /// path mark does not move with it, so a run that bought into a crash
+    /// still in progress booked the whole displacement as profit. An adverse
+    /// condition made the headline number better — which is the one thing
+    /// nothing in this crate is allowed to do.
+    ///
+    /// Where the venues disagree, the mark is the one *least* favourable to
+    /// the position held: the lowest mid for a long, the highest for a short.
+    /// A position is one thing and the venues are several, so some rule is
+    /// needed, and the conservative rule is the one that cannot be arranged
+    /// into a profit by choosing where to look.
+    ///
+    /// `None` when no venue offered a mid at all — every book crossed, empty
+    /// or one-sided. There is no price to mark at then, and inventing one is
+    /// how a broken feed becomes a return.
+    fn closing_mark(&self, object_id: &str, at: Timestamp, quantity: Decimal) -> Option<Decimal> {
+        let mut worst: Option<Decimal> = None;
+        for venue in &self.venues {
+            let regime = self.regime_at(at, venue, object_id, 0);
+            let Ok(book) = self.build_book(object_id, venue, at, &regime) else {
+                continue;
+            };
+            let Some(mid) = book.mid() else {
+                continue;
+            };
+            if !mid.is_positive() {
+                continue;
+            }
+            worst = Some(match worst {
+                // A short is marked at the highest price it could be bought
+                // back at; everything else at the lowest it could be sold at.
+                Some(current) if quantity.is_negative() => current.max(mid),
+                Some(current) => current.min(mid),
+                None => mid,
+            });
+        }
+        worst
     }
 
     /// Commission on a filled notional, from the platform's own cost model.
@@ -1211,7 +1414,12 @@ impl MarketSimulator {
         }
         let charged =
             (notional.to_f64() * self.costs.commission_rate).max(self.costs.minimum_commission);
-        Decimal::from_f64(charged).unwrap_or(Decimal::ZERO)
+        // A fee too large to represent saturates rather than falling back to
+        // zero. Zero was the wrong direction for an unrepresentable number: a
+        // notional big enough to overflow the fee is a notional whose fee is
+        // enormous, and reporting it as free is the one reading that is
+        // certainly wrong.
+        Decimal::from_f64(charged).unwrap_or(Decimal::MAX)
     }
 }
 

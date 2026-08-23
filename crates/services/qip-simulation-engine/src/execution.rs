@@ -153,6 +153,26 @@ pub enum FillStatus {
     /// market's. So nothing is sent: the residual is exact and
     /// [`ExecutionReport::crossed_by`] says how far through the touch was.
     CrossedBook,
+    /// The book had depth, and the simulator would not put a price on it.
+    ///
+    /// Two things reach here, and both are the cost model being asked a
+    /// question outside what it can answer:
+    ///
+    /// * The slice was a larger share of the day's volume than
+    ///   [`crate::costs::CostModel::maximum_participation`]. The square-root
+    ///   impact law is calibrated on modest participation and extrapolating it
+    ///   to a third of a day's volume returns a number rather than an answer —
+    ///   [`crate::costs::CostModel::cost_of`] refuses that order outright and
+    ///   the fill engine now refuses it in the same terms.
+    /// * The book had no mid to measure the fill against: one side quoted, or
+    ///   none. Everything the regime charges — the spread crossed, the walk,
+    ///   the impact, the slippage multiplier over all three — is defined
+    ///   relative to that mid, so a fill without one would escape every cost
+    ///   the injected conditions impose and be reported as a flawless
+    ///   execution because there was nothing left to measure it against.
+    ///
+    /// Either way the residual is exact and still the caller's.
+    Unpriceable,
 }
 
 impl FillStatus {
@@ -165,6 +185,7 @@ impl FillStatus {
             Self::VenueUnreachable => "venue_unreachable",
             Self::FeedUnusable => "feed_unusable",
             Self::CrossedBook => "crossed_book",
+            Self::Unpriceable => "unpriceable",
         }
     }
 
@@ -195,6 +216,13 @@ pub struct FillSlice {
     pub depth_available: Decimal,
     /// Whether the venue answered this slice.
     pub venue_responding: bool,
+    /// The mid of the book this slice traded into, before it traded.
+    ///
+    /// Per slice rather than per order because a worked order meets a
+    /// different market at each slice, and the difference between those
+    /// markets is the market moving, not the execution being good or bad. See
+    /// [`ExecutionReport::execution_cost_bps`].
+    pub reference: Option<Decimal>,
 }
 
 impl FillSlice {
@@ -265,8 +293,17 @@ impl ExecutionReport {
         1.0 - self.fill_fraction()
     }
 
-    /// Cost against the reference in basis points, positive being worse for
-    /// the taker.
+    /// Implementation shortfall: cost against the *arrival* mid in basis
+    /// points, positive being worse for the taker.
+    ///
+    /// The standard measure and the one a strategy is judged on, and for a
+    /// worked order it contains something that is not execution quality at
+    /// all: the market moving between arrival and the later slices. A buyer
+    /// working an order into a falling market shows a negative shortfall
+    /// having done nothing clever. That is a true statement about the trade
+    /// and a useless one about the fill engine, which is why the direction of
+    /// an injected condition is asserted on [`Self::adversity_bps`] and not on
+    /// this.
     pub fn slippage_bps(&self) -> Option<f64> {
         let reference = self.reference?;
         if !reference.is_positive() {
@@ -280,6 +317,48 @@ impl ExecutionReport {
         Some(signed.to_f64() / reference.to_f64() * 10_000.0)
     }
 
+    /// What the fills cost against the market each of them actually traded
+    /// into, volume-weighted, in basis points.
+    ///
+    /// The same number as [`Self::slippage_bps`] for an order that executed in
+    /// one slice, and a different one for a worked order — deliberately. A
+    /// slice is measured against the mid of the book it hit, at the instant it
+    /// hit it, so the market moving between slices cancels out of the answer
+    /// instead of being credited to the execution. Without that, injecting a
+    /// flash event under a worked buy order *lowered* the measured cost by
+    /// several hundred basis points, because the later slices printed far
+    /// below a reference frozen at arrival: the deepest crash in the schedule
+    /// scored as the best execution in the run.
+    ///
+    /// `None` when nothing filled.
+    pub fn execution_cost_bps(&self) -> Option<f64> {
+        let mut weighted = 0.0_f64;
+        let mut filled = 0.0_f64;
+        for slice in &self.slices {
+            if !slice.filled.is_positive() {
+                continue;
+            }
+            // A fill with no reference has no cost anyone can state. It is
+            // left out of the weighting and picked up by `adversity_bps`,
+            // which charges the unmeasured fraction rather than discounting
+            // it.
+            let (Some(reference), Some(average)) = (slice.reference, slice.average_price()) else {
+                continue;
+            };
+            if !reference.is_positive() {
+                continue;
+            }
+            let signed = match self.side {
+                Side::Buy => average - reference,
+                Side::Sell => reference - average,
+            };
+            let quantity = slice.filled.to_f64();
+            weighted += signed.to_f64() / reference.to_f64() * 10_000.0 * quantity;
+            filled += quantity;
+        }
+        (filled > 0.0).then(|| weighted / filled)
+    }
+
     /// One scalar in which a worse execution is always a larger number.
     ///
     /// The filled part contributes its slippage; the unfilled part contributes
@@ -290,10 +369,28 @@ impl ExecutionReport {
     /// without asserting something false: a condition may legitimately move
     /// the price level — a flash event does — but it may never make the
     /// execution itself better.
+    ///
+    /// The cost is [`Self::execution_cost_bps`] and not
+    /// [`Self::slippage_bps`], because the shortfall against a reference
+    /// frozen at arrival carries the market's own drift with it, and a
+    /// condition that moves the price would otherwise be able to improve this
+    /// number by moving it far enough.
+    ///
+    /// A fill with no reference to measure it against scores as the unfilled
+    /// part does, rather than as zero. Zero was the flattering reading: it
+    /// said a fill nobody can evaluate was a fill with no cost, so a condition
+    /// that destroyed the benchmark would be rewarded for destroying it. The
+    /// honest reading of an unmeasurable execution is not "free", and
+    /// [`Self::execution_cost_bps`] still returns `None` so a reader can tell
+    /// the two apart.
     pub fn adversity_bps(&self) -> f64 {
         let filled = self.fill_fraction();
-        let slippage = self.slippage_bps().unwrap_or(0.0);
-        filled * slippage + self.unfilled_fraction() * 10_000.0
+        let unfilled = self.unfilled_fraction() * 10_000.0;
+        match self.execution_cost_bps() {
+            Some(cost) => filled * cost + unfilled,
+            None if filled > 0.0 => filled * 10_000.0 + unfilled,
+            None => unfilled,
+        }
     }
 
     /// Signed cash effect of the order: negative for a buy, positive for a
