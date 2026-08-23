@@ -19,6 +19,7 @@
 pub mod causal;
 pub mod features;
 pub mod graph;
+pub mod liquidity;
 pub mod relationship;
 pub mod state;
 pub mod world;
@@ -26,6 +27,10 @@ pub mod world;
 pub use causal::{CausalEdge, CausalGraph, Effect, Mechanism, PropagationResult};
 pub use features::{Feature, FeatureStore, FeatureValue};
 pub use graph::{Fact, KnowledgeGraph, Node, NodeKind};
+pub use liquidity::{
+    Concentration, DepthObservation, LiquidityDrift, LiquidityMap, LiquidityTopology, VenueDepth,
+    VenueShift,
+};
 pub use relationship::{Relationship, RelationshipKind};
 pub use state::{Change, ChangeKind, WorldDiff, WorldState};
 pub use world::WorldModel;

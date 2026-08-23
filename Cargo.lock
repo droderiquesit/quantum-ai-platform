@@ -871,6 +871,7 @@ name = "qip-world-model"
 version = "0.1.0"
 dependencies = [
  "qip-ai",
+ "qip-contracts",
  "qip-core",
  "qip-entity-resolution",
  "qip-events",
