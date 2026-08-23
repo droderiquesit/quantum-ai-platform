@@ -17,6 +17,11 @@ qip-market.workspace = true
 qip-contracts.workspace = true
 qip-storage.workspace = true
 qip-events.workspace = true
+# ADR 0011's in-tree mesh transport, which the central plane's half of the
+# spine in `spine.rs` is built on: a service depending on a library is the
+# permitted direction, and the durable spool it needs for the capital path
+# lives there too.
+qip-transport.workspace = true
 
 [lints]
 workspace = true

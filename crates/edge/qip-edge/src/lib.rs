@@ -29,10 +29,16 @@ pub mod cell;
 pub mod dropcopy;
 pub mod envelope;
 pub mod journal;
+pub mod mesh;
 pub mod seam;
 
 pub use cell::{Cell, CellConfig, PlacedOrder, Placer, WorkReport};
 pub use dropcopy::{CellFill, Discrepancy, DropCopyFill, DropCopyReconciler};
 pub use envelope::{VerifiedEnvelope, sign_payload};
 pub use journal::{Decision, FileMirror, Journal, JournalEntry, MemoryMirror, Mirror, MirrorBatch};
+pub use mesh::{
+    CapitalDownlink, CapitalGrantTopic, CellStateDelta, CellUplink, DeltaOrder, DeltaRefusal,
+    Dispatch, DownlinkBatch, DownlinkConfig, DownlinkStats, RefusedGrant, StrategyUtilisation,
+    UplinkConfig, UplinkStats,
+};
 pub use seam::{CellLiquidity, value_kind, value_type};

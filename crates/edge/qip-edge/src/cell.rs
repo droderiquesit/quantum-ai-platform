@@ -13,6 +13,7 @@
 use crate::dropcopy::{CellFill, Discrepancy, DropCopyFill, DropCopyReconciler};
 use crate::envelope::VerifiedEnvelope;
 use crate::journal::{Decision, Journal, Mirror};
+use crate::mesh::{CellStateDelta, DeltaOrder, DeltaRefusal, StrategyUtilisation};
 use crate::seam::CellLiquidity;
 use qip_contracts::capital::{CapitalGrant, Utilisation};
 use qip_contracts::message::{BookSide, MarketMessage};
@@ -120,8 +121,21 @@ pub struct Cell {
     dropcopy: DropCopyReconciler,
     journal: Journal,
     fills: Vec<CellFill>,
+    /// Every disagreement between this cell's fills and the venue's own
+    /// account, kept so the centre hears about it in the state delta as well as
+    /// in the journal.
+    ///
+    /// Bounded, like everything else that grows on a signal from outside. It
+    /// can only grow while an operator keeps resuming a cell that a break has
+    /// already halted, and past the bound the count is what travels: a
+    /// truncation nobody can see would understate an incident.
+    breaks: Vec<String>,
+    breaks_omitted: u32,
     order_sequence: u64,
 }
+
+/// How many reconciliation breaks a cell keeps for reporting.
+const MAX_RETAINED_BREAKS: usize = 32;
 
 impl Cell {
     /// Assemble a cell.
@@ -142,6 +156,8 @@ impl Cell {
             dropcopy: DropCopyReconciler::new(),
             journal: Journal::new(),
             fills: Vec::new(),
+            breaks: Vec::new(),
+            breaks_omitted: 0,
             order_sequence: 0,
             config,
         })
@@ -605,6 +621,131 @@ impl Cell {
         );
     }
 
+    // --- the mesh seam ------------------------------------------------------
+
+    /// Describe this cell to the central plane.
+    ///
+    /// Assembled from what the cell already holds rather than accumulated as it
+    /// goes, so a delta is a *view* and building one twice with the same report
+    /// produces the same value. That matters because the transport underneath
+    /// is at-least-once: a delta that is rebuilt and re-sent after a failed
+    /// attempt has to be the same fact, not a second one.
+    ///
+    /// `cell`, `region` and `sequence` are filled in by
+    /// [`crate::mesh::CellUplink::publish`], which owns the stream's numbering.
+    /// A cell that numbered its own deltas would eventually skip one, and the
+    /// centre cannot tell a skipped sequence from a lost delta.
+    pub fn state_delta(&self, report: &WorkReport, at: Timestamp) -> CellStateDelta {
+        let mut delta = CellStateDelta {
+            cell: self.config.cell_id.clone(),
+            region: self.config.region.clone(),
+            sequence: 0,
+            at,
+            halted: self.is_halted(),
+            utilisation: self
+                .deployed
+                .values()
+                .map(|deployed| StrategyUtilisation {
+                    strategy: deployed.envelope.strategy().clone(),
+                    utilisation: deployed.utilisation.clone(),
+                    envelope_expires_at: deployed.envelope.expires_at(),
+                })
+                .collect(),
+            orders: report
+                .orders
+                .iter()
+                .map(|order| DeltaOrder {
+                    order_id: order.order_id.clone(),
+                    strategy: order.strategy.clone(),
+                    object_id: order.object_id.clone(),
+                    venue: order.venue.clone(),
+                    side: order.side,
+                    quantity: order.quantity,
+                    price: order.price,
+                    simulated: order.simulated,
+                })
+                .collect(),
+            refusals: report
+                .refusals
+                .iter()
+                .map(|(gate, reason)| DeltaRefusal {
+                    gate: gate.clone(),
+                    reason: reason.clone(),
+                })
+                .collect(),
+            // Set by `bound_refusals` below; the caller does not get to claim
+            // a truncation that did not happen.
+            refusals_omitted: 0,
+            reconciliation_breaks: self.breaks.clone(),
+            reconciliation_breaks_omitted: self.breaks_omitted,
+        };
+        delta.bound_refusals();
+        delta
+    }
+
+    /// Install a capital envelope the centre issued for a strategy already
+    /// deployed here.
+    ///
+    /// Takes the verified type, so there is no path from a frame off the wire
+    /// to a live grant that does not go through
+    /// [`crate::VerifiedEnvelope::verify`]. Arriving over the mesh buys an
+    /// envelope nothing; this signature is what says so.
+    ///
+    /// Three things this deliberately does not do:
+    ///
+    /// * **It does not deploy.** A grant names a strategy; it does not carry
+    ///   the compiled strategy or the program its plan indexes into, and a cell
+    ///   that started running something because capital arrived for it would be
+    ///   promoting its own strategy — the thing ADR 0008 says a cell never
+    ///   does. An envelope for a strategy that is not deployed is refused.
+    /// * **It does not reset utilisation.** What a strategy has committed is
+    ///   measured against positions that are still open, and a renewal that
+    ///   zeroed it would hand the strategy its whole gross limit again while
+    ///   the previous commitment was still live. Carrying it across is the
+    ///   conservative direction, and it is the one that is right.
+    /// * **It does not widen anything by itself.** The new envelope replaces
+    ///   the old one entirely — wider or narrower — because that is what the
+    ///   centre signed. A cell that merged the two would be constructing a
+    ///   grant nobody approved.
+    pub fn renew_capital(&mut self, envelope: VerifiedEnvelope, now: Timestamp) -> Result<()> {
+        // `verify` has already checked the cell, and this checks it again
+        // against the cell's own identity rather than against the string a
+        // caller passed to the verifier. The two are the same today; a
+        // downlink misconfigured with another cell's name is the case where
+        // they would not be, and that is exactly the case worth catching.
+        if envelope.cell() != self.config.cell_id {
+            return Err(Error::denied(format!(
+                "an envelope for cell {} cannot renew capital at {}",
+                envelope.cell(),
+                self.config.cell_id
+            )));
+        }
+        let key = envelope.strategy().as_str().to_string();
+        let Some(deployed) = self.deployed.get_mut(&key) else {
+            return Err(Error::not_found(format!(
+                "no strategy {key} is deployed at this cell, so there is nothing for the grant to \
+                 fund; a cell does not deploy a strategy because capital arrived for it"
+            )));
+        };
+        let approver = envelope.approver().to_string();
+        let expires_at = envelope.expires_at();
+        deployed.envelope = envelope;
+        self.journal.record(
+            Decision::CapitalRenewed {
+                strategy: key,
+                approver,
+                expires_at,
+            },
+            now,
+        );
+        Ok(())
+    }
+
+    /// Reconciliation breaks this cell has recorded, oldest first.
+    pub fn reconciliation_breaks(&self) -> &[String] {
+        &self.breaks
+    }
+
     // --- reconciliation and the mirror --------------------------------------
 
     /// Absorb a fill from the independent drop-copy channel.
@@ -621,12 +762,14 @@ impl Cell {
         let fills = self.fills.clone();
         let breaks = self.dropcopy.reconcile(&fills);
         for discrepancy in &breaks {
-            self.journal.record(
-                Decision::ReconciliationBreak {
-                    detail: discrepancy.describe(),
-                },
-                now,
-            );
+            let detail = discrepancy.describe();
+            if self.breaks.len() < MAX_RETAINED_BREAKS {
+                self.breaks.push(detail.clone());
+            } else {
+                self.breaks_omitted = self.breaks_omitted.saturating_add(1);
+            }
+            self.journal
+                .record(Decision::ReconciliationBreak { detail }, now);
         }
         if !breaks.is_empty() && !self.is_halted() {
             self.autonomy.kill_switch_mut().trip_global(

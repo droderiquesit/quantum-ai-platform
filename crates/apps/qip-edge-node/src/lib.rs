@@ -5,11 +5,13 @@
 //! what that process is assembled *from*, exposed so the pieces can be tested
 //! against the same types the binary uses rather than against a copy of them.
 //!
-//! Two modules, and both are seams: the venue seam, where the cell's orders
-//! meet a matching engine, and the durability seam, where the cell's decision
-//! record leaves the process. Each is somewhere the node could look healthy
-//! while doing nothing, so each is exercised against the types the binary
-//! actually uses.
+//! Three modules, and all three are seams: the venue seam, where the cell's
+//! orders meet a matching engine; the durability seam, where the cell's
+//! decision record leaves the process; and the mesh seam, where the cell's
+//! state reaches the central plane and the central plane's signed capital
+//! reaches the cell. Each is somewhere the node could look healthy while doing
+//! nothing, so each is exercised against the types the binary actually uses.
 
 pub mod gateway;
+pub mod mesh;
 pub mod mirror;

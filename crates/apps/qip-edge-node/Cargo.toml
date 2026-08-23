@@ -24,8 +24,18 @@ qip-storage.workspace = true
 # rather than a stub the tests alone exercise.
 qip-brokers.workspace = true
 qip-execution-engine.workspace = true
+# ADR 0011's mesh, so the deployable actually contains the wire to the central
+# plane rather than a cell that only ever talks to itself. The transport types
+# the node names — the peer address, the retry ladder, the socket limits — are
+# configuration this binary reads from the environment.
+qip-transport.workspace = true
 
 [dev-dependencies]
+# The mesh tests frame a capital grant the way the central plane does, so the
+# node is exercised against a payload built independently of it rather than
+# against one this crate also produced. Dev-only: nothing in the binary needs
+# the event envelope directly.
+qip-events.workspace = true
 qip-strategy.workspace = true
 qip-orderbook.workspace = true
 qip-financial.workspace = true

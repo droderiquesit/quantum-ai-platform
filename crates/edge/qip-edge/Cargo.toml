@@ -26,6 +26,14 @@ qip-risk.workspace = true
 qip-portfolio.workspace = true
 qip-execution-engine.workspace = true
 qip-risk-engine.workspace = true
+# The platform's own event envelope, which is what the mesh carries. The cell
+# does not invent a second wire format for its state deltas.
+qip-events.workspace = true
+# ADR 0011's in-tree mesh. Both crates are libraries, so the dependency edge
+# runs the permitted way; the `qip-streaming` adapter that wears the same
+# transport as a `Publisher` is a service and therefore cannot be used from
+# here, which is why this reaches for `MeshPublisher` directly.
+qip-transport.workspace = true
 
 [lints]
 workspace = true

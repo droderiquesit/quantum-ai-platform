@@ -31,8 +31,9 @@
 use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Duration, SystemClock};
-use qip_edge::cell::{Cell, CellConfig};
+use qip_edge::cell::{Cell, CellConfig, WorkReport};
 use qip_edge_node::gateway::SimulatedGateway;
+use qip_edge_node::mesh::{MeshLink, MeshSettings, PEER_VARIABLE};
 use qip_edge_node::mirror::StoreMirror;
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
@@ -70,6 +71,10 @@ struct NodeConfig {
     envelope_key: Vec<u8>,
     health_port: u16,
     storage: StorageSettings,
+    /// Where the central plane is, when there is one. `None` is a cell running
+    /// detached, which ADR 0008 makes a legitimate state rather than a
+    /// misconfiguration — see `qip_edge_node::mesh`.
+    mesh: Option<MeshSettings>,
 }
 
 impl NodeConfig {
@@ -128,6 +133,7 @@ impl NodeConfig {
 
         let storage = StorageSettings::from_env()
             .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+        let mesh = MeshSettings::from_env(&cell_id, &region)?;
 
         Ok(Self {
             cell_id,
@@ -136,6 +142,7 @@ impl NodeConfig {
             envelope_key: key.into_bytes(),
             health_port,
             storage,
+            mesh,
         })
     }
 }
@@ -233,27 +240,58 @@ fn run() -> Result<()> {
         );
     }
 
+    // The mesh link, when a peer is configured. Built after the store is proven
+    // writable and before the health surface binds, so a node that cannot even
+    // parse its peer address fails as a configuration error rather than as a
+    // process that reported healthy and then never spoke to the centre.
+    let mut link = match &config.mesh {
+        Some(settings) => {
+            let link = MeshLink::connect(settings, &config.envelope_key, Arc::clone(&clock))?;
+            println!("qip-edge-node: mesh peer {}", link.peer());
+            Some(link)
+        }
+        None => None,
+    };
+
     // No venue connectivity is configured: this build has no credential for
     // one, and inventing a feed would be worse than serving without it. The
     // node serves its health surface so an orchestrator can see it, and
     // reports what production would still have to supply.
-    for requirement in missing_production_requirements() {
+    for requirement in missing_production_requirements(config.mesh.is_some()) {
         println!("qip-edge-node: awaiting {requirement}");
     }
 
-    serve(&config, &mut cell, &gateway, &mut mirror, &clock, started)
+    serve(
+        &config,
+        &mut cell,
+        &gateway,
+        &mut mirror,
+        link.as_mut(),
+        &clock,
+        started,
+    )
 }
 
 /// What a production cell would need that this build cannot supply.
 ///
 /// Named rather than faked. A synthetic feed that looked like a venue would
 /// make the node appear to work and make the gap invisible.
-fn missing_production_requirements() -> Vec<String> {
-    vec![
+fn missing_production_requirements(has_mesh_peer: bool) -> Vec<String> {
+    let mut missing = vec![
         "QIP_VENUE_FEED_ENDPOINT and its multicast group or session credential".to_string(),
         "QIP_VENUE_GATEWAY_ENDPOINT and an order-entry session credential".to_string(),
         "QIP_DROP_COPY_ENDPOINT for the independent fill channel".to_string(),
-    ]
+    ];
+    if !has_mesh_peer {
+        // Named rather than silently tolerated. A detached cell is a valid
+        // state and an invisible one is not: this node will keep trading inside
+        // the envelope it holds and will never be granted another.
+        missing.push(format!(
+            "{PEER_VARIABLE} for the central plane: without it this cell publishes no state and \
+             receives no capital, and stops when its current envelope expires"
+        ));
+    }
+    missing
 }
 
 /// Serve the health surface until the listener fails, draining the journal as
@@ -275,6 +313,7 @@ fn serve(
     cell: &mut Cell,
     gateway: &SimulatedGateway,
     mirror: &mut StoreMirror,
+    mut link: Option<&mut MeshLink>,
     clock: &Arc<dyn Clock>,
     started: qip_core::Timestamp,
 ) -> Result<()> {
@@ -290,13 +329,31 @@ fn serve(
                 // keeps serving: the entries are still held locally and still
                 // chained, so the next flush ships them. Exiting here would
                 // turn a storage outage into a trading outage.
-                if let Err(error) = cell.flush(mirror, clock.now()) {
+                let now = clock.now();
+                if let Err(error) = cell.flush(mirror, now) {
                     eprintln!(
                         "qip-edge-node: the journal could not be shipped: {}",
                         error.message()
                     );
                 }
-                if let Err(error) = answer(stream, config, cell, gateway, mirror, started) {
+                // One exchange with the central plane per probe, for the same
+                // reason and with the same caveat as the flush above: this node
+                // has no scheduler, so the liveness probe is the only periodic
+                // event it has. A production cell runs this on a timer, because
+                // tying capital renewal to how often something asks whether the
+                // cell is alive is a compromise, not a design.
+                //
+                // The work report is empty because no venue feed is configured
+                // in this build, so the delta reports the cell's authority and
+                // halt state rather than its trading.
+                if let Some(link) = link.as_deref_mut() {
+                    let tick = link.exchange(cell, &WorkReport::default(), now);
+                    if !tick.is_quiet() {
+                        eprintln!("qip-edge-node: mesh exchange: {tick:?}");
+                    }
+                }
+                let health = link.as_deref().map(MeshLink::health);
+                if let Err(error) = answer(stream, config, cell, gateway, mirror, health, started) {
                     eprintln!("qip-edge-node: health request failed: {}", error.message());
                 }
             }
@@ -313,6 +370,7 @@ fn answer(
     cell: &Cell,
     gateway: &SimulatedGateway,
     mirror: &StoreMirror,
+    mesh: Option<qip_edge_node::mesh::MeshHealth>,
     started: qip_core::Timestamp,
 ) -> Result<()> {
     let mut buffer = [0u8; 1024];
@@ -320,8 +378,24 @@ fn answer(
     // read has to happen or the client sees a reset instead of a response.
     let _ = stream.read(&mut buffer);
 
+    // The mesh block is `null` when no peer is configured, rather than absent
+    // or zeroed. A probe that could not tell "detached" from "connected and
+    // quiet" would report the two most different states identically.
+    let mesh = match mesh {
+        Some(health) => format!(
+            r#"{{"peer_circuit":"{}","deltas_delivered":{},"deltas_dead_lettered":{},"circuit_refusals":{},"grants_verified":{},"grants_refused":{},"grants_duplicate":{}}}"#,
+            health.circuit.as_str(),
+            health.uplink.delivered,
+            health.uplink.dead_lettered,
+            health.uplink.circuit_refusals,
+            health.downlink.verified,
+            health.downlink.refused,
+            health.downlink.duplicates,
+        ),
+        None => "null".to_string(),
+    };
     let body = format!(
-        r#"{{"cell":"{}","region":"{}","halted":{},"live_capable":{},"venues":{},"strategies":{},"journal_entries":{},"journal_shipped":{},"storage":"{}","durable":{},"gateway":{{"class":"{}","venue":"{}","submitted":{},"rejected":{}}},"started_at":{}}}"#,
+        r#"{{"cell":"{}","region":"{}","halted":{},"live_capable":{},"venues":{},"strategies":{},"journal_entries":{},"journal_shipped":{},"storage":"{}","durable":{},"gateway":{{"class":"{}","venue":"{}","submitted":{},"rejected":{}}},"mesh":{mesh},"started_at":{}}}"#,
         config.cell_id,
         config.region,
         cell.is_halted(),

@@ -57,6 +57,18 @@ pub enum Decision {
     ReconciliationBreak { detail: String },
     /// The cell halted or resumed.
     HaltChanged { halted: bool, reason: String },
+    /// A capital envelope the centre issued was verified and installed.
+    ///
+    /// Recorded like a decision because it is one: it is the moment the cell's
+    /// authority changed, and "why was this cell allowed to commit that much"
+    /// is a question the journal has to answer as precisely as "why did this
+    /// trade". The approver and the expiry are carried because those are the
+    /// two facts an incident review asks for first.
+    CapitalRenewed {
+        strategy: String,
+        approver: String,
+        expires_at: Timestamp,
+    },
 }
 
 impl Decision {
@@ -71,6 +83,7 @@ impl Decision {
             Self::Refused { .. } => "refused",
             Self::ReconciliationBreak { .. } => "reconciliation_break",
             Self::HaltChanged { .. } => "halt_changed",
+            Self::CapitalRenewed { .. } => "capital_renewed",
         }
     }
 }

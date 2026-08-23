@@ -329,6 +329,7 @@ dependencies = [
  "qip-contracts",
  "qip-core",
  "qip-edge",
+ "qip-events",
  "qip-execution-engine",
  "qip-feature-dag",
  "qip-financial",

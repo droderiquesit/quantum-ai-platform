@@ -24,6 +24,12 @@
 //!   quietly hand back a JSON file. `qip-storage` calls that hazard out and
 //!   this crate honours it: the failure happens where somebody can fix it.
 //!
+//! [`spine`] is the odd one out and is named here so nobody has to discover it:
+//! it is not a data-mesh port at all but the central plane's half of ADR 0011's
+//! *network* mesh — the wire that carries state deltas up from the regional
+//! cells and signed capital envelopes back down. It shares a word with the rest
+//! of this crate and nothing else.
+//!
 //! [`catalog::Catalog`] ties them together — which datasets exist, what
 //! produced what, what each may be used for (in
 //! [`qip_contracts::Entitlement`], the type `qip-compliance` enforces), and
@@ -34,6 +40,7 @@ pub mod backing;
 pub mod catalog;
 pub mod ports;
 pub mod provider;
+pub mod spine;
 pub mod state;
 
 pub use adapters::{
@@ -49,3 +56,8 @@ pub use ports::{
     HotSeries, Lakehouse, MasterData, Row, TableVersion,
 };
 pub use provider::{MeshPort, MeshProvider, MeshTarget};
+pub use spine::{
+    CELL_DELTA_TOPIC, CapitalDispatch, CapitalDispatcher, CapitalGrantFrame, CellDeltaReceiver,
+    CellDeltaSink, DispatcherConfig, DrainHalt, DrainReport, HeldReason, ReceiverStats,
+    RecoveryReport,
+};
