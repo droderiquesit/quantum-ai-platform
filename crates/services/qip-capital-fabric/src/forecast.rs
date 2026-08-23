@@ -439,8 +439,9 @@ impl DemandForecaster {
         // The floor is applied to the half-width rather than to the residual so
         // it survives every branch below, including the exact-fit one.
         let floored = half_width_stat.max(z * self.floor_dispersion_fraction * point_stat.abs());
-        let half = Decimal::from_f64(floored.max(0.0))
-            .ok_or_else(|| Error::numeric("the demand interval half-width was not representable"))?;
+        let half = Decimal::from_f64(floored.max(0.0)).ok_or_else(|| {
+            Error::numeric("the demand interval half-width was not representable")
+        })?;
 
         let interval = Interval::new(
             (point - half).max(Decimal::ZERO),

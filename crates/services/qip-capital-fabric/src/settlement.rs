@@ -111,11 +111,7 @@ impl SettlementQuote {
             "instructed {} ({} the cut-off), {} value {} settling {} settlement day(s) later, \
              usable {} after {:.2} calendar day(s) in flight",
             self.instructed_at.to_rfc3339(),
-            if self.made_cutoff {
-                "inside"
-            } else {
-                "after"
-            },
+            if self.made_cutoff { "inside" } else { "after" },
             self.convention.as_str(),
             self.value_date.to_date_string(),
             self.settlement_days,
@@ -246,8 +242,8 @@ impl SettlementCalendar {
     /// Friday T+1 is Monday rather than Saturday.
     pub fn quote(&self, instructed_at: Timestamp) -> Result<SettlementQuote> {
         let today = instructed_at.start_of_day();
-        let made_cutoff = self.is_settlement_day(instructed_at)
-            && self.is_inside_cutoff(instructed_at);
+        let made_cutoff =
+            self.is_settlement_day(instructed_at) && self.is_inside_cutoff(instructed_at);
         let value_date = if made_cutoff {
             today
         } else {
@@ -256,12 +252,13 @@ impl SettlementCalendar {
 
         let mut settlement_date = value_date;
         for _ in 0..self.convention.days() {
-            settlement_date = self
-                .settlement_day_at_or_after(settlement_date.saturating_add(Duration::from_days(1)))?;
+            settlement_date = self.settlement_day_at_or_after(
+                settlement_date.saturating_add(Duration::from_days(1)),
+            )?;
         }
 
-        let available_at =
-            settlement_date.saturating_add(Duration::from_mins(i64::from(self.availability_minute)));
+        let available_at = settlement_date
+            .saturating_add(Duration::from_mins(i64::from(self.availability_minute)));
         // Guard against a calendar whose availability time precedes the
         // instruction on the same day; the funds cannot be usable before they
         // were asked for, and reporting that they are is worse than being late.
