@@ -56,10 +56,12 @@
 pub mod durable;
 pub mod envelope;
 pub mod local;
+pub mod mesh;
 pub mod ports;
 pub mod processing;
 pub mod provenance;
 pub mod pubsub;
+pub mod registry;
 pub mod routing;
 pub mod schema;
 pub mod sequencing;

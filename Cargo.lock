@@ -837,6 +837,7 @@ dependencies = [
  "qip-financial",
  "qip-market",
  "qip-sequencing",
+ "qip-transport",
  "serde",
  "serde_json",
 ]

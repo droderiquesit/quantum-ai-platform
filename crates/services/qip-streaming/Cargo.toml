@@ -19,6 +19,11 @@ qip-market.workspace = true
 # edge stack. This crate composes that tracker rather than growing a second
 # implementation of it — see `sequencing.rs`.
 qip-sequencing.workspace = true
+# The in-tree mesh ADR 0011 puts where Pub/Sub was. The edge runs service →
+# library, which is the direction `a_library_never_depends_on_a_service_or_an_
+# application` permits, so the port adapter for it lives here in `mesh.rs`
+# beside `local.rs` and `durable.rs` rather than in `qip-transport`'s tests.
+qip-transport.workspace = true
 
 [lints]
 workspace = true
