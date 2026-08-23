@@ -73,7 +73,6 @@ use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Currency, Decimal, ManualClock, dec};
 use qip_data_finder::coverage::{SourceCoverage, SourceRegion, UpdateFrequency};
 use qip_data_finder::endpoint::{AccessMechanism, AuthRequirement, SourceEndpoint};
-use qip_data_finder::finder::{DataFinder, FinderConfig};
 use qip_data_finder::legal::{LicensingPosture, SourceLicense};
 use qip_data_finder::probe::{HeadResponse, InMemoryProbe, PayloadSample, RobotsFetch};
 use qip_data_finder::quality::SourceCost;
@@ -460,12 +459,6 @@ fn the_platform_walks_from_a_discovered_source_to_a_learned_lesson() -> Result<(
     // that matters: "nothing forbade it" is not "something permitted it", and
     // a finder that collects on silence is a finder that will eventually
     // collect something it may not trade on.
-    let mut finder = DataFinder::new(FinderConfig::new(
-        "qip-data-finder/1.0",
-        Usage::Trade,
-        "market-data",
-        7,
-    )?);
     let permitted = candidate(
         "lse-level1",
         "https://vendor.example/data/prices.json",
@@ -498,16 +491,37 @@ fn the_platform_walks_from_a_discovered_source_to_a_learned_lesson() -> Result<(
         ),
     ]);
 
-    let decisions = finder.assess(vec![permitted, unlicensed], &mut probe, start())?;
-    assert_eq!(decisions.len(), 2, "one decision per candidate");
-    let registered = finder
-        .registered("lse-level1")
+    // Through the assembled platform rather than the finder alone: the point
+    // of this walk is that the parts meet, and "the finder works" and "the
+    // platform contains the finder" are different claims. The second is the
+    // one a deployment depends on.
+    let mut platform = assembled_platform()?;
+    let assessment = platform.assess_sources(vec![permitted, unlicensed], &mut probe, start())?;
+    assert_eq!(assessment.decisions.len(), 2, "one decision per candidate");
+    assert!(
+        assessment.catalogue_problems.is_empty(),
+        "the mesh catalogue refused a registration: {:?}",
+        assessment.catalogue_problems
+    );
+
+    // What the finder registered is what the mesh now holds. Before these
+    // were composed, "what datasets exist" and "what should exist" were two
+    // registries in two crates that never met in a running process.
+    assert_eq!(
+        assessment.catalogued.len(),
+        1,
+        "exactly the licensed source should have reached the catalogue"
+    );
+    let registered = platform
+        .registered_sources()
+        .get("lse-level1")
         .ok_or_else(|| Error::not_found("the licensed source did not register"))?;
     assert!(
-        finder.registered("mystery-feed").is_none(),
+        !platform.registered_sources().contains_key("mystery-feed"),
         "a source with no discoverable licence was registered anyway"
     );
-    let refusal = decisions
+    let refusal = assessment
+        .decisions
         .iter()
         .find(|decision| !decision.is_registered())
         .ok_or_else(|| Error::not_found("the refusal"))?;
@@ -925,7 +939,95 @@ fn the_platform_walks_from_a_discovered_source_to_a_learned_lesson() -> Result<(
     );
     println!("layer 9: IBM Quantum unavailable — {refusal}");
 
-    // ===== 10. Nothing became live =========================================
+    // ===== 10. The composed subsystems observed this run ===================
+    //
+    // Everything above proves the layers meet. This proves the eight services
+    // wired into the composition root are actually *in* the running process
+    // rather than merely linked — the distinction that made them reachable
+    // from no binary until recently, with their own suites passing the whole
+    // time. Each assertion here fails if a capability is present as a field
+    // and absent as a behaviour.
+
+    // The platform has a second execution surface: the cell decides locally
+    // under its grant, and the central plane submits through its own order
+    // manager. The walk above exercised the first. This exercises the second,
+    // and it is what gives the twin and the capital fabric something real to
+    // observe — without it the two assertions below would pass on an empty
+    // chain, which is the shape of a test that proves nothing.
+    let captured_before = platform.outcomes().len();
+    let central_order = platform.order_from(
+        subject.clone(),
+        qip_execution_engine::order::Side::Buy,
+        dec!("5000"),
+        dec!("100"),
+        "prop-e2e-central",
+        vec!["hyp-e2e-central".to_string()],
+        t(60),
+    );
+    platform.submit_order(central_order, t(60))?;
+
+    // The outcome chain recorded what happened, and it verifies. A refusal is
+    // captured beside a fill, because a refusal with no row is
+    // indistinguishable from a decision nobody made.
+    platform.outcomes().verify()?;
+    assert!(
+        platform.outcomes().len() > captured_before,
+        "an order went through the central plane and the twin captured nothing; \
+         the outcome capture is a field rather than a behaviour"
+    );
+    println!(
+        "layer 10: {} outcome(s) captured by the platform, chain verified",
+        platform.outcomes().len()
+    );
+
+    // Deciding cost something, and the cost is metered rather than assumed.
+    // NetEdge's compute deduction is only honest if somebody counts.
+    let spend_after_first = platform.compute_spend();
+    assert!(
+        spend_after_first.is_positive(),
+        "two cycles ran and the compute ledger charged nothing"
+    );
+    platform.run_cycle(t(90));
+    assert!(
+        platform.compute_spend() > spend_after_first,
+        "a further cycle consumed compute and the cumulative spend did not move"
+    );
+    let (compute, data) = platform.cost_deductions()?;
+    println!(
+        "layer 10: cycle cost {}, cumulative {}, deductions {} and {}",
+        platform.last_cycle_cost(),
+        platform.compute_spend(),
+        compute.kind.as_str(),
+        data.kind.as_str()
+    );
+
+    // The journal is durable and replayable: what the cycles wrote can be read
+    // back as the envelopes that were sealed, not reconstructed from memory.
+    let journalled = platform.journal_entries()?;
+    assert!(
+        !journalled.is_empty(),
+        "three cycles ran and the durable journal holds nothing"
+    );
+    println!(
+        "layer 10: {} cycle(s) journalled and replayable",
+        journalled.len()
+    );
+
+    // Capital demand was observed from the fills this run actually produced —
+    // not supplied by the test, which would prove only that the forecaster
+    // runs.
+    let lanes = platform.forecast_capital_demand(t(90), Duration::from_days(7));
+    assert!(
+        !lanes.is_empty(),
+        "the central plane filled an order and the capital fabric observed no \
+         demand; the two are linked by a field rather than by a call"
+    );
+    println!(
+        "layer 10: {} funding lane(s) forecast from observed demand",
+        lanes.len()
+    );
+
+    // ===== 11. Nothing became live =========================================
     assert!(
         !platform.is_live_capable(),
         "the platform became live-capable during a paper run"
