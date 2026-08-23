@@ -220,6 +220,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "qip-confidential"
+version = "0.1.0"
+dependencies = [
+ "qip-core",
+ "serde",
+]
+
+[[package]]
 name = "qip-contracts"
 version = "0.1.0"
 dependencies = [
@@ -323,6 +331,7 @@ dependencies = [
  "qip-financial",
  "qip-observability",
  "qip-orderbook",
+ "qip-storage",
  "qip-strategy",
  "serde",
  "serde_json",
@@ -390,7 +399,10 @@ dependencies = [
  "qip-financial",
  "qip-investment-agents",
  "qip-kernel",
+ "qip-market",
+ "qip-market-ingestion",
  "qip-observability",
+ "qip-risk",
  "qip-storage",
  "serde",
  "serde_json",
@@ -541,6 +553,7 @@ dependencies = [
  "qip-market",
  "qip-numerics",
  "qip-observability",
+ "qip-transport",
  "serde",
  "serde_json",
 ]

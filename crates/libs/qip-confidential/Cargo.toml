@@ -1,0 +1,22 @@
+[package]
+name = "qip-confidential"
+description = "Statistical disclosure control for cross-cell aggregates: an insight leaves, the records do not."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Releases and spend reports are audit records: they are written down, shipped
+# to the compliance plane and read back later. `Deserialize` is deliberately
+# absent from every validated type here — see `budget::PrivacyLedger`.
+serde.workspace = true
+# The seeded RNG, the error type and SHA-256 (used as a mixing function, not as
+# a security primitive) all come from the substrate crate. Nothing else is
+# needed, and nothing else is taken: this crate is on the decision-core side of
+# ADR 0009 and holds to serde alone.
+qip-core.workspace = true
+
+[lints]
+workspace = true

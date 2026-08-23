@@ -228,7 +228,7 @@ manufacturing performance.
 | A. Counterfactual Digital Twin | **Built** — `qip-twin` |
 | B. Contextual Model / Agent Router | **Built** — `qip-cost-router` selects the cheapest tier reaching a required confidence inside a deadline, and charges what it used against an agent budget that can refuse. `ComputeRouter` still routes solvers; these are now two different things and both exist |
 | C. Predictive Capital Fabric | **Built, unfunded** — `qip-capital-fabric` plans; nothing moves cash |
-| D. Confidential Global Intelligence | **Missing** |
+| D. Confidential Global Intelligence | **Partial — the data-collaboration half only** — `qip-confidential` releases cross-cell aggregates under statistical disclosure control: a cohort threshold that refuses rather than warns, applied to every difference of releases as well as to each query; a per-cell privacy budget that only goes up; and Laplace noise from a seeded `Xoshiro256`, keyed on the question so a repeat cannot average it away. There is **no confidential computing**: no enclave, no attestation, no encryption, and the aggregator holds every raw contribution in memory. Collusion between contributors, a malicious host, and multi-query trackers are all undefended and are listed as data in `qip_confidential::NOT_DEFENDED_AGAINST` |
 | E. Quantum-Centric Learning Fabric | Partial — simulator and a port, no device |
 | Governance and guardrails | **Built** — `qip-compliance`, six controls enforced structurally, with recorded caveats |
 | Observability | Partial — `qip-observability` types exist and are shaped for OTLP; the collector is in-tree and nothing exports |

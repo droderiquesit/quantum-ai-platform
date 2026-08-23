@@ -51,7 +51,7 @@ is a real thing and it is most of the work. It is not a running system.
 
 | | |
 |---|---|
-| Crates | 58 |
+| Crates | 59 |
 | Source lines | 120,864 |
 | Test lines | 63,527 |
 | Tests passing | **2,086** |
