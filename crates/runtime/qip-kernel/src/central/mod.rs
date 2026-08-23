@@ -49,7 +49,9 @@
 
 pub mod dna;
 pub mod factory;
+pub mod foundry;
 pub mod learning;
+pub mod models;
 pub mod plane;
 
 pub use dna::{DnaPayload, StrategyDna};
