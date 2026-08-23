@@ -54,8 +54,8 @@ is a real thing and it is most of the work. It is not a running system.
 | Crates | 57 |
 | Source lines | 120,864 |
 | Test lines | 63,527 |
-| Tests passing | **2,000** |
-| Tests failing | **2** — see below; the suite is red |
+| Tests passing | **2,043** |
+| Tests failing | **0** — `make count`, which exits non-zero if any do |
 | `unsafe` blocks | **0** — `unsafe_code = "forbid"` workspace-wide; the thirteen occurrences of the word are all prose |
 | Third-party packages in the lockfile | 11, all permitted (`serde`, `serde_json` and their closure) |
 | Clippy | clean, `--workspace --all-targets`, warnings denied |
@@ -64,34 +64,17 @@ is a real thing and it is most of the work. It is not a running system.
 | Kubernetes manifests | 6 — never applied |
 | Architecture decision records | 10 |
 
-Reproduce all of it with `make check`, which **currently fails**.
+Reproduce all of it with `make check`, and count it with `make count`.
 
-### The suite is red
-
-Two tests fail deterministically in
-`crates/services/qip-simulation-engine/tests/market_conditions.rs`:
-
-* `a_slippage_regime_multiplies_what_is_paid_beyond_the_reference` — a 10×
-  slippage regime moves cost 5.8002bp → 40.0016bp, about seven times rather
-  than ten.
-* `injecting_a_condition_never_improves_the_execution` — one of 96 generated
-  cases, a crossed market combined with latency, *improves* adversity
-  5.894609bp → 3.767213bp. A crossed book is a data fault, and filling a buy
-  against the lower side of one pays the buyer for a broken quote. That breaks
-  the monotonicity the whole conditions model rests on, and it is worse in a
-  simulator than anywhere else: a backtest rewarded for crossed quotes will
-  learn to seek them out.
-
-Both arrived with the commit that first compiled roughly three thousand lines
-of `qip-simulation-engine` that had never been built. They are under repair.
-Until they pass, **"model validation and backtesting" is PARTIAL, not PASS**,
-and no backtest result from this build should be believed.
-
-A note on how this was nearly missed, because the method matters more than the
-instance: the total above was first obtained by summing `test result: ok. N
-passed` lines. A test binary that fails prints no such line, so a failing
-target is invisible to that sum — it under-reports rather than erroring. Count
-with `--no-fail-fast` and check the exit code.
+**Count it with `make count`, not with a grep.** Summing `test result: ok. N
+passed` misses a failing binary entirely — a failing target prints `FAILED`
+instead and contributes nothing — so the total comes back lower and still
+looks like a clean number. That is the worst way for a measurement to be
+wrong: it under-reports rather than erroring, and a report written from it
+says the suite is green. It said so here, wrongly, for one revision.
+`scripts/count-tests.sh` counts both outcomes and both columns, exits on
+cargo's status rather than on the parse, and refuses to hand back a passing
+count on a red suite without the failing one beside it.
 
 **What a passing test proves here.** The house convention is that a test
 asserts a *property* rather than restating an implementation, and that a
@@ -143,7 +126,7 @@ several rows.
 | Reasoning engine | **PASS** | 41 | |
 | Investment agents | **PASS** | 33 | The organisation reaches the desk; the desk is read-only, and no agent crate can reach the execution engine — asserted over the parsed dependency graph. |
 | Prediction | **PASS** | 36 | |
-| Simulation | **PARTIAL** | 40 + 30, 2 failing | Two market-condition defects, described above, are open. Otherwise: backtest, Monte Carlo with antithetic variates, scenarios, purged k-fold with embargo, walk-forward, deflated Sharpe. Square-root impact law, and a refusal to price beyond the participation it was calibrated for. |
+| Simulation | **PASS** | 75 | Backtest, Monte Carlo with antithetic variates, scenarios, purged k-fold with embargo, walk-forward, deflated Sharpe. Square-root impact law, and a refusal to price beyond the participation it was calibrated for. |
 | Optimisation | **PASS** | 24 | Classical and quantum-inspired, with a compute router. |
 | Quantum | **PARTIAL** | 35 | Statevector simulator, QAOA, three solvers behind one trait, and a benchmark that **cannot produce a report without a classical baseline** and whose only usable answer is one re-evaluated classically. The IBM port refuses and names the token, the CRN and the transport. **No hardware has been reached and no advantage has been measured.** |
 
@@ -237,6 +220,8 @@ something.
 
 | Defect | Why it mattered |
 |---|---|
+| The simulator priced a slice against the touch read back *after* the sweep | The order's own market impact sat inside the reference instead of beyond it, so the impact term double-counted and a ten-times slippage regime multiplied by about seven |
+| A crossed book was filled at the worse of its two touch prices | The book is built symmetrically about the mid, so at any cross width *both* quotes are inside the calm touch — the "worse" one included. Charging it is still charging less than an orderly market, which turns a data fault into a subsidy a backtest will learn to seek out |
 | `WorldModel::absorb_bar` accepted a known-time before the bar closed | Look-ahead: a backtest could read a price that had not printed |
 | `Cell::deploy` did not take the program its plan indexes into | `NodeRef` is an index; in a large enough arena it resolves to another strategy's node and the cell emits a signal from arithmetic nobody wrote for it |
 | `serde_json` declared without `float_roundtrip` | Every content digest over an `f64` was a within-process identity only; two copies of one model that took different routes through JSON did not collide |

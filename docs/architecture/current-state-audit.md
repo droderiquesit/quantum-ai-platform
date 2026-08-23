@@ -1,6 +1,7 @@
 # Current-state audit
 
-**Re-audited at commit `dc9ee9a`.** Every count below was measured, not
+**Re-audited at commit `dc9ee9a`, and updated at `237c0f0`, which returned
+the workspace to green.** Every count below was measured, not
 recalled, by the same commands that produced the first set: `.rs` files under
 `*/src/*` and under `*/tests/*` counted separately with `wc -l`, crate
 directories under `crates/*/*`, and the passing-test total summed out of
@@ -27,8 +28,8 @@ file was.
 | Crates | 57 | 49 |
 | Rust source | 120,864 lines | 87,496 |
 | Rust tests | 63,601 lines | 43,680 |
-| Tests passing | 2,000 | 1,554 |
-| **Tests failing** | **2** | 0 |
+| Tests passing | 2,043 | 1,554 |
+| Tests failing | 0 | 0 |
 | Terraform | 26 files, 2,191 lines | unchanged |
 | Kubernetes manifests | 6 | unchanged |
 | Documentation | 26 files (10 ADRs) | 19 |
@@ -42,11 +43,14 @@ composition root, 6 applications, 1 workspace test crate.
 The whole platform is Rust. There is no JavaScript, no Python, and no build
 step outside `cargo`.
 
-**`cargo test --workspace` exits 101.** Two tests fail, deterministically, in
-`crates/services/qip-simulation-engine/tests/market_conditions.rs`. They are
-described in section 6 and they are not cosmetic. Every other figure in this
-document is measured against a workspace that does not fully pass, and the
-number to quote is "2,000 passing and 2 failing", never "2,000 tests".
+**The workspace is green**, at 2,043 passing and none failing. It was not when
+this audit was first written: two market-condition tests failed
+deterministically, and both are now fixed — see section 6, which keeps the
+account because the diagnosis is the useful part. Count the suite with
+`make count`, never by summing `test result: ok` lines: a failing binary prints
+`FAILED` instead and contributes nothing, so that sum under-reports rather than
+erroring, and a document written from it says the suite is green when it is
+not. This one did, for a revision.
 
 The eight lockfile packages behind the two declared dependencies bring the
 third-party total to 11, all permitted. `serde_json` now carries the
@@ -208,7 +212,7 @@ manufacturing performance.
 | Capability | State | Where |
 |---|---|---|
 | Lifecycle gates (holdout → paper → shadow → pilot → scaled) | Built | `qip-lifecycle` |
-| Model validation and backtesting | Partial | `qip-simulation-engine` — purged k-fold, embargo, deflated Sharpe, walk-forward all built and passing; **the market-conditions layer has two failing tests** (section 6) |
+| Model validation and backtesting | Built | `qip-simulation-engine` — purged k-fold, embargo, deflated Sharpe, walk-forward; the market-conditions layer's two defects are fixed (section 6) and it now refuses a crossed book outright |
 | Model registry and governance | Built | `qip-ai::registry`, `qip-compliance::model_risk` |
 | Strategy factory and DNA packaging | Built | `qip-kernel::central` |
 | **Model training** | Partial | `qip-training` — local teachers, datasets, cadence and a full request shape are built and tested; `vertex` is a port that returns an error naming what is missing. Nothing here promotes a model: `qip-lifecycle` owns the one path to capital |
@@ -298,15 +302,15 @@ Listed because the greatest risk to the next phase is rewriting working code:
 ## 5. Migration plan
 
 Ordered by dependency, not by ambition. Each phase must leave the workspace
-green — a standard this phase did not meet, which is why item 0 is new.
+green — a standard this phase missed and then met.
 
-0. **Return the workspace to green.** Two failing tests in
-   `qip-simulation-engine`'s market-conditions layer. Nothing below should be
-   started while the backtester's adversity model is wrong, because everything
-   below is eventually judged by a backtest.
-1. ~~Tiered dependency policy~~ — decided as ADR 0009. **Still to do:** make
-   `tests/architecture.rs` enforce the two tiers the ADR describes rather than
-   one tier the ADR does not.
+0. ~~Return the workspace to green.~~ — done at `237c0f0`. It was the right
+   thing to put first: everything below is eventually judged by a backtest, and
+   the backtester's adversity model was wrong in the direction that flatters.
+1. ~~Tiered dependency policy~~ — decided as ADR 0009, and now actually
+   enforced: `the_decision_core_named_by_adr_0009_is_the_set_actually_held_to_two`
+   reads the core's list out of the ADR's own fenced block rather than keeping
+   a copy.
 2. ~~Cost engine~~ — done. `DeductionKind` has nine variants, priced by
    `qip-cost-router`.
 3. ~~Autonomous Data Finder~~ — done, offline. **Still to do:** a real
@@ -414,8 +418,9 @@ tree at `dc9ee9a`.
   live-capable. One passing run is evidence that the interfaces compose. It is
   not evidence that the system trades.
 
-* **The workspace is not green.** `cargo test --workspace` exits 101. Two tests
-  fail deterministically in
+* **The backtester was flattering executions, and was found doing it.** Fixed
+  at `237c0f0`; kept here because the diagnosis is the part worth remembering.
+  Two tests failed deterministically in
   `crates/services/qip-simulation-engine/tests/market_conditions.rs`:
 
   * `a_slippage_regime_multiplies_what_is_paid_beyond_the_reference` — a
@@ -427,11 +432,22 @@ tree at `dc9ee9a`.
     is the monotonicity the whole conditions model rests on.
 
   Both arrived with the commit that compiled eight thousand previously-unwired
-  lines, which is what a first compile of untested code is for. Until they are
-  fixed, `qip-simulation-engine` is **Partial**, no backtest run through the
-  market-conditions layer is trustworthy in the pessimistic direction, and no
-  document may describe the suite as green or quote "2,000 tests" without "and
-  2 failing" beside it.
+  lines, which is what a first compile of untested code is for, and both turned
+  out to be the same area. The slice was priced against the touch read back
+  *after* the sweep, so the order's own impact sat inside the reference instead
+  of beyond it — the impact term double-counted, and the reported slippage was
+  partly scaled by the regime multiplier and partly not. And a crossed book was
+  being filled at the worse of its two touch prices, which sounds conservative
+  and is not: the book is built symmetrically about the mid, so at any cross
+  width *both* quotes sit inside the calm touch. Charging the worse side of a
+  crossed book still charges less than an orderly market. A crossed book is now
+  refused outright — the simulator cannot tell a stale quote from a real
+  arbitrage and is not entitled to guess.
+
+  The standing lesson: a backtester's errors are only dangerous in one
+  direction, and both of these ran that way. Neither was found by review. A
+  property test over 96 generated condition sequences found the second, and the
+  first was the same root cause wearing a different symptom.
 
 * **A port is not an integration, and this phase created many ports.** This is
   the newly-available overclaim and the reason the section exists. `qip-streaming`
