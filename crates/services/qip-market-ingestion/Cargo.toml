@@ -16,6 +16,11 @@ qip-events.workspace = true
 qip-financial.workspace = true
 qip-market.workspace = true
 qip-observability.workspace = true
+# The REST adapter's socket. `qip_transport::http` is the sanctioned outbound
+# HTTP client in this workspace: blocking, one connection per request, and
+# bounded in every dimension a peer chooses. Both crates are below the
+# application layer, so the dependency edge is legal.
+qip-transport.workspace = true
 
 [lints]
 workspace = true
