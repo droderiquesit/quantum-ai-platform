@@ -474,3 +474,77 @@ fn no_document_promises_something_the_platform_does_not_do() {
         }
     }
 }
+
+// --- the final system report ------------------------------------------------
+
+#[test]
+fn the_final_report_states_a_verdict_for_every_layer_and_the_four_disqualifiers() {
+    // The report is the document most likely to be read by someone deciding
+    // whether to trust this platform, and therefore the one most likely to
+    // drift into flattery. Two things are pinned here.
+    //
+    // First, that it covers the architecture rather than a subset of it: a
+    // report that quietly drops the layer with the worst verdict reads better
+    // and says less.
+    //
+    // Second, that the four facts which decide the headline verdict are still
+    // in it. Each is independently sufficient, so removing any one of them
+    // would change what the document concludes.
+    let report = qip_acceptance::read("docs/FINAL-SYSTEM-REPORT.md");
+    let lowered = report.to_lowercase();
+
+    for layer in [
+        "data finder",
+        "regional ai brain",
+        "global opportunity brain",
+        "capital brain",
+        "regional execution mesh",
+        "counterfactual twin",
+        "evolution",
+    ] {
+        assert!(
+            lowered.contains(layer),
+            "the final report has no verdict for {layer}"
+        );
+    }
+
+    for disqualifier in [
+        "nothing has been deployed",
+        "never connected to a venue",
+        "no end-to-end latency has been measured",
+        "runs on a simulator",
+    ] {
+        assert!(
+            lowered.contains(disqualifier),
+            "the final report no longer says \"{disqualifier}\", which is one of \
+             the four facts its verdict rests on"
+        );
+    }
+
+    // A verdict column that is all PASS is a verdict column nobody used. The
+    // report is required to carry at least one row that is not a pass, because
+    // three subsystems genuinely are not — and if that ever stops being true
+    // the honest response is to delete this assertion in the same commit that
+    // shows why.
+    assert!(
+        report.contains("**PARTIAL**"),
+        "every subsystem in the final report passes, which has not been true \
+         of this platform at any point"
+    );
+}
+
+#[test]
+fn the_final_report_counts_the_crates_that_are_actually_there() {
+    // The evidence table is measured, and a measured number goes stale. This
+    // is what notices — it is cheap to recount and expensive to be wrong
+    // about, since the count is the first thing a reader checks.
+    let report = qip_acceptance::read("docs/FINAL-SYSTEM-REPORT.md");
+    let manifests = qip_acceptance::files_with_extension("crates", "toml")
+        .into_iter()
+        .filter(|path| path.file_name().is_some_and(|name| name == "Cargo.toml"))
+        .count();
+    assert!(
+        report.contains(&format!("| Crates | {manifests} |")),
+        "the final report does not say there are {manifests} crates, and there are"
+    );
+}
