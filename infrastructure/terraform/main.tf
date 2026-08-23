@@ -131,6 +131,7 @@ module "secrets" {
   source = "./modules/secrets"
 
   project_id       = var.project_id
+  project_number   = var.project_number
   region           = var.region
   environment      = var.environment
   labels           = local.labels
@@ -154,6 +155,12 @@ module "secrets" {
     # somebody who can replace it can mint envelopes, which is the one way a
     # cell's bound can be widened without the central plane agreeing.
     "qip-capital-envelope-key",
+    # The market-data vendor's API key, read by
+    # `qip_market_ingestion::rest::RestMarketDataAdapter`. It travels in a
+    # request header and never in a URL, so it must not be assembled into one
+    # here either: the adapter reads it from the environment at start-up and
+    # redacts it from every Debug rendering.
+    "qip-market-data-key",
   ]
 
   # The venue credential is readable only by an environment that could use it.
@@ -230,6 +237,60 @@ module "evidence" {
 # calls for seven; this ships with one, and the other six are entries in a
 # variable rather than six more directories. See the variable for the map, and
 # docs/operations/deploying-an-edge-cell.md for what else each one needs.
+module "data" {
+  source = "./modules/data"
+
+  project_id  = var.project_id
+  region      = var.region
+  environment = var.environment
+  labels      = local.labels
+
+  key_ring_id = module.secrets.key_ring_id
+  network_id  = module.network.network_id
+
+  # Every managed store is off unless a deployment says otherwise, because
+  # this build implements three storage targets and refuses six. See the
+  # module documentation: a provisioned database no adapter can open is a
+  # bill, an attack surface, and a diagram that reads as a capability.
+  enable_bigquery      = var.enable_bigquery
+  enable_cloud_storage = var.enable_cloud_storage
+  enable_alloydb       = var.enable_alloydb
+  enable_bigtable      = var.enable_bigtable
+  enable_memorystore   = var.enable_memorystore
+  enable_spanner       = var.enable_spanner
+
+  # The deep brain researches and the API reads; neither writes tick history.
+  # Narrower than "every workload", because a component that can write the
+  # archive can obscure what it did.
+  writer_service_accounts = [
+    module.secrets.service_account_emails["deepbrain"],
+  ]
+  reader_service_accounts = [
+    module.secrets.service_account_emails["api"],
+    module.secrets.service_account_emails["deepbrain"],
+  ]
+}
+
+module "ai" {
+  source = "./modules/ai"
+
+  project_id  = var.project_id
+  region      = var.region
+  environment = var.environment
+  labels      = local.labels
+
+  key_ring_id = module.secrets.key_ring_id
+  network_id  = module.network.network_id
+
+  enable_vertex_ai = var.enable_vertex_ai
+
+  # Training is the deep brain's work. The fast path may not call a model at
+  # all — `qip-fastbrain` refuses to start if any agent it hosts holds
+  # `call_language_model` — so giving it a training identity would contradict
+  # a guarantee the binary enforces at start-up.
+  training_service_account = module.secrets.service_account_emails["deepbrain"]
+}
+
 module "edge_cell" {
   source   = "./modules/edge-cell"
   for_each = var.edge_cells

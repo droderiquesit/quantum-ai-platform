@@ -193,3 +193,68 @@ variable "edge_cells" {
     error_message = "Two cells share a subnet range. Overlapping ranges route to whichever subnet was created first."
   }
 }
+
+variable "project_number" {
+  description = <<-EOT
+    The project's numeric id. Distinct from `project_id` and not derivable from
+    it: Google's own service agents are named by number, so the IAM grant that
+    lets Secret Manager publish a rotation notice needs this and cannot infer
+    it. Read it from `gcloud projects describe <project_id> --format='value(projectNumber)'`.
+  EOT
+  type        = number
+}
+
+# --- Managed data services --------------------------------------------------
+#
+# All default false. `qip_storage::provider::StorageTarget::is_implemented`
+# returns true for three targets — memory, local files, and the in-tree engine
+# — and the six below are ports that refuse construction while naming what
+# they still need.
+#
+# The flag means "an adapter exists and I have wired it", not "I would like
+# this service". Turning one on beforehand produces a healthy, empty, billable
+# instance and an architecture diagram that overstates the platform. The
+# `data` module's `enabled_without_an_adapter` output reports exactly that
+# mismatch at plan time.
+
+variable "enable_bigquery" {
+  description = "Research warehouse. Requires an adapter for StorageTarget::BigQuery."
+  type        = bool
+  default     = false
+}
+
+variable "enable_cloud_storage" {
+  description = "Event-log archive and model artifacts. Requires an adapter for StorageTarget::CloudStorage."
+  type        = bool
+  default     = false
+}
+
+variable "enable_alloydb" {
+  description = "Transactional records. Requires an adapter and a Postgres driver this build does not have."
+  type        = bool
+  default     = false
+}
+
+variable "enable_bigtable" {
+  description = "Tick and order-book history. Requires an adapter for StorageTarget::Bigtable."
+  type        = bool
+  default     = false
+}
+
+variable "enable_memorystore" {
+  description = "Hot cache. Requires an adapter for StorageTarget::Memorystore."
+  type        = bool
+  default     = false
+}
+
+variable "enable_spanner" {
+  description = "Cross-region transactions. The last to enable, not the first — AlloyDB is cheaper everywhere a transaction stays in one region."
+  type        = bool
+  default     = false
+}
+
+variable "enable_vertex_ai" {
+  description = "Managed training. The Vertex port in qip-training has no client, no credential and no egress path, so enabling this provisions somewhere to train without making this build able to submit a job."
+  type        = bool
+  default     = false
+}

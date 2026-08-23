@@ -36,3 +36,14 @@ variable "venue_credential_readable" {
   type        = bool
   default     = false
 }
+
+variable "project_number" {
+  description = <<-EOT
+    The project's numeric id, which is not the project id and cannot be derived
+    from it. Google service agents are named by number — Secret Manager
+    publishes rotation notices as
+    `service-<number>@gcp-sa-secretmanager.iam.gserviceaccount.com` — so the
+    grant that lets rotation work at all needs this value.
+  EOT
+  type        = number
+}

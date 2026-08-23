@@ -92,6 +92,35 @@ resource "google_service_account" "workload" {
 }
 
 # The secrets themselves, created without values.
+# Where Secret Manager announces that a rotation is due.
+#
+# This is the one Pub/Sub topic in the platform, and it is not a contradiction
+# of ADR 0011. That decision replaced Pub/Sub as the *data* bus — the path
+# carrying state deltas and capital envelopes between cells and the central
+# plane, which is now the in-tree mesh in `qip-transport`. This carries no
+# platform data: it is a control-plane notification from a Google service to
+# an operator, and Secret Manager will not accept a rotation schedule without
+# one.
+resource "google_pubsub_topic" "rotation" {
+  project = var.project_id
+  name    = "qip-secret-rotation-${var.environment}"
+  labels  = var.labels
+
+  # The message says a rotation is due and names the secret. It never carries
+  # the value, so the topic's own encryption is defence in depth rather than
+  # the thing keeping the credential safe.
+  kms_key_name = google_kms_crypto_key.secrets.id
+}
+
+# Secret Manager publishes as its own service agent, so the grant is to that
+# agent rather than to any workload identity.
+resource "google_pubsub_topic_iam_member" "rotation_publisher" {
+  project = var.project_id
+  topic   = google_pubsub_topic.rotation.name
+  role    = "roles/pubsub.publisher"
+  member  = "serviceAccount:service-${var.project_number}@gcp-sa-secretmanager.iam.gserviceaccount.com"
+}
+
 resource "google_secret_manager_secret" "platform" {
   for_each = toset(var.secret_names)
 
@@ -109,10 +138,18 @@ resource "google_secret_manager_secret" "platform" {
     }
   }
 
-  # A secret with no rotation schedule is a secret nobody rotates.
+  # A secret with no rotation schedule is a secret nobody rotates — and a
+  # schedule with nowhere to announce itself is one nobody acts on, which is
+  # why Secret Manager requires the topic rather than accepting the timer
+  # alone. Terraform never writes the new value; the notification is what tells
+  # an operator that writing one is now due.
   rotation {
     next_rotation_time = "2026-12-01T00:00:00Z"
     rotation_period    = "7776000s"
+  }
+
+  topics {
+    name = google_pubsub_topic.rotation.id
   }
 
   labels = var.labels
