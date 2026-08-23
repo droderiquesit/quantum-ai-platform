@@ -444,20 +444,43 @@ tree at `dc9ee9a`.
   refused outright — the simulator cannot tell a stale quote from a real
   arbitrage and is not entitled to guess.
 
-  Reading the rest of the file the way that property test reads it then found
-  two more of the same shape. A book with one side quoted, or neither, has no
-  mid — and every cost the regime charges is defined relative to it, so a fill
-  measured against nothing escaped all of them and came back a flawless
-  execution. And a position the run ended holding and could not mark was valued
-  at the last price the generator produced, which no book was showing. Both are
-  now refusals, and the report names the positions it could not mark rather
-  than pricing them.
+  Reading the rest of the crate the way that property test reads it found
+  **seven more of the same shape**, all fixed in the same pass. The two worth
+  knowing about by name:
+
+  * A **flash event made a run 6.5× more profitable**. The closing position was
+    marked at the undisturbed path price, so buying into a crash booked the
+    displacement as profit — +96,630 against a calm +14,938, where the truth is
+    −65,537. A backtest of any strategy that trades into dislocations was
+    reporting the dislocation itself as alpha.
+  * A **flash event flattered any worked order by hundreds of basis points**,
+    because slippage measured against a reference frozen at arrival carries the
+    market's drift: later slices printing below the crash scored as the best
+    execution in the run.
+
+  The rest: `maximum_participation` was documented as a refusal and never
+  enforced, so 80% of a day's volume was quoted 43.8bp and reported complete; a
+  one-sided book was filled with no mid to charge any cost against; `adversity_bps`
+  scored an unmeasurable fill as zero, rewarding a condition for destroying the
+  benchmark; a crossed book published a mark that was served as current; and
+  three fallbacks pointed the wrong way, including an unrepresentable commission
+  falling back to zero.
 
   The standing lesson: a backtester's errors are only dangerous in one
-  direction, and all four of these ran that way. Not one was found by review. A
-  property test over 96 generated condition sequences found the first, and the
-  rest came from asking the same question of every other path that had to put a
-  number on something it could not measure.
+  direction, and **all nine of these ran that way**. Not one was found by
+  review. A property test over 96 generated condition sequences found the first;
+  the rest came from asking the same question of every other path that had to
+  put a number on something it could not measure. The fix was verified against a
+  throwaway 30,000-case sweep — buys and sells, thin and liquid books, one to
+  three slices, limit orders, windows at varying offsets — with zero
+  monotonicity violations.
+
+  One of the two original tests passes **unmodified**: its claim about the
+  slippage multiplier was true and the implementation was measuring against a
+  yardstick the order had moved. The other was rewritten strictly stronger —
+  seven cross widths and both sides, asserting there is no crossed fill price at
+  all, where the original checked one width of a claim that is false at narrow
+  crosses.
 
 * **A port is not an integration, and this phase created many ports.** This is
   the newly-available overclaim and the reason the section exists. `qip-streaming`

@@ -221,8 +221,14 @@ something.
 | Defect | Why it mattered |
 |---|---|
 | The simulator priced a slice against the touch read back *after* the sweep | The order's own market impact sat inside the reference instead of beyond it, so the impact term double-counted and a ten-times slippage regime multiplied by about seven |
+| A flash event made a simulated run 6.5× more profitable | The closing position was marked at the *undisturbed path price*, so buying into a crash booked the displacement as profit: +96,630 against a calm +14,938, where the truth is −65,537 |
+| A flash event flattered any worked order by hundreds of basis points | Slippage measured against a reference frozen at arrival carries the market's drift, so later slices printing below the crash scored as the best execution in the run |
+| `CostModel::maximum_participation` was documented as a refusal and never enforced | The fill engine reimplemented the impact law inline, so an order for 80% of a day's volume was quoted a cheerful 43.8bp and reported complete |
 | A book with one side quoted, or neither, was filled anyway | Every cost the regime charges is defined relative to the mid, so a fill measured against nothing escaped all of them and reported as a flawless execution |
+| `adversity_bps` scored an unmeasurable fill as zero | The flattering default: a condition was rewarded for destroying the benchmark it would have been judged by |
+| A crossed book published a mark price, served as current | Nothing about a cross makes a mark stale, so the contradictory quote propagated as a live price |
 | A position the run could not mark was valued at the last generated price | An invented mark, at a price no book was showing, inside a reported P&L |
+| Three fallbacks pointed the wrong way | An unrepresentable commission fell back to *zero*; an unapplicable flash displacement fell back to the *undisplaced* price; a level too small to halve rested two raw units, handing back depth a collapse had removed |
 | A crossed book was filled at the worse of its two touch prices | The book is built symmetrically about the mid, so at any cross width *both* quotes are inside the calm touch — the "worse" one included. Charging it is still charging less than an orderly market, which turns a data fault into a subsidy a backtest will learn to seek out |
 | `WorldModel::absorb_bar` accepted a known-time before the bar closed | Look-ahead: a backtest could read a price that had not printed |
 | `Cell::deploy` did not take the program its plan indexes into | `NodeRef` is an index; in a large enough arena it resolves to another strategy's node and the cell emits a signal from arithmetic nobody wrote for it |
