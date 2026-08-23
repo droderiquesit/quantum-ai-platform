@@ -112,7 +112,7 @@ cleanly.
 
 ## The seven locations
 
-ADR 0008 calls for seven cells. Adding the other six is six entries in the map
+ADR 0008 calls for at least seven cells; nine are configured. Adding a tenth is one entry in the map
 above — no new module, no new directory.
 
 | cell id | location | region | note |
@@ -124,12 +124,14 @@ above — no new module, no new directory.
 | `frankfurt-1` | Frankfurt | `europe-west3` | in the metro |
 | `singapore-1` | Singapore | `asia-southeast1` | in the metro |
 | `tokyo-1` | Tokyo | `asia-northeast1` | in the metro |
+| `saopaulo-1` | São Paulo | `southamerica-east1` | in the metro — B3 |
+| `dubai-1` | Dubai | `me-central1` | **not in the metro** — Doha, Qatar |
 
-Two of the seven are a problem worth reading before building on this table.
+Three of the nine are a problem worth reading before building on this table.
 
-Google Cloud has no region in Chicago and none in the New York/New Jersey
-metropolitan area. The nearest regions are roughly 400 and 300 kilometres away
-respectively, which is several milliseconds of round trip that a cell whose
+Google Cloud has no region in Chicago, none in the New York/New Jersey
+metropolitan area, and none in Dubai. The nearest regions are roughly 400, 300
+and 380 kilometres away respectively, which is several milliseconds of round trip that a cell whose
 whole argument is source-adjacency cannot spend. A cell in `us-central1` is not
 next to CME any more than the central plane is.
 

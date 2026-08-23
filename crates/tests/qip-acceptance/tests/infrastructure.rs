@@ -1353,6 +1353,8 @@ fn the_edge_cells_are_one_module_rather_than_seven_copies() {
         "frankfurt-1",
         "singapore-1",
         "tokyo-1",
+        "saopaulo-1",
+        "dubai-1",
     ] {
         assert!(
             runbook.contains(cell),

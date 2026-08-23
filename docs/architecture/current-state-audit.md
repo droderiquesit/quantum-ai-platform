@@ -124,9 +124,10 @@ checks every planned node against it, checks the envelope names this cell and
 this strategy, and gives each deployment its own runtime rather than sharing one
 per cell — which removes the aliasing rather than checking for it.
 
-Two of the seven cells are recorded as being in the wrong city: Google Cloud has
-no region in Chicago or the New York/New Jersey metro, so those cells sit
-roughly 400km and 330km from the venues they are meant to be adjacent to. They
+Three of the nine cells are recorded as being in the wrong city: Google Cloud
+has no region in Chicago, the New York/New Jersey metro, or Dubai, so those
+cells sit roughly 400km, 330km and 380km from the venues they are meant to be
+adjacent to. They
 are listed with the distance against each rather than dropped, because that
 distance is the measurement ADR 0008's own reversal condition turns on.
 
@@ -189,7 +190,7 @@ once a day and one read a million times cost the same to licence.
 | Reconciliation | Built | `qip-edge::dropcopy`, OMS `reconciliation_breaks` |
 | Broker/gateway adapter framework | Built, no live class | `qip-brokers` — `VenueAdapter` extends `Broker` with session, logon, heartbeat, amendment; a `ReadyTicket` with no public constructor makes "submit to a venue that is not ready" unwriteable; `Secret` implements neither `Serialize` nor `Deserialize`; `SimulatedExchange` really matches, with queue position, residuals, exact commission and seeded rejections |
 | **A live venue** | **Missing** | `AdapterClass` has `Simulated` and `Sandbox` and no third variant. There is no live adapter to instantiate, no feature flag that adds one, and no string that deserialises into one — both facts are pinned by doctests |
-| **Multi-region mesh** | Partial | Same state as Layer 2: seven cells specified, none applied |
+| **Multi-region mesh** | Partial | Same state as Layer 2: nine cells specified, none applied |
 
 ### Layer 6 — Outcomes Capture
 
@@ -330,7 +331,7 @@ green — a standard this phase missed and then met.
    against the classical baseline, never in the execution path. The benchmark
    harness that will judge it exists and already refuses to report a quantum
    answer without a classical one beside it.
-10. **Multi-region deployment** — seven cells are parameterised and specified in
+10. **Multi-region deployment** — nine cells are parameterised and specified in
     the development environment. Instantiating them is credentials, an `apply`,
     and the venue address ranges that `venues = {}` currently, correctly,
     declines to guess.

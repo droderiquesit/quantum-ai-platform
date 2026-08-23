@@ -101,4 +101,22 @@ edge_cells = {
     service_cidr = "10.120.0.0/20"
     venues       = {}
   }
+
+  # São Paulo — in the metro (B3)
+  "saopaulo-1" = {
+    region       = "southamerica-east1"
+    subnet_cidr  = "10.128.0.0/20"
+    pod_cidr     = "10.132.0.0/14"
+    service_cidr = "10.136.0.0/20"
+    venues       = {}
+  }
+
+  # Dubai — Doha, ~380km — see the runbook
+  "dubai-1" = {
+    region       = "me-central1"
+    subnet_cidr  = "10.144.0.0/20"
+    pod_cidr     = "10.148.0.0/14"
+    service_cidr = "10.152.0.0/20"
+    venues       = {}
+  }
 }
