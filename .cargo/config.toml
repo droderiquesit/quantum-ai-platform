@@ -1,0 +1,9 @@
+# Incremental compilation is off in this workspace.
+#
+# It is a developer-latency optimisation that trades disk for rebuild speed,
+# and the trade is a bad one here: 58 crates of incremental state reached 15GB
+# and exhausted the session's whole disk allowance mid-build, which fails every
+# command including the ones that would clean it up. A full rebuild costs
+# minutes; a full disk costs the session.
+[build]
+incremental = false
