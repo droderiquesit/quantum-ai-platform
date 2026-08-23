@@ -105,7 +105,10 @@ fn a_duplicate_of_a_registered_source_scores_no_uniqueness() -> Result<()> {
         .scores()
         .ok_or_else(|| Error::not_found("scores"))?
         .uniqueness();
-    assert!(unique > 0.99, "the first source covers nothing already held");
+    assert!(
+        unique > 0.99,
+        "the first source covers nothing already held"
+    );
 
     // Same instruments, different host: a perfect duplicate.
     let second = finder.assess(
@@ -163,7 +166,10 @@ fn an_expensive_source_scores_worse_on_cost_than_a_free_one() -> Result<()> {
         .scores()
         .ok_or_else(|| Error::not_found("scores"))?
         .cost_efficiency();
-    assert!(free_cost > paid_cost, "{free_cost} should exceed {paid_cost}");
+    assert!(
+        free_cost > paid_cost,
+        "{free_cost} should exceed {paid_cost}"
+    );
     assert!((free_cost - 1.0).abs() < 1e-9);
     Ok(())
 }

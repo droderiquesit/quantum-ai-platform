@@ -270,9 +270,12 @@ impl DataFinder {
             );
             reasoning.record(
                 LifecycleStage::Route,
-                Routing::decide(legality.overall(), &SourceScores::new(0.0, 0.0, 0.0, 0.0, 0.0)?)
-                    .basis()
-                    .to_string(),
+                Routing::decide(
+                    legality.overall(),
+                    &SourceScores::new(0.0, 0.0, 0.0, 0.0, 0.0)?,
+                )
+                .basis()
+                .to_string(),
             );
             return RegistrationDecision::new(
                 id,
@@ -518,13 +521,17 @@ impl DataFinder {
             - self
                 .registry
                 .values()
-                .map(|registered| registered.source().coverage().overlap_with(source.coverage()))
+                .map(|registered| {
+                    registered
+                        .source()
+                        .coverage()
+                        .overlap_with(source.coverage())
+                })
                 .fold(0.0f64, f64::max);
         let uniqueness = uniqueness.clamp(0.0, 1.0);
 
         let depth = source.coverage().history_depth(now).as_nanos() as f64;
-        let historical_value =
-            (depth / Self::HISTORY_SATURATION.as_nanos() as f64).clamp(0.0, 1.0);
+        let historical_value = (depth / Self::HISTORY_SATURATION.as_nanos() as f64).clamp(0.0, 1.0);
 
         let monthly = source
             .cost()
@@ -661,10 +668,7 @@ impl DataFinder {
             ));
         }
         candidates.sort_by(|left, right| left.0.cmp(&right.0));
-        Ok(replacement::search(
-            lost.source().coverage(),
-            &candidates,
-        ))
+        Ok(replacement::search(lost.source().coverage(), &candidates))
     }
 }
 

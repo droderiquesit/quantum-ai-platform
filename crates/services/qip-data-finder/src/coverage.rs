@@ -318,7 +318,11 @@ impl CoverageGap {
         if !self.instruments.is_empty() {
             parts.push(format!(
                 "instruments {}",
-                self.instruments.iter().cloned().collect::<Vec<_>>().join(", ")
+                self.instruments
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
         if let Some((offered, required)) = self.frequency_shortfall {

@@ -11,6 +11,7 @@
 #![allow(dead_code)]
 
 use qip_contracts::governance::Usage;
+use qip_core::error::Result;
 use qip_core::{Currency, Decimal, Duration, Timestamp};
 use qip_data_finder::coverage::{SourceCoverage, SourceRegion, UpdateFrequency};
 use qip_data_finder::endpoint::{AccessMechanism, AuthRequirement, SourceEndpoint};
@@ -18,7 +19,6 @@ use qip_data_finder::legal::{LicensingPosture, SourceLicense};
 use qip_data_finder::probe::{HeadResponse, InMemoryProbe, PayloadSample, RobotsFetch};
 use qip_data_finder::quality::SourceCost;
 use qip_data_finder::source::{SourceCandidate, SourceIdentity};
-use qip_core::error::Result;
 use qip_events::Topic;
 use qip_financial::asset_class::AssetClass;
 

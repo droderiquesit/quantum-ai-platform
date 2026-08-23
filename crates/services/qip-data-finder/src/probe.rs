@@ -263,7 +263,9 @@ impl SourceProbe for InMemoryProbe {
             )));
         };
         Self::take(queue).ok_or_else(|| {
-            Error::not_found(format!("the scripted HEAD responses for `{url}` are exhausted"))
+            Error::not_found(format!(
+                "the scripted HEAD responses for `{url}` are exhausted"
+            ))
         })
     }
 
@@ -299,8 +301,7 @@ pub struct NetworkProbe {
 impl NetworkProbe {
     /// The transport requirement, which no amount of configuration satisfies
     /// in this phase.
-    pub const TRANSPORT_REQUIREMENT: &'static str =
-        "an HTTP/1.1 client with TLS 1.2+ and certificate verification (no transport is linked \
+    pub const TRANSPORT_REQUIREMENT: &'static str = "an HTTP/1.1 client with TLS 1.2+ and certificate verification (no transport is linked \
          into this build; see docs/adr/0009-tiered-dependency-policy.md)";
 
     pub fn unconfigured() -> Self {
@@ -326,7 +327,11 @@ impl NetworkProbe {
         self
     }
 
-    pub fn with_credential(mut self, host: impl Into<String>, reference: impl Into<String>) -> Self {
+    pub fn with_credential(
+        mut self,
+        host: impl Into<String>,
+        reference: impl Into<String>,
+    ) -> Self {
         self.credentials.insert(host.into(), reference.into());
         self
     }

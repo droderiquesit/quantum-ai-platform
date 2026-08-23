@@ -130,11 +130,25 @@ pub struct SourceLicense {
 }
 
 impl SourceLicense {
+    /// The expiry recorded for a licence that does not expire.
+    ///
+    /// Deliberately not [`Timestamp::MAX`]. The platform serialises
+    /// timestamps at millisecond precision, so a nanosecond sentinel comes
+    /// back a fraction earlier and a decision read out of the evidence store
+    /// no longer equals the one that was written into it — which would make
+    /// the evidence store's whole point, that a record is the record, false
+    /// for exactly the entitlements that never lapse. Floored to the
+    /// millisecond it round-trips exactly and means the same thing.
+    pub const PERPETUAL: Timestamp = Timestamp::from_millis(i64::MAX / 1_000_000);
+
     /// Build a licence from its identifier and the usages it grants.
     ///
     /// An unnamed licence is refused: "we believe this is fine" is the claim
     /// this type exists to make unrepresentable.
-    pub fn new(identifier: impl Into<String>, permits: impl IntoIterator<Item = Usage>) -> Result<Self> {
+    pub fn new(
+        identifier: impl Into<String>,
+        permits: impl IntoIterator<Item = Usage>,
+    ) -> Result<Self> {
         let identifier = identifier.into();
         if identifier.trim().is_empty() {
             return Err(Error::invalid(
@@ -192,29 +206,34 @@ impl SourceLicense {
     /// [`Entitlement`] type the mesh catalogue holds, so the two cannot
     /// disagree about what a licence says.
     pub fn entitlements(&self, dataset: &str, now: Timestamp) -> Vec<Entitlement> {
-        let expires_at = self.expires_at.unwrap_or(Timestamp::MAX);
-        [Usage::Research, Usage::Derive, Usage::Trade, Usage::Redistribute]
-            .into_iter()
-            .map(|usage| {
-                if self.permits_at(usage, now) {
-                    Entitlement::Granted {
-                        dataset: dataset.to_string(),
-                        usage,
-                        expires_at,
-                    }
-                } else {
-                    Entitlement::Denied {
-                        dataset: dataset.to_string(),
-                        usage,
-                        reason: format!(
-                            "licence `{}` does not grant {}",
-                            self.identifier,
-                            usage.as_str()
-                        ),
-                    }
+        let expires_at = self.expires_at.unwrap_or(Self::PERPETUAL);
+        [
+            Usage::Research,
+            Usage::Derive,
+            Usage::Trade,
+            Usage::Redistribute,
+        ]
+        .into_iter()
+        .map(|usage| {
+            if self.permits_at(usage, now) {
+                Entitlement::Granted {
+                    dataset: dataset.to_string(),
+                    usage,
+                    expires_at,
                 }
-            })
-            .collect()
+            } else {
+                Entitlement::Denied {
+                    dataset: dataset.to_string(),
+                    usage,
+                    reason: format!(
+                        "licence `{}` does not grant {}",
+                        self.identifier,
+                        usage.as_str()
+                    ),
+                }
+            }
+        })
+        .collect()
     }
 }
 
@@ -536,10 +555,7 @@ impl LegalAssessment {
     /// permissive of them, computed here rather than by the caller so there
     /// is one place where the combination can be got wrong.
     pub fn combine(host: Legality, robots: Legality, licensing: Legality, usage: Usage) -> Self {
-        let overall = host
-            .clone()
-            .and(robots.clone())
-            .and(licensing.clone());
+        let overall = host.clone().and(robots.clone()).and(licensing.clone());
         Self {
             host,
             robots,

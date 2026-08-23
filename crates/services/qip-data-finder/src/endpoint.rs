@@ -237,14 +237,17 @@ impl AccessMechanism {
                 incremental: true,
                 credential_required: auth.credential_required(),
             },
-            Self::Feed { published_every, .. } | Self::BulkFile { published_every, .. } => {
-                PollPlan {
-                    delivery: Delivery::Pull,
-                    natural_interval: *published_every,
-                    incremental: false,
-                    credential_required: self.credential_required(),
-                }
+            Self::Feed {
+                published_every, ..
             }
+            | Self::BulkFile {
+                published_every, ..
+            } => PollPlan {
+                delivery: Delivery::Pull,
+                natural_interval: *published_every,
+                incremental: false,
+                credential_required: self.credential_required(),
+            },
             Self::GitRepository { .. } => PollPlan {
                 delivery: Delivery::Pull,
                 natural_interval: Duration::from_mins(15),
@@ -391,7 +394,12 @@ impl SourceEndpoint {
 
     pub fn url(&self) -> String {
         match self.port {
-            Some(port) => format!("{}://{}:{port}{}", self.scheme.as_str(), self.host, self.path),
+            Some(port) => format!(
+                "{}://{}:{port}{}",
+                self.scheme.as_str(),
+                self.host,
+                self.path
+            ),
             None => format!("{}://{}{}", self.scheme.as_str(), self.host, self.path),
         }
     }

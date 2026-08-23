@@ -56,8 +56,7 @@ pub mod source;
 
 pub use coverage::{CoverageGap, CoverageMatch, SourceCoverage, SourceRegion, UpdateFrequency};
 pub use decision::{
-    DecisionOutcome, LifecycleStage, ReasonStep, Reasoning, RegisteredSource,
-    RegistrationDecision,
+    DecisionOutcome, LifecycleStage, ReasonStep, Reasoning, RegisteredSource, RegistrationDecision,
 };
 pub use endpoint::{
     AccessMechanism, AuthRequirement, Delivery, FeedFormat, FileFormat, McpTarget, PollPlan,

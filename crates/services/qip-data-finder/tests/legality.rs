@@ -10,8 +10,7 @@
 mod common;
 
 use common::{
-    AGENT, candidate, licensed_for, now, permissive_robots, probe_for, robots_absent,
-    robots_served,
+    AGENT, candidate, licensed_for, now, permissive_robots, probe_for, robots_absent, robots_served,
 };
 use qip_contracts::governance::{Entitlement, Usage};
 use qip_core::error::{Error, Result};
@@ -46,10 +45,14 @@ fn a_forbidden_robots_rule_blocks_collection_however_good_the_source_is() -> Res
     );
 
     let decisions = finder.assess(vec![candidate], &mut probe, now())?;
-    let decision = decisions.first().ok_or_else(|| Error::not_found("a decision"))?;
+    let decision = decisions
+        .first()
+        .ok_or_else(|| Error::not_found("a decision"))?;
 
     assert!(!decision.is_registered());
-    let legality = decision.legality().ok_or_else(|| Error::not_found("legality"))?;
+    let legality = decision
+        .legality()
+        .ok_or_else(|| Error::not_found("legality"))?;
     assert!(legality.robots().is_forbidden());
     assert!(
         legality.robots().reason().contains("/data/"),
@@ -78,9 +81,13 @@ fn an_undetermined_legality_is_refused_rather_than_read_as_permission() -> Resul
     );
 
     let decisions = finder.assess(vec![candidate], &mut probe, now())?;
-    let decision = decisions.first().ok_or_else(|| Error::not_found("a decision"))?;
+    let decision = decisions
+        .first()
+        .ok_or_else(|| Error::not_found("a decision"))?;
 
-    let legality = decision.legality().ok_or_else(|| Error::not_found("legality"))?;
+    let legality = decision
+        .legality()
+        .ok_or_else(|| Error::not_found("legality"))?;
     assert!(legality.robots().is_unknown());
     assert!(!legality.overall().is_permitted());
     assert!(!decision.is_registered());
@@ -121,10 +128,7 @@ fn no_score_however_high_overrides_a_legal_refusal() -> Result<()> {
 
 #[test]
 fn a_denylisted_host_is_refused_even_when_it_is_also_allowlisted() -> Result<()> {
-    let rules = HostRules::new(
-        ["example.com".to_string()],
-        ["example.com".to_string()],
-    );
+    let rules = HostRules::new(["example.com".to_string()], ["example.com".to_string()]);
     let verdict = rules.verdict("example.com");
     assert!(verdict.is_forbidden());
     assert!(verdict.reason().contains("denylisted"));
@@ -138,12 +142,11 @@ fn a_denylisted_host_is_refused_even_when_it_is_also_allowlisted() -> Result<()>
 fn a_denylisted_host_is_never_contacted_at_all() -> Result<()> {
     // Refusing after fetching would satisfy a verdict test and still have
     // sent the request the denylist exists to prevent.
-    let config = FinderConfig::new(AGENT, Usage::Trade, "market-data", 99)?.with_host_rules(
-        HostRules::new(
+    let config =
+        FinderConfig::new(AGENT, Usage::Trade, "market-data", 99)?.with_host_rules(HostRules::new(
             ["denied.example".to_string()],
             ["denied.example".to_string()],
-        ),
-    );
+        ));
     let mut finder = DataFinder::new(config);
     let candidate = candidate(
         "denied",
@@ -158,7 +161,9 @@ fn a_denylisted_host_is_never_contacted_at_all() -> Result<()> {
     );
 
     let decisions = finder.assess(vec![candidate], &mut probe, now())?;
-    let decision = decisions.first().ok_or_else(|| Error::not_found("a decision"))?;
+    let decision = decisions
+        .first()
+        .ok_or_else(|| Error::not_found("a decision"))?;
 
     assert!(matches!(
         decision.outcome(),
@@ -256,7 +261,10 @@ fn an_expired_licence_stops_granting_what_it_used_to() -> Result<()> {
 
     assert!(
         posture
-            .legality_for(Usage::Trade, expiry.saturating_sub(qip_core::Duration::from_secs(1)))
+            .legality_for(
+                Usage::Trade,
+                expiry.saturating_sub(qip_core::Duration::from_secs(1))
+            )
             .is_permitted()
     );
     let after = posture.legality_for(Usage::Trade, expiry);

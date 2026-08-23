@@ -205,10 +205,7 @@ impl Routing {
                  floor of {:.2}",
                 Self::COLD_THRESHOLD
             ),
-            other => format!(
-                "{} on a composite score of {composite:.3}",
-                other.as_str()
-            ),
+            other => format!("{} on a composite score of {composite:.3}", other.as_str()),
         };
         Self {
             class,

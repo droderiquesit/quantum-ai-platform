@@ -39,7 +39,11 @@ fn drift_names_exactly_which_fields_appeared_vanished_and_changed_type() -> Resu
     assert_eq!(retype.field, "volume");
     assert_eq!(retype.was, FieldType::Integer);
     assert_eq!(retype.now, FieldType::Text);
-    assert!(drift.describe().contains("`volume` changed from integer to text"));
+    assert!(
+        drift
+            .describe()
+            .contains("`volume` changed from integer to text")
+    );
 
     // Fields that did not move are not reported, so the record is the change
     // rather than the payload.
@@ -128,9 +132,8 @@ fn a_source_whose_schema_drifted_is_quarantined_rather_than_consumed() -> Result
     );
 
     // The source now serves `volume` as a string. Availability is perfect.
-    let drifted = SourceSchema::parse(
-        r#"{"symbol":"EU0001","bid":10.25,"ask":10.27,"volume":"41,000"}"#,
-    )?;
+    let drifted =
+        SourceSchema::parse(r#"{"symbol":"EU0001","bid":10.25,"ask":10.27,"volume":"41,000"}"#)?;
     let later = now().saturating_add(Duration::from_mins(10));
     let observations = healthy_observations(later);
 
@@ -194,7 +197,8 @@ fn drift_is_checked_before_health_so_a_healthy_drifted_source_still_stops() -> R
     ));
 
     // ...and the same health with a moved shape does not.
-    let moved = SourceSchema::parse(r#"{"symbol":"EU0001","bid":"10.25","ask":10.27,"volume":41000}"#)?;
+    let moved =
+        SourceSchema::parse(r#"{"symbol":"EU0001","bid":"10.25","ask":10.27,"volume":41000}"#)?;
     assert!(matches!(
         finder.monitor(
             "drifter",

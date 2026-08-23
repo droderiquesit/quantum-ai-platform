@@ -107,9 +107,7 @@ impl SourceHealth {
         let window_starts = window_ends.saturating_sub(window);
         let inside: Vec<&HealthObservation> = observations
             .iter()
-            .filter(|observation| {
-                observation.at > window_starts && observation.at <= window_ends
-            })
+            .filter(|observation| observation.at > window_starts && observation.at <= window_ends)
             .collect();
         if inside.is_empty() {
             return Err(Error::not_found(format!(
@@ -224,8 +222,7 @@ impl SourceHealth {
 
     /// Whether the source is working but below what it promised.
     pub fn is_degraded(&self, expected_freshness: Duration) -> bool {
-        !self.is_dead()
-            && (self.availability < 0.99 || self.staleness > expected_freshness)
+        !self.is_dead() && (self.availability < 0.99 || self.staleness > expected_freshness)
     }
 
     pub fn describe(&self) -> String {

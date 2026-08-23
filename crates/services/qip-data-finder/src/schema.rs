@@ -26,12 +26,16 @@ pub enum FieldType {
     Integer,
     Number,
     Text,
-    Array { element: Box<FieldType> },
+    Array {
+        element: Box<FieldType>,
+    },
     /// A nested record reached inside an array, carrying how many fields it
     /// had. Objects at the top level are flattened into dotted paths instead;
     /// only the ones inside arrays land here, and the field count is what
     /// makes a record losing a field visible at all.
-    Object { fields: usize },
+    Object {
+        fields: usize,
+    },
     /// An array whose elements disagree, or a field seen with two types in
     /// one payload. Recorded rather than collapsed, because a field that is
     /// sometimes a string is a field a parser will fail on eventually.

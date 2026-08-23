@@ -57,11 +57,8 @@ fn the_longest_matching_rule_decides_rather_than_the_first_one_in_the_file() -> 
 fn allow_beats_disallow_when_the_two_patterns_are_the_same_length() -> Result<()> {
     // Same length, opposite senses, and the Disallow written first. A parser
     // that keeps the first match, or the last, gets one of these wrong.
-    let disallow_first = RobotsPolicy::parse(
-        "User-agent: *\nDisallow: /feed/x\nAllow: /feed/x\n",
-    );
-    let allow_first =
-        RobotsPolicy::parse("User-agent: *\nAllow: /feed/x\nDisallow: /feed/x\n");
+    let disallow_first = RobotsPolicy::parse("User-agent: *\nDisallow: /feed/x\nAllow: /feed/x\n");
+    let allow_first = RobotsPolicy::parse("User-agent: *\nAllow: /feed/x\nDisallow: /feed/x\n");
 
     for policy in [&disallow_first, &allow_first] {
         assert_eq!(
@@ -133,19 +130,27 @@ fn wildcards_and_the_end_anchor_match_the_way_the_standard_says() -> Result<()> 
     );
 
     assert!(
-        policy.verdict(AGENT, "/exports/daily.csv").is_forbidden_for_test(),
+        policy
+            .verdict(AGENT, "/exports/daily.csv")
+            .is_forbidden_for_test(),
         "a star must span path separators"
     );
     assert!(
-        policy.verdict(AGENT, "/a.csv/b.csv").is_forbidden_for_test(),
+        policy
+            .verdict(AGENT, "/a.csv/b.csv")
+            .is_forbidden_for_test(),
         "an anchored suffix must be matched from the right, not at its first occurrence"
     );
     assert!(
-        !policy.verdict(AGENT, "/exports/daily.csv.gz").is_forbidden_for_test(),
+        !policy
+            .verdict(AGENT, "/exports/daily.csv.gz")
+            .is_forbidden_for_test(),
         "the end anchor must stop the rule matching a longer path"
     );
     assert!(
-        policy.verdict(AGENT, "/tmp/17/scratch").is_forbidden_for_test(),
+        policy
+            .verdict(AGENT, "/tmp/17/scratch")
+            .is_forbidden_for_test(),
         "a star in the middle must match one segment"
     );
     Ok(())

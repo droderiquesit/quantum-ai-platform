@@ -76,7 +76,9 @@ fn registered_primary(finder: &mut DataFinder, probe: &mut InMemoryProbe) -> Res
 
 fn dead_observations(until: Timestamp) -> Vec<HealthObservation> {
     (1..=4)
-        .map(|step| HealthObservation::timed_out(until.saturating_sub(Duration::from_mins(5 - step))))
+        .map(|step| {
+            HealthObservation::timed_out(until.saturating_sub(Duration::from_mins(5 - step)))
+        })
         .collect()
 }
 
@@ -165,7 +167,10 @@ fn when_nothing_covers_the_source_the_search_says_so_and_names_the_gap() -> Resu
     let mut finder = DataFinder::new(FinderConfig::new(AGENT, Usage::Derive, "market-data", 5)?);
     let mut probe = probe_for_hosts(&[
         ("primary.example", PRIMARY_URL),
-        ("partial.example", "https://partial.example/data/prices.json"),
+        (
+            "partial.example",
+            "https://partial.example/data/prices.json",
+        ),
     ]);
     registered_primary(&mut finder, &mut probe)?;
 

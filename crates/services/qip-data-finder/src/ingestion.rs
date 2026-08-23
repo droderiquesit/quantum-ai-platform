@@ -103,9 +103,7 @@ pub fn descriptor_for(registered: &RegisteredSource) -> SourceDescriptor {
 fn licensing_class(registered: &RegisteredSource) -> LicensingClass {
     use qip_contracts::governance::Usage;
     match registered.source().licensing().license() {
-        Some(license) if license.permits().contains(&Usage::Redistribute) => {
-            LicensingClass::Public
-        }
+        Some(license) if license.permits().contains(&Usage::Redistribute) => LicensingClass::Public,
         Some(_) => LicensingClass::Licensed,
         // Unreachable through the finder, and mapped to the most restrictive
         // class rather than asserted away: a panic here would be a crash in
