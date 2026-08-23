@@ -20,6 +20,7 @@ members = [
     "crates/libs/qip-quantum",
     "crates/libs/qip-contracts",
     "crates/libs/qip-compliance",
+    "crates/libs/qip-transport",
 
     # --- source-adjacent edge cells: the hot execution path ---
     "crates/edge/qip-protocols",
@@ -109,6 +110,7 @@ qip-agents = { path = "crates/libs/qip-agents" }
 qip-quantum = { path = "crates/libs/qip-quantum" }
 qip-contracts = { path = "crates/libs/qip-contracts" }
 qip-compliance = { path = "crates/libs/qip-compliance" }
+qip-transport = { path = "crates/libs/qip-transport" }
 
 qip-protocols = { path = "crates/edge/qip-protocols" }
 qip-sequencing = { path = "crates/edge/qip-sequencing" }

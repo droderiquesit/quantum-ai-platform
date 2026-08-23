@@ -16,3 +16,4 @@ no stated reversal condition cannot be revisited honestly.
 | [0008](0008-edge-cells-decide-alone.md) | Edge cells decide alone, on capital granted in advance |
 | [0009](0009-tiered-dependency-policy.md) | A tiered dependency policy, so the core stays at two |
 | [0010](0010-what-gets-deployed.md) | Four of the six application crates are deployed, and the other two are not |
+| [0011](0011-everything-in-rust-on-kubernetes.md) | Everything is Rust on Kubernetes; IBM Quantum is the only integration |

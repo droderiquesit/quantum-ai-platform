@@ -854,6 +854,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "qip-transport"
+version = "0.1.0"
+dependencies = [
+ "qip-contracts",
+ "qip-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "qip-twin"
 version = "0.1.0"
 dependencies = [

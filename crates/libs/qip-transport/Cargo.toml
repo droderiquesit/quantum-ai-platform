@@ -1,0 +1,17 @@
+[package]
+name = "qip-transport"
+description = "The in-tree streaming backbone: an HTTP/1.1 client and the mesh transport that replaces a managed message bus."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+qip-core.workspace = true
+qip-contracts.workspace = true
+
+[lints]
+workspace = true
