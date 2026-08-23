@@ -46,5 +46,20 @@ qip-execution-engine.workspace = true
 qip-learning-engine.workspace = true
 qip-investment-agents.workspace = true
 
+# The eleven service crates below were, until this change, reachable from no
+# deployable binary: the test suite exercised them and the deployed processes
+# did not contain them. The kernel is the composition root, so this is where
+# they become part of what actually ships.
+qip-data-finder.workspace = true
+qip-mesh.workspace = true
+qip-chain.workspace = true
+qip-prediction.workspace = true
+qip-streaming.workspace = true
+qip-twin.workspace = true
+qip-capital-fabric.workspace = true
+qip-cost-router.workspace = true
+qip-evolution.workspace = true
+qip-training.workspace = true
+
 [lints]
 workspace = true
