@@ -16,7 +16,8 @@ Dependencies point one way, and the compiler enforces it: a library cannot
 depend on a service, and a service cannot depend on the runtime.
 
 ```
-apps        qip-api  qip-web  qip-cli  qip-fastbrain  qip-deepbrain
+apps        qip-api  qip-fastbrain  qip-deepbrain  qip-edge-node
+            qip-cli (operator tool)   qip-web (library, linked by qip-api)
               │
 runtime     qip-kernel  ─── the only place that knows how it fits together
               │

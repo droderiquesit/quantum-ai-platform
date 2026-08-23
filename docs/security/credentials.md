@@ -216,7 +216,7 @@ It has no `gcloud`, no `terraform`, no credentials and no application-default
 credentials. It therefore cannot authenticate, plan, apply or deploy anything,
 and a service-account email does not change that — an identifier is not a key.
 
-The infrastructure is **specified and structurally tested**: 45 tests read the
+The infrastructure is **specified and structurally tested**: 54 tests read the
 Terraform and manifests and assert properties a plan would not catch, such as
 the node pool having no public addresses and no workload identity holding
 delete on the evidence bucket. It has never been validated against the provider

@@ -1,8 +1,8 @@
 # An edge cell.
 #
-# One of these per cell. `CELL_ID` and `CELL_REGION` are substituted at deploy
-# time, the same way `ENVIRONMENT`, `PROJECT` and `IMAGE_TAG` are — see
-# docs/operations/deploying-an-edge-cell.md.
+# One of these per cell. `CELL_ID`, `CELL_REGION` and `CELL_VENUES` are
+# substituted at deploy time, the same way `ENVIRONMENT`, `PROJECT` and
+# `IMAGE_TAG` are — see docs/operations/deploying-an-edge-cell.md.
 #
 # ADR 0008: the cell holds the whole hot path and decides without asking the
 # central plane. What keeps that safe is that it never decides how much it may
@@ -61,16 +61,10 @@ spec:
                   app: qip-edge-node
                   qip.io/cell: CELL_ID
               topologyKey: kubernetes.io/hostname
-      # No liveness or readiness probe.
-      #
-      # This binary does not serve yet: the crate that produces it is still being written. A probe pointed at a port
-      # nothing is listening on would fail every time, and one written against
-      # an endpoint that does not exist is a probe that looks like coverage and
-      # is not. The port and the Service below are the shape the workload is
-      # being built towards; until the serving loop lands, Kubernetes restarts
-      # the container each time it exits, which is visible in the restart count
-      # and is recorded as a blocking gap in
-      # docs/operations/external-dependencies.md.
+      # This one serves, unlike the two central-plane workloads. `qip-edge-node`
+      # binds `QIP_HEALTH_PORT` and answers every request with the cell's state,
+      # so the probes below point at something that exists rather than at the
+      # shape a workload is being built towards.
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -132,6 +126,18 @@ spec:
               value: "CELL_ID"
             - name: QIP_CELL_REGION
               value: "CELL_REGION"
+            # The venues this cell is configured for. `qip-edge-node` refuses to
+            # start without it and refuses an empty list — a cell with no venue
+            # has nothing to do, and one that started anyway would report itself
+            # healthy while being unable to trade.
+            #
+            # This is what the cell is configured for; the Terraform `venues`
+            # map and the egress rule below are what it may actually reach. All
+            # three are substituted from the same map, so they cannot name
+            # different venues, and the narrowest of them wins: a venue named
+            # here with no firewall rule is a venue the cell cannot open.
+            - name: QIP_VENUES
+              value: "CELL_VENUES"
             # The key capital envelopes are verified against. From a secret
             # reference, never from the image and never from a literal.
             - name: QIP_CAPITAL_ENVELOPE_KEY

@@ -60,6 +60,7 @@ should expect to correct it.
    ```sh
    sed -e "s#CELL_ID#london-1#g" \
        -e "s#CELL_REGION#europe-west2#g" \
+       -e "s#CELL_VENUES#<venue ids, comma separated>#g" \
        -e "s#IMAGE_PREFIX#$(terraform output -raw image_prefix)#g" \
        -e "s#IMAGE_TAG#<commit sha>#g" \
        -e "s#ENVIRONMENT#<environment>#g" \
@@ -67,10 +68,26 @@ should expect to correct it.
        infrastructure/kubernetes/base/edge-cell.yaml | kubectl apply -f -
    ```
 
-8. **Confirm the cell can reach nothing yet.** With `venues` empty, the cell
-   should fail to open a venue connection and should still start, log its cell
-   id and hold no envelope. That state — running, connected to nothing — is the
-   one to confirm before granting it any capital.
+   `CELL_VENUES` becomes `QIP_VENUES`, and the node refuses to start without
+   it: a cell that does not know which venues it is for cannot check an
+   envelope's venue scope, and one that started anyway would report itself
+   healthy while being unable to trade. Use the same venue ids as the
+   `venues` map in step 3, even while that map is empty — see the next step
+   for why those two are not the same thing.
+
+8. **Confirm the cell can reach nothing yet.** Two different things are being
+   checked here, and conflating them is how a cell ends up trading before
+   anyone meant it to.
+
+   `QIP_VENUES` is what the cell is *configured* for. The Terraform `venues`
+   map — still empty at this point — is what it may *reach*: no entry means no
+   firewall rule and no `allow-edge-egress` rule, so every venue connection
+   fails at the network. The narrower of the two always wins.
+
+   So the state to confirm is: the node starts, logs its cell id, prints the
+   venue endpoints and credentials it is still awaiting, serves `/health`, and
+   opens no venue connection. Running, connected to nothing, holding no
+   envelope. That is the state to be in before granting any capital.
 
 9. **Add the venues, last.** Put the ranges the venue publishes into the
    `venues` map, apply, and substitute `VENUE_CIDR` and `VENUE_PORT` in

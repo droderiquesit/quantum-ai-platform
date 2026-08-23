@@ -104,14 +104,28 @@ jobs:
           fi
           echo "ci succeeded for ${DEPLOY_SHA}"
 
-  # One image per deployable binary, built from the one Dockerfile so the five
+  # One image per deployable binary, built from the one Dockerfile so the four
   # cannot drift apart.
   #
-  # `qip-cli` is absent on purpose: it is an operator's tool, run by a person
-  # against a cluster rather than scheduled in one. `qip-edge-node` joins this
-  # matrix when its crate does — see the pending list in
-  # crates/tests/qip-acceptance/tests/infrastructure.rs, which fails as soon as
-  # the crate lands.
+  # The workspace builds five binaries and this matrix names four. Which ones
+  # deploy, and why the others do not, is decided in
+  # docs/adr/0010-what-gets-deployed.md rather than here — a reason living only
+  # in a matrix comment is a reason only the person editing the matrix reads.
+  #
+  #   * `qip`, from `qip-cli`, is absent on purpose: it is an operator's tool,
+  #     run by a person against a cluster rather than scheduled in one.
+  #   * `qip-web` is absent because it is not a binary. It is the library
+  #     `qip-api` links and renders from — `crates/apps/qip-web` declares no
+  #     `[[bin]]` and has no `main.rs` — so its pages are already served by the
+  #     `qip-api` image, on `qip-api`'s port. An entry here would ask the
+  #     Dockerfile for `cargo build --bin qip-web`, which has nothing to build.
+  #
+  # None of that is left as a claim.
+  # crates/tests/qip-acceptance/tests/infrastructure.rs checks it in every
+  # direction that can be wrong: a binary that appears with no image fails, an
+  # image with no manifest fails, a manifest with no image fails, an exclusion
+  # whose reason is not in the decision record fails, and `qip-web` gaining a
+  # `main.rs` fails rather than quietly shipping a library nobody serves.
   images:
     name: build and push ${{ matrix.binary }}
     needs: gate
@@ -222,7 +236,7 @@ jobs:
           # `cidr: VENUE_CIDR` would be rejected by the API server; a
           # `PROJECT` in a workload identity annotation would not be, and would
           # produce a pod that cannot authenticate.
-          ! grep -RnE 'IMAGE_PREFIX|IMAGE_TAG|PROJECT|ENVIRONMENT|CELL_ID|CELL_REGION|VENUE_CIDR|VENUE_PORT' rendered
+          ! grep -RnE 'IMAGE_PREFIX|IMAGE_TAG|PROJECT|ENVIRONMENT|CELL_ID|CELL_REGION|CELL_VENUES|VENUE_CIDR|VENUE_PORT' rendered
 
       # A dry run against the live API server first. It catches a manifest the
       # cluster will reject — an admission policy, a bad field — without having
@@ -235,6 +249,23 @@ jobs:
 
       # An apply that returns is not a deployment that worked. This is the step
       # that fails when the image does not start.
+      #
+      # The list is every Deployment the step above applied and nothing else.
+      # `qip-edge-CELL_ID` is not on it because `edge-cell.yaml` was skipped,
+      # and `kubectl rollout status` against a Deployment nobody created waits
+      # until it times out rather than failing usefully. The correspondence is
+      # checked by `the_rollout_waits_on_every_workload_the_pipeline_applies`,
+      # so adding a manifest without adding it here fails the test suite rather
+      # than producing a pipeline that reports success for a workload it never
+      # looked at.
+      #
+      # Stated because it will be met on the first real run: two of these three
+      # do not serve yet. `qip-fastbrain` and `qip-deepbrain` return from
+      # `fn run`, so their containers exit and are restarted, and this step is
+      # expected to time out against them until the serving loops land. That is
+      # a known blocking gap, recorded with the others in
+      # docs/operations/external-dependencies.md — not something to work around
+      # by dropping them from this list.
       - name: wait for the rollout
         run: |
           set -euo pipefail

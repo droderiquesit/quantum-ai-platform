@@ -15,7 +15,7 @@
 // assertion is the deliverable, and `?` is what keeps the setup readable.
 #![allow(clippy::panic_in_result_fn)]
 
-use qip_acceptance::{files_with_extension, read};
+use qip_acceptance::{files_with_extension, read, repository_root};
 
 /// Whether a configuration sets a boolean setting to a value.
 ///
@@ -487,6 +487,30 @@ fn the_dependency_policy_is_enforced_rather_than_documented() {
 /// and a predicate cannot answer it.
 const NOT_A_WORKLOAD: &[(&str, &str)] = &[(
     // `qip-cli` builds a binary called `qip`.
+    "qip",
+    "an operator's tool, run by a person against a cluster rather than \
+     scheduled in one",
+)];
+
+/// Binaries the workspace builds that the pipeline deliberately builds no image
+/// for.
+///
+/// The sibling of `NOT_A_WORKLOAD`, and deliberately a second list rather than
+/// a reuse of the first: "nothing schedules it" and "nothing builds it" are
+/// different decisions, and a crate could sensibly be one without the other —
+/// an operator tool distributed as an image and run as a `Job` would be in the
+/// matrix and absent from the manifests.
+///
+/// Each entry carries the crate it comes from as well as the binary, because
+/// the two differ exactly where this matters: `qip-cli` builds `qip`, and a
+/// reader searching the decision record for "qip" finds every line in it.
+///
+/// The reasons are the short form. The decision is
+/// `docs/adr/0010-what-gets-deployed.md`, and
+/// `every_deployment_exclusion_is_recorded_as_a_decision` is what keeps the two
+/// from drifting.
+const NOT_IN_THE_IMAGE_MATRIX: &[(&str, &str, &str)] = &[(
+    "qip-cli",
     "qip",
     "an operator's tool, run by a person against a cluster rather than \
      scheduled in one",
@@ -1483,19 +1507,221 @@ fn the_pipeline_authenticates_without_a_long_lived_key() {
     );
 }
 
+// --- what deploys, and what deliberately does not ---------------------------
+//
+// Three lists have to agree: the binaries the workspace builds, the images the
+// pipeline pushes, and the workloads the manifests declare. Every pair of them
+// can disagree in both directions, and each of the six failures is quiet:
+//
+//   * a binary with no image — the crate ships nowhere, and the deploy that was
+//     supposed to include it succeeds;
+//   * an image with no manifest — a build that costs money and ships nothing,
+//     and reads to a reviewer as a deployed component;
+//   * a manifest with no image — a rollout waiting for a tag that will never
+//     exist;
+//   * a workload the rollout check never waits on — a pipeline that reports
+//     success for a container that never started.
+//
+// None of these produces an error anywhere. They produce a deployment that is
+// missing something, and a review in which everything present is correct.
+
+/// The binaries the deploy workflow builds an image for.
+///
+/// Parsed out of the matrix rather than listed here, for the same reason
+/// `workspace_binaries` is parsed out of the manifests: a list here would be a
+/// third copy of the truth, and this whole section exists because copies drift.
+fn image_matrix() -> Vec<String> {
+    let deploy = read(".github/workflows/deploy.yml");
+    let block = deploy
+        .split("\n        binary:\n")
+        .nth(1)
+        .expect("the image job declares a matrix of binaries")
+        .split("\n    steps:")
+        .next()
+        .expect("the matrix ends where the job's steps begin");
+    let mut binaries: Vec<String> = block
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("- "))
+        .map(str::to_string)
+        .collect();
+    binaries.sort();
+    binaries.dedup();
+    assert!(
+        binaries.len() >= 4,
+        "only {binaries:?} were parsed out of the image matrix; the workflow's \
+         indentation has changed and this check has stopped checking"
+    );
+    binaries
+}
+
+/// The manifests the deploy pipeline renders but deliberately does not apply.
+///
+/// Read off the `case` in the render step, so a manifest that stops being
+/// skipped stops being exempt here in the same commit.
+fn manifests_the_pipeline_skips() -> Vec<String> {
+    let deploy = read(".github/workflows/deploy.yml");
+    let skipped: Vec<String> = deploy
+        .lines()
+        .filter_map(|line| line.trim().strip_suffix(") continue ;;"))
+        .map(str::to_string)
+        .collect();
+    assert!(
+        !skipped.is_empty(),
+        "no manifest is skipped by the render step. Either every manifest is \
+         applied now — in which case the rollout check must wait on all of \
+         them — or the `case` has been rewritten and this walk reads nothing."
+    );
+    skipped
+}
+
+/// The workloads the pipeline waits for a rollout of.
+fn rollout_workloads() -> Vec<String> {
+    let deploy = read(".github/workflows/deploy.yml");
+    let line = deploy
+        .lines()
+        .find(|line| line.trim().starts_with("for workload in "))
+        .expect("the pipeline waits for a rollout");
+    line.trim()
+        .trim_start_matches("for workload in ")
+        .split(';')
+        .next()
+        .expect("the loop's list ends at a semicolon")
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
+}
+
+/// Every Deployment the pipeline actually applies, by workload name.
+fn workloads_the_pipeline_applies() -> Vec<String> {
+    let skipped = manifests_the_pipeline_skips();
+    let applied: Vec<String> = documents_of_kind("Deployment")
+        .into_iter()
+        .filter(|(path, _)| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_none_or(|name| !skipped.iter().any(|skip| skip == name))
+        })
+        .map(|(_, document)| first_value(&document, "name").expect("a Deployment is named"))
+        .collect();
+    assert!(
+        applied.len() >= 3,
+        "only {applied:?} would be applied; the manifest walk is not reaching them"
+    );
+    applied
+}
+
+#[test]
+fn every_binary_the_workspace_builds_is_in_the_image_matrix_or_excluded_by_name() {
+    // The direction nobody notices: a new deployable lands, the manifests are
+    // written, and the matrix is not touched. The apply then references an
+    // image tag that was never pushed.
+    let matrix = image_matrix();
+    for binary in workspace_binaries() {
+        if NOT_IN_THE_IMAGE_MATRIX
+            .iter()
+            .any(|(_, name, _)| *name == binary)
+        {
+            continue;
+        }
+        assert!(
+            matrix.contains(&binary),
+            "{binary} is a binary this workspace builds and deploy.yml builds \
+             no image for it. Either add it to the matrix, or add it to \
+             NOT_IN_THE_IMAGE_MATRIX with the reason it is not deployed and \
+             record that reason in docs/adr/0010-what-gets-deployed.md."
+        );
+    }
+}
+
+#[test]
+fn nothing_is_excluded_from_the_image_matrix_and_built_by_it() {
+    // What stops the exclusion list becoming a place things are left. An entry
+    // that is also in the matrix is an exclusion somebody undid without
+    // deleting, and an entry for a binary the workspace no longer builds is one
+    // whose crate has gone.
+    let matrix = image_matrix();
+    let binaries = workspace_binaries();
+    for (crate_name, binary, reason) in NOT_IN_THE_IMAGE_MATRIX {
+        assert!(
+            !matrix.contains(&(*binary).to_string()),
+            "{binary} is excluded from the image matrix for the reason \
+             \"{reason}\" and the matrix builds it anyway. Delete the entry."
+        );
+        assert!(
+            binaries.contains(&(*binary).to_string()),
+            "NOT_IN_THE_IMAGE_MATRIX excludes {binary}, which no crate in this \
+             workspace builds. An exclusion for something that does not exist \
+             hides the next thing that takes its name."
+        );
+        assert!(
+            repository_root()
+                .join(format!("crates/apps/{crate_name}/Cargo.toml"))
+                .exists(),
+            "NOT_IN_THE_IMAGE_MATRIX names the crate {crate_name}, which is not \
+             under crates/apps"
+        );
+    }
+}
+
+#[test]
+fn qip_web_is_a_library_and_stops_being_exempt_the_moment_it_is_not() {
+    // The one crate under crates/apps with no image, no manifest and no
+    // service account — and the one whose absence most looks like an
+    // oversight. It is a library qip-api links and renders from, so its pages
+    // are already served by the qip-api image on qip-api's port, and there is
+    // no second process to schedule.
+    //
+    // This is checked rather than left in a comment because the day it grows a
+    // `main.rs` is the day four files need changing together: the matrix, a
+    // manifest, the service-account map in Terraform, and the rollout check.
+    // Without this the crate would simply build a binary nothing deploys.
+    let manifest = read("crates/apps/qip-web/Cargo.toml");
+    assert!(
+        !manifest.contains("[[bin]]"),
+        "qip-web declares a binary, and the deployment configuration has no \
+         entry for it anywhere: no image in deploy.yml, no manifest, no \
+         service account in Terraform. Either give it all of them or take the \
+         binary back out. See docs/adr/0010-what-gets-deployed.md."
+    );
+    assert!(
+        !workspace_binaries().contains(&"qip-web".to_string()),
+        "qip-web now produces a binary. See docs/adr/0010-what-gets-deployed.md \
+         for the four places that have to change with it."
+    );
+
+    // And it is still linked by the thing that serves it. A library nothing
+    // links is not a decision not to deploy it; it is dead code.
+    let api = read("crates/apps/qip-api/Cargo.toml");
+    assert!(
+        api.contains("qip-web.workspace = true"),
+        "qip-api no longer links qip-web, so nothing renders its pages and \
+         nothing serves them. Either something else does — and then that is \
+         what deploys them — or the crate is unused."
+    );
+}
+
+#[test]
+fn every_image_the_matrix_builds_has_a_manifest_that_runs_it() {
+    // An image nobody deploys is a build that costs money and ships nothing.
+    // Worse, it reads to a reviewer as a component that is deployed: the
+    // pipeline visibly builds and pushes it, and nothing says the cluster never
+    // asks for it.
+    let deployed = deployed_binaries();
+    for binary in image_matrix() {
+        assert!(
+            deployed.contains(&binary),
+            "the pipeline builds and pushes {binary} and no manifest runs it. \
+             Either write the manifest or take it out of the matrix."
+        );
+    }
+}
+
 #[test]
 fn the_pipeline_builds_an_image_for_every_workload_it_deploys() {
-    // A Deployment whose image nothing builds is a rollout that waits for a tag
-    // that will never exist.
-    let deploy = read(".github/workflows/deploy.yml");
-    let matrix = deploy
-        .split("binary:")
-        .nth(1)
-        .expect("the image job has a matrix")
-        .split("steps:")
-        .next()
-        .expect("the matrix ends");
-
+    // The reverse, and the one that fails a deployment rather than wasting a
+    // build: a Deployment whose image nothing pushes is a rollout waiting for a
+    // tag that will never exist.
+    let matrix = image_matrix();
     for binary in deployed_binaries() {
         if AWAITING_ITS_CRATE.iter().any(|(name, _)| *name == binary) {
             continue;
@@ -1503,6 +1729,224 @@ fn the_pipeline_builds_an_image_for_every_workload_it_deploys() {
         assert!(
             matrix.contains(&binary),
             "{binary} has a Deployment and the pipeline builds no image for it"
+        );
+    }
+}
+
+#[test]
+fn every_manifest_pulls_from_the_repository_the_pipeline_pushes_to() {
+    // Three places name the same repository and none of them can see the other
+    // two: the workflow builds `<region>-docker.pkg.dev/<project>/qip-<env>`,
+    // Terraform creates `qip-<env>`, and every manifest writes `IMAGE_PREFIX`
+    // for the workflow to substitute. If any drifts, every pull in every
+    // environment fails with a 404 that names neither of the two that disagree.
+    let deploy = read(".github/workflows/deploy.yml");
+    assert!(
+        deploy.contains("docker.pkg.dev/${{ vars.GCP_PROJECT }}/qip-${TARGET_ENVIRONMENT}"),
+        "the pipeline no longer pushes to qip-<environment> in the project's \
+         Artifact Registry"
+    );
+    let registry = read("infrastructure/terraform/modules/registry/main.tf");
+    assert!(
+        sets(&registry, "repository_id", r#""qip-${var.environment}""#),
+        "the registry Terraform creates is not the one the pipeline pushes to"
+    );
+
+    // And no manifest pins a registry of its own. A hard-coded prefix survives
+    // the pipeline's placeholder check — there is no placeholder left in it —
+    // and pulls from wherever it says, in every environment.
+    let mut checked = 0usize;
+    for (path, document) in documents_of_kind("Deployment") {
+        for container in containers(&document) {
+            let image = container
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("image:"))
+                .map(str::trim)
+                .unwrap_or_else(|| panic!("a container declares an image"));
+            assert!(
+                image.starts_with("IMAGE_PREFIX/"),
+                "{} pulls {image}, which names a registry rather than deferring \
+                 to the one the pipeline substitutes",
+                path.display()
+            );
+            assert!(
+                image.ends_with(":IMAGE_TAG"),
+                "{} pulls {image}, which pins a tag rather than the commit \
+                 being deployed",
+                path.display()
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked >= 4, "only {checked} images were checked");
+}
+
+#[test]
+fn the_rollout_waits_on_every_workload_the_pipeline_applies() {
+    // `kubectl apply` returns when the API server has accepted the objects, not
+    // when the containers are running. Without this step a pipeline reports
+    // success for an image that crashes on start-up, which is the failure the
+    // whole deployment exists to catch.
+    //
+    // Both directions matter. A workload missing from the list is never
+    // checked; a workload on the list that the pipeline did not apply makes
+    // `rollout status` wait on a Deployment nobody created until it times out,
+    // which fails the deployment for a reason that is not the real one.
+    let waited = rollout_workloads();
+    let applied = workloads_the_pipeline_applies();
+
+    for workload in &applied {
+        assert!(
+            waited.contains(workload),
+            "the pipeline applies {workload} and never waits for its rollout, \
+             so a {workload} that does not start is a deployment that reports \
+             success"
+        );
+    }
+    for workload in &waited {
+        assert!(
+            applied.contains(workload),
+            "the rollout waits for {workload}, which this pipeline does not \
+             apply. `kubectl rollout status` on a Deployment nobody created \
+             waits until it times out."
+        );
+    }
+}
+
+#[test]
+fn every_manifest_is_somewhere_something_applies_it() {
+    // `infrastructure/kubernetes/overlays` was an empty directory nothing
+    // referenced — no kustomization, no pipeline step, no runbook. Empty it was
+    // harmless. With a manifest in it, it would have been a set of resources a
+    // reviewer reads as deployed and that nothing applies.
+    let deploy = read(".github/workflows/deploy.yml");
+    assert!(
+        deploy.contains("for manifest in infrastructure/kubernetes/base/*.yaml"),
+        "the pipeline no longer renders infrastructure/kubernetes/base/*.yaml, \
+         so this check is looking at the wrong directory"
+    );
+
+    let skipped = manifests_the_pipeline_skips();
+    let runbooks: String = files_with_extension("docs/operations", "md")
+        .iter()
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .collect();
+
+    let mut checked = 0usize;
+    for path in files_with_extension("infrastructure/kubernetes", "yaml") {
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("a manifest has a name")
+            .to_string();
+        assert!(
+            path.parent()
+                .is_some_and(|parent| parent.ends_with("infrastructure/kubernetes/base")),
+            "{} is a manifest outside the one directory the pipeline renders. \
+             Nothing applies it.",
+            path.display()
+        );
+        if skipped.contains(&name) {
+            assert!(
+                runbooks.contains(&name),
+                "{name} is skipped by the deploy pipeline and named by no \
+                 runbook in docs/operations, so nothing applies it and nobody \
+                 is told to"
+            );
+        }
+        checked += 1;
+    }
+    assert!(checked >= 5, "only {checked} manifests were checked");
+}
+
+/// The environment variables a binary refuses to start without.
+///
+/// Read out of the source rather than listed here. `required("QIP_X", &mut
+/// missing)` is the call that puts a variable on the list the binary exits on,
+/// so matching it is matching the actual requirement rather than a second
+/// statement of it.
+fn variables_the_binary_refuses_to_start_without(source: &str) -> Vec<String> {
+    source
+        .split("required(\"")
+        .skip(1)
+        .filter_map(|rest| rest.split('"').next())
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn every_variable_a_deployable_refuses_to_start_without_is_set_by_its_manifest() {
+    // The bug this was written for: `edge-cell.yaml` set QIP_CELL_ID,
+    // QIP_CELL_REGION and QIP_CAPITAL_ENVELOPE_KEY and not QIP_VENUES, which
+    // `qip-edge-node` also requires. The container would have exited with a
+    // configuration error and been restarted for ever.
+    //
+    // Nothing else would have caught it. The manifest is not applied by the
+    // pipeline, so no rollout check runs against it; the runbook that does
+    // apply it substituted the placeholders that were there.
+    let mut checked = 0usize;
+    for (path, document) in documents_of_kind("Deployment") {
+        for container in containers(&document) {
+            let binary = container_binary(&container);
+            let source = format!("crates/apps/{binary}/src/main.rs");
+            if !repository_root().join(&source).exists() {
+                continue;
+            }
+            for variable in variables_the_binary_refuses_to_start_without(&read(&source)) {
+                assert!(
+                    container.contains(&format!("- name: {variable}")),
+                    "{binary} refuses to start without {variable} and {} does \
+                     not set it. The container exits with a configuration error \
+                     and is restarted for ever, which looks like a crash loop \
+                     rather than a missing value.",
+                    path.display()
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(
+        checked >= 4,
+        "only {checked} required variables were checked; the walk from a \
+         container to the source of the binary it runs is finding nothing"
+    );
+}
+
+#[test]
+fn every_deployment_exclusion_is_recorded_as_a_decision() {
+    // A reason in a `const` is read by whoever is already editing this file.
+    // The person asking why the operator CLI is not in the cluster, or why
+    // there are six application crates and four images, is not that person —
+    // and a comment in a build matrix is not where they will look.
+    let adr = read("docs/adr/0010-what-gets-deployed.md");
+
+    for (crate_name, _, _) in NOT_IN_THE_IMAGE_MATRIX {
+        assert!(
+            adr.contains(crate_name),
+            "{crate_name} is excluded from the image matrix and the decision \
+             record does not mention it"
+        );
+    }
+    for (binary, _) in NOT_A_WORKLOAD {
+        assert!(
+            adr.contains(binary),
+            "{binary} is deployed by no workload and the decision record does \
+             not mention it"
+        );
+    }
+    assert!(
+        adr.contains("qip-web"),
+        "the decision record does not say why qip-web is neither built nor \
+         deployed, which is the exclusion that most looks like an oversight"
+    );
+
+    // And the record lists what *is* deployed too. A record of only the
+    // exceptions cannot be checked against the thing it describes.
+    for binary in image_matrix() {
+        assert!(
+            adr.contains(&binary),
+            "the decision record does not name {binary}, which the pipeline \
+             builds and deploys"
         );
     }
 }

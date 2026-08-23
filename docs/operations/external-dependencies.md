@@ -153,16 +153,27 @@ refused at admission.
 Closing it needs a Binary Authorization policy, an attestor backed by a KMS
 signing key, and a signing step in the pipeline after the push.
 
-### Three of the four workloads do not serve
+### Two of the four workloads do not serve
 
 `qip-fastbrain` checks its agent roster and returns. `qip-deepbrain` runs one
-cycle and returns. `qip-edge-node`'s crate is still being written —
-`crates/edge/qip-edge` says "Under construction" and declares no binary.
+cycle and returns.
 
 Their Deployments, Services and ports describe the shape they are being built
-towards. Applied today, Kubernetes would restart each container as it exits.
-They carry no liveness or readiness probe for that reason: a probe against an
-endpoint that does not exist looks like coverage and is not.
+towards. Applied today, Kubernetes would restart each container as it exits,
+and the rollout check at the end of `deploy.yml` is expected to time out
+against both. That is a pipeline failing for a real reason; the fix is a
+serving loop, not a shorter wait list.
+
+They carry no liveness or readiness probe for the same reason: a probe against
+an endpoint that does not exist looks like coverage and is not.
+
+`qip-edge-node` used to be the third and is not any more. It binds
+`QIP_HEALTH_PORT`, answers every request with the cell's state, and
+`edge-cell.yaml` probes `/health` for real. It is still absent from the
+rollout check, but for a different reason — the pipeline does not apply
+`edge-cell.yaml` at all. Bringing a cell up is
+[a runbook](deploying-an-edge-cell.md), because a workload that trades should
+not appear unattended.
 
 `crates/tests/qip-acceptance/tests/infrastructure.rs` holds this as an explicit,
 shrinking list. The test fails when a binary on it gains a serving loop, which
@@ -174,6 +185,34 @@ is what forces the exemption to be removed rather than forgotten.
 It does not create a node pool. Until one exists carrying the cell's tag — the
 tag every firewall rule in the module targets — the cell has nowhere to be
 scheduled, and its egress rules constrain nothing.
+
+### Nothing in the central plane can mint a capital envelope
+
+`modules/edge-cell` grants `roles/secretmanager.secretAccessor` on
+`qip-capital-envelope-key` to each cell's service account, and to nothing else.
+No central-plane identity — not `qip-api`, not `qip-deepbrain` — has a reader
+binding on it.
+
+That matters because the signature is symmetric.
+`qip_edge::envelope::sign_payload` is HMAC-SHA256 over a shared secret, and the
+function says so itself: it "proves possession of a shared secret, not the
+identity of a signer". Whoever mints an envelope must read the same bytes the
+cell verifies against. As configured, no workload can.
+
+**This is deliberately not fixed here, because the obvious repair is the wrong
+one.** Granting a central-plane workload read on that key gives it the authority
+to mint an envelope for any cell — which is the exact authority
+`edge-cell.yaml` calls the most security-relevant value in the file, and it
+would mean one compromised central-plane pod could widen every cell's bound
+without anyone agreeing. It would be a real reduction in the platform's safety,
+made silently, in a commit about deployment coverage.
+
+The answer is asymmetric signing: the central plane holds a private key, each
+cell holds only the public half, and reading a cell's copy grants the ability
+to verify and not to mint. That needs a signing key in KMS, a verification path
+in `qip-edge` that is not HMAC, and a decision about which identity signs.
+Until then, envelopes are minted only in tests, and the absent IAM binding is
+the honest state rather than a missing line.
 
 ### Kubernetes Secrets are created out of band
 
