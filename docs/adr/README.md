@@ -17,3 +17,4 @@ no stated reversal condition cannot be revisited honestly.
 | [0009](0009-tiered-dependency-policy.md) | A tiered dependency policy, so the core stays at two |
 | [0010](0010-what-gets-deployed.md) | Four of the six application crates are deployed, and the other two are not |
 | [0011](0011-everything-in-rust-on-kubernetes.md) | Everything is Rust on Kubernetes; IBM Quantum is the only integration |
+| [0012](0012-where-a-library-earns-its-place.md) | A dependency is admitted only where getting it wrong is silent, the problem is specialist, and a maintained implementation exists |
