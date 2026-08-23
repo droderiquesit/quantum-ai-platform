@@ -193,13 +193,75 @@ fn keys_compose_and_decompose() {
 #[test]
 fn the_provider_builds_local_adapters() {
     let dir = temp_dir("provider");
-    for target in [StorageTarget::Memory, StorageTarget::File] {
+    for target in [
+        StorageTarget::Memory,
+        StorageTarget::File,
+        StorageTarget::Engine,
+    ] {
         let provider = StorageProvider::new(target, &dir);
-        let store = provider.key_value("test").unwrap();
+        let store = provider.key_value(&format!("test-{target:?}")).unwrap();
         store.put("k", serde_json::json!(1)).unwrap();
         assert_eq!(store.len().unwrap(), 1);
         assert!(provider.blobs("artifacts").is_ok());
+        assert!(target.is_implemented());
+        assert_eq!(
+            target.required_configuration(),
+            None,
+            "{target:?} is built in and must not ask for credentials"
+        );
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn only_the_targets_that_flush_claim_to_be_crash_safe() {
+    // Memory is honest about losing everything; the two file-backed targets
+    // fsync before acknowledging a write.
+    assert!(!StorageTarget::Memory.is_crash_safe());
+    assert!(StorageTarget::File.is_crash_safe());
+    assert!(StorageTarget::Engine.is_crash_safe());
+}
+
+#[test]
+fn the_file_blob_store_never_lists_a_scratch_file_left_by_a_crash() {
+    // A crash between writing a temporary and renaming it leaves the partial
+    // file behind. It holds no complete object and must not appear as one.
+    let dir = temp_dir("blob-scratch");
+    let store = FileBlobStore::open(&dir).unwrap();
+    store.put("reports/final.json", b"{}".to_vec()).unwrap();
+    std::fs::create_dir_all(dir.join("reports")).unwrap();
+    std::fs::write(dir.join("reports/final.json.qip-partial.9"), b"half").unwrap();
+
+    assert_eq!(
+        store.list("").unwrap(),
+        vec!["reports/final.json"],
+        "the scratch file is not a stored object"
+    );
+    assert_eq!(
+        store.get("reports/final.json").unwrap(),
+        Some(b"{}".to_vec()),
+        "and the real object is untouched by it"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_file_store_write_leaves_no_scratch_file_behind() {
+    let dir = temp_dir("kv-scratch");
+    let store = FileKeyValueStore::open(dir.join("store.json")).unwrap();
+    for i in 0..5 {
+        store.put(&format!("k{i}"), serde_json::json!(i)).unwrap();
+    }
+    let leftovers: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains("qip-partial"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "the temporary must be renamed, not accumulated: {leftovers:?}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

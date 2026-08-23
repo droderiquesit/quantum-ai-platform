@@ -114,8 +114,18 @@ impl KeyValueStore for MemoryKeyValueStore {
 
 /// File-backed store: one JSON document, rewritten on change.
 ///
-/// Adequate for local development and for the modest state the demo keeps. It
-/// is explicitly not a database — the managed adapters exist for that.
+/// Adequate for a handful of keys read at start-up and rewritten rarely —
+/// configuration snapshots, a bootstrap manifest. It is explicitly not a
+/// database: every `put` re-serialises and rewrites the whole document, so the
+/// cost of a write is the size of the dataset, and a large namespace makes
+/// that quadratic. [`crate::engine::DurableStore`] is the engine to reach for
+/// instead; this type is kept for the small cases where a single
+/// human-readable JSON file is the point.
+///
+/// Writes are durable: the document is written to a scratch file, flushed with
+/// `fsync`, renamed over the target, and the directory flushed in turn. When
+/// `put` returns the new contents are on the device, and a crash at any point
+/// leaves either the previous document or the new one — never a mixture.
 #[derive(Debug)]
 pub struct FileKeyValueStore {
     path: PathBuf,
@@ -144,14 +154,15 @@ impl FileKeyValueStore {
         })
     }
 
-    /// Write the cache out. Writes to a temporary file and renames, so a crash
-    /// mid-write leaves the previous contents intact rather than a truncated file.
+    /// Write the cache out atomically and durably.
+    ///
+    /// The rename gives atomicity; the `fsync` inside [`crate::fsio::write_atomic`]
+    /// gives durability. Without the second, a successful `put` would mean only
+    /// that the kernel had seen the bytes, and a power loss would silently
+    /// discard writes this store had already acknowledged.
     fn flush(&self, entries: &BTreeMap<String, serde_json::Value>) -> Result<()> {
         let text = serde_json::to_string_pretty(entries)?;
-        let temporary = self.path.with_extension("tmp");
-        std::fs::write(&temporary, text)?;
-        std::fs::rename(&temporary, &self.path)?;
-        Ok(())
+        crate::fsio::write_atomic(&self.path, text.as_bytes())
     }
 }
 

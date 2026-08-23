@@ -8,7 +8,7 @@ use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::engine::frame::{self, Frame};
 use crate::fsio;
@@ -16,7 +16,6 @@ use crate::fsio;
 /// An open frame file positioned for appends.
 #[derive(Debug)]
 pub(crate) struct FrameLog {
-    path: PathBuf,
     file: File,
     /// Bytes currently in the file, header included.
     length: u64,
@@ -40,7 +39,6 @@ impl FrameLog {
             fsio::sync_directory(parent);
         }
         Ok(Self {
-            path: path.to_path_buf(),
             file,
             length: header.len() as u64,
         })
@@ -51,27 +49,17 @@ impl FrameLog {
     /// `length` comes from recovery and is the offset just past the last frame
     /// that verified. Anything after it was a torn tail and has been removed.
     pub(crate) fn open_at(path: &Path, length: u64) -> Result<Self> {
-        let file = OpenOptions::new().read(true).append(true).open(path)?;
-        Ok(Self {
-            path: path.to_path_buf(),
-            file,
-            length,
-        })
-    }
-
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// Bytes in the file, header included.
-    pub(crate) fn length(&self) -> u64 {
-        self.length
+        let file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(path)
+            .map_err(|e| Error::io(format!("cannot open {} for appending: {e}", path.display())))?;
+        Ok(Self { file, length })
     }
 
     /// Bytes of frames, excluding the fixed header.
     pub(crate) fn frame_bytes(&self) -> u64 {
-        self.length
-            .saturating_sub(frame::FILE_HEADER_LEN as u64)
+        self.length.saturating_sub(frame::FILE_HEADER_LEN as u64)
     }
 
     /// Append one payload. Returns the number of bytes written.
@@ -79,6 +67,13 @@ impl FrameLog {
     /// This does **not** flush; the caller decides when to pay for the barrier
     /// so that a batch of frames can share one.
     pub(crate) fn append(&mut self, payload: &[u8]) -> Result<u64> {
+        if payload.len() > frame::MAX_PAYLOAD_LEN {
+            return Err(Error::invalid(format!(
+                "a single record of {} bytes exceeds the {}-byte record limit",
+                payload.len(),
+                frame::MAX_PAYLOAD_LEN
+            )));
+        }
         let encoded = frame::encode(payload);
         self.file.write_all(&encoded)?;
         self.length += encoded.len() as u64;
@@ -119,7 +114,15 @@ pub(crate) struct Scan {
 /// Corruption inside a complete frame is raised, because no truncation can
 /// produce it.
 pub(crate) fn scan(label: &str, path: &Path) -> Result<Scan> {
-    let bytes = std::fs::read(path)?;
+    // The path matters more than the errno here: a manifest naming a file that
+    // is not there is a very different problem from a permissions mistake, and
+    // the operating system's message says neither.
+    let bytes = std::fs::read(path).map_err(|e| {
+        Error::io(format!(
+            "cannot read {}, which the manifest names as live: {e}",
+            path.display()
+        ))
+    })?;
     frame::check_file_header(label, &bytes)?;
 
     let mut payloads = Vec::new();

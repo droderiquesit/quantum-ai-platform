@@ -69,6 +69,12 @@ impl BlobStore for MemoryBlobStore {
 }
 
 /// Blob store rooted at a filesystem directory.
+///
+/// A `put` returns only once the object's bytes have been flushed to the
+/// storage device and the directory entry naming them has been flushed too.
+/// Blobs are the platform's evidence — simulation outputs, model artifacts,
+/// reports someone will later be asked to justify — so an acknowledged write
+/// that a power loss can take back is not acceptable here either.
 #[derive(Debug)]
 pub struct FileBlobStore {
     root: PathBuf,
@@ -104,8 +110,7 @@ impl BlobStore for FileBlobStore {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(path, bytes)?;
-        Ok(())
+        crate::fsio::write_atomic(&path, &bytes)
     }
 
     fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
@@ -121,7 +126,12 @@ impl BlobStore for FileBlobStore {
         if !path.exists() {
             return Ok(false);
         }
-        std::fs::remove_file(path)?;
+        std::fs::remove_file(&path)?;
+        // An unlink is a directory change like any other, and is no more
+        // durable than a create until the directory itself is flushed.
+        if let Some(parent) = path.parent() {
+            crate::fsio::sync_directory(parent);
+        }
         Ok(true)
     }
 
@@ -144,7 +154,13 @@ fn collect(root: &Path, directory: &Path, out: &mut Vec<String>) -> Result<()> {
         if path.is_dir() {
             collect(root, &path, out)?;
         } else if let Ok(relative) = path.strip_prefix(root) {
-            out.push(relative.to_string_lossy().replace('\\', "/"));
+            let key = relative.to_string_lossy().replace('\\', "/");
+            // A crash between writing a scratch file and renaming it leaves
+            // one behind. It is not a stored object and must not be listed as
+            // one.
+            if !crate::fsio::is_temporary(&key) {
+                out.push(key);
+            }
         }
     }
     Ok(())

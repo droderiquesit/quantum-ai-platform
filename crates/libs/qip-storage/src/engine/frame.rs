@@ -170,7 +170,7 @@ pub(crate) fn read_frame(label: &str, bytes: &[u8], offset: usize) -> Result<Fra
     let payload = &rest[FRAME_HEADER_LEN..end];
     let expected = &rest[8..40];
     let actual = sha256(payload);
-    if expected != actual {
+    if expected != actual.as_slice() {
         return Err(Error::io(format!(
             "corrupt record in {label} at byte offset {offset}: \
              digest mismatch over {length} payload bytes \

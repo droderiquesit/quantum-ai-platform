@@ -14,8 +14,12 @@ use serde::{Deserialize, Serialize};
 pub enum StorageTarget {
     /// Process memory. Simulation, tests, and the Fast Brain's hot state.
     Memory,
-    /// Local files. Development and single-node deployments.
+    /// Local files, one JSON document per namespace. Development, and small
+    /// hand-inspectable state.
     File,
+    /// The in-tree embedded engine: write-ahead log, checkpoints, atomic
+    /// transactions, crash recovery. The durable choice for a single node.
+    Engine,
     /// Analytical warehouse: research queries, attribution, backtest results.
     BigQuery,
     /// Object storage: event log archives, model artifacts, reports.
@@ -33,14 +37,26 @@ pub enum StorageTarget {
 impl StorageTarget {
     /// Whether an adapter for this target exists in this build.
     pub fn is_implemented(&self) -> bool {
-        matches!(self, Self::Memory | Self::File)
+        matches!(self, Self::Memory | Self::File | Self::Engine)
+    }
+
+    /// Whether an acknowledged write to this target survives loss of power.
+    ///
+    /// Only [`StorageTarget::Engine`] both flushes every write and recovers a
+    /// crash mid-write. [`StorageTarget::File`] flushes too, but rewrites the
+    /// whole document each time, so it is durable without being an engine.
+    pub fn is_crash_safe(&self) -> bool {
+        matches!(self, Self::File | Self::Engine)
     }
 
     /// What the target is for, and why it was chosen over the alternatives.
     pub fn rationale(&self) -> &'static str {
         match self {
             Self::Memory => "hot state and deterministic simulation; nothing survives a restart",
-            Self::File => "single-node durability for local development and the demo",
+            Self::File => "one readable JSON document per namespace; small, rarely written state",
+            Self::Engine => {
+                "the in-tree engine: durable, crash-recoverable, transactional, single node"
+            }
             Self::BigQuery => "columnar scans over research history; not for transactional writes",
             Self::CloudStorage => "immutable large objects: log archives, model artifacts, reports",
             Self::AlloyDb => {
@@ -57,7 +73,7 @@ impl StorageTarget {
     /// The credential or configuration a deployment must supply.
     pub fn required_configuration(&self) -> Option<&'static str> {
         match self {
-            Self::Memory | Self::File => None,
+            Self::Memory | Self::File | Self::Engine => None,
             Self::BigQuery => {
                 Some("GCP project, dataset, and a service account with BigQuery Data Editor")
             }
@@ -81,14 +97,29 @@ impl StorageTarget {
 pub struct StorageProvider {
     target: StorageTarget,
     root: std::path::PathBuf,
+    clock: std::sync::Arc<dyn qip_core::Clock>,
 }
 
 impl StorageProvider {
+    /// A provider reading the host wall clock.
+    ///
+    /// The provider is a composition-root helper, which is the one place a
+    /// live [`qip_core::SystemClock`] belongs; a simulation or a replay calls
+    /// [`StorageProvider::with_clock`] to inject its own.
     pub fn new(target: StorageTarget, root: impl Into<std::path::PathBuf>) -> Self {
         Self {
             target,
             root: root.into(),
+            clock: std::sync::Arc::new(qip_core::SystemClock),
         }
+    }
+
+    /// Build stores against an injected clock. Required for deterministic
+    /// replay, where the timestamps the engine stamps on commits must be the
+    /// simulated ones.
+    pub fn with_clock(mut self, clock: std::sync::Arc<dyn qip_core::Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     pub fn target(&self) -> StorageTarget {
@@ -108,6 +139,10 @@ impl StorageProvider {
                 let path = self.root.join(format!("{namespace}.json"));
                 Ok(std::sync::Arc::new(crate::FileKeyValueStore::open(path)?))
             }
+            StorageTarget::Engine => Ok(std::sync::Arc::new(crate::DurableStore::open(
+                self.root.join(namespace),
+                crate::EngineConfig::new(self.clock.clone()),
+            )?)),
             other => Err(Error::unavailable(format!(
                 "the {other:?} adapter is not built into this binary. It requires: {}. \
                  See docs/operations/external-dependencies.md",
@@ -122,9 +157,11 @@ impl StorageProvider {
     pub fn blobs(&self, namespace: &str) -> Result<std::sync::Arc<dyn crate::BlobStore>> {
         match self.target {
             StorageTarget::Memory => Ok(std::sync::Arc::new(crate::MemoryBlobStore::new())),
-            StorageTarget::File => Ok(std::sync::Arc::new(crate::FileBlobStore::open(
-                self.root.join(namespace),
-            )?)),
+            // Blobs are whole files either way: the engine's log buys nothing
+            // for objects written once and never edited.
+            StorageTarget::File | StorageTarget::Engine => Ok(std::sync::Arc::new(
+                crate::FileBlobStore::open(self.root.join(namespace))?,
+            )),
             other => Err(Error::unavailable(format!(
                 "the {other:?} blob adapter is not built into this binary. It requires: {}",
                 other
