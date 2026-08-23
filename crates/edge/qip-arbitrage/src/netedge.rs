@@ -1,4 +1,4 @@
-//! Turning a priced path into a [`NetEdge`] with all seven deductions.
+//! Turning a priced path into a [`NetEdge`] with all nine deductions.
 //!
 //! The gross figure is the easy part and the least interesting: it is the
 //! quantity that comes back at the end of the cycle, minus the quantity that
@@ -8,7 +8,7 @@
 //! rather than assumed away. A deduction that was never considered does not
 //! show up as zero here; it shows up as a refusal.
 //!
-//! The seven, and what each is actually modelling:
+//! The nine, and what each is actually modelling:
 //!
 //! * **Spread** — crossing from the mid to the touch on every leg. Charged to
 //!   everyone, whatever the size.
@@ -29,6 +29,18 @@
 //! * **Uncertainty** — not a cost the market charges. A discount the platform
 //!   takes on its own estimate, growing as the inputs get stale and shrinking
 //!   as more observations back them.
+//! * **Compute cost** — what it cost to reach the decision. Zero here, and the
+//!   basis says why: a triangular scan and this calculation are deterministic
+//!   Rust running in microseconds, and the figure at the size an arbitrage is
+//!   done in rounds to nothing in units of the starting instrument. It is
+//!   deducted as an explicit zero rather than omitted so that a path which
+//!   *does* consult a model — routed through `qip-cost-router`, which owns the
+//!   compute ledger this crate has no access to — replaces a stated zero rather
+//!   than filling a silence nobody noticed.
+//! * **Data cost** — the amortised licence cost of the books the path was
+//!   priced from. Also zero here, for a reason that is not "it is free": this
+//!   crate sees an order book, not a subscription or a read volume, and cannot
+//!   amortise what it cannot see. The cost engine owns that figure.
 //!
 //! Every deduction is denominated in units of the instrument the cycle started
 //! from. A cost quoted as a fraction of one leg's notional converts by
@@ -215,9 +227,19 @@ impl NetEdgeCalculator {
                     "confidence {confidence_f64} from inputs {age:?} old backed by {} observations",
                     pricing.fewest_observations
                 ),
+            )?)
+            .deduct(Deduction::new(
+                DeductionKind::ComputeCost,
+                Decimal::ZERO,
+                "the search and this calculation are deterministic Rust; in units of the starting instrument the cost rounds to nothing at this size, and a path that escalates to a model is priced by the cost engine, which owns the compute ledger",
+            )?)
+            .deduct(Deduction::new(
+                DeductionKind::DataCost,
+                Decimal::ZERO,
+                "not modelled here; a cell sees an order book, not a subscription and a read volume, and the amortised licence cost per read is owned by the cost engine",
             )?);
 
-        // The check that makes the other six load-bearing. It cannot catch a
+        // The check that makes the other eight load-bearing. It cannot catch a
         // deduction that is wrong, only one that is absent, and absent is the
         // way this goes wrong in practice.
         edge.require_complete()?;

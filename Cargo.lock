@@ -195,6 +195,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "qip-cost-router"
+version = "0.1.0"
+dependencies = [
+ "qip-agents",
+ "qip-ai",
+ "qip-contracts",
+ "qip-core",
+ "qip-financial",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "qip-data-finder"
+version = "0.1.0"
+dependencies = [
+ "qip-contracts",
+ "qip-core",
+ "qip-events",
+ "qip-financial",
+ "qip-market-ingestion",
+ "qip-mesh",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "qip-deepbrain"
 version = "0.1.0"
 dependencies = [

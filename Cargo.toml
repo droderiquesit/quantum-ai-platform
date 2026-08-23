@@ -32,6 +32,7 @@ members = [
     "crates/edge/qip-edge",
 
     # --- domain services: each owns one stage of the intelligence loop ---
+    "crates/services/qip-data-finder",
     "crates/services/qip-market-ingestion",
     "crates/services/qip-normalization",
     "crates/services/qip-entity-resolution",
@@ -49,6 +50,7 @@ members = [
     "crates/services/qip-prediction",
     "crates/services/qip-lifecycle",
     "crates/services/qip-capital",
+    "crates/services/qip-cost-router",
 
     # --- investment agent organization ---
     "crates/agents/qip-investment-agents",
@@ -111,6 +113,7 @@ qip-arbitrage = { path = "crates/edge/qip-arbitrage" }
 qip-routing = { path = "crates/edge/qip-routing" }
 qip-edge = { path = "crates/edge/qip-edge" }
 
+qip-data-finder = { path = "crates/services/qip-data-finder" }
 qip-market-ingestion = { path = "crates/services/qip-market-ingestion" }
 qip-normalization = { path = "crates/services/qip-normalization" }
 qip-entity-resolution = { path = "crates/services/qip-entity-resolution" }
@@ -128,6 +131,7 @@ qip-chain = { path = "crates/services/qip-chain" }
 qip-prediction = { path = "crates/services/qip-prediction" }
 qip-lifecycle = { path = "crates/services/qip-lifecycle" }
 qip-capital = { path = "crates/services/qip-capital" }
+qip-cost-router = { path = "crates/services/qip-cost-router" }
 
 qip-investment-agents = { path = "crates/agents/qip-investment-agents" }
 qip-quant = { path = "crates/quant/qip-quant" }

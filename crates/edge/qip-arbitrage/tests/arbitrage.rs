@@ -605,7 +605,7 @@ fn a_net_edge_that_skipped_a_deduction_is_refused() -> Result<()> {
     }
     let refusal = edge
         .require_complete()
-        .expect_err("six of seven is not complete");
+        .expect_err("eight of nine is not complete");
     assert!(refusal.message().contains("uncertainty"));
     Ok(())
 }

@@ -117,8 +117,18 @@ fn an_edge_that_skipped_a_cost_refuses_to_call_itself_complete() -> Result<()> {
         "touch",
     )?);
     let missing = partial.unconsidered();
-    assert_eq!(missing.len(), 6, "{missing:?}");
+    assert_eq!(missing.len(), 8, "{missing:?}");
     assert!(partial.require_complete().is_err());
+
+    // The two the platform charges itself are as mandatory as the seven the
+    // market charges. An edge that considered every market cost and neither of
+    // its own is the exact shape of a strategy that is profitable per trade and
+    // loses money per month, so it is refused by name rather than by count.
+    let refusal = partial
+        .require_complete()
+        .expect_err("an edge missing eight deductions is not complete");
+    assert!(refusal.message().contains("compute_cost"), "{refusal}");
+    assert!(refusal.message().contains("data_cost"), "{refusal}");
 
     let complete = DeductionKind::all().into_iter().try_fold(
         NetEdge::gross(dec!("100"), dec!("1000"))?,
@@ -127,7 +137,60 @@ fn an_edge_that_skipped_a_cost_refuses_to_call_itself_complete() -> Result<()> {
         },
     )?;
     complete.require_complete()?;
-    assert_eq!(complete.net(), dec!("65"));
+    assert_eq!(complete.net(), dec!("55"));
+    Ok(())
+}
+
+#[test]
+fn an_edge_that_clears_its_market_costs_but_not_its_compute_cost_is_negative() -> Result<()> {
+    // The reason compute cost is a deduction and not a budget line. Every
+    // market cost is covered with room to spare, and the decision still lost
+    // money because reaching it cost more than it was worth. An accounting
+    // that put the inference bill anywhere else would report this as a
+    // twelve-unit win.
+    let edge = NetEdge::gross(dec!("100"), dec!("1000"))?
+        .deduct(Deduction::new(DeductionKind::Spread, dec!("40"), "touch")?)
+        .deduct(Deduction::new(DeductionKind::Fees, dec!("20"), "taker")?)
+        .deduct(Deduction::new(
+            DeductionKind::Latency,
+            dec!("10"),
+            "round trip",
+        )?)
+        .deduct(Deduction::new(DeductionKind::Slippage, dec!("8"), "sweep")?)
+        .deduct(Deduction::new(DeductionKind::Funding, dec!("4"), "carry")?)
+        .deduct(Deduction::new(
+            DeductionKind::Collateral,
+            dec!("3"),
+            "margin",
+        )?)
+        .deduct(Deduction::new(
+            DeductionKind::Uncertainty,
+            dec!("3"),
+            "haircut",
+        )?)
+        .deduct(Deduction::new(
+            DeductionKind::ComputeCost,
+            dec!("25"),
+            "a deep model and two agent calls to reach the view",
+        )?)
+        .deduct(Deduction::new(
+            DeductionKind::DataCost,
+            dec!("2"),
+            "amortised licence cost of the sources read",
+        )?);
+
+    edge.require_complete()?;
+    assert_eq!(
+        edge.gross_edge() - dec!("88"),
+        dec!("12"),
+        "the market costs alone leave the trade in profit"
+    );
+    assert_eq!(edge.net(), dec!("-15"));
+    assert!(
+        !edge.is_positive(),
+        "an opportunity that earns less than it cost to find is not an opportunity: {}",
+        edge.summarise()
+    );
     Ok(())
 }
 

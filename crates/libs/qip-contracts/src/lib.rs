@@ -22,8 +22,10 @@
 //! * **Nothing crosses a boundary unattributed.** [`Origin`] says which venue,
 //!   feed and sequence a fact came from, and survives every transformation.
 //! * **A cost is never a single number.** [`NetEdge`] decomposes gross edge
-//!   into the seven deductions that decide whether an opportunity is real, and
-//!   refuses to report a net figure that its parts do not sum to.
+//!   into the nine deductions that decide whether an opportunity is real —
+//!   seven the market charges, plus the compute and data cost of having
+//!   reached the decision at all — and refuses to report a net figure that its
+//!   parts do not sum to.
 
 pub mod capital;
 pub mod edge;

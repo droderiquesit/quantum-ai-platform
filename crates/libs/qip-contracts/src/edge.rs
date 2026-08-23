@@ -5,6 +5,15 @@
 //! and the deductions are usually larger than the gross figure that motivated
 //! the trade. Reporting a net number without its parts is how a strategy runs
 //! for a month before anyone notices the fees.
+//!
+//! Two of the nine deductions are not charged by the market at all.
+//! [`DeductionKind::ComputeCost`] and [`DeductionKind::DataCost`] are what the
+//! platform spent reaching the decision and reading the inputs it decided
+//! from. They are here rather than in a separate budget for the same reason
+//! the other seven are here: a cost that is accounted for somewhere else is a
+//! cost the edge calculation does not have to survive, and the aggregate of
+//! trades that each cleared their market costs while none cleared their
+//! inference bill is a loss nobody sees coming.
 
 use crate::venue::VenueId;
 use qip_core::error::{Error, Result};
@@ -31,6 +40,24 @@ pub enum DeductionKind {
     /// Not a cost the market charges — a discount the platform charges itself
     /// for acting on a number it is not sure of.
     Uncertainty,
+    /// What it cost to *reach* this decision: inference, solver time, agent
+    /// calls, the simulation that ruled an alternative out.
+    ///
+    /// It sits here rather than in a separate compute budget because an
+    /// opportunity that earns less than it cost to find is not an
+    /// opportunity, and the only place that arithmetic can be done is next to
+    /// the gross figure it has to survive. Keeping it outside the edge is how
+    /// a platform runs profitably on paper and loses money in aggregate:
+    /// every individual trade clears, and the inference bill clears them all.
+    ComputeCost,
+    /// The amortised cost of the licensed inputs the decision read.
+    ///
+    /// Amortised, not charged whole: a source read once a day and one read a
+    /// million times cost the same to licence and are wildly different per
+    /// decision. Like [`Self::ComputeCost`] it belongs in the deduction list
+    /// rather than in a subscription line nobody nets against edge, because a
+    /// signal that only pays when its data is free is not a signal.
+    DataCost,
 }
 
 impl DeductionKind {
@@ -43,11 +70,13 @@ impl DeductionKind {
             Self::Funding => "funding",
             Self::Collateral => "collateral",
             Self::Uncertainty => "uncertainty",
+            Self::ComputeCost => "compute_cost",
+            Self::DataCost => "data_cost",
         }
     }
 
     /// Every kind, so a caller can assert it has considered all of them.
-    pub const fn all() -> [Self; 7] {
+    pub const fn all() -> [Self; 9] {
         [
             Self::Spread,
             Self::Fees,
@@ -56,6 +85,8 @@ impl DeductionKind {
             Self::Funding,
             Self::Collateral,
             Self::Uncertainty,
+            Self::ComputeCost,
+            Self::DataCost,
         ]
     }
 }

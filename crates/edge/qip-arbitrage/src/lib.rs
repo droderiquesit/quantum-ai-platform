@@ -21,7 +21,7 @@
 //! * [`pricing`] walks the real book at the real size through
 //!   [`liquidity::LiquiditySource`], recording the touch and the sweep
 //!   separately so spread and slippage stay distinguishable.
-//! * [`netedge`] takes off all seven deductions and refuses any edge that
+//! * [`netedge`] takes off all nine deductions and refuses any edge that
 //!   skipped one.
 //! * [`plan`] orders the legs least-reversible-first, works out what inventory
 //!   has to be standing there beforehand, and refuses a plan whose residual

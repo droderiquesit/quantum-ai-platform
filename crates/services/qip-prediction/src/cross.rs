@@ -243,6 +243,16 @@ impl<'a> CrossMarketPair<'a> {
                 DeductionKind::Collateral,
                 Decimal::ZERO,
                 "the long leg collateralises the short until both resolve",
+            )?)
+            .deduct(Deduction::new(
+                DeductionKind::ComputeCost,
+                Decimal::ZERO,
+                "none: pairing two books is arithmetic, not a model call; a caller that reached this through one owns that figure",
+            )?)
+            .deduct(Deduction::new(
+                DeductionKind::DataCost,
+                Decimal::ZERO,
+                "not modelled here; the amortised licence cost of both venues' feeds belongs to whoever pays for them, not to this crate, which is handed the books",
             )?);
 
         let plan = LegPlan::new(vec![

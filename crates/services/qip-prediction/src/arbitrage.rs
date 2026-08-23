@@ -284,6 +284,16 @@ fn walk(
             DeductionKind::Uncertainty,
             Decimal::ZERO,
             "none: one outcome of a complete set pays by construction, whatever the resolution is",
+        )?)
+        .deduct(Deduction::new(
+            DeductionKind::ComputeCost,
+            Decimal::ZERO,
+            "none: finding a mispriced set is arithmetic over the books, not a model call; a caller that reached this through one owns that figure",
+        )?)
+        .deduct(Deduction::new(
+            DeductionKind::DataCost,
+            Decimal::ZERO,
+            "not modelled here; the amortised licence cost of these books belongs to whoever pays for the feed, not to this crate, which is handed them",
         )?);
 
     let cost = match kind {

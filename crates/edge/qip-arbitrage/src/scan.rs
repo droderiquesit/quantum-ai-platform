@@ -7,7 +7,7 @@
 //! 2. Exact arithmetic re-multiplies the quoted rates and drops what was
 //!    rounding.
 //! 3. [`crate::pricing`] walks the book at the stated size.
-//! 4. [`crate::netedge`] takes off all seven deductions.
+//! 4. [`crate::netedge`] takes off all nine deductions.
 //! 5. [`crate::plan`] orders the legs and bounds what could be stranded.
 //!
 //! Every refusal is kept. A scan that returned nothing and said nothing about
