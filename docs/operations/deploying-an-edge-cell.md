@@ -143,6 +143,34 @@ ADR 0008 already names the condition under which the whole cell architecture
 should be collapsed back into the central plane, and this is evidence for that
 question rather than against it.
 
+## The cell's journal outlives its pod
+
+`edge-cell.yaml` is a **StatefulSet**, not a Deployment, and the reason is the
+journal. A cell's hash-chained decision record is what answers "why did this
+cell trade" after the fact, and a record on ephemeral pod storage answers it
+only until the first restart.
+
+Each replica therefore gets its own `journal` volume from a
+`volumeClaimTemplate`, mounted at `/var/lib/qip/journal`, which is where
+`QIP_MIRROR_PATH` points. The retention policy is `Retain` on both delete and
+scale-down: a cell that has been removed still has to be able to account for
+what it did while it ran.
+
+Book and feature state stays on `emptyDir`, deliberately. A cell rebuilds its
+books from the feed on start, and state that survived a restart would be state
+nobody reconciled against the venue — the same reasoning that makes a stale
+book serve no price.
+
+Two consequences worth knowing before the first apply:
+
+* **The volumes outlive `kubectl delete statefulset`.** Removing a cell for
+  good means deleting its PVCs deliberately, after its journal has been
+  archived. That is the intended friction.
+* **`kubectl rollout status` needs the kind.** The pipeline's wait loop is
+  kind-qualified for this reason; a bare `deployment/qip-edge-…` would wait on
+  an object that does not exist until it timed out.
+
+
 ## What this runbook does not cover
 
 The cell's node pool. This module creates the cell's subnet and identity, not

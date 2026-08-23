@@ -266,10 +266,15 @@ jobs:
       # a known blocking gap, recorded with the others in
       # docs/operations/external-dependencies.md — not something to work around
       # by dropping them from this list.
+      # Each entry is kind-qualified. `kubectl rollout status` needs the kind,
+      # and a workload converted from a Deployment to a StatefulSet — which is
+      # what any workload keeping a journal becomes — would otherwise leave
+      # this step waiting on a Deployment that does not exist, until it times
+      # out, reporting a failure that is not the real one.
       - name: wait for the rollout
         run: |
           set -euo pipefail
-          for workload in qip-api qip-fastbrain qip-deepbrain; do
-            kubectl rollout status "deployment/${workload}" \
+          for workload in deployment/qip-api deployment/qip-fastbrain deployment/qip-deepbrain; do
+            kubectl rollout status "${workload}" \
               --namespace qip --timeout=5m
           done

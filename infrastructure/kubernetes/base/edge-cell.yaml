@@ -26,7 +26,7 @@ metadata:
     iam.gke.io/gcp-service-account: qip-edge-CELL_ID-ENVIRONMENT@PROJECT.iam.gserviceaccount.com
 ---
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: qip-edge-CELL_ID
   namespace: qip
@@ -34,6 +34,19 @@ metadata:
     app: qip-edge-node
     qip.io/cell: CELL_ID
 spec:
+  # A StatefulSet rather than a Deployment, for one reason: the journal.
+  # A cell's hash-chained decision record is evidence — the answer to "why did
+  # this cell trade" after the fact — and evidence that lives on ephemeral pod
+  # storage is evidence that disappears on the first restart. Stable identity
+  # gives each replica its own journal volume that outlives its pod.
+  #
+  # Book and feature state stays on emptyDir below, deliberately: a cell
+  # rebuilds its books from the feed, and state that survived a restart would
+  # be state nobody reconciled against the venue.
+  serviceName: qip-edge-CELL_ID
+  # Cells are independent; there is no leader to elect and no ordering to
+  # respect, so replicas start together rather than one at a time.
+  podManagementPolicy: Parallel
   replicas: 2
   selector:
     matchLabels:
@@ -140,6 +153,11 @@ spec:
               value: "CELL_VENUES"
             # The key capital envelopes are verified against. From a secret
             # reference, never from the image and never from a literal.
+            # Where the hash-chained journal is shipped. Without it the node
+            # warns at startup and holds the record in memory only, which is
+            # the state this StatefulSet exists to end.
+            - name: QIP_MIRROR_PATH
+              value: /var/lib/qip/journal
             - name: QIP_CAPITAL_ENVELOPE_KEY
               valueFrom:
                 secretKeyRef:
@@ -159,7 +177,9 @@ spec:
             - name: tmp
               mountPath: /tmp
             - name: state
-              mountPath: /var/lib/qip
+              mountPath: /var/lib/qip/state
+            - name: journal
+              mountPath: /var/lib/qip/journal
       volumes:
         - name: tmp
           emptyDir:
@@ -170,6 +190,23 @@ spec:
         - name: state
           emptyDir:
             sizeLimit: 4Gi
+  # The journal, per replica, outliving the pod that wrote it. Retained on
+  # scale-down rather than deleted: a cell that is removed still has to be able
+  # to answer for what it did while it ran.
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  volumeClaimTemplates:
+    - metadata:
+        name: journal
+        labels:
+          app: qip-edge-node
+          qip.io/cell: CELL_ID
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 16Gi
 ---
 apiVersion: v1
 kind: Service

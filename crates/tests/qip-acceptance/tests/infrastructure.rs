@@ -290,7 +290,7 @@ fn the_namespace_denies_all_traffic_by_default() {
 fn no_container_runs_as_root_or_can_escalate() {
     for path in files_with_extension("infrastructure/kubernetes", "yaml") {
         let content = std::fs::read_to_string(&path).expect("readable");
-        if !content.contains("kind: Deployment") {
+        if !is_workload(&content) {
             continue;
         }
         for (setting, why) in [
@@ -331,7 +331,7 @@ fn every_container_has_both_a_cpu_and_a_memory_limit() {
     // node.
     for path in files_with_extension("infrastructure/kubernetes", "yaml") {
         let content = std::fs::read_to_string(&path).expect("readable");
-        if !content.contains("kind: Deployment") {
+        if !is_workload(&content) {
             continue;
         }
         assert!(
@@ -646,7 +646,32 @@ fn block_under(text: &str, key: &str) -> String {
         .join("\n")
 }
 
-/// The container blocks inside a Deployment document.
+/// Whether a manifest declares a workload that runs containers.
+///
+/// A `StatefulSet` is a `Deployment` that keeps its volumes, and every rule in
+/// this file — no root, no escalation, limits, a probe, a pinned image — is
+/// about the container rather than about which controller manages it. Keying
+/// these checks on `kind: Deployment` alone is how a workload converted to a
+/// `StatefulSet` would quietly stop being checked.
+fn is_workload(content: &str) -> bool {
+    content.contains("kind: Deployment") || content.contains("kind: StatefulSet")
+}
+
+/// The kinds of workload the manifests may declare.
+const WORKLOAD_KINDS: [&str; 2] = ["Deployment", "StatefulSet"];
+
+/// Every workload document in the manifests, of either kind.
+///
+/// The single place that knows which controllers run containers, so a third
+/// kind is one edit rather than nine.
+fn workload_documents() -> Vec<(std::path::PathBuf, String)> {
+    WORKLOAD_KINDS
+        .iter()
+        .flat_map(|kind| documents_of_kind(kind))
+        .collect()
+}
+
+/// The container blocks inside a workload document.
 ///
 /// Split on the fixed indentation these manifests use. That is brittle on
 /// purpose: a reindented manifest makes this return nothing, and every caller
@@ -685,13 +710,16 @@ fn container_binary(container: &str) -> String {
 
 /// Every binary a Deployment in the manifests runs.
 fn deployed_binaries() -> Vec<String> {
-    let mut deployed: Vec<String> = documents_of_kind("Deployment")
+    let mut deployed: Vec<String> = WORKLOAD_KINDS
+        .iter()
+        .flat_map(|kind| documents_of_kind(kind))
+        .collect::<Vec<_>>()
         .iter()
         .flat_map(|(path, document)| {
             let found = containers(document);
             assert!(
                 !found.is_empty(),
-                "{} has a Deployment with no container the split could find; \
+                "{} has a workload with no container the split could find; \
                  the manifest's indentation has changed and this check has \
                  stopped checking",
                 path.display()
@@ -760,7 +788,7 @@ fn every_workload_that_cannot_be_probed_says_why_and_stops_being_exempt_when_it_
     // them are deliberate, because the binaries do not serve yet, and a probe
     // written against an endpoint that does not exist is worse than none: it
     // looks like coverage.
-    for (path, document) in documents_of_kind("Deployment") {
+    for (path, document) in workload_documents() {
         let workload = first_value(&document, "name").expect("a Deployment is named");
         let binary = containers(&document)
             .first()
@@ -820,7 +848,7 @@ fn every_service_account_terraform_creates_is_used_by_exactly_one_workload() {
     );
 
     // Every account has a workload naming it, exactly once.
-    let service_accounts: Vec<String> = documents_of_kind("Deployment")
+    let service_accounts: Vec<String> = workload_documents()
         .iter()
         .filter_map(|(_, document)| first_value(document, "serviceAccountName"))
         .collect();
@@ -855,7 +883,7 @@ fn every_workload_has_its_own_service_account_and_mounts_no_token() {
     // authenticates to Google through workload identity and none of them talks
     // to the Kubernetes API.
     let mut seen: Vec<String> = Vec::new();
-    for (path, document) in documents_of_kind("Deployment") {
+    for (path, document) in workload_documents() {
         let workload = first_value(&document, "name").expect("a Deployment is named");
         let account = first_value(&document, "serviceAccountName").unwrap_or_else(|| {
             panic!("{workload} runs under the namespace's default service account")
@@ -890,7 +918,7 @@ fn every_container_has_a_cpu_and_a_memory_request_as_well_as_a_limit() {
     // and no requests is scheduled as if it were free, which is how a node ends
     // up with more promised to it than it has.
     let mut checked = 0usize;
-    for (path, document) in documents_of_kind("Deployment") {
+    for (path, document) in workload_documents() {
         let found = containers(&document);
         assert!(
             !found.is_empty(),
@@ -925,7 +953,7 @@ fn no_container_in_any_workload_runs_as_root_or_can_escalate() {
     // The existing check asks whether the settings appear anywhere in a file.
     // This one asks per container, so a second container added to a Deployment
     // that already has the settings once cannot arrive without them.
-    for (path, document) in documents_of_kind("Deployment") {
+    for (path, document) in workload_documents() {
         assert!(
             document.contains("runAsNonRoot: true"),
             "{} does not set runAsNonRoot",
@@ -992,7 +1020,7 @@ fn every_workload_is_covered_by_both_an_ingress_and_an_egress_policy() {
     // missing egress rule for the API is exactly what was wrong here.
     let policies = policy_targets();
     let mut checked = 0usize;
-    for (_, document) in documents_of_kind("Deployment") {
+    for (_, document) in workload_documents() {
         let app = document
             .split("labels:")
             .nth(1)
@@ -1589,14 +1617,17 @@ fn rollout_workloads() -> Vec<String> {
         .next()
         .expect("the loop's list ends at a semicolon")
         .split_whitespace()
-        .map(str::to_string)
+        // Entries are kind-qualified (`deployment/qip-api`), because
+        // `rollout status` needs the kind. The name is what this file
+        // compares against the manifests.
+        .map(|entry| entry.rsplit('/').next().unwrap_or(entry).to_string())
         .collect()
 }
 
-/// Every Deployment the pipeline actually applies, by workload name.
+/// Every workload the pipeline actually applies, by workload name.
 fn workloads_the_pipeline_applies() -> Vec<String> {
     let skipped = manifests_the_pipeline_skips();
-    let applied: Vec<String> = documents_of_kind("Deployment")
+    let applied: Vec<String> = workload_documents()
         .into_iter()
         .filter(|(path, _)| {
             path.file_name()
@@ -1758,7 +1789,7 @@ fn every_manifest_pulls_from_the_repository_the_pipeline_pushes_to() {
     // the pipeline's placeholder check — there is no placeholder left in it —
     // and pulls from wherever it says, in every environment.
     let mut checked = 0usize;
-    for (path, document) in documents_of_kind("Deployment") {
+    for (path, document) in workload_documents() {
         for container in containers(&document) {
             let image = container
                 .lines()
@@ -1887,7 +1918,7 @@ fn every_variable_a_deployable_refuses_to_start_without_is_set_by_its_manifest()
     // pipeline, so no rollout check runs against it; the runbook that does
     // apply it substituted the placeholders that were there.
     let mut checked = 0usize;
-    for (path, document) in documents_of_kind("Deployment") {
+    for (path, document) in workload_documents() {
         for container in containers(&document) {
             let binary = container_binary(&container);
             let source = format!("crates/apps/{binary}/src/main.rs");
