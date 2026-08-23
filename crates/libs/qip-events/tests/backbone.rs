@@ -937,3 +937,71 @@ fn _assert_any_event_is_inspectable(event: &AnyEvent) -> Result<()> {
     let _ = event.ingestion_latency();
     Ok(())
 }
+
+// --- the chain outlives the machine -----------------------------------------
+
+#[test]
+fn an_appended_record_is_on_the_platter_before_append_returns() {
+    // The chain's whole purpose is to be evidence after the fact. Before this
+    // was enforced, `append` wrote and returned without an fsync: the record
+    // reached the page cache, a power cut removed it, and — because the chain
+    // is computed over what was *retained* — the shortened log still verified.
+    // A silently missing decision that leaves a valid-looking chain behind is
+    // the worst shape this defect could take.
+    //
+    // This test cannot cut power, and says so rather than implying otherwise.
+    // What it pins is the guarantee the code makes: synchronous is the
+    // default, it is the only mode under which the promise holds, and an
+    // acknowledged append is readable through a handle that is not this one.
+    use qip_events::log::Durability;
+
+    let dir = std::env::temp_dir().join(format!("qip-events-durable-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("events.jsonl");
+
+    let (ctx, now) = context();
+    {
+        let mut log = EventLog::open(&path).unwrap();
+        assert_eq!(
+            log.durability(),
+            Durability::Synchronous,
+            "a file-backed audit log defaulted to a mode that loses records on power loss"
+        );
+        assert!(log.durability().survives_power_loss());
+
+        let event = Envelope::new(
+            ctx.ids().generate(now),
+            now,
+            now,
+            root_lineage("feed"),
+            Tick {
+                symbol: "DURABLE".to_string(),
+                price: 1.0,
+            },
+        )
+        .erase()
+        .unwrap();
+        log.append(&event).unwrap();
+
+        // Read through a separate handle while the log is still open: the
+        // bytes left this process rather than sitting in its buffers.
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            written.contains("DURABLE"),
+            "an acknowledged append is not in the file"
+        );
+    }
+
+    let reopened = EventLog::open(&path).unwrap();
+    assert_eq!(reopened.len(), 1, "the reopened log lost the record");
+    assert!(
+        reopened.verify_chain().is_ok(),
+        "the reopened chain is broken"
+    );
+
+    // The other mode exists and is honest about what it gives up.
+    assert!(!Durability::OsBuffered.survives_power_loss());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

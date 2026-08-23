@@ -44,6 +44,35 @@ pub struct EventLog {
     /// Cap on retained records; oldest lossy-tolerable events are dropped
     /// first when it is reached.
     capacity: Option<usize>,
+    /// Whether an appended record is on the platter before `append` returns.
+    durability: Durability,
+}
+
+/// Whether an appended record has reached the disk when `append` returns.
+///
+/// The same choice `qip_storage`'s engine offers, stated the same way,
+/// because it is the same question: a write that has reached the operating
+/// system has not reached the platter, and the difference only shows up when
+/// the power does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Durability {
+    /// `fsync` the file before returning. The default, because this log is
+    /// the platform's evidence: a decision record that a power cut can
+    /// silently remove is not a record anybody can rely on afterwards.
+    #[default]
+    Synchronous,
+    /// Return once the operating system has the bytes. Survives `kill -9`;
+    /// does not survive power loss. Choose it only where losing the last
+    /// records is acceptable and say why at the call site.
+    OsBuffered,
+}
+
+impl Durability {
+    /// Whether an appended record survives loss of power.
+    pub fn survives_power_loss(self) -> bool {
+        matches!(self, Self::Synchronous)
+    }
 }
 
 impl Default for EventLog {
@@ -61,6 +90,7 @@ impl EventLog {
             by_event_id: BTreeMap::new(),
             path: None,
             capacity: None,
+            durability: Durability::Synchronous,
         }
     }
 
@@ -92,6 +122,17 @@ impl EventLog {
 
     /// Bound the log's memory. Only events whose topic tolerates loss are
     /// evicted; an order fill is never dropped to save space.
+    /// Trade the durability guarantee for throughput, deliberately.
+    pub fn with_durability(mut self, durability: Durability) -> Self {
+        self.durability = durability;
+        self
+    }
+
+    /// What this log promises about an appended record.
+    pub fn durability(&self) -> Durability {
+        self.durability
+    }
+
     pub fn with_capacity(mut self, capacity: usize) -> Self {
         self.capacity = Some(capacity);
         self
@@ -130,6 +171,14 @@ impl EventLog {
                 .append(true)
                 .open(path)?;
             writeln!(file, "{line}")?;
+            if self.durability.survives_power_loss() {
+                // The chain is only evidence if the record outlives the
+                // machine. Without this the append reaches the page cache and
+                // a power cut removes a decision nobody can then account for —
+                // and because the chain is over what was *retained*, the
+                // surviving log still verifies, so the loss is silent.
+                file.sync_all()?;
+            }
         }
         self.index(record);
         self.enforce_capacity();
