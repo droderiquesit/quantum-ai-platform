@@ -423,6 +423,7 @@ impl Placer for OutageGateway {
     fn place(
         &mut self,
         _order_id: &str,
+        _object_id: &ObjectId,
         _venue: &VenueId,
         _side: BookSide,
         _quantity: Decimal,
@@ -1517,6 +1518,7 @@ impl Placer for RecordingGateway {
     fn place(
         &mut self,
         order_id: &str,
+        _object_id: &ObjectId,
         venue: &VenueId,
         _side: BookSide,
         quantity: Decimal,

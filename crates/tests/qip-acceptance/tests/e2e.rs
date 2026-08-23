@@ -374,6 +374,7 @@ impl Placer for PaperGateway {
     fn place(
         &mut self,
         order_id: &str,
+        _object_id: &ObjectId,
         venue: &VenueId,
         _side: BookSide,
         quantity: Decimal,

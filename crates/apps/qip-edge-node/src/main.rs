@@ -24,6 +24,7 @@ use qip_core::error::{Error, Result};
 use qip_core::{Clock, Duration, SystemClock};
 use qip_edge::cell::{Cell, CellConfig};
 use qip_edge::journal::{FileMirror, MemoryMirror, Mirror};
+use qip_edge_node::gateway::SimulatedGateway;
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
 use std::io::{Read, Write};
@@ -144,6 +145,21 @@ fn run() -> Result<()> {
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
     let cell = Cell::new(cell_config, features)?;
 
+    // The venue seam. Simulated is the only class this binary can construct —
+    // `AdapterClass` has no live variant — and the seed is configuration so a
+    // session is replayable: the same seed against the same orders produces
+    // the same fills and the same rejection draws.
+    let gateway_seed = std::env::var("QIP_GATEWAY_SEED")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(1);
+    let gateway_venue = config
+        .venues
+        .first()
+        .expect("from_env refuses an empty venue list")
+        .clone();
+    let gateway = SimulatedGateway::new(gateway_venue, gateway_seed, started)?;
+
     let mut mirror: Box<dyn Mirror> = match &config.mirror_path {
         Some(path) => Box::new(FileMirror::new(path)),
         // No durable mirror configured is a degraded state, not a fatal one:
@@ -159,11 +175,13 @@ fn run() -> Result<()> {
     };
 
     println!(
-        "qip-edge-node cell={} region={} venues={} live_capable={}",
+        "qip-edge-node cell={} region={} venues={} live_capable={} gateway={}({})",
         config.cell_id,
         config.region,
         config.venues.len(),
-        cell.autonomy().ceiling().is_live()
+        cell.autonomy().ceiling().is_live(),
+        gateway.class(),
+        gateway.venue()
     );
 
     // No venue connectivity is configured: this build has no credential for
@@ -174,7 +192,7 @@ fn run() -> Result<()> {
         println!("qip-edge-node: awaiting {requirement}");
     }
 
-    serve(&config, cell, mirror.as_mut(), started)
+    serve(&config, cell, &gateway, mirror.as_mut(), started)
 }
 
 /// What a production cell would need that this build cannot supply.
@@ -197,6 +215,7 @@ fn missing_production_requirements() -> Vec<String> {
 fn serve(
     config: &NodeConfig,
     cell: Cell,
+    gateway: &SimulatedGateway,
     mirror: &mut dyn Mirror,
     started: qip_core::Timestamp,
 ) -> Result<()> {
@@ -208,7 +227,7 @@ fn serve(
     for incoming in listener.incoming() {
         match incoming {
             Ok(stream) => {
-                if let Err(error) = answer(stream, config, &cell, started) {
+                if let Err(error) = answer(stream, config, &cell, gateway, started) {
                     eprintln!("qip-edge-node: health request failed: {}", error.message());
                 }
             }
@@ -227,6 +246,7 @@ fn answer(
     mut stream: TcpStream,
     config: &NodeConfig,
     cell: &Cell,
+    gateway: &SimulatedGateway,
     started: qip_core::Timestamp,
 ) -> Result<()> {
     let mut buffer = [0u8; 1024];
@@ -235,7 +255,7 @@ fn answer(
     let _ = stream.read(&mut buffer);
 
     let body = format!(
-        r#"{{"cell":"{}","region":"{}","halted":{},"live_capable":{},"venues":{},"strategies":{},"journal_entries":{},"started_at":{}}}"#,
+        r#"{{"cell":"{}","region":"{}","halted":{},"live_capable":{},"venues":{},"strategies":{},"journal_entries":{},"gateway":{{"class":"{}","venue":"{}","submitted":{},"rejected":{}}},"started_at":{}}}"#,
         config.cell_id,
         config.region,
         cell.is_halted(),
@@ -243,6 +263,10 @@ fn answer(
         config.venues.len(),
         cell.deployed_strategies().len(),
         cell.journal().len(),
+        gateway.class(),
+        gateway.venue(),
+        gateway.submitted_count(),
+        gateway.rejected_count(),
         started.as_secs()
     );
     let response = format!(

@@ -43,7 +43,9 @@ use qip_core::time::{Duration, Timestamp};
 use qip_core::{Currency, Decimal};
 use qip_execution_engine::broker::{Broker, VenueCapabilities};
 use qip_execution_engine::order::{Fill, Order, OrderType, Side};
+use qip_financial::asset_class::InstrumentType;
 use qip_financial::object::FinancialObject;
+use qip_financial::quality::Provenance;
 use qip_market::book::OrderBook;
 use qip_market::quote::Quote;
 use serde::{Deserialize, Serialize};
@@ -212,6 +214,45 @@ impl SimulatedExchange {
         self.ledger.register(object.clone());
         self.listings
             .insert(object.object_id.as_str().to_string(), object);
+    }
+
+    /// List an instrument from its trading facts alone.
+    ///
+    /// The full `FinancialObject` vocabulary belongs to the library layer, and
+    /// the deployables that hold this venue sit behind ports too narrow to
+    /// carry it — the edge cell's `Placer` names a venue, a side, a quantity
+    /// and a price and nothing else. So the venue builds the listing itself:
+    /// it already speaks the vocabulary, and a listing is the venue's own
+    /// record in any case. The provenance is stamped synthetic, because a
+    /// listing invented by a simulator must never read as market data.
+    pub fn list_synthetic(
+        &mut self,
+        object_id: ObjectId,
+        symbol: &str,
+        price: Decimal,
+        lot_size: Decimal,
+        tick_size: Decimal,
+        at: Timestamp,
+    ) -> Result<()> {
+        if price <= Decimal::ZERO || lot_size <= Decimal::ZERO || tick_size <= Decimal::ZERO {
+            return Err(Error::invalid(format!(
+                "a listing for {symbol} at {} needs a positive price, lot size and tick size; \
+                 got price {price}, lot {lot_size}, tick {tick_size}",
+                self.venue.as_str()
+            )));
+        }
+        let listing = FinancialObject::builder(object_id, symbol, InstrumentType::CommonStock)
+            .venue(self.venue.as_str())
+            .price(price)
+            .lot_size(lot_size)
+            .tick_size(tick_size)
+            .provenance(Provenance::synthetic(
+                format!("listed by the simulated venue {}", self.venue.as_str()),
+                at,
+            ))
+            .build(at)?;
+        self.list(listing);
+        Ok(())
     }
 
     pub fn is_listed(&self, object_id: &ObjectId) -> bool {

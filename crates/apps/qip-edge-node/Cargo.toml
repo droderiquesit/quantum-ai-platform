@@ -21,5 +21,10 @@ qip-observability.workspace = true
 qip-brokers.workspace = true
 qip-execution-engine.workspace = true
 
+[dev-dependencies]
+qip-strategy.workspace = true
+qip-orderbook.workspace = true
+qip-financial.workspace = true
+
 [lints]
 workspace = true

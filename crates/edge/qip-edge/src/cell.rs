@@ -540,7 +540,15 @@ impl Cell {
         self.order_sequence += 1;
         let order_id = format!("{}-{}", self.config.cell_id, self.order_sequence);
         let simulated = gateway.is_simulated();
-        gateway.place(&order_id, &venue, side, quantity, price, now)?;
+        gateway.place(
+            &order_id,
+            &signal.object_id,
+            &venue,
+            side,
+            quantity,
+            price,
+            now,
+        )?;
 
         if let Some(deployed) = self.deployed.get_mut(&key) {
             deployed.utilisation.gross_committed += quantity * price;
@@ -671,6 +679,7 @@ pub trait Placer: std::fmt::Debug {
     fn place(
         &mut self,
         order_id: &str,
+        object_id: &ObjectId,
         venue: &VenueId,
         side: BookSide,
         quantity: Decimal,

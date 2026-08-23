@@ -320,7 +320,10 @@ dependencies = [
  "qip-edge",
  "qip-execution-engine",
  "qip-feature-dag",
+ "qip-financial",
  "qip-observability",
+ "qip-orderbook",
+ "qip-strategy",
  "serde",
  "serde_json",
 ]

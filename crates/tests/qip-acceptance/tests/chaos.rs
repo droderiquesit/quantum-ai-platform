@@ -287,6 +287,7 @@ impl Placer for WillingGateway {
     fn place(
         &mut self,
         _order_id: &str,
+        _object_id: &ObjectId,
         _venue: &VenueId,
         _side: BookSide,
         _quantity: Decimal,
