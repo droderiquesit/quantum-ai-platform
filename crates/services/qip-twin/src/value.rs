@@ -10,7 +10,10 @@
 //! can forget to check:
 //!
 //! * There is no accessor that returns the wrapped value. No `into_inner`, no
-//!   `Deref`, no `From<Simulated<Decimal>> for Decimal`, no public field.
+//!   `Deref`, no `From<Simulated<Decimal>> for Decimal`, no public field, and
+//!   no general `map` — a closure can write what it is handed into a variable
+//!   the caller owns, so every operation here is a named one that returns
+//!   another [`Simulated`].
 //! * [`Simulated`] adds only to [`Simulated`]. `Decimal + Simulated<Decimal>`
 //!   does not exist, and Rust's orphan rules mean no crate other than this one
 //!   could add it — `Add` and `Decimal` are both foreign everywhere else.
@@ -50,20 +53,13 @@ impl<T> Simulated<T> {
     pub const fn of(value: T) -> Self {
         Self { value }
     }
-
-    /// Apply a function without ever handing the value out.
-    ///
-    /// The escape hatch that is not one: the closure sees the value, but the
-    /// result is re-wrapped before it can reach a caller, so a caller cannot
-    /// use `map` to launder a simulated figure into a real one.
-    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Simulated<U> {
-        Simulated { value: f(self.value) }
-    }
 }
 
 impl Simulated<Decimal> {
     /// Zero, simulated.
-    pub const ZERO: Self = Self { value: Decimal::ZERO };
+    pub const ZERO: Self = Self {
+        value: Decimal::ZERO,
+    };
 
     /// The magnitude, in the `f64` lane the house rules reserve for statistics.
     ///
@@ -87,7 +83,9 @@ impl Simulated<Decimal> {
     }
 
     pub fn abs(self) -> Self {
-        Self { value: self.value.abs() }
+        Self {
+            value: self.value.abs(),
+        }
     }
 
     /// Scale by an exact factor, staying simulated.
@@ -99,19 +97,40 @@ impl Simulated<Decimal> {
             value: self.value.checked_mul(factor).unwrap_or(Decimal::ZERO),
         }
     }
+
+    /// Divide by an exact divisor, staying simulated.
+    ///
+    /// Present because the arithmetic a total needs — a mean over a sample —
+    /// has to happen somewhere, and the alternative was a general `map` that
+    /// hands the inner value to a closure. A closure can write what it is given
+    /// into a variable the caller owns, so a general `map` would have been
+    /// exactly the escape hatch this type exists not to have. Every operation
+    /// here is therefore a named one that returns another [`Simulated`].
+    ///
+    /// A zero divisor yields zero rather than failing: this is a reporting
+    /// path, and understating a regret is the safe direction to fail in.
+    pub fn divided_by(self, divisor: Decimal) -> Self {
+        Self {
+            value: self.value.checked_div(divisor).unwrap_or(Decimal::ZERO),
+        }
+    }
 }
 
 impl<T: Add<Output = T>> Add for Simulated<T> {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {
-        Self { value: self.value + rhs.value }
+        Self {
+            value: self.value + rhs.value,
+        }
     }
 }
 
 impl<T: Sub<Output = T>> Sub for Simulated<T> {
     type Output = Self;
     fn sub(self, rhs: Self) -> Self {
-        Self { value: self.value - rhs.value }
+        Self {
+            value: self.value - rhs.value,
+        }
     }
 }
 
@@ -161,9 +180,7 @@ impl<T: Serialize> Serialize for Simulated<T> {
 }
 
 impl<'de, T: Deserialize<'de>> Deserialize<'de> for Simulated<T> {
-    fn deserialize<D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> std::result::Result<Self, D::Error> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
         #[derive(Deserialize)]
         struct Repr<T> {
             simulated_value: T,
@@ -177,6 +194,8 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Simulated<T> {
                 "a simulated value arrived with simulated=false; a counterfactual figure cannot be reported as an actual",
             ));
         }
-        Ok(Self { value: repr.simulated_value })
+        Ok(Self {
+            value: repr.simulated_value,
+        })
     }
 }

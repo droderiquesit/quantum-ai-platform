@@ -16,13 +16,35 @@
 //! Simulating a QAOA circuit costs more than solving the problem it encodes.
 //! Running one against this simulator therefore proves the formulation is
 //! right and proves nothing whatever about advantage.
+//!
+//! ## The three-way comparison
+//!
+//! [`solver`] puts three things behind one trait — the classical searches the
+//! platform already had, a genuine quantum-inspired search (path-integral
+//! quantum annealing over the same QUBO), and the IBM Quantum port — and
+//! [`benchmark`] runs them on one problem. Two rules are enforced there by
+//! type rather than by convention: a [`benchmark::BenchmarkReport`] carries
+//! its classical baseline in a non-optional field, and the only usable answer
+//! is a [`benchmark::ValidatedSolution`], whose sole constructor re-evaluates
+//! the assignment classically and refuses a claim that does not match.
 
+pub mod benchmark;
 pub mod provider;
 pub mod qaoa;
+pub mod solver;
 pub mod statevector;
 
+pub use benchmark::{
+    BenchmarkReport, ClassicalValidation, ClassicalValidator, QualityMeasure, Reliability,
+    SolverBenchmark, SolverRecord, ValidatedSolution,
+};
 pub use provider::{
     HostedConfig, HostedProvider, ProviderCapabilities, QuantumProvider, SimulatedProvider,
 };
 pub use qaoa::{QaoaResult, QaoaSettings};
+pub use solver::{
+    ClassicalSearch, ClassicalSolver, IbmQuantumConfig, IbmQuantumSolver, ProviderSolver,
+    QuantumInspiredSolver, QuboSolver, QueuePolicy, SearchTrace, SolverCandidate, SolverCostModel,
+    SolverEffort, SolverKind,
+};
 pub use statevector::{Complex, MAX_QUBITS, StateVector};

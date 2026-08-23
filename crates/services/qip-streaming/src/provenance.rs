@@ -239,8 +239,12 @@ impl Subject {
 /// `f64` because it is a statistic and never money. The constructor refuses
 /// anything outside the range, including `NaN`: a confidence that silently
 /// clamped would let a broken estimator publish `2.0` and be read as certainty.
+///
+/// Serialised as a bare number, and parsed back through [`Confidence::new`]
+/// rather than through a transparent newtype: a wire form is exactly where an
+/// out-of-range value arrives, so that is where the range has to be checked.
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(transparent)]
+#[serde(try_from = "f64", into = "f64")]
 pub struct Confidence(f64);
 
 impl Confidence {
@@ -258,6 +262,20 @@ impl Confidence {
 
     pub fn value(&self) -> f64 {
         self.0
+    }
+}
+
+impl TryFrom<f64> for Confidence {
+    type Error = Error;
+
+    fn try_from(value: f64) -> Result<Self> {
+        Self::new(value)
+    }
+}
+
+impl From<Confidence> for f64 {
+    fn from(confidence: Confidence) -> Self {
+        confidence.0
     }
 }
 

@@ -11,11 +11,25 @@ repository.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 qip-core.workspace = true
-qip-contracts.workspace = true
-qip-ai.workspace = true
 qip-numerics.workspace = true
-qip-simulation-engine.workspace = true
+# `DistilledModel` is the distillation target: the only learned function the
+# hot path will evaluate, and the reason this crate exists in the shape it does.
+qip-strategy.workspace = true
+# `Horizon`, which sets the span a label covers and therefore the purge width
+# any cross-validation of this data has to use.
 qip-quant.workspace = true
+
+# Deliberately absent, and each absence is a boundary rather than an oversight.
+#
+# `qip-lifecycle` holds the gates a model passes before it may influence
+# capital. This crate measures a model and refuses to hand out one that falls
+# short of a policy; it does not decide that anything is fit for production. A
+# crate that both trains a model and clears it for use grades its own homework.
+#
+# `qip-simulation-engine` holds the validation machinery — purged k-fold with
+# an embargo, deflated Sharpe, walk-forward. A caller runs those over the folds
+# `TrainingDataset::select` builds; growing a second set of statistics in here
+# would give the platform two answers that could disagree with each other.
 
 [lints]
 workspace = true

@@ -12,9 +12,14 @@ serde.workspace = true
 serde_json.workspace = true
 qip-core.workspace = true
 qip-contracts.workspace = true
+# Generated strategies are IR. They become programs only by passing the
+# existing type checker and cost bound, which is the whole safety story.
 qip-strategy.workspace = true
-qip-quant.workspace = true
+# Challenger testing and feature discovery re-use the deflated Sharpe and the
+# purged folds rather than inventing a second set of statistics.
 qip-simulation-engine.workspace = true
+# Promotion and retirement go through the existing gates, ledger and demotion
+# triggers. There is deliberately no second path to capital in this crate.
 qip-lifecycle.workspace = true
 qip-numerics.workspace = true
 

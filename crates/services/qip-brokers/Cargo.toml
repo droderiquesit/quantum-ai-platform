@@ -15,7 +15,12 @@ qip-contracts.workspace = true
 qip-financial.workspace = true
 qip-market.workspace = true
 qip-portfolio.workspace = true
+qip-routing.workspace = true
 qip-execution-engine.workspace = true
+
+[dev-dependencies]
+qip-risk.workspace = true
+qip-risk-engine.workspace = true
 
 [lints]
 workspace = true

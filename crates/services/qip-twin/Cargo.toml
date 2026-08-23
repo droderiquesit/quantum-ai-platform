@@ -15,7 +15,6 @@ qip-contracts.workspace = true
 qip-numerics.workspace = true
 qip-financial.workspace = true
 qip-market.workspace = true
-qip-portfolio.workspace = true
 qip-simulation-engine.workspace = true
 qip-learning-engine.workspace = true
 
