@@ -46,6 +46,50 @@ pub struct PlatformConfig {
     /// mention.
     #[serde(default)]
     pub central: CentralConfig,
+
+    /// Who is accountable for what this deployment collects and registers.
+    ///
+    /// Carried here rather than derived because a registered data source needs
+    /// a named owner before it may reach the mesh catalogue, and "whoever
+    /// happened to run the process" is not a name anybody can be asked about
+    /// six months later.
+    #[serde(default = "default_owner")]
+    pub owner: String,
+
+    /// The user agent the data finder presents when it probes a source.
+    ///
+    /// Mandatory upstream and mandatory here: a publisher's only means of
+    /// refusing a crawler is to name it in robots.txt, and a crawler that will
+    /// not say who it is has taken that away from them.
+    #[serde(default = "default_data_user_agent")]
+    pub data_user_agent: String,
+
+    /// How deep a chain observation has to be buried before the platform will
+    /// read state derived from it.
+    ///
+    /// Stated in configuration because it is a risk appetite rather than a
+    /// constant: the depth at which a reorg becomes tolerable differs by chain
+    /// and by what the state is being used for.
+    #[serde(default = "default_chain_confirmations")]
+    pub chain_confirmations: u32,
+}
+
+/// The owner recorded against anything this deployment registers.
+fn default_owner() -> String {
+    "qip-platform".to_string()
+}
+
+/// The user agent the finder presents. Names the platform and the crate
+/// version so a publisher reading its logs can identify and refuse it.
+fn default_data_user_agent() -> String {
+    format!("qip-data-finder/{}", env!("CARGO_PKG_VERSION"))
+}
+
+/// Twelve blocks: deep enough that a reorg past it is an incident rather than
+/// a Tuesday, and shallow enough that state is readable within a few minutes
+/// on a chain with a twelve-second block time.
+fn default_chain_confirmations() -> u32 {
+    12
 }
 
 impl Default for PlatformConfig {
@@ -62,6 +106,9 @@ impl Default for PlatformConfig {
             licensed_datasets: Vec::new(),
             agent_review_interval: Duration::from_days(90),
             central: CentralConfig::default(),
+            owner: default_owner(),
+            data_user_agent: default_data_user_agent(),
+            chain_confirmations: default_chain_confirmations(),
         }
     }
 }
@@ -94,6 +141,24 @@ impl PlatformConfig {
     /// Size and bound the central plane.
     pub fn with_central(mut self, central: CentralConfig) -> Self {
         self.central = central;
+        self
+    }
+
+    /// Name who is accountable for what this deployment registers.
+    pub fn with_owner(mut self, owner: impl Into<String>) -> Self {
+        self.owner = owner.into();
+        self
+    }
+
+    /// Name the crawler, as robots.txt has to be able to.
+    pub fn with_data_user_agent(mut self, user_agent: impl Into<String>) -> Self {
+        self.data_user_agent = user_agent.into();
+        self
+    }
+
+    /// State how deep a block must be buried before its state may be read.
+    pub fn with_chain_confirmations(mut self, blocks: u32) -> Self {
+        self.chain_confirmations = blocks;
         self
     }
 

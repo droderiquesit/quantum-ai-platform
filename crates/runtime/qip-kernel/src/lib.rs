@@ -19,6 +19,17 @@
 //! capital across every edge cell — research, approval gates, allocation,
 //! aggregate exposure and the six governance controls. It is additive: a
 //! platform that never touches it runs exactly the cycle it always did.
+//!
+//! # What this process contains
+//!
+//! A crate is not a service until a process ships it. Eight further service
+//! crates are composed onto [`Platform`] and *called* by it, so a deployed
+//! binary contains the capability rather than merely depending on the code:
+//! the autonomous data finder and the mesh catalogue it feeds, the chain
+//! observer and its confirmation discipline, the prediction record, the
+//! durable event journal, the outcome capture and counterfactual twin, the
+//! capital demand forecaster, and the cost meter that charges every cycle for
+//! having been run. See [`platform`].
 
 pub mod central;
 pub mod config;
@@ -28,4 +39,6 @@ pub mod platform;
 pub use central::{CellReport, CentralPlane, StrategyDna, StrategyFactory};
 pub use config::PlatformConfig;
 pub use cycle::{CycleReport, Stage, StageOutcome};
-pub use platform::Platform;
+pub use platform::{
+    ChainAbsorption, CycleJournalEntry, Platform, RecordedPrediction, SourceAssessment,
+};
