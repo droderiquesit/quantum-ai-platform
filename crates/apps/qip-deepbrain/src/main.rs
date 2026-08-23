@@ -7,6 +7,15 @@
 //! submission belongs to the execution path, and the agents this node hosts are
 //! checked at start-up to confirm none of them holds a market-touching
 //! capability.
+//!
+//! This node runs a cycle and exits, which makes it the binary with the most to
+//! lose from having nowhere to write: without a configured store, every run
+//! starts from nothing and the research it did is gone the moment it finishes.
+//! What it keeps is the event log's hash chain, appended after the cycle so
+//! successive runs accumulate into one record. What it does not keep is the
+//! world model and the agent working state — those are derived from the chain
+//! and from the universe, and a half-restored model is harder to reason about
+//! than one rebuilt.
 
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, SystemClock};
@@ -15,6 +24,8 @@ use qip_investment_agents::manifests;
 use qip_kernel::{Platform, PlatformConfig};
 use qip_observability::Telemetry;
 use qip_risk::limits::LimitSet;
+use qip_storage::ChainArchive;
+use qip_storage::settings::StorageSettings;
 use std::sync::Arc;
 
 fn main() {
@@ -45,6 +56,13 @@ fn run() -> Result<()> {
         }
     }
 
+    // Before the platform is built, so a node deployed against a store it
+    // cannot write to fails without having done any research it would then
+    // throw away.
+    let storage = StorageSettings::from_env()?;
+    storage.preflight()?;
+    let archive = ChainArchive::open(storage.key_value("event-log")?)?;
+
     let config = PlatformConfig::default();
     let context = qip_core::Context::new(clock.clone(), config.seed);
     let ceiling = config.autonomy_ceiling;
@@ -67,9 +85,29 @@ fn run() -> Result<()> {
             "unreachable in this deployment"
         }
     );
+    for line in storage.banner_lines(
+        &["the event log's hash chain, appended after the cycle"],
+        &[
+            "the world model and every agent's working state",
+            "the opportunity queue",
+        ],
+    ) {
+        println!("{line}");
+    }
+    println!("  event chain:      {}", archive.describe());
 
     let report = platform.run_cycle(clock.now());
     println!();
     println!("{}", report.summarise());
+
+    // After the cycle, not during it: a disk on the path of every event would
+    // put a storage system's latency inside the loop. What that costs is the
+    // events of a cycle that was interrupted.
+    let archived = archive.absorb(platform.event_log().records())?;
+    println!();
+    println!(
+        "archived {archived} event(s); the chain now holds {}",
+        archive.describe()
+    );
     Ok(())
 }

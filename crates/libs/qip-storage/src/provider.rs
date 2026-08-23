@@ -70,6 +70,67 @@ impl StorageTarget {
         }
     }
 
+    /// Every target, in declaration order.
+    ///
+    /// Used to build the error a bad configuration value gets. An operator who
+    /// misspells a target name should be told the whole valid set rather than
+    /// left to grep for it.
+    pub const ALL: [Self; 9] = [
+        Self::Memory,
+        Self::File,
+        Self::Engine,
+        Self::BigQuery,
+        Self::CloudStorage,
+        Self::AlloyDb,
+        Self::Spanner,
+        Self::Bigtable,
+        Self::Memorystore,
+    ];
+
+    /// The name this target is written as in configuration.
+    ///
+    /// Matches the `snake_case` serde representation, so a target read from an
+    /// environment variable and one read from a serialized document cannot
+    /// disagree about what `alloy_db` means.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Memory => "memory",
+            Self::File => "file",
+            Self::Engine => "engine",
+            Self::BigQuery => "big_query",
+            Self::CloudStorage => "cloud_storage",
+            Self::AlloyDb => "alloy_db",
+            Self::Spanner => "spanner",
+            Self::Bigtable => "bigtable",
+            Self::Memorystore => "memorystore",
+        }
+    }
+
+    /// Parse a target from configuration.
+    ///
+    /// Deliberately not `serde_json::from_str`: an operator setting an
+    /// environment variable writes `engine`, not `"engine"`, and the error
+    /// from a JSON parser would be about quoting rather than about which
+    /// targets exist. A rejected name lists the valid set, because the failure
+    /// this prevents is a typo resolving to the default and a deployment that
+    /// believes it is durable running in memory.
+    pub fn parse(value: &str) -> Result<Self> {
+        let normalised = value.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+        Self::ALL
+            .into_iter()
+            .find(|target| target.as_str() == normalised)
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "{value:?} is not a storage target. Valid targets: {}",
+                    Self::ALL
+                        .iter()
+                        .map(|target| target.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            })
+    }
+
     /// The credential or configuration a deployment must supply.
     pub fn required_configuration(&self) -> Option<&'static str> {
         match self {

@@ -28,13 +28,16 @@
 //! writing nowhere. See `docs/operations/external-dependencies.md`.
 
 pub mod blob;
+pub mod chain;
 pub mod engine;
 mod fsio;
 pub mod kv;
 pub mod provider;
 pub mod repository;
+pub mod settings;
 
 pub use blob::{BlobStore, FileBlobStore, MemoryBlobStore};
+pub use chain::{ArchivedRecord, ChainArchive};
 pub use engine::{
     Durability, DurableStore, EngineConfig, EngineStats, IntegrityReport, RecoveryReport,
     WriteBatch,
@@ -42,3 +45,4 @@ pub use engine::{
 pub use kv::{FileKeyValueStore, KeyValueStore, KeyValueStoreExt, MemoryKeyValueStore};
 pub use provider::{StorageProvider, StorageTarget};
 pub use repository::{MemoryRepository, Record, Repository};
+pub use settings::StorageSettings;

@@ -9,6 +9,12 @@
 //! and never from a default. A server with no credential configured refuses to
 //! start: an API that would otherwise be unauthenticated is worse than one
 //! that is down.
+//!
+//! Storage is read the same way and refused the same way. `QIP_STORAGE_TARGET`
+//! and `QIP_STORAGE_ROOT` name the store, and a configuration that does not
+//! describe one this process can write to stops the start-up rather than
+//! falling back to memory — a deployment that believed it was durable and was
+//! not would pass every smoke test it has and lose everything at the restart.
 
 use qip_api::auth::{Authenticator, Credential, RateLimiter, Role};
 use qip_api::cells::CellRegistry;
@@ -24,6 +30,8 @@ use qip_kernel::{Platform, PlatformConfig};
 use qip_observability::Telemetry;
 use qip_risk::limits::LimitSet;
 use qip_risk_engine::autonomy::AutonomyLevel;
+use qip_storage::ChainArchive;
+use qip_storage::settings::StorageSettings;
 use std::sync::{Arc, Mutex};
 
 fn main() {
@@ -45,6 +53,13 @@ fn run() -> Result<()> {
         Ok(value) => AutonomyLevel::parse(&value)?,
         Err(_) => AutonomyLevel::PaperTrading,
     };
+
+    // Resolved and proven writable before anything else is built. Failing here
+    // costs a restart; failing at the first archived cycle costs the record of
+    // everything that happened up to it.
+    let storage = StorageSettings::from_env()?;
+    storage.preflight()?;
+    let archive = Arc::new(ChainArchive::open(storage.key_value("event-log")?)?);
 
     let config = PlatformConfig::default().with_live_ceiling(ceiling);
     let context = qip_core::Context::new(clock.clone(), config.seed);
@@ -105,7 +120,8 @@ fn run() -> Result<()> {
             rate_limiter.clone(),
             clock.clone(),
         )
-        .with_cells(cells.clone()),
+        .with_cells(cells.clone())
+        .with_archive(archive.clone()),
     );
     let console = Arc::new(Console::new(
         platform.clone(),
@@ -147,6 +163,17 @@ fn run() -> Result<()> {
         "  console:          read-only; it can trip the kill switch and has no path that \
          clears one"
     );
+    for line in storage.banner_lines(
+        &["the event log's hash chain, at each completed cycle"],
+        &[
+            "the in-memory event index and everything queried from it",
+            "rate-limit counters",
+            "which cells have reported and when",
+        ],
+    ) {
+        println!("{line}");
+    }
+    println!("  event chain:      {}", archive.describe());
 
     server.serve()
 }

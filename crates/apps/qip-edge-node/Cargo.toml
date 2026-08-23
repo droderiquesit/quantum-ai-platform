@@ -15,6 +15,10 @@ qip-contracts.workspace = true
 qip-edge.workspace = true
 qip-feature-dag.workspace = true
 qip-observability.workspace = true
+# The journal's durable destination. Already a workspace dependency; the node
+# resolves a target from the environment through it rather than keeping its own
+# separate answer to where this deployment stores things.
+qip-storage.workspace = true
 # The venue adapter framework: the simulated exchange is the paper gateway the
 # cell places against, so the deployable actually contains the venue seam
 # rather than a stub the tests alone exercise.

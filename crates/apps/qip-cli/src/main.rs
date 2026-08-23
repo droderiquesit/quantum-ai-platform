@@ -7,6 +7,14 @@
 //! No subcommand here can raise the autonomy level. That is deliberate and
 //! matches the API: enabling live trading requires two authenticated
 //! operators, and a command line cannot establish two people.
+//!
+//! Every invocation builds a fresh platform and exits, so nothing this process
+//! holds outlives the command — which makes the *archive* the only thing that
+//! makes `qip cycle` more than a demonstration. `cycle` appends the event log's
+//! hash chain to the configured store and `status` reads it back, so two
+//! invocations against the same store are two runs of one platform rather than
+//! two unrelated ones. Without a store configured they are unrelated, and
+//! `status` says so rather than printing a zero it never observed.
 
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, SystemClock};
@@ -14,6 +22,8 @@ use qip_financial::universe::Universe;
 use qip_kernel::{Platform, PlatformConfig};
 use qip_observability::Telemetry;
 use qip_risk::limits::LimitSet;
+use qip_storage::ChainArchive;
+use qip_storage::settings::StorageSettings;
 use std::sync::Arc;
 
 fn main() {
@@ -30,6 +40,7 @@ fn main() {
         "agents" => agents(),
         "governance" => governance(),
         "limits" => limits_command(),
+        "storage" => storage_command(),
         other => Err(Error::invalid(format!(
             "unknown command: {other}. Run `qip help` for the list."
         ))),
@@ -49,10 +60,27 @@ fn print_help() {
     println!("  agents            the agent roster and each agent's grants");
     println!("  governance        run the roster's governance review");
     println!("  limits            the risk limits and their rationales");
+    println!("  storage           the configured store, and what survives a restart");
     println!();
     println!("There is deliberately no command to raise the autonomy level:");
     println!("enabling live trading needs two authenticated operators, and a");
     println!("command line cannot establish two people.");
+}
+
+/// The configured store, proven writable.
+///
+/// Every command that reads or writes the archive goes through here, so a
+/// misconfigured store fails the command outright. Returning an in-memory
+/// store on a bad configuration would make `qip cycle` report archived records
+/// that were never anywhere.
+fn storage() -> Result<StorageSettings> {
+    let settings = StorageSettings::from_env()?;
+    settings.preflight()?;
+    Ok(settings)
+}
+
+fn archive(settings: &StorageSettings) -> Result<ChainArchive> {
+    ChainArchive::open(settings.key_value("event-log")?)
 }
 
 fn platform() -> Result<Platform> {
@@ -66,6 +94,29 @@ fn platform() -> Result<Platform> {
         Universe::new(),
         LimitSet::conservative_default(),
     )
+}
+
+fn storage_command() -> Result<()> {
+    let settings = storage()?;
+    println!("target:    {}", settings.target().as_str());
+    println!(
+        "root:      {}",
+        match settings.root().as_os_str().is_empty() {
+            true => "not used by this target".to_string(),
+            false => settings.root().display().to_string(),
+        }
+    );
+    println!("rationale: {}", settings.target().rationale());
+    println!(
+        "durable:   {}",
+        if settings.is_durable() {
+            "yes; an acknowledged write survives a restart"
+        } else {
+            "NO; nothing this process writes survives it"
+        }
+    );
+    println!("chain:     {}", archive(&settings)?.describe());
+    Ok(())
 }
 
 fn status() -> Result<()> {
@@ -102,6 +153,21 @@ fn status() -> Result<()> {
             Err(sequence) => format!("BROKEN at sequence {sequence}"),
         }
     );
+
+    // The counts above describe a platform that was built one line ago, so
+    // they are all but meaningless on their own. The archive is the part that
+    // spans invocations, and it is reported separately rather than folded into
+    // the same numbers — adding a restart's records to this run's would claim
+    // this process had done work it has not.
+    let settings = storage()?;
+    println!("store:     {}", settings.target().as_str());
+    println!("archived:  {}", archive(&settings)?.describe());
+    if !settings.is_durable() {
+        println!(
+            "           nothing is being kept; set QIP_STORAGE_TARGET=engine and \
+             QIP_STORAGE_ROOT to make successive commands one platform rather than many"
+        );
+    }
     Ok(())
 }
 
@@ -109,6 +175,8 @@ fn cycle(count: u64) -> Result<()> {
     if count == 0 || count > 1000 {
         return Err(Error::invalid("run between 1 and 1000 cycles"));
     }
+    let settings = storage()?;
+    let archive = archive(&settings)?;
     let mut platform = platform()?;
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     for _ in 0..count {
@@ -116,6 +184,17 @@ fn cycle(count: u64) -> Result<()> {
         println!("{}", report.summarise());
         println!();
     }
+
+    // Once, after every cycle has run, rather than once per cycle: the archive
+    // skips what it already holds, so the two are equivalent in what they
+    // write, and doing it here keeps a storage failure from stopping a run of
+    // cycles halfway through.
+    let archived = archive.absorb(platform.event_log().records())?;
+    println!(
+        "archived {archived} event(s) to {}; {}",
+        settings.target().as_str(),
+        archive.describe()
+    );
     Ok(())
 }
 

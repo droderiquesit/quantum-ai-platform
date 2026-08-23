@@ -13,6 +13,15 @@
 //! * A **venue set**. What this cell may reach, independent of what any
 //!   envelope permits; an order clears both or neither.
 //!
+//! What it keeps, and what it deliberately does not, is settled here too. The
+//! journal — every decision and every refusal — is shipped to the configured
+//! store, because a cell that dies is a cell whose record is the only account
+//! of what it did. Its books, features and stream watermarks are *not*, and
+//! that is not an omission: a cell rebuilds its books from the feed, and a
+//! book restored from disk is a position nobody has reconciled against the
+//! venue. Restoring it would make the cell trade against a picture of the
+//! market that stopped being true when the process died.
+//!
 //! The node cannot reach a language model, and the guarantee is structural
 //! rather than checked here: `qip-edge` and this binary do not depend on
 //! `qip-ai` directly or transitively, and a workspace architecture test keeps
@@ -23,10 +32,11 @@ use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Duration, SystemClock};
 use qip_edge::cell::{Cell, CellConfig};
-use qip_edge::journal::{FileMirror, MemoryMirror, Mirror};
 use qip_edge_node::gateway::SimulatedGateway;
+use qip_edge_node::mirror::StoreMirror;
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
+use qip_storage::settings::{ROOT_VARIABLE, StorageSettings, TARGET_VARIABLE};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
@@ -59,7 +69,7 @@ struct NodeConfig {
     venues: Vec<VenueId>,
     envelope_key: Vec<u8>,
     health_port: u16,
-    mirror_path: Option<String>,
+    storage: StorageSettings,
 }
 
 impl NodeConfig {
@@ -102,13 +112,30 @@ impl NodeConfig {
             Err(_) => 8080,
         };
 
+        // `QIP_MIRROR_PATH` used to select the journal's destination on its
+        // own, beside the variables every other binary reads. Ignoring it now
+        // would leave a cell that was deployed with it writing its journal
+        // nowhere while its configuration still claimed a path, so it is
+        // refused with the replacement named rather than quietly dropped.
+        if std::env::var("QIP_MIRROR_PATH").is_ok_and(|value| !value.trim().is_empty()) {
+            return Err(Error::invalid(format!(
+                "configuration: QIP_MIRROR_PATH is no longer read. The journal goes to the \
+                 store named by {TARGET_VARIABLE} and {ROOT_VARIABLE}, the same two variables \
+                 every other binary reads; set {TARGET_VARIABLE}=engine and {ROOT_VARIABLE} to \
+                 the path you had here"
+            )));
+        }
+
+        let storage = StorageSettings::from_env()
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+
         Ok(Self {
             cell_id,
             region,
             venues,
             envelope_key: key.into_bytes(),
             health_port,
-            mirror_path: std::env::var("QIP_MIRROR_PATH").ok(),
+            storage,
         })
     }
 }
@@ -143,7 +170,7 @@ fn run() -> Result<()> {
         cell_config = cell_config.with_venue(venue.clone());
     }
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
-    let cell = Cell::new(cell_config, features)?;
+    let mut cell = Cell::new(cell_config, features)?;
 
     // The venue seam. Simulated is the only class this binary can construct —
     // `AdapterClass` has no live variant — and the seed is configuration so a
@@ -160,19 +187,20 @@ fn run() -> Result<()> {
         .clone();
     let gateway = SimulatedGateway::new(gateway_venue, gateway_seed, started)?;
 
-    let mut mirror: Box<dyn Mirror> = match &config.mirror_path {
-        Some(path) => Box::new(FileMirror::new(path)),
-        // No durable mirror configured is a degraded state, not a fatal one:
-        // the cell still records locally and still refuses what it should.
-        // Saying so is what keeps it from looking healthy.
-        None => {
-            eprintln!(
-                "qip-edge-node: QIP_MIRROR_PATH is unset; the journal is held in memory only \
-                 and will not survive this process"
-            );
-            Box::new(MemoryMirror::new())
-        }
-    };
+    // The store is opened and proven writable before the health surface binds.
+    // A node that started, reported healthy, and only discovered at the first
+    // flush that its journal had nowhere to go would have been trading for
+    // however long that took with no record anybody could read afterwards.
+    config
+        .storage
+        .preflight()
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    let mut mirror = StoreMirror::open(
+        config.storage.key_value("cell-journal")?,
+        &config.cell_id,
+        started,
+    )?;
+    let retained_sessions = mirror.retained_sessions()?;
 
     println!(
         "qip-edge-node cell={} region={} venues={} live_capable={} gateway={}({})",
@@ -184,6 +212,27 @@ fn run() -> Result<()> {
         gateway.venue()
     );
 
+    for line in config.storage.banner_lines(
+        &["the cell's decision journal, chained within each session"],
+        &[
+            "the order books and every feature derived from them",
+            "the feed watermarks",
+            "the halt state",
+        ],
+    ) {
+        println!("{line}");
+    }
+    println!("  prior sessions:   {retained_sessions} retained in this store");
+    if !config.storage.is_durable() {
+        // Not fatal: the cell still records locally and still refuses what it
+        // should. Saying so is what keeps it from looking healthy — an
+        // operator reading this line knows the record dies with the process.
+        eprintln!(
+            "qip-edge-node: the journal is held in memory only and will not survive this \
+             process; set {TARGET_VARIABLE}=engine and {ROOT_VARIABLE} to keep it"
+        );
+    }
+
     // No venue connectivity is configured: this build has no credential for
     // one, and inventing a feed would be worse than serving without it. The
     // node serves its health surface so an orchestrator can see it, and
@@ -192,7 +241,7 @@ fn run() -> Result<()> {
         println!("qip-edge-node: awaiting {requirement}");
     }
 
-    serve(&config, cell, &gateway, mirror.as_mut(), started)
+    serve(&config, &mut cell, &gateway, &mut mirror, &clock, started)
 }
 
 /// What a production cell would need that this build cannot supply.
@@ -207,16 +256,26 @@ fn missing_production_requirements() -> Vec<String> {
     ]
 }
 
-/// Serve the health surface until the listener fails.
+/// Serve the health surface until the listener fails, draining the journal as
+/// it goes.
 ///
 /// Deliberately tiny and deliberately not the platform's HTTP server: a node
 /// whose liveness probe depends on the API crate has coupled the two, and the
 /// probe is what tells an orchestrator whether the cell is alive at all.
+///
+/// The journal is flushed on each accepted connection because this node has no
+/// scheduler and the liveness probe is the only periodic event it has. That is
+/// a compromise and worth naming: it ties the record's durability to how often
+/// something asks whether the cell is alive, so a node nobody probes keeps its
+/// decisions in memory. A production cell drains on a timer instead. The flush
+/// happens before the answer is written so the numbers reported are the ones
+/// already shipped, rather than a count the next crash would take back.
 fn serve(
     config: &NodeConfig,
-    cell: Cell,
+    cell: &mut Cell,
     gateway: &SimulatedGateway,
-    mirror: &mut dyn Mirror,
+    mirror: &mut StoreMirror,
+    clock: &Arc<dyn Clock>,
     started: qip_core::Timestamp,
 ) -> Result<()> {
     let address = format!("0.0.0.0:{}", config.health_port);
@@ -227,7 +286,17 @@ fn serve(
     for incoming in listener.incoming() {
         match incoming {
             Ok(stream) => {
-                if let Err(error) = answer(stream, config, &cell, gateway, started) {
+                // A journal that cannot be shipped is reported and the node
+                // keeps serving: the entries are still held locally and still
+                // chained, so the next flush ships them. Exiting here would
+                // turn a storage outage into a trading outage.
+                if let Err(error) = cell.flush(mirror, clock.now()) {
+                    eprintln!(
+                        "qip-edge-node: the journal could not be shipped: {}",
+                        error.message()
+                    );
+                }
+                if let Err(error) = answer(stream, config, cell, gateway, mirror, started) {
                     eprintln!("qip-edge-node: health request failed: {}", error.message());
                 }
             }
@@ -235,10 +304,6 @@ fn serve(
             Err(error) => eprintln!("qip-edge-node: accept failed: {error}"),
         }
     }
-
-    // Unreachable while the listener holds, but if it ever ends the journal is
-    // shipped rather than dropped.
-    let _ = mirror;
     Ok(())
 }
 
@@ -247,6 +312,7 @@ fn answer(
     config: &NodeConfig,
     cell: &Cell,
     gateway: &SimulatedGateway,
+    mirror: &StoreMirror,
     started: qip_core::Timestamp,
 ) -> Result<()> {
     let mut buffer = [0u8; 1024];
@@ -255,7 +321,7 @@ fn answer(
     let _ = stream.read(&mut buffer);
 
     let body = format!(
-        r#"{{"cell":"{}","region":"{}","halted":{},"live_capable":{},"venues":{},"strategies":{},"journal_entries":{},"gateway":{{"class":"{}","venue":"{}","submitted":{},"rejected":{}}},"started_at":{}}}"#,
+        r#"{{"cell":"{}","region":"{}","halted":{},"live_capable":{},"venues":{},"strategies":{},"journal_entries":{},"journal_shipped":{},"storage":"{}","durable":{},"gateway":{{"class":"{}","venue":"{}","submitted":{},"rejected":{}}},"started_at":{}}}"#,
         config.cell_id,
         config.region,
         cell.is_halted(),
@@ -263,6 +329,13 @@ fn answer(
         config.venues.len(),
         cell.deployed_strategies().len(),
         cell.journal().len(),
+        // Reported beside the journal's own length so a probe can see the two
+        // diverge. A cell whose entries climb while nothing ships is a cell
+        // whose record is not leaving the process, and that is invisible if
+        // only one of the two numbers is published.
+        mirror.shipped_entries(),
+        config.storage.target().as_str(),
+        config.storage.is_durable(),
         gateway.class(),
         gateway.venue(),
         gateway.submitted_count(),

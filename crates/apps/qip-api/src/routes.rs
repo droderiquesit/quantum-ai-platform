@@ -14,6 +14,7 @@ use crate::http::{Handler, Method, Request, Response};
 use crate::json;
 use qip_core::time::Timestamp;
 use qip_kernel::Platform;
+use qip_storage::ChainArchive;
 use std::sync::{Arc, Mutex};
 
 /// The prefix every route in the table sits under.
@@ -275,6 +276,16 @@ pub struct Api {
     /// through [`Api::with_cells`] so the page and the JSON behind it cannot
     /// disagree about which cells are stale.
     cells: Arc<CellRegistry>,
+    /// Where the event log's hash chain is kept across restarts.
+    ///
+    /// `None` means this instance archives nothing. That is not a fallback the
+    /// server can reach: `qip-api`'s `main` resolves a store from the
+    /// environment and refuses to start if the configuration does not describe
+    /// one it can write to, so a running deployment always has an archive. The
+    /// `None` case exists for tests and embedders that assemble an `Api`
+    /// directly and have decided in their own code, rather than by
+    /// configuration, that nothing should persist.
+    archive: Option<Arc<ChainArchive>>,
 }
 
 impl std::fmt::Debug for Api {
@@ -299,6 +310,7 @@ impl Api {
             rate_limiter,
             clock,
             cells: Arc::new(CellRegistry::default()),
+            archive: None,
         }
     }
 
@@ -310,6 +322,17 @@ impl Api {
     /// a missing one.
     pub fn with_cells(mut self, cells: Arc<CellRegistry>) -> Self {
         self.cells = cells;
+        self
+    }
+
+    /// Archive the event log's hash chain into `archive` as cycles run.
+    ///
+    /// The platform's own log is in memory and begins again at every start, so
+    /// without this the audit trail is only ever as long as the current
+    /// process has been up — and the one question an incident review asks is
+    /// what happened before the restart.
+    pub fn with_archive(mut self, archive: Arc<ChainArchive>) -> Self {
+        self.archive = Some(archive);
         self
     }
 
@@ -336,7 +359,9 @@ impl Api {
 
         match (route.method, route.pattern) {
             (Method::Get, "/health") => Response::json(200, health(&platform)),
-            (Method::Get, "/system/status") => Response::json(200, status(&platform)),
+            (Method::Get, "/system/status") => {
+                Response::json(200, status(&platform, self.archive.as_deref()))
+            }
             (Method::Get, "/system/metrics") => Response::json(200, metrics(&platform)),
             (Method::Get, "/system/governance") => Response::json(200, governance(&platform, now)),
             (Method::Get, "/portfolio") => Response::json(200, portfolio(&platform)),
@@ -379,7 +404,25 @@ impl Api {
             (Method::Get, "/quantum") => Response::json(200, quantum(&platform)),
             (Method::Post, "/cycle") => {
                 let report = platform.run_cycle(now);
-                Response::json(202, cycle_report(&report))
+                // The hand-over happens here rather than inside the log's
+                // append, so a disk never sits on the path of an individual
+                // event. What that costs is the events of a cycle that was
+                // interrupted; what it buys is a decision loop whose latency
+                // is not a storage system's problem.
+                let archived = self.archive.as_ref().map(|archive| {
+                    archive
+                        .absorb(platform.event_log().records())
+                        .map_err(|error| error.message().to_string())
+                });
+                if let Some(Err(reason)) = &archived {
+                    // The cycle already happened, so failing the request would
+                    // be a lie about what the platform did. It is reported
+                    // instead — in the response and on stderr — because an
+                    // archive that stopped accepting records is an incident,
+                    // and one that fails silently is a worse one.
+                    eprintln!("qip-api: the event chain could not be archived: {reason}");
+                }
+                Response::json(202, cycle_report(&report, archived.as_ref()))
             }
             (Method::Post, "/kill-switch") => {
                 let reason = request
@@ -549,10 +592,18 @@ fn health(platform: &Platform) -> String {
     )
 }
 
-fn status(platform: &Platform) -> String {
+/// The platform's state, and how much of it is being kept.
+///
+/// `events` counts what this process holds in memory and `archived` counts what
+/// survives it. Both are reported because they answer different questions and
+/// the first one alone is the misleading half: an operator reading a healthy
+/// event count has no way to tell it from a deployment that is keeping none of
+/// it. `archived` is `null` when nothing is configured, rather than zero — a
+/// zero would read as "configured and empty".
+fn status(platform: &Platform, archive: Option<&ChainArchive>) -> String {
     let switch = platform.autonomy().kill_switch();
     format!(
-        r#"{{"autonomy":{},"configured_autonomy":{},"ceiling":{},"live_capable":{},"halted":{},"halted_scopes":[{}],"cycles":{},"events":{}}}"#,
+        r#"{{"autonomy":{},"configured_autonomy":{},"ceiling":{},"live_capable":{},"halted":{},"halted_scopes":[{}],"cycles":{},"events":{},"archived":{}}}"#,
         json::string(platform.autonomy().level().as_str()),
         json::string(platform.autonomy().configured_level().as_str()),
         json::string(platform.autonomy().ceiling().as_str()),
@@ -565,7 +616,11 @@ fn status(platform: &Platform) -> String {
             .collect::<Vec<_>>()
             .join(","),
         platform.cycle_count(),
-        platform.event_log().len()
+        platform.event_log().len(),
+        match archive {
+            Some(archive) => archive.records_archived().to_string(),
+            None => "null".to_string(),
+        }
     )
 }
 
@@ -748,7 +803,10 @@ fn autonomy(platform: &Platform) -> String {
     )
 }
 
-fn cycle_report(report: &qip_kernel::CycleReport) -> String {
+fn cycle_report(
+    report: &qip_kernel::CycleReport,
+    archived: Option<&std::result::Result<usize, String>>,
+) -> String {
     let stages: Vec<String> = report
         .stages
         .iter()
@@ -768,12 +826,25 @@ fn cycle_report(report: &qip_kernel::CycleReport) -> String {
             )
         })
         .collect();
+    // Reported rather than omitted on failure: a caller that ran a cycle and
+    // got a 202 has no other way to learn that the cycle left no durable
+    // trace, and "the request succeeded" is not the same claim as "the record
+    // was kept".
+    let archived = match archived {
+        None => r#""archived":null"#.to_string(),
+        Some(Ok(count)) => format!(r#""archived":{count}"#),
+        Some(Err(reason)) => format!(
+            r#""archived":null,"archive_error":{}"#,
+            json::string(reason)
+        ),
+    };
     format!(
-        r#"{{"cycle":{},"correlation_id":{},"halted":{},"traversed_every_stage":{},"stages":[{}]}}"#,
+        r#"{{"cycle":{},"correlation_id":{},"halted":{},"traversed_every_stage":{},{},"stages":[{}]}}"#,
         report.cycle,
         json::string(report.correlation_id.as_str()),
         report.halted,
         report.traversed_every_stage(),
+        archived,
         stages.join(",")
     )
 }

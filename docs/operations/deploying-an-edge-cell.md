@@ -151,10 +151,16 @@ cell trade" after the fact, and a record on ephemeral pod storage answers it
 only until the first restart.
 
 Each replica therefore gets its own `journal` volume from a
-`volumeClaimTemplate`, mounted at `/var/lib/qip/journal`, which is where
-`QIP_MIRROR_PATH` points. The retention policy is `Retain` on both delete and
-scale-down: a cell that has been removed still has to be able to account for
-what it did while it ran.
+`volumeClaimTemplate`, mounted at `/var/lib/qip/journal`. Point
+`QIP_STORAGE_ROOT` at that path and set `QIP_STORAGE_TARGET=engine`. The
+retention policy is `Retain` on both delete and scale-down: a cell that has
+been removed still has to be able to account for what it did while it ran.
+
+`QIP_MIRROR_PATH` used to select the journal's destination on its own. It is no
+longer read, and the node **refuses to start** if it is set rather than
+ignoring it — a cell deployed with the old variable would otherwise write its
+journal nowhere while its configuration still claimed a path. The refusal names
+the two replacements.
 
 Book and feature state stays on `emptyDir`, deliberately. A cell rebuilds its
 books from the feed on start, and state that survived a restart would be state
