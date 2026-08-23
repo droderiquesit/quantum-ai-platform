@@ -37,6 +37,13 @@ pub enum AnomalyKind {
     SentimentShift,
     /// An alternative-data reading diverging from its proxy.
     AlternativeDataDivergence,
+    /// A knowable event linked to a move it plausibly explains, or landing
+    /// with an estimable historical impact.
+    Catalyst,
+    /// A large move with *no* knowable catalyst. Kept distinct from
+    /// [`Self::Catalyst`]: a move nothing public explains is either
+    /// information leaking or a data error, and both demand escalation.
+    UnexplainedMove,
 }
 
 impl AnomalyKind {
@@ -53,6 +60,8 @@ impl AnomalyKind {
             Self::MacroSurprise => "macro_surprise",
             Self::SentimentShift => "sentiment_shift",
             Self::AlternativeDataDivergence => "alternative_data_divergence",
+            Self::Catalyst => "catalyst",
+            Self::UnexplainedMove => "unexplained_move",
         }
     }
 
@@ -62,9 +71,13 @@ impl AnomalyKind {
     /// having changed; a single large price move usually is not.
     pub fn base_importance(&self) -> f64 {
         match self {
-            Self::StructuralBreak | Self::RegimeChange => 0.85,
+            // A large move nothing knowable explains outranks an explained
+            // one: an explained move is ordinary repricing, an unexplained one
+            // is either information leaking or a data error.
+            Self::StructuralBreak | Self::RegimeChange | Self::UnexplainedMove => 0.85,
             Self::FundamentalSurprise | Self::MacroSurprise => 0.80,
             Self::CorrelationBreakdown => 0.75,
+            Self::Catalyst => 0.70,
             Self::LiquidityDeterioration => 0.65,
             Self::VolatilityShift => 0.60,
             Self::PriceMove => 0.50,
@@ -87,6 +100,14 @@ impl AnomalyKind {
             Self::MacroSurprise => vec![I::MacroAnalysis, I::CreditAnalysis],
             Self::SentimentShift => vec![I::DataVerification, I::CausalAnalysis],
             Self::AlternativeDataDivergence => vec![I::DataVerification, I::HistoricalValidation],
+            // The cause is already named; what remains is what it is worth.
+            Self::Catalyst => vec![I::Valuation, I::HistoricalValidation],
+            // The cause is exactly what is missing.
+            Self::UnexplainedMove => vec![
+                I::DataVerification,
+                I::CausalAnalysis,
+                I::MicrostructureAnalysis,
+            ],
         }
     }
 }
@@ -111,6 +132,11 @@ pub struct Anomaly {
     pub detected_at: Timestamp,
     /// Human-readable statement of what was noticed.
     pub description: String,
+    /// Structured linkage to the event that explains or constitutes the
+    /// anomaly, carrying the event, its known-time, the lag and the historical
+    /// impact assessment. `None` for purely statistical detections.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalyst: Option<crate::catalyst::CatalystLink>,
 }
 
 impl Anomaly {
@@ -135,6 +161,11 @@ impl Anomaly {
 #[derive(Debug, Default)]
 pub struct DetectionContext {
     pub as_of: Timestamp,
+    /// Spacing between consecutive price observations; the last price is at
+    /// `as_of`, so the latest return spans the window starting one interval
+    /// earlier. The catalyst detector needs this to place the move window in
+    /// time; [`Self::new`] sets one day.
+    pub bar_interval: Duration,
     /// Close price history per instrument, oldest first.
     pub prices: BTreeMap<String, Vec<f64>>,
     /// Volume history per instrument.
@@ -143,12 +174,18 @@ pub struct DetectionContext {
     pub spreads: BTreeMap<String, Vec<f64>>,
     /// Named scalar observations: surprises, sentiment, alternative data.
     pub observations: BTreeMap<String, Vec<f64>>,
+    /// Events already filtered to what was knowable at `as_of`. The type is
+    /// the guarantee: [`crate::catalyst::KnownEvents`] admits events only
+    /// through a constructor that filters by known-time, so a detector can
+    /// never be handed an event from the future of the scan.
+    pub events: crate::catalyst::KnownEvents,
 }
 
 impl DetectionContext {
     pub fn new(as_of: Timestamp) -> Self {
         Self {
             as_of,
+            bar_interval: Duration::from_days(1),
             ..Self::default()
         }
     }
@@ -170,6 +207,20 @@ impl DetectionContext {
 
     pub fn with_observations(mut self, name: impl Into<String>, values: Vec<f64>) -> Self {
         self.observations.insert(name.into(), values);
+        self
+    }
+
+    /// Attach events. The known-time filter is applied here, structurally: an
+    /// event not knowable at `as_of` never enters the context at all, and the
+    /// resulting coverage records that the stream was watched through `as_of`
+    /// — the precondition for ever calling a move unexplained.
+    pub fn with_events(mut self, events: Vec<crate::catalyst::MarketEvent>) -> Self {
+        self.events = crate::catalyst::KnownEvents::known_by(self.as_of, events);
+        self
+    }
+
+    pub fn with_bar_interval(mut self, interval: Duration) -> Self {
+        self.bar_interval = interval;
         self
     }
 }
@@ -258,6 +309,7 @@ impl Detector for ReturnAnomalyDetector {
                 expected: centre,
                 sample_size: history.len(),
                 detected_at: context.as_of,
+                catalyst: None,
                 description: format!(
                     "{subject} returned {:+.2}% against a typical {:+.2}%, {z:+.1} robust sigma",
                     latest * 100.0,
@@ -333,6 +385,7 @@ impl Detector for VolatilityShiftDetector {
                 expected: baseline_volatility,
                 sample_size: returns.len(),
                 detected_at: context.as_of,
+                catalyst: None,
                 description: format!(
                     "{subject} volatility moved from {:.2}% to {:.2}% per period",
                     baseline_volatility * 100.0,
@@ -449,6 +502,7 @@ impl Detector for StructuralBreakDetector {
                 expected: self.threshold,
                 sample_size: returns.len(),
                 detected_at: context.as_of,
+                catalyst: None,
                 description: format!(
                     "{subject} shows a persistent {} drift accumulating to {magnitude:.1} over \
                      at least {} observations, strongest around observation {break_index}",
@@ -557,6 +611,7 @@ impl Detector for RegimeDetector {
                 expected: 0.5,
                 sample_size: returns.len(),
                 detected_at: context.as_of,
+                catalyst: None,
                 description: format!(
                     "{subject} entered its high-volatility regime with probability \
                      {probability:.2}; volatility {:.2}% against {:.2}% in the calm state, \
@@ -647,6 +702,7 @@ impl Detector for CorrelationBreakdownDetector {
                     expected: baseline,
                     sample_size: n,
                     detected_at: context.as_of,
+                    catalyst: None,
                     description: format!(
                         "correlation between {first} and {second} moved from {baseline:.2} to \
                          {recent:.2}"
@@ -715,6 +771,7 @@ impl Detector for LiquidityDetector {
                 expected: centre,
                 sample_size: history.len(),
                 detected_at: context.as_of,
+                catalyst: None,
                 description: format!(
                     "{subject} spread widened to {latest:.1}bp against a typical {centre:.1}bp"
                 ),
@@ -785,6 +842,7 @@ impl Detector for ObservationDetector {
                 expected: centre,
                 sample_size: history.len(),
                 detected_at: context.as_of,
+                catalyst: None,
                 description: format!(
                     "{subject} read {latest:.3} against a typical {centre:.3}, {z:+.1} sigma"
                 ),
@@ -824,6 +882,9 @@ impl DetectorRegistry {
                 Box::new(CorrelationBreakdownDetector::default()),
                 Box::new(LiquidityDetector::default()),
                 Box::new(ObservationDetector::new(AnomalyKind::FundamentalSurprise)),
+                // Silent until the context carries event visibility and, for
+                // impact statements, until its history has been fed.
+                Box::new(crate::catalyst::CatalystDetector::default()),
             ],
         }
     }
@@ -888,10 +949,15 @@ pub fn object_id_of(subject: &str) -> ObjectId {
 pub fn horizon_for(kind: AnomalyKind) -> Duration {
     match kind {
         AnomalyKind::LiquidityDeterioration => Duration::from_days(2),
-        AnomalyKind::PriceMove | AnomalyKind::VolumeSpike | AnomalyKind::SentimentShift => {
-            Duration::from_days(5)
-        }
-        AnomalyKind::VolatilityShift | AnomalyKind::CorrelationBreakdown => Duration::from_days(20),
+        // An unexplained move is urgent precisely because its cause is
+        // unknown; whatever it means will be public within days.
+        AnomalyKind::PriceMove
+        | AnomalyKind::VolumeSpike
+        | AnomalyKind::SentimentShift
+        | AnomalyKind::UnexplainedMove => Duration::from_days(5),
+        AnomalyKind::VolatilityShift
+        | AnomalyKind::CorrelationBreakdown
+        | AnomalyKind::Catalyst => Duration::from_days(20),
         AnomalyKind::FundamentalSurprise | AnomalyKind::AlternativeDataDivergence => {
             Duration::from_days(60)
         }

@@ -960,11 +960,18 @@ fn mechanism_for(
         // A reported figure far from consensus reprices the asset directly.
         AnomalyKind::FundamentalSurprise => Some((Mechanism::DemandLinkage, claim)),
         AnomalyKind::MacroSurprise => Some((Mechanism::DiscountRate, claim)),
+        // A move already linked to a knowable event is a repricing on that
+        // event; the standing hypothesis is that the market under- or
+        // over-reacted, which is a sentiment story in the move's direction.
+        AnomalyKind::Catalyst => Some((Mechanism::Sentiment, claim)),
         // The rest noticed something without suggesting why. A volume spike is
         // a fact about volume; mapping it to a direction would be inventing a
-        // mechanism to fill a gap.
+        // mechanism to fill a gap — and an unexplained move is *defined* by
+        // the absence of a known mechanism, so assigning one would erase
+        // exactly what makes it worth investigating.
         AnomalyKind::VolumeSpike
         | AnomalyKind::SentimentShift
-        | AnomalyKind::AlternativeDataDivergence => None,
+        | AnomalyKind::AlternativeDataDivergence
+        | AnomalyKind::UnexplainedMove => None,
     }
 }

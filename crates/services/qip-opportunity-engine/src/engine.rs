@@ -202,10 +202,21 @@ impl OpportunityEngine {
             headline: strongest.description.clone(),
             affected_objects: affected_objects(&anomalies),
             affected_entities: vec![subject.to_string()],
-            evidence: anomalies
-                .iter()
-                .map(|a| format!("{}:{}", a.detector, a.subject))
-                .collect(),
+            evidence: {
+                let mut evidence: Vec<String> = anomalies
+                    .iter()
+                    .map(|a| format!("{}:{}", a.detector, a.subject))
+                    .collect();
+                // Catalyst linkages cite the event itself, so REASON can pull
+                // the record rather than re-discover it from the headline.
+                for link in anomalies.iter().filter_map(|a| a.catalyst.as_ref()) {
+                    let entry = format!("event:{}", link.event_id);
+                    if !evidence.contains(&entry) {
+                        evidence.push(entry);
+                    }
+                }
+                evidence
+            },
             historical_context: self.historical_context(subject, at, &anomalies),
             rank: OpportunityRank {
                 score,
@@ -333,5 +344,7 @@ pub fn supported_anomaly_kinds() -> Vec<AnomalyKind> {
         AnomalyKind::MacroSurprise,
         AnomalyKind::SentimentShift,
         AnomalyKind::AlternativeDataDivergence,
+        AnomalyKind::Catalyst,
+        AnomalyKind::UnexplainedMove,
     ]
 }

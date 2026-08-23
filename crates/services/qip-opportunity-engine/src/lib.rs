@@ -17,10 +17,15 @@
 //! * an opportunity carries the **investigation it requires**, so the cost of
 //!   following it up is visible when deciding whether to.
 
+pub mod catalyst;
 pub mod detector;
 pub mod engine;
 pub mod opportunity;
 
+pub use catalyst::{
+    CatalystDetector, CatalystLink, ImpactAssessment, ImpactEstimate, ImpactHistory, ImpactScope,
+    KnownEvents, MarketEvent,
+};
 pub use detector::{Anomaly, AnomalyKind, DetectionContext, Detector, DetectorRegistry};
 pub use engine::{EngineConfig, OpportunityEngine};
 pub use opportunity::{Investigation, Opportunity, OpportunityRank};
