@@ -54,7 +54,8 @@ is a real thing and it is most of the work. It is not a running system.
 | Crates | 57 |
 | Source lines | 120,864 |
 | Test lines | 63,527 |
-| Passing tests | **1,998** |
+| Tests passing | **2,000** |
+| Tests failing | **2** — see below; the suite is red |
 | `unsafe` blocks | **0** — `unsafe_code = "forbid"` workspace-wide; the thirteen occurrences of the word are all prose |
 | Third-party packages in the lockfile | 11, all permitted (`serde`, `serde_json` and their closure) |
 | Clippy | clean, `--workspace --all-targets`, warnings denied |
@@ -63,7 +64,34 @@ is a real thing and it is most of the work. It is not a running system.
 | Kubernetes manifests | 6 — never applied |
 | Architecture decision records | 10 |
 
-Reproduce all of it with `make check`.
+Reproduce all of it with `make check`, which **currently fails**.
+
+### The suite is red
+
+Two tests fail deterministically in
+`crates/services/qip-simulation-engine/tests/market_conditions.rs`:
+
+* `a_slippage_regime_multiplies_what_is_paid_beyond_the_reference` — a 10×
+  slippage regime moves cost 5.8002bp → 40.0016bp, about seven times rather
+  than ten.
+* `injecting_a_condition_never_improves_the_execution` — one of 96 generated
+  cases, a crossed market combined with latency, *improves* adversity
+  5.894609bp → 3.767213bp. A crossed book is a data fault, and filling a buy
+  against the lower side of one pays the buyer for a broken quote. That breaks
+  the monotonicity the whole conditions model rests on, and it is worse in a
+  simulator than anywhere else: a backtest rewarded for crossed quotes will
+  learn to seek them out.
+
+Both arrived with the commit that first compiled roughly three thousand lines
+of `qip-simulation-engine` that had never been built. They are under repair.
+Until they pass, **"model validation and backtesting" is PARTIAL, not PASS**,
+and no backtest result from this build should be believed.
+
+A note on how this was nearly missed, because the method matters more than the
+instance: the total above was first obtained by summing `test result: ok. N
+passed` lines. A test binary that fails prints no such line, so a failing
+target is invisible to that sum — it under-reports rather than erroring. Count
+with `--no-fail-fast` and check the exit code.
 
 **What a passing test proves here.** The house convention is that a test
 asserts a *property* rather than restating an implementation, and that a
@@ -115,7 +143,7 @@ several rows.
 | Reasoning engine | **PASS** | 41 | |
 | Investment agents | **PASS** | 33 | The organisation reaches the desk; the desk is read-only, and no agent crate can reach the execution engine — asserted over the parsed dependency graph. |
 | Prediction | **PASS** | 36 | |
-| Simulation | **PASS** | 40 | Backtest, Monte Carlo with antithetic variates, scenarios, purged k-fold with embargo, walk-forward, deflated Sharpe. Square-root impact law, and a refusal to price beyond the participation it was calibrated for. |
+| Simulation | **PARTIAL** | 40 + 30, 2 failing | Two market-condition defects, described above, are open. Otherwise: backtest, Monte Carlo with antithetic variates, scenarios, purged k-fold with embargo, walk-forward, deflated Sharpe. Square-root impact law, and a refusal to price beyond the participation it was calibrated for. |
 | Optimisation | **PASS** | 24 | Classical and quantum-inspired, with a compute router. |
 | Quantum | **PARTIAL** | 35 | Statevector simulator, QAOA, three solvers behind one trait, and a benchmark that **cannot produce a report without a classical baseline** and whose only usable answer is one re-evaluated classically. The IBM port refuses and names the token, the CRN and the transport. **No hardware has been reached and no advantage has been measured.** |
 
@@ -165,7 +193,7 @@ several rows.
 | Web console | **PASS** | 31 | Server-rendered, no JavaScript, `default-src 'none'`. It can trip the kill switch and has no path that clears one. |
 | Kernel / composition root | **PASS** | 28 | A cycle never panics and never stops early; a failing stage records why and the loop continues. |
 | Determinism and replay | **PASS** | 66 | No ambient clock, no ambient RNG; injected `Clock` and seeded `Xoshiro256`. Bit-exact replay. |
-| Infrastructure as code | **PARTIAL** | 45 | 45 structural tests assert properties a plan would not catch — the node pool has no public addresses, no workload identity holds delete on the evidence bucket, no credential appears in any manifest. **Never validated against a provider schema and never applied.** |
+| Infrastructure as code | **PARTIAL** | 54 | 54 structural tests assert properties a plan would not catch — the node pool has no public addresses, no workload identity holds delete on the evidence bucket, no credential appears in any manifest, every binary the workspace builds is either deployed or excluded by a named decision. **Never validated against a provider schema and never applied.** |
 | End-to-end demonstration | **PASS** | 1 | `crates/tests/qip-acceptance/tests/e2e.rs`: one run from a discovered source through ingest, a regional brain, the global loop, a three-arm dislocation, an allocation, a dual approval, a signed grant the cell verifies itself, an order, a partial fill reported as a break, an outcome on a hash chain beside six alternatives that cannot be added to it, and a solver benchmark whose quantum arm names the credential it lacks. Its own module doc states what it does not prove. |
 | Chaos and stress | **PASS** | 16 + 16 | Every test names the specific safe outcome the failure has to produce. "Nothing crashed" is not asserted anywhere, because it is the assertion that lets a system which silently invented a number pass. |
 

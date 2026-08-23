@@ -19,8 +19,18 @@ qip-orderbook     qip-feature-dag   qip-compliance
 ```
 
 These keep `serde` and `serde_json` and nothing else. The boundary is enforced
-in `crates/tests/qip-acceptance/tests/architecture.rs`, which already parses
-every manifest — so this is a checked property, not an intention.
+by `the_decision_core_named_by_adr_0009_is_the_set_actually_held_to_two` in
+`crates/tests/qip-acceptance/tests/architecture.rs`, which reads the list
+**out of the fenced block above** rather than keeping a copy. A crate added to
+the core in this document is a crate that test starts checking, and a crate
+quietly dropped from it to let a dependency through is a diff a reviewer sees.
+
+Today a second test, `no_crate_declares_a_third_party_dependency_beyond_the_two_permitted`,
+holds *every* crate to the same two, because no edge crate has yet taken
+anything. That is stricter than this ADR and it should stay until the first
+client lands. The tier check exists now rather than then for a specific reason:
+whoever adds Pub/Sub will relax the strict check, and on the day they do,
+something has to still be holding the core.
 
 Everything else — transport, cloud clients, serialisation formats, model
 serving — may take dependencies from an allowlist, in crates that hold no

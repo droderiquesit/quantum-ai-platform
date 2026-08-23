@@ -647,6 +647,100 @@ fn no_crate_declares_a_third_party_dependency_beyond_the_two_permitted() {
     );
 }
 
+#[test]
+fn the_decision_core_named_by_adr_0009_is_the_set_actually_held_to_two() {
+    // ADR 0009 tiers the dependency policy: a named decision core keeps serde
+    // and serde_json, and an I/O edge may take from an allowlist so that the
+    // managed-service clients can exist at all. The ADR says that boundary "is
+    // enforced in crates/tests/qip-acceptance/tests/architecture.rs".
+    //
+    // It was not. The test above holds *every* crate to two, with no tier —
+    // stricter than the ADR, which sounds harmless and is not: the document
+    // claimed an enforcement that did not exist, and the day the first Pub/Sub
+    // client lands, whoever adds it will relax the strict check and discover
+    // that nothing then holds the core to anything.
+    //
+    // So the list is read out of the ADR rather than copied into this file.
+    // A crate added to the decision core in prose is a crate this test starts
+    // checking; a crate quietly dropped from the prose to let a dependency in
+    // is a diff a reviewer sees.
+    let adr = qip_acceptance::read("docs/adr/0009-tiered-dependency-policy.md");
+    let core: BTreeSet<String> = adr
+        .split("```")
+        .nth(1)
+        .expect("the ADR names the decision core in a fenced block")
+        .split_whitespace()
+        .filter(|token| token.starts_with("qip-"))
+        .map(str::to_string)
+        .collect();
+    assert!(
+        core.len() >= 15,
+        "the ADR's decision core has shrunk to {} crate(s), which is the shape \
+         of a change that widens the dependency policy without saying so",
+        core.len()
+    );
+
+    let graph = dependency_graph();
+    let mut missing = Vec::new();
+    for crate_name in &core {
+        if !graph.contains_key(crate_name) {
+            missing.push(crate_name.clone());
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "the ADR names crates that are not in the workspace: {missing:?}"
+    );
+
+    // And each of them declares nothing beyond the two. Read from the manifest
+    // rather than from the lockfile: what a crate *asked for* is the line in
+    // the diff, and a transitive arrival is the shell script's job.
+    let permitted: BTreeSet<&str> = ["serde", "serde_json"].into_iter().collect();
+    let mut offenders = Vec::new();
+    for path in qip_acceptance::files_with_extension("crates", "toml") {
+        if path.file_name().is_none_or(|name| name != "Cargo.toml") {
+            continue;
+        }
+        let content = std::fs::read_to_string(&path).expect("readable manifest");
+        let Some(name) = content
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("name = "))
+            .map(|value| value.trim_matches('"').to_string())
+        else {
+            continue;
+        };
+        if !core.contains(&name) {
+            continue;
+        }
+        let mut section = String::new();
+        for line in content.lines() {
+            let line = line.trim();
+            if line.starts_with('[') {
+                section = line.to_string();
+                continue;
+            }
+            if !section.contains("dependencies") || line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some(dependency) = line.split(['.', ' ', '=']).next() else {
+                continue;
+            };
+            if dependency.is_empty()
+                || dependency.starts_with("qip-")
+                || permitted.contains(dependency)
+            {
+                continue;
+            }
+            offenders.push(format!("{name}: {dependency}"));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these are in ADR 0009's decision core and declare more than serde and \
+         serde_json: {offenders:?}"
+    );
+}
+
 // --- the workspace itself ---------------------------------------------------
 
 #[test]
