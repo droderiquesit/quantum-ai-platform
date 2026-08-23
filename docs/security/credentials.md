@@ -141,6 +141,22 @@ build does not have and which ADR 0009 now permits at the I/O edge.
 
 ## 3. How to authenticate `claude-builder`
 
+**The whole flow below is scripted.** From Cloud Shell, where every tool is
+preinstalled and you are already authenticated:
+
+```sh
+git clone https://github.com/droderiquesit/quantum-ai-platform
+cd quantum-ai-platform
+./scripts/bootstrap-deploy.sh          # development; pass staging|production to target another
+```
+
+It enables the APIs, grants you impersonation, creates the versioned state
+bucket, runs `terraform init` and an **interactive** apply — it never
+auto-approves — and sets the four pipeline variables. It never creates,
+downloads or reads a key. The rest of this section is the same flow by hand,
+kept because a script you cannot check against its documentation is a script
+you have to trust.
+
 **Do not create a service-account key.** A downloaded JSON key is a
 long-lived, exfiltratable, non-rotating credential, and it is the root cause of
 a large share of cloud compromises. Every path below avoids one.
