@@ -28,7 +28,7 @@ file was.
 | Crates | 57 | 49 |
 | Rust source | 120,864 lines | 87,496 |
 | Rust tests | 63,601 lines | 43,680 |
-| Tests passing | 2,043 | 1,554 |
+| Tests passing | 2,052 | 1,554 |
 | Tests failing | 0 | 0 |
 | Terraform | 26 files, 2,191 lines | unchanged |
 | Kubernetes manifests | 6 | unchanged |
@@ -43,7 +43,7 @@ composition root, 6 applications, 1 workspace test crate.
 The whole platform is Rust. There is no JavaScript, no Python, and no build
 step outside `cargo`.
 
-**The workspace is green**, at 2,043 passing and none failing. It was not when
+**The workspace is green**, at 2,052 passing and none failing. It was not when
 this audit was first written: two market-condition tests failed
 deterministically, and both are now fixed — see section 6, which keeps the
 account because the diagnosis is the useful part. Count the suite with
@@ -444,10 +444,20 @@ tree at `dc9ee9a`.
   refused outright — the simulator cannot tell a stale quote from a real
   arbitrage and is not entitled to guess.
 
+  Reading the rest of the file the way that property test reads it then found
+  two more of the same shape. A book with one side quoted, or neither, has no
+  mid — and every cost the regime charges is defined relative to it, so a fill
+  measured against nothing escaped all of them and came back a flawless
+  execution. And a position the run ended holding and could not mark was valued
+  at the last price the generator produced, which no book was showing. Both are
+  now refusals, and the report names the positions it could not mark rather
+  than pricing them.
+
   The standing lesson: a backtester's errors are only dangerous in one
-  direction, and both of these ran that way. Neither was found by review. A
-  property test over 96 generated condition sequences found the second, and the
-  first was the same root cause wearing a different symptom.
+  direction, and all four of these ran that way. Not one was found by review. A
+  property test over 96 generated condition sequences found the first, and the
+  rest came from asking the same question of every other path that had to put a
+  number on something it could not measure.
 
 * **A port is not an integration, and this phase created many ports.** This is
   the newly-available overclaim and the reason the section exists. `qip-streaming`

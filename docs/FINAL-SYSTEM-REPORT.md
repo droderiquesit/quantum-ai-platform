@@ -54,7 +54,7 @@ is a real thing and it is most of the work. It is not a running system.
 | Crates | 57 |
 | Source lines | 120,864 |
 | Test lines | 63,527 |
-| Tests passing | **2,043** |
+| Tests passing | **2,052** |
 | Tests failing | **0** — `make count`, which exits non-zero if any do |
 | `unsafe` blocks | **0** — `unsafe_code = "forbid"` workspace-wide; the thirteen occurrences of the word are all prose |
 | Third-party packages in the lockfile | 11, all permitted (`serde`, `serde_json` and their closure) |
@@ -126,7 +126,7 @@ several rows.
 | Reasoning engine | **PASS** | 41 | |
 | Investment agents | **PASS** | 33 | The organisation reaches the desk; the desk is read-only, and no agent crate can reach the execution engine — asserted over the parsed dependency graph. |
 | Prediction | **PASS** | 36 | |
-| Simulation | **PASS** | 75 | Backtest, Monte Carlo with antithetic variates, scenarios, purged k-fold with embargo, walk-forward, deflated Sharpe. Square-root impact law, and a refusal to price beyond the participation it was calibrated for. |
+| Simulation | **PASS** | 82 | Backtest, Monte Carlo with antithetic variates, scenarios, purged k-fold with embargo, walk-forward, deflated Sharpe. Square-root impact law, and a refusal to price beyond the participation it was calibrated for. |
 | Optimisation | **PASS** | 24 | Classical and quantum-inspired, with a compute router. |
 | Quantum | **PARTIAL** | 35 | Statevector simulator, QAOA, three solvers behind one trait, and a benchmark that **cannot produce a report without a classical baseline** and whose only usable answer is one re-evaluated classically. The IBM port refuses and names the token, the CRN and the transport. **No hardware has been reached and no advantage has been measured.** |
 
@@ -221,6 +221,8 @@ something.
 | Defect | Why it mattered |
 |---|---|
 | The simulator priced a slice against the touch read back *after* the sweep | The order's own market impact sat inside the reference instead of beyond it, so the impact term double-counted and a ten-times slippage regime multiplied by about seven |
+| A book with one side quoted, or neither, was filled anyway | Every cost the regime charges is defined relative to the mid, so a fill measured against nothing escaped all of them and reported as a flawless execution |
+| A position the run could not mark was valued at the last generated price | An invented mark, at a price no book was showing, inside a reported P&L |
 | A crossed book was filled at the worse of its two touch prices | The book is built symmetrically about the mid, so at any cross width *both* quotes are inside the calm touch — the "worse" one included. Charging it is still charging less than an orderly market, which turns a data fault into a subsidy a backtest will learn to seek out |
 | `WorldModel::absorb_bar` accepted a known-time before the bar closed | Look-ahead: a backtest could read a price that had not printed |
 | `Cell::deploy` did not take the program its plan indexes into | `NodeRef` is an index; in a large enough arena it resolves to another strategy's node and the cell emits a signal from arithmetic nobody wrote for it |
