@@ -12,5 +12,21 @@ data:
   # Paper trading. Raising this permits two authenticated operators to enable
   # live trading; it does not enable it.
   autonomy_ceiling: "paper_trading"
+
+  # Which store a workload uses, read as QIP_STORAGE_TARGET.
+  #
+  # `memory` is the default here and it is a statement rather than a
+  # placeholder: a workload keeps nothing across a restart unless it has a
+  # volume to keep it on, and only the edge cell has one. The three
+  # implemented targets are memory, file and engine; the six managed ones are
+  # ports that refuse construction, so naming one here would stop a pod
+  # starting rather than upgrading its durability.
+  #
+  # A workload that overrides this must also have somewhere to write: the
+  # root filesystem is read-only by design, so `engine` without a mounted
+  # volume fails at start-up. That failure is deliberate — `StorageSettings::
+  # preflight` round-trips a value before the process serves anything, so a
+  # misconfigured store is found at boot rather than at the first audit write.
+  storage_target: "memory"
   cycle_interval_seconds: "300"
   log_level: "info"

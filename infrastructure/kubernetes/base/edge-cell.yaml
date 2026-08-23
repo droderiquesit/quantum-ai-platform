@@ -117,6 +117,10 @@ spec:
             - name: QIP_HEALTH_PORT
               value: "8080"
             # The same config-map keys every other workload reads.
+            - name: QIP_STORAGE_TARGET
+              value: "engine"
+            - name: QIP_STORAGE_ROOT
+              value: "/var/lib/qip/journal"
             - name: QIP_AUTONOMY_CEILING
               valueFrom:
                 configMapKeyRef:
@@ -180,6 +184,16 @@ spec:
               mountPath: /var/lib/qip/state
             - name: journal
               mountPath: /var/lib/qip/journal
+          # The cell is the one workload with a volume that outlives its pod,
+          # so it is the one that names a durable store. The journal drains
+          # here through `StoreMirror`, and the retention policy on the claim
+          # is Retain: a cell that has been removed still has to account for
+          # what it did while it ran.
+          #
+          # QIP_MIRROR_PATH used to select this destination on its own. The
+          # node now refuses to start if it is set, rather than ignoring it,
+          # because a cell deployed with the old variable would write its
+          # journal nowhere while its configuration still claimed a path.
       volumes:
         - name: tmp
           emptyDir:
