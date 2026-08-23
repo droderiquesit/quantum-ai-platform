@@ -245,6 +245,16 @@ fn the_execution_engine_is_reachable_from_almost_nothing() {
         "qip-edge",
         "qip-edge-node",
         "qip-acceptance",
+        // The venue adapters implement the execution engine's `Broker` port
+        // and speak its `Order`/`Fill` vocabulary. That is the port-adapter
+        // direction — the far side of an order path necessarily knows what an
+        // order is — and refusing it would mean a second, parallel order
+        // vocabulary that has to be kept in agreement with this one by hand.
+        //
+        // What that concession costs is checked by
+        // `nothing_outside_a_composition_root_holds_an_order_manager` below:
+        // reaching the crate is permitted, holding the order manager is not.
+        "qip-brokers",
     ]
     .into_iter()
     .collect();
@@ -258,6 +268,54 @@ fn the_execution_engine_is_reachable_from_almost_nothing() {
             "{crate_name} depends on the execution engine directly"
         );
     }
+}
+
+#[test]
+fn nothing_outside_a_composition_root_holds_an_order_manager() {
+    // The manifest rule above says which crates may *reach* the execution
+    // engine. This one says what they may do with it, and it is the property
+    // that actually matters: an `OrderManager` is the thing that submits, and
+    // a crate that constructs one has an order path the capability system
+    // never reviewed.
+    //
+    // Checked in the source rather than in the graph, because the concession
+    // made to `qip-brokers` above is exactly the shape of change that would
+    // otherwise let an order manager in unnoticed.
+    let permitted = [
+        "crates/runtime/qip-kernel",
+        "crates/edge/qip-edge",
+        "crates/apps",
+        "crates/tests",
+        // Where it is defined.
+        "crates/services/qip-execution-engine",
+    ];
+
+    let mut offenders = Vec::new();
+    for path in qip_acceptance::files_with_extension("crates", "rs") {
+        let display = path.display().to_string();
+        let relative = display
+            .rsplit_once("crates/")
+            .map_or(display.clone(), |(_, tail)| format!("crates/{tail}"));
+        if permitted.iter().any(|prefix| relative.starts_with(prefix)) {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).unwrap_or_default();
+        if source.contains("OrderManager") {
+            offenders.push(relative);
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these hold an order manager without being a composition root: {offenders:?}"
+    );
+
+    // The vacuity guard: the name must actually exist, or this test passes by
+    // checking for something that was renamed.
+    assert!(
+        qip_acceptance::read("crates/services/qip-execution-engine/src/oms.rs")
+            .contains("pub struct OrderManager"),
+        "the order manager has been renamed and this test constrains nothing"
+    );
 }
 
 #[test]

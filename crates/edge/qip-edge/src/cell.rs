@@ -26,6 +26,7 @@ use qip_protocols::registry::{FeedKey, ProtocolRegistry};
 use qip_risk_engine::autonomy::{AutonomyController, AutonomyLevel};
 use qip_sequencing::tracker::{ReorderPolicy, Sequencer};
 use qip_strategy::compile::CompiledStrategy;
+use qip_strategy::program::Program;
 use qip_strategy::runtime::StrategyRuntime;
 use std::collections::BTreeMap;
 
@@ -88,10 +89,20 @@ pub struct PlacedOrder {
     pub simulated: bool,
 }
 
-/// A deployed strategy and the capital it runs under.
+/// A deployed strategy, the arena its plan indexes into, and the capital it
+/// runs under.
+///
+/// The runtime is per-strategy rather than per-cell. One shared arena would
+/// mean a plan compiled against one program being evaluated against another,
+/// and the failure mode is not a crash: `NodeRef` is an index, so the run
+/// would read whatever node happened to sit at that position and emit a signal
+/// derived from a different strategy's arithmetic. Giving each deployment the
+/// program it was compiled against costs a few kilobytes and removes the
+/// aliasing entirely.
 #[derive(Debug)]
 struct Deployed {
     strategy: CompiledStrategy,
+    runtime: StrategyRuntime,
     envelope: VerifiedEnvelope,
     utilisation: Utilisation,
 }
@@ -104,7 +115,6 @@ pub struct Cell {
     sequencer: Sequencer,
     liquidity: CellLiquidity,
     features: FeatureEngine,
-    runtime: StrategyRuntime,
     deployed: BTreeMap<String, Deployed>,
     autonomy: AutonomyController,
     dropcopy: DropCopyReconciler,
@@ -122,16 +132,11 @@ impl Cell {
     /// the absence of that constructor here is what makes the claim true
     /// rather than merely intended.
     pub fn new(config: CellConfig, features: FeatureEngine) -> Result<Self> {
-        let runtime = StrategyRuntime::with_budget(
-            qip_strategy::program::Program::default(),
-            config.strategy_budget,
-        )?;
         Ok(Self {
             protocols: ProtocolRegistry::new(),
             sequencer: Sequencer::new(ReorderPolicy::default()),
             liquidity: CellLiquidity::new(),
             features,
-            runtime,
             deployed: BTreeMap::new(),
             autonomy: AutonomyController::new(),
             dropcopy: DropCopyReconciler::new(),
@@ -184,11 +189,35 @@ impl Cell {
         self.liquidity.insert(state);
     }
 
-    /// Deploy a strategy under a verified capital envelope.
+    /// Deploy a strategy, the program its plan indexes into, and the verified
+    /// capital envelope it runs under.
     ///
-    /// Takes the verified type, so a strategy cannot be deployed against a
-    /// grant nobody signed.
-    pub fn deploy(&mut self, strategy: CompiledStrategy, envelope: VerifiedEnvelope) -> Result<()> {
+    /// The envelope is the verified type, so a strategy cannot be deployed
+    /// against a grant nobody signed. The program is taken here rather than at
+    /// assembly for the reason that made this call worth changing: a cell used
+    /// to be constructed with an empty arena, so a strategy whose plan pointed
+    /// into a real one could be deployed, accepted, and then refuse on every
+    /// pass of `work` — a cell that looked healthy, held a strategy, and could
+    /// not evaluate it. Every reason that can be established without the market
+    /// is established here instead, and a deployment that returns `Ok` is one
+    /// the cell can actually run:
+    ///
+    /// * the envelope names this cell,
+    /// * the program is internally consistent,
+    /// * every node the plan names exists in that program,
+    /// * the strategy fits the cell's evaluation budget.
+    ///
+    /// What deliberately is *not* checked here is whether the feature engine
+    /// will produce the inputs the strategy reads. That depends on the market —
+    /// a feature can be registered and still undefined for want of a quote —
+    /// so it stays a per-pass judgement the runtime makes against the vector it
+    /// was actually handed.
+    pub fn deploy(
+        &mut self,
+        strategy: CompiledStrategy,
+        program: Program,
+        envelope: VerifiedEnvelope,
+    ) -> Result<()> {
         if envelope.cell() != self.config.cell_id {
             return Err(Error::denied(format!(
                 "an envelope for cell {} cannot deploy into {}",
@@ -196,10 +225,52 @@ impl Cell {
                 self.config.cell_id
             )));
         }
+        if envelope.strategy() != strategy.id() {
+            return Err(Error::denied(format!(
+                "an envelope for strategy {} cannot deploy {}",
+                envelope.strategy().as_str(),
+                strategy.id().as_str()
+            )));
+        }
+
+        // `NodeRef` is an index. A plan naming a node the arena does not hold
+        // is the case where an out-of-range read would be the *lucky* outcome:
+        // in a larger arena the index resolves, to a node belonging to some
+        // other strategy, and the cell emits a signal computed from arithmetic
+        // nobody wrote for it.
+        program.validate()?;
+        for node in strategy.plan() {
+            if program.node(*node).is_none() {
+                return Err(Error::invalid(format!(
+                    "strategy {} plans node {} and the program it was deployed \
+                     with holds {} node(s); the plan and the program do not \
+                     belong together",
+                    strategy.id().as_str(),
+                    node.index(),
+                    program.len()
+                )));
+            }
+        }
+
+        // `with_budget` refuses a program it could not evaluate in bounded
+        // time. Doing it here means an over-budget strategy is refused by the
+        // deployment that shipped it rather than silently, later, by a market
+        // that moved.
+        let runtime = StrategyRuntime::with_budget(program, self.config.strategy_budget)?;
+        if strategy.cost() > runtime.budget() {
+            return Err(Error::guard(format!(
+                "strategy {} needs {} nodes and this cell evaluates at most {}",
+                strategy.id().as_str(),
+                strategy.cost(),
+                runtime.budget()
+            )));
+        }
+
         self.deployed.insert(
             envelope.strategy().as_str().to_string(),
             Deployed {
                 strategy,
+                runtime,
                 envelope,
                 utilisation: Utilisation::default(),
             },
@@ -290,10 +361,15 @@ impl Cell {
         let strategy_ids: Vec<String> = self.deployed.keys().cloned().collect();
 
         for id in strategy_ids {
-            let Some(deployed) = self.deployed.get(&id) else {
-                continue;
+            // Each deployment evaluates against the arena it was compiled
+            // with. `runtime` and `strategy` are disjoint fields of the same
+            // deployment, so the borrow ends with the call and the refusal
+            // path below can take `&mut self` to journal why it refused.
+            let outcome = match self.deployed.get_mut(&id) {
+                Some(deployed) => deployed.runtime.run(&deployed.strategy, &vector, now),
+                None => continue,
             };
-            let signal = match self.runtime.run(&deployed.strategy, &vector, now) {
+            let signal = match outcome {
                 Ok(Some(signal)) => signal,
                 Ok(None) => continue,
                 Err(error) => {

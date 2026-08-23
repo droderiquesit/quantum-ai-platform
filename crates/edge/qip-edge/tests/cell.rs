@@ -626,10 +626,57 @@ fn a_strategy_cannot_be_deployed_under_another_cells_grant() -> Result<()> {
         "tokyo-1",
         t(10),
     )?;
+    let (strategy, program) = trivial_strategy()?;
     assert!(
-        cell.deploy(trivial_strategy()?, elsewhere).is_err(),
+        cell.deploy(strategy, program, elsewhere).is_err(),
         "a grant for another cell deployed here"
     );
+    Ok(())
+}
+
+#[test]
+fn a_plan_and_a_program_that_do_not_belong_together_are_refused_at_deployment() -> Result<()> {
+    // The failure this closes is not a crash. `NodeRef` is an index, so a plan
+    // evaluated against a foreign arena of the same size reads real nodes
+    // belonging to a different strategy and emits a signal computed from
+    // arithmetic nobody wrote for it. Deployment is where the mismatch is
+    // detectable without the market, so deployment is where it is refused.
+    use qip_edge::cell::{Cell, CellConfig};
+    use qip_feature_dag::engine::FeatureEngine;
+    use qip_feature_dag::state::MarketState;
+    use qip_strategy::program::Program;
+
+    let config = CellConfig::new(CELL, "europe-west2").with_venue(VenueId::new("XLON"));
+    let engine = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, engine)?;
+
+    let grant =
+        VerifiedEnvelope::verify(signed_envelope(CELL, "1000", "400", KEY)?, KEY, CELL, t(10))?;
+    let (strategy, program) = trivial_strategy()?;
+    assert!(
+        !strategy.plan().is_empty(),
+        "the fixture must plan at least one node, or the check has nothing to catch"
+    );
+
+    // The empty arena a cell used to be constructed with.
+    let error = cell
+        .deploy(strategy.clone(), Program::default(), grant)
+        .expect_err("a strategy deployed against an arena that does not hold its plan");
+    assert!(
+        error.message().contains("do not belong together"),
+        "the refusal did not name the mismatch: {error}"
+    );
+    assert!(
+        cell.deployed_strategies().is_empty(),
+        "a refused deployment was still recorded"
+    );
+
+    // The same strategy with its own program is accepted, so the test is
+    // about the mismatch rather than about the strategy.
+    let grant =
+        VerifiedEnvelope::verify(signed_envelope(CELL, "1000", "400", KEY)?, KEY, CELL, t(10))?;
+    cell.deploy(strategy, program, grant)?;
+    assert_eq!(cell.deployed_strategies(), vec!["mean-reversion-1"]);
     Ok(())
 }
 
@@ -638,7 +685,10 @@ fn a_strategy_cannot_be_deployed_under_another_cells_grant() -> Result<()> {
 /// The deployment gate under test is about *whose* capital it runs on, not
 /// about what it computes, so the cheapest well-typed program is the honest
 /// fixture here.
-fn trivial_strategy() -> Result<qip_strategy::compile::CompiledStrategy> {
+fn trivial_strategy() -> Result<(
+    qip_strategy::compile::CompiledStrategy,
+    qip_strategy::program::Program,
+)> {
     use qip_contracts::signal::SignalKind;
     use qip_strategy::catalogue::FeatureCatalogue;
     use qip_strategy::compile::StrategyCompiler;
@@ -658,5 +708,6 @@ fn trivial_strategy() -> Result<qip_strategy::compile::CompiledStrategy> {
         Expr::Statistic(0.5),
         100,
     ));
-    compiler.compile(&spec)
+    let compiled = compiler.compile(&spec)?;
+    Ok((compiled, compiler.into_program()))
 }

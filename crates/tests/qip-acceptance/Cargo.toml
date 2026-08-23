@@ -41,5 +41,36 @@ qip-kernel.workspace = true
 qip-api.workspace = true
 qip-web.workspace = true
 
+# The stress, chaos and performance suites reach the edge stack directly: the
+# cell and its journal, the books it prices from, the sequencer that decides a
+# feed is corrupt, the compiler and runtime a strategy is evaluated by, the
+# arbitrage pipeline, and the quantum port that reports itself unavailable.
+# These are in-tree crates; the workspace's two-dependency rule is untouched.
+qip-numerics.workspace = true
+qip-quantum.workspace = true
+qip-protocols.workspace = true
+qip-sequencing.workspace = true
+qip-orderbook.workspace = true
+qip-feature-dag.workspace = true
+qip-strategy.workspace = true
+qip-arbitrage.workspace = true
+qip-routing.workspace = true
+qip-edge.workspace = true
+
+# The security suite additionally reaches the data finder, because the
+# threat model's "unknown is not permission" property lives in its
+# three-valued legality and nowhere else.
+qip-data-finder.workspace = true
+
+# The end-to-end demonstration is the one test that has to reach everything at
+# once: the capital brain that signs a grant, the twin that prices what the
+# platform did not do, the fabric that pre-positions the cash, and the cost
+# engine that charges the decision for having been made. Nothing else in this
+# crate needs them, and the demonstration is worth nothing without them.
+qip-capital.workspace = true
+qip-twin.workspace = true
+qip-capital-fabric.workspace = true
+qip-cost-router.workspace = true
+
 [lints]
 workspace = true
