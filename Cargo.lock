@@ -141,6 +141,7 @@ dependencies = [
  "qip-risk",
  "qip-risk-engine",
  "qip-routing",
+ "qip-transport",
  "serde",
  "serde_json",
 ]
@@ -301,6 +302,7 @@ dependencies = [
  "qip-arbitrage",
  "qip-contracts",
  "qip-core",
+ "qip-events",
  "qip-execution-engine",
  "qip-feature-dag",
  "qip-financial",
@@ -314,6 +316,7 @@ dependencies = [
  "qip-routing",
  "qip-sequencing",
  "qip-strategy",
+ "qip-transport",
  "serde",
  "serde_json",
 ]
@@ -333,6 +336,7 @@ dependencies = [
  "qip-orderbook",
  "qip-storage",
  "qip-strategy",
+ "qip-transport",
  "serde",
  "serde_json",
 ]
@@ -569,6 +573,7 @@ dependencies = [
  "qip-market",
  "qip-numerics",
  "qip-storage",
+ "qip-transport",
  "serde",
  "serde_json",
 ]

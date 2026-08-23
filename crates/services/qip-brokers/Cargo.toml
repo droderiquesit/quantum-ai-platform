@@ -17,6 +17,7 @@ qip-market.workspace = true
 qip-portfolio.workspace = true
 qip-routing.workspace = true
 qip-execution-engine.workspace = true
+qip-transport.workspace = true
 
 [dev-dependencies]
 qip-risk.workspace = true

@@ -119,11 +119,32 @@
 //! accounting: `equity = cash + position value` holds exactly after any
 //! sequence of fills, and [`AccountLedger::verify`] says so on demand.
 //!
-//! Nothing here reads a clock or an ambient random source. `at` is a parameter
-//! on every operation and the venue's coin-flips come from a seeded
+//! [`RestOrderEntryAdapter`] is the other kind of venue: one that opens a
+//! socket. It sends real orders over HTTP to whatever endpoint a deployment
+//! configures, which makes it the only thing in this crate whose behaviour is
+//! not decided inside this process. Everything it does is arranged around one
+//! rule — **a fill is never inferred**. A submit that times out, a body that
+//! will not parse, an acknowledgement naming a different order: each of those
+//! leaves the order's state *unknown*, which is a third thing that is neither
+//! filled nor rejected, and which only a query answered by the venue resolves.
+//! Every submit carries a client-generated idempotency key, and where the venue
+//! does not promise to honour one the adapter refuses to retry rather than risk
+//! a second order. With no endpoint or no credential it refuses and opens no
+//! socket; there is no code path from it into [`SimulatedExchange`], because a
+//! live path that quietly degraded to a simulator would report fills for orders
+//! that never left the process. Its own module documentation is the long form.
+//!
+//! The simulated venue reads no clock and no ambient random source. `at` is a
+//! parameter on every operation and its coin-flips come from a seeded
 //! [`qip_core::Xoshiro256`], so the same instructions at the same timestamps
 //! with the same seed produce byte-identical fills. That is what makes a
 //! simulated venue usable as a test oracle instead of merely as a stub.
+//! [`RestOrderEntryAdapter`] inherits the first half and cannot have the
+//! second: its timestamps are still the caller's or the venue's, but what a
+//! venue answers is not this crate's to reproduce, and the one interval it
+//! measures itself — the round trip on an acknowledgement — comes from
+//! [`std::time::Instant`], because there is no way to learn how long a socket
+//! took from a timestamp taken before it was opened.
 //!
 //! Money, prices and quantities are [`qip_core::Decimal`] throughout. `f64`
 //! appears only for statistics — [`MarginState::leverage`] and
@@ -135,6 +156,7 @@ pub mod credential;
 pub mod exchange;
 pub mod ledger;
 pub mod matching;
+pub mod rest;
 
 pub use adapter::{
     AdapterClass, CashBalance, Heartbeat, MarginState, MarketData, OrderAck, PositionSnapshot,
@@ -148,3 +170,7 @@ pub use credential::{
 pub use exchange::{BookableFill, ExchangeSettings, SimulatedExchange};
 pub use ledger::{AccountLedger, MarginPolicy};
 pub use matching::{ExecutionOutcome, MatchingEngine, Participant, Resting, Trade};
+pub use rest::{
+    IdempotencySupport, OrderOutcome, RestOrderEntryAdapter, RestOrderStats, RestVenueConfig,
+    TrackedOrder,
+};
