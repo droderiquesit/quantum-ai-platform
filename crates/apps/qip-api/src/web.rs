@@ -243,10 +243,23 @@ impl Handler for Web {
     }
 }
 
-/// Routes between the API and the operator interface on one server.
+/// Routes between the API, the operator interface and the operator console on
+/// one server.
+///
+/// One process serves all three because they are one deployment and one
+/// credential set: an operator who can read the console can read the JSON
+/// behind it, and splitting them would mean two things to authenticate against
+/// and two chances to configure the authority differently.
 pub struct Router {
     api: Arc<crate::routes::Api>,
     web: Arc<Web>,
+    /// The console, where one is mounted.
+    ///
+    /// Optional because the console needs a cell registry to say how old a
+    /// cell's book is, and a caller assembling a router without one should get
+    /// a refusal on `/console` rather than a console that cannot answer the
+    /// question it exists to answer.
+    console: Option<Arc<crate::console::Console>>,
 }
 
 impl std::fmt::Debug for Router {
@@ -257,16 +270,35 @@ impl std::fmt::Debug for Router {
 
 impl Router {
     pub fn new(api: Arc<crate::routes::Api>, web: Arc<Web>) -> Self {
-        Self { api, web }
+        Self {
+            api,
+            web,
+            console: None,
+        }
+    }
+
+    /// Serve the operator console under `/console`.
+    pub fn with_console(mut self, console: Arc<crate::console::Console>) -> Self {
+        self.console = Some(console);
+        self
     }
 }
 
 impl Handler for Router {
     fn handle(&self, request: &Request) -> Response {
         if request.path.starts_with("/api") {
-            self.api.handle(request)
-        } else {
-            self.web.handle(request)
+            return self.api.handle(request);
         }
+        if crate::console::Console::owns(&request.path) {
+            return match &self.console {
+                Some(console) => console.handle(request),
+                // Not a 404 that pretends the path does not exist, and not the
+                // overview page the surfaces answer an unknown path with: the
+                // console is a thing this build has and this process was not
+                // given, and an operator looking for it should be told that.
+                None => Response::text(503, "the operator console is not mounted in this process"),
+            };
+        }
+        self.web.handle(request)
     }
 }

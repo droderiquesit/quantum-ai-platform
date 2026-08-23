@@ -183,3 +183,17 @@ pub fn code() -> Element {
 pub fn strong() -> Element {
     Element::new("strong")
 }
+/// A form. The only interactive element the console has, and the only one the
+/// content-security policy permits: `form-action 'self'` allows a submission
+/// back to the origin that served the page, and forbids everything else.
+pub fn form(action: &str) -> Element {
+    Element::new("form")
+        .attr("method", "post")
+        .attr("action", action)
+}
+pub fn button() -> Element {
+    Element::new("button").attr("type", "submit")
+}
+pub fn small() -> Element {
+    Element::new("small")
+}

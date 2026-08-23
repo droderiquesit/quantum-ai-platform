@@ -11,6 +11,8 @@
 //! that is down.
 
 use qip_api::auth::{Authenticator, Credential, RateLimiter, Role};
+use qip_api::cells::CellRegistry;
+use qip_api::console::Console;
 use qip_api::http::{Server, ServerLimits};
 use qip_api::routes::Api;
 use qip_api::web::{Router, Web};
@@ -91,14 +93,29 @@ fn run() -> Result<()> {
     let authenticator = Arc::new(Authenticator::new(credentials));
     let rate_limiter = Arc::new(RateLimiter::new(Duration::from_secs(60), 600));
 
-    let api = Arc::new(Api::new(
+    // One registry, shared. The console reads staleness off it and `/regions`
+    // serves the same observations, so a page and the JSON behind it cannot
+    // disagree about which cells have gone quiet.
+    let cells = Arc::new(CellRegistry::default());
+
+    let api = Arc::new(
+        Api::new(
+            platform.clone(),
+            authenticator.clone(),
+            rate_limiter.clone(),
+            clock.clone(),
+        )
+        .with_cells(cells.clone()),
+    );
+    let console = Arc::new(Console::new(
         platform.clone(),
+        cells,
         authenticator.clone(),
         rate_limiter.clone(),
         clock.clone(),
     ));
     let web = Arc::new(Web::new(platform, authenticator, rate_limiter, clock));
-    let router = Router::new(api, web);
+    let router = Router::new(api, web).with_console(console);
 
     let server = Server::bind(&address, Arc::new(router), ServerLimits::default())?;
     let bound = server.local_address()?;
@@ -116,7 +133,20 @@ fn run() -> Result<()> {
         }
     );
     println!("  api version:      v1");
-    println!("  operator ui:      9 surface(s), no JavaScript");
+    println!(
+        "  api surface:      {} route(s), described at {}",
+        qip_api::ROUTES.len(),
+        qip_api::routes::OPENAPI_PATH
+    );
+    println!(
+        "  operator ui:      {} surface(s) and {} console view(s), no JavaScript",
+        qip_web::Surface::all().len(),
+        qip_web::View::all().len()
+    );
+    println!(
+        "  console:          read-only; it can trip the kill switch and has no path that \
+         clears one"
+    );
 
     server.serve()
 }

@@ -8,6 +8,37 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Whether real money is moving, and how much authority the platform holds.
+///
+/// Extracted from the wider view models so the banner has exactly one
+/// implementation. Two banners rendered from two structs is two chances to
+/// disagree about the single fact that must never be ambiguous.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Posture {
+    /// The autonomy level, as a string for display.
+    pub autonomy_level: String,
+    /// The highest level this deployment may ever reach.
+    pub autonomy_ceiling: String,
+    /// Whether orders reach a real venue.
+    pub live: bool,
+    pub halted: bool,
+    pub halt_reason: String,
+}
+
+impl Default for Posture {
+    /// The safe reading, and the one a page rendered before the platform
+    /// reported anything must show: paper trading, not halted.
+    fn default() -> Self {
+        Self {
+            autonomy_level: "paper_trading".to_string(),
+            autonomy_ceiling: "paper_trading".to_string(),
+            live: false,
+            halted: false,
+            halt_reason: String::new(),
+        }
+    }
+}
+
 /// One stage of the last cycle.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct StageRow {
@@ -122,6 +153,23 @@ pub struct ViewModel {
     pub limits: Vec<LimitRow>,
     pub agents: Vec<AgentRow>,
     pub governance: Vec<GovernanceRow>,
+}
+
+impl ViewModel {
+    /// The banner's view of this model.
+    ///
+    /// Copied out rather than borrowed so the banner has no lifetime tying it
+    /// to the model it came from, which is what lets one banner serve both
+    /// this model and the console's.
+    pub fn posture(&self) -> Posture {
+        Posture {
+            autonomy_level: self.autonomy_level.clone(),
+            autonomy_ceiling: self.autonomy_ceiling.clone(),
+            live: self.live,
+            halted: self.halted,
+            halt_reason: self.halt_reason.clone(),
+        }
+    }
 }
 
 impl Default for ViewModel {

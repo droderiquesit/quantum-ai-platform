@@ -14,7 +14,7 @@ use crate::html::{
     table, tbody, td, th, thead, tr, ul,
 };
 use crate::style::STYLESHEET;
-use crate::view::{AgentRow, OpportunityRow, OrderRow, ProposalRow, StageRow, ViewModel};
+use crate::view::{AgentRow, OpportunityRow, OrderRow, Posture, ProposalRow, StageRow, ViewModel};
 
 /// The nine surfaces the platform exposes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -141,21 +141,30 @@ fn chrome(current: Surface) -> Element {
 /// that must never be ambiguous, so it is stated at the top of every page in
 /// its own colour.
 fn banner(model: &ViewModel) -> Element {
-    if model.halted {
+    banner_of(&model.posture())
+}
+
+/// The banner, from a [`Posture`].
+///
+/// One implementation, used by these surfaces and by the operator console. Two
+/// banners rendered from two structs would be two chances to disagree about
+/// the one fact that must never be ambiguous.
+pub(crate) fn banner_of(posture: &Posture) -> Element {
+    if posture.halted {
         return div()
             .class("banner halted")
             .child(strong().text("HALTED"))
-            .text(format!(" — {}", model.halt_reason))
+            .text(format!(" — {}", posture.halt_reason))
             .child(
                 p().class("muted")
                     .text("No orders will be sent until an operator clears the halt."),
             );
     }
-    if model.live {
+    if posture.live {
         return div()
             .class("banner live")
             .child(strong().text("LIVE TRADING"))
-            .text(format!(" — autonomy level {}", model.autonomy_level))
+            .text(format!(" — autonomy level {}", posture.autonomy_level))
             .child(
                 p().class("muted")
                     .text("Orders reach real venues. Every fill is a real fill."),
@@ -164,10 +173,10 @@ fn banner(model: &ViewModel) -> Element {
     div()
         .class("banner paper")
         .child(strong().text("PAPER TRADING"))
-        .text(format!(" — autonomy level {}", model.autonomy_level))
+        .text(format!(" — autonomy level {}", posture.autonomy_level))
         .child(p().class("muted").text(format!(
             "Orders are worked against a simulated venue and reach no market. This deployment's ceiling is {}.",
-            model.autonomy_ceiling
+            posture.autonomy_ceiling
         )))
 }
 

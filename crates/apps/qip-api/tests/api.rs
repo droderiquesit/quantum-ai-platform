@@ -11,11 +11,14 @@
 #![allow(clippy::panic_in_result_fn)]
 
 use qip_api::auth::{Authenticator, Credential, Principal, RateLimiter, Role};
+use qip_api::cells::CellRegistry;
+use qip_api::console::Console;
 use qip_api::http::{
     Handler, Method, Request, Response, Server, ServerLimits, normalise_path, percent_decode,
 };
 use qip_api::json;
-use qip_api::routes::{Api, ROUTES};
+use qip_api::routes::{Api, DISCOVERY_PATH, OPENAPI_PATH, ROUTES};
+use qip_api::web::{Router, Web};
 use qip_core::error::Result;
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, ManualClock};
@@ -490,7 +493,20 @@ fn a_head_request_returns_the_headers_without_the_body() {
 
 // --- the API, end to end ----------------------------------------------------
 
-fn api() -> Result<Arc<Api>> {
+/// The whole server, assembled the way `main` assembles it.
+///
+/// One platform, one clock, one cell registry: the API and the console read
+/// the same state, which is the property that keeps a page and the JSON behind
+/// it from disagreeing.
+struct Assembled {
+    api: Arc<Api>,
+    console: Arc<Console>,
+    web: Arc<Web>,
+    cells: Arc<CellRegistry>,
+    clock: Arc<ManualClock>,
+}
+
+fn assemble() -> Result<Assembled> {
     use qip_financial::asset_class::{InstrumentType, Sector};
     use qip_financial::object::FinancialObject;
     use qip_financial::quality::Provenance;
@@ -525,12 +541,41 @@ fn api() -> Result<Arc<Api>> {
         LimitSet::conservative_default(),
     )?;
 
-    Ok(Arc::new(Api::new(
-        Arc::new(std::sync::Mutex::new(platform)),
-        Arc::new(Authenticator::new(credentials())),
-        Arc::new(RateLimiter::new(Duration::from_secs(60), 1000)),
+    let platform = Arc::new(std::sync::Mutex::new(platform));
+    let authenticator = Arc::new(Authenticator::new(credentials()));
+    let rate_limiter = Arc::new(RateLimiter::new(Duration::from_secs(60), 1000));
+    let cells = Arc::new(CellRegistry::default());
+
+    Ok(Assembled {
+        api: Arc::new(
+            Api::new(
+                platform.clone(),
+                authenticator.clone(),
+                rate_limiter.clone(),
+                clock.clone(),
+            )
+            .with_cells(cells.clone()),
+        ),
+        console: Arc::new(Console::new(
+            platform.clone(),
+            cells.clone(),
+            authenticator.clone(),
+            rate_limiter.clone(),
+            clock.clone(),
+        )),
+        web: Arc::new(Web::new(
+            platform,
+            authenticator,
+            rate_limiter,
+            clock.clone(),
+        )),
+        cells,
         clock,
-    )))
+    })
+}
+
+fn api() -> Result<Arc<Api>> {
+    Ok(assemble()?.api)
 }
 
 fn request(method: Method, path: &str, token: Option<&str>) -> Request {
@@ -678,5 +723,405 @@ fn running_a_cycle_through_the_api_traverses_every_stage() -> Result<()> {
     assert_eq!(response.status, 202);
     let body = String::from_utf8(response.body).unwrap();
     assert!(body.contains("\"traversed_every_stage\":true"), "{body}");
+    Ok(())
+}
+
+// --- the console's read surface, as JSON ------------------------------------
+
+/// Parse a response body, failing loudly if it is not JSON.
+///
+/// Every body this API returns is assembled by hand from `crate::json`, so
+/// "does it parse at all" is a real question and the tests below ask it of
+/// everything they read.
+fn body_of(response: Response) -> serde_json::Value {
+    let text = String::from_utf8(response.body).expect("a UTF-8 body");
+    serde_json::from_str(&text).unwrap_or_else(|error| panic!("{error}: {text}"))
+}
+
+/// Whether any number appears anywhere in a value.
+fn contains_a_number(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Number(_) => true,
+        serde_json::Value::Array(items) => items.iter().any(contains_a_number),
+        serde_json::Value::Object(fields) => fields.values().any(contains_a_number),
+        _ => false,
+    }
+}
+
+#[test]
+fn a_surface_with_nothing_behind_it_names_the_reason_and_returns_no_number() -> Result<()> {
+    // The rule the whole crate is built around. A client that plots whatever
+    // it is given must not be given a zero the platform never observed, so
+    // these bodies carry no number at all — only what is missing and why.
+    let api = api()?;
+    for path in [
+        "/api/v1/markets",
+        "/api/v1/assets",
+        "/api/v1/arbitrage",
+        "/api/v1/pnl",
+        "/api/v1/data-sources",
+        "/api/v1/training",
+    ] {
+        let response = get(&api, path, Some("viewer-token"));
+        assert_eq!(response.status, 200, "{path}");
+        let body = body_of(response);
+        assert_eq!(body["available"], serde_json::json!(false), "{path}");
+        let reason = body["reason"].as_str().unwrap_or_default();
+        assert!(
+            reason.len() > 40,
+            "{path} gives no usable reason: {reason:?}"
+        );
+        assert!(
+            !contains_a_number(&body),
+            "{path} returned a number nothing reported: {body}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn regions_reports_that_no_cell_has_reported_rather_than_an_empty_book() -> Result<()> {
+    // An empty aggregate and a silent feed are the same JSON if the endpoint
+    // renders the aggregate, and they are opposite readings.
+    let api = api()?;
+    let body = body_of(get(&api, "/api/v1/regions", Some("viewer-token")));
+    assert_eq!(body["available"], serde_json::json!(false), "{body}");
+    assert!(
+        body["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no edge cell has reported"),
+        "{body}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_cell_that_reported_is_shown_with_its_age_and_goes_stale_on_the_clock() -> Result<()> {
+    let assembled = assemble()?;
+    assembled
+        .cells
+        .record(&qip_kernel::CellReport::new("eu-west", now()));
+
+    let body = body_of(get(&assembled.api, "/api/v1/regions", Some("viewer-token")));
+    let cell = &body["cells"][0];
+    assert_eq!(cell["cell"], serde_json::json!("eu-west"), "{body}");
+    assert_eq!(cell["stale"], serde_json::json!(false), "{body}");
+    assert_eq!(cell["age"], serde_json::json!("0s"), "{body}");
+
+    // The registry's freshness bound is a minute, and the point of recording
+    // arrival times at all is that a book stops being presented as current.
+    assembled.clock.advance(Duration::from_secs(120));
+    let body = body_of(get(&assembled.api, "/api/v1/regions", Some("viewer-token")));
+    assert_eq!(body["cells"][0]["stale"], serde_json::json!(true), "{body}");
+    assert_eq!(
+        body["cells"][0]["age"],
+        serde_json::json!("2m 0s"),
+        "{body}"
+    );
+    Ok(())
+}
+
+#[test]
+fn risk_reports_no_exposure_rather_than_zero_exposure_when_no_cell_has_reported() -> Result<()> {
+    // Zero gross exposure is what a flat book looks like. It is also what a
+    // platform nothing is reporting to looks like, and only one of those is a
+    // reason to relax.
+    let api = api()?;
+    let body = body_of(get(&api, "/api/v1/risk", Some("viewer-token")));
+    assert_eq!(
+        body["exposure"]["available"],
+        serde_json::json!(false),
+        "{body}"
+    );
+    assert!(!contains_a_number(&body["exposure"]), "{body}");
+    // And no empty findings list either: "no concentration breach" and "nobody
+    // has looked" are the same empty array and opposite readings.
+    assert_eq!(
+        body["concentrations"]["available"],
+        serde_json::json!(false),
+        "{body}"
+    );
+    // The two risk figures this process cannot measure are named rather than
+    // omitted: a client that found no limits would otherwise read it as a
+    // platform with no limits.
+    assert_eq!(
+        body["limit_utilisation"]["available"],
+        serde_json::json!(false)
+    );
+    assert_eq!(body["tail_risk"]["available"], serde_json::json!(false));
+    // What it does know.
+    assert_eq!(body["kill_switch"]["halted"], serde_json::json!(false));
+    Ok(())
+}
+
+#[test]
+fn models_reports_what_the_agents_spent_without_inventing_a_roster() -> Result<()> {
+    let api = api()?;
+    let body = body_of(get(&api, "/api/v1/models", Some("viewer-token")));
+    assert_eq!(
+        body["registry"]["available"],
+        serde_json::json!(false),
+        "{body}"
+    );
+    // Spend is an observation this process holds: the audit trail is its own,
+    // so a zero here is a measured zero rather than a missing feed.
+    assert_eq!(
+        body["observed_use"]["agent_runs"],
+        serde_json::json!(0),
+        "{body}"
+    );
+    assert_eq!(
+        body["observed_use"]["cost_micros"],
+        serde_json::json!(0),
+        "{body}"
+    );
+    Ok(())
+}
+
+#[test]
+fn system_reports_the_event_log_chain_and_where_it_broke() -> Result<()> {
+    let api = api()?;
+    let body = body_of(get(&api, "/api/v1/system", Some("viewer-token")));
+    assert_eq!(body["chain_intact"], serde_json::json!(true), "{body}");
+    // Null rather than a sentinel: zero is a record number.
+    assert!(body["chain_broken_at"].is_null(), "{body}");
+    assert_eq!(
+        body["autonomy"],
+        serde_json::json!("paper_trading"),
+        "{body}"
+    );
+    Ok(())
+}
+
+#[test]
+fn quantum_shows_no_job_at_all_rather_than_a_result_without_its_classical_run() -> Result<()> {
+    let api = api()?;
+    let body = body_of(get(&api, "/api/v1/quantum", Some("viewer-token")));
+    assert_eq!(
+        body["jobs"]["available"],
+        serde_json::json!(false),
+        "{body}"
+    );
+    assert_eq!(
+        body["routing"]["classical_baseline"],
+        serde_json::json!("always"),
+        "{body}"
+    );
+    Ok(())
+}
+
+#[test]
+fn every_console_route_answers_a_viewer_with_json_and_refuses_a_monitor() -> Result<()> {
+    // The console's read surface is portfolio data, and a monitoring token
+    // holds no portfolio authority. The table says so; this checks the table
+    // is enforced rather than merely written down.
+    let api = api()?;
+    for route in ROUTES
+        .iter()
+        .filter(|route| route.required_role == Role::Viewer)
+    {
+        let path = format!("/api/v1{}", route.pattern);
+        let response = get(&api, &path, Some("viewer-token"));
+        assert_eq!(response.status, 200, "{path}");
+        let _ = body_of(response);
+        assert_eq!(
+            get(&api, &path, Some("monitor-token")).status,
+            403,
+            "{path} is readable by a monitoring token"
+        );
+    }
+    Ok(())
+}
+
+// --- the generated OpenAPI document -----------------------------------------
+
+#[test]
+fn the_openapi_document_is_unauthenticated_valid_json_and_declares_its_version() -> Result<()> {
+    let api = api()?;
+    let response = api.handle(&request(Method::Get, OPENAPI_PATH, None));
+    assert_eq!(response.status, 200);
+    let document = body_of(response);
+    assert!(
+        document["openapi"]
+            .as_str()
+            .is_some_and(|version| version.starts_with("3.1")),
+        "{document}"
+    );
+    // The two endpoints served ahead of the table are in it, and are the only
+    // operations declaring no security.
+    assert!(document["paths"][DISCOVERY_PATH].is_object(), "{document}");
+    assert!(document["paths"][OPENAPI_PATH].is_object(), "{document}");
+    Ok(())
+}
+
+#[test]
+fn the_openapi_document_describes_every_route_and_the_authority_it_requires() {
+    // The document is generated from the route table, so this is really a
+    // check that nothing was lost on the way: a path a security review reads
+    // in the document must require what the table says it requires.
+    let document: serde_json::Value =
+        serde_json::from_str(&qip_api::document()).expect("valid JSON");
+    let paths = &document["paths"];
+    for route in ROUTES {
+        let path = format!("/api/v1{}", route.pattern);
+        let method = route.method.as_str().to_ascii_lowercase();
+        let operation = &paths[&path][&method];
+        assert!(
+            operation.is_object(),
+            "{} {path} is not in the document",
+            route.method.as_str()
+        );
+        assert_eq!(
+            operation["x-required-role"],
+            serde_json::json!(route.required_role.as_str()),
+            "{path} states the wrong authority"
+        );
+        assert_eq!(
+            operation["summary"],
+            serde_json::json!(route.summary),
+            "{path}"
+        );
+        // The success status comes from the table too, so a route answering
+        // 202 is not documented as answering 200.
+        assert!(
+            operation["responses"][route.success.to_string()].is_object(),
+            "{path} does not document its {} response",
+            route.success
+        );
+        assert!(
+            operation["responses"]["403"].is_object(),
+            "{path} does not document the refusal its role check produces"
+        );
+    }
+}
+
+#[test]
+fn the_openapi_document_declares_nothing_the_router_does_not_serve() {
+    // The other direction, and the one that catches a document drifting into
+    // describing an endpoint that was removed.
+    let document: serde_json::Value =
+        serde_json::from_str(&qip_api::document()).expect("valid JSON");
+    let paths = document["paths"].as_object().expect("a paths object");
+
+    let mut identifiers: Vec<String> = Vec::new();
+    for (path, operations) in paths {
+        if path == DISCOVERY_PATH || path == OPENAPI_PATH {
+            continue;
+        }
+        let suffix = path
+            .strip_prefix("/api/v1")
+            .unwrap_or_else(|| panic!("{path} is not under the version prefix"));
+        for (method, operation) in operations.as_object().expect("operations") {
+            if method == "parameters" {
+                continue;
+            }
+            assert!(
+                ROUTES.iter().any(|route| {
+                    route.pattern == suffix && route.method.as_str().to_ascii_lowercase() == *method
+                }),
+                "the document declares {method} {path}, which is not a route"
+            );
+            identifiers.push(
+                operation["operationId"]
+                    .as_str()
+                    .expect("an operation id")
+                    .to_string(),
+            );
+        }
+    }
+    let mut unique = identifiers.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(
+        unique.len(),
+        identifiers.len(),
+        "two operations share an id, which no generated client can express"
+    );
+}
+
+#[test]
+fn the_openapi_document_carries_no_credential() {
+    // It declares that a bearer token is required. It must not contain one,
+    // and no token exists in this crate to leak.
+    let document = qip_api::document();
+    assert!(document.contains(r#""scheme":"bearer""#), "{document}");
+    for token in ["monitor-token", "viewer-token", "operator-token"] {
+        assert!(!document.contains(token), "{document}");
+    }
+}
+
+// --- the operator console ---------------------------------------------------
+
+#[test]
+fn the_console_is_served_under_console_and_is_not_a_lower_bar_than_the_api() -> Result<()> {
+    let assembled = assemble()?;
+    let router = Router::new(assembled.api.clone(), assembled.web.clone())
+        .with_console(assembled.console.clone());
+
+    let page = router.handle(&request(Method::Get, "/console", Some("viewer-token")));
+    assert_eq!(page.status, 200);
+    let html = String::from_utf8(page.body).expect("UTF-8");
+    assert!(html.starts_with("<!DOCTYPE html>"), "{html}");
+    // A panel with nothing behind it says so on the page as well as in the
+    // JSON, and in the same words.
+    assert!(html.contains("No data."), "{html}");
+
+    assert_eq!(
+        router
+            .handle(&request(Method::Get, "/console", Some("monitor-token")))
+            .status,
+        403,
+        "a monitoring token must not read the console"
+    );
+    assert_eq!(
+        router
+            .handle(&request(Method::Get, "/console", None))
+            .status,
+        401
+    );
+    Ok(())
+}
+
+#[test]
+fn a_router_with_no_console_refuses_the_console_paths_rather_than_answering_them() -> Result<()> {
+    // Answering with the surfaces' overview page would be worse than a
+    // refusal: an operator would read a page that is not the console and not
+    // notice.
+    let assembled = assemble()?;
+    let router = Router::new(assembled.api.clone(), assembled.web.clone());
+    let response = router.handle(&request(Method::Get, "/console/risk", Some("viewer-token")));
+    assert_eq!(response.status, 503);
+    Ok(())
+}
+
+#[test]
+fn the_console_can_trip_the_kill_switch_and_has_no_path_that_clears_one() -> Result<()> {
+    let assembled = assemble()?;
+    let router = Router::new(assembled.api.clone(), assembled.web.clone())
+        .with_console(assembled.console.clone());
+
+    let tripped = router.handle(&request(
+        Method::Post,
+        "/console/risk/kill-switch",
+        Some("viewer-token"),
+    ));
+    // See Other, so a refresh after the POST does not trip it again.
+    assert_eq!(tripped.status, 303);
+    let body = body_of(get(&assembled.api, "/api/v1/health", Some("monitor-token")));
+    assert_eq!(body["halted"], serde_json::json!(true), "{body}");
+
+    // And there is no console path that lifts it. Clearing requires an
+    // operator identity verified minutes ago, which a page cannot establish.
+    for path in [
+        "/console/risk/kill-switch/clear",
+        "/console/risk/clear",
+        "/console/risk/resume",
+    ] {
+        let response = router.handle(&request(Method::Post, path, Some("operator-token")));
+        assert_eq!(response.status, 404, "{path} did something");
+    }
+    let body = body_of(get(&assembled.api, "/api/v1/health", Some("monitor-token")));
+    assert_eq!(body["halted"], serde_json::json!(true), "{body}");
     Ok(())
 }

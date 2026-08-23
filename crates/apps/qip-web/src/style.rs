@@ -89,5 +89,45 @@ tbody tr:hover { background: var(--panel); }
 .pill.warn { color: var(--warn); border-color: var(--warn); }
 .pill.bad { color: var(--bad); border-color: var(--bad); }
 .empty { color: var(--muted); font-style: italic; padding: 1rem 0; }
+
+/* A panel with nothing behind it. Deliberately not styled like an empty
+   table: "we are not receiving data" and "there is nothing to receive" must
+   not look alike, because on a trading console they are opposites. */
+.nodata {
+  border: 1px dashed var(--warn);
+  border-radius: 6px;
+  padding: 0.9rem 1.1rem;
+  color: var(--muted);
+  background: rgba(224,179,65,0.06);
+}
+.nodata strong { color: var(--warn); }
+.nodata p { margin: 0.35rem 0 0; }
+/* Reported and genuinely empty: an observed zero, and the only state in the
+   console that means one. Neutral rather than warning-coloured. */
+.nodata.reported { border-style: solid; border-color: var(--line); background: none; }
+.nodata.reported strong { color: var(--text); }
+
+.stale { color: var(--bad); font-size: 0.85rem; }
+.card.stale { border-color: var(--bad); }
+.card.stale .value { color: var(--bad); }
+td.bad { color: var(--bad); }
+nav.secondary { margin-left: auto; }
+nav.secondary a { font-size: 0.8rem; }
+
+/* The one control the console has. Coloured like a halt because that is what
+   it causes. */
+form.killswitch { margin: 0.75rem 0; }
+button.danger {
+  background: rgba(224,92,92,0.12);
+  color: var(--bad);
+  border: 1px solid var(--bad);
+  border-radius: 6px;
+  padding: 0.5rem 1.1rem;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+button.danger:hover { background: rgba(224,92,92,0.22); }
+
 footer { color: var(--muted); font-size: 0.8rem; padding: 1.5rem; border-top: 1px solid var(--line); }
 "#;
