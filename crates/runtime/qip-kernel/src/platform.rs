@@ -394,6 +394,16 @@ impl Platform {
     ) -> Result<Self> {
         let now = context.now();
 
+        // Opened here, before anything else is built, for the same reason the
+        // storage preflight runs before a node serves: a log destination that
+        // cannot be opened — an unwritable directory, a corrupt line in a file
+        // this process is meant to continue — is a deployment fault, and
+        // discovering it at the first append means the platform is already
+        // running and already believed. A file destination also *reads back*
+        // here, so the chain continues from the last record on disk instead of
+        // beginning again at sequence one.
+        let event_log = config.event_log.open()?;
+
         let desk = Arc::new(Desk::new(
             MarketView {
                 snapshot: MarketSnapshot::new(now),
@@ -529,7 +539,7 @@ impl Platform {
             config,
             context,
             telemetry,
-            event_log: EventLog::in_memory(),
+            event_log,
             cycle: 0,
             price_history: BTreeMap::new(),
             volume_history: BTreeMap::new(),

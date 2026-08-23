@@ -44,17 +44,6 @@ spec:
       # A cycle that is part way through should finish rather than leave a
       # half-written run behind.
       terminationGracePeriodSeconds: 120
-      # No liveness or readiness probe.
-      #
-      # This binary does not serve yet: `fn run` in crates/apps/qip-deepbrain runs one cycle and
-      # returns. A probe pointed at a port
-      # nothing is listening on would fail every time, and one written against
-      # an endpoint that does not exist is a probe that looks like coverage and
-      # is not. The port and the Service below are the shape the workload is
-      # being built towards; until the serving loop lands, Kubernetes restarts
-      # the container each time it exits, which is visible in the restart count
-      # and is recorded as a blocking gap in
-      # docs/operations/external-dependencies.md.
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -74,7 +63,50 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+          # Liveness and readiness are deliberately different endpoints, and the
+          # numbers below are deliberately not the Fast Brain's.
+          #
+          # /health says the process is alive, and on this node that is the only
+          # question a liveness probe may ask. A deep-brain cycle runs research,
+          # causal reasoning, simulation and optimisation, and the agents it
+          # hosts may consult a language model, so a cycle legitimately takes
+          # minutes. A liveness probe that could go red while one is in flight
+          # would restart the node in the middle of every long analysis and it
+          # would never finish one. failureThreshold is 6 rather than the
+          # default 3: at a 30-second period that is three minutes of missed
+          # probes before a restart, which is a wedged process rather than a
+          # busy one.
+          #
+          # /ready says the node is worth consulting. It returns 503 while the
+          # node is stopping, halted, stalled, persistently failing its cycles,
+          # or still warming — that last one being the state with no fast-path
+          # equivalent, because until the first cycle lands there is no world
+          # model to consult. Note what does NOT make it unready: being slow.
+          # initialDelaySeconds is 10 and the node will report `warming` for as
+          # long as its first cycle takes, which is correct and needs no
+          # startupProbe: readiness failing during warm-up removes the pod from
+          # a Service, and liveness is not watching readiness.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
           env:
+            # The health surface this node serves. QIP_API_ADDRESS is not read
+            # by this binary — it serves its own listener, not the API's.
+            - name: QIP_DEEPBRAIN_HEALTH_ADDRESS
+              value: "0.0.0.0:8080"
             - name: QIP_API_ADDRESS
               value: "0.0.0.0:8080"
             - name: QIP_AUTONOMY_CEILING

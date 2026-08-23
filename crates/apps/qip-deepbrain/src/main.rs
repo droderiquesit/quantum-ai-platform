@@ -1,80 +1,215 @@
 //! The Deep Brain node.
 //!
 //! Research, causal reasoning, simulation, optimisation and learning: the path
-//! that may take minutes to months and may call a language model.
+//! that may take minutes and may call a language model.
 //!
 //! It runs the intelligence loop. What it does *not* do is reach a venue: order
 //! submission belongs to the execution path, and the agents this node hosts are
 //! checked at start-up to confirm none of them holds a market-touching
-//! capability.
+//! capability. That check is the first thing this binary does and everything
+//! else happens behind it — the node validates, and only then runs.
 //!
-//! This node runs a cycle and exits, which makes it the binary with the most to
-//! lose from having nowhere to write: without a configured store, every run
-//! starts from nothing and the research it did is gone the moment it finishes.
-//! What it keeps is the event log's hash chain, appended after the cycle so
-//! successive runs accumulate into one record. What it does not keep is the
-//! world model and the agent working state — those are derived from the chain
-//! and from the universe, and a half-restored model is harder to reason about
-//! than one rebuilt.
+//! It also refuses to start without a store it can actually write to. The
+//! configuration is resolved and proven before the listener is bound, because a
+//! deployment that believed it was durable and was not passes every smoke test
+//! it has and discovers the truth at the restart.
+//!
+//! # What it does once it is running
+//!
+//! Runs a cycle, hands the event log to the chain archive, waits out the rest
+//! of the cadence, and repeats. The cadence is minutes rather than
+//! milliseconds, and unlike the fast brain this node has *no ceiling on a
+//! cycle*: a long cycle here is a deep analysis, so an overrun is counted and
+//! printed and is never a fault, never a reason to fail a probe, and never a
+//! reason to leave rotation. What can take it out of rotation is having
+//! produced nothing at all — see `qip_deepbrain::status::Unready`.
+//!
+//! The health surface is started *before* the platform is assembled, which is
+//! the reverse of the fast brain's order and is deliberate: assembling this
+//! platform is not instant, and an orchestrator that probed a node during its
+//! own start-up should be told it is alive and warming rather than getting a
+//! refused connection.
+//!
+//! # Stopping it
+//!
+//! `POST /quiesce` from the node itself, or a configured cycle or time bound.
+//! Either way the loop finishes the cycle in flight, stops, and hands the event
+//! log to the chain archive. The wait between cycles is interruptible, so a
+//! quiesce lands within the cycle in flight rather than within the cadence —
+//! which at five minutes would outlast the pod's termination grace period.
+//! There is no signal handler: this build has no dependency that could install
+//! one, so a `SIGTERM` ends the process where it stands and whatever has not
+//! reached the archive is lost. That is why the archive runs after every cycle,
+//! and why a pre-stop hook should quiesce.
 
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, SystemClock};
+use qip_deepbrain::config::DeepBrainConfig;
+use qip_deepbrain::{health, node, roster};
 use qip_financial::universe::Universe;
-use qip_investment_agents::manifests;
 use qip_kernel::{Platform, PlatformConfig};
 use qip_observability::Telemetry;
 use qip_risk::limits::LimitSet;
 use qip_storage::ChainArchive;
-use qip_storage::settings::StorageSettings;
-use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
+
+/// Exit code for a configuration problem, matching `sysexits.h`.
+///
+/// Distinct from a general failure so an orchestrator can tell "this node was
+/// deployed wrong" from "this node broke", and stop restarting the first.
+const EX_CONFIG: i32 = 78;
 
 fn main() {
-    if let Err(error) = run() {
-        eprintln!("qip-deepbrain: {}", error.message());
-        std::process::exit(1);
+    match run() {
+        Ok(()) => {}
+        Err(error) if error.message().starts_with("configuration:") => {
+            eprintln!("qip-deepbrain: {}", error.message());
+            std::process::exit(EX_CONFIG);
+        }
+        Err(error) => {
+            eprintln!("qip-deepbrain: {}", error.message());
+            std::process::exit(1);
+        }
     }
 }
 
 fn run() -> Result<()> {
+    // The clock is read once, here, at the boundary. Everything inside takes a
+    // timestamp as a parameter, which is what makes a session replayable.
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-    let now = clock.now();
+    let started = clock.now();
 
-    // The check: nothing this node hosts may reach a market. The execution
-    // agent runs on the execution path, not here.
-    let roster = manifests::roster(now);
-    for manifest in roster.iter() {
-        if manifest.id == manifests::ids::EXECUTION {
-            continue;
-        }
-        for capability in manifest.capabilities.iter() {
-            if capability.touches_market() {
-                return Err(Error::denied(format!(
-                    "{} holds {capability}; the deep brain hosts no agent that can reach a venue",
-                    manifest.id
-                )));
-            }
-        }
+    // First, and before anything else exists to be undone.
+    let cleared = roster::clear(started)?;
+
+    let config = DeepBrainConfig::from_env()?;
+    config
+        .storage
+        .preflight()
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    let archive = ChainArchive::open(config.storage.key_value("event-log")?)?;
+
+    // Bound before the platform is assembled: a busy port is a deployment
+    // mistake, and finding it after building a platform wastes the start-up.
+    let listener = health::bind(&config.health_address)?;
+    let bound = listener
+        .local_addr()
+        .map_err(|error| Error::io(format!("the health listener has no address: {error}")))?;
+
+    let status = Arc::new(Mutex::new(qip_deepbrain::status::NodeStatus::opening(
+        &cleared, &config, started,
+    )));
+    let stop = Arc::new(AtomicBool::new(false));
+
+    // Serving starts here, before the platform exists. Until the first cycle
+    // lands the status reports `warming`, which is exactly what an orchestrator
+    // should see: alive, not yet worth consulting.
+    {
+        let status = status.clone();
+        let stop = stop.clone();
+        let clock = clock.clone();
+        std::thread::Builder::new()
+            .name("qip-deepbrain-health".to_string())
+            .spawn(move || health::serve(&listener, &status, &stop, &clock))
+            .map_err(|error| Error::io(format!("cannot start the health thread: {error}")))?;
     }
 
-    // Before the platform is built, so a node deployed against a store it
-    // cannot write to fails without having done any research it would then
-    // throw away.
-    let storage = StorageSettings::from_env()?;
-    storage.preflight()?;
-    let archive = ChainArchive::open(storage.key_value("event-log")?)?;
-
-    let config = PlatformConfig::default();
-    let context = qip_core::Context::new(clock.clone(), config.seed);
-    let ceiling = config.autonomy_ceiling;
+    // The kernel is told where its event log goes, so a deployment with a
+    // durable path gets a chain that continues across a restart of this process
+    // rather than one that begins again at sequence one.
+    let platform_config = PlatformConfig::default().with_event_log(config.event_log.clone());
+    let context = qip_core::Context::new(clock.clone(), platform_config.seed);
+    let ceiling = platform_config.autonomy_ceiling.to_string();
     let mut platform = Platform::new(
-        config,
+        platform_config,
         context,
         Telemetry::new("qip-deepbrain", clock.clone()),
         Universe::new(),
         LimitSet::conservative_default(),
     )?;
 
-    println!("qip-deepbrain");
+    // Read once, immediately after assembly, and carried through the run. It is
+    // the boundary between what this process inherited from a previous run's
+    // log and what it is itself accountable for handing to the archive.
+    let inherited = node::restored_through(platform.event_log().records());
+
+    banner(
+        &config, &cleared, &platform, &ceiling, bound, &archive, inherited,
+    );
+
+    let summary = node::run(
+        &mut platform,
+        &archive,
+        &config,
+        &status,
+        &stop,
+        &clock,
+        inherited,
+        |outcome| {
+            println!();
+            println!("{}", outcome.report.summarise());
+            println!(
+                "  {:>10} {:>4}  {}s against a {}s cadence{}",
+                "elapsed",
+                "",
+                outcome.elapsed.as_secs_f64(),
+                config.cycle_interval.as_secs_f64(),
+                if outcome.overran_the_interval {
+                    "  (over the cadence; the next cycle starts immediately)"
+                } else {
+                    ""
+                }
+            );
+        },
+    )?;
+
+    println!();
+    println!(
+        "qip-deepbrain stopping: {}",
+        summary.stopped_because.as_str()
+    );
+    println!(
+        "  cycles:           {} ({} did not traverse every stage)",
+        summary.cycles, summary.failed_cycles
+    );
+    println!(
+        "  cadence:          {} cycle(s) ran past the {}s interval, longest {}s",
+        summary.overruns,
+        config.cycle_interval.as_secs_f64(),
+        summary.longest_cycle.as_secs_f64()
+    );
+    println!(
+        "  archived so far:  {} record(s) handed over between cycles",
+        summary.archived_while_running
+    );
+
+    let flushed = node::flush(
+        &platform,
+        &archive,
+        config.storage.is_durable(),
+        config.shutdown_budget,
+        inherited,
+    )?;
+    println!("  shutdown:         {}", flushed.describe());
+    Ok(())
+}
+
+/// What this process will do, before it does any of it.
+///
+/// Everything an operator would otherwise have to infer from behaviour: which
+/// guarantee was checked, what this node will not do, whether the run stops on
+/// its own, where the evidence goes, and what a restart takes away.
+fn banner(
+    config: &DeepBrainConfig,
+    cleared: &roster::ClearedRoster,
+    platform: &Platform,
+    ceiling: &str,
+    bound: std::net::SocketAddr,
+    archive: &ChainArchive,
+    inherited: u64,
+) {
+    println!("qip-deepbrain health on {bound}");
     println!("  autonomy ceiling: {ceiling}");
     println!("  agents:           {}", platform.organisation().len());
     println!(
@@ -85,29 +220,47 @@ fn run() -> Result<()> {
             "unreachable in this deployment"
         }
     );
-    for line in storage.banner_lines(
-        &["the event log's hash chain, appended after the cycle"],
+    println!(
+        "  hosting:          {} agent(s), of which {} may consult a language model",
+        cleared.agents.len(),
+        cleared.model_callers()
+    );
+    println!(
+        "  not hosting:      {} — this node reaches no venue",
+        cleared.excluded.join(", ")
+    );
+    println!(
+        "  cycle:            one every {}s, no ceiling — a long cycle here is research, not a \
+         fault",
+        config.cycle_interval.as_secs_f64()
+    );
+    println!(
+        "  run:              {}",
+        match (config.max_cycles, config.max_runtime) {
+            (Some(cycles), _) => format!("stops after {cycles} cycle(s)"),
+            (None, Some(runtime)) => format!("stops after {}s", runtime.as_secs_f64()),
+            (None, None) => "until quiesced on loopback".to_string(),
+        }
+    );
+    println!("  event log:        {}", config.event_log.describe());
+    if inherited > 0 {
+        println!(
+            "  continuing:       {inherited} record(s) read back from the log; this run's chain \
+             carries on from there rather than starting again"
+        );
+    }
+    for line in config.storage.banner_lines(
+        &["the event log's hash chain, after every cycle and once on the way out"],
         &[
-            "the world model and every agent's working state",
-            "the opportunity queue",
+            "the world model, the opportunity queue and every agent's working state, which are \
+             rebuilt from the chain and the universe",
+            "the cycle in flight, if this process is killed rather than quiesced",
         ],
     ) {
         println!("{line}");
     }
     println!("  event chain:      {}", archive.describe());
-
-    let report = platform.run_cycle(clock.now());
-    println!();
-    println!("{}", report.summarise());
-
-    // After the cycle, not during it: a disk on the path of every event would
-    // put a storage system's latency inside the loop. What that costs is the
-    // events of a cycle that was interrupted.
-    let archived = archive.absorb(platform.event_log().records())?;
-    println!();
-    println!(
-        "archived {archived} event(s); the chain now holds {}",
-        archive.describe()
-    );
-    Ok(())
+    if let Some(note) = config.durability_note() {
+        println!("  note:             {note}");
+    }
 }

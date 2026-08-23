@@ -451,3 +451,134 @@ fn a_different_seed_does_not_change_a_deterministic_conclusion() -> Result<()> {
     assert_eq!(detail_for(1)?, detail_for(999)?);
     Ok(())
 }
+
+// --- where the event log goes -----------------------------------------------
+
+fn log_directory(label: &str) -> std::path::PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "qip-kernel-log-{label}-{}-{unique}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir
+}
+
+#[test]
+fn a_platform_nobody_configured_a_destination_for_keeps_its_log_in_memory() -> Result<()> {
+    // The compatibility promise: every call site that assembled a platform
+    // before the field existed behaves exactly as it did.
+    let mut platform = platform(PlatformConfig::default())?;
+    platform.observe(bars("AAA", 30));
+    platform.run_cycle(start());
+    assert!(
+        !platform.event_log().records().is_empty(),
+        "the premise: a cycle appends to the log"
+    );
+    assert!(
+        platform.config().event_log.path().is_none(),
+        "an unconfigured platform chose a file to write to"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_platform_given_a_path_writes_its_event_log_there_rather_than_only_into_memory() -> Result<()> {
+    let directory = log_directory("written");
+    let path = directory.join("events.jsonl");
+    // The parent does not exist yet on purpose: a deployment names a path
+    // under a fresh volume, and a kernel that refused it would be refusing the
+    // ordinary case.
+    assert!(!directory.exists(), "the premise: nothing is there yet");
+
+    let mut platform = platform(PlatformConfig::default().with_event_log_file(&path))?;
+    platform.observe(bars("AAA", 30));
+    platform.run_cycle(start());
+    let appended = platform.event_log().records().len();
+    assert!(appended > 0, "the premise: the cycle appended something");
+
+    let written = std::fs::read_to_string(&path).expect("the log file exists");
+    assert_eq!(
+        written
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count(),
+        appended,
+        "the file holds a different number of records than the log says it appended"
+    );
+
+    let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
+}
+
+#[test]
+fn a_second_platform_over_the_same_file_continues_the_chain_instead_of_starting_a_new_one()
+-> Result<()> {
+    // This is the whole point of the injection point. A process that restarts
+    // used to begin at sequence one with a genesis link, which is why the
+    // record of a run could be overwritten by the run that followed it.
+    let directory = log_directory("restart");
+    let path = directory.join("events.jsonl");
+
+    let (first_count, first_tail) = {
+        let mut platform = platform(PlatformConfig::default().with_event_log_file(&path))?;
+        platform.observe(bars("AAA", 30));
+        platform.run_cycle(start());
+        let records = platform.event_log().records();
+        let tail = records.last().expect("the first run appended something");
+        (records.len(), tail.record_hash.clone())
+    };
+    assert!(first_count > 0, "the premise: the first run wrote records");
+
+    let mut second = platform(PlatformConfig::default().with_event_log_file(&path))?;
+    assert_eq!(
+        second.event_log().records().len(),
+        first_count,
+        "the second platform did not read back what the first one wrote"
+    );
+
+    second.observe(bars("BBB", 30));
+    second.run_cycle(start());
+    let records = second.event_log().records();
+    assert!(
+        records.len() > first_count,
+        "the second run appended nothing, so there is nothing to have chained"
+    );
+
+    let carried_on = &records[first_count];
+    assert_eq!(
+        carried_on.sequence,
+        first_count as u64 + 1,
+        "the second run restarted the sequence rather than continuing it"
+    );
+    assert_eq!(
+        carried_on.previous_hash, first_tail,
+        "the second run's first record chains onto genesis rather than onto the first run's tail"
+    );
+
+    let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
+}
+
+#[test]
+fn a_log_destination_that_cannot_be_opened_fails_assembly_rather_than_the_first_append()
+-> Result<()> {
+    // A corrupt line is a deployment fault, and finding it at the first append
+    // means the platform is already running and already believed.
+    let directory = log_directory("corrupt");
+    std::fs::create_dir_all(&directory).expect("the fixture directory is creatable");
+    let path = directory.join("events.jsonl");
+    std::fs::write(&path, "this is not a log record\n").expect("the fixture is writable");
+
+    let refusal = platform(PlatformConfig::default().with_event_log_file(&path))
+        .expect_err("a platform must not assemble over a log it cannot read");
+    assert!(
+        refusal.message().contains("corrupt log record"),
+        "the refusal does not say what is wrong with the log: {}",
+        refusal.message()
+    );
+
+    let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
+}
