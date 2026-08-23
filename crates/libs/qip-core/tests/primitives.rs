@@ -266,3 +266,50 @@ fn production_forbids_synthetic_data() {
     assert_eq!(Environment::parse("prod"), Environment::Production);
     assert_eq!(Environment::parse("whatever"), Environment::Local);
 }
+
+// --- floating point across a serialisation boundary -------------------------
+
+#[test]
+fn a_statistic_survives_a_json_round_trip_bit_for_bit() {
+    // Not a serde test. This is the property every content digest in the
+    // platform depends on.
+    //
+    // `serde_json` parses floats through a fast approximate path unless the
+    // `float_roundtrip` feature is on, and that path is accurate to within one
+    // unit in the last place. One ULP is nothing to a statistic and fatal to a
+    // digest: `qip_strategy::model::DistilledModel::digest` exists so that two
+    // identical models collide and two different ones never do, and without an
+    // exact parse two copies of one model that took different routes through
+    // JSON hash differently. The workspace manifest turns the feature on; this
+    // is what notices if somebody turns it off.
+    //
+    // Built from bit patterns rather than from decimal literals, for two
+    // reasons: a literal is subject to the compiler's own parse (and to
+    // clippy's view that seventeen digits is excessive), and a bit pattern
+    // says precisely what the assertion is about. These are the values whose
+    // shortest exact decimal form runs to seventeen significant digits, which
+    // is exactly where the approximate parse differs — a round number
+    // round-trips either way and would make this test vacuous.
+    let awkward: Vec<f64> = [
+        0x3fed_8fc2_60ad_3b07_u64, // ~0.9237987411705441
+        0x3fb9_9999_9999_999a_u64, // ~0.1, whose exact value needs every digit
+        0x3c28_0000_0000_0001,     // a denormal-adjacent tiny value
+        0x0010_0000_0000_0001,     // just above the smallest normal
+        0x7fef_ffff_ffff_fffe,     // just below the largest finite
+        0xbfd5_5555_5555_5555,     // ~-1/3
+    ]
+    .into_iter()
+    .map(f64::from_bits)
+    .collect();
+
+    for value in awkward {
+        let text = serde_json::to_string(&value).expect("a finite float serialises");
+        let back: f64 = serde_json::from_str(&text).expect("what we just wrote parses");
+        assert_eq!(
+            value.to_bits(),
+            back.to_bits(),
+            "{value:e} came back as {back:e}: serde_json's float_roundtrip feature is off, \
+             and every content digest over an f64 is now a within-process identity only"
+        );
+    }
+}
