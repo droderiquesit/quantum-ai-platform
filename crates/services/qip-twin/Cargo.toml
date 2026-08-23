@@ -1,0 +1,22 @@
+[package]
+name = "qip-twin"
+description = "Counterfactual digital twin: every decision and the alternatives it did not take."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+qip-core.workspace = true
+qip-contracts.workspace = true
+qip-financial.workspace = true
+qip-market.workspace = true
+qip-portfolio.workspace = true
+qip-execution-engine.workspace = true
+qip-learning-engine.workspace = true
+
+[lints]
+workspace = true

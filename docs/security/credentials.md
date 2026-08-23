@@ -75,6 +75,44 @@ workload identity federation: GitHub mints a short-lived OIDC token, GCP
 exchanges it for a credential scoped to one job. An `attribute_condition` pins
 the repository, so a token from any other repository is refused.
 
+### Setting the pipeline variables
+
+All four are **variables, not secrets** — every one is an identifier that
+appears in resource names anyway, and marking them secret only makes them
+harder to debug. Run these once you have applied the infrastructure:
+
+```sh
+gh variable set GCP_PROJECT --repo droderiquesit/quantum-ai-platform \
+  --body "project-d3f96b6b-852b-4460-b6d"
+
+gh variable set GCP_REGION --repo droderiquesit/quantum-ai-platform \
+  --body "europe-west2"
+
+# Both of these are Terraform outputs. They do not exist until apply.
+gh variable set GCP_WORKLOAD_IDENTITY_PROVIDER --repo droderiquesit/quantum-ai-platform \
+  --body "$(terraform -chdir=infrastructure/terraform output -raw workload_identity_provider)"
+
+gh variable set GCP_DEPLOY_SERVICE_ACCOUNT --repo droderiquesit/quantum-ai-platform \
+  --body "$(terraform -chdir=infrastructure/terraform output -raw deploy_service_account)"
+```
+
+Only `GCP_PROJECT` and `GCP_REGION` can be set today. The other two are
+Terraform outputs and do not exist until the infrastructure has been applied
+once — which is the correct ordering, not an inconvenience: the provider and
+the pipeline account are created by the apply.
+
+**`GCP_DEPLOY_SERVICE_ACCOUNT` must not be `claude-builder`.** That is the
+bootstrap identity and it holds project admin. The value belongs to the narrow
+account Terraform creates, which can push an image and apply a manifest and
+nothing else. Setting it to the bootstrap account would give every CI run
+permanent project admin and make one compromised workflow file enough to own
+the project — see the section above.
+
+**No GitHub secret is needed at all.** There is deliberately no key to store:
+the pipeline exchanges a GitHub OIDC token for a short-lived credential, and
+`attribute_condition` pins the repository so a token minted anywhere else is
+refused.
+
 ### For the platform at runtime
 
 | Secret | Consumer | Injection |
