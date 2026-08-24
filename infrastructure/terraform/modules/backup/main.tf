@@ -1,3 +1,17 @@
+terraform {
+  required_providers {
+    google = {
+      source = "hashicorp/google"
+    }
+    # For `google_project_service_identity` only — see modules/secrets for the
+    # reasoning; the GKE Backup agent was the account whose lazy creation the
+    # first real apply raced and lost.
+    google-beta = {
+      source = "hashicorp/google-beta"
+    }
+  }
+}
+
 # Backups for the state that cannot be rebuilt.
 #
 # `docs/operations/disaster-recovery.md` named this as a live gap, and named it
@@ -93,9 +107,20 @@ resource "google_kms_crypto_key" "backups" {
 # same reasoning, as the Secret Manager agent that publishes rotation notices
 # in modules/secrets.
 #
-# The agent is created when `gkebackup.googleapis.com` is enabled, which is why
-# this module is applied after modules/services rather than alongside it.
+# Enabling `gkebackup.googleapis.com` does NOT reliably create the agent —
+# the first real apply failed with "service-…@gcp-sa-gkebackup… does not
+# exist" on a project where the API was on. The service identity below forces
+# the agent into existence; being applied after modules/services is necessary
+# but not sufficient.
+resource "google_project_service_identity" "gkebackup" {
+  provider = google-beta
+  project  = var.project_id
+  service  = "gkebackup.googleapis.com"
+}
+
 resource "google_kms_crypto_key_iam_member" "backup_agent" {
+  depends_on = [google_project_service_identity.gkebackup]
+
   crypto_key_id = google_kms_crypto_key.backups.id
   role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
   member        = "serviceAccount:service-${var.project_number}@gcp-sa-gkebackup.iam.gserviceaccount.com"

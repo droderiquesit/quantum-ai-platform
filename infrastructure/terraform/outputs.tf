@@ -241,3 +241,15 @@ output "security_command_center_still_needs_an_organisation" {
   EOT
   value       = module.scc.still_needs_an_organisation
 }
+
+output "infra_service_account" {
+  description = <<-EOT
+    Set this as the GitHub repository variable GCP_INFRA_SERVICE_ACCOUNT.
+
+    It is what infra.yml — the manually dispatched workflow that plans,
+    applies and tears down the stack — authenticates as, so an operator or an
+    agent can iterate the infrastructure from the repository with no key in
+    existence. See modules/cicd for what bounds it.
+  EOT
+  value       = module.cicd.infra_service_account
+}

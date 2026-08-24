@@ -1509,31 +1509,72 @@ fn pipeline_variables_the_workflow_reads(workflow: &str) -> Vec<String> {
 
 #[test]
 fn the_bootstrap_script_sets_every_pipeline_variable_the_workflow_reads() {
-    let workflow = read(".github/workflows/deploy.yml");
     let bootstrap = read("scripts/bootstrap-deploy.sh");
 
-    let required = pipeline_variables_the_workflow_reads(&workflow);
-    // The premise: if this found nothing, the loop below would pass by being
-    // empty and this test would guard nothing at all.
-    assert!(
-        required.len() >= 4,
-        "found only {} pipeline variables in deploy.yml; the match is broken, \
-         not the workflow",
-        required.len()
-    );
-
-    // The failure this prevents: the script set four of the six variables the
-    // workflow reads, and the two it missed were the Binary Authorization
-    // pair. Terraform would apply cleanly, the pipeline would refuse to build,
-    // and the first person to press the button would find out. Nothing tied
-    // the two files together, so the gap could not be seen from either one.
-    for name in &required {
+    // Every workflow that reads `vars.GCP_*`, not just deploy.yml — infra.yml
+    // authenticates the same way, and a variable it reads that the bootstrap
+    // never sets is the same first-press failure in a different tab.
+    for workflow_file in [
+        ".github/workflows/deploy.yml",
+        ".github/workflows/infra.yml",
+    ] {
+        let workflow = read(workflow_file);
+        let required = pipeline_variables_the_workflow_reads(&workflow);
+        // The premise: if this found nothing, the loop below would pass by
+        // being empty and this test would guard nothing at all.
         assert!(
-            bootstrap.contains(name.as_str()),
-            "deploy.yml reads {name} and scripts/bootstrap-deploy.sh never \
-             sets it, so the first deployment leaves it empty"
+            required.len() >= 3,
+            "found only {} pipeline variables in {workflow_file}; the match is \
+             broken, not the workflow",
+            required.len()
         );
+
+        // The failure this prevents: the script set four of the six variables
+        // deploy.yml reads, and the two it missed were the Binary
+        // Authorization pair. Terraform would apply cleanly, the pipeline
+        // would refuse to build, and the first person to press the button
+        // would find out. Nothing tied the files together, so the gap could
+        // not be seen from either one.
+        for name in &required {
+            assert!(
+                bootstrap.contains(name.as_str()),
+                "{workflow_file} reads {name} and scripts/bootstrap-deploy.sh \
+                 never sets it, so the first deployment leaves it empty"
+            );
+        }
     }
+}
+
+#[test]
+fn the_infrastructure_workflow_cannot_touch_production() {
+    // infra.yml holds the identity that can reshape an environment, which is
+    // exactly why it must never offer prod. Two layers: prod absent from the
+    // dispatch choices, and a step that refuses it even if the choices are
+    // edited. Both checked, because either alone is one edit from gone.
+    let infra = read(".github/workflows/infra.yml");
+    let choices = block_under(&infra, "environment:");
+    assert!(
+        !choices.contains("- prod"),
+        "infra.yml offers prod as a dispatch choice"
+    );
+    assert!(
+        infra.contains("inputs.environment }}\" = \"prod\" ]"),
+        "infra.yml no longer refuses prod in a step, so a fork that adds the \
+         choice gets it"
+    );
+    // And the destructive action is targeted, never a full destroy: KMS keys
+    // and the workload identity pool are soft-deleted by name, so a full
+    // destroy/apply cycle collides with its own remains — including this
+    // workflow's own authentication.
+    assert!(
+        infra.contains("-target=module.cluster"),
+        "infra.yml's down is no longer targeted at the cluster"
+    );
+    assert!(
+        !without_comments(&infra)
+            .contains("destroy -input=false -auto-approve \\\n            -var-file"),
+        "infra.yml runs an untargeted destroy"
+    );
 }
 
 #[test]

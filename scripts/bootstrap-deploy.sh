@@ -253,6 +253,19 @@ wip="$(terraform -chdir="${TF_DIR}" output -raw workload_identity_provider)"
 deploy_sa="$(terraform -chdir="${TF_DIR}" output -raw deploy_service_account)"
 attestor="$(terraform -chdir="${TF_DIR}" output -raw binary_authorization_attestor)"
 key_version="$(terraform -chdir="${TF_DIR}" output -raw binary_authorization_key_version)"
+# The seventh: what infra.yml impersonates to plan, apply and tear down the
+# stack from the repository. See modules/cicd for what bounds it.
+infra_sa="$(terraform -chdir="${TF_DIR}" output -raw infra_service_account)"
+
+# The infra account's one object-delete grant, scoped to the state bucket.
+# Overwriting Terraform state requires storage.objects.delete, and the
+# project-level role the account holds deliberately lacks it so nothing it
+# runs can delete from the evidence bucket. Here rather than in Terraform:
+# the state bucket is created by this script (state cannot bootstrap itself),
+# and the acceptance suite refuses delete-capable storage roles in any .tf.
+gcloud storage buckets add-iam-policy-binding "gs://${STATE_BUCKET}" \
+  --member="serviceAccount:${infra_sa}" \
+  --role="roles/storage.objectAdmin" --quiet >/dev/null
 
 declare -A pipeline_variables=(
   [GCP_PROJECT]="${PROJECT}"
@@ -261,6 +274,7 @@ declare -A pipeline_variables=(
   [GCP_DEPLOY_SERVICE_ACCOUNT]="${deploy_sa}"
   [GCP_BINAUTHZ_ATTESTOR]="${attestor}"
   [GCP_BINAUTHZ_KEY_VERSION]="${key_version}"
+  [GCP_INFRA_SERVICE_ACCOUNT]="${infra_sa}"
 )
 
 # An output that came back empty is a variable that would be set to nothing,

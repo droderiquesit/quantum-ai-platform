@@ -14,3 +14,8 @@ output "workload_identity_provider" {
 
   value = google_iam_workload_identity_pool_provider.github.name
 }
+
+output "infra_service_account" {
+  description = "The infrastructure account infra.yml impersonates. Set as the GitHub variable GCP_INFRA_SERVICE_ACCOUNT."
+  value       = google_service_account.infra.email
+}

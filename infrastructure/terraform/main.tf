@@ -275,6 +275,23 @@ module "secrets" {
   venue_credential_readable = var.autonomy_ceiling != "paper_trading"
 }
 
+# Pods authenticate as their Google service accounts through the cluster's
+# workload identity pool. These bindings live here, not in modules/secrets,
+# because the pool they name — `<project_id>.svc.id.goog` — exists only once
+# the cluster does, and the cluster consumes the secrets module's
+# node-encryption key: a binding inside that module would need the cluster to
+# precede its own dependency. The first real apply hit exactly that —
+# "Identity Pool does not exist" — three times.
+resource "google_service_account_iam_member" "workload_identity" {
+  for_each = local.service_accounts
+
+  service_account_id = module.secrets.service_account_names[each.key]
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "serviceAccount:${var.project_id}.svc.id.goog[qip/${each.value}]"
+
+  depends_on = [module.cluster]
+}
+
 module "observability" {
   source = "./modules/observability"
 

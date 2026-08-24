@@ -3,6 +3,15 @@
 # Four alerts, chosen because each one means somebody should look now. An
 # alerting policy that fires on something nobody acts on trains people to
 # ignore the ones that matter.
+#
+# All four conditions are PromQL rather than metric-type filters, and the
+# difference is when they can be created. A filter names a metric descriptor,
+# and Cloud Monitoring refuses a policy whose descriptor does not exist —
+# which, for application metrics, is every apply that precedes the first
+# deployment. The first real apply failed on all four for exactly that
+# reason. A PromQL rule is evaluated against whatever series exist, so the
+# policy can be created on an empty project and starts judging the moment the
+# first scrape lands.
 
 # The kill switch tripping. No threshold and no duration: any trip is worth
 # waking someone for, and one that resolves itself before an alert would fire
@@ -15,19 +24,10 @@ resource "google_monitoring_alert_policy" "kill_switch" {
   conditions {
     display_name = "kill switch tripped"
 
-    condition_threshold {
-      filter = join(" AND ", [
-        "metric.type=\"prometheus.googleapis.com/qip_kill_switch_tripped/gauge\"",
-        "resource.type=\"prometheus_target\"",
-      ])
-      comparison      = "COMPARISON_GT"
-      threshold_value = 0
-      duration        = "0s"
-
-      aggregations {
-        alignment_period   = "60s"
-        per_series_aligner = "ALIGN_MAX"
-      }
+    condition_prometheus_query_language {
+      query               = "max(qip_kill_switch_tripped) > 0"
+      duration            = "0s"
+      evaluation_interval = "30s"
     }
   }
 
@@ -51,7 +51,7 @@ resource "google_monitoring_alert_policy" "kill_switch" {
 # A live order reaching a venue. In a paper environment this should never fire
 # at all, which is why the threshold is zero rather than a rate.
 resource "google_monitoring_alert_policy" "live_fill" {
-  count = var.environment == "production" ? 0 : 1
+  count = var.environment == "prod" ? 0 : 1
 
   project      = var.project_id
   display_name = "qip ${var.environment}: a live fill occurred in a non-production environment"
@@ -60,19 +60,10 @@ resource "google_monitoring_alert_policy" "live_fill" {
   conditions {
     display_name = "live fill"
 
-    condition_threshold {
-      filter = join(" AND ", [
-        "metric.type=\"prometheus.googleapis.com/qip_live_fills_total/counter\"",
-        "resource.type=\"prometheus_target\"",
-      ])
-      comparison      = "COMPARISON_GT"
-      threshold_value = 0
-      duration        = "0s"
-
-      aggregations {
-        alignment_period   = "60s"
-        per_series_aligner = "ALIGN_DELTA"
-      }
+    condition_prometheus_query_language {
+      query               = "increase(qip_live_fills_total[5m]) > 0"
+      duration            = "0s"
+      evaluation_interval = "30s"
     }
   }
 
@@ -105,19 +96,10 @@ resource "google_monitoring_alert_policy" "persistent_breach" {
   conditions {
     display_name = "persistent limit breach"
 
-    condition_threshold {
-      filter = join(" AND ", [
-        "metric.type=\"prometheus.googleapis.com/qip_limit_breaches/gauge\"",
-        "resource.type=\"prometheus_target\"",
-      ])
-      comparison      = "COMPARISON_GT"
-      threshold_value = 0
-      duration        = "900s"
-
-      aggregations {
-        alignment_period   = "60s"
-        per_series_aligner = "ALIGN_MAX"
-      }
+    condition_prometheus_query_language {
+      query               = "max(qip_limit_breaches) > 0"
+      duration            = "900s"
+      evaluation_interval = "30s"
     }
   }
 
@@ -146,19 +128,10 @@ resource "google_monitoring_alert_policy" "permission_violation" {
   conditions {
     display_name = "permission violation"
 
-    condition_threshold {
-      filter = join(" AND ", [
-        "metric.type=\"prometheus.googleapis.com/qip_permission_denials_total/counter\"",
-        "resource.type=\"prometheus_target\"",
-      ])
-      comparison      = "COMPARISON_GT"
-      threshold_value = 0
-      duration        = "300s"
-
-      aggregations {
-        alignment_period   = "300s"
-        per_series_aligner = "ALIGN_DELTA"
-      }
+    condition_prometheus_query_language {
+      query               = "increase(qip_permission_denials_total[5m]) > 0"
+      duration            = "300s"
+      evaluation_interval = "30s"
     }
   }
 

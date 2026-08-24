@@ -10,6 +10,21 @@
 # holding one cannot use it — not because the application declines, but
 # because the IAM binding does not exist.
 
+terraform {
+  required_providers {
+    google = {
+      source = "hashicorp/google"
+    }
+    # `google_project_service_identity` only. Enabling an API does not always
+    # create its service agent; this resource forces the agent into existence
+    # so a grant to it does not race a lazily created account. The first real
+    # apply lost that race twice — GKE Backup's agent and Pub/Sub's grant.
+    google-beta = {
+      source = "hashicorp/google-beta"
+    }
+  }
+}
+
 resource "google_kms_key_ring" "platform" {
   project  = var.project_id
   name     = "qip-${var.environment}"
@@ -35,6 +50,25 @@ resource "google_kms_crypto_key" "node_encryption" {
   }
 
   labels = var.labels
+}
+
+# The GKE service agent encrypts etcd with the node-encryption key as itself,
+# not as any workload — so the agent needs the key, exactly like the storage
+# agent in modules/evidence. Without this the cluster fails its precondition
+# with MISSING_IAM_PERMISSIONS_ON_CRYPTO_KEY, which is how the first real
+# apply died.
+resource "google_project_service_identity" "container" {
+  provider = google-beta
+  project  = var.project_id
+  service  = "container.googleapis.com"
+}
+
+resource "google_kms_crypto_key_iam_member" "gke_robot" {
+  crypto_key_id = google_kms_crypto_key.node_encryption.id
+  role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+  member        = "serviceAccount:service-${var.project_number}@container-engine-robot.iam.gserviceaccount.com"
+
+  depends_on = [google_project_service_identity.container]
 }
 
 resource "google_kms_crypto_key" "secrets" {
@@ -101,6 +135,23 @@ resource "google_service_account" "workload" {
 # platform data: it is a control-plane notification from a Google service to
 # an operator, and Secret Manager will not accept a rotation schedule without
 # one.
+# Pub/Sub encrypts the topic with the key as its own service agent, so the
+# agent needs the key before the topic can exist. The agent itself is created
+# lazily; the service identity forces it so the grant has someone to land on.
+resource "google_project_service_identity" "pubsub" {
+  provider = google-beta
+  project  = var.project_id
+  service  = "pubsub.googleapis.com"
+}
+
+resource "google_kms_crypto_key_iam_member" "pubsub_agent" {
+  crypto_key_id = google_kms_crypto_key.secrets.id
+  role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+  member        = "serviceAccount:service-${var.project_number}@gcp-sa-pubsub.iam.gserviceaccount.com"
+
+  depends_on = [google_project_service_identity.pubsub]
+}
+
 resource "google_pubsub_topic" "rotation" {
   project = var.project_id
   name    = "qip-secret-rotation-${var.environment}"
@@ -110,6 +161,8 @@ resource "google_pubsub_topic" "rotation" {
   # the value, so the topic's own encryption is defence in depth rather than
   # the thing keeping the credential safe.
   kms_key_name = google_kms_crypto_key.secrets.id
+
+  depends_on = [google_kms_crypto_key_iam_member.pubsub_agent]
 }
 
 # Secret Manager publishes as its own service agent, so the grant is to that
@@ -214,15 +267,13 @@ resource "google_secret_manager_secret_iam_member" "venue_credential" {
   member    = "serviceAccount:${google_service_account.workload["fastbrain"].email}"
 }
 
-# Workload identity bindings, so a pod authenticates as its service account
-# without a key file on disk.
-resource "google_service_account_iam_member" "workload_identity" {
-  for_each = var.service_accounts
-
-  service_account_id = google_service_account.workload[each.key].name
-  role               = "roles/iam.workloadIdentityUser"
-  member             = "serviceAccount:${var.project_id}.svc.id.goog[qip/${each.value}]"
-}
+# The workload identity bindings are deliberately NOT here. The pool they
+# name — `<project_id>.svc.id.goog` — exists only once a cluster with
+# workload identity has been created, and the cluster consumes this module's
+# node-encryption key, so a binding here would need the cluster to exist
+# before the thing the cluster depends on. They live in the root, after
+# `module.cluster`. The first real apply proved the cycle the hard way:
+# "Identity Pool does not exist (…svc.id.goog)".
 
 # The minimum each deployable needs beyond its secrets: write telemetry.
 resource "google_project_iam_member" "telemetry" {

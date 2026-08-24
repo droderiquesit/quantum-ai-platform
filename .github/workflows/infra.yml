@@ -1,0 +1,133 @@
+# Build the stack up, and tear the expensive half down.
+#
+# This is the workflow that lets an operator — or an agent working for one —
+# iterate the infrastructure from the repository: plan a change, apply it,
+# and shut the cluster down when nobody is testing, which is where nearly all
+# of the money goes. It authenticates by workload identity federation as the
+# `qip-infra` account `modules/cicd` creates; no key exists anywhere in this
+# path.
+#
+# **Manual dispatch only, and never prod.** The automatic paths belong to
+# deploy.yml, which cannot touch infrastructure. Production infrastructure is
+# applied by a person running `scripts/bootstrap-deploy.sh prod`, on purpose:
+# an agent that can reshape prod is an agent one prompt injection away from
+# reshaping prod.
+#
+# ## Why `down` is not `destroy`
+#
+# `down` destroys `module.cluster` — the GKE cluster and its node pools, the
+# resources that bill by the hour — and leaves identity, KMS, secrets, the
+# registry and the state bucket standing. That asymmetry is deliberate:
+#
+#   * KMS keys cannot be truly deleted — destroying them schedules key
+#     versions for destruction and the key names stay claimed, so a full
+#     destroy/apply cycle collides with its own remains ("CryptoKey already
+#     exists"). The keys also cost nothing to keep.
+#   * A workload identity pool is soft-deleted for thirty days, over which its
+#     name cannot be reused. A full destroy would take this workflow's own
+#     authentication down with it and the next apply could not put it back.
+#   * The secrets hold seeded values a destroy would discard.
+#
+# So the cheap, safe iteration loop is `down` at the end of a session and
+# `up` (a plain apply) at the start of the next. A true full teardown is a
+# deliberate human act with `terraform destroy` and a reading of the KMS and
+# WIF caveats above.
+name: infra
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Which environment. prod is refused — it is applied by a person, from the bootstrap script."
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - test
+          - stage
+      action:
+        description: "plan (read-only), up (apply), down (destroy the cluster to stop the meter; everything else stands)"
+        required: true
+        default: "plan"
+        type: choice
+        options:
+          - plan
+          - up
+          - down
+
+permissions:
+  contents: read
+
+concurrency:
+  # One infrastructure operation at a time per environment, and it queues
+  # rather than cancels: half an apply is the worst of both.
+  group: infra-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  terraform:
+    name: ${{ inputs.action }} ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: refuse what this workflow must never do
+        run: |
+          set -euo pipefail
+          # Defence in depth behind the choice list: a fork of this file with
+          # prod added to the options still stops here.
+          if [ "${{ inputs.environment }}" = "prod" ]; then
+            echo "prod infrastructure is never changed from this workflow." >&2
+            echo "A person runs scripts/bootstrap-deploy.sh prod." >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_INFRA_SERVICE_ACCOUNT }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: terraform init
+        run: |
+          terraform -chdir=infrastructure/terraform init -input=false \
+            -backend-config="bucket=${{ vars.GCP_PROJECT }}-qip-tfstate"
+
+      - name: plan
+        if: inputs.action == 'plan'
+        run: |
+          terraform -chdir=infrastructure/terraform plan -input=false \
+            -var-file="../environments/${{ inputs.environment }}/terraform.tfvars"
+
+      # -auto-approve because there is nobody at a prompt: the review is the
+      # dispatch itself, recorded in the Actions log with who pressed it. The
+      # prod refusal above is what keeps that acceptable.
+      - name: up
+        if: inputs.action == 'up'
+        run: |
+          terraform -chdir=infrastructure/terraform apply -input=false -auto-approve \
+            -var-file="../environments/${{ inputs.environment }}/terraform.tfvars"
+
+      - name: down
+        if: inputs.action == 'down'
+        run: |
+          # Targeted on purpose — see the header for why a full destroy is a
+          # trap. Terraform also destroys everything that depends on the
+          # cluster (the backup plan, the workload identity bindings), which
+          # `up` recreates.
+          terraform -chdir=infrastructure/terraform destroy -input=false -auto-approve \
+            -target=module.cluster \
+            -var-file="../environments/${{ inputs.environment }}/terraform.tfvars"
+
+      - name: what exists now
+        if: always()
+        run: |
+          terraform -chdir=infrastructure/terraform state list | wc -l | \
+            xargs -I{} echo "{} resources in ${{ inputs.environment }} state"
