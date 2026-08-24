@@ -130,7 +130,10 @@ pub struct NewsItem {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub topics: Vec<String>,
     pub provenance: Provenance,
-    #[serde(default)]
+    /// No `#[serde(default)]`: [`DataQuality::default`] is a *perfect*
+    /// measurement, which clears [`crate::quality::DECISION_QUALITY_FLOOR`].
+    /// A vendor that says nothing about quality must not produce the same
+    /// record as one that measured everything.
     pub quality: DataQuality,
 }
 
@@ -184,7 +187,10 @@ pub struct FundamentalUpdate {
     #[serde(default)]
     pub is_restatement: bool,
     pub provenance: Provenance,
-    #[serde(default)]
+    /// No `#[serde(default)]`: [`DataQuality::default`] is a *perfect*
+    /// measurement, which clears [`crate::quality::DECISION_QUALITY_FLOOR`].
+    /// A vendor that says nothing about quality must not produce the same
+    /// record as one that measured everything.
     pub quality: DataQuality,
 }
 
@@ -264,7 +270,10 @@ pub struct MacroObservation {
     #[serde(default)]
     pub is_revision: bool,
     pub provenance: Provenance,
-    #[serde(default)]
+    /// No `#[serde(default)]`: [`DataQuality::default`] is a *perfect*
+    /// measurement, which clears [`crate::quality::DECISION_QUALITY_FLOOR`].
+    /// A vendor that says nothing about quality must not produce the same
+    /// record as one that measured everything.
     pub quality: DataQuality,
 }
 
@@ -320,7 +329,10 @@ pub struct AlternativeDataPoint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxies_for: Option<String>,
     pub provenance: Provenance,
-    #[serde(default)]
+    /// No `#[serde(default)]`: [`DataQuality::default`] is a *perfect*
+    /// measurement, which clears [`crate::quality::DECISION_QUALITY_FLOOR`].
+    /// A vendor that says nothing about quality must not produce the same
+    /// record as one that measured everything.
     pub quality: DataQuality,
 }
 

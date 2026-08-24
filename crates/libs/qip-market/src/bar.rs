@@ -81,7 +81,11 @@ pub struct Bar {
     pub vwap: Option<Decimal>,
     #[serde(default)]
     pub trade_count: u64,
-    #[serde(default)]
+    /// No `#[serde(default)]`: [`DataQuality::default`] is a *perfect*
+    /// measurement — completeness and confidence 1.0, not imputed — which
+    /// clears [`qip_financial::quality::DECISION_QUALITY_FLOOR`]. A record
+    /// that says nothing about its quality would therefore decode as one that
+    /// measured everything perfectly, so it does not decode at all.
     pub quality: DataQuality,
 }
 

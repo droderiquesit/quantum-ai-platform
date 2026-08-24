@@ -41,8 +41,8 @@
 //! dropped it would make bad vendor data invisible, which is the failure
 //! charter section 21 exists to prevent. What is refused here is what cannot
 //! become a record at all: a body that is not JSON, a field of the wrong type,
-//! an interval or a trade condition this decoder cannot name, a symbol with no
-//! instrument behind it.
+//! an interval or a trade condition this decoder cannot name, a trade that
+//! states no condition at all, a symbol with no instrument behind it.
 //!
 //! # The peer is untrusted
 //!
@@ -587,9 +587,25 @@ impl RestMarketDataAdapter {
             price: wire.price,
             size: wire.size,
             aggressor: wire.aggressor.as_deref().map(side_from_code).transpose()?,
+            // An absent condition is refused for the same reason an
+            // unreadable one is: the only value that could stand in for it is
+            // `Regular`, and `TradeCondition::is_price_forming` is true for
+            // `Regular`. A late report or an off-exchange cross whose
+            // condition the vendor left out would otherwise reach price
+            // discovery as an ordinary continuous-session print and move a
+            // mark it never traded at. This decoder cannot tell "the vendor
+            // says this printed normally" from "the vendor said nothing", so
+            // it declines to guess.
             condition: match wire.condition.as_deref() {
                 Some(code) => condition_from_code(code)?,
-                None => TradeCondition::Regular,
+                None => {
+                    return Err(Error::schema(format!(
+                        "the trade {} at {} states no condition, and this decoder will not read                          that as {:?}: an unstated condition is not a regular print, and regular                          is the one condition that forms a price. Have the vendor send a                          condition, or map its feed to one.",
+                        wire.trade_id.as_deref().unwrap_or(&wire.symbol),
+                        wire.at,
+                        TradeCondition::Regular,
+                    )));
+                }
             },
             // The vendor's own identity for the print, kept so a reconciliation
             // against the vendor has something to join on and so the bus can

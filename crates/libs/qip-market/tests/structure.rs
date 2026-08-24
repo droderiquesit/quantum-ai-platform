@@ -2,6 +2,7 @@
 
 use qip_core::testing::approx_eq;
 use qip_core::{Currency, Decimal, Duration, ObjectId, Timestamp, dec};
+use qip_financial::quality::{DECISION_QUALITY_FLOOR, DataQuality};
 use qip_market::bar::{Bar, BarSeries, Interval};
 use qip_market::book::{BookLevel, OrderBook, Side};
 use qip_market::corporate_action::{CorporateAction, CorporateActionKind, adjust_prices};
@@ -125,6 +126,81 @@ fn only_price_forming_conditions_contribute_to_discovery() {
     assert!(!TradeCondition::OffExchange.is_price_forming());
     assert!(!TradeCondition::Corrected.is_price_forming());
 }
+
+// --- what absence decodes to --------------------------------------------------
+//
+// Both tests below assert their own premise first. Without it they would pass
+// for the wrong reason: "this JSON does not decode" is only interesting once
+// you know what it used to decode *to*.
+
+#[test]
+fn a_trade_that_states_no_condition_does_not_decode() {
+    // The premise. `Regular` is what a `#[serde(default)]` would have
+    // supplied — it is the ordinary continuous-session print — and `Regular`
+    // is price-forming. So absence used to arrive as permission to move a
+    // mark.
+    let stated: Trade = serde_json::from_str(TRADE_JSON).expect("a stated condition decodes");
+    assert_eq!(stated.condition, TradeCondition::Regular);
+    assert!(
+        stated.condition.is_price_forming(),
+        "the value absence would have produced is the one that forms a price"
+    );
+
+    // The same object with the one field removed.
+    let without = TRADE_JSON.replace(r#""condition":"regular","#, "");
+    assert!(!without.contains("condition"));
+    let error = serde_json::from_str::<Trade>(&without)
+        .expect_err("a print that says nothing about how it printed is not a regular print");
+    assert!(
+        error.to_string().contains("condition"),
+        "the failure has to name the missing field: {error}"
+    );
+}
+
+#[test]
+fn a_market_record_that_states_no_quality_does_not_decode() {
+    // The premise: the default is not "unknown quality", it is a perfect,
+    // directly observed measurement that clears the floor deciding whether a
+    // record may drive a capital decision.
+    let default = DataQuality::default();
+    assert!(approx_eq(default.completeness, 1.0, 1e-12));
+    assert!(approx_eq(default.confidence, 1.0, 1e-12));
+    assert!(!default.is_imputed);
+    assert!(
+        default.meets(DECISION_QUALITY_FLOOR),
+        "an unstated quality block used to clear the decision floor outright"
+    );
+
+    // Every market record type carries one, and every one of them refuses.
+    let quote_json = r#"{"object_id":"obj-aapl","venue":"XNYS","at":"2026-08-22T00:00:00Z",
+        "bid":"10.00","ask":"10.02","bid_size":"100","ask_size":"100"}"#;
+    assert!(
+        serde_json::from_str::<Quote>(quote_json).is_err(),
+        "a quote with no quality block decoded as a perfect measurement"
+    );
+    assert!(
+        serde_json::from_str::<Trade>(&TRADE_JSON.replace(QUALITY_JSON, "null")).is_err(),
+        "a trade with a null quality block decoded"
+    );
+
+    let without = TRADE_JSON.replace(&format!(r#","quality":{QUALITY_JSON}"#), "");
+    assert!(!without.contains("quality"));
+    assert!(serde_json::from_str::<Trade>(&without).is_err());
+
+    // And the record that does state it still decodes, so this is a refusal of
+    // silence rather than of the field.
+    let stated: Trade = serde_json::from_str(TRADE_JSON).expect("a stated quality decodes");
+    assert!(stated.quality.meets(DECISION_QUALITY_FLOOR));
+}
+
+/// The quality block the fixture states. Extracted so the tests above can
+/// remove exactly it and nothing else.
+const QUALITY_JSON: &str =
+    r#"{"completeness":1.0,"confidence":1.0,"validation_failures":0,"is_imputed":false}"#;
+
+/// A trade as it is actually written, with every field the decoder requires.
+const TRADE_JSON: &str = r#"{"object_id":"obj-aapl","venue":"XNYS","at":"2026-08-22T00:00:00Z",
+    "price":"10.01","size":"100","condition":"regular","quality":{"completeness":1.0,"confidence":1.0,"validation_failures":0,"is_imputed":false}}"#;
 
 // --- order book -------------------------------------------------------------
 

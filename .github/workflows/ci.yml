@@ -126,6 +126,13 @@ jobs:
         run: |
           terraform -chdir=infrastructure/terraform init -backend=false
           terraform -chdir=infrastructure/terraform validate
+      # `validate` accepts a module using a provider it never declared; only
+      # `plan` refuses it, and `plan` needs credentials CI does not have. So
+      # that class of error passes here and fails on the day somebody applies
+      # — which is exactly what happened with `modules/ai` and `google-beta`.
+      # This is the static check that closes it.
+      - name: provider declarations
+        run: ./scripts/check-terraform-providers.sh
 
   # The secrets check runs on the diff, not the history: a secret already
   # committed needs rotating rather than a failing build, and a build that

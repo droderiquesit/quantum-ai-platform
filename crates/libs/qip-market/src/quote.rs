@@ -18,7 +18,11 @@ pub struct Quote {
     pub ask: Decimal,
     pub bid_size: Decimal,
     pub ask_size: Decimal,
-    #[serde(default)]
+    /// No `#[serde(default)]`: [`DataQuality::default`] is a *perfect*
+    /// measurement — completeness and confidence 1.0, not imputed — which
+    /// clears [`qip_financial::quality::DECISION_QUALITY_FLOOR`]. A record
+    /// that says nothing about its quality would therefore decode as one that
+    /// measured everything perfectly, so it does not decode at all.
     pub quality: DataQuality,
 }
 
@@ -119,11 +123,20 @@ impl EventBody for Quote {
 
 /// How a trade was executed, which determines whether it is usable for
 /// price discovery.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+///
+/// Deliberately has no `Default`, and [`Trade::condition`] is deliberately not
+/// `#[serde(default)]`. The only value a default could pick is `Regular`, and
+/// `Regular` is the one condition that is *price-forming*: a late report or an
+/// off-exchange cross whose condition a venue omitted would enter the platform
+/// as an ordinary continuous-session print and drag the mark it is not
+/// entitled to move. Absence of a condition is not a condition, so it is
+/// refused where it arrives instead. [`qip_contracts::TradeCondition`] — the
+/// edge's own copy of this idea — already has no `Default` for the same
+/// reason, and this is the library half catching up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TradeCondition {
     /// Ordinary continuous-session trade.
-    #[default]
     Regular,
     /// Opening or closing auction print.
     Auction,
@@ -156,12 +169,17 @@ pub struct Trade {
     /// Side the aggressor was on, where the venue reports it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aggressor: Option<Side>,
-    #[serde(default)]
+    /// No `#[serde(default)]`: see [`TradeCondition`]. A record that does not
+    /// state how it printed does not decode.
     pub condition: TradeCondition,
     /// Venue-assigned trade identifier, for deduplication and reconciliation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trade_id: Option<String>,
-    #[serde(default)]
+    /// No `#[serde(default)]`: [`DataQuality::default`] is a *perfect*
+    /// measurement — completeness and confidence 1.0, not imputed — which
+    /// clears [`qip_financial::quality::DECISION_QUALITY_FLOOR`]. A record
+    /// that says nothing about its quality would therefore decode as one that
+    /// measured everything perfectly, so it does not decode at all.
     pub quality: DataQuality,
 }
 
@@ -209,7 +227,11 @@ pub struct Tick {
     pub price: Decimal,
     #[serde(default)]
     pub volume: Decimal,
-    #[serde(default)]
+    /// No `#[serde(default)]`: [`DataQuality::default`] is a *perfect*
+    /// measurement — completeness and confidence 1.0, not imputed — which
+    /// clears [`qip_financial::quality::DECISION_QUALITY_FLOOR`]. A record
+    /// that says nothing about its quality would therefore decode as one that
+    /// measured everything perfectly, so it does not decode at all.
     pub quality: DataQuality,
 }
 

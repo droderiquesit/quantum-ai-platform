@@ -775,6 +775,56 @@ fn replay_respects_the_callers_clock() {
 }
 
 #[test]
+fn a_replay_nobody_declared_a_licence_for_is_not_displayable() {
+    // The premise, and the whole reason this is worth a test: the class a
+    // default would supply is not a neutral "unknown", it is a grant.
+    assert_eq!(LicensingClass::default(), LicensingClass::Internal);
+    assert!(
+        LicensingClass::default().allows_raw_display(),
+        "an unset class permits raw display, which is why a capture file is not given one"
+    );
+    assert!(
+        LicensingClass::default().allows_production_decisions(),
+        "and permits a capital decision, so the grant is not only about the screen"
+    );
+
+    let mut environment = environment(179);
+    let original = environment.run_until(start().saturating_add(Duration::from_mins(10)));
+    assert!(!original.is_empty());
+
+    let dir = std::env::temp_dir().join(format!("qip-replay-licence-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("capture.jsonl");
+    ReplayAdapter::write(&path, &original).unwrap();
+
+    // A file says nothing about its own terms. The adapter therefore reports
+    // the non-displayable class rather than the permissive default.
+    let undeclared = ReplayAdapter::open("capture", &path).unwrap();
+    assert_eq!(undeclared.licensing(), LicensingClass::Restricted);
+    assert_eq!(
+        undeclared.descriptor().licensing,
+        LicensingClass::Restricted
+    );
+    assert!(
+        !undeclared.descriptor().licensing.allows_raw_display(),
+        "a path out of the environment must not arrive downstream as permission to show a          vendor's raw prices"
+    );
+
+    // Records already in memory are no better known than records in a file.
+    let from_memory = ReplayAdapter::from_records("memory", original.clone());
+    assert_eq!(from_memory.licensing(), LicensingClass::Restricted);
+
+    // And a caller who does know says so, which is the only way one gets said.
+    let declared = ReplayAdapter::open("capture", &path)
+        .unwrap()
+        .with_licensing(LicensingClass::Public);
+    assert_eq!(declared.descriptor().licensing, LicensingClass::Public);
+    assert!(declared.descriptor().licensing.allows_raw_display());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_malformed_replay_line_is_reported_not_silently_skipped() {
     let dir = std::env::temp_dir().join(format!("qip-replay-bad-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

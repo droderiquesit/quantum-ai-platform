@@ -120,10 +120,18 @@ pub struct EquityDetails {
     pub gics_sub_industry: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// Whether a line is still trading.
+///
+/// Deliberately has no `Default`. The only variant a default could name is
+/// `Listed`, and `Listed` is the permissive one: a suspended or delisted line
+/// arriving in a vendor record that omits the field would read as a tradable
+/// one. There is no "unknown" variant to fall back to either, and inventing a
+/// listing state is worse than declining to have one — so the field has to be
+/// stated, and `EquityDetails` accordingly does not derive `Default` and does
+/// not mark this `#[serde(default)]`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ListingStatus {
-    #[default]
     Listed,
     Suspended,
     Delisted,

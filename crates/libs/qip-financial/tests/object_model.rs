@@ -11,8 +11,9 @@ use qip_financial::constraints::{Jurisdiction, RegulatoryConstraints, TradingRes
 use qip_financial::costs::{LiquidityProfile, TransactionCostModel};
 use qip_financial::extensions::*;
 use qip_financial::identifiers::{IdentifierKind, Identifiers};
+use qip_financial::intelligence::MacroObservation;
 use qip_financial::object::{FinancialObject, TradeSide};
-use qip_financial::quality::{DataQuality, LicensingClass, Provenance};
+use qip_financial::quality::{DECISION_QUALITY_FLOOR, DataQuality, LicensingClass, Provenance};
 use qip_financial::risk_profile::{FactorExposures, Greeks, RiskCharacteristics, factors};
 use qip_financial::universe::Universe;
 
@@ -529,6 +530,68 @@ fn synthetic_data_is_barred_from_production_decisions() {
     assert!(LicensingClass::Licensed.allows_production_decisions());
     assert!(!LicensingClass::Restricted.allows_raw_display());
     assert!(LicensingClass::Public.allows_raw_display());
+}
+
+#[test]
+fn an_intelligence_record_that_states_no_quality_does_not_decode() {
+    // The premise. `DataQuality::default` is a perfect, directly observed
+    // measurement, and it clears the floor that decides whether a record may
+    // drive a capital decision — so a vendor that said nothing about quality
+    // used to produce exactly the record a vendor that measured everything
+    // would have produced.
+    assert!(DataQuality::default().meets(DECISION_QUALITY_FLOOR));
+    assert!(!DataQuality::default().is_imputed);
+    assert!(approx_eq(DataQuality::default().completeness, 1.0, 1e-12));
+
+    // One record, written twice: everything but the quality block is identical.
+    const BODY: &str = r#""series_id":"US.CPI.YOY","region":"US","value":314.5,
+      "unit":"index","reference_date":"2026-07-01T00:00:00Z",
+      "provenance":{"source":"vendor","event_time":"2026-07-01T00:00:00Z",
+        "ingestion_time":"2026-08-12T00:00:00Z","licensing":"licensed"}"#;
+    const QUALITY: &str = r#""quality":{"completeness":1.0,"confidence":0.9,
+      "validation_failures":0,"is_imputed":true}"#;
+
+    let stated: MacroObservation = serde_json::from_str(&format!("{{{BODY},{QUALITY}}}"))
+        .expect("a record that states its quality decodes");
+    assert!(
+        stated.quality.is_imputed,
+        "the vendor said it filled this in, and that survives the decode"
+    );
+
+    let silent = format!("{{{BODY}}}");
+    assert!(!silent.contains("quality"));
+    let error = serde_json::from_str::<MacroObservation>(&silent)
+        .expect_err("an unstated quality block became a perfect measurement");
+    assert!(
+        error.to_string().contains("quality"),
+        "the failure has to name the missing field: {error}"
+    );
+}
+
+#[test]
+fn an_equity_that_states_no_listing_status_does_not_decode() {
+    // The premise: `Listed` is the only status a default could name, and it is
+    // the permissive one — a suspended or delisted line arriving without the
+    // field would have read as a tradable one.
+    let listed: ListingStatus =
+        serde_json::from_str(r#""listed""#).expect("the wire form of the permissive value");
+    assert_eq!(listed, ListingStatus::Listed);
+    assert_ne!(listed, ListingStatus::Delisted);
+    assert_ne!(listed, ListingStatus::Suspended);
+
+    const STATED: &str = r#"{"shares_outstanding":"1000","free_float_shares":"800",
+      "dividend_yield":0.01,"book_value_per_share":"12","earnings_per_share":"3",
+      "voting_rights_per_share":1.0,"listing_status":"delisted"}"#;
+    let details: EquityDetails =
+        serde_json::from_str(STATED).expect("a line that states its status decodes");
+    assert_eq!(details.listing_status, ListingStatus::Delisted);
+
+    let silent = STATED.replace(r#","listing_status":"delisted""#, "");
+    assert!(!silent.contains("listing_status"));
+    assert!(
+        serde_json::from_str::<EquityDetails>(&silent).is_err(),
+        "a delisted line with the field omitted must not decode as a listed one"
+    );
 }
 
 #[test]

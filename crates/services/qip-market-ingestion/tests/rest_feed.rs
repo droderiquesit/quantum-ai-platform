@@ -14,6 +14,7 @@ use qip_core::{Context, Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_events::{EventBus, EventLog, Topic};
 use qip_financial::intelligence::{DataQualityFailure, ReferenceDataUpdate};
 use qip_financial::quality::LicensingClass;
+use qip_market::TradeCondition;
 use qip_market_ingestion::adapter::{DataAdapter, SensedRecord};
 use qip_market_ingestion::rest::{RestFeedConfig, RestInstrument, RestMarketDataAdapter};
 use qip_market_ingestion::{IngestionService, MarketDataAdapter};
@@ -616,6 +617,57 @@ fn an_unreadable_trade_condition_is_refused_rather_than_defaulted_to_regular() {
         .expect_err("an unknown condition became a price-forming print");
 
     assert_eq!(error.code(), "schema", "got {error:?}");
+}
+
+#[test]
+fn an_absent_trade_condition_is_refused_rather_than_read_as_regular() {
+    // The premise. `Regular` is the only value a stand-in could pick, and
+    // `Regular` is price-forming: had the decoder fallen back to it, a print
+    // the vendor never described would have moved a mark.
+    assert!(
+        TradeCondition::Regular.is_price_forming(),
+        "if this stops being true the refusal below protects nothing"
+    );
+    assert!(!TradeCondition::LateReport.is_price_forming());
+    assert!(!TradeCondition::OffExchange.is_price_forming());
+
+    // The same print, once with a condition and once without. Only the
+    // presence of the field differs.
+    let stated = TestServer::always(Action::json(
+        200,
+        r#"{"trades":[{"symbol":"NWSC","at":"2026-08-24T14:59:45Z","price":"101.75","size":"100",
+            "condition":"late_report"}]}"#,
+    ));
+    let records = adapter_for(&stated)
+        .poll(poll_instant())
+        .expect("a print that states its condition decodes");
+    match records.first().expect("one trade") {
+        SensedRecord::Trade(trade) => assert!(
+            !trade.condition.is_price_forming(),
+            "the vendor said late report, and a late report does not form a price"
+        ),
+        other => panic!("expected a trade, got {other:?}"),
+    }
+
+    let unstated = TestServer::always(Action::json(
+        200,
+        r#"{"trades":[{"symbol":"NWSC","at":"2026-08-24T14:59:45Z","price":"101.75","size":"100",
+            "trade_id":"print-404"}]}"#,
+    ));
+    let error = adapter_for(&unstated)
+        .poll(poll_instant())
+        .expect_err("silence about a condition is not a statement that it printed normally");
+
+    assert_eq!(error.code(), "schema", "got {error:?}");
+    let text = error.to_string();
+    assert!(
+        text.contains("print-404"),
+        "the refusal has to name the print an operator must go and look at: {text}"
+    );
+    assert!(
+        text.contains("Regular"),
+        "and name the value it is declining to fall back to: {text}"
+    );
 }
 
 // --- an adapter with nothing behind it --------------------------------------
