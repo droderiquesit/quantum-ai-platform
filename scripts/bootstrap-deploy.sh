@@ -8,11 +8,13 @@
 #
 #   1. checks the tools and the authenticated identity
 #   2. enables the project APIs the configuration needs
-#   3. lets the current user impersonate the bootstrap service account
+#   3. creates the bootstrap service account if it does not exist, and lets
+#      the current user impersonate it
 #   4. creates the Terraform state bucket if it does not exist
 #   5. terraform init + apply, impersonating claude-builder — apply shows its
 #      plan and asks before changing anything; this script never auto-approves
 #   6. sets the six GitHub Actions *variables* the deploy pipeline reads
+#   7. seeds the six generated secrets with random values, if they are empty
 #
 # What it deliberately never does: create, download or read a service-account
 # key. Authentication is your own identity impersonating the bootstrap
@@ -72,13 +74,22 @@ echo
 # --- 1. tools and identity ---------------------------------------------------
 
 missing=()
-for tool in gcloud terraform gh; do
+for tool in gcloud terraform gh openssl; do
   command -v "${tool}" >/dev/null 2>&1 || missing+=("${tool}")
 done
 if ((${#missing[@]} > 0)); then
   echo "missing: ${missing[*]}" >&2
-  echo "Cloud Shell has all three preinstalled: https://shell.cloud.google.com" >&2
+  echo "Cloud Shell has all of them preinstalled: https://shell.cloud.google.com" >&2
   exit 69
+fi
+
+# Checked here, not at step 6 where it is used. Failing after a twenty-minute
+# apply for a login that takes thirty seconds would mean running the whole
+# script twice; nothing before step 6 depends on GitHub, but the point of one
+# command is that it finishes.
+if ! gh auth status >/dev/null 2>&1; then
+  echo "gh is not authenticated. Run: gh auth login   (then rerun this script)" >&2
+  exit 77
 fi
 
 ACCOUNT="$(gcloud config get-value account 2>/dev/null || true)"
@@ -101,7 +112,32 @@ gcloud services enable \
   iamcredentials.googleapis.com cloudresourcemanager.googleapis.com \
   monitoring.googleapis.com logging.googleapis.com storage.googleapis.com
 
-# --- 3. impersonation --------------------------------------------------------
+# --- 3. the bootstrap account ------------------------------------------------
+
+# Created here if it does not exist. The account is defined in
+# docs/security/credentials.md as the project-admin identity that applies
+# Terraform — so its role is owner, and the safety of that is not the role but
+# the access path: nobody holds a key to this account, and using it means
+# being someone the audit log names, impersonating it for an hour.
+#
+# Owner rather than a hand-picked list, deliberately. The configuration
+# creates IAM bindings, service accounts, a workload identity pool, KMS keys,
+# clusters and buckets; a curated role list that misses one permission fails
+# in the middle of an apply with an error naming a permission rather than a
+# decision, which is exactly the failure this script exists to prevent.
+if ! gcloud iam service-accounts describe "${BOOTSTRAP_SA}" >/dev/null 2>&1; then
+  echo "creating bootstrap service account ${BOOTSTRAP_SA}…"
+  if ! gcloud iam service-accounts create claude-builder \
+    --display-name="qip bootstrap: applies Terraform, used via impersonation only"; then
+    echo >&2
+    echo "could not create ${BOOTSTRAP_SA}; a project owner must create it:" >&2
+    echo "  gcloud iam service-accounts create claude-builder" >&2
+    exit 77
+  fi
+  gcloud projects add-iam-policy-binding "${PROJECT}" \
+    --member="serviceAccount:${BOOTSTRAP_SA}" \
+    --role="roles/owner" --condition=None --quiet >/dev/null
+fi
 
 # Grant yourself token-creator on the bootstrap account. Needs to succeed only
 # once; if you lack the authority to grant it, the error below says who to ask.
@@ -189,6 +225,33 @@ else
     echo "  gh variable set ${name} --repo ${GITHUB_REPOSITORY} --body \"${pipeline_variables[$name]}\""
   done
 fi
+
+# --- 7. the generated secrets ------------------------------------------------
+
+# Terraform creates the secret containers empty — their values are never in
+# Terraform, so a leaked state file leaks no credential. Six of them are
+# self-generated random values with no external party involved, and a secret
+# with no version fails the CSI mount, leaving every pod in ContainerCreating.
+# So the six are seeded here, once: an existing value is never overwritten,
+# because replacing the capital-envelope key mid-flight would strand every
+# grant signed under the old one. Rotation is a deliberate act — add a version
+# and restart the workloads.
+#
+# The vendor credentials — qip-market-data-key, qip-venue-credential,
+# qip-quantum-token — are deliberately not here. They come from a data vendor,
+# a broker and a quantum provider respectively; a random value would not be a
+# credential, and the venue credential is unreadable under paper trading
+# anyway.
+for secret in qip-token-operator qip-token-approver qip-token-analyst \
+  qip-token-viewer qip-token-monitor qip-capital-envelope-key; do
+  qualified="${secret}-${ENVIRONMENT}"
+  if [[ -z "$(gcloud secrets versions list "${qualified}" --limit=1 --format='value(name)' 2>/dev/null)" ]]; then
+    openssl rand -base64 48 | gcloud secrets versions add "${qualified}" --data-file=- >/dev/null
+    echo "seeded ${qualified}"
+  else
+    echo "${qualified} already has a value; left as it is"
+  fi
+done
 
 echo
 echo "done. The infrastructure is applied and the pipeline can authenticate."

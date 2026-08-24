@@ -51,17 +51,18 @@ Nothing below exists in this environment. This is the checklist.
 
 ### Before `bootstrap-deploy.sh` can run
 
-The script does everything it can do without authority it does not have. These
-five it cannot, because each is a decision or a grant that belongs to whoever
-owns the project. It fails naming the one that is missing rather than part-way
-through.
+The script does everything it can do without authority it does not have. When
+you run it as the project's owner — the ordinary case for a personal project —
+only the first two rows below are yours: the project and its billing. The rest
+it creates or grants itself, and it fails naming the missing thing rather than
+part-way through.
 
 | Requirement | How to check it | Why the script cannot do it |
 |---|---|---|
 | The project exists | `gcloud projects describe project-d3f96b6b-852b-4460-b6d` | A project is created in a folder, under an organisation, with org policies — a landing-zone decision this repository does not make |
 | Billing is enabled on it | `gcloud beta billing projects describe <project>` | `container`, `cloudkms` and `artifactregistry` refuse to enable without it, and the error names billing rather than the API |
 | Service Usage and Cloud Resource Manager are on | `gcloud services list --enabled \| grep -E 'serviceusage\|cloudresourcemanager'` | Service Usage cannot enable itself. See `modules/services/BOOTSTRAP.md` |
-| `claude-builder@…` exists, with project admin | `gcloud iam service-accounts describe claude-builder@<project>.iam.gserviceaccount.com` | Creating an admin identity is the grant everything else rests on |
+| `claude-builder@…` exists, with project admin | `gcloud iam service-accounts describe claude-builder@<project>.iam.gserviceaccount.com` | The script creates it when you have the authority to create service accounts; a project owner creates it otherwise |
 | You can impersonate it | The script grants this and says who to ask if it cannot | Needs `roles/iam.serviceAccountTokenCreator`, which only a project owner can give |
 
 The identity running the first apply also needs
