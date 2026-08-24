@@ -97,6 +97,11 @@ spec:
             # Set explicitly rather than left to the binary's default, because
             # a durability question answered by omission is one nobody
             # revisits when a volume finally exists.
+            #
+            # What giving it that volume would actually take, and why it is not
+            # one field: the foot of this file. It is not a `Retain` policy and
+            # a claim — it converts this workload to a StatefulSet, which
+            # changes what the autoscaler below is doing.
             - name: QIP_STORAGE_TARGET
               valueFrom:
                 configMapKeyRef:
@@ -299,3 +304,118 @@ spec:
         - type: Pods
           value: 1
           periodSeconds: 300
+# ---------------------------------------------------------------------------
+# The chain this workload does not keep, and why closing it is not a manifest
+# change.
+#
+# docs/operations/disaster-recovery.md puts the event log's hash chain at the
+# top of what is irreplaceable: it is the audit trail, and it cannot be
+# recomputed from anything. `qip-api` opens a `ChainArchive` over whatever
+# `QIP_STORAGE_TARGET` resolves to, before it builds anything else, so that a
+# store it cannot write to stops the start-up rather than being discovered at
+# the first archived cycle. On the shipped configuration that target is
+# `memory`, and the archive it opens is one nothing survives.
+#
+# ## What a durable chain here would actually take
+#
+# Three things, and they are not separable.
+#
+#   * **A volume that outlives the pod.** The only one here is a 64Mi
+#     `emptyDir` for `/tmp`, which outlives nothing. A single
+#     PersistentVolumeClaim shared by the replicas is not the answer either:
+#     a persistent disk is `ReadWriteOnce`, so one claim pins every replica to
+#     one node and turns the zone spread above into a decoration.
+#   * **`QIP_STORAGE_TARGET=engine`, set here rather than in the config map.**
+#     `qip-fastbrain` reads the same `storage_target` key and has no volume at
+#     all, so raising the shared key raises it for a workload with nowhere to
+#     write: `StorageSettings::preflight` round-trips a value before anything
+#     serves, and the fast brain would stop at start-up. config.yaml says this
+#     in its own comment — a workload that overrides the shared key must also
+#     have somewhere to write — and edge-cell.yaml is the precedent for how,
+#     setting the literal beside its own claim.
+#   * **`QIP_STORAGE_ROOT` pointing into that volume.** This one is not
+#     optional and cannot be staged. `QIP_STORAGE_ROOT` set while the target is
+#     `memory` is an explicit refusal to start, not a warning: an operator who
+#     configured a path believes the process persists, and the binary would
+#     rather not start than hold that belief falsely. So the volume, the target
+#     and the root arrive in one commit or the API does not come up.
+#
+# Per-replica claims mean `volumeClaimTemplates`, and `volumeClaimTemplates`
+# mean this stops being a Deployment. That is the point where the change stops
+# being mechanical.
+#
+# ## A StatefulSet with an autoscaler is not a Deployment with one
+#
+# It is legal — `scaleTargetRef` takes a StatefulSet — and it is a different
+# animal.
+#
+# Every replica takes its own claim from the template and therefore keeps its
+# own chain. That is not, in itself, a distortion: the event log is per
+# process, like the rate-limit counters and the cell registry the autoscaler
+# comment above already names, so `qip-api` at six replicas already holds six
+# unrelated event logs. Making them durable preserves the shape rather than
+# inventing it.
+#
+# Nor is it the edge cell's failure, and it is worth saying why not, because
+# the two look alike. edge-cell.yaml refuses an autoscaler partly because one
+# would mint evidence volumes on a load spike and orphan them permanently on
+# the way back down. Here `maxReplicas` is 6 and a StatefulSet's ordinals are
+# stable, so the set of claims is bounded at six and ordinal 4 re-adopts its
+# own disk when it returns — `ChainArchive::open` continues whatever chain it
+# finds. Bounded and reused is not orphaned.
+#
+# What does change is the property the chain exists to have. A single chain's
+# linkage proves nothing was removed from its middle: a missing entry breaks
+# it at that point, which is the whole design. Six chains prove that of each of
+# the six, and prove nothing about a seventh having existed and been deleted —
+# because nothing durable records how many there ever were. The count is a CPU
+# threshold's decision, and scale-down-then-up leaves a chain that verifies
+# cleanly across a gap in wall-clock time that nothing in it marks. Tamper
+# evidence within a shard, none across them, and the shard count chosen by
+# load.
+#
+# `persistentVolumeClaimRetentionPolicy` would also have to be `Retain` in both
+# directions. `Retain` is already the Kubernetes default, which is the danger:
+# `whenScaled: Delete` is the tidy-looking edit somebody makes to stop unused
+# claims accumulating, and here it means a quiet afternoon deletes an audit
+# trail.
+#
+# ## The three ways out, and what each costs
+#
+#   1. **StatefulSet, keep this autoscaler.** Buys durability now. Costs the
+#      paragraph above: an audit trail sharded by load, with no record of the
+#      shard count. Also needs `.github/workflows/deploy.yml` changed in the
+#      same commit — its rollout wait is kind-qualified `deployment/qip-api`,
+#      and that file already says what happens to a workload converted to a
+#      StatefulSet without it — plus a headless governing Service for
+#      `serviceName`.
+#   2. **StatefulSet, fixed replicas, no autoscaler.** Buys one chain per
+#      known replica and a count nobody varies. Costs the only autoscaler in
+#      this repository, on the one workload whose horizontal scaling is
+#      genuinely correct — requests arrive from outside and a replica serves
+#      one. Trading real elasticity for durability, when the durability could
+#      instead be had by moving the state.
+#   3. **One writer that is not a replica.** Either the chain moves to a store
+#      several processes can share, or the archiving leaves this process for a
+#      singleton that owns it. The first is not available today:
+#      `ChainArchive` holds a process-local `Mutex` across the store write, and
+#      `open` takes the last key as its tail — two processes over one store
+#      read the same tail and write two entries claiming the same predecessor,
+#      which is a fork rather than a chain. It is the same interleaving
+#      fastbrain.yaml refuses a second replica for, and closing it is a
+#      compare-and-set in `qip-storage`, not a field here.
+#
+# ## Why this file stops at describing them
+#
+# Choosing between the three is a decision about what the audit trail has to
+# prove — whether an evidence set whose piece count was chosen by an autoscaler
+# is evidence — and that is a question for whoever answers to a regulator with
+# it, not one a manifest should settle by being edited. Option 3 is the honest
+# one and it is the same sentence the autoscaler above already reaches for the
+# rate-limit counters and the cell registry: move that state out of the
+# process. The chain is the third piece of it, and the only one where losing it
+# is irreversible rather than cosmetic.
+#
+# Until then this workload is a Deployment with an `emptyDir`, and
+# `QIP_STORAGE_TARGET` is set from the config map explicitly so that the
+# durability question is answered in the open rather than by omission.

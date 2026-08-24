@@ -100,6 +100,33 @@ spec:
       # evidence. A cell killed with orders live leaves the book holding risk
       # nobody is watching.
       terminationGracePeriodSeconds: 60
+      # The cell runs in its own region or it does not run.
+      #
+      # This is one line against the quietest failure in the whole deployment.
+      # `CELL_REGION` is substituted into `QIP_CELL_REGION` below, where it is
+      # a string the cell reports about itself; nothing until now made it a
+      # statement about where the pods are. The Terraform module creates the
+      # cell's subnet, identity and firewall rules in that region and creates
+      # no compute, and a GKE node pool belongs to its cluster's location — so
+      # a cell whose region is not this cluster's region has nowhere in this
+      # cluster to correctly be.
+      #
+      # Without this selector it lands anyway, on the central plane's own
+      # nodes, and comes up healthy: it serves `/health`, reports
+      # `QIP_CELL_REGION` as the region it is not in, and the central plane
+      # records a cell next to a venue that is a continent away. A cell's
+      # entire argument is source-adjacency, and this is that argument being
+      # false while every indicator says it is true.
+      #
+      # `topology.kubernetes.io/region` is set on every node by the cloud
+      # provider, so this needs no node-pool label and no new Terraform. For a
+      # cell whose region is the cluster's region — `london-1` in the
+      # `europe-west2` clusters today — it changes nothing. For any other, the
+      # pods stay `Pending`, which is the true state said out loud: that cell
+      # has no nodes, and docs/operations/multi-region.md is what it would
+      # take to give it some.
+      nodeSelector:
+        topology.kubernetes.io/region: CELL_REGION
       # Two replicas of a latency-sensitive workload on the same node share a
       # failure and a network card, and gain nothing.
       affinity:
@@ -277,6 +304,32 @@ spec:
           qip.io/cell: CELL_ID
       spec:
         accessModes: ["ReadWriteOnce"]
+        # Named rather than left to the cluster's default class, and the
+        # reason is the snapshot rather than the disk.
+        #
+        # A volume snapshot is taken by the same CSI driver that provisioned
+        # the volume — a snapshot class naming a different one fails rather
+        # than falling back. Left to the default, what provisions this claim is
+        # whatever class the cluster happens to carry, which on an older
+        # cluster is the in-tree `kubernetes.io/gce-pd` provisioner. A journal
+        # on one of those cannot be snapshotted by any CSI snapshot class at
+        # all, and the way that is discovered is a backup schedule that has
+        # been reporting success against volumes it never touched.
+        #
+        # base/journal-storage.yaml is the class, and it also fixes the second
+        # half of what `Retain` below does not cover: the retention policy
+        # keeps the *claim*, and the class is what keeps the *disk* when the
+        # claim is finally deleted.
+        #
+        # Two things to know before applying this to a cell that already
+        # exists. `volumeClaimTemplates` is immutable on a live StatefulSet, so
+        # this is not an edit the API server will accept — it needs
+        # `kubectl delete statefulset --cascade=orphan` and a re-apply, which
+        # leaves the pods and the existing claims running and untouched. And
+        # the existing claims keep the class they were bound with: only new
+        # replicas take this one, so an established cell has to be migrated
+        # by snapshot rather than by this line.
+        storageClassName: qip-journal
         resources:
           requests:
             storage: 16Gi

@@ -74,6 +74,123 @@ a plausible sequence.
 4. The cell will not trade until it holds a verified capital envelope. If the envelope
    key is unavailable, the cell refuses to start — that is the design, not a fault.
 
+## Snapshotting a cell journal
+
+The Kubernetes half of this is in `infrastructure/kubernetes/base/journal-storage.yaml`,
+and it is two objects of which only one is live.
+
+**Live: a `StorageClass` named `qip-journal`**, applied by the deploy pipeline,
+named by `edge-cell.yaml`'s claim template. It changes two things about a
+journal volume and nothing else:
+
+* `reclaimPolicy: Retain`, which is what makes the word "retained" cover the
+  disk and not only the claim. The retention policy on the StatefulSet stops
+  Kubernetes deleting the *claim*; the class is what stops the disk going with
+  it when somebody finally does delete the claim, which is the last step of
+  taking a cell out.
+* `provisioner: pd.csi.storage.gke.io`, which is what makes the volume
+  snapshottable at all. A snapshot is taken by the driver that provisioned the
+  disk, so a journal left to an older cluster's in-tree default class cannot be
+  snapshotted by any CSI snapshot class — and the way that is discovered is a
+  schedule reporting success against volumes it never touched.
+
+**Not live: a `VolumeSnapshotClass`**, in the same file, commented out. It is a
+CRD, the cluster module declares no CSI addon, and the deploy pipeline runs
+`kubectl apply --server-side --dry-run=server` over the whole rendered
+directory — so an unknown kind fails that gate for every manifest, not just its
+own. The preconditions for uncommenting it are listed where it is.
+
+### Before the first cell, not before the first snapshot
+
+```sh
+kubectl get csidriver pd.csi.storage.gke.io
+kubectl get crd volumesnapshotclasses.snapshot.storage.k8s.io
+```
+
+If the first is empty the class above provisions nothing either, the cell's
+journal claim sits `Pending`, and the cell never starts. That is the correct
+failure and it is much easier to read here than at 3am.
+
+### Attaching the schedule
+
+A Compute Engine snapshot schedule is a resource policy, and a resource policy
+attaches to a *disk*. The disks under these claims are named `pvc-<uuid>` and
+are created when a cell's pod is first scheduled — after any `terraform apply`,
+with a name nothing could have predicted. So the schedule is created by
+Terraform and attached by hand, once per cell, after its pods have run:
+
+```sh
+gcloud compute disks list --filter="labels.qip-journal=true" \
+  --format="value(name,zone)"
+
+gcloud compute disks add-resource-policies <disk> --zone <zone> \
+  --resource-policies <schedule>
+```
+
+Two replicas per cell means two disks per cell, and the claim behind each is
+named `journal-qip-edge-<cell>-<ordinal>` — the claim template's name, the
+StatefulSet's name, the ordinal. `kubectl get pvc -l qip.io/cell=<cell>` lists
+them, and `kubectl get pv` maps each to the disk the commands above want.
+
+**What this assumes about the Terraform side.** That the schedule is a
+`google_compute_resource_policy`, and that the agreed handle between the two
+halves is the label `qip-journal=true` that the StorageClass stamps on every
+journal disk — not a disk name, which cannot exist before the disk does. If the
+Terraform half instead expects to name disks it created itself, then the
+journal has to become a statically provisioned volume and the claim template
+above is the wrong shape. Check that the two agree before relying on either.
+
+## Restoring a cell journal
+
+Not run against a real project. It is written from the configuration, and the
+first person to follow it should expect to correct it.
+
+The cell must be stopped first. A pod holding the claim is a pod writing to it,
+and 60 seconds of termination grace is there so a cell cancels its resting
+orders before it goes.
+
+```sh
+kubectl scale statefulset qip-edge-<cell> --namespace qip --replicas=0
+```
+
+**From a Compute Engine snapshot** — the path the schedule above produces:
+
+1. Create a disk from the snapshot, in a zone the cell can schedule into. The
+   cell is pinned to its region by a node selector, and the disk must be zonal
+   within it.
+2. Delete the claim that the restored disk replaces
+   (`journal-qip-edge-<cell>-<ordinal>`). Under `qip-journal` this leaves the
+   old PersistentVolume `Released` rather than deleting it — deliberately, so a
+   restore that turns out to be the wrong snapshot has not destroyed the thing
+   it was replacing.
+3. Create a PersistentVolume over the restored disk with a
+   `csi` source naming `pd.csi.storage.gke.io`, and a claim of the same name
+   bound to it.
+4. Scale the StatefulSet back up. The ordinal takes the claim by name.
+
+**From a `VolumeSnapshot`** — once the snapshot class is uncommented, steps 1
+to 3 collapse into creating the claim with a `dataSource` naming the snapshot,
+under the name the ordinal expects, before scaling back up.
+
+Both paths restore into the cluster the cell already runs in. Restoring into a
+*different* region is a different exercise and a much larger one — Compute
+Engine snapshots cross regions, and nothing else here does. See
+[multi-region](multi-region.md) for what the second region would have to be
+before there were anywhere to restore to.
+
+Then, and this is the step that is not optional:
+
+5. **Verify before trusting it.** `verify_continuity` proves the journal is
+   intact across restarts and `verify_against` proves this segment follows the
+   digest the centre last saw. A restore from a snapshot taken mid-write is
+   exactly what these exist to catch. The same rule as the chain applies: if
+   verification fails, do not let the cell append to it — restore an earlier
+   snapshot and verify that.
+
+6. The cell still rebuilds its books from the feed and still will not trade
+   until it holds a verified capital envelope. Restoring the journal restores
+   the record of what it did, not the state it was in.
+
 ## Why positions are reconciled and never restored
 
 A backup of the platform's position book is, by definition, a picture of what the
