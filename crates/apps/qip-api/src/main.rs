@@ -63,13 +63,40 @@ fn run() -> Result<()> {
 
     let config = PlatformConfig::default().with_live_ceiling(ceiling);
     let context = qip_core::Context::new(clock.clone(), config.seed);
-    let platform = Platform::new(
+    let mut platform = Platform::new(
         config,
         context,
         Telemetry::new("qip-api", clock.clone()),
         Universe::new(),
         LimitSet::conservative_default(),
     )?;
+
+    // The trust root, before anything is served: install the operator's
+    // envelope key when the deployment provides one, and refuse to run
+    // live-capable on the seed-derived default. This process is the one that
+    // dispatches envelopes down the mesh, so the key installed here is the
+    // key every cell verifies those grants against. See `trust.rs` for why a
+    // refusal and not a warning.
+    let provenance = qip_api::trust::harden_central(
+        &mut platform,
+        std::env::var(qip_api::trust::ENVELOPE_KEY_VARIABLE)
+            .ok()
+            .as_deref(),
+    )
+    .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+
+    // The mesh backbone, where the deployment names cells to serve. Absent
+    // configuration means the routes are absent: no listener binds, and the
+    // banner says the deltas have nowhere to land here.
+    let mesh_settings = qip_api::mesh::MeshSettings::from_env()?;
+    let mesh = match &mesh_settings {
+        Some(settings) => Some(Arc::new(Mutex::new(qip_api::mesh::MeshBackbone::open(
+            settings,
+            storage.key_value("mesh")?,
+            clock.clone(),
+        )?))),
+        None => None,
+    };
 
     // Credentials from the environment. Nothing is defaulted: an API that
     // starts unauthenticated because a variable was missing is worse than one
@@ -113,16 +140,18 @@ fn run() -> Result<()> {
     // disagree about which cells have gone quiet.
     let cells = Arc::new(CellRegistry::default());
 
-    let api = Arc::new(
-        Api::new(
-            platform.clone(),
-            authenticator.clone(),
-            rate_limiter.clone(),
-            clock.clone(),
-        )
-        .with_cells(cells.clone())
-        .with_archive(archive.clone()),
-    );
+    let mut api = Api::new(
+        platform.clone(),
+        authenticator.clone(),
+        rate_limiter.clone(),
+        clock.clone(),
+    )
+    .with_cells(cells.clone())
+    .with_archive(archive.clone());
+    if let Some(mesh) = &mesh {
+        api = api.with_mesh(mesh.clone());
+    }
+    let api = Arc::new(api);
     let console = Arc::new(Console::new(
         platform.clone(),
         cells,
@@ -163,12 +192,56 @@ fn run() -> Result<()> {
         "  console:          read-only; it can trip the kill switch and has no path that \
          clears one"
     );
+    println!("  capital trust:    {}", provenance.describe());
+    match &mesh {
+        Some(mesh) => {
+            // The addresses come from the bound sockets rather than from the
+            // configuration, so what the banner names is what is actually
+            // listening — including a port the operating system chose.
+            let Ok(mesh) = mesh.lock() else {
+                return Err(Error::invalid(
+                    "the mesh backbone is in an inconsistent state before serving began",
+                ));
+            };
+            println!(
+                "  mesh:             serving {} cell(s); deltas drain and capital dispatches \
+                 on each POST /cycle",
+                mesh.listeners()
+                    .iter()
+                    .filter(|listener| listener.role == "cells")
+                    .count()
+            );
+            for listener in mesh.listeners() {
+                match listener.role {
+                    "cells" => println!(
+                        "                    {} publishes deltas and polls capital at {} \
+                         (its QIP_MESH_PEER)",
+                        listener.cell, listener.address
+                    ),
+                    _ => println!(
+                        "                    {} capital feed on loopback {} (internal)",
+                        listener.cell, listener.address
+                    ),
+                }
+            }
+        }
+        None => println!(
+            "  mesh:             not served ({} is not set); cells pointed here are \
+             partitioned and stop when their envelopes expire",
+            qip_api::mesh::CELLS_VARIABLE
+        ),
+    }
     for line in storage.banner_lines(
-        &["the event log's hash chain, at each completed cycle"],
+        &[
+            "the event log's hash chain, at each completed cycle",
+            "undelivered capital envelopes in the mesh spool, and their dead letters \
+             (when the mesh is served)",
+        ],
         &[
             "the in-memory event index and everything queried from it",
             "rate-limit counters",
             "which cells have reported and when",
+            "the mesh delta inbox and its absorption counters",
         ],
     ) {
         println!("{line}");

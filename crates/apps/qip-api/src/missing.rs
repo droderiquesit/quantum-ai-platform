@@ -88,3 +88,10 @@ pub const NO_TRANSPORT_HEALTH: &str = "no transport reports its health to this \
 /// No cluster membership is reported.
 pub const NO_CLUSTER_HEALTH: &str = "no cluster membership or mesh health is \
     reported to this process. It runs as a single node and knows of no others.";
+
+/// The mesh backbone is not configured in this process.
+pub const MESH_NOT_SERVED: &str = "this process serves no mesh. QIP_MESH_CELLS \
+    is not set, so no cell has an address to publish state deltas to or to poll \
+    capital from, and nothing here drains an inbox or dispatches an envelope. \
+    Cells pointed at this deployment are effectively partitioned: they keep \
+    trading inside the envelopes they already hold and stop when those expire.";

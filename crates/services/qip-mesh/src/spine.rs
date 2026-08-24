@@ -121,7 +121,14 @@ impl EventBody for CapitalGrantFrame {
 /// they are kept in step by the round-trip test rather than by the compiler,
 /// and the test asserts the cell recognises the duplicate rather than asserting
 /// the strings match, because recognition is the property that matters.
-fn grant_key(envelope: &CapitalEnvelope) -> String {
+///
+/// Public because the composition root needs the same identity: a serving
+/// binary that re-dispatches the plane's envelopes each cycle must recognise
+/// a grant it has already handed to [`CapitalDispatcher::dispatch`], or every
+/// cycle would push the same envelope into the spool again. Deriving the key
+/// here rather than there keeps one declaration of what a grant's identity
+/// *is* on the centre's side of the wire.
+pub fn grant_key(envelope: &CapitalEnvelope) -> String {
     format!(
         "{}|{}|{}",
         envelope.cell(),

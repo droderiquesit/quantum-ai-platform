@@ -28,7 +28,9 @@
 //! it is not a data-mesh port at all but the central plane's half of ADR 0011's
 //! *network* mesh — the wire that carries state deltas up from the regional
 //! cells and signed capital envelopes back down. It shares a word with the rest
-//! of this crate and nothing else.
+//! of this crate and nothing else. [`delta`] sits beside it and decodes what
+//! the spine absorbed, keeping the delta's absolute and incremental halves in
+//! separate types so a receiver cannot accumulate the one it must replace.
 //!
 //! [`catalog::Catalog`] ties them together — which datasets exist, what
 //! produced what, what each may be used for (in
@@ -38,6 +40,7 @@
 pub mod adapters;
 pub mod backing;
 pub mod catalog;
+pub mod delta;
 pub mod ports;
 pub mod provider;
 pub mod spine;
@@ -51,6 +54,10 @@ pub use adapters::{
 };
 pub use backing::{FileBacking, MemoryBacking, StateBacking};
 pub use catalog::{Catalog, DatasetLineage, DatasetRegistration, LineageBreak, QualityState};
+pub use delta::{
+    CellInterval, CellStanding, DecodedCellDelta, DeltaOrder, DeltaRefusal, StrategyStanding,
+    decode_cell_delta,
+};
 pub use ports::{
     Aggregation, AnalyticalStore, ColumnFilter, Edge, EvidenceReceipt, EvidenceStore, GraphStore,
     HotSeries, Lakehouse, MasterData, Row, TableVersion,
@@ -59,5 +66,5 @@ pub use provider::{MeshPort, MeshProvider, MeshTarget};
 pub use spine::{
     CELL_DELTA_TOPIC, CapitalDispatch, CapitalDispatcher, CapitalGrantFrame, CellDeltaReceiver,
     CellDeltaSink, DispatcherConfig, DrainHalt, DrainReport, HeldReason, ReceiverStats,
-    RecoveryReport,
+    RecoveryReport, grant_key,
 };

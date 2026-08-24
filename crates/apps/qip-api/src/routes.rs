@@ -85,6 +85,13 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         method: Method::Get,
+        pattern: "/mesh",
+        required_role: Role::Viewer,
+        summary: "the mesh backbone: cells served, deltas absorbed, envelopes dispatched, inbox depth",
+        success: 200,
+    },
+    Route {
+        method: Method::Get,
         pattern: "/portfolio",
         required_role: Role::Viewer,
         summary: "positions, exposures and equity",
@@ -286,6 +293,15 @@ pub struct Api {
     /// directly and have decided in their own code, rather than by
     /// configuration, that nothing should persist.
     archive: Option<Arc<ChainArchive>>,
+    /// The mesh backbone's central half, where one is configured.
+    ///
+    /// `None` means this process serves no mesh, and `/mesh` says so in the
+    /// words of `crate::missing` rather than with an empty status. Behind a
+    /// mutex of its own because the drain needs the platform and the mesh
+    /// together while dispatch must run with the platform lock released —
+    /// the lock order is always platform first, then mesh, and no path takes
+    /// them the other way around.
+    mesh: Option<Arc<Mutex<crate::mesh::MeshBackbone>>>,
 }
 
 impl std::fmt::Debug for Api {
@@ -311,7 +327,19 @@ impl Api {
             clock,
             cells: Arc::new(CellRegistry::default()),
             archive: None,
+            mesh: None,
         }
+    }
+
+    /// Serve the mesh backbone this process assembled.
+    ///
+    /// With it, `POST /cycle` drains the cell-delta inbox into the platform
+    /// and dispatches the plane's capital envelopes after each cycle, and
+    /// `/mesh` reports what the backbone has done. Without it the API still
+    /// serves everything else and says honestly that no mesh is served.
+    pub fn with_mesh(mut self, mesh: Arc<Mutex<crate::mesh::MeshBackbone>>) -> Self {
+        self.mesh = Some(mesh);
+        self
     }
 
     /// Read cell reports from a registry shared with the operator console.
@@ -334,6 +362,22 @@ impl Api {
     pub fn with_archive(mut self, archive: Arc<ChainArchive>) -> Self {
         self.archive = Some(archive);
         self
+    }
+
+    /// The mesh backbone's status as JSON, `None` when none is configured.
+    ///
+    /// A poisoned backbone lock still answers — with the fact of its own
+    /// inconsistency — because `/mesh` claiming "not served" about a mesh
+    /// that is bound and broken would send an operator to the wrong page.
+    fn mesh_status_json(&self) -> Option<String> {
+        let mesh = self.mesh.as_ref()?;
+        Some(match mesh.lock() {
+            Ok(mesh) => serde_json::to_string(&mesh.status()).unwrap_or_else(|error| {
+                format!(r#"{{"error":{}}}"#, json::string(&error.to_string()))
+            }),
+            Err(_) => r#"{"served":true,"error":"the mesh backbone is in an inconsistent state"}"#
+                .to_string(),
+        })
     }
 
     /// Find the route matching a request, if any.
@@ -360,8 +404,16 @@ impl Api {
         match (route.method, route.pattern) {
             (Method::Get, "/health") => Response::json(200, health(&platform)),
             (Method::Get, "/system/status") => {
-                Response::json(200, status(&platform, self.archive.as_deref()))
+                let mesh = self.mesh_status_json();
+                Response::json(
+                    200,
+                    status(&platform, self.archive.as_deref(), mesh.as_deref()),
+                )
             }
+            (Method::Get, "/mesh") => match self.mesh_status_json() {
+                Some(mesh) => Response::json(200, mesh),
+                None => Response::json(200, unavailable("mesh", crate::missing::MESH_NOT_SERVED)),
+            },
             (Method::Get, "/system/metrics") => Response::json(200, metrics(&platform)),
             (Method::Get, "/system/governance") => Response::json(200, governance(&platform, now)),
             (Method::Get, "/portfolio") => Response::json(200, portfolio(&platform)),
@@ -422,7 +474,27 @@ impl Api {
                     // and one that fails silently is a worse one.
                     eprintln!("qip-api: the event chain could not be archived: {reason}");
                 }
-                Response::json(202, cycle_report(&report, archived.as_ref()))
+                // The mesh backbone rides this same rhythm: drain the cell
+                // deltas into the platform while its lock is held, snapshot
+                // the plane's live envelopes, then release the lock before
+                // any dispatch socket is touched — a retry ladder must never
+                // run under the lock every other request waits on.
+                let mesh = self.mesh.as_ref().map(|mesh| {
+                    let Ok(mut mesh) = mesh.lock() else {
+                        drop(platform);
+                        return r#"{"error":"the mesh backbone is in an inconsistent state"}"#
+                            .to_string();
+                    };
+                    let drained = mesh.drain_into(&mut platform, self.cells.as_ref(), now);
+                    let pending = crate::mesh::pending_capital(&platform, now);
+                    drop(platform);
+                    let dispatched = mesh.dispatch(pending, now);
+                    crate::mesh::exchange_json(&drained, &dispatched)
+                });
+                Response::json(
+                    202,
+                    cycle_report(&report, archived.as_ref(), mesh.as_deref()),
+                )
             }
             (Method::Post, "/kill-switch") => {
                 let reason = request
@@ -600,10 +672,10 @@ fn health(platform: &Platform) -> String {
 /// event count has no way to tell it from a deployment that is keeping none of
 /// it. `archived` is `null` when nothing is configured, rather than zero — a
 /// zero would read as "configured and empty".
-fn status(platform: &Platform, archive: Option<&ChainArchive>) -> String {
+fn status(platform: &Platform, archive: Option<&ChainArchive>, mesh: Option<&str>) -> String {
     let switch = platform.autonomy().kill_switch();
     format!(
-        r#"{{"autonomy":{},"configured_autonomy":{},"ceiling":{},"live_capable":{},"halted":{},"halted_scopes":[{}],"cycles":{},"events":{},"archived":{}}}"#,
+        r#"{{"autonomy":{},"configured_autonomy":{},"ceiling":{},"live_capable":{},"halted":{},"halted_scopes":[{}],"cycles":{},"events":{},"archived":{},"mesh":{}}}"#,
         json::string(platform.autonomy().level().as_str()),
         json::string(platform.autonomy().configured_level().as_str()),
         json::string(platform.autonomy().ceiling().as_str()),
@@ -620,6 +692,13 @@ fn status(platform: &Platform, archive: Option<&ChainArchive>) -> String {
         match archive {
             Some(archive) => archive.records_archived().to_string(),
             None => "null".to_string(),
+        },
+        // The status page states the truth about the backbone either way: a
+        // served mesh reports its counters, and an unserved one says the
+        // deltas have nowhere to land rather than saying nothing.
+        match mesh {
+            Some(mesh) => mesh.to_string(),
+            None => r#"{"served":false}"#.to_string(),
         }
     )
 }
@@ -806,6 +885,7 @@ fn autonomy(platform: &Platform) -> String {
 fn cycle_report(
     report: &qip_kernel::CycleReport,
     archived: Option<&std::result::Result<usize, String>>,
+    mesh: Option<&str>,
 ) -> String {
     let stages: Vec<String> = report
         .stages
@@ -838,14 +918,21 @@ fn cycle_report(
             json::string(reason)
         ),
     };
+    // Absent rather than null when no mesh is configured: an absent key says
+    // the process has no mesh, while `"mesh":null` would read as a mesh that
+    // did nothing this cycle.
+    let mesh = mesh
+        .map(|exchange| format!(r#","mesh":{exchange}"#))
+        .unwrap_or_default();
     format!(
-        r#"{{"cycle":{},"correlation_id":{},"halted":{},"traversed_every_stage":{},{},"stages":[{}]}}"#,
+        r#"{{"cycle":{},"correlation_id":{},"halted":{},"traversed_every_stage":{},{},"stages":[{}]{}}}"#,
         report.cycle,
         json::string(report.correlation_id.as_str()),
         report.halted,
         report.traversed_every_stage(),
         archived,
-        stages.join(",")
+        stages.join(","),
+        mesh
     )
 }
 

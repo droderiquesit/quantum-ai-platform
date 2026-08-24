@@ -22,6 +22,20 @@ qip-risk-engine.workspace = true
 qip-opportunity-engine.workspace = true
 qip-kernel.workspace = true
 qip-web.workspace = true
+# The mesh backbone's central half: the API is the composition root that
+# serves the spine's endpoints, drains the delta inbox into the platform and
+# dispatches capital envelopes over the durable spool.
+qip-contracts.workspace = true
+qip-mesh.workspace = true
+qip-transport.workspace = true
+
+[dev-dependencies]
+# The tests publish genuine cell deltas and verify dispatched grants with the
+# real cell-side types, so the API's decode is proven against the payloads an
+# edge cell actually writes rather than against a mirror this side also
+# maintains. Dev-only: the serving binary never names the edge crate — the
+# composition root's decode goes through `qip_mesh::delta`.
+qip-edge.workspace = true
 
 [lints]
 workspace = true

@@ -1,0 +1,1140 @@
+//! The mesh backbone's central half, composed into the serving API.
+//!
+//! `qip_mesh::spine` built the centre's receiver and dispatcher and
+//! `qip-edge-node` built the cell's uplink and downlink, and for a long time
+//! the two met only in an acceptance test: a deployed cell published state
+//! deltas at a peer where nothing listened, and no recall or reconciliation
+//! halt could ever fire because no serving binary drained the inbox they
+//! arrive on. This module is the missing composition root. The API serves the
+//! wire, drains the deltas into `qip_kernel::Platform::ingest_cell_report`,
+//! and dispatches the plane's capital envelopes back down over the durable
+//! spool.
+//!
+//! # Why every cell gets its own listener
+//!
+//! Two facts of the transport force the topology, and both are worth knowing
+//! before changing it:
+//!
+//! * A mesh poll is a destructive read with a single cursor. The inbox
+//!   discards everything at or below the caller's acknowledged position, so
+//!   two cells polling one capital inbox would discard each other's grants —
+//!   the second cell simply never receives capital, silently.
+//! * A publisher and a subscriber address a peer by base URL and then
+//!   *replace* the path (`Url::with_path`), so a path prefix cannot carry the
+//!   cell's identity, and nothing else on the wire does either.
+//!
+//! The address is therefore the identity: each configured cell gets one
+//! listener at the address its `QIP_MESH_PEER` points at. On it, `publish`
+//! feeds the shared delta inbox (deltas name their cell in the payload, so
+//! sharing is safe) and `poll` reads that cell's own capital inbox (which is
+//! exactly not safe to share). A second, unconfigurable listener per cell
+//! binds a loopback port for the [`CapitalDispatcher`] to publish grants
+//! into — the dispatcher speaks the real socket protocol like everything
+//! else in this workspace, and keeping its ingress off the cell-facing
+//! address means no remote peer can inject frames into a capital inbox.
+//!
+//! # The rhythm
+//!
+//! Nothing here runs a thread of its own beyond the listeners. The drain and
+//! the dispatch ride the API's existing rhythm — `POST /cycle` — with
+//! bounded work per pass: at most [`DRAIN_LIMIT`] deltas absorbed, and every
+//! socket the dispatcher touches is a loopback with explicit connect, read
+//! and write timeouts. A delta published between cycles waits in a bounded
+//! inbox; when the inbox fills, the transport's own backpressure answers 503
+//! and the cell's breaker backs off, which is the designed behaviour of the
+//! wire and not an error in it.
+//!
+//! # Idempotency, in layers
+//!
+//! Delivery is at-least-once in both directions, so every layer here absorbs
+//! a duplicate rather than trusting the one below to have caught it: the
+//! inbox recognises a retried delta within its dedup window, the receiver
+//! remembers absorbed keys past that window, and a grant is dispatched once
+//! per [`qip_mesh::spine::grant_key`] with the cell's own applied-grant
+//! memory as the final backstop. The integration tests prove the property at
+//! this seam — a delta delivered twice is one ingestion.
+
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration as StdDuration;
+
+use qip_contracts::capital::CapitalEnvelope;
+use qip_core::Decimal;
+use qip_core::error::{Error, Result};
+use qip_core::time::{Duration, Timestamp};
+use qip_core::{Clock, hash};
+use qip_events::AnyEvent;
+use qip_kernel::Platform;
+use qip_kernel::central::{CellReport, ReconciliationBreak};
+use qip_mesh::delta::{CellStanding, decode_cell_delta};
+use qip_mesh::spine::{
+    CapitalDispatch, CapitalDispatcher, CellDeltaReceiver, CellDeltaSink, DispatcherConfig,
+    ReceiverStats, grant_key,
+};
+use qip_storage::kv::KeyValueStore;
+use qip_transport::mesh::{HEALTH_PATH, POLL_PATH, PUBLISH_PATH};
+use qip_transport::retry::ThreadSleeper;
+use qip_transport::spool::DurableDeadLetters;
+use qip_transport::{ClientLimits, InboxHealth, MeshConfig, MeshEndpoint, MeshInbox, RetryPolicy};
+use serde::Serialize;
+
+use crate::cells::CellRegistry;
+use crate::http::{Handler, Request, Response, Server, ServerLimits};
+
+/// The gate. Set it to `cell=host:port[,cell=host:port…]` and the mesh is
+/// served; leave it unset and no mesh route exists in this process. Each
+/// address is the value that cell's `QIP_MESH_PEER` must carry.
+pub const CELLS_VARIABLE: &str = "QIP_MESH_CELLS";
+/// Frames a mesh inbox holds before the transport's backpressure answers 503.
+pub const INBOX_CAPACITY_VARIABLE: &str = "QIP_MESH_INBOX_CAPACITY";
+/// Undelivered capital envelopes one cell's durable spool may hold.
+pub const SPOOL_CAPACITY_VARIABLE: &str = "QIP_MESH_SPOOL_CAPACITY";
+
+/// Deltas absorbed per cycle. A bound because the drain runs inside a
+/// request: a backlog is worked off across cycles rather than stalling one
+/// request for as long as the backlog is deep.
+pub const DRAIN_LIMIT: usize = 256;
+
+/// Dispatched grant identities remembered per cell. Past the bound the
+/// oldest is forgotten and a still-live envelope would be dispatched again —
+/// which the spool, the inbox window and the cell's own applied-grant memory
+/// each absorb as the duplicate it is.
+const DISPATCH_MEMORY: usize = 4_096;
+
+fn default_inbox_capacity() -> usize {
+    1_024
+}
+
+fn default_spool_capacity() -> usize {
+    1_024
+}
+
+// --- configuration ------------------------------------------------------
+
+/// One cell and the address this process serves it at.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CellAddress {
+    pub cell: String,
+    pub address: String,
+}
+
+/// What the environment says the mesh should be.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MeshSettings {
+    pub cells: Vec<CellAddress>,
+    pub inbox_capacity: usize,
+    pub spool_capacity: usize,
+}
+
+impl MeshSettings {
+    /// Read the mesh configuration, or `None` when this process serves no
+    /// mesh. Absence is not a misconfiguration: an API can honestly run
+    /// without being anyone's peer, and the banner says so out loud.
+    pub fn from_env() -> Result<Option<Self>> {
+        let Some(cells) = std::env::var(CELLS_VARIABLE)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+        else {
+            return Ok(None);
+        };
+        Self::parse(
+            &cells,
+            std::env::var(INBOX_CAPACITY_VARIABLE).ok().as_deref(),
+            std::env::var(SPOOL_CAPACITY_VARIABLE).ok().as_deref(),
+        )
+        .map(Some)
+    }
+
+    /// The parse behind [`Self::from_env`], separated so a test can hand it
+    /// strings without touching the process environment.
+    pub fn parse(
+        cells: &str,
+        inbox_capacity: Option<&str>,
+        spool_capacity: Option<&str>,
+    ) -> Result<Self> {
+        let mut parsed = Vec::new();
+        let mut names = BTreeSet::new();
+        let mut addresses = BTreeSet::new();
+        for entry in cells.split(',') {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                continue;
+            }
+            let Some((cell, address)) = entry.split_once('=') else {
+                return Err(Error::invalid(format!(
+                    "configuration: {CELLS_VARIABLE} entry `{entry}` is not `cell=host:port`; \
+                     the address is the cell's identity on this transport, so it cannot be \
+                     left to a default"
+                )));
+            };
+            let cell = cell.trim();
+            let address = address.trim();
+            if cell.is_empty() || address.is_empty() {
+                return Err(Error::invalid(format!(
+                    "configuration: {CELLS_VARIABLE} entry `{entry}` names an empty cell or \
+                     address"
+                )));
+            }
+            if !names.insert(cell.to_string()) {
+                return Err(Error::invalid(format!(
+                    "configuration: {CELLS_VARIABLE} names {cell} twice; two lanes for one \
+                     cell would each claim the same capital spool"
+                )));
+            }
+            if !addresses.insert(address.to_string()) {
+                return Err(Error::invalid(format!(
+                    "configuration: {CELLS_VARIABLE} reuses {address}; the address is the \
+                     cell's identity, so two cells on one address are one cell with two names"
+                )));
+            }
+            parsed.push(CellAddress {
+                cell: cell.to_string(),
+                address: address.to_string(),
+            });
+        }
+        if parsed.is_empty() {
+            return Err(Error::invalid(format!(
+                "configuration: {CELLS_VARIABLE} is set and names no cell; unset it to serve \
+                 no mesh, which is a decision, rather than an empty list, which is a typo"
+            )));
+        }
+        Ok(Self {
+            cells: parsed,
+            inbox_capacity: parse_capacity(INBOX_CAPACITY_VARIABLE, inbox_capacity)?
+                .unwrap_or_else(default_inbox_capacity),
+            spool_capacity: parse_capacity(SPOOL_CAPACITY_VARIABLE, spool_capacity)?
+                .unwrap_or_else(default_spool_capacity),
+        })
+    }
+}
+
+fn parse_capacity(variable: &str, value: Option<&str>) -> Result<Option<usize>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let parsed: usize = value.trim().parse().map_err(|_| {
+        Error::invalid(format!(
+            "configuration: {variable} is not a number: {value}"
+        ))
+    })?;
+    if parsed == 0 {
+        return Err(Error::invalid(format!(
+            "configuration: {variable} is zero, which does not disable the mesh — unset \
+             {CELLS_VARIABLE} for that — it refuses every message while looking configured"
+        )));
+    }
+    Ok(Some(parsed))
+}
+
+/// A stable per-cell seed from the cell's own name, mirroring the edge
+/// node's derivation: nine dispatchers that all drew the same jitter would
+/// retry in lockstep, and a configured seed per cell would be nine settings
+/// nobody rotates.
+fn seed_from(cell: &str) -> u64 {
+    let digest = hash::sha256_hex(cell.as_bytes());
+    u64::from_str_radix(digest.get(..16).unwrap_or("0"), 16).unwrap_or(0)
+}
+
+/// Client limits for the dispatcher's loopback publishes. Tight because the
+/// peer is this process: a send that needs longer than this is not a slow
+/// network, it is this process wedged, and the spool keeps the envelope.
+fn dispatch_limits() -> ClientLimits {
+    ClientLimits {
+        connect_timeout: StdDuration::from_millis(500),
+        read_timeout: StdDuration::from_secs(2),
+        write_timeout: StdDuration::from_secs(1),
+        ..ClientLimits::default()
+    }
+}
+
+/// A short ladder for the same reason: the entry is persisted before the
+/// first attempt, so giving up quickly costs a redelivery on a later cycle
+/// rather than a lost instruction — while a long ladder would hold the
+/// `POST /cycle` request that drives it.
+fn dispatch_retry() -> RetryPolicy {
+    RetryPolicy {
+        max_attempts: 3,
+        initial_backoff: Duration::from_millis(50),
+        max_backoff: Duration::from_millis(400),
+        multiplier: 2,
+        jitter_basis_points: 2_500,
+    }
+}
+
+fn mesh_server_limits() -> ServerLimits {
+    ServerLimits {
+        max_body: 1024 * 1024,
+        read_timeout: StdDuration::from_secs(5),
+        write_timeout: StdDuration::from_secs(5),
+        max_concurrent: 16,
+        ..ServerLimits::default()
+    }
+}
+
+// --- the wire, served ---------------------------------------------------
+
+/// The handler on a cell's configured address.
+///
+/// `publish` lands in the shared delta inbox — a delta names its cell in the
+/// payload, so one inbox serves all publishers and the receiver files each
+/// frame under the cell it claims. `poll` reads this cell's own capital
+/// inbox, which is single-consumer by the transport's cursor semantics and
+/// is why this handler exists per cell rather than once.
+#[derive(Debug)]
+struct CellFacing {
+    cell: String,
+    deltas: MeshEndpoint,
+    capital: MeshEndpoint,
+}
+
+impl Handler for CellFacing {
+    fn handle(&self, request: &Request) -> Response {
+        let Some(method) = qip_transport::Method::parse(request.method.as_str()) else {
+            return Response::json(405, r#"{"error":"the mesh endpoint knows no such method"}"#);
+        };
+        match request.path.as_str() {
+            PUBLISH_PATH => wire(self.deltas.handle(method, PUBLISH_PATH, &request.body)),
+            POLL_PATH => wire(self.capital.handle(method, POLL_PATH, &request.body)),
+            // Composed rather than one inbox's health, because a probe of
+            // this address is asking about the lane and the lane is both
+            // directions.
+            HEALTH_PATH => Response::json(
+                200,
+                format!(
+                    r#"{{"cell":{},"deltas":{},"capital":{}}}"#,
+                    crate::json::string(&self.cell),
+                    health_json(&self.deltas.inbox().health()),
+                    health_json(&self.capital.inbox().health()),
+                ),
+            ),
+            other => Response::json(
+                404,
+                format!(r#"{{"error":"{other} is not a mesh endpoint"}}"#),
+            ),
+        }
+    }
+}
+
+/// The handler on a cell's loopback feed address, where the dispatcher
+/// publishes grants into that cell's capital inbox. It answers `publish` and
+/// nothing else: this address exists so capital ingress is not reachable
+/// from the cell-facing one, and serving anything more here would erode
+/// exactly that.
+#[derive(Debug)]
+struct CapitalFeed {
+    capital: MeshEndpoint,
+}
+
+impl Handler for CapitalFeed {
+    fn handle(&self, request: &Request) -> Response {
+        let Some(method) = qip_transport::Method::parse(request.method.as_str()) else {
+            return Response::json(405, r#"{"error":"the mesh endpoint knows no such method"}"#);
+        };
+        match request.path.as_str() {
+            PUBLISH_PATH => wire(self.capital.handle(method, PUBLISH_PATH, &request.body)),
+            other => Response::json(
+                404,
+                format!(
+                    r#"{{"error":"{other} is not served here; this address only feeds one \
+                     cell's capital inbox"}}"#
+                ),
+            ),
+        }
+    }
+}
+
+fn wire(answer: qip_transport::EndpointResponse) -> Response {
+    Response::new(
+        answer.status,
+        qip_transport::EndpointResponse::CONTENT_TYPE,
+        answer.body,
+    )
+}
+
+fn health_json(health: &InboxHealth) -> String {
+    serde_json::to_string(health).unwrap_or_else(|_| "null".to_string())
+}
+
+/// One bound listener, kept so the thread's server is owned by something and
+/// the banner can say where the mesh lives.
+#[derive(Debug)]
+pub struct MeshListener {
+    pub role: &'static str,
+    pub cell: String,
+    pub address: String,
+    shutdown: Arc<AtomicBool>,
+}
+
+impl Drop for MeshListener {
+    fn drop(&mut self) {
+        // A request, not a join: the accept loop notices between connections.
+        // The process does not wait for it, exactly as the CLI's loopback
+        // peers document.
+        self.shutdown.store(true, Ordering::Relaxed);
+    }
+}
+
+fn spawn_listener(
+    role: &'static str,
+    cell: &str,
+    address: &str,
+    handler: Arc<dyn Handler>,
+) -> Result<MeshListener> {
+    let server = Arc::new(Server::bind(address, handler, mesh_server_limits())?);
+    let bound = server.local_address()?;
+    let shutdown = server.shutdown_handle();
+    let serving = Arc::clone(&server);
+    std::thread::Builder::new()
+        .name(format!("qip-mesh-{role}-{cell}"))
+        .spawn(move || {
+            // A serving error is the listener going away, which is what
+            // shutdown looks like from inside the loop; the visible failure
+            // is a peer not getting an answer, which the peer's breaker and
+            // dead letters already report better than a message here could.
+            let _ = serving.serve();
+        })
+        .map_err(|error| Error::io(format!("cannot start the {role} listener: {error}")))?;
+    Ok(MeshListener {
+        role,
+        cell: cell.to_string(),
+        address: bound,
+        shutdown,
+    })
+}
+
+// --- the backbone -------------------------------------------------------
+
+/// The dispatch path to one cell.
+#[derive(Debug)]
+struct CapitalLane {
+    /// Where the cell polls, for the banner and the status page.
+    address: String,
+    /// Another handle on the inbox the listeners serve, for the status page
+    /// — a clone shares the same state, which is the transport's own design
+    /// for exactly this split.
+    capital: MeshEndpoint,
+    dispatcher: CapitalDispatcher,
+    /// Grant identities already handed to the dispatcher, so a cycle that
+    /// sees the same live envelope again does not push it into the spool
+    /// again. Bounded; see [`DISPATCH_MEMORY`].
+    dispatched: BTreeSet<String>,
+    dispatched_order: VecDeque<String>,
+}
+
+impl CapitalLane {
+    fn remember(&mut self, key: String) {
+        self.dispatched.insert(key.clone());
+        self.dispatched_order.push_back(key);
+        while self.dispatched_order.len() > DISPATCH_MEMORY {
+            if let Some(oldest) = self.dispatched_order.pop_front() {
+                self.dispatched.remove(&oldest);
+            }
+        }
+    }
+}
+
+/// Counters the receiver does not already keep.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct BackboneCounters {
+    /// Cell reports built from deltas and absorbed by the platform.
+    pub reports_ingested: u64,
+    /// Frames on the delta topic that did not decode as a delta. Skipped
+    /// rather than halting the drain — see the sink for why the two failure
+    /// classes part ways.
+    pub undecodable: u64,
+    /// Orders reported across all deltas — the incremental half, summed,
+    /// which is the arithmetic that half is for.
+    pub orders_reported: u64,
+    /// Refusals reported across all deltas, counting the ones each delta
+    /// said it truncated.
+    pub refusals_reported: u64,
+    /// Ingestions that halted the reporting cell.
+    pub cell_halts: u64,
+    /// Recall orders the plane issued while ingesting.
+    pub recalls_issued: u64,
+    /// Envelopes the cells acknowledged.
+    pub envelopes_dispatched: u64,
+    /// Dispatch outcomes still waiting in a spool.
+    pub envelopes_held: u64,
+    /// Envelopes a cell answered and refused, now in the dead letters.
+    pub envelopes_rejected: u64,
+    /// Envelopes the plane holds for cells this process does not serve. A
+    /// non-zero value is a configuration gap an operator has to see.
+    pub envelopes_unserved: u64,
+}
+
+/// The last standing each cell reported, kept for the status surface. The
+/// platform holds the aggregate; this holds the per-cell facts the kernel's
+/// `CellReport` cannot carry — the halt flag above all.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct CellStandingSummary {
+    pub cell: String,
+    pub region: String,
+    pub sequence: u64,
+    pub at: Timestamp,
+    /// Whether the cell reports having stopped itself.
+    pub halted: bool,
+    pub strategies: usize,
+    pub reconciliation_breaks: usize,
+    pub reconciliation_breaks_omitted: u32,
+}
+
+/// What one drain pass did, for the cycle response.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct DrainSummary {
+    pub absorbed: usize,
+    pub duplicates: usize,
+    pub ignored: usize,
+    pub corrupt: usize,
+    pub undecodable: usize,
+    /// Cells halted by this pass's ingestions.
+    pub halted_cells: Vec<String>,
+    pub recalls: usize,
+    /// Set when a sink refusal stopped the drain; the frame is re-offered
+    /// next cycle.
+    pub halted_at: Option<String>,
+    /// Frames the inbox still holds, including the ones just absorbed until
+    /// the next read acknowledges them.
+    pub inbox_depth: usize,
+}
+
+/// What one dispatch pass did.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct DispatchSummary {
+    pub delivered: usize,
+    pub held: usize,
+    pub rejected: usize,
+    /// Grants not dispatched this pass because older spooled entries for the
+    /// same cell are still undelivered: capital instructions to one cell are
+    /// ordered, and a fresh grant must not overtake a held one.
+    pub deferred: usize,
+    /// Cells the plane holds envelopes for and this process does not serve.
+    pub unserved_cells: Vec<String>,
+    /// Spooled entries re-sent by recovery, delivered or not.
+    pub recovered: usize,
+}
+
+/// Everything the status surface says about the mesh, serialisable so the
+/// route and the banner cannot disagree with the internals they describe.
+#[derive(Clone, Debug, Serialize)]
+pub struct MeshStatus {
+    pub served: bool,
+    pub delta_inbox: InboxHealth,
+    pub receiver: ReceiverStats,
+    pub counters: BackboneCounters,
+    pub cells: Vec<MeshCellStatus>,
+    pub standings: Vec<CellStandingSummary>,
+    /// The most recent frame on the delta topic that would not decode, kept
+    /// because a counter says something is wrong and this says what.
+    pub last_undecodable: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MeshCellStatus {
+    pub cell: String,
+    pub address: String,
+    pub capital_inbox: InboxHealth,
+    /// Envelopes persisted and not yet acknowledged by the cell.
+    pub spool_pending: usize,
+    pub circuit: String,
+}
+
+/// A capital envelope the plane holds, snapshotted for dispatch after the
+/// platform lock is released — the dispatcher's sockets must not run under
+/// it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingGrant {
+    pub cell: String,
+    pub envelope: CapitalEnvelope,
+}
+
+/// Every live envelope the central plane currently holds.
+///
+/// Enumerated the same way the `/capital` route enumerates them, so the
+/// grants an operator reads there and the grants this process dispatches
+/// cannot be two different lists. Expired envelopes are skipped: an expired
+/// envelope admits nothing whatever the cell does, so sending one would be
+/// traffic with no authority in it.
+pub fn pending_capital(platform: &Platform, now: Timestamp) -> Vec<PendingGrant> {
+    let central = platform.central();
+    central
+        .factory()
+        .candidates()
+        .filter_map(|candidate| {
+            let envelope = central.envelope(candidate.cell(), candidate.strategy())?;
+            envelope.is_live(now).then(|| PendingGrant {
+                cell: candidate.cell().to_string(),
+                envelope: envelope.clone(),
+            })
+        })
+        .collect()
+}
+
+/// The centre's half of the mesh, assembled and serving.
+#[derive(Debug)]
+pub struct MeshBackbone {
+    receiver: CellDeltaReceiver,
+    lanes: BTreeMap<String, CapitalLane>,
+    listeners: Vec<MeshListener>,
+    counters: BackboneCounters,
+    standings: BTreeMap<String, CellStandingSummary>,
+    last_undecodable: Option<String>,
+}
+
+impl MeshBackbone {
+    /// Bind every listener, open every spool, and start serving.
+    ///
+    /// Serving begins here but consuming does not: deltas queue in the inbox
+    /// until the first `POST /cycle` drains them, and a spool left by a
+    /// previous process goes out on that same first cycle. Start-up stays
+    /// fast and cannot wedge on a peer, which is what the spine's own
+    /// open-versus-recover split is for.
+    pub fn open(
+        settings: &MeshSettings,
+        store: Arc<dyn KeyValueStore>,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Self> {
+        let receiver = CellDeltaReceiver::with_defaults("central", settings.inbox_capacity)?;
+        let mut lanes = BTreeMap::new();
+        let mut listeners = Vec::new();
+
+        for cell in &settings.cells {
+            let capital = MeshEndpoint::new(MeshInbox::new(
+                format!("capital:{}", cell.cell),
+                settings.inbox_capacity,
+                settings.inbox_capacity,
+            )?);
+
+            let facing = spawn_listener(
+                "cells",
+                &cell.cell,
+                &cell.address,
+                Arc::new(CellFacing {
+                    cell: cell.cell.clone(),
+                    deltas: receiver.endpoint().clone(),
+                    capital: capital.clone(),
+                }),
+            )?;
+            // Loopback and port zero, deliberately: nothing configures this
+            // address, nothing remote can reach it, and the dispatcher reads
+            // it back from the bound socket.
+            let feed = spawn_listener(
+                "capital-feed",
+                &cell.cell,
+                "127.0.0.1:0",
+                Arc::new(CapitalFeed {
+                    capital: capital.clone(),
+                }),
+            )?;
+
+            let dispatcher = CapitalDispatcher::open(
+                DispatcherConfig::new(
+                    &cell.cell,
+                    MeshConfig::new(
+                        format!("capital:{}", cell.cell),
+                        format!("http://{}", feed.address),
+                    )
+                    .with_retry(dispatch_retry())
+                    .with_limits(dispatch_limits())
+                    .with_seed(seed_from(&cell.cell)),
+                )
+                .with_spool_capacity(settings.spool_capacity),
+                Arc::clone(&store),
+                Arc::clone(&clock),
+                Arc::new(ThreadSleeper),
+                // Durable, because a rejected capital envelope is a record an
+                // operator reads after a restart, and the publisher's own
+                // requirements name exactly this wiring as the deployment's
+                // job.
+                Box::new(DurableDeadLetters::open(
+                    Arc::clone(&store),
+                    format!("capital:{}", cell.cell),
+                )?),
+            )?;
+
+            lanes.insert(
+                cell.cell.clone(),
+                CapitalLane {
+                    address: facing.address.clone(),
+                    capital,
+                    dispatcher,
+                    dispatched: BTreeSet::new(),
+                    dispatched_order: VecDeque::new(),
+                },
+            );
+            listeners.push(facing);
+            listeners.push(feed);
+        }
+
+        Ok(Self {
+            receiver,
+            lanes,
+            listeners,
+            counters: BackboneCounters::default(),
+            standings: BTreeMap::new(),
+            last_undecodable: None,
+        })
+    }
+
+    /// The bound listeners, for the banner.
+    pub fn listeners(&self) -> &[MeshListener] {
+        &self.listeners
+    }
+
+    /// The address one cell's `QIP_MESH_PEER` must name, once bound.
+    pub fn cell_address(&self, cell: &str) -> Option<&str> {
+        self.lanes.get(cell).map(|lane| lane.address.as_str())
+    }
+
+    pub const fn counters(&self) -> BackboneCounters {
+        self.counters
+    }
+
+    /// Drain the delta inbox into the platform, one bounded pass.
+    ///
+    /// Runs under the platform lock because ingestion writes the central
+    /// plane; the pass is bounded by [`DRAIN_LIMIT`] so the lock is held for
+    /// work proportional to what arrived, never to what could.
+    pub fn drain_into(
+        &mut self,
+        platform: &mut Platform,
+        cells: &CellRegistry,
+        now: Timestamp,
+    ) -> Result<DrainSummary> {
+        let Self {
+            receiver,
+            counters,
+            standings,
+            last_undecodable,
+            ..
+        } = self;
+        let mut sink = IngestSink {
+            platform,
+            cells,
+            now,
+            counters,
+            standings,
+            last_undecodable,
+            undecodable: 0,
+            halted_cells: Vec::new(),
+            recalls: 0,
+        };
+        let report = receiver.drain(now, DRAIN_LIMIT, &mut sink)?;
+        let summary = DrainSummary {
+            // What the platform absorbed, not what the receiver handed over:
+            // the receiver counts undecodable frames as absorbed because the
+            // sink accepted them, and this summary is read as ingestions.
+            absorbed: report.absorbed - sink.undecodable,
+            duplicates: report.duplicates.len(),
+            ignored: report.ignored,
+            corrupt: report.corrupt.len(),
+            undecodable: sink.undecodable,
+            halted_cells: sink.halted_cells,
+            recalls: sink.recalls,
+            halted_at: report.halted.map(|halt| halt.reason),
+            inbox_depth: report.remaining,
+        };
+        Ok(summary)
+    }
+
+    /// Send the plane's envelopes down, one bounded pass.
+    ///
+    /// Recovery first, then new grants, and never a new grant past a held
+    /// one: the spool is FIFO because capital instructions to one cell are
+    /// ordered, and dispatching fresh envelopes while older ones are held
+    /// would deliver them out of that order the moment the peer recovered.
+    pub fn dispatch(&mut self, pending: Vec<PendingGrant>, now: Timestamp) -> DispatchSummary {
+        let mut summary = DispatchSummary::default();
+
+        for lane in self.lanes.values_mut() {
+            match lane.dispatcher.recover(now) {
+                Ok(recovery) => {
+                    summary.recovered += recovery.outcomes.len();
+                    for outcome in &recovery.outcomes {
+                        Self::count(&mut self.counters, &mut summary, outcome);
+                    }
+                }
+                // A recovery error is a spool that cannot be read. The
+                // entries are still persisted; saying so beats failing the
+                // cycle that tried.
+                Err(error) => {
+                    eprintln!(
+                        "qip-api: the capital spool for {} could not be recovered: {}",
+                        lane.dispatcher.cell(),
+                        error.message()
+                    );
+                }
+            }
+        }
+
+        for grant in pending {
+            let Some(lane) = self.lanes.get_mut(&grant.cell) else {
+                self.counters.envelopes_unserved += 1;
+                if !summary.unserved_cells.contains(&grant.cell) {
+                    summary.unserved_cells.push(grant.cell);
+                }
+                continue;
+            };
+            let key = grant_key(&grant.envelope);
+            if lane.dispatched.contains(&key) {
+                continue;
+            }
+            match lane.dispatcher.pending() {
+                Ok(0) => {}
+                Ok(_) => {
+                    // Order guard: the recovery above left entries held, so
+                    // this grant waits for a later cycle rather than entering
+                    // a spool it would then be sent ahead of.
+                    summary.deferred += 1;
+                    continue;
+                }
+                Err(error) => {
+                    eprintln!(
+                        "qip-api: the capital spool for {} is unreadable: {}",
+                        grant.cell,
+                        error.message()
+                    );
+                    continue;
+                }
+            }
+            match lane.dispatcher.dispatch(grant.envelope, now) {
+                Ok(outcome) => {
+                    // Remembered on every spooled outcome, including a held
+                    // one: the envelope is persisted now, and recovery — not
+                    // re-dispatch — is what retries it.
+                    lane.remember(key);
+                    Self::count(&mut self.counters, &mut summary, &outcome);
+                }
+                // Refused before anything was persisted (a full spool). The
+                // grant stays pending and next cycle tries again.
+                Err(error) => {
+                    eprintln!(
+                        "qip-api: dispatching capital to {} failed: {}",
+                        lane.dispatcher.cell(),
+                        error.message()
+                    );
+                }
+            }
+        }
+        summary
+    }
+
+    fn count(
+        counters: &mut BackboneCounters,
+        summary: &mut DispatchSummary,
+        outcome: &CapitalDispatch,
+    ) {
+        match outcome {
+            CapitalDispatch::Delivered { .. } => {
+                counters.envelopes_dispatched += 1;
+                summary.delivered += 1;
+            }
+            CapitalDispatch::Held { .. } => {
+                counters.envelopes_held += 1;
+                summary.held += 1;
+            }
+            CapitalDispatch::Rejected { .. } => {
+                counters.envelopes_rejected += 1;
+                summary.rejected += 1;
+            }
+        }
+    }
+
+    /// The whole truth, for `/mesh` and the status line.
+    pub fn status(&self) -> MeshStatus {
+        MeshStatus {
+            served: true,
+            delta_inbox: self.receiver.inbox().health(),
+            receiver: self.receiver.stats(),
+            counters: self.counters,
+            cells: self
+                .lanes
+                .iter()
+                .map(|(cell, lane)| MeshCellStatus {
+                    cell: cell.clone(),
+                    address: lane.address.clone(),
+                    capital_inbox: lane.capital.inbox().health(),
+                    spool_pending: lane.dispatcher.pending().unwrap_or(0),
+                    circuit: lane.dispatcher.circuit().as_str().to_string(),
+                })
+                .collect(),
+            standings: self.standings.values().cloned().collect(),
+            last_undecodable: self.last_undecodable.clone(),
+        }
+    }
+}
+
+/// The cycle response's account of one drain-and-dispatch exchange.
+///
+/// A drain error is rendered rather than propagated: the cycle it rode on
+/// already ran, so the response reports what the exchange did and did not
+/// manage, exactly as the archive failure on the same route is reported.
+pub fn exchange_json(drained: &Result<DrainSummary>, dispatched: &DispatchSummary) -> String {
+    let drained = match drained {
+        Ok(summary) => serde_json::to_string(summary).unwrap_or_else(|_| "null".to_string()),
+        Err(error) => format!(r#"{{"error":{}}}"#, crate::json::string(error.message())),
+    };
+    let dispatched = serde_json::to_string(dispatched).unwrap_or_else(|_| "null".to_string());
+    format!(r#"{{"drained":{drained},"dispatched":{dispatched}}}"#)
+}
+
+// --- delta to report ----------------------------------------------------
+
+/// Build the kernel's report from a delta's absolute half.
+///
+/// Only the standing crosses into the platform, because only the standing is
+/// the cell as it is: utilisation replaces what the plane holds, and every
+/// reconciliation break arrives as a break so that `ingest_cell_report`'s
+/// halt actually trips. Two absences are deliberate:
+///
+/// * **No positions.** The delta is not a position book — the cell says so
+///   in its own wire contract — and inventing positions from the interval's
+///   orders would hand the aggregate exposure numbers nobody reconciled
+///   against a custodian.
+/// * **No parsed quantities on a break.** The wire carries the cell's prose;
+///   the quantities are stated as zero and the prose travels in `detail`,
+///   which is what the kill switch's reason renders. Guessing numbers out of
+///   a sentence would put fiction in the one record an incident reader
+///   trusts.
+fn report_from(standing: &CellStanding) -> CellReport {
+    let mut report = CellReport::new(standing.cell.clone(), standing.at).with_utilisation(
+        standing
+            .utilisation
+            .iter()
+            .map(|entry| (entry.strategy.clone(), entry.utilisation.clone()))
+            .collect(),
+    );
+    for detail in &standing.reconciliation_breaks {
+        report = report.with_break(ReconciliationBreak {
+            instrument: "unquantified".to_string(),
+            cell_quantity: Decimal::ZERO,
+            external_quantity: Decimal::ZERO,
+            detail: detail.clone(),
+        });
+    }
+    if standing.reconciliation_breaks_omitted > 0 {
+        // The cell said its list understates. That fact must reach the
+        // centre as a break of its own, or a cell that dropped a thousand
+        // breaks and retained three would read as an incident of three.
+        report = report.with_break(ReconciliationBreak {
+            instrument: "unquantified".to_string(),
+            cell_quantity: Decimal::ZERO,
+            external_quantity: Decimal::ZERO,
+            detail: format!(
+                "{} further reconciliation break(s) the cell recorded but no longer retains",
+                standing.reconciliation_breaks_omitted
+            ),
+        });
+    }
+    report
+}
+
+/// The sink the drain hands frames to: decode, then ingest.
+///
+/// Two failure classes part ways here, and the difference is the point. A
+/// frame that does not *decode* will never decode — halting on it would
+/// wedge the drain behind one poison frame forever on an unauthenticated
+/// wire — so it is counted, remembered for the status page, and skipped. An
+/// *ingest* that fails is refused with `Err`, which halts the drain and
+/// re-offers the frame next cycle: the platform refusing a well-formed
+/// report is a condition to stop on, not to skip past, because continuing
+/// would leave an invisible hole in the centre's view of that cell.
+#[derive(Debug)]
+struct IngestSink<'a> {
+    platform: &'a mut Platform,
+    cells: &'a CellRegistry,
+    now: Timestamp,
+    counters: &'a mut BackboneCounters,
+    standings: &'a mut BTreeMap<String, CellStandingSummary>,
+    last_undecodable: &'a mut Option<String>,
+    undecodable: usize,
+    halted_cells: Vec<String>,
+    recalls: usize,
+}
+
+impl CellDeltaSink for IngestSink<'_> {
+    fn absorb(&mut self, frame: &AnyEvent) -> Result<()> {
+        let decoded = match decode_cell_delta(frame) {
+            Ok(decoded) => decoded,
+            Err(error) => {
+                self.undecodable += 1;
+                self.counters.undecodable += 1;
+                *self.last_undecodable = Some(format!("{}: {}", frame.event_id, error.message()));
+                return Ok(());
+            }
+        };
+
+        let report = report_from(&decoded.standing);
+        // Recorded before the ingest so `/regions` knows the cell spoke even
+        // when the plane goes on to halt it — a halted cell that looked
+        // silent would be the worst possible rendering of the loudest fact.
+        self.cells.record(&report);
+        let ingestion = self.platform.ingest_cell_report(report, self.now)?;
+
+        self.counters.reports_ingested += 1;
+        self.counters.orders_reported += decoded.interval.orders.len() as u64;
+        self.counters.refusals_reported +=
+            decoded.interval.refusals.len() as u64 + u64::from(decoded.interval.refusals_omitted);
+        if ingestion.halted.is_some() {
+            self.counters.cell_halts += 1;
+            self.halted_cells.push(ingestion.cell.clone());
+        }
+        self.counters.recalls_issued += ingestion.recalls.len() as u64;
+        self.recalls += ingestion.recalls.len();
+
+        self.standings.insert(
+            decoded.standing.cell.clone(),
+            CellStandingSummary {
+                cell: decoded.standing.cell.clone(),
+                region: decoded.standing.region.clone(),
+                sequence: decoded.standing.sequence,
+                at: decoded.standing.at,
+                halted: decoded.standing.halted,
+                strategies: decoded.standing.utilisation.len(),
+                reconciliation_breaks: decoded.standing.reconciliation_breaks.len(),
+                reconciliation_breaks_omitted: decoded.standing.reconciliation_breaks_omitted,
+            },
+        );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // In a test the assertion is the deliverable; the workspace denies this
+    // lint for production code, where a panic on the capital path is a bug.
+    #![allow(clippy::panic_in_result_fn)]
+
+    use super::*;
+    use qip_contracts::capital::Utilisation;
+    use qip_contracts::signal::StrategyId;
+    use qip_mesh::delta::StrategyStanding;
+
+    #[test]
+    fn the_settings_parse_names_every_cell_with_its_own_address() -> Result<()> {
+        let settings = MeshSettings::parse(
+            "london-1=127.0.0.1:9101, tokyo-1=127.0.0.1:9102",
+            Some("64"),
+            None,
+        )?;
+        assert_eq!(settings.cells.len(), 2);
+        assert_eq!(settings.cells[0].cell, "london-1");
+        assert_eq!(settings.cells[0].address, "127.0.0.1:9101");
+        assert_eq!(settings.inbox_capacity, 64);
+        assert_eq!(
+            settings.spool_capacity,
+            default_spool_capacity(),
+            "an unset capacity takes the default rather than failing"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_duplicate_cell_or_a_shared_address_is_refused_at_parse() {
+        // Two lanes for one cell would both claim the capital spool; two
+        // cells on one address are indistinguishable on this transport, so
+        // the second would silently read the first's capital.
+        let duplicate = MeshSettings::parse("a=127.0.0.1:1,a=127.0.0.1:2", None, None)
+            .expect_err("one cell was accepted twice");
+        assert!(duplicate.message().contains("twice"));
+        let shared = MeshSettings::parse("a=127.0.0.1:1,b=127.0.0.1:1", None, None)
+            .expect_err("two cells were accepted on one address");
+        assert!(shared.message().contains("identity"));
+    }
+
+    #[test]
+    fn an_entry_without_an_address_is_refused_rather_than_defaulted() {
+        let error = MeshSettings::parse("london-1", None, None)
+            .expect_err("a cell with no address was accepted");
+        assert!(
+            error.message().contains("cell=host:port"),
+            "the refusal does not show the expected shape: {}",
+            error.message()
+        );
+    }
+
+    #[test]
+    fn a_zero_capacity_is_refused_because_it_is_not_a_disable_switch() {
+        let error = MeshSettings::parse("a=127.0.0.1:1", Some("0"), None)
+            .expect_err("a zero inbox capacity was accepted");
+        assert!(error.message().contains(CELLS_VARIABLE));
+    }
+
+    fn standing() -> CellStanding {
+        CellStanding {
+            cell: "london-1".to_string(),
+            region: "eu-west".to_string(),
+            sequence: 4,
+            at: Timestamp::from_secs(1_000),
+            halted: false,
+            utilisation: vec![StrategyStanding {
+                strategy: StrategyId::new("mean-reversion-1"),
+                utilisation: Utilisation {
+                    gross_committed: Decimal::from_int(250_000),
+                    realised_loss: Decimal::from_int(1_200),
+                    orders_sent: 14,
+                },
+                envelope_expires_at: Timestamp::from_secs(5_000),
+            }],
+            reconciliation_breaks: Vec::new(),
+            reconciliation_breaks_omitted: 0,
+        }
+    }
+
+    #[test]
+    fn a_reconciling_standing_becomes_a_report_that_reconciles() {
+        let report = report_from(&standing());
+        assert_eq!(report.cell, "london-1");
+        assert!(report.reconciles(), "a clean delta must not trip a halt");
+        assert_eq!(report.utilisation.len(), 1);
+        assert_eq!(report.utilisation[0].1.orders_sent, 14);
+        assert!(
+            report.positions.is_empty(),
+            "the delta carries no position book, so the report must not invent one"
+        );
+    }
+
+    #[test]
+    fn every_break_the_cell_described_reaches_the_report_and_trips_reconciliation() {
+        let mut standing = standing();
+        standing.reconciliation_breaks =
+            vec!["OBJ1: cell holds 100, venue confirms 60".to_string()];
+        let report = report_from(&standing);
+        assert!(
+            !report.reconciles(),
+            "a break that does not fail reconciliation can never trip the kill switch"
+        );
+        assert_eq!(report.reconciliation_breaks.len(), 1);
+        assert!(
+            report.reconciliation_breaks[0]
+                .detail
+                .contains("venue confirms 60"),
+            "the cell's own description must survive into the incident record"
+        );
+    }
+
+    #[test]
+    fn omitted_breaks_surface_as_a_break_of_their_own() {
+        // A cell that dropped a thousand breaks and retained three must not
+        // read as an incident of three.
+        let mut standing = standing();
+        standing.reconciliation_breaks = vec!["OBJ1: gap".to_string()];
+        standing.reconciliation_breaks_omitted = 997;
+        let report = report_from(&standing);
+        assert_eq!(report.reconciliation_breaks.len(), 2);
+        assert!(
+            report.reconciliation_breaks[1].detail.contains("997"),
+            "the omission count did not reach the centre: {}",
+            report.reconciliation_breaks[1].detail
+        );
+    }
+
+    #[test]
+    fn two_cells_draw_different_dispatch_jitter_from_their_own_names() {
+        // Nine dispatchers retrying a recovering process on the same
+        // millisecond is the herd the seed exists to break up.
+        assert_ne!(seed_from("london-1"), seed_from("tokyo-2"));
+        assert_eq!(seed_from("london-1"), seed_from("london-1"));
+    }
+}
