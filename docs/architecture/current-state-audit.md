@@ -118,7 +118,7 @@ never been pointed at the internet.
 | Strategy and program travel together | Built | `qip-edge::Cell::deploy` takes the `Program` its plan indexes into and refuses a mismatch — see below |
 | Anomaly detection | Partial | `qip-opportunity-engine` exists but runs centrally, not per-cell |
 | Cash and inventory per region | Partial | `qip-capital` tracks centrally; `qip-capital-fabric::LocationBalance` models per-location balances for planning; cells still hold a utilisation counter only |
-| **Multi-region deployment** | Partial | Seven cells — Dallas, Chicago, NY/NJ, London, Frankfurt, Singapore, Tokyo — are *specified* in `infrastructure/environments/development/terraform.tfvars`. Staging and production still name one (`london-1`). `venues` is empty on all seven. Nothing has been applied |
+| **Multi-region deployment** | Partial | Nine cells are allocated in `infrastructure/environments/README.md`; `stage` names three and `prod` names one (`london-1`), with the other eight commented in place so their CIDR blocks are not reused. `venues` is empty on every one, so no cell can reach a venue. Nothing has been applied |
 
 `Cell::deploy` previously took a compiled strategy and an envelope but not the
 `Program` the strategy's plan indexes into, so a cell could be assembled with an

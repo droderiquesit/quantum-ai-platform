@@ -21,7 +21,7 @@ variable "region" {
 }
 
 variable "environment" {
-  description = "Which environment this is: development, staging or production."
+  description = "Which environment this is: dev, test, stage or prod."
   type        = string
 
   validation {
@@ -330,12 +330,23 @@ variable "edge_cells" {
 
 variable "project_number" {
   description = <<-EOT
-    The project's numeric id. Distinct from `project_id` and not derivable from
-    it: Google's own service agents are named by number, so the IAM grant that
-    lets Secret Manager publish a rotation notice needs this and cannot infer
-    it. Read it from `gcloud projects describe <project_id> --format='value(projectNumber)'`.
+    The project's numeric id, or null to look it up.
+
+    Distinct from `project_id` and not inferable by reading it: Google's own
+    service agents are named by number, so the IAM grants that let Secret
+    Manager publish a rotation notice and GKE Backup write to its bucket need
+    this. Terraform can ask Cloud Resource Manager for it, which is what
+    happens when this is null, and that is the normal case — a number typed in
+    by hand is a number that can disagree with `project_id`, and the failure
+    then is an IAM binding granted to a service agent in someone else's
+    project.
+
+    Set it explicitly only where the lookup cannot run: Cloud Resource Manager
+    disabled, or an identity without `resourcemanager.projects.get`. Read it
+    from `gcloud projects describe <project_id> --format='value(projectNumber)'`.
   EOT
   type        = number
+  default     = null
 }
 
 # --- Managed data services --------------------------------------------------
@@ -403,7 +414,8 @@ variable "enable_vertex_ai" {
 # its pairing key, and Terraform cannot order a cross-connect.
 #
 # See modules/connectivity/NOT-ORDERED.md for the four things a deployment
-# must arrange first, and env/prod.tfvars for why three cells need them.
+# must arrange first, and environments/prod/terraform.tfvars for why three cells
+# need them.
 
 variable "enable_partner_interconnect" {
   description = "Cloud Router and VLAN attachments for Partner Interconnect. Requires a partner, a circuit and a pairing key handed over — none of which Terraform can create."

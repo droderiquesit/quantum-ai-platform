@@ -5,7 +5,7 @@
 # and it is also the honest answer to a problem the platform already writes
 # down rather than a capability added for its own sake.
 #
-# `env/prod.tfvars` and `docs/operations/deploying-an-edge-cell.md` both record
+# `environments/prod/terraform.tfvars` and `docs/operations/deploying-an-edge-cell.md` both record
 # that three of the nine cells are not in their metropolitan area: Google Cloud
 # has no region in Chicago, none in NY/NJ and none in Dubai, so `chicago-1`,
 # `newyork-1` and `dubai-1` run roughly 400, 300 and 380 kilometres from the

@@ -12,6 +12,18 @@
 # metropolitan area. Staging is where that cost should be measured, not
 # production.
 
+# The project this environment lives in. An identifier, not a secret: it
+# appears in every resource name and in the pipeline's own configuration, so
+# keeping it out of version control would buy nothing and cost reproducibility.
+#
+# All four environments name the same project today. Separate projects would
+# be better — a blast radius that stops at a project boundary is the only one
+# that reliably stops — and the change is this one line per file plus a state
+# bucket each. What makes one project survivable meanwhile is that every
+# resource carries the `environment` prefix below, so `dev` and `prod` cannot
+# collide on a name.
+project_id = "project-d3f96b6b-852b-4460-b6d"
+
 environment      = "stage"
 region           = "europe-west2"
 autonomy_ceiling = "paper_trading"

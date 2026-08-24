@@ -24,11 +24,16 @@
 # to repeat, so rerunning after a partial failure is the intended recovery.
 set -euo pipefail
 
-readonly ENVIRONMENT="${1:-development}"
+# The four names are the ones `var.environment` validates, and they are short
+# on purpose: they are interpolated into Google resource ids with hard length
+# limits, and `qip-edge-frankfurt-1-production` is 31 characters against a
+# service account's limit of 30. Naming the directory after the value keeps the
+# thing you type and the thing that lands in resource names the same string.
+readonly ENVIRONMENT="${1:-dev}"
 case "${ENVIRONMENT}" in
-  development | staging | production) ;;
+  dev | test | stage | prod) ;;
   *)
-    echo "usage: $0 [development|staging|production]" >&2
+    echo "usage: $0 [dev|test|stage|prod]" >&2
     exit 64
     ;;
 esac

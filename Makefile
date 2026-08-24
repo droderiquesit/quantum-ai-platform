@@ -20,7 +20,6 @@ export RUSTFLAGS ?= -D warnings
 export CARGO_TERM_COLOR ?= always
 
 TERRAFORM_DIR := infrastructure/terraform
-DEV_TFVARS := ../environments/development/terraform.tfvars
 
 .PHONY: check all fmt fmt-check lint test test-release build release \
         deps secrets audit sbom tf-fmt tf-validate infra e2e acceptance \

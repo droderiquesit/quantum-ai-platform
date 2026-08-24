@@ -49,7 +49,26 @@ provider "google-beta" {
   region  = var.region
 }
 
+# The project's numeric id, asked for rather than typed in.
+#
+# Two IAM bindings name Google's own service agents, which are identified by
+# number and not by id. Requiring the operator to supply it made the number a
+# second source of truth that can disagree with `project_id` — and when it
+# does, the bindings are granted to service agents in whatever project that
+# number belongs to, which applies cleanly and grants nothing.
+#
+# `var.project_number` overrides this for the case the lookup cannot run; see
+# the variable.
+data "google_project" "this" {
+  count      = var.project_number == null ? 1 : 0
+  project_id = var.project_id
+}
+
 locals {
+  # `tonumber` because the data source reports the number as a string and
+  # every consumer of it declares a `number`.
+  project_number = var.project_number != null ? var.project_number : tonumber(one(data.google_project.this[*].number))
+
   # Every resource carries these, so an unlabelled resource is visibly an
   # unmanaged one.
   labels = {
@@ -219,7 +238,7 @@ module "secrets" {
   depends_on = [module.services]
 
   project_id       = var.project_id
-  project_number   = var.project_number
+  project_number   = local.project_number
   region           = var.region
   environment      = var.environment
   labels           = local.labels
@@ -482,7 +501,7 @@ module "binary_authorization" {
 # handed over and a VLAN attachment on their side are all out of band, and
 # modules/connectivity/NOT-ORDERED.md lists them in the order they happen.
 #
-# What it is for is written down rather than implied. `env/prod.tfvars` records
+# What it is for is written down rather than implied. The `prod` tfvars records
 # that `chicago-1`, `newyork-1` and `dubai-1` run 400, 300 and 380km from the
 # venues they trade, because Google Cloud has no region in those metros;
 # colocation with a partner interconnect back to this VPC is the first of the
@@ -536,7 +555,7 @@ module "backup" {
   source = "./modules/backup"
 
   project_id     = var.project_id
-  project_number = var.project_number
+  project_number = local.project_number
   environment    = var.environment
   labels         = local.labels
 

@@ -15,7 +15,7 @@ entirely and never enters this repository.
 
 | Value | What it is | Where it lives |
 |---|---|---|
-| `project-d3f96b6b-852b-4460-b6d` | GCP project id | `infrastructure/environments/*/terraform.tfvars`, in version control |
+| `project-d3f96b6b-852b-4460-b6d` | GCP project id | `infrastructure/environments/{dev,test,stage,prod}/terraform.tfvars`, in version control |
 | `claude-builder@project-d3f96b6b-852b-4460-b6d.iam.gserviceaccount.com` | Bootstrap service account | This document. Not referenced by Terraform — see below |
 
 Neither is secret. Both are recorded so the next person does not have to ask.
@@ -147,7 +147,7 @@ preinstalled and you are already authenticated:
 ```sh
 git clone https://github.com/droderiquesit/quantum-ai-platform
 cd quantum-ai-platform
-./scripts/bootstrap-deploy.sh          # development; pass staging|production to target another
+./scripts/bootstrap-deploy.sh          # dev; pass test|stage|prod to target another
 ```
 
 It enables the APIs, grants you impersonation, creates the versioned state
@@ -169,7 +169,7 @@ gcloud config set project project-d3f96b6b-852b-4460-b6d
 export GOOGLE_IMPERSONATE_SERVICE_ACCOUNT=\
 claude-builder@project-d3f96b6b-852b-4460-b6d.iam.gserviceaccount.com
 terraform -chdir=infrastructure/terraform apply \
-  -var-file=../environments/development/terraform.tfvars
+  -var-file=../environments/dev/terraform.tfvars
 ```
 
 The human needs `roles/iam.serviceAccountTokenCreator` on `claude-builder`.

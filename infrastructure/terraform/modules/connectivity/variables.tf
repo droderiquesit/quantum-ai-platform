@@ -41,7 +41,7 @@ variable "partner_interconnects" {
     the resource name — `chicago-a`, `chicago-b`, `newyork-a`.
 
     Empty by default. The three cells this exists for — `chicago-1`,
-    `newyork-1` and `dubai-1` — are the ones `env/prod.tfvars` records as being
+    `newyork-1` and `dubai-1` — are the ones `environments/prod/terraform.tfvars` records as being
     400, 300 and 380 kilometres from the venues they trade, and a colocated
     cage with a circuit back to the VPC is the first of the three honest
     answers `docs/operations/deploying-an-edge-cell.md` names. Naming them here

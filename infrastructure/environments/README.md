@@ -1,15 +1,46 @@
 # Environments
 
-Four files, one per environment, applied with:
+Four directories, one per environment, named after the value of
+`var.environment` inside them. Normally you do not apply these by hand —
+`scripts/bootstrap-deploy.sh <env>` does the whole first deployment, reads its
+project and repository out of the file, and never auto-approves. By hand it is:
 
 ```
-terraform -chdir=infrastructure/terraform apply -var-file=env/<name>.tfvars
+terraform -chdir=infrastructure/terraform apply \
+  -var-file=../environments/<env>/terraform.tfvars
 ```
 
-`project_id` and `project_number` are deliberately **not** in these files.
-Every environment should be a separate Google project — a blast radius that
-stops at a project boundary is the only one that reliably stops — so the pair
-is passed on the command line or in a `*.auto.tfvars` that is not committed.
+The names are short because they are interpolated into Google resource ids with
+hard length limits: `qip-edge-frankfurt-1-production` is 31 characters against a
+service account's limit of 30, so `production` could not deploy a cell at all.
+Directory name and variable value are the same string on purpose — the thing you
+type is the thing that lands in a resource name.
+
+`project_id` **is** in these files, and all four name the same project today.
+Separate projects per environment would be better — a blast radius that stops at
+a project boundary is the only one that reliably stops — and the change is one
+line per file plus a state bucket each. What makes one project survivable
+meanwhile is that every resource carries the `environment` prefix, so `dev` and
+`prod` cannot collide on a name. The id itself is an identifier and not a
+secret: it appears in every resource name and in the pipeline's own
+configuration, so keeping it out of version control would buy nothing and cost
+reproducibility.
+
+`project_number` is not here — it is a `terraform output`, not an input.
+
+## How many cells each environment runs
+
+| env | cells | why |
+| --- | --- | --- |
+| `dev` | 0 | A cell exists to be next to a venue and there is no venue here. |
+| `test` | 1 | One cell exercises every two-process failure worth catching. |
+| `stage` | 3 | Three spans the failures that only appear under combined load. |
+| `prod` | 1 (`london-1`) | Cells come up one at a time; the other eight are commented in place. |
+
+The eight commented cells in `prod/terraform.tfvars` are kept in the file rather
+than deleted so their CIDR blocks are not reused. Uncommenting one, then filling
+in its `venues`, is how a cell is added — see
+`docs/operations/deploying-an-edge-cell.md`.
 
 ## The CIDR plan
 

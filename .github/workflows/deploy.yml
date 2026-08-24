@@ -8,9 +8,9 @@
 # ci succeeded. On the manual path it asks GitHub whether ci succeeded for the
 # commit being deployed, because "somebody pressed the button" is not evidence.
 #
-# **Production is never automatic.** The automatic path deploys to development
-# and nowhere else. Staging and production need a person to dispatch the
-# workflow, and the `production` GitHub environment is expected to carry
+# **Production is never automatic.** The automatic path deploys to `dev` and
+# nowhere else. `test`, `stage` and `prod` need a person to dispatch the
+# workflow, and the `prod` GitHub environment is expected to carry
 # required reviewers — a repository setting, not something this file can
 # create. See docs/operations/external-dependencies.md.
 #
@@ -45,12 +45,13 @@ on:
       environment:
         description: "Which environment to deploy to. Production is never reached any other way."
         required: true
-        default: "development"
+        default: "dev"
         type: choice
         options:
-          - development
-          - staging
-          - production
+          - dev
+          - test
+          - stage
+          - prod
 
 # Read-only by default. The jobs that need to mint an OIDC token ask for it
 # explicitly, so the blast radius of a compromised action is visible in the diff
@@ -61,12 +62,12 @@ permissions:
 concurrency:
   # One deployment at a time per environment. Two applies racing each other
   # produce a cluster in a state neither of them describes.
-  group: deploy-${{ inputs.environment || 'development' }}
+  group: deploy-${{ inputs.environment || 'dev' }}
   cancel-in-progress: false
 
 env:
-  # The automatic path goes to development and nowhere else.
-  TARGET_ENVIRONMENT: ${{ inputs.environment || 'development' }}
+  # The automatic path goes to dev and nowhere else.
+  TARGET_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
   DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
 
 jobs:
@@ -81,9 +82,9 @@ jobs:
       checks: read
     steps:
       - name: refuse a production deployment that nobody dispatched
-        if: env.TARGET_ENVIRONMENT == 'production' && github.event_name != 'workflow_dispatch'
+        if: env.TARGET_ENVIRONMENT == 'prod' && github.event_name != 'workflow_dispatch'
         run: |
-          echo "production is not deployed automatically." >&2
+          echo "prod is not deployed automatically." >&2
           exit 1
 
       - name: the triggering ci run succeeded
@@ -273,12 +274,12 @@ jobs:
             --keyversion "${BINAUTHZ_KEY_VERSION}"
 
   deploy:
-    name: deploy to ${{ inputs.environment || 'development' }}
+    name: deploy to ${{ inputs.environment || 'dev' }}
     needs: images
     runs-on: ubuntu-latest
     # The GitHub environment. Where required reviewers and deployment branch
-    # rules are configured, which is why production names one at all.
-    environment: ${{ inputs.environment || 'development' }}
+    # rules are configured, which is why `prod` names one at all.
+    environment: ${{ inputs.environment || 'dev' }}
     permissions:
       contents: read
       id-token: write

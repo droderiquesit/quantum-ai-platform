@@ -216,7 +216,7 @@ fn every_environment_ships_with_a_paper_trading_ceiling() {
     // The one line in the repository that decides whether the platform can
     // reach a real venue. Production included: raising it is a separate,
     // reviewed change.
-    for environment in ["development", "staging", "production"] {
+    for environment in ["dev", "test", "stage", "prod"] {
         let tfvars = read(&format!(
             "infrastructure/environments/{environment}/terraform.tfvars"
         ));
@@ -229,7 +229,7 @@ fn every_environment_ships_with_a_paper_trading_ceiling() {
 
 #[test]
 fn no_environment_authorises_the_whole_internet() {
-    for environment in ["development", "staging", "production"] {
+    for environment in ["dev", "test", "stage", "prod"] {
         let tfvars = without_comments(&read(&format!(
             "infrastructure/environments/{environment}/terraform.tfvars"
         )));
@@ -1377,7 +1377,7 @@ fn the_edge_cells_are_one_module_rather_than_seven_copies() {
     // One cell is configured, and adding the others is a variable change: the
     // runbook carries the map, so the seventh cell is an entry rather than a
     // directory.
-    for environment in ["development", "staging", "production"] {
+    for environment in ["dev", "test", "stage", "prod"] {
         let tfvars = read(&format!(
             "infrastructure/environments/{environment}/terraform.tfvars"
         ));
@@ -1482,8 +1482,8 @@ fn nothing_deploys_that_has_not_passed_the_test_suite() {
 fn production_is_never_deployed_automatically() {
     let deploy = read(".github/workflows/deploy.yml");
     assert!(
-        deploy.contains("TARGET_ENVIRONMENT: ${{ inputs.environment || 'development' }}"),
-        "the automatic path does not default to development"
+        deploy.contains("TARGET_ENVIRONMENT: ${{ inputs.environment || 'dev' }}"),
+        "the automatic path does not default to dev"
     );
     assert!(
         deploy.contains("refuse a production deployment that nobody dispatched"),
@@ -1491,12 +1491,12 @@ fn production_is_never_deployed_automatically() {
     );
     assert!(
         deploy.contains(
-            "env.TARGET_ENVIRONMENT == 'production' && github.event_name != 'workflow_dispatch'"
+            "env.TARGET_ENVIRONMENT == 'prod' && github.event_name != 'workflow_dispatch'"
         ),
         "the refusal does not test what it claims to"
     );
     assert!(
-        deploy.contains("environment: ${{ inputs.environment || 'development' }}"),
+        deploy.contains("environment: ${{ inputs.environment || 'dev' }}"),
         "the deploy job names no GitHub environment, so required reviewers have \
          nothing to attach to"
     );
@@ -2006,7 +2006,7 @@ fn nothing_added_here_raises_the_autonomy_ceiling_anywhere() {
     // is allowed to change the one line that decides whether the platform can
     // reach a real venue — and the venue credential's IAM binding must stay
     // absent wherever the ceiling is paper trading.
-    for environment in ["development", "staging", "production"] {
+    for environment in ["dev", "test", "stage", "prod"] {
         let tfvars = without_comments(&read(&format!(
             "infrastructure/environments/{environment}/terraform.tfvars"
         )));
