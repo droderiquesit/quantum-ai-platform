@@ -16,6 +16,12 @@ autonomy_ceiling = "paper_trading"
 node_count   = 1
 machine_type = "e2-standard-4"
 
+# One node per zone, up to three. Same reasoning as development: nothing here
+# is warm-critical, and a low ceiling makes a runaway workload visible as an
+# unschedulable pod instead of as a bill nobody reads until month end.
+min_node_count = 1
+max_node_count = 3
+
 authorised_networks = []
 
 edge_cells = {
@@ -37,6 +43,24 @@ enable_bigtable      = false
 enable_memorystore   = false
 enable_spanner       = false
 enable_vertex_ai     = false
+
+# --- Off, and each is a decision rather than an oversight --------------------
+
+# Confidential VMs on the nodes. Real hardening, and off because
+# `crates/libs/qip-confidential` is statistical disclosure control with no
+# enclave and no attestation — turning this on next to a crate with that name
+# lets the two together imply a guarantee neither provides. It is also never a
+# one-line change: the machine type above is Intel and this needs n2d, c2d or
+# c3d, which the cluster module refuses at plan time.
+enable_confidential_nodes = false
+
+# Security Command Center's project-scoped resources: two custom detectors that
+# watch for a cluster with Binary Authorization enforcement turned off or a
+# public control plane. Off because they only ever evaluate if SCC is activated
+# at the organisation, which is not a project-level act and which nothing here
+# can check. Detectors that are stored and never run read in the console as a
+# project being watched, which is worse than the gap they replace.
+enable_security_command_center = false
 
 # The only repository whose pipeline may deploy into this project. No default
 # exists for this on purpose: a default would name a repository somebody else

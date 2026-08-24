@@ -95,10 +95,53 @@ locals {
   # Private Google access. The one range through which a workload reaches
   # Google APIs without leaving the VPC and without a route to anywhere else.
   private_google_apis = "199.36.153.8/30"
+
+  # Where journal backups are stored. The cluster's own region unless a
+  # deployment names another one, which is the difference between surviving a
+  # failed disk and surviving a lost region. See modules/backup/NOT-COVERED.md.
+  backup_location = var.backup_location != "" ? var.backup_location : var.region
+}
+
+# The APIs everything else assumes.
+#
+# First, and everything below takes an explicit dependency on it. Without that
+# ordering Terraform is free to create a subnet before the API that creates
+# subnets is on, and the first apply into a fresh project stops partway with a
+# `SERVICE_DISABLED` error — after the network exists, which is the state
+# somebody then has to reason about.
+#
+# Not behind a flag, for the same reason as Binary Authorization below: the off
+# position of that switch is the gap. An already-enabled API is adopted without
+# a call, so this costs an existing project nothing.
+#
+# The conditional half mirrors the flags further down this file rather than
+# reading them, so an API is enabled exactly when the resource that needs it is
+# created. modules/services/BOOTSTRAP.md has the two things that must be true
+# before even this can run.
+module "services" {
+  source = "./modules/services"
+
+  project_id = var.project_id
+
+  enable_bigquery                = var.enable_bigquery
+  enable_alloydb                 = var.enable_alloydb
+  enable_bigtable                = var.enable_bigtable
+  enable_memorystore             = var.enable_memorystore
+  enable_spanner                 = var.enable_spanner
+  enable_vertex_ai               = var.enable_vertex_ai
+  enable_security_command_center = var.enable_security_command_center
+
+  # False. Disabling an API on destroy does not revoke access, it deletes the
+  # resources under it — including ones this configuration never created. See
+  # the variable.
+  disable_services_on_destroy = var.disable_services_on_destroy
 }
 
 module "network" {
   source = "./modules/network"
+
+  # Nothing here can be created before its API is on. See module "services".
+  depends_on = [module.services]
 
   project_id  = var.project_id
   region      = var.region
@@ -115,6 +158,9 @@ module "network" {
 module "cluster" {
   source = "./modules/cluster"
 
+  # Nothing here can be created before its API is on. See module "services".
+  depends_on = [module.services]
+
   project_id  = var.project_id
   region      = var.region
   environment = var.environment
@@ -130,9 +176,33 @@ module "cluster" {
   # cluster in name only.
   authorised_networks = var.authorised_networks
 
+  # The size at creation. After that the autoscaler owns it — the node pool
+  # ignores changes to this deliberately, because editing it would otherwise
+  # destroy and recreate the pool.
   node_count   = var.node_count
   machine_type = var.machine_type
   kms_key_id   = module.secrets.node_encryption_key_id
+
+  # What the pool may grow and shrink to, per zone. Until this existed the pool
+  # was a fixed size and `qip-api`'s HorizontalPodAutoscaler could not reach its
+  # own `maxReplicas: 6` — nothing could add a node, so the ceiling on that
+  # workload was capacity rather than policy, and the autoscaler's answer to
+  # load past the committed nodes was a pod stuck in `Pending`.
+  min_node_count = var.min_node_count
+  max_node_count = var.max_node_count
+
+  # Dated change freezes. Empty by default: a GKE maintenance exclusion is a
+  # fixed pair of timestamps rather than a recurring rule, so "not during
+  # market hours" is covered by the weekly Sunday window in the module and this
+  # is for the specific frozen weekend somebody has in a calendar.
+  maintenance_exclusions = var.maintenance_exclusions
+
+  # Off. Confidential VMs are real hardening and this is a decision rather than
+  # a default — see the variable and modules/data/NOT-PROVISIONED.md. The short
+  # version: `crates/libs/qip-confidential` is statistical disclosure control
+  # with no enclave and no attestation, and enabling this next to a crate with
+  # that name lets the two together imply a guarantee neither provides.
+  enable_confidential_nodes = var.enable_confidential_nodes
 
   # The nodes' own account. Previously this was the deep brain's workload
   # account, which meant a node compromise yielded that workload's permissions
@@ -144,6 +214,9 @@ module "cluster" {
 
 module "secrets" {
   source = "./modules/secrets"
+
+  # Nothing here can be created before its API is on. See module "services".
+  depends_on = [module.services]
 
   project_id       = var.project_id
   project_number   = var.project_number
@@ -186,6 +259,9 @@ module "secrets" {
 module "observability" {
   source = "./modules/observability"
 
+  # Nothing here can be created before its API is on. See module "services".
+  depends_on = [module.services]
+
   project_id  = var.project_id
   environment = var.environment
   labels      = local.labels
@@ -198,6 +274,9 @@ module "observability" {
 module "cicd" {
   source = "./modules/cicd"
 
+  # Nothing here can be created before its API is on. See module "services".
+  depends_on = [module.services]
+
   project_id  = var.project_id
   environment = var.environment
 
@@ -208,6 +287,9 @@ module "cicd" {
 
 module "registry" {
   source = "./modules/registry"
+
+  # Nothing here can be created before its API is on. See module "services".
+  depends_on = [module.services]
 
   project_id  = var.project_id
   region      = var.region
@@ -227,6 +309,9 @@ module "registry" {
 
 module "evidence" {
   source = "./modules/evidence"
+
+  # Nothing here can be created before its API is on. See module "services".
+  depends_on = [module.services]
 
   project_id  = var.project_id
   region      = var.region
@@ -254,6 +339,9 @@ module "evidence" {
 # docs/operations/deploying-an-edge-cell.md for what else each one needs.
 module "data" {
   source = "./modules/data"
+
+  # Nothing here can be created before its API is on. See module "services".
+  depends_on = [module.services]
 
   project_id  = var.project_id
   region      = var.region
@@ -289,6 +377,9 @@ module "data" {
 module "ai" {
   source = "./modules/ai"
 
+  # Nothing here can be created before its API is on. See module "services".
+  depends_on = [module.services]
+
   providers = {
     google      = google
     google-beta = google-beta
@@ -314,6 +405,9 @@ module "ai" {
 module "edge_cell" {
   source   = "./modules/edge-cell"
   for_each = var.edge_cells
+
+  # Nothing here can be created before its API is on. See module "services".
+  depends_on = [module.services]
 
   project_id  = var.project_id
   environment = var.environment
@@ -355,6 +449,9 @@ module "edge_cell" {
 module "binary_authorization" {
   source = "./modules/binaryauthorization"
 
+  # Nothing here can be created before its API is on. See module "services".
+  depends_on = [module.services]
+
   project_id  = var.project_id
   environment = var.environment
   labels      = local.labels
@@ -394,6 +491,9 @@ module "binary_authorization" {
 module "connectivity" {
   source = "./modules/connectivity"
 
+  # Nothing here can be created before its API is on. See module "services".
+  depends_on = [module.services]
+
   project_id  = var.project_id
   environment = var.environment
   labels      = local.labels
@@ -407,4 +507,90 @@ module "connectivity" {
   enable_private_service_connect  = var.enable_private_service_connect
   private_service_connect_address = var.private_service_connect_address
   private_service_connect_target  = var.private_service_connect_target
+}
+
+# Backups for the state that cannot be rebuilt.
+#
+# `docs/operations/disaster-recovery.md` named the gap precisely: the edge cell
+# journal claims are `Retain`, and retained is not backed up. `Retain` stops
+# Kubernetes deleting a disk when the claim goes away and does nothing about a
+# disk that fails, a project that is deleted or a region that is lost. The
+# journal is what a cell decided and why, and it is the one record that cannot
+# be recomputed from the feed or from the venue.
+#
+# Not behind a flag, and for the same reason as Binary Authorization: a switch
+# whose off position is the gap the runbook already documents would leave that
+# gap in place and add a line to the configuration implying otherwise.
+# `backup_paused` is the honest form of "not right now" — it keeps the plan, the
+# key and the retention and suspends the schedule.
+#
+# Two mechanisms, which is deliberate rather than belt and braces. Backup for
+# GKE selects by namespace and needs nobody to remember anything, and it stops
+# covering a journal the moment its claim is deleted. A Compute Engine snapshot
+# schedule keeps covering the disk after that — the `Retain` reclaim policy in
+# `journal-storage.yaml` exists so that disk survives the claim — and protects
+# nothing until somebody attaches it to a disk, which Terraform cannot do
+# because the disks are named `pvc-<uuid>` and created long after any apply.
+# `journal_snapshot_attachment_command` is that step. See the module.
+module "backup" {
+  source = "./modules/backup"
+
+  project_id     = var.project_id
+  project_number = var.project_number
+  environment    = var.environment
+  labels         = local.labels
+
+  # In the platform's existing key ring, like the evidence and model keys.
+  key_ring_id = module.secrets.key_ring_id
+
+  # From the cluster's output rather than assembled here: a plan naming a
+  # cluster that does not exist is accepted by the API and protects nothing.
+  cluster_id     = module.cluster.id
+  cluster_region = var.region
+
+  # The cluster's own region by default. That covers a failed disk, a deleted
+  # PersistentVolume and an operator error, and does not cover losing the
+  # region — the `journal_backup` output reports which of the two this is.
+  backup_location = local.backup_location
+
+  backup_schedule  = var.backup_schedule
+  backup_paused    = var.backup_paused
+  retain_days      = var.backup_retain_days
+  delete_lock_days = var.backup_delete_lock_days
+
+  # The disk-level half. Offset in time from the plan above so two mechanisms
+  # do not read the same volume in the same minute, and retained longer,
+  # because these are what still covers a journal whose claim has been deleted
+  # — a decommissioned cell whose record somebody may still have to answer for.
+  snapshot_start_time  = var.snapshot_start_time
+  snapshot_retain_days = var.snapshot_retain_days
+
+  depends_on = [module.services]
+}
+
+# Security Command Center, the project-scoped part of it.
+#
+# Off by default, and the reason is unusual enough to be worth stating here as
+# well as in the variable: the resources are free and useful, and they only
+# ever evaluate if SCC is activated at the **organisation** this project
+# belongs to. This configuration is project-scoped by design — one project per
+# environment, so a blast radius stops at a project boundary — and has no
+# organisation id to check that with.
+#
+# Turning it on where the organisation has not activated SCC creates two
+# detectors that are stored, never run, and read in the console as a project
+# being watched. That is worse than the gap it replaces: an absent control is
+# visibly absent, and a control that never fires looks like a clean result.
+#
+# modules/scc/ORGANISATION-SCOPED.md draws the line item by item, including why
+# there is no notification config or BigQuery export here.
+module "scc" {
+  source = "./modules/scc"
+
+  project_id = var.project_id
+
+  enable_security_command_center = var.enable_security_command_center
+  muted_findings                 = var.scc_muted_findings
+
+  depends_on = [module.services]
 }

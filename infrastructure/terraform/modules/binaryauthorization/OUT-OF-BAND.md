@@ -23,11 +23,17 @@ if either is empty. That is deliberate: the alternative is a pipeline that
 builds four images, pushes them, cannot sign them, and reports success up to
 the moment the cluster refuses them.
 
-**Two APIs enabled on the project.** `binaryauthorization.googleapis.com` and
-`containeranalysis.googleapis.com`. This configuration manages no
-`google_project_service` anywhere — API enablement has always been out of band
-here — so the first apply fails with a `SERVICE_DISABLED` error naming the API
-rather than anything about signing.
+**Two APIs enabled on the project** — `binaryauthorization.googleapis.com` and
+`containeranalysis.googleapis.com` — **and this is no longer a deployment's
+job.** It used to be: this configuration managed no `google_project_service`
+anywhere, so the first apply into a fresh project failed with a
+`SERVICE_DISABLED` error naming the API rather than anything about signing.
+
+`modules/services` now manages both, unconditionally, in the same apply. What
+remains out of band is one step further back — Service Usage cannot enable
+itself, and the identity running the first apply needs
+`roles/serviceusage.serviceUsageAdmin`, which the deploy account deliberately
+does not hold. `modules/services/BOOTSTRAP.md` has that list.
 
 **An operator who applies this before the first signed deploy.** The policy
 denies by default from the moment it exists. Anything already running in the

@@ -142,3 +142,102 @@ output "private_connectivity_still_needed" {
 
   value = module.connectivity.still_needs_arranging_out_of_band
 }
+
+output "enabled_apis" {
+  description = <<-EOT
+    Every Google API this configuration manages, mapped to the resource that
+    needs it.
+
+    The answer to "why is this API on in our project", which is what a security
+    review asks and what an enablement performed by hand cannot answer. It is
+    also the list to read before a destroy: none of these is turned off by one,
+    because disabling an API deletes the resources under it rather than merely
+    revoking access.
+  EOT
+  value       = module.services.enabled
+}
+
+output "node_pool_bounds" {
+  description = <<-EOT
+    What the node pool may grow and shrink to, per zone and regionally.
+
+    Both forms, because they are three apart and confusing them is how a pool
+    ends up a third of the intended size. A HorizontalPodAutoscaler's ceiling is
+    only a policy if the regional maximum can hold it: `qip-api` asks for six
+    replicas at 250m, which is why nothing being able to add a node made that
+    ceiling a capacity limit instead.
+  EOT
+  value       = module.cluster.node_pool_bounds
+}
+
+output "confidential_nodes" {
+  description = <<-EOT
+    Whether the node pool's memory is encrypted by an AMD SEV key.
+
+    Surfaced so the answer comes from the infrastructure rather than from a
+    crate's name. `crates/libs/qip-confidential` is statistical disclosure
+    control with no enclave and no attestation, and this being true does not
+    change that; see the variable and modules/data/NOT-PROVISIONED.md.
+  EOT
+  value       = module.cluster.confidential_nodes
+}
+
+output "journal_backup" {
+  description = <<-EOT
+    What the edge cell journal backups cover, and where that stops.
+
+    `survives_region_loss` is the field to read: it is false whenever backups
+    are stored in the cluster's own region, which is the default.
+    `protected_pod_count` is the other one — a plan whose namespace selector
+    matches nothing succeeds, reports healthy and protects zero pods, which is
+    indistinguishable from a working backup until somebody needs one.
+
+    modules/backup/NOT-COVERED.md says what is deliberately excluded, including
+    the positions and open orders that the disaster-recovery runbook insists are
+    reconciled from the venue and never restored.
+  EOT
+  value = merge(
+    module.backup.coverage,
+    {
+      plan                = module.backup.plan_name
+      protected_pod_count = module.backup.protected_pod_count
+      snapshot_schedule   = module.backup.snapshot_schedule_name
+    },
+  )
+}
+
+output "journal_snapshot_attachment_command" {
+  description = <<-EOT
+    The command that attaches the journal snapshot schedule to the journal
+    disks, and the reason it is an output instead of a resource.
+
+    A Compute Engine resource policy attaches to a disk. The journal disks are
+    named `pvc-<uuid>` and are created by the CSI driver when a cell's pod is
+    first scheduled — after any apply, with a name nothing could have
+    predicted. `infrastructure/kubernetes/base/journal-storage.yaml` labels them
+    `qip-journal=true` for exactly this reason; this is the other end of that
+    arrangement.
+
+    Until it has been run for a given disk, that disk is covered by the GKE
+    backup plan and by nothing else — which is enough until somebody deletes
+    the claim, at which point it is covered by nothing at all.
+
+    Run it after a cell's first pod is running, and again after adding a cell.
+    `docs/operations/disaster-recovery.md` carries it as a numbered step.
+  EOT
+  value       = module.backup.snapshot_attachment_command
+}
+
+output "security_command_center_still_needs_an_organisation" {
+  description = <<-EOT
+    What Security Command Center cannot do from a project-scoped configuration.
+
+    The counterpart of the data module's `enabled_without_an_adapter` and the
+    connectivity module's `still_needs_arranging_out_of_band`: a gap read at
+    plan time beats one inferred from an empty findings list months later. The
+    entry that matters most is the first — nothing this project defines
+    evaluates at all until SCC is activated at the organisation, and a project
+    cannot tell whether it has been.
+  EOT
+  value       = module.scc.still_needs_an_organisation
+}

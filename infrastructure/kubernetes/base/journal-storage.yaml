@@ -128,11 +128,11 @@ parameters:
 # Three things must be true before uncommenting:
 #
 #   1. The cluster runs the Compute Engine persistent disk CSI driver, and the
-#      snapshot CRDs that come with it. The cluster module in
-#      infrastructure/terraform declares no `addons_config` at all, so whether
-#      `pd.csi.storage.gke.io` is present is a GKE default this repository does
-#      not assert — true on a current cluster, and not something to find out
-#      from a failed deploy. Two commands answer it:
+#      snapshot CRDs that come with it. The cluster module now asserts the
+#      driver (`gce_persistent_disk_csi_driver_config`), so on a cluster this
+#      repository built, the first command below is a formality. The snapshot
+#      CRDs are still the driver's to install, so both are still worth running
+#      rather than found out from a failed deploy:
 #
 #        kubectl get csidriver pd.csi.storage.gke.io
 #        kubectl get crd volumesnapshotclasses.snapshot.storage.k8s.io

@@ -36,6 +36,27 @@ has a validation that refuses two cells sharing a subnet, which catches a
 copy-paste that reuses a block — but only within one apply, so the table above
 is what keeps them apart across environments.
 
+## The node counts are per zone
+
+`node_count`, `min_node_count` and `max_node_count` are all **per zone**, and every
+environment here is a regional cluster across three. The real numbers are three
+times what these files say: production's `min_node_count = 3` is nine nodes.
+
+Reading them as regional totals sizes a pool at a third of what was meant, which
+is why all three are stated explicitly in every file rather than left to the
+module defaults.
+
+`node_count` is now the size **at creation only**. After the pool exists the
+autoscaler owns its size, and the node pool ignores later changes to that
+variable on purpose: `initial_node_count` forces replacement, so editing this
+line would otherwise destroy the pool and recreate it — draining every pod in
+the cluster at once, in a plan whose summary reads "1 to add, 1 to destroy".
+Change the bounds instead.
+
+The floor is deliberately not lower than the committed size outside development
+and test. Scaling down means draining, and a quiet period on this platform is a
+market that has closed followed by one that opens.
+
 ## Why `venues` is empty everywhere
 
 Every cell here has `venues = {}`, which means it can reach no venue. That is

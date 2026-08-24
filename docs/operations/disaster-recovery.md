@@ -38,17 +38,69 @@ is no world model to consult.
 
 ## The gap you have today
 
-**The journal claims are `Retain`, and retained is not backed up.** `Retain` means
-Kubernetes will not delete the disk when the claim goes away. It does nothing about a
-failed disk, a deleted project, or a region becoming unavailable. There is no snapshot
-schedule on those volumes.
+This section used to say the journal claims were `Retain`, that retained is not backed
+up, and that there was no snapshot schedule on those volumes. There is one now, and a
+second mechanism beside it. What is left is narrower, and most of it is one step a
+person has to take.
 
-**With `QIP_STORAGE_TARGET=memory` there is no chain to recover.** That is the default,
-and the start-up banner says `NOTHING SURVIVES A RESTART` — which is honest, and means
-DR for the audit trail begins with choosing `engine` and a real volume.
+**The journals are backed up two ways, and only one is automatic.**
+`infrastructure/terraform/modules/backup` provisions both:
 
-Closing both needs a snapshot schedule on the journal volumes and a durable storage
-target for the central plane. Neither is provisioned.
+* A **Backup for GKE plan** over the `qip` namespace — daily, including volume data,
+  retained 35 days, undeletable for the first 7. It selects by namespace, so it needs
+  nobody to remember anything and a cell added later is covered from its first backup.
+  It captures the Kubernetes objects as well, so a restore puts back a StatefulSet, a
+  claim and the knowledge of which replica owned which disk, rather than a bare block
+  device.
+
+* A **Compute Engine snapshot schedule** — daily, retained 90 days, with
+  `on_source_disk_delete = KEEP_AUTO_SNAPSHOTS`. This is the half that covers a journal
+  *after* its claim is deleted, which is exactly what `qip-journal`'s `reclaimPolicy:
+  Retain` leaves behind and what the backup plan stops seeing. Its snapshots are stored
+  in a multi-region, so they survive losing the region too.
+
+**The snapshot schedule has to be attached to each disk by hand.** This is the live gap
+now. Terraform creates the schedule and cannot attach it: a resource policy attaches to
+a disk, and the journal disks are named `pvc-<uuid>` and created by the CSI driver when
+a cell's pod is first scheduled, long after any apply. The agreed handle between the two
+halves is the label `qip-journal=true`, which the StorageClass stamps on every journal
+disk.
+
+[Attaching the schedule](#attaching-the-schedule) below is the procedure. The command
+with this deployment's project and schedule name already filled in is:
+
+```sh
+terraform -chdir=infrastructure/terraform output -raw journal_snapshot_attachment_command
+```
+
+and the check that nothing was missed — run it after adding a cell, because that is when
+a new row appears:
+
+```sh
+gcloud compute disks list --project <project> \
+  --filter="labels.qip-journal=true AND -resourcePolicies:*" \
+  --format='table(name, zone, labels.qip-environment)'
+```
+
+An empty result is the correct state. A disk in that list is still covered by the backup
+plan — until somebody deletes its claim, after which it is covered by nothing.
+
+**By default the backup plan does not survive losing the region.** Its backups are
+stored where the plan is, which is the cluster's own region. `backup_location` moves
+them, at the cost of cross-region transfer on every backup and a slower restore. The
+`journal_backup` Terraform output reports which of the two this deployment has, as
+`survives_region_loss`. The disk snapshots survive it either way.
+
+**With `QIP_STORAGE_TARGET=memory` there is still no chain to recover.** That is the
+default, and the start-up banner says `NOTHING SURVIVES A RESTART` — which is honest, and
+means DR for the audit trail begins with choosing `engine` and a real volume. No
+Terraform closes this; it is an application setting. Once it names a real volume in the
+`qip` namespace, the backup plan above covers that volume too with no further change.
+
+**Nobody has restored from any of this.** An untested restore is a belief, and
+[Restoring a cell journal](#restoring-a-cell-journal) says as much about itself. Doing
+it once, deliberately, into a scratch namespace is what turns the paragraphs above from
+a configuration into a recovery.
 
 ## Recovering the chain
 
@@ -95,7 +147,7 @@ journal volume and nothing else:
   schedule reporting success against volumes it never touched.
 
 **Not live: a `VolumeSnapshotClass`**, in the same file, commented out. It is a
-CRD, the cluster module declares no CSI addon, and the deploy pipeline runs
+CRD, the cluster module now asserts the PD CSI driver, and the deploy pipeline runs
 `kubectl apply --server-side --dry-run=server` over the whole rendered
 directory — so an unknown kind fails that gate for every manifest, not just its
 own. The preconditions for uncommenting it are listed where it is.

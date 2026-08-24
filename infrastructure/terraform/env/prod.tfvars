@@ -29,6 +29,26 @@ autonomy_ceiling = "paper_trading"
 node_count   = 3
 machine_type = "e2-standard-16"
 
+# Three per zone committed, never fewer, up to eight.
+#
+# Both numbers are **per zone** and this is a regional cluster, so the real
+# range is nine to twenty-four nodes.
+#
+# The floor is not lower than the committed size on purpose. Scaling down means
+# draining, and the quiet period on this platform is a market that has closed
+# followed by one that opens; giving back nodes overnight buys a few hours of a
+# smaller bill and pays for it with cold starts and a wave of rescheduling at
+# the open.
+#
+# The ceiling is what makes `qip-api`'s HorizontalPodAutoscaler a policy rather
+# than a capacity limit — before there was any autoscaling, nothing in the
+# system could add a node, so its `maxReplicas: 6` was a number the cluster
+# could not honour. It is also a bound on the other direction: eight per zone
+# is room for the cells to be rescheduled off a lost node and for an upgrade to
+# surge, and it is not room for a wedged workload to buy nodes all day.
+min_node_count = 3
+max_node_count = 8
+
 # Filled in with the operator ranges that may reach the control plane. Empty
 # means nobody, which fails safe: an unreachable control plane is recoverable
 # and an open one is not.
@@ -121,6 +141,24 @@ enable_bigtable      = false
 enable_memorystore   = false
 enable_spanner       = false
 enable_vertex_ai     = false
+
+# --- Off, and each is a decision rather than an oversight --------------------
+
+# Confidential VMs on the nodes. Real hardening, and off because
+# `crates/libs/qip-confidential` is statistical disclosure control with no
+# enclave and no attestation — turning this on next to a crate with that name
+# lets the two together imply a guarantee neither provides. It is also never a
+# one-line change: the machine type above is Intel and this needs n2d, c2d or
+# c3d, which the cluster module refuses at plan time.
+enable_confidential_nodes = false
+
+# Security Command Center's project-scoped resources: two custom detectors that
+# watch for a cluster with Binary Authorization enforcement turned off or a
+# public control plane. Off because they only ever evaluate if SCC is activated
+# at the organisation, which is not a project-level act and which nothing here
+# can check. Detectors that are stored and never run read in the console as a
+# project being watched, which is worse than the gap they replace.
+enable_security_command_center = false
 
 # The only repository whose pipeline may deploy into this project. No default
 # exists for this on purpose: a default would name a repository somebody else

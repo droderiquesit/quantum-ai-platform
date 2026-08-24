@@ -111,7 +111,20 @@ variable "authorised_networks" {
 }
 
 variable "node_count" {
-  description = "Nodes per zone in the default pool."
+  description = <<-EOT
+    Nodes per zone in the pool **at creation**.
+
+    This used to be the size, full stop. Now it is the starting point and the
+    autoscaler owns the rest: the node pool ignores later changes to it on
+    purpose, because `initial_node_count` forces replacement and editing this
+    line in a tfvars file would otherwise destroy the pool and recreate it,
+    draining every pod in the cluster at once, in a plan whose summary reads
+    "1 to add, 1 to destroy".
+
+    It must sit inside `min_node_count` and `max_node_count`. The cluster
+    module has a precondition that says so at plan time rather than letting the
+    API refuse it after the cluster exists.
+  EOT
   type        = number
   default     = 2
 
@@ -119,6 +132,116 @@ variable "node_count" {
     condition     = var.node_count >= 1 && var.node_count <= 20
     error_message = "The node count must be between 1 and 20."
   }
+}
+
+# --- Node pool autoscaling --------------------------------------------------
+#
+# Both are **per zone**, and this is a regional cluster, so the real range is
+# three times each number. Reading them as regional totals sizes the pool at a
+# third of what was meant.
+#
+# The gap these close: `qip-api` has a HorizontalPodAutoscaler with
+# `maxReplicas: 6` and the pool had a fixed `node_count`, so nothing in the
+# system could add a node. Past the capacity the committed nodes could hold, the
+# autoscaler's answer to load was a pod in `Pending` — which looks like a
+# scheduling fault and is a sizing one.
+
+variable "min_node_count" {
+  description = <<-EOT
+    The smallest the pool may shrink to, per zone.
+
+    Two, not zero and not one. Scaling down means draining, and the quiet
+    period on this platform is a market that is closed followed by one that
+    opens. A floor that lets the pool collapse overnight saves a few hours of
+    a smaller bill and pays for it with cold starts and a wave of rescheduling
+    at the open.
+  EOT
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.min_node_count >= 1 && var.min_node_count <= 20
+    error_message = "The minimum node count must be between 1 and 20, per zone."
+  }
+}
+
+variable "max_node_count" {
+  description = <<-EOT
+    The largest the pool may grow to, per zone.
+
+    A ceiling, not a target: nothing scales towards it unless pods cannot be
+    scheduled. It exists because the alternative to a bound is an autoscaler
+    that answers a wedged workload — one stuck in a crash loop requesting four
+    CPUs, say — by buying nodes until somebody reads the bill.
+
+    Six per zone is eighteen regionally against two per zone committed: room
+    for the API to reach its `maxReplicas`, for cells to be rescheduled off a
+    lost node and for an upgrade to surge, without being room for an accident
+    to run all day.
+  EOT
+  type        = number
+  default     = 6
+
+  validation {
+    condition     = var.max_node_count >= 1 && var.max_node_count <= 50
+    error_message = "The maximum node count must be between 1 and 50, per zone."
+  }
+}
+
+variable "maintenance_exclusions" {
+  description = <<-EOT
+    Dated periods during which no cluster maintenance happens at all, keyed by
+    name.
+
+    Empty by default, and necessarily so: a GKE maintenance exclusion is a
+    fixed pair of timestamps rather than a recurring rule, so "never during
+    market hours" cannot be expressed here. The cluster's weekly window already
+    puts ordinary upgrades on a Sunday, when no venue this platform trades is
+    open. This is for the specific dated freeze — a quarterly roll, an exchange
+    migration weekend, the fortnight around a go-live.
+
+    At most three, and `NO_MINOR_OR_NODE_UPGRADES` may not exceed 180 days.
+    `scope` defaults to `NO_MINOR_OR_NODE_UPGRADES`, which freezes the nodes —
+    where the workload is — while still letting the control plane take a patch.
+  EOT
+
+  type = map(object({
+    start_time = string
+    end_time   = string
+    scope      = optional(string, "NO_MINOR_OR_NODE_UPGRADES")
+  }))
+
+  default = {}
+}
+
+variable "enable_confidential_nodes" {
+  description = <<-EOT
+    Whether the cluster's nodes run as Confidential VMs, with memory encrypted
+    by an AMD SEV key the host cannot read.
+
+    **Off, and off is the decision rather than the default.** The hardening is
+    real and defensible. The reason it is not simply on is the name sitting next
+    to it: `crates/libs/qip-confidential` is **not** confidential computing. It
+    is statistical disclosure control — a k-anonymity gate, a monotone privacy
+    budget, calibrated noise — and its own module documentation says in its
+    first paragraph that there is no enclave, no attestation and no hardware
+    isolation.
+
+    Enabling this alongside a crate with that name lets the two together be read
+    as a guarantee neither one makes. Nothing in this platform attests a node,
+    and no decision anywhere is gated on a node having been attested. Turn it on
+    as defence in depth if that is what you want; do not turn it on and conclude
+    that fabric D is now confidential computing.
+
+    It is never a one-line change. The machine family must be AMD — n2d, c2d or
+    c3d — and neither the `n2-standard-4` default nor production's
+    `e2-standard-16` qualifies; the cluster module refuses the combination at
+    plan time. Enabling it also replaces the cluster.
+
+    modules/data/NOT-PROVISIONED.md carries the full argument.
+  EOT
+  type        = bool
+  default     = false
 }
 
 variable "machine_type" {
@@ -329,4 +452,182 @@ variable "private_service_connect_target" {
   description = "Which bundle the endpoint reaches: vpc-sc (restricted, the set a VPC Service Controls perimeter can protect) or all-apis."
   type        = string
   default     = "vpc-sc"
+}
+
+# --- API enablement ---------------------------------------------------------
+
+variable "disable_services_on_destroy" {
+  description = <<-EOT
+    Whether `terraform destroy` turns the project's Google APIs back off.
+
+    **False**, and the asymmetry here is total rather than a judgement.
+
+    Disabling a Google API is not a permissions change. Disabling
+    `compute.googleapis.com` deletes every Compute resource in the project —
+    instances, disks, networks, firewall rules — whether or not this
+    configuration created them. The plan gives no hint: it shows one API being
+    disabled, not the resources that go with it. In a project holding anything
+    besides this platform, a destroy aimed here becomes somebody else's outage.
+
+    Leaving an API enabled after a destroy costs nothing. Google does not bill
+    for an enabled API with nothing under it, and the next apply adopts it.
+
+    Set it true only where the project exists for one change and is deleted
+    whole afterwards, so the destroy is the project going away and there is
+    nothing else in it to damage.
+  EOT
+  type        = bool
+  default     = false
+}
+
+# --- Security Command Center ------------------------------------------------
+
+variable "enable_security_command_center" {
+  description = <<-EOT
+    Whether to create this project's Security Command Center resources: two
+    custom Security Health Analytics detectors, and any mute configurations
+    declared below.
+
+    **Off**, and not because the resources cost anything — they are free, and
+    the detectors are ones this platform would genuinely benefit from. They
+    watch for a cluster whose Binary Authorization enforcement has been turned
+    off and one whose control plane has been made public: two properties the
+    acceptance suite refuses in the repository and nothing watches in the
+    project, where they are each a single field in a console.
+
+    It is off because everything here only evaluates if Security Command Center
+    is **activated at the organisation this project belongs to**, at Premium or
+    Enterprise. That is not a project-level act, this configuration has no
+    organisation id by design, and nothing here can check it. Turning it on
+    inside an organisation that has not activated SCC creates two detectors that
+    are accepted, stored, never run, and read in the console as a project being
+    watched.
+
+    That failure is worse than the gap it replaces. An absent control is visibly
+    absent; a control that never fires looks like a clean result.
+
+    modules/scc/ORGANISATION-SCOPED.md lists what must be true first and what
+    stays out of reach afterwards — including why there is deliberately no
+    notification config or BigQuery export here.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "scc_muted_findings" {
+  description = <<-EOT
+    Security Command Center findings this deployment has decided not to act on,
+    keyed by mute config id.
+
+    Empty, and it should stay small. Each entry stops a class of finding being
+    shown to anybody, so the `description` is the load-bearing field: it is the
+    only record of who decided and why, and what a reviewer reads when the muted
+    thing turns out to have mattered. The module refuses an entry whose
+    description is shorter than twenty characters.
+
+    They live here rather than in a console because a mute clicked in a console
+    has no author, no date and no argument attached, and a year later is
+    indistinguishable from a finding nobody ever saw.
+  EOT
+
+  type = map(object({
+    filter      = string
+    description = string
+    type        = optional(string, "DYNAMIC")
+  }))
+
+  default = {}
+}
+
+# --- Backups ----------------------------------------------------------------
+#
+# There is no `enable_backup` here, deliberately.
+# `docs/operations/disaster-recovery.md` recorded the absence of a snapshot
+# schedule on the edge cell journals as a gap the platform has; a flag whose
+# default is off would leave that gap exactly where it was and add a line to the
+# configuration implying otherwise. `backup_paused` is the honest form of "not
+# right now": it keeps the plan, the key and the retention and suspends the
+# schedule.
+
+variable "backup_location" {
+  description = <<-EOT
+    Where journal backups are stored. Empty means the cluster's own region.
+
+    That default covers a failed disk, a deleted PersistentVolume, a corrupted
+    journal and an operator error — four of the five losses the disaster
+    recovery runbook lists, and not the fifth: a backup held in the same region
+    as the cluster does not survive losing the region.
+
+    Naming another region buys the fifth and costs cross-region transfer on
+    every backup and a slower restore while everyone waits. It is a
+    deployment's call rather than a default, and whichever way it goes, the
+    `journal_backup` output reports which of the two this deployment has.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "backup_schedule" {
+  description = <<-EOT
+    When a journal backup is taken, as a UTC cron expression.
+
+    Daily. A volume backup here is a persistent disk snapshot — incremental
+    after the first and taken without pausing the writer — so unlike a node
+    upgrade it is not constrained by market hours.
+
+    The minute is not zero on purpose: everything scheduled on the hour in a
+    Google Cloud project contends with everything else scheduled on the hour.
+
+    Shortening it does not shorten the runbook's stated RPO for the journal,
+    which is the shipping interval to the cell's mirror. This is the durable
+    copy behind that, not a replacement for it.
+  EOT
+  type        = string
+  default     = "17 3 * * *"
+}
+
+variable "backup_paused" {
+  description = "Suspends the backup schedule while keeping the plan, its key and its retention. For a cluster genuinely holding nothing worth keeping — not an off switch for the control."
+  type        = bool
+  default     = false
+}
+
+variable "backup_retain_days" {
+  description = "How long a journal backup is kept. Thirty-five days, so a corruption noticed at a month-end reconciliation still has a clean copy behind it. Deliberately not seven years: the evidence bucket is the long-horizon record, under a locked retention policy."
+  type        = number
+  default     = 35
+}
+
+variable "backup_delete_lock_days" {
+  description = "How long a journal backup cannot be deleted by anyone, including whoever holds the permission to delete it. The window in which an operator error, or an account acting on someone else's behalf, cannot also remove the evidence of what it did."
+  type        = number
+  default     = 7
+}
+
+variable "snapshot_start_time" {
+  description = <<-EOT
+    When the disk-level journal snapshot schedule runs, as `HH:MM` in UTC.
+
+    Offset from `backup_schedule`: two snapshot mechanisms reading the same
+    disks in the same minute is avoidable I/O on a volume a cell is actively
+    journalling to, and neither is urgent enough to contend for it.
+  EOT
+  type        = string
+  default     = "05:00"
+}
+
+variable "snapshot_retain_days" {
+  description = <<-EOT
+    How long a journal disk snapshot is kept. Ninety days, longer than the GKE
+    backup plan's retention and deliberately so.
+
+    These are the copies that keep covering a journal after its claim has been
+    deleted — a cell taken out of service, whose disk is `Released` and whose
+    decision record somebody may still be asked about. That question is a
+    compliance one rather than an operational one, so the window is months
+    rather than weeks. Snapshots are incremental, so this costs far less than
+    the number suggests for a volume that appends.
+  EOT
+  type        = number
+  default     = 90
 }
