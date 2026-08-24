@@ -167,11 +167,32 @@ resource "google_pubsub_topic" "rotation" {
 
 # Secret Manager publishes as its own service agent, so the grant is to that
 # agent rather than to any workload identity.
+# Secret Manager's own agent — third of the lazily created service agents,
+# found the same way as the first two: a real apply naming an account that
+# "does not exist". It needs to exist for the publisher grant below, and it
+# needs the secrets key because every secret here is customer-managed
+# encrypted, which Secret Manager performs as this agent.
+resource "google_project_service_identity" "secretmanager" {
+  provider = google-beta
+  project  = var.project_id
+  service  = "secretmanager.googleapis.com"
+}
+
+resource "google_kms_crypto_key_iam_member" "secretmanager_agent" {
+  crypto_key_id = google_kms_crypto_key.secrets.id
+  role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+  member        = "serviceAccount:service-${var.project_number}@gcp-sa-secretmanager.iam.gserviceaccount.com"
+
+  depends_on = [google_project_service_identity.secretmanager]
+}
+
 resource "google_pubsub_topic_iam_member" "rotation_publisher" {
   project = var.project_id
   topic   = google_pubsub_topic.rotation.name
   role    = "roles/pubsub.publisher"
   member  = "serviceAccount:service-${var.project_number}@gcp-sa-secretmanager.iam.gserviceaccount.com"
+
+  depends_on = [google_project_service_identity.secretmanager]
 }
 
 resource "google_secret_manager_secret" "platform" {
@@ -179,6 +200,10 @@ resource "google_secret_manager_secret" "platform" {
 
   project   = var.project_id
   secret_id = "${each.value}-${var.environment}"
+
+  # The CMEK below is performed by Secret Manager's agent, so the secret
+  # cannot exist before the agent holds the key.
+  depends_on = [google_kms_crypto_key_iam_member.secretmanager_agent]
 
   replication {
     user_managed {

@@ -284,8 +284,14 @@ resource "google_container_node_pool" "primary" {
 
   node_config {
     machine_type = var.machine_type
-    disk_type    = "pd-ssd"
-    disk_size_gb = 100
+    # Configurable because boot disks are what quota kills first: pd-ssd and
+    # pd-balanced both count against SSD_TOTAL_GB, which defaults to 250GB in
+    # a fresh project's region — and a regional cluster's three 100GB disks
+    # are 300. The first dev apply died exactly there. Development runs on
+    # pd-standard (a different, far larger quota); environments that keep the
+    # SSD default are the ones whose quota somebody has raised.
+    disk_type    = var.node_disk_type
+    disk_size_gb = var.node_disk_size_gb
 
     # The pool's own service account, not the default compute one, which has
     # far more permission than any workload needs.

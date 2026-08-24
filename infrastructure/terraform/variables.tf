@@ -643,3 +643,27 @@ variable "snapshot_retain_days" {
   type        = number
   default     = 90
 }
+
+variable "node_disk_type" {
+  description = "The central cluster's node boot disk type. See modules/cluster; development uses pd-standard to fit a fresh project's 250GB SSD quota."
+  type        = string
+  default     = "pd-ssd"
+}
+
+variable "node_disk_size_gb" {
+  description = "The central cluster's node boot disk size, per node."
+  type        = number
+  default     = 100
+}
+
+variable "workload_metrics_exist" {
+  description = <<-EOT
+    Whether this project has ever ingested the platform's own Prometheus
+    metrics. False until the first deployment runs; the four workload alert
+    policies exist only when it is true, because Cloud Monitoring refuses a
+    policy naming a metric it has never seen. Flip it in the tfvars after the
+    first deployment and re-apply.
+  EOT
+  type        = bool
+  default     = false
+}

@@ -73,3 +73,18 @@ enable_security_command_center = false
 # could be running, and the consequence of getting it wrong is that their
 # pipeline pushes images and applies manifests here.
 github_repository = "droderiquesit/quantum-ai-platform"
+
+# pd-standard, 50GB: a fresh project's SSD_TOTAL_GB quota is 250 in the
+# region, and a regional cluster's three pd-ssd boot disks at the default
+# 100GB are already 300 — the first apply died on exactly that. Standard
+# disks draw on a separate, far larger quota, and development does not trade
+# on its disk latency.
+node_disk_type    = "pd-standard"
+node_disk_size_gb = 50
+
+# Flip to true and re-apply after the first deployment is running: the four
+# workload alert policies name Prometheus metrics, and Cloud Monitoring
+# refuses a policy for a metric it has never ingested. While this is false
+# the alerts do not exist, which is the honest description of an environment
+# whose workloads have never emitted a metric.
+# workload_metrics_exist = true

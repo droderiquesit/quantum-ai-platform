@@ -1521,9 +1521,13 @@ fn the_bootstrap_script_sets_every_pipeline_variable_the_workflow_reads() {
         let workflow = read(workflow_file);
         let required = pipeline_variables_the_workflow_reads(&workflow);
         // The premise: if this found nothing, the loop below would pass by
-        // being empty and this test would guard nothing at all.
+        // being empty and this test would guard nothing at all. Two is the
+        // floor because infra.yml deliberately reads only the provider and
+        // the project — its service-account name is constructed, so a failed
+        // bootstrap that never set the variables cannot strand the workflow
+        // that exists to recover failed bootstraps.
         assert!(
-            required.len() >= 3,
+            required.len() >= 2,
             "found only {} pipeline variables in {workflow_file}; the match is \
              broken, not the workflow",
             required.len()

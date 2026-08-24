@@ -4,19 +4,20 @@
 # alerting policy that fires on something nobody acts on trains people to
 # ignore the ones that matter.
 #
-# All four conditions are PromQL rather than metric-type filters, and the
-# difference is when they can be created. A filter names a metric descriptor,
-# and Cloud Monitoring refuses a policy whose descriptor does not exist —
-# which, for application metrics, is every apply that precedes the first
-# deployment. The first real apply failed on all four for exactly that
-# reason. A PromQL rule is evaluated against whatever series exist, so the
-# policy can be created on an empty project and starts judging the moment the
-# first scrape lands.
+# All four are gated on `workload_metrics_exist`, and the gate is the fix for
+# a failure two applies hit in two different shapes: Cloud Monitoring refuses
+# an alert policy naming a metric it has never ingested — a filter condition
+# fails on the missing descriptor, and a PromQL condition fails validation on
+# the unknown metric name. For application metrics that is every apply that
+# precedes the first deployment, so the policies simply cannot exist first.
+# The tfvars flips the gate after the first deployment scrapes.
 
 # The kill switch tripping. No threshold and no duration: any trip is worth
 # waking someone for, and one that resolves itself before an alert would fire
 # is exactly the one worth knowing about.
 resource "google_monitoring_alert_policy" "kill_switch" {
+  count = var.workload_metrics_exist ? 1 : 0
+
   project      = var.project_id
   display_name = "qip ${var.environment}: kill switch tripped"
   combiner     = "OR"
@@ -51,7 +52,7 @@ resource "google_monitoring_alert_policy" "kill_switch" {
 # A live order reaching a venue. In a paper environment this should never fire
 # at all, which is why the threshold is zero rather than a rate.
 resource "google_monitoring_alert_policy" "live_fill" {
-  count = var.environment == "prod" ? 0 : 1
+  count = var.workload_metrics_exist && var.environment != "prod" ? 1 : 0
 
   project      = var.project_id
   display_name = "qip ${var.environment}: a live fill occurred in a non-production environment"
@@ -89,6 +90,8 @@ resource "google_monitoring_alert_policy" "live_fill" {
 # first breach and halts on the third, so a breach persisting for fifteen
 # minutes means the book is not coming back inside on its own.
 resource "google_monitoring_alert_policy" "persistent_breach" {
+  count = var.workload_metrics_exist ? 1 : 0
+
   project      = var.project_id
   display_name = "qip ${var.environment}: a risk limit has been breached for fifteen minutes"
   combiner     = "OR"
@@ -121,6 +124,8 @@ resource "google_monitoring_alert_policy" "persistent_breach" {
 # still worth knowing about: it is either a bug or an agent behaving in a way
 # nobody anticipated.
 resource "google_monitoring_alert_policy" "permission_violation" {
+  count = var.workload_metrics_exist ? 1 : 0
+
   project      = var.project_id
   display_name = "qip ${var.environment}: an agent attempted an ungranted capability"
   combiner     = "OR"

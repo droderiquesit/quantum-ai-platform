@@ -184,3 +184,33 @@ variable "enable_confidential_nodes" {
   type        = bool
   default     = false
 }
+
+variable "node_disk_type" {
+  description = <<-EOT
+    The node boot disks' type.
+
+    pd-ssd by default for the environments that trade, because a node's disk
+    is where every image pull and every container write lands. Development
+    overrides this to pd-standard: pd-ssd and pd-balanced both count against
+    the region's SSD_TOTAL_GB quota, 250GB on a fresh project, and a regional
+    cluster's three boot disks alone exceed it.
+  EOT
+  type        = string
+  default     = "pd-ssd"
+
+  validation {
+    condition     = contains(["pd-standard", "pd-balanced", "pd-ssd"], var.node_disk_type)
+    error_message = "The node disk type must be pd-standard, pd-balanced or pd-ssd."
+  }
+}
+
+variable "node_disk_size_gb" {
+  description = "The node boot disks' size. Multiplied by every node in every zone, which is what the quota sees."
+  type        = number
+  default     = 100
+
+  validation {
+    condition     = var.node_disk_size_gb >= 20 && var.node_disk_size_gb <= 500
+    error_message = "The node disk size must be between 20 and 500 GB."
+  }
+}

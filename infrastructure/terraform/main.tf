@@ -190,6 +190,9 @@ module "cluster" {
   pod_range     = module.network.pod_range_name
   service_range = module.network.service_range_name
 
+  node_disk_type    = var.node_disk_type
+  node_disk_size_gb = var.node_disk_size_gb
+
   # Where an operator may reach the control plane from. Never the whole
   # internet: a private cluster with a public control plane is a private
   # cluster in name only.
@@ -301,6 +304,9 @@ module "observability" {
   project_id  = var.project_id
   environment = var.environment
   labels      = local.labels
+
+  # Whether the four workload alerts can exist yet — see the variable.
+  workload_metrics_exist = var.workload_metrics_exist
 
   # Alerting thresholds. The kill-switch alert has no threshold: any trip is
   # worth waking someone for.
