@@ -19,6 +19,16 @@ terraform {
       source  = "hashicorp/google"
       version = "~> 6.12"
     }
+    # One resource needs it: the Vertex AI metadata store, which records the
+    # lineage of a managed training run and has no GA equivalent. Declared
+    # rather than reached for implicitly, because `terraform validate` accepts
+    # a module using an undeclared provider and only `plan` refuses it — so an
+    # undeclared provider is a configuration that passes CI and fails on the
+    # day somebody applies it.
+    google-beta = {
+      source  = "hashicorp/google-beta"
+      version = "~> 6.12"
+    }
   }
 
   # State holds secret material references and the full topology. It lives in
@@ -30,6 +40,11 @@ terraform {
 }
 
 provider "google" {
+  project = var.project_id
+  region  = var.region
+}
+
+provider "google-beta" {
   project = var.project_id
   region  = var.region
 }
@@ -273,6 +288,11 @@ module "data" {
 
 module "ai" {
   source = "./modules/ai"
+
+  providers = {
+    google      = google
+    google-beta = google-beta
+  }
 
   project_id  = var.project_id
   region      = var.region
