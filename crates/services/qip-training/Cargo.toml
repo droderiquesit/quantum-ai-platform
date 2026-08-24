@@ -18,6 +18,11 @@ qip-strategy.workspace = true
 # `Horizon`, which sets the span a label covers and therefore the purge width
 # any cross-validation of this data has to use.
 qip-quant.workspace = true
+# The HTTP client `vertex` reaches the managed training API through. In-tree,
+# blocking, every limit explicit and no TLS — which is why a deployment has to
+# put a TLS-terminating egress proxy in front of it, and why that requirement
+# is stated on the adapter rather than assumed away.
+qip-transport.workspace = true
 
 # Deliberately absent, and each absence is a boundary rather than an oversight.
 #

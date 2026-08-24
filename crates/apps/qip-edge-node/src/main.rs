@@ -13,6 +13,16 @@
 //! * A **venue set**. What this cell may reach, independent of what any
 //!   envelope permits; an order clears both or neither.
 //!
+//! And one thing it must be *told*, because the default is the safe answer and
+//! silence has to keep selecting it: **which venue adapter the orders go
+//! through**. Absent any configuration the cell places against the in-process
+//! matching engine and nothing leaves this process, which is what every
+//! deployment of this binary has done until now. Naming the REST order-entry
+//! adapter opens a socket to a real venue, and `qip_edge_node::venue` refuses
+//! that unless an operator has written the destination out — because nothing
+//! in this platform's code can tell a venue's sandbox host from its production
+//! host, and the start-up banner says so beside the address it will use.
+//!
 //! What it keeps, and what it deliberately does not, is settled here too. The
 //! journal — every decision and every refusal — is shipped to the configured
 //! store, because a cell that dies is a cell whose record is the only account
@@ -31,10 +41,11 @@
 use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Duration, SystemClock};
-use qip_edge::cell::{Cell, CellConfig, WorkReport};
-use qip_edge_node::gateway::SimulatedGateway;
+use qip_edge::cell::{Cell, CellConfig, Placer, WorkReport};
+use qip_edge_node::gateway::NodeGateway;
 use qip_edge_node::mesh::{MeshLink, MeshSettings, PEER_VARIABLE};
 use qip_edge_node::mirror::StoreMirror;
+use qip_edge_node::venue::{ACKNOWLEDGEMENT_VARIABLE, ADAPTER_VARIABLE, VenueChoice};
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
 use qip_storage::settings::{ROOT_VARIABLE, StorageSettings, TARGET_VARIABLE};
@@ -179,20 +190,26 @@ fn run() -> Result<()> {
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
     let mut cell = Cell::new(cell_config, features)?;
 
-    // The venue seam. Simulated is the only class this binary can construct —
-    // `AdapterClass` has no live variant — and the seed is configuration so a
-    // session is replayable: the same seed against the same orders produces
-    // the same fills and the same rejection draws.
-    let gateway_seed = std::env::var("QIP_GATEWAY_SEED")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(1);
+    // The venue seam, and the one decision in this binary that is not
+    // recoverable if it is wrong. Read before anything is opened and announced
+    // before anything is sent: the banner is printed first so that an operator
+    // watching a node fail to start still learns where it was about to send
+    // orders.
+    //
+    // The ceiling is read from the cell's own autonomy controller rather than
+    // from configuration, so "this deployment permits live execution" is
+    // decided by the thing that would permit it.
     let gateway_venue = config
         .venues
         .first()
         .expect("from_env refuses an empty venue list")
         .clone();
-    let gateway = SimulatedGateway::new(gateway_venue, gateway_seed, started)?;
+    let ceiling = cell.autonomy().ceiling();
+    let choice = VenueChoice::from_env(&gateway_venue, ceiling.is_live())?;
+    for line in choice.banner_lines(ceiling.as_str()) {
+        println!("{line}");
+    }
+    let gateway = NodeGateway::open(&choice, gateway_venue, started)?;
 
     // The store is opened and proven writable before the health surface binds.
     // A node that started, reported healthy, and only discovered at the first
@@ -210,13 +227,16 @@ fn run() -> Result<()> {
     let retained_sessions = mirror.retained_sessions()?;
 
     println!(
-        "qip-edge-node cell={} region={} venues={} live_capable={} gateway={}({})",
+        "qip-edge-node cell={} region={} venues={} live_capable={} gateway={}({}) adapter={} \
+         reaches_a_socket={}",
         config.cell_id,
         config.region,
         config.venues.len(),
-        cell.autonomy().ceiling().is_live(),
+        ceiling.is_live(),
         gateway.class(),
-        gateway.venue()
+        gateway.venue(),
+        choice.selector(),
+        gateway.reaches_a_socket()
     );
 
     for line in config.storage.banner_lines(
@@ -257,7 +277,7 @@ fn run() -> Result<()> {
     // one, and inventing a feed would be worse than serving without it. The
     // node serves its health surface so an orchestrator can see it, and
     // reports what production would still have to supply.
-    for requirement in missing_production_requirements(config.mesh.is_some()) {
+    for requirement in missing_production_requirements(config.mesh.is_some(), &gateway) {
         println!("qip-edge-node: awaiting {requirement}");
     }
 
@@ -272,16 +292,34 @@ fn run() -> Result<()> {
     )
 }
 
-/// What a production cell would need that this build cannot supply.
+/// What a production cell would need that this deployment has not supplied.
 ///
 /// Named rather than faked. A synthetic feed that looked like a venue would
 /// make the node appear to work and make the gap invisible.
-fn missing_production_requirements(has_mesh_peer: bool) -> Vec<String> {
+///
+/// The order-entry line is now conditional, because it can genuinely be
+/// satisfied: a node that selected the REST adapter has an endpoint and an
+/// authenticated session, and repeating "awaiting an order-entry credential"
+/// beside a banner naming the venue it just logged on to would train an
+/// operator to ignore this list. What replaces it is the adapter's own
+/// standing requirements — the ones that hold *even when everything is
+/// configured*, the first of which is that nothing in this code can tell a
+/// sandbox endpoint from a production one.
+fn missing_production_requirements(has_mesh_peer: bool, gateway: &NodeGateway) -> Vec<String> {
     let mut missing = vec![
         "QIP_VENUE_FEED_ENDPOINT and its multicast group or session credential".to_string(),
-        "QIP_VENUE_GATEWAY_ENDPOINT and an order-entry session credential".to_string(),
         "QIP_DROP_COPY_ENDPOINT for the independent fill channel".to_string(),
     ];
+    if gateway.reaches_a_socket() {
+        missing.extend(gateway.required_configuration());
+    } else {
+        missing.push(format!(
+            "an order-entry venue: this cell places against the in-process matching engine and \
+             nothing it does reaches a market. Set {ADAPTER_VARIABLE}=rest, the venue's own \
+             endpoint, credential and account variables, and {ACKNOWLEDGEMENT_VARIABLE} to the \
+             endpoint you mean"
+        ));
+    }
     if !has_mesh_peer {
         // Named rather than silently tolerated. A detached cell is a valid
         // state and an invisible one is not: this node will keep trading inside
@@ -311,7 +349,7 @@ fn missing_production_requirements(has_mesh_peer: bool) -> Vec<String> {
 fn serve(
     config: &NodeConfig,
     cell: &mut Cell,
-    gateway: &SimulatedGateway,
+    gateway: &NodeGateway,
     mirror: &mut StoreMirror,
     mut link: Option<&mut MeshLink>,
     clock: &Arc<dyn Clock>,
@@ -368,7 +406,7 @@ fn answer(
     mut stream: TcpStream,
     config: &NodeConfig,
     cell: &Cell,
-    gateway: &SimulatedGateway,
+    gateway: &NodeGateway,
     mirror: &StoreMirror,
     mesh: Option<qip_edge_node::mesh::MeshHealth>,
     started: qip_core::Timestamp,
@@ -395,7 +433,7 @@ fn answer(
         None => "null".to_string(),
     };
     let body = format!(
-        r#"{{"cell":"{}","region":"{}","halted":{},"live_capable":{},"venues":{},"strategies":{},"journal_entries":{},"journal_shipped":{},"storage":"{}","durable":{},"gateway":{{"class":"{}","venue":"{}","submitted":{},"rejected":{}}},"mesh":{mesh},"started_at":{}}}"#,
+        r#"{{"cell":"{}","region":"{}","halted":{},"live_capable":{},"venues":{},"strategies":{},"journal_entries":{},"journal_shipped":{},"storage":"{}","durable":{},"gateway":{{"class":"{}","venue":"{}","submitted":{},"rejected":{},"reaches_a_socket":{},"unknown_orders":{}}},"mesh":{mesh},"started_at":{}}}"#,
         config.cell_id,
         config.region,
         cell.is_halted(),
@@ -414,6 +452,12 @@ fn answer(
         gateway.venue(),
         gateway.submitted_count(),
         gateway.rejected_count(),
+        gateway.reaches_a_socket(),
+        // The number to alert on, and zero for a venue that never sends an
+        // order. An unknown order is one that may be working at the venue, may
+        // have filled, or may never have arrived, and it is published because
+        // the only thing worse than having one is not knowing how many.
+        gateway.unknown_orders(),
         started.as_secs()
     );
     let response = format!(

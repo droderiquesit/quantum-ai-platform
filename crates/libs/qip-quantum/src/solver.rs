@@ -21,9 +21,14 @@
 //!   its moves are accepted against a cross-replica coupling that Metropolis
 //!   annealing has no term for, and at strong coupling the ensemble crosses a
 //!   barrier as one object rather than one spin at a time.
-//! * [`IbmQuantumSolver`] is the port. It reports itself unavailable and names
-//!   exactly what a deployment is missing, because this build has no HTTPS
-//!   transport, no Qiskit Runtime client and no credential.
+//! * [`IbmQuantumSolver`] is the port: it reports itself unavailable and names
+//!   exactly what a deployment is missing, because *this type* holds no
+//!   transport and no credential. A deployment that has both reaches the device
+//!   through [`crate::provider::HostedProvider::connected`] wrapped in a
+//!   [`ProviderSolver`], which enters the same benchmark under the same
+//!   [`SolverKind::Quantum`] and therefore under the same requirement for a
+//!   classical baseline. This type stays as the description of what such a
+//!   deployment has to supply.
 //!
 //! **Runtime here is modelled, not measured.** The platform forbids reaching
 //! for an ambient clock, and a benchmark that called one would produce a

@@ -1,8 +1,8 @@
 //! `qip-quantum` — quantum optimisation, honestly scoped.
 //!
 //! A statevector simulator, a QAOA implementation on top of it, and a provider
-//! port with a hosted adapter that reports exactly what a deployment is
-//! missing rather than pretending to be usable.
+//! port whose hosted adapter reaches IBM Quantum over REST — or reports exactly
+//! what a deployment is missing, rather than pretending to be usable.
 //!
 //! The rule this crate exists to make enforceable is that **no quantum result
 //! is used without a classical baseline solved on the same problem**. That is
@@ -11,7 +11,11 @@
 //! but everything here is shaped to make it possible: a
 //! [`qaoa::QaoaResult`] is a candidate to be checked, and
 //! [`provider::ProviderCapabilities::simulated`] means a simulated result can
-//! never be reported as hardware evidence.
+//! never be reported as hardware evidence. The hosted adapter keeps that flag
+//! honest the only way a remote device permits: it asks the service whether the
+//! backend is a simulator and **refuses to return a result** when the service
+//! says yes, rather than running and relabelling itself. See
+//! [`provider::HostedProvider`].
 //!
 //! Simulating a QAOA circuit costs more than solving the problem it encodes.
 //! Running one against this simulator therefore proves the formulation is
@@ -39,7 +43,8 @@ pub use benchmark::{
     SolverBenchmark, SolverRecord, ValidatedSolution,
 };
 pub use provider::{
-    HostedConfig, HostedProvider, ProviderCapabilities, QuantumProvider, SimulatedProvider,
+    ConfirmedDevice, HostedConfig, HostedProvider, HostedStats, HostedToken, HostedTransport,
+    ProviderCapabilities, QuantumProvider, SimulatedProvider,
 };
 pub use qaoa::{QaoaResult, QaoaSettings};
 pub use solver::{

@@ -12,6 +12,11 @@ serde.workspace = true
 serde_json.workspace = true
 qip-core.workspace = true
 qip-numerics.workspace = true
+# The HTTP client the hosted provider reaches IBM Quantum through. In-tree,
+# blocking, every limit explicit and no TLS — which is why a deployment has to
+# put a TLS-terminating egress proxy in front of it, and why that requirement is
+# stated on the adapter rather than assumed away.
+qip-transport.workspace = true
 
 [lints]
 workspace = true
