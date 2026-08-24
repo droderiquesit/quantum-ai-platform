@@ -153,27 +153,30 @@ refused at admission.
 Closing it needs a Binary Authorization policy, an attestor backed by a KMS
 signing key, and a signing step in the pipeline after the push.
 
-### One of the four workloads does not serve
+### All four workloads now serve
 
-`qip-deepbrain` runs one cycle and returns.
+This section used to name the workloads that ran once and exited. There are
+none left, and the exemption list in the acceptance suite
+(`DOES_NOT_SERVE_YET`) is empty.
 
-`qip-fastbrain` used to be the other. It now validates its agent roster, then
-runs an ingest-and-cycle loop and serves `/health` and `/ready` on its own
-listener, so its Deployment carries real probes. The two endpoints answer
-different questions on purpose: liveness stays 200 while a cycle is merely
-slow, because restarting a slow node makes the problem worse, and readiness
+`qip-fastbrain` validates its agent roster, then runs an ingest-and-cycle loop
+and serves `/health` and `/ready` on its own listener. `qip-deepbrain` does the
+same with a research cadence rather than a fast-path one. Both Deployments
+carry real probes.
+
+The two endpoints answer different questions on purpose, and the reasoning
+differs between the nodes. On the fast path, liveness stays 200 while a cycle
+is merely slow — restarting a slow node makes the problem worse — and readiness
 turns 503 once cycles have breached the fast-path ceiling for longer than the
 breach tolerance, so a node that is alive and not fast leaves rotation instead
-of being killed.
+of being killed. On the deep path there is **no cycle ceiling at all**: a long
+cycle there is research rather than a fault, so slow is never unready. Its
+readiness is revoked only for stopping, halted, stalled, persistently failing,
+and warming — that last having no fast-path equivalent, because until the first
+cycle lands there is no world model to consult.
 
-Their Deployments, Services and ports describe the shape they are being built
-towards. Applied today, Kubernetes would restart each container as it exits,
-and the rollout check at the end of `deploy.yml` is expected to time out
-against both. That is a pipeline failing for a real reason; the fix is a
-serving loop, not a shorter wait list.
-
-They carry no liveness or readiness probe for the same reason: a probe against
-an endpoint that does not exist looks like coverage and is not.
+The rollout check at the end of `deploy.yml` should now pass against both
+rather than time out.
 
 `qip-edge-node` used to be the third and is not any more. It binds
 `QIP_HEALTH_PORT`, answers every request with the cell's state, and
