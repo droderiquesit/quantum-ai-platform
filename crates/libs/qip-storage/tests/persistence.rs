@@ -269,12 +269,19 @@ fn a_file_store_write_leaves_no_scratch_file_behind() {
 fn an_unconfigured_managed_target_fails_loudly_and_names_what_is_missing() {
     // A deployment pointed at BigQuery must not silently fall back to files.
     for target in [
-        StorageTarget::BigQuery,
-        StorageTarget::CloudStorage,
         StorageTarget::AlloyDb,
         StorageTarget::Spanner,
         StorageTarget::Bigtable,
-        StorageTarget::Memorystore,
+        // Memorystore is deliberately absent: its adapter exists, so
+        // `is_implemented` is true for it while an unconfigured deployment is
+        // still refused. That pair of facts is asserted next to the adapter,
+        // in `redis::tests`.
+        //
+        // Cloud Storage and BigQuery are absent for the same reason: both now
+        // have REST adapters in `gcp`, so `is_implemented` is true for them
+        // too, and `key_value` refuses them for a different reason again —
+        // neither is a key-value store. The pair of facts, and the refusals
+        // naming the right shape, are asserted in `tests/gcp.rs`.
     ] {
         assert!(!target.is_implemented());
         let provider = StorageProvider::new(target, "/tmp");

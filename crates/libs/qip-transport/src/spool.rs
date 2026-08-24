@@ -41,7 +41,7 @@
 //!   instructions is the mistake ADR 0009 names about in-tree crypto, wearing
 //!   different clothes. One publisher per namespace, enforced by deployment.
 //! * **It does not fsync per message.** Durability is the
-//!   [`KeyValueStore`]'s, and [`qip_storage::kv::FileKeyValueStore`] writes
+//!   [`KeyValueStore`]'s, and the file-backed adapter in `qip-storage` writes
 //!   through the platform's file I/O. A host that loses its page cache loses
 //!   the tail. Surviving *that* is what the managed bus was for, and ADR 0011
 //!   accepted its loss knowingly.
@@ -53,8 +53,8 @@
 use crate::deadletter::{DeadLetter, DeadLetterSink};
 use crate::error::TransportError;
 use qip_core::error::{Error, Result};
+use qip_core::kv::{KeyValueStore, KeyValueStoreExt};
 use qip_events::AnyEvent;
-use qip_storage::kv::{KeyValueStore, KeyValueStoreExt};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 

@@ -16,6 +16,7 @@ pub mod decimal;
 pub mod error;
 pub mod hash;
 pub mod ids;
+pub mod kv;
 pub mod lineage;
 pub mod money;
 pub mod rng;
@@ -32,6 +33,7 @@ pub use ids::{
     ObjectId, OpportunityId, OptimizationId, OrderId, PortfolioId, PositionId, ProposalId,
     RequestId, ScenarioId, SignalId, SimulationId, StrategyId,
 };
+pub use kv::{KeyValueStore, KeyValueStoreExt};
 pub use lineage::{CausationId, CorrelationId, Lineage, TraceId};
 pub use money::{Currency, Money};
 pub use rng::{Rng, Xoshiro256};

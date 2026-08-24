@@ -19,13 +19,18 @@ qip-contracts.workspace = true
 # suite enforces that direction. It is a dev-dependency instead, so the tests
 # can prove that a `StreamEnvelope` crosses this transport unchanged.
 qip-events.workspace = true
-# The spool persists through the `KeyValueStore` port rather than reaching for
-# the filesystem, so a test runs it in memory and a deployment chooses the
-# adapter. Both crates are libraries, so the dependency edge is legal.
-qip-storage.workspace = true
 
 [dev-dependencies]
 qip-streaming.workspace = true
+# The spool persists through the `KeyValueStore` port rather than reaching for
+# the filesystem, so a test runs it in memory and a deployment chooses the
+# adapter. The port is declared in `qip-core`, not here and not in
+# `qip-storage`: `qip-storage` now depends on this crate, because its Cloud
+# Storage and BigQuery adapters speak a REST API over `HttpClient`, and a
+# normal dependency in both directions is a cycle cargo refuses to build.
+# This edge is a dev-dependency, which cargo does permit in a cycle, and it
+# buys only `MemoryKeyValueStore` for the spool tests.
+qip-storage.workspace = true
 
 [lints]
 workspace = true

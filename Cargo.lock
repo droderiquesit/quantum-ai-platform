@@ -185,6 +185,7 @@ dependencies = [
  "qip-financial",
  "qip-market",
  "qip-numerics",
+ "qip-transport",
  "serde",
  "serde_json",
 ]
@@ -729,6 +730,7 @@ version = "0.1.0"
 dependencies = [
  "qip-core",
  "qip-numerics",
+ "qip-transport",
  "serde",
  "serde_json",
 ]
@@ -828,6 +830,7 @@ version = "0.1.0"
 dependencies = [
  "qip-core",
  "qip-events",
+ "qip-transport",
  "serde",
  "serde_json",
 ]
@@ -869,6 +872,7 @@ dependencies = [
  "qip-numerics",
  "qip-quant",
  "qip-strategy",
+ "qip-transport",
  "serde",
  "serde_json",
 ]

@@ -12,6 +12,13 @@ serde.workspace = true
 serde_json.workspace = true
 qip-core.workspace = true
 qip-events.workspace = true
+# The Cloud Storage and BigQuery adapters in `gcp` speak the GCP JSON APIs over
+# `qip_transport::HttpClient` — the platform's one reviewed HTTP/1.1 client,
+# with bounded bodies and explicit timeouts. Both crates are libraries, so the
+# edge is legal; it runs this way round because the `KeyValueStore` port the
+# transport's spool needs lives in `qip-core`, so the transport does not need
+# this crate to get it.
+qip-transport.workspace = true
 
 [lints]
 workspace = true

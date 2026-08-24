@@ -1,61 +1,23 @@
-//! Key-value persistence.
+//! Key-value persistence: the adapters, and the port they satisfy.
+//!
+//! The port itself is [`qip_core::kv::KeyValueStore`]; this module re-exports
+//! it and supplies the two adapters that need no configuration to work.
 
 use qip_core::error::{Error, Result};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-/// A namespaced key-value store.
+/// The key-value port, re-exported from where it is declared.
 ///
-/// Keys are opaque strings; values are JSON. Scanning by prefix is part of the
-/// contract because every caller needs it — listing a portfolio's positions,
-/// a day's fills, an agent's memory.
-pub trait KeyValueStore: Send + Sync + std::fmt::Debug {
-    fn get(&self, key: &str) -> Result<Option<serde_json::Value>>;
-    fn put(&self, key: &str, value: serde_json::Value) -> Result<()>;
-    fn delete(&self, key: &str) -> Result<bool>;
-    /// Keys beginning with `prefix`, in lexicographic order.
-    fn keys_with_prefix(&self, prefix: &str) -> Result<Vec<String>>;
-    fn len(&self) -> Result<usize>;
-
-    fn is_empty(&self) -> Result<bool> {
-        Ok(self.len()? == 0)
-    }
-}
-
-/// Typed helpers over [`KeyValueStore`].
-///
-/// These live on an extension trait rather than the port itself: generic
-/// methods would make `KeyValueStore` not object-safe, and every consumer holds
-/// it as `Arc<dyn KeyValueStore>` so the backing adapter can be swapped by
-/// configuration.
-pub trait KeyValueStoreExt: KeyValueStore {
-    /// Get and deserialize in one step.
-    fn get_as<T: serde::de::DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {
-        match self.get(key)? {
-            None => Ok(None),
-            Some(value) => Ok(Some(serde_json::from_value(value)?)),
-        }
-    }
-
-    /// Serialize and put in one step.
-    fn put_as<T: serde::Serialize>(&self, key: &str, value: &T) -> Result<()> {
-        self.put(key, serde_json::to_value(value)?)
-    }
-
-    /// Every value under a prefix, in key order.
-    fn scan_as<T: serde::de::DeserializeOwned>(&self, prefix: &str) -> Result<Vec<(String, T)>> {
-        let mut out = Vec::new();
-        for key in self.keys_with_prefix(prefix)? {
-            if let Some(value) = self.get_as::<T>(&key)? {
-                out.push((key, value));
-            }
-        }
-        Ok(out)
-    }
-}
-
-impl<S: KeyValueStore + ?Sized> KeyValueStoreExt for S {}
+/// The trait and its extension moved to [`qip_core::kv`] so that
+/// `qip-transport` could depend on the *port* without depending on this crate,
+/// which is what freed this crate to depend on `qip-transport` in turn — see
+/// [`crate::gcp`]. They are re-exported here, under the path they have always
+/// had, because `qip_storage::KeyValueStore` and `qip_storage::kv::KeyValueStore`
+/// name the same type as before and every existing `Arc<dyn KeyValueStore>`
+/// still coerces. Moving a port should not be visible to the code using it.
+pub use qip_core::kv::{KeyValueStore, KeyValueStoreExt};
 
 /// In-memory store. The default for simulation and tests.
 #[derive(Debug, Default)]
