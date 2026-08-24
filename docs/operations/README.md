@@ -13,6 +13,7 @@ needs the first line more than the reasoning.
 * [Provisioning a managed Google service](provisioning-managed-services.md)
 * [Disaster recovery](disaster-recovery.md)
 * [Scaling and availability](scaling-and-availability.md)
+* [Multi-region, and why it is not a manifest change](multi-region.md)
 
 And the standing list of what this build cannot reach:
 

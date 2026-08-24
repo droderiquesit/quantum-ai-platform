@@ -84,15 +84,13 @@ spec:
           env:
             - name: QIP_API_ADDRESS
               value: "0.0.0.0:8080"
-            # The autonomy ceiling. Set from a config map so that changing it
-            # is a visible change to a named resource rather than an argument
-            # buried in a command line.
             # No volume outlives this pod, so this says so rather than
             # naming a durable store it has nowhere to write. The API holds
             # no source of record: its state is rebuilt from the feed and the
             # central plane, and what it must not lose — the event log's hash
             # chain — needs either a volume of its own or the Cloud Storage
-            # adapter that `StorageTarget::CloudStorage` still refuses.
+            # adapter, which now exists and needs a TLS-terminating proxy at
+            # QIP_GCP_ENDPOINT and a token source before it can be reached.
             #
             # Set explicitly rather than left to the binary's default, because
             # a durability question answered by omission is one nobody
@@ -107,6 +105,9 @@ spec:
                 configMapKeyRef:
                   name: qip-config
                   key: storage_target
+            # The autonomy ceiling. Set from a config map so that changing it
+            # is a visible change to a named resource rather than an argument
+            # buried in a command line.
             - name: QIP_AUTONOMY_CEILING
               valueFrom:
                 configMapKeyRef:

@@ -89,6 +89,22 @@ should expect to correct it.
    opens no venue connection. Running, connected to nothing, holding no
    envelope. That is the state to be in before granting any capital.
 
+   **The pod will only reach that state if the cluster has nodes in the cell's
+   region.** `edge-cell.yaml` carries a `nodeSelector` on
+   `topology.kubernetes.io/region`, so a cell whose region has no node pool
+   sits `Pending` rather than starting. That is deliberate and it is the check
+   working: without it the pod schedules onto the central plane's own nodes,
+   comes up healthy, passes its probes and reports a region it is not in — a
+   cell's whole argument is proximity to a venue, and that failure makes the
+   argument false while every indicator says it holds.
+
+   `modules/cluster` creates one regional node pool, so today only a cell in
+   the cluster's own region can start. A cell elsewhere needs a node pool
+   there, which is the second half of `docs/operations/multi-region.md` and is
+   an architectural decision rather than a step in this runbook. A `Pending`
+   cell here is not a misconfiguration to work around; it is this platform
+   telling you it has nowhere to put that cell.
+
 9. **Add the venues, last.** Put the ranges the venue publishes into the
    `venues` map, apply, and substitute `VENUE_CIDR` and `VENUE_PORT` in
    `allow-edge-egress`. Terraform validation refuses `0.0.0.0/0`. Do not guess
