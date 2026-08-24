@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "qip_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "qip"
 path = "src/main.rs"
@@ -22,7 +26,44 @@ qip-storage.workspace = true
 qip-agents.workspace = true
 qip-risk.workspace = true
 qip-kernel.workspace = true
+# The HTTP server the live demonstration's three doubles are served by. Already
+# a dependency of this crate for the API's own types; `qip_api::http::Server` is
+# the platform's own HTTP/1.1 server, so the demonstration binds one rather than
+# carrying a copy of a test harness into a shipped binary.
 qip-api.workspace = true
+
+# --- what `qip demo --live` needs, and nothing else uses ---------------------
+#
+# Each of these is a crate that speaks over a socket, or a piece the composition
+# between two of them requires. They are listed one by one, with the seam each
+# one supplies, because a manifest that grew ten dependencies for one subcommand
+# should say what each of them bought.
+#
+# The vendor's four feeds: prices, documents, book depth and alternative data.
+qip-market-ingestion.workspace = true
+# The venue's order entry, over HTTP.
+qip-brokers.workspace = true
+# The order manager and the `Broker` port the venue adapter satisfies. The
+# platform's own control path, reached directly because `Platform` fixes its
+# broker at construction; see `demo::gaps`.
+qip-execution-engine.workspace = true
+# The pre-trade checker that control path runs.
+qip-risk-engine.workspace = true
+# The cell's half of the mesh, and the cell that verifies a capital grant.
+qip-edge.workspace = true
+# The centre's half of the same mesh.
+qip-mesh.workspace = true
+# The signing of a capital envelope, which is what makes the grant on the wire
+# evidence rather than a message.
+qip-capital.workspace = true
+# The shared vocabulary both ends of the mesh agree on.
+qip-contracts.workspace = true
+# The mesh transport itself: the inbox the demonstration's mesh peer serves.
+qip-transport.workspace = true
+# The feature engine a cell is built around, and the compiler that produces the
+# strategy it deploys under the grant.
+qip-feature-dag.workspace = true
+qip-strategy.workspace = true
 
 [lints]
 workspace = true

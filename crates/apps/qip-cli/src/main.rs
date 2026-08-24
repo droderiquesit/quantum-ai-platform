@@ -8,6 +8,14 @@
 //! matches the API: enabling live trading requires two authenticated
 //! operators, and a command line cannot establish two people.
 //!
+//! `demo --live` is the one subcommand that opens a socket, and it keeps a
+//! second rule of the same shape: it takes no address from anybody. Its three
+//! peers are loopback servers this process binds on ephemeral ports and scripts
+//! itself, and no flag, variable or file moves them — so it cannot become a way
+//! to reach a venue the normal path would refuse. See [`qip_cli::demo`], which
+//! is also where it says, at both ends of the run, that every fill it prints
+//! was made up in this process.
+//!
 //! Every invocation builds a fresh platform and exits, so nothing this process
 //! holds outlives the command — which makes the *archive* the only thing that
 //! makes `qip cycle` more than a demonstration. `cycle` appends the event log's
@@ -16,6 +24,7 @@
 //! two unrelated ones. Without a store configured they are unrelated, and
 //! `status` says so rather than printing a zero it never observed.
 
+use qip_cli::demo::{DemoSettings, LiveDemo};
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, SystemClock};
 use qip_financial::universe::Universe;
@@ -36,6 +45,7 @@ fn main() {
             Ok(())
         }
         "status" => status(),
+        "demo" => demo(&arguments[1..]),
         "cycle" => cycle(arguments.get(1).and_then(|n| n.parse().ok()).unwrap_or(1)),
         "agents" => agents(),
         "governance" => governance(),
@@ -56,11 +66,18 @@ fn print_help() {
     println!("qip — operator command line");
     println!();
     println!("  status            the autonomy level, ceiling and kill switch");
+    println!("  demo --live [n]   stand up loopback peers and walk the live path");
     println!("  cycle [n]         run n cycles of the intelligence loop (default 1)");
     println!("  agents            the agent roster and each agent's grants");
     println!("  governance        run the roster's governance review");
     println!("  limits            the risk limits and their rationales");
     println!("  storage           the configured store, and what survives a restart");
+    println!();
+    println!("`demo --live` binds a data vendor, a venue and a mesh peer on");
+    println!("loopback, points the live adapters at them and prints what every");
+    println!("layer did. It is a demonstration: every fill it reports is made up");
+    println!("by a test double in this process, and it takes no address from");
+    println!("anybody, so it cannot be pointed at a market.");
     println!();
     println!("There is deliberately no command to raise the autonomy level:");
     println!("enabling live trading needs two authenticated operators, and a");
@@ -195,6 +212,64 @@ fn cycle(count: u64) -> Result<()> {
         settings.target().as_str(),
         archive.describe()
     );
+    Ok(())
+}
+
+/// Stand up the live path against loopback peers and walk it.
+///
+/// Everything this function does beyond argument handling belongs to
+/// [`qip_cli::demo`], which is where it can be tested. What is here is the
+/// shape of the command: refuse an invocation that does not name `--live`,
+/// bound the cycle count, print the banner before anything runs, print each
+/// cycle as it finishes, and print what the run was not on the way out.
+///
+/// `--live` is required rather than defaulted because the word is the only
+/// thing separating this from a command that could be read as running the
+/// platform for real. There is no other demonstration behind `qip demo`, and
+/// naming the one there is costs an operator four keystrokes and buys the
+/// reader of a shell history the knowledge that a socket was involved.
+fn demo(arguments: &[String]) -> Result<()> {
+    let mut positional = Vec::new();
+    let mut live = false;
+    for argument in arguments {
+        match argument.as_str() {
+            "--live" => live = true,
+            other if other.starts_with("--") => {
+                return Err(Error::invalid(format!(
+                    "unknown option {other}. `qip demo --live [cycles]` is the only form"
+                )));
+            }
+            other => positional.push(other),
+        }
+    }
+    if !live {
+        return Err(Error::invalid(
+            "`qip demo` has one form: `qip demo --live [cycles]`. It binds a data vendor, a \
+             venue and a mesh peer on loopback and walks the platform's live path against them. \
+             Nothing it prints comes from a market",
+        ));
+    }
+    let cycles = match positional.first() {
+        None => DemoSettings::default().cycles,
+        Some(text) => text
+            .parse::<u64>()
+            .map_err(|_| Error::invalid(format!("{text:?} is not a number of cycles")))?,
+    };
+
+    let mut demonstration = LiveDemo::stand_up(DemoSettings::default().with_cycles(cycles)?)?;
+    for line in demonstration.banner_lines() {
+        println!("{line}");
+    }
+    for _ in 0..cycles {
+        println!();
+        for line in demonstration.cycle()?.lines() {
+            println!("{line}");
+        }
+    }
+    println!();
+    for line in demonstration.closing_lines() {
+        println!("{line}");
+    }
     Ok(())
 }
 
