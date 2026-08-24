@@ -15,6 +15,11 @@ qip-numerics.workspace = true
 qip-financial.workspace = true
 qip-market.workspace = true
 qip-contracts.workspace = true
+# The JSON-RPC adapter's socket. `qip_transport::http` is the sanctioned
+# outbound HTTP client in this workspace: blocking, one connection per request,
+# and bounded in every dimension a peer chooses. `qip-transport` is a library
+# crate below this service, so the dependency edge is legal.
+qip-transport.workspace = true
 
 [lints]
 workspace = true

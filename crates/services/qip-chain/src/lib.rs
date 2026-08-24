@@ -33,6 +33,7 @@ pub mod finality;
 pub mod gas;
 pub mod math;
 pub mod mempool;
+pub mod rpc;
 pub mod state;
 pub mod units;
 
@@ -52,5 +53,6 @@ pub use bridge::{
 pub use finality::{Confirmations, Finality};
 pub use gas::{GasCost, GasProfile, effective_gas_price};
 pub use mempool::{LikelyOrdering, Mempool, OrderedPending, PendingTransaction, ReorderingRisk};
+pub use rpc::{JsonRpcChainAdapter, RpcChainConfig, RpcStats, TokenBinding};
 pub use state::{Applied, ChainState, ConfirmedView, DerivedState, PoolState, Reorg};
 pub use units::{Conversion, Quantised, TokenAmount};
