@@ -79,7 +79,14 @@ for tool in gcloud terraform gh openssl; do
 done
 if ((${#missing[@]} > 0)); then
   echo "missing: ${missing[*]}" >&2
-  echo "Cloud Shell has all of them preinstalled: https://shell.cloud.google.com" >&2
+  # Cloud Shell resets /usr when its VM recycles — the home directory
+  # survives, installed packages do not. So "it worked this morning" and
+  # "terraform: command not found" are both true, and the fix is to install
+  # again (Cloud Shell prints the commands when you run the missing tool) or
+  # to persist it via $HOME/.customize_environment:
+  # https://cloud.google.com/shell/docs/configuring-cloud-shell
+  echo "on Cloud Shell a recycled VM loses installed packages; reinstall the" >&2
+  echo "missing tool (running it prints the install commands) and rerun this." >&2
   exit 69
 fi
 
