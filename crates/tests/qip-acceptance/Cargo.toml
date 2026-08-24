@@ -62,6 +62,18 @@ qip-edge.workspace = true
 # three-valued legality and nowhere else.
 qip-data-finder.workspace = true
 
+# The live end-to-end walk is the one test that has to reach every adapter that
+# opens a socket at once: the venue order-entry adapter, the JSON-RPC chain
+# adapter, the mesh transport both ends of the spine are built on, and the
+# key-value store the centre's capital spool persists into. Each is already
+# tested against a loopback listener on its own; `e2e_live.rs` is the first
+# thing that runs them together. These are in-tree crates; the workspace's
+# two-dependency rule is untouched.
+qip-brokers.workspace = true
+qip-chain.workspace = true
+qip-transport.workspace = true
+qip-storage.workspace = true
+
 # The end-to-end demonstration is the one test that has to reach everything at
 # once: the capital brain that signs a grant, the twin that prices what the
 # platform did not do, the fabric that pre-positions the cash, and the cost

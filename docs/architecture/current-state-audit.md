@@ -12,6 +12,13 @@ This document exists because the build order says to audit before implementing.
 Its purpose is to stop the next phase rebuilding things that already work, and
 to stop it reporting things as built that are not.
 
+**Sections 1 to 5 have not been re-measured since `237c0f0`.** Section 7 was
+added later, when the platform grew adapters that open real sockets; it carries
+its own measurements and says so. One claim in section 6 was made false by that
+work and has been corrected in place rather than left standing, because a
+known-false-claims section that itself contains a false claim is the worst
+artefact in the repository.
+
 The first audit was written when eight crates held a full implementation on
 disk behind a three-line `lib.rs` that declared no modules. Those crates are
 now compiled and tested, which moves a great many rows — and creates a new
@@ -351,16 +358,25 @@ tree at `dc9ee9a`.
   now *specified* in the development tfvars; specification is not deployment,
   and `venues` is empty on every one of them.
 
-* **No real venue, broker or market-data connection exists.** This is now
-  stronger than it was, not weaker. `qip-brokers` is a full adapter framework
-  and `AdapterClass` has exactly two variants, `Simulated` and `Sandbox`; a
-  doctest asserts there is no `Live` to construct and another asserts no string
-  deserialises into one. The only `std::net` in the workspace is the inbound
-  `TcpListener` in `qip-api` and `qip-edge-node`. There is no HTTP client, no
-  TLS, and no outbound socket anywhere — including in the data finder, whose
-  `NetworkProbe` reports unavailable rather than connecting. Every fill in every
-  test is simulated, and the flag saying so is stamped by the adapter and again
-  by the OMS, overwriting whatever a venue message claimed.
+* **No real venue, broker or market-data connection exists** — but the
+  sentence that used to follow it does not, and the difference matters.
+  `qip-brokers` is a full adapter framework and `AdapterClass` has exactly two
+  variants, `Simulated` and `Sandbox`; a doctest asserts there is no `Live` to
+  construct and another asserts no string deserialises into one. Every fill in
+  every test is simulated, and the flag saying so is stamped by the adapter and
+  again by the OMS, overwriting whatever a venue message claimed. All of that
+  still holds.
+
+  What no longer holds is *"there is no HTTP client, no TLS, and no outbound
+  socket anywhere"*. That was true when this audit was written and is now false
+  in its first and third clauses: `qip-transport::http` is an outbound HTTP/1.1
+  client on `std::net::TcpStream`, and seven adapters speak through it. The
+  middle clause is still true and is the one that keeps the headline true —
+  there is no TLS stack, `Url::parse` refuses `https` by name rather than
+  downgrading it, and a credential sent straight to a public vendor would
+  therefore cross the internet in clear text. The data finder is also unchanged:
+  `NetworkProbe` still reports unavailable rather than connecting, so nothing
+  crawls. See section 7.
 
 * **The quantum layer is a simulator, and "quantum-inspired" is not quantum.**
   `qip-quantum` is 2,467 lines: a correct statevector simulator, QAOA on top of
@@ -418,6 +434,12 @@ tree at `dc9ee9a`.
   default autonomy ceiling and asserts at the end that it never became
   live-capable. One passing run is evidence that the interfaces compose. It is
   not evidence that the system trades.
+
+  `e2e_live.rs` is the second half of that claim and is described in section 7:
+  the same shape of walk, with the observations arriving over sockets and the
+  order leaving over one. It does not supersede this one — it proves less about
+  the layers and more about the wire — and neither is evidence that the system
+  trades.
 
 * **The backtester was flattering executions, and was found doing it.** Fixed
   at `237c0f0`; kept here because the diagnosis is the part worth remembering.
@@ -505,3 +527,173 @@ tree at `dc9ee9a`.
   gap is closed, but the sentence "the platform discovers its own data sources"
   is false in this build. It assesses sources presented to it through an
   in-memory probe. Nothing crawls.
+---
+
+## 7. The live path, and the seams it found
+
+Added after sections 1 to 5 were measured, and kept separate from them on
+purpose: nothing above has been re-measured, and a row edited without a
+re-measurement is a recollection wearing a measurement's formatting. What is
+measured here was measured here — `scripts/count-tests.sh` reports **2,862
+passing and none failing** at the time of writing, against the 2,086 in section
+1, and the difference is a great deal of work this section does not attempt to
+account for.
+
+### What now opens a socket
+
+`qip-transport::http` is an outbound HTTP/1.1 client on `std::net::TcpStream`
+with every limit explicit: a body cap, a header cap, and separate connect, read
+and write timeouts. It has no TLS stack and `Url::parse` refuses `https` by name
+rather than downgrading it, which is why every adapter below carries the same
+first production requirement — a TLS-terminating egress proxy, or a peer inside
+the cluster network — and why none of them may be pointed at a public vendor as
+things stand.
+
+Eight modules speak through it:
+
+| Path | Where |
+|---|---|
+| Market data — bars, quotes, trades, reference | `qip-market-ingestion::rest` |
+| News, filings, macro | `qip-market-ingestion::narrative` |
+| Order-book depth | `qip-market-ingestion::depth` |
+| Alternative data | `qip-market-ingestion::alternative` |
+| On-chain, over JSON-RPC | `qip-chain::rpc` |
+| Venue order entry | `qip-brokers::rest` |
+| Cell → centre, state deltas | `qip-edge::mesh` |
+| Centre → cell, signed capital | `qip-mesh::spine` |
+
+Each is tested against a real `TcpListener` on loopback in its own crate. Until
+`e2e_live.rs` none of them had ever run together, and the platform had never
+completed a cycle whose observations arrived over a socket and whose orders left
+over one.
+
+### What runs them together
+
+`crates/tests/qip-acceptance/tests/e2e_live.rs`, one test, alongside
+`tests/live/mod.rs` — a loopback server that can be a vendor, a venue, a
+JSON-RPC node or a real `MeshEndpoint`, written once here rather than four times
+in the walk. Six of the eight paths above are exercised in one run; `narrative`
+and `alternative` are not, and adding them would prove nothing the `rest` path
+does not already prove about composition.
+
+The run is deterministic and bounded: one `ManualClock` read by every adapter
+and by the platform, a deterministic price series rather than a wall-clock or
+machine-dependent one, a `RecordingSleeper` so the retry ladders cost no elapsed
+time, and explicit transport timeouts in milliseconds. It completes in well
+under a second.
+
+### What it proves
+
+* **A record fetched over HTTP keeps its provenance and its two instants.** The
+  reference-data change the vendor serves is announced an hour before the poll
+  and becomes true a week after it; the record that reaches the platform names
+  the adapter that produced it, carries the vendor's announcement as its
+  knowable-at instant and the *caller's clock* — not the wall clock — as its
+  ingestion instant, which is what makes the same fetch replay identically in a
+  backtest.
+* **A withheld record does not reach a decision.** The vendor serves a hundred
+  and twenty daily bars, the last carrying an 8.5% jump in a series whose
+  typical day is half a percent. At the walk's first instant that bar's bucket
+  has not closed, so it is withheld and counted; the platform runs a full cycle
+  over the other hundred and nineteen and DISCOVER finds no return anomaly. The
+  clock then moves past the bucket close, **the same vendor response is polled
+  again**, and DISCOVER finds it. Same server, same body, same platform: only
+  the clock moved. The gapped order book and the unfinalised chain blocks are
+  withheld in the same run for the same kind of reason — and the adapter never
+  even *asks* the node for a height inside its own confirmation depth, which is
+  stronger than not reporting one, because there is no answer for anything
+  downstream to have read.
+* **An order leaves over a socket and its acknowledgement comes back.** An order
+  naming the opportunity the live bars produced goes through the platform's
+  control path — `OrderManager`, `PreTradeChecker`, the platform's own
+  `AutonomyController` — into `qip-brokers::rest`, which puts it on the wire.
+  The assertion is on what the venue server *recorded*: one POST, a body naming
+  the order and the instrument, an idempotency header equal to the key computed
+  from the order's own terms, and the session secret nowhere in the target. The
+  venue answers a partial fill and the fill is on the order in the order
+  manager, not merely in a return value.
+* **A signed capital grant crosses a socket and is verified rather than
+  trusted.** The centre's spool persists the envelope before any attempt to send
+  it, the cell's downlink polls it off the wire and checks the signature against
+  a key it was given separately, and the cell deploys under the grant that
+  crossed — there is no path from a polled frame to a deployment that skips the
+  check. The cell's state delta then crosses a second socket into the centre's
+  receiver and is absorbed into the central plane.
+
+Every assertion was checked by mutation rather than by reading. Making the
+withheld bar knowable makes the first cycle find the anomaly and the walk fails;
+removing the confirmation depth makes the adapter ask the node for heights it
+should not have and the walk fails; removing the sequence gap publishes the
+gapped book and the walk fails; having the venue acknowledge with no fill fails
+the acknowledgement assertion; signing the grant with a key the cell has never
+held fails the verification assertion. The two vacuous assertions in `e2e.rs`
+were both of the shape "a count is non-zero where the execution went through a
+surface the assertion did not observe", and every count asserted here is paired
+with a premise saying the thing being counted was possible at all.
+
+### What it does not prove
+
+* **Loopback is not the internet.** Every peer answers immediately and
+  correctly. What each adapter does with a peer that stalls, truncates,
+  overruns or lies belongs to that adapter's own suite and is not re-argued.
+* **There is still no vendor and no venue.** No TLS, so no public endpoint;
+  `AdapterClass` still has no `Live` variant, so `Broker::is_simulated` answers
+  `true` for the REST venue adapter as well. That is a claim about the endpoint
+  a deployment supplied and not a guarantee about the money.
+* **Nothing is timed.** See `docs/performance/budgets.md`.
+
+### The seams that do not exist
+
+These are the findings, and they are the reason this section is worth more than
+the passing test. Each is a place where the composition is thinner than the code
+reads.
+
+1. **The platform's world model is never written.** `Platform::new` builds a
+   `qip_world_model::WorldModel`, hands it to the `Desk` behind a read-only
+   capability gate, and nothing ever writes to it: there is no `&mut` accessor
+   from anywhere, and no call to `absorb_bar`, `absorb_news`,
+   `absorb_fundamental` or `absorb_macro` exists in the workspace outside that
+   crate's own tests. `Platform::observe` keeps `close.to_f64()` and
+   `volume.to_f64()` in two `Vec<f64>` and discards the record's event time, its
+   knowable-at time and its provenance entirely. `stage_understand` reports
+   "world model covers *n* instrument(s)" where *n* is `price_history.len()`.
+   So the bitemporal discipline the world model exists for, and which the live
+   adapters go to some trouble to preserve, stops at the platform's front door.
+   The walk asserts it on the record the adapter handed over, because that is as
+   far as it survives.
+2. **`IngestionService` is composed by nothing.** The validation gate that
+   publishes a `DataQualityFailure` rather than dropping a bad record — the
+   platform's charter-section-21 promise that bad data never silently becomes an
+   investment decision — is named by no binary and no composition root.
+   `Platform::observe` takes `Vec<SensedRecord>` directly, so an incoherent bar
+   reaches the price history unremarked.
+3. **`Platform`'s broker is fixed at construction.** There is a
+   `Platform::set_central` and no `set_broker`, so the central plane can never
+   submit through a live venue adapter even though `RestOrderEntryAdapter`
+   implements `Broker`. The walk builds the same `OrderManager` over the same
+   `PreTradeChecker` and submits with the platform's own autonomy controller,
+   which is the call `Platform::submit_order` makes internally and the closest
+   it can get.
+4. **Nothing decodes a cell delta into a `CellReport`.** `qip-mesh::spine` says
+   in as many words that the composition root is where that decode belongs,
+   because it is the one place that legitimately knows both
+   `qip_edge::CellStateDelta` and `qip_kernel::CellReport`. The composition root
+   does not do it — `qip-kernel` names `CellReport` and never names
+   `CellStateDelta`. The walk performs the decode itself and says so.
+5. **A live depth feed cannot supply a cell's features.** `FeatureEngine::ingest`
+   takes a `MarketMessage`; `DepthFeedAdapter` produces an `OrderBook` and a
+   `VenueState`. A socket can therefore give a cell the book it *routes* against
+   — the walk does exactly that, and the cell prices from the touch the vendor's
+   increments produced — and cannot give it the numbers its strategies *read*.
+   The cell's live feature path is `Cell::on_bytes` over a venue wire protocol,
+   and no adapter in the workspace fetches those bytes from anywhere.
+6. **The cell's live venue seam exists in exactly one crate.** `Placer` over
+   `RestOrderEntryAdapter` is `qip_edge_node::gateway::RestGateway` and nothing
+   else. It is a real composition and it is tested in that crate; the workspace
+   walk does not reach it, because doing so means the acceptance crate taking a
+   dependency on an application, and duplicating it in the test would be a
+   bridge pretending to be a seam.
+
+None of the six is a bug in an adapter. Every one of them is a join that reads
+as though it exists and does not, which is the failure mode a suite of
+per-adapter tests is structurally unable to find.
