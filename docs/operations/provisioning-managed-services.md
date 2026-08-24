@@ -11,10 +11,25 @@ Check before you enable:
 ```
 terraform -chdir=infrastructure/terraform plan \
   -var-file=env/<environment>.tfvars \
-  | grep -A20 enabled_without_an_adapter
+  | grep -A20 "enabled_without_an_adapter\|enabled_but_unreachable"
 ```
 
-If your service is named in that output, the deployment is ahead of the code.
+Two outputs, because there are two kinds of gap and they need different
+actions.
+
+`enabled_without_an_adapter` names services this build cannot reach at all —
+AlloyDB, Bigtable, Spanner. Being listed there means code has to be written,
+and the string says which protocol stands in the way.
+
+`enabled_but_unreachable_without_deployment_support` names services whose
+adapter exists but which need something only the deployment can supply. All
+three want a TLS-terminating proxy, because `qip_transport::http` has no TLS
+stack and refuses `https` by name. The two Google APIs also want a bearer
+token, which this build cannot mint: that means RSA-signing a JWT, and ADR 0009
+forbids in-tree crypto. Being listed there means configuration, not code.
+
+Six of the nine storage targets now have adapters — memory, file, the in-tree
+engine, Cloud Storage, BigQuery and Memorystore.
 
 ## What a first deployment needs
 
@@ -48,9 +63,11 @@ infer it.
 
 ## Which storage target to set
 
-`QIP_STORAGE_TARGET` accepts `memory`, `file` and `engine`. The six managed
-targets are ports: naming one stops the process rather than upgrading it, and
-that refusal is deliberate.
+`QIP_STORAGE_TARGET` accepts `memory`, `file` and `engine` with no further
+setup. `cloud_storage`, `bigquery` and `memorystore` also have adapters but
+need the endpoint and credential above; naming one without them stops the
+process rather than degrading, and that refusal is deliberate. `alloydb`,
+`bigtable` and `spanner` remain ports and always refuse.
 
 A workload can only use `engine` or `file` if it has somewhere to write. The
 root filesystem is read-only in every manifest, so:
