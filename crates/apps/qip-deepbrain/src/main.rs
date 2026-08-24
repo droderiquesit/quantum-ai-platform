@@ -150,6 +150,54 @@ fn run() -> Result<()> {
         provenance, &config, &cleared, &platform, &ceiling, bound, &archive, inherited,
     );
 
+    // The evolution engine, and the research node's first data source. The
+    // adapter is the synthetic exchange, seeded from the platform so a session
+    // reproduces; QIP_DEEPBRAIN_REPLAY_PATH swaps in a recording. The engine
+    // also feeds Platform::observe — before it, this node ran every cycle
+    // blind and its own cycle lines said so.
+    let evolution_config =
+        qip_deepbrain::evolution::EvolutionConfig::from_lookup(&|name| std::env::var(name).ok())
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    let adapter: Box<dyn qip_market_ingestion::adapter::DataAdapter> =
+        match std::env::var("QIP_DEEPBRAIN_REPLAY_PATH").ok().as_deref() {
+            Some(path) => Box::new(qip_market_ingestion::replay::ReplayAdapter::open(
+                "replay", path,
+            )?),
+            None => {
+                // The bar interval must match the step, or a fast cadence
+                // closes a bar every sixty cycles and the node runs blind for
+                // hours while looking configured — the trap the fast brain's
+                // feed documents, walked into here once before this comment.
+                let synthetic = qip_market_ingestion::synthetic::EnvironmentConfig {
+                    seed: platform.config().seed,
+                    step: config.cycle_interval,
+                    bar_interval: if config.cycle_interval < qip_core::Duration::from_mins(1) {
+                        qip_market::bar::Interval::Second
+                    } else {
+                        qip_market::bar::Interval::Minute
+                    },
+                    ..qip_market_ingestion::synthetic::EnvironmentConfig::default()
+                };
+                Box::new(qip_market_ingestion::synthetic::SyntheticEnvironment::demo(
+                    clock.now(),
+                    synthetic,
+                ))
+            }
+        };
+    let mut evolution = qip_deepbrain::evolution::EvolutionEngine::new(
+        evolution_config,
+        adapter,
+        platform.config().seed,
+    );
+    println!(
+        "  evolution:        {}",
+        if evolution.enabled() {
+            "searching on its cadence; candidates register at the bottom rung and never promote themselves"
+        } else {
+            "disabled (QIP_DEEPBRAIN_EVOLUTION_EVERY=0)"
+        }
+    );
+
     let summary = node::run(
         &mut platform,
         &archive,
@@ -158,9 +206,13 @@ fn run() -> Result<()> {
         &stop,
         &clock,
         inherited,
+        Some(&mut evolution),
         |outcome| {
             println!();
             println!("{}", outcome.report.summarise());
+            if let Some(round) = &outcome.evolution {
+                println!("  {}", round.describe());
+            }
             println!(
                 "  {:>10} {:>4}  {}s against a {}s cadence{}",
                 "elapsed",

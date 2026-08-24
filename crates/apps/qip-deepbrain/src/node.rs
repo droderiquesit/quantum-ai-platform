@@ -93,6 +93,12 @@ impl Stop {
 #[derive(Debug)]
 pub struct StepOutcome {
     pub report: CycleReport,
+    /// Records the evolution engine's adapter fed the platform this cycle.
+    /// Zero when no engine is attached — the node then runs blind, exactly as
+    /// it did before evolution existed, and the cycle line shows it.
+    pub observed: usize,
+    /// What the evolution round did, on the cycles where one ran.
+    pub evolution: Option<crate::evolution::RoundSummary>,
     /// Measured on a monotonic clock, so a wall-clock adjustment mid-cycle
     /// cannot invent or erase an overrun.
     pub elapsed: Duration,
@@ -134,6 +140,8 @@ pub fn step(platform: &mut Platform, now: Timestamp, interval: Duration) -> Step
         overran_the_interval: elapsed > interval,
         report,
         elapsed,
+        observed: 0,
+        evolution: None,
     }
 }
 
@@ -250,6 +258,7 @@ pub fn run(
     stop: &Arc<AtomicBool>,
     clock: &Arc<dyn qip_core::Clock>,
     restored_through: u64,
+    mut evolution: Option<&mut crate::evolution::EvolutionEngine>,
     mut on_cycle: impl FnMut(&StepOutcome),
 ) -> Result<RunSummary> {
     let started = clock.now();
@@ -268,9 +277,24 @@ pub fn run(
         let now = clock.now();
         set_status(status, |status| status.cycle_started(now));
 
-        let outcome = step(platform, now, config.cycle_interval);
+        // Sense before thinking: the engine's adapter feeds the platform the
+        // records this cycle will reason over, and tees bars for the search.
+        let observed = match evolution.as_deref_mut() {
+            Some(engine) => engine.sense(platform, now)?,
+            None => 0,
+        };
+
+        let mut outcome = step(platform, now, config.cycle_interval);
+        outcome.observed = observed;
 
         cycles += 1;
+
+        // Search after thinking, on the engine's own cadence, in the gap
+        // between cycles for the same reason the archive writes there: a
+        // round's backtests are work the cycle's budget never promised.
+        if let Some(engine) = evolution.as_deref_mut() {
+            outcome.evolution = engine.maybe_turn(platform, cycles, now)?;
+        }
         if !outcome.report.traversed_every_stage() {
             failed += 1;
         }
@@ -572,6 +596,7 @@ mod tests {
             &stop,
             &clock,
             0,
+            None,
             |_| {},
         )
         .expect("the loop runs");
@@ -600,6 +625,7 @@ mod tests {
             &stop,
             &clock,
             0,
+            None,
             move |_| requester.store(true, Ordering::Relaxed),
         )
         .expect("the loop runs");
@@ -676,6 +702,7 @@ mod tests {
             &stop,
             &clock,
             0,
+            None,
             |_| {},
         )
         .expect("the loop runs");
@@ -708,6 +735,7 @@ mod tests {
             &stop,
             &clock,
             0,
+            None,
             |_| {},
         )
         .expect("the loop runs");
@@ -740,6 +768,7 @@ mod tests {
             &stop,
             &clock,
             0,
+            None,
             |_| {},
         )
         .expect("the loop runs");
@@ -922,6 +951,7 @@ mod tests {
             &stop,
             &clock,
             0,
+            None,
             |_| {},
         )
         .expect("the loop runs");

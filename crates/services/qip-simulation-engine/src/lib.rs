@@ -50,6 +50,7 @@ pub mod clock;
 pub mod conditions;
 pub mod costs;
 pub mod execution;
+pub mod harness;
 pub mod market;
 pub mod montecarlo;
 pub mod scenario;

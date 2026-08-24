@@ -27,6 +27,17 @@ qip-agents.workspace = true
 qip-investment-agents.workspace = true
 qip-risk.workspace = true
 qip-kernel.workspace = true
+# The evolution loop: the grammar and trial ledger, the harness that scores a
+# generated candidate on observed bars, and the evidence types the factory's
+# gate reads. All workspace-internal; the app is the composition root where
+# these were always meant to meet.
+qip-evolution.workspace = true
+qip-simulation-engine.workspace = true
+qip-strategy.workspace = true
+qip-market.workspace = true
+qip-market-ingestion.workspace = true
+qip-lifecycle.workspace = true
+qip-contracts.workspace = true
 qip-api.workspace = true
 
 [lints]

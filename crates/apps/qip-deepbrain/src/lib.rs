@@ -37,6 +37,7 @@
 //! allowed to run.
 
 pub mod config;
+pub mod evolution;
 pub mod health;
 pub mod node;
 pub mod roster;
