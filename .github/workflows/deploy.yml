@@ -24,6 +24,15 @@
 #   GCP_DEPLOY_SERVICE_ACCOUNT       terraform output deploy_service_account
 #   GCP_PROJECT                      the project the environment lives in
 #   GCP_REGION                       the region it lives in
+#
+# Two more carry the result of the `binaryauthorization` module. The cluster
+# refuses an image nothing has attested, so an unsigned image is one that
+# pushes successfully and is refused at admission later, appearing as a pod
+# that will not schedule rather than as a deployment that failed. The `images`
+# job therefore refuses to build at all until both are set:
+#
+#   GCP_BINAUTHZ_ATTESTOR            terraform output binary_authorization_attestor
+#   GCP_BINAUTHZ_KEY_VERSION         terraform output binary_authorization_key_version
 name: deploy
 
 on:
@@ -143,6 +152,31 @@ jobs:
           - qip-deepbrain
           - qip-edge-node
     steps:
+      # Refuse to build an image nothing will sign.
+      #
+      # First, before the checkout and before anything is built: the failure
+      # this prevents is four images pushed to the registry that the cluster
+      # will then refuse, and a pipeline that reports success up to the moment
+      # somebody wonders why no pod is starting. Named variables, named
+      # commands, so the fix is in the error rather than in a runbook.
+      - name: the signing variables are set
+        env:
+          BINAUTHZ_ATTESTOR: ${{ vars.GCP_BINAUTHZ_ATTESTOR }}
+          BINAUTHZ_KEY_VERSION: ${{ vars.GCP_BINAUTHZ_KEY_VERSION }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "${BINAUTHZ_ATTESTOR}" ] || missing="${missing} GCP_BINAUTHZ_ATTESTOR"
+          [ -n "${BINAUTHZ_KEY_VERSION}" ] || missing="${missing} GCP_BINAUTHZ_KEY_VERSION"
+          if [ -n "${missing}" ]; then
+            echo "unset repository variables:${missing}" >&2
+            echo "set them from 'terraform output binary_authorization_attestor'" >&2
+            echo "and 'terraform output binary_authorization_key_version'." >&2
+            echo "Until they are, nothing attests these images and the cluster's" >&2
+            echo "Binary Authorization policy refuses every one of them." >&2
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.DEPLOY_SHA }}
@@ -176,6 +210,67 @@ jobs:
           set -euo pipefail
           prefix="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/qip-${TARGET_ENVIRONMENT}"
           docker push "${prefix}/${{ matrix.binary }}:${DEPLOY_SHA}"
+
+      # Sign it. This is the step that makes the cluster's
+      # `binary_authorization` block mean something.
+      #
+      # It was enforcing `PROJECT_SINGLETON_POLICY_ENFORCE` against no policy,
+      # so Google evaluated the implicit one — default rule `ALWAYS_ALLOW` —
+      # and every image in the registry was admissible.
+      # `infrastructure/terraform/modules/binaryauthorization` makes the
+      # default rule deny; this is what puts an image on the other side of it.
+      #
+      # By digest, never by tag. An attestation names bytes, and Binary
+      # Authorization resolves whatever a manifest asks for to a digest and
+      # looks for an attestation of *that*. The digest is read back from the
+      # registry rather than from the local daemon, because what is signed has
+      # to be what a node will pull.
+      #
+      # What this proves is that the pipeline pushed these bytes, and nothing
+      # more: not that the source was reviewed, not that the dependencies were
+      # the ones the lockfile names. The limits, and the two things a
+      # deployment must still arrange, are in
+      # infrastructure/terraform/modules/binaryauthorization/OUT-OF-BAND.md.
+      - name: sign the pushed image
+        env:
+          BINAUTHZ_ATTESTOR: ${{ vars.GCP_BINAUTHZ_ATTESTOR }}
+          BINAUTHZ_KEY_VERSION: ${{ vars.GCP_BINAUTHZ_KEY_VERSION }}
+          GCP_PROJECT: ${{ vars.GCP_PROJECT }}
+          GCP_REGION: ${{ vars.GCP_REGION }}
+        run: |
+          set -euo pipefail
+          prefix="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/qip-${TARGET_ENVIRONMENT}"
+          digest=$(gcloud artifacts docker images describe \
+            "${prefix}/${{ matrix.binary }}:${DEPLOY_SHA}" \
+            --format='value(image_summary.digest)')
+          if [ -z "${digest}" ]; then
+            echo "the registry reports no digest for ${{ matrix.binary }}:${DEPLOY_SHA}." >&2
+            exit 1
+          fi
+          image="${prefix}/${{ matrix.binary }}@${digest}"
+
+          # A re-run of this workflow for the same commit must not fail here.
+          # `sign-and-create` refuses to write an attestation that already
+          # exists, and a re-deploy of an unchanged commit is a normal thing to
+          # do — so an existing attestation for these exact bytes is success,
+          # not a conflict.
+          existing=$(gcloud container binauthz attestations list \
+            --project "${GCP_PROJECT}" \
+            --attestor "${BINAUTHZ_ATTESTOR}" \
+            --attestor-project "${GCP_PROJECT}" \
+            --artifact-url "${image}" \
+            --format='value(name)')
+          if [ -n "${existing}" ]; then
+            echo "${image} is already attested."
+            exit 0
+          fi
+
+          gcloud container binauthz attestations sign-and-create \
+            --project "${GCP_PROJECT}" \
+            --artifact-url "${image}" \
+            --attestor "${BINAUTHZ_ATTESTOR}" \
+            --attestor-project "${GCP_PROJECT}" \
+            --keyversion "${BINAUTHZ_KEY_VERSION}"
 
   deploy:
     name: deploy to ${{ inputs.environment || 'development' }}
