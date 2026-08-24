@@ -134,6 +134,13 @@ resource "google_project_iam_member" "infra_roles" {
     "roles/iam.roleAdmin",
     "roles/resourcemanager.projectIamAdmin",
     "roles/cloudkms.admin",
+    # admin manages keys and their IAM and deliberately excludes the crypto
+    # operations themselves. One of those is needed read-only:
+    # modules/binaryauthorization reads the attestor's public key at plan
+    # time, and the first infra run died on exactly
+    # `cloudkms.cryptoKeyVersions.viewPublicKey`. Viewer grants that and
+    # nothing that signs, encrypts or decrypts.
+    "roles/cloudkms.publicKeyViewer",
     "roles/secretmanager.admin",
     "roles/pubsub.admin",
     "roles/monitoring.admin",
