@@ -95,3 +95,31 @@ database nobody notices until someone queries it.
 
 Turning a flag on is a claim that the adapter exists and is wired. Until
 someone can make that claim, absent is the honest state.
+
+## The egress rule a live adapter needs
+
+The namespace runs default-deny on both ingress and egress. Every workload has
+an egress policy naming exactly what it may reach, and **a workload with no
+matching rule does not get an error — it gets a connection that hangs.**
+
+That matters more now than it did, because the platform has live adapters. An
+*unconfigured* adapter refuses at start-up and says what it needs, which is the
+loud, correct failure. A *configured* adapter behind a denied egress produces a
+hang, which looks like a slow vendor.
+
+`allow-market-data-egress` is written out in `namespace.yaml`, commented, ready
+to uncomment. Two things must be true first:
+
+1. `VENDOR_CIDR` is the range the vendor **publishes**. A range resolved from a
+   DNS lookup is a rule that works until the vendor moves a host, and
+   `0.0.0.0/0` is not a vendor range — a workload that can reach the internet
+   can exfiltrate the position history it was trained on.
+2. It points at a **TLS-terminating proxy**, not the vendor. `qip_transport::http`
+   has no TLS stack and refuses `https` by name, so a credential sent straight
+   to a public vendor crosses the internet in clear text. The proxy holds the
+   vendor's certificate.
+
+The venue path is the same shape and already templated per cell as
+`VENUE_CIDR`/`VENUE_PORT` in `edge-cell.yaml`, because a venue rule belongs to
+one cell: two cells selected only by `app` would each inherit the other's
+venues, which is a wider grant than either was given.

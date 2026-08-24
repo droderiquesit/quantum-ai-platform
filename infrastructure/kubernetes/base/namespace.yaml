@@ -135,6 +135,48 @@ spec:
         - protocol: TCP
           port: 443
 ---
+# The market-data vendor, for the workloads that ingest from one.
+#
+# Commented out, and that is the correct committed state. The platform now has
+# a live REST market-data adapter (`qip_market_ingestion::rest`), and under the
+# default deny above it can reach nothing: an unconfigured adapter refuses at
+# start-up and says so, but a *configured* one against a denied egress produces
+# a connection that hangs rather than an error naming the policy. That is the
+# worst of the three outcomes, so the rule is written out here ready to be
+# uncommented rather than left to be reinvented during an incident.
+#
+# Two things must be true before uncommenting:
+#
+#   1. `VENDOR_CIDR` is the address range the vendor *publishes*. A range
+#      resolved from a DNS lookup is a firewall rule that works until the
+#      vendor moves a host, and `0.0.0.0/0` is not a vendor range — it is the
+#      internet, and a workload that can reach the internet can exfiltrate the
+#      position history it was trained on.
+#   2. Egress goes to a TLS-terminating proxy, not to the vendor directly.
+#      `qip_transport::http` has no TLS stack and refuses `https` by name, so a
+#      credential sent straight to a public vendor would cross the internet in
+#      clear text. Point this rule at the proxy and let the proxy hold the
+#      vendor's certificate.
+#
+# apiVersion: networking.k8s.io/v1
+# kind: NetworkPolicy
+# metadata:
+#   name: allow-market-data-egress
+#   namespace: qip
+# spec:
+#   podSelector:
+#     matchLabels:
+#       app: qip-fastbrain
+#   policyTypes:
+#     - Egress
+#   egress:
+#     - to:
+#         - ipBlock:
+#             cidr: VENDOR_CIDR
+#       ports:
+#         - protocol: TCP
+#           port: VENDOR_PORT
+---
 # The API reaches the three workloads behind it, and Google's APIs. Nothing
 # else.
 #
