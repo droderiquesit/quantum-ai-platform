@@ -47,6 +47,42 @@ spec:
   # Cells are independent; there is no leader to elect and no ordering to
   # respect, so replicas start together rather than one at a time.
   podManagementPolicy: Parallel
+  # Fixed at two, and there is deliberately no HorizontalPodAutoscaler for a
+  # cell. Scaling a cell is not a capacity decision, it is a risk one.
+  #
+  # A `CapitalEnvelope` is scoped to a *cell*: it carries a `cell` field, a
+  # `gross_limit` that is the most that may be at risk at once, and an
+  # `order_limit` per order. Each pod verifies that envelope and then enforces
+  # it against the book it holds in its own memory — the book is rebuilt from
+  # the feed into the emptyDir below, and nothing reconciles one pod's book
+  # against another's. So a cell running N pods can hold N times its gross
+  # limit at risk while every individual pod is correctly inside the envelope
+  # it was handed, and the central plane, which signed one envelope, is
+  # reasoning about a bound that no longer describes the exposure.
+  #
+  # That is precisely the failure the header of this file names as the one
+  # that matters — a cell's bound widening without the central plane agreeing.
+  # An autoscaler here would hand that widening to a CPU threshold, and let
+  # load rather than an approver decide how much may be at risk.
+  #
+  # Two further consequences, either enough on its own:
+  #
+  #   * The central plane cannot tell the pods apart. A cell report is keyed
+  #     by cell id, and every pod here is started with the same `QIP_CELL_ID`,
+  #     so the second pod's report replaces the first pod's rather than adding
+  #     to it. More pods do not produce more cells; they produce one cell that
+  #     speaks with several voices and is heard as one.
+  #   * Every replica takes its own journal claim from the template below, and
+  #     the retention policy is Retain in both directions on purpose. An
+  #     autoscaler would mint evidence volumes on a load spike and orphan them
+  #     on the way back down, permanently, because nothing deletes a retained
+  #     claim.
+  #
+  # A cell that needs more capacity gets a new cell — its own id, its own
+  # envelope, its own subnet and its own venue rules, all of which the
+  # edge-cell Terraform module already takes as a single map entry. That is
+  # the scaling unit here, and it is deliberately something a person decides
+  # rather than something a threshold decides.
   replicas: 2
   selector:
     matchLabels:
@@ -74,6 +110,29 @@ spec:
                   app: qip-edge-node
                   qip.io/cell: CELL_ID
               topologyKey: kubernetes.io/hostname
+      # And across zones as well as across nodes. The rule above already keeps
+      # the two pods off one machine; this keeps them out of one zone, which is
+      # the failure that takes both at once. A cell holds the whole hot path,
+      # so losing every pod of one is losing the ability to trade — and to
+      # cancel — for the venues that cell owns.
+      #
+      # `ScheduleAnyway`, and here the reason is sharper than elsewhere: the
+      # anti-affinity above is `required`, so a hard zone rule on top of it
+      # would mean a replacement pod needs a free node in a specific zone or it
+      # does not start at all. During a zone outage that is the difference
+      # between a cell running degraded on one pod and a cell running on none.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: qip-edge-node
+              # The cell as well as the workload, for the same reason the rule
+              # above and the policies below name it: two cells in one
+              # namespace selected only by `app` would be spread against each
+              # other, and one cell's placement would depend on another's.
+              qip.io/cell: CELL_ID
       # This one serves, unlike the two central-plane workloads. `qip-edge-node`
       # binds `QIP_HEALTH_PORT` and answers every request with the cell's state,
       # so the probes below point at something that exists rather than at the

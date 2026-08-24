@@ -17,7 +17,16 @@ metadata:
   labels:
     app: qip-api
 spec:
-  replicas: 2
+  # No `replicas` here, deliberately: the autoscaler at the bottom of this file
+  # owns the number.
+  #
+  # The pipeline deploys with `kubectl apply --server-side`, which makes
+  # whoever names a field its owner. A `replicas: 2` committed here would be
+  # reasserted on every deploy, so a rollout during a busy hour would cut a
+  # scaled-out API back to two and leave the autoscaler to climb again from
+  # under load — a capacity dip caused by deploying, at the moment capacity
+  # was being used. The floor lives in `minReplicas` instead, where nothing
+  # overwrites it.
   selector:
     matchLabels:
       app: qip-api
@@ -30,6 +39,29 @@ spec:
       # No automatic token mount: the workload authenticates through workload
       # identity, and a mounted token is a credential nothing needs.
       automountServiceAccountToken: false
+      # Spread across zones, not merely across nodes.
+      #
+      # The cluster is regional and its pool runs nodes in three zones. Nothing
+      # otherwise stops the scheduler placing every API replica in one of them,
+      # and losing that zone would take the whole operator interface with it —
+      # including the path an operator uses to trip the kill switch, which is
+      # the one thing that must be reachable while something is going wrong.
+      #
+      # `ScheduleAnyway` rather than `DoNotSchedule`, and that is the whole
+      # decision. A hard constraint on a pool this size turns an unsatisfiable
+      # spread into pods that stay Pending: during a zone outage — exactly when
+      # the replacements are needed — the surviving zones would refuse them,
+      # because accepting one would breach the skew. That is an availability
+      # feature causing the outage it was added to prevent. Soft spreads when
+      # it can and schedules when it cannot, so the worst case is a badly
+      # balanced API rather than no API.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: qip-api
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -152,7 +184,118 @@ metadata:
   name: qip-api
   namespace: qip
 spec:
-  minAvailable: 1
+  # `maxUnavailable: 1` rather than `minAvailable: 1`, because the replica
+  # count is no longer fixed.
+  #
+  # The two say the same thing at two replicas and diverge above it: with the
+  # autoscaler at six, `minAvailable: 1` would permit a drain to take five at
+  # once and leave one replica holding the traffic that needed six. As
+  # `maxUnavailable` the budget stays proportionate to whatever the autoscaler
+  # has decided — one replica leaves at a time, at any size.
+  #
+  # What it must never become is `minAvailable` equal to the replica count.
+  # Node auto-upgrade is enabled on this pool and drains nodes without asking:
+  # a budget that forbids every voluntary eviction does not protect the API,
+  # it stalls the upgrade against it until somebody deletes the budget during
+  # an incident.
+  maxUnavailable: 1
   selector:
     matchLabels:
       app: qip-api
+---
+# The only autoscaler in this repository, and the reason it is the only one.
+#
+# The API is a request/response server: work arrives from outside, one replica
+# handles one request, and a second replica halves what each one carries. That
+# is the property a horizontal autoscaler needs, and it is the property the
+# other three workloads do not have — each of them runs its own loop at its own
+# cadence, so a replica added to them duplicates the work rather than sharing
+# it. Each of those manifests says so at the point where somebody would go to
+# add the autoscaler they are missing.
+#
+# CPU only, deliberately. The obvious second metric is memory and it would be
+# actively wrong here: this process holds the event index, the rate-limit
+# counters and the cell registry in memory, so its footprint tracks how much
+# has happened rather than how busy it is, and it does not come back down when
+# traffic does. An autoscaler targeting memory would add replicas because the
+# day had been long, and would never remove them.
+#
+# `averageUtilization: 300` is not a typo. The autoscaler measures against the
+# container's *request*, and this container requests 250m against a 2 CPU
+# limit — the request is a scheduling floor, not an estimate of steady state.
+# 300% of 250m is 750m, a little over a third of the limit, which adds a
+# replica while there is still headroom rather than once requests are already
+# queueing behind a throttled runtime. Raising the request to something like
+# steady state and using a conventional 70% would say the same thing more
+# plainly, but the request is also what the scheduler packs on, so that is a
+# change to how this pod is placed and not only to how it scales.
+#
+# minReplicas is 2: one replica has nowhere to fail to, no zone to be spread
+# across, and would make the disruption budget above unable to allow a single
+# eviction.
+#
+# maxReplicas is 6, and it is a capacity number rather than an ambition. The
+# pool is regional with two nodes per zone across three zones and there is no
+# cluster autoscaler, so nothing here can summon a node: six replicas at 250m
+# is 1.5 CPU of requests, which fits the pool as committed. An autoscaler whose
+# maximum does not fit does not add capacity, it leaves pods Pending.
+#
+# Six is also where more replicas stop helping, for reasons that are not
+# capacity and are not fixed by raising this number:
+#
+#   * Rate-limit counters are per process. Six replicas means a caller's real
+#     allowance is six times the one this process believes it is enforcing.
+#   * A cell's report reaches whichever replica the Service picked, and the
+#     registry that records it is per process too. The more replicas, the
+#     smaller the share of reports each one sees, and the likelier the console
+#     served by one of the others calls a cell stale that is not. It is a
+#     display concern — the risk aggregate is rebuilt from the reports
+#     themselves — but it is a real one, and it gets worse with every replica.
+#
+# Both would be closed by moving that state out of the process rather than by
+# scaling further, which is the honest next step and is not this change.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: qip-api
+  namespace: qip
+spec:
+  # Written inline on purpose, and it must stay that way. The acceptance suite
+  # finds workloads by looking for a line reading `kind: Deployment` at any
+  # indentation; a block-style target puts exactly that line in this document
+  # and makes an autoscaler look like a Deployment with no containers, no
+  # service account and no probes, which fails several checks that have nothing
+  # to do with autoscaling.
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: qip-api
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 300
+  behavior:
+    scaleUp:
+      # A minute of agreement before acting, then at most double. Traffic
+      # arrives faster than it leaves, so this side is the permissive one.
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+    scaleDown:
+      # Slow, and one replica at a time. Every replica removed takes its
+      # rate-limit counters and its record of which cells have reported with
+      # it, so shedding four at once loses most of what the console knows;
+      # and a set that flaps discards it repeatedly while a node drain is
+      # trying to make progress against the disruption budget above.
+      stabilizationWindowSeconds: 600
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 300

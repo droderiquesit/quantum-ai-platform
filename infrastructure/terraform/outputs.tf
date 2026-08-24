@@ -89,3 +89,56 @@ output "edge_cells" {
     }
   }
 }
+
+output "binary_authorization_attestor" {
+  description = <<-EOT
+    Set this as the GitHub repository variable `GCP_BINAUTHZ_ATTESTOR`.
+
+    Until it and `GCP_BINAUTHZ_KEY_VERSION` are set, `deploy.yml` refuses to
+    build. That is the intended failure: the alternative is a pipeline that
+    builds and pushes four images it cannot sign, and a cluster that refuses
+    every one of them at admission with no indication of why.
+  EOT
+
+  value = module.binary_authorization.attestor_name
+}
+
+output "binary_authorization_key_version" {
+  description = "Set this as the GitHub repository variable `GCP_BINAUTHZ_KEY_VERSION`. The fully qualified KMS key version the pipeline signs with; the private half never leaves KMS."
+  value       = module.binary_authorization.attestor_key_version
+}
+
+output "interconnect_pairing_keys" {
+  description = <<-EOT
+    Attachment name to the pairing key its partner needs, or empty when partner
+    interconnect is off.
+
+    Sensitive because it is a bearer token in everything but name: whoever
+    holds it can attach a circuit of theirs to a VLAN attachment of this
+    project's. Read it deliberately, with
+    `terraform output -json interconnect_pairing_keys`, and hand it over
+    through the partner's ordering process rather than a CI log.
+  EOT
+
+  value     = module.connectivity.pairing_keys
+  sensitive = true
+}
+
+output "interconnect_attachments" {
+  description = "Each attachment's region, edge availability domain and state. `PENDING_PARTNER` means Google is still waiting for the partner's half."
+  value       = module.connectivity.interconnect_attachments
+}
+
+output "private_connectivity_still_needed" {
+  description = <<-EOT
+    What a deployment must still arrange elsewhere for the private path to
+    carry traffic: a circuit against each pairing key, somebody enabling an
+    attachment after reviewing its far end, and DNS at the colocated site.
+
+    The counterpart of the data module's `enabled_without_an_adapter`, and for
+    the same reason: a gap an operator reads at plan time rather than
+    discovering at cutover.
+  EOT
+
+  value = module.connectivity.still_needs_arranging_out_of_band
+}

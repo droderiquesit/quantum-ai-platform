@@ -25,8 +25,19 @@ variable "environment" {
   type        = string
 
   validation {
-    condition     = contains(["development", "staging", "production"], var.environment)
-    error_message = "The environment must be development, staging or production."
+    # Four, and short. The platform's environments are DEV/TEST/STAGE/PROD, and
+    # `test` had no permitted value at all — an environment named in the
+    # architecture that no configuration could express.
+    #
+    # Short on purpose. These names are interpolated into Google resource ids
+    # with hard length limits, and `production` was already one character over
+    # for an edge cell: `qip-edge-frankfurt-1-production` is 31 characters
+    # against a service account's limit of 30. That combination passed variable
+    # validation and failed at apply, so the platform as configured could not
+    # deploy a cell to production. See the length validation in
+    # `modules/edge-cell`, which now catches the class rather than this case.
+    condition     = contains(["dev", "test", "stage", "prod"], var.environment)
+    error_message = "The environment must be dev, test, stage or prod."
   }
 }
 
@@ -257,4 +268,65 @@ variable "enable_vertex_ai" {
   description = "Managed training. The Vertex port in qip-training has no client, no credential and no egress path, so enabling this provisions somewhere to train without making this build able to submit a job."
   type        = bool
   default     = false
+}
+
+# --- Private connectivity ---------------------------------------------------
+#
+# Both default false, for a reason one step beyond the managed data services
+# above. A database enabled early is a bill and an attack surface. An
+# interconnect attachment enabled early is those, plus a private path that
+# appears in the project and in every diagram and does not exist: a VLAN
+# attachment carries nothing until a partner has provisioned a circuit against
+# its pairing key, and Terraform cannot order a cross-connect.
+#
+# See modules/connectivity/NOT-ORDERED.md for the four things a deployment
+# must arrange first, and env/prod.tfvars for why three cells need them.
+
+variable "enable_partner_interconnect" {
+  description = "Cloud Router and VLAN attachments for Partner Interconnect. Requires a partner, a circuit and a pairing key handed over — none of which Terraform can create."
+  type        = bool
+  default     = false
+}
+
+variable "partner_interconnects" {
+  description = <<-EOT
+    The VLAN attachments to create, keyed by a short name.
+
+    Empty by default. Two entries per site, in different edge availability
+    domains, or the redundant pair is one circuit twice — a single metro
+    maintenance window takes both.
+  EOT
+
+  type = map(object({
+    region                   = string
+    edge_availability_domain = string
+    admin_enabled            = optional(bool, false)
+    description              = optional(string, "")
+  }))
+
+  default = {}
+}
+
+variable "cloud_router_asn" {
+  description = "The VPC side's BGP ASN. Private, and not the one the colocated equipment uses: two ends claiming one ASN never establish a session."
+  type        = number
+  default     = 64514
+}
+
+variable "enable_private_service_connect" {
+  description = "An internal endpoint answering for Google APIs, so the far end of an interconnect reaches them without a route to the internet. Needs DNS on the far end, which is not a resource here."
+  type        = bool
+  default     = false
+}
+
+variable "private_service_connect_address" {
+  description = "The endpoint's internal address. No default: it must overlap neither this VPC's subnets nor the far end's ranges, and only the deployment knows both."
+  type        = string
+  default     = ""
+}
+
+variable "private_service_connect_target" {
+  description = "Which bundle the endpoint reaches: vpc-sc (restricted, the set a VPC Service Controls perimeter can protect) or all-apis."
+  type        = string
+  default     = "vpc-sc"
 }

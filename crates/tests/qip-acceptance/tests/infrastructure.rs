@@ -611,14 +611,24 @@ fn manifest_documents() -> Vec<(std::path::PathBuf, String)> {
 }
 
 /// Documents of one kind.
+/// Documents whose **own** kind is `kind`.
+///
+/// The match is anchored at column zero rather than trimmed, because `kind:`
+/// appears nested inside several Kubernetes objects and a trimmed match reads
+/// those as the document's own kind. A `HorizontalPodAutoscaler` names its
+/// target in a `scaleTargetRef` containing `kind: Deployment`, so the trimmed
+/// version pulled every HPA into the Deployment set and then panicked on it
+/// having no container — which made a correctly written HPA fail four tests
+/// that have nothing to do with autoscaling.
+///
+/// The workaround at the time was to write `scaleTargetRef` as an inline flow
+/// mapping so the line never appeared on its own. That is a coupling between a
+/// manifest's formatting and a test's parser, and the kind of thing that holds
+/// until somebody reformats a file for good reasons.
 fn documents_of_kind(kind: &str) -> Vec<(std::path::PathBuf, String)> {
     manifest_documents()
         .into_iter()
-        .filter(|(_, document)| {
-            document
-                .lines()
-                .any(|line| line.trim() == format!("kind: {kind}"))
-        })
+        .filter(|(_, document)| document.lines().any(|line| line == format!("kind: {kind}")))
         .collect()
 }
 

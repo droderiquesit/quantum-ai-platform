@@ -62,8 +62,18 @@ resource "google_compute_subnetwork" "cell" {
 }
 
 resource "google_service_account" "cell" {
-  project      = var.project_id
-  account_id   = "qip-edge-${var.cell_id}-${var.environment}"
+  project = var.project_id
+  # A service account id is 6 to 30 characters. `qip-edge-` is 9, so a cell id
+  # and environment totalling more than 21 fails — at apply, after the network
+  # and cluster exist. The precondition moves that to plan time.
+  account_id = "qip-edge-${var.cell_id}-${var.environment}"
+
+  lifecycle {
+    precondition {
+      condition     = length("qip-edge-${var.cell_id}-${var.environment}") <= 30
+      error_message = "The derived service account id qip-edge-${var.cell_id}-${var.environment} is ${length("qip-edge-${var.cell_id}-${var.environment}")} characters; Google allows 30. Shorten the cell id."
+    }
+  }
   display_name = "qip edge cell ${var.cell_id} (${var.environment})"
   description  = "Workload identity for the ${var.cell_id} edge cell."
 }

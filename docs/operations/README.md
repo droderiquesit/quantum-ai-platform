@@ -12,6 +12,7 @@ needs the first line more than the reasoning.
 * [Deploying a new edge cell](deploying-an-edge-cell.md)
 * [Provisioning a managed Google service](provisioning-managed-services.md)
 * [Disaster recovery](disaster-recovery.md)
+* [Scaling and availability](scaling-and-availability.md)
 
 And the standing list of what this build cannot reach:
 

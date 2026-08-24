@@ -337,3 +337,74 @@ module "edge_cell" {
   registry_location          = var.region
   registry_repository        = module.registry.repository_name
 }
+
+# Only an image this pipeline signed may run.
+#
+# The cluster above already sets `binary_authorization =
+# PROJECT_SINGLETON_POLICY_ENFORCE`. Until this module existed there was no
+# policy for it to enforce, so Google evaluated the implicit one — whose
+# default rule is `ALWAYS_ALLOW` — and the cluster refused nothing while
+# reading, in the configuration and in the console, as though it did.
+#
+# Not optional and deliberately not behind a flag: with enforcement already on,
+# the only alternative to a deny-by-default policy is the implicit policy that
+# admits everything, so an off switch here would be a switch whose off position
+# is the gap. `exempt_image_patterns` is likewise not surfaced as a root
+# variable — an exemption is an image that runs unsigned, and it should be a
+# deliberate edit to the module rather than a line in a tfvars file.
+module "binary_authorization" {
+  source = "./modules/binaryauthorization"
+
+  project_id  = var.project_id
+  environment = var.environment
+  labels      = local.labels
+
+  # The signing key lives in the platform's existing key ring, like the
+  # evidence and data keys, rather than in a second ring nobody rotates.
+  key_ring_id = module.secrets.key_ring_id
+
+  # `<location>.<name>`, which is the only form Binary Authorization matches a
+  # cluster rule on. Taken from the cluster module's output so the policy
+  # cannot end up naming a cluster that does not exist — a rule that matches
+  # nothing is never evaluated and reports nothing.
+  cluster_id = "${var.region}.${module.cluster.name}"
+
+  # The pipeline signs. That is the honest shape of this control and its main
+  # limitation: whoever can run a step in that pipeline can sign an image.
+  # modules/binaryauthorization/OUT-OF-BAND.md says what a stronger
+  # arrangement would be and why this repository cannot hold it.
+  ci_service_account = module.cicd.service_account_email
+}
+
+# Private links and direct peering.
+#
+# Off in every environment unless a deployment says otherwise, and the reason
+# is stronger than the one for a managed database: an interconnect attachment
+# is a resource waiting for a partner circuit that nobody has ordered. It
+# cannot be made to work from here — a partner, a cross-connect, a pairing key
+# handed over and a VLAN attachment on their side are all out of band, and
+# modules/connectivity/NOT-ORDERED.md lists them in the order they happen.
+#
+# What it is for is written down rather than implied. `env/prod.tfvars` records
+# that `chicago-1`, `newyork-1` and `dubai-1` run 400, 300 and 380km from the
+# venues they trade, because Google Cloud has no region in those metros;
+# colocation with a partner interconnect back to this VPC is the first of the
+# three honest answers `docs/operations/deploying-an-edge-cell.md` names, and
+# this is the VPC half of it.
+module "connectivity" {
+  source = "./modules/connectivity"
+
+  project_id  = var.project_id
+  environment = var.environment
+  labels      = local.labels
+
+  network_id = module.network.network_id
+
+  enable_partner_interconnect = var.enable_partner_interconnect
+  partner_interconnects       = var.partner_interconnects
+  cloud_router_asn            = var.cloud_router_asn
+
+  enable_private_service_connect  = var.enable_private_service_connect
+  private_service_connect_address = var.private_service_connect_address
+  private_service_connect_target  = var.private_service_connect_target
+}

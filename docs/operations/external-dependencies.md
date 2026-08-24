@@ -143,15 +143,51 @@ runners do not have stable ones of.
 None is configured. This is the single thing that stands between this
 configuration and a deployment that runs.
 
-### Images are not signed
+### Images are signed now, and it is worth knowing by whom
 
-The cluster sets `binary_authorization = PROJECT_SINGLETON_POLICY_ENFORCE`,
-which means it refuses an image that is not attested. Nothing in this repository
-produces an attestation. A deploy would push an image successfully and then be
-refused at admission.
+This used to say that nothing produced an attestation. The gap was worse than
+that sentence: the cluster set `binary_authorization =
+PROJECT_SINGLETON_POLICY_ENFORCE` and no policy resource existed, so Google
+evaluated the *implicit* policy, whose default rule is `ALWAYS_ALLOW`. The
+cluster was not refusing unsigned images and waiting for a signer. It was
+enforcing a policy that admitted everything, while the configuration read as
+though a control was in place.
 
-Closing it needs a Binary Authorization policy, an attestor backed by a KMS
-signing key, and a signing step in the pipeline after the push.
+`infrastructure/terraform/modules/binaryauthorization` closes it: an asymmetric
+KMS signing key in the platform's existing key ring, a Container Analysis note,
+an attestor holding the public half, and a policy whose default rule is
+`REQUIRE_ATTESTATION` with `ENFORCED_BLOCK_AND_AUDIT_LOG` — plus the same rule
+pinned to the cluster, so loosening the default later does not quietly loosen
+the cluster that trades. `deploy.yml` signs each image by digest after the
+push, and refuses to build at all until the two repository variables that make
+signing possible are set:
+
+    GCP_BINAUTHZ_ATTESTOR       terraform output binary_authorization_attestor
+    GCP_BINAUTHZ_KEY_VERSION    terraform output binary_authorization_key_version
+
+Four things are still out of band, and the module's `OUT-OF-BAND.md` carries
+them in full:
+
+  * those two repository variables, which only a person with repository
+    settings access can set;
+  * `binaryauthorization.googleapis.com` and `containeranalysis.googleapis.com`
+    enabled on the project — this configuration manages no
+    `google_project_service` anywhere;
+  * **the signer is the pipeline itself.** Anyone who can make that pipeline run
+    a step of their choosing can sign an image of their choosing, so this
+    raises the bar from "anything in the registry runs" to "anything the
+    pipeline signs runs". A signer the pipeline cannot impersonate needs a
+    second identity in a second project, which is not a thing a repository can
+    create for itself;
+  * the attestation says the pipeline pushed these bytes and nothing else. Not
+    that the source was reviewed, not that the dependencies were the ones the
+    lockfile names. A SLSA provenance statement would carry those claims and
+    this repository produces none.
+
+Key rotation is a deliberate sequence rather than a setting, because Cloud KMS
+rotates only symmetric keys automatically. Disabling the old version before
+everything signed by it has been rescheduled refuses running images one at a
+time, as they happen to move.
 
 ### All four workloads now serve
 
