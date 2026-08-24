@@ -50,6 +50,7 @@
 pub mod dna;
 pub mod factory;
 pub mod foundry;
+pub mod insights;
 pub mod learning;
 pub mod models;
 pub mod plane;

@@ -31,6 +31,9 @@ qip-contracts.workspace = true
 qip-lifecycle.workspace = true
 qip-capital.workspace = true
 qip-compliance.workspace = true
+# The confidential release gate, standing between the plane's per-cell state
+# and any aggregate that leaves it as insight. See central/insights.rs.
+qip-confidential.workspace = true
 qip-strategy.workspace = true
 qip-market-ingestion.workspace = true
 qip-normalization.workspace = true

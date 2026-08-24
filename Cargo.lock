@@ -483,6 +483,7 @@ dependencies = [
  "qip-capital-fabric",
  "qip-chain",
  "qip-compliance",
+ "qip-confidential",
  "qip-contracts",
  "qip-core",
  "qip-cost-router",

@@ -142,6 +142,12 @@ pub struct Platform {
     /// process against the market in front of it, and the centre reasons about
     /// every cell on its own schedule.
     central: CentralPlane,
+    /// The confidential gate between the plane's per-cell state and any
+    /// aggregate that leaves it as insight. Held here rather than constructed
+    /// per query, because its privacy budget and its release record are the
+    /// whole point: a gate rebuilt each time forgets what it has already
+    /// spent, and a budget that forgets is not a budget.
+    insights: crate::central::insights::CellInsights,
 
     // --- the eight services this process now actually contains -------------
     /// Decides what data *should* exist. Opens no sockets: the caller supplies
@@ -501,6 +507,7 @@ impl Platform {
 
         Ok(Self {
             central,
+            insights: crate::central::insights::CellInsights::new(config.seed),
             data_finder,
             catalog: Catalog::new(),
             chain: None,
@@ -577,6 +584,14 @@ impl Platform {
     /// anyone who knows the seed can mint an envelope. A deployment builds
     /// [`CentralPlane::new`] with a secret from its key store and swaps it in
     /// here.
+    /// The confidential gate over the plane's cross-cell state.
+    ///
+    /// `&mut` because a release spends privacy budget — reading an insight is
+    /// a consuming act, and the signature says so.
+    pub fn insights_mut(&mut self) -> (&mut crate::central::insights::CellInsights, &CentralPlane) {
+        (&mut self.insights, &self.central)
+    }
+
     pub fn set_central(&mut self, central: CentralPlane) {
         self.central = central;
     }

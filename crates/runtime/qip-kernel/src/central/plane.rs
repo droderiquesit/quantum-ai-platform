@@ -393,6 +393,41 @@ impl CentralPlane {
 
     /// The whole book as the centre sees it, stale by the round trip from the
     /// cells — see the cost section of ADR 0008.
+    /// Gross notional per reporting cell — the absolute values of every
+    /// position a cell last reported, summed.
+    ///
+    /// This is a per-cell read and it is deliberately *not* an insight: it
+    /// exists for `central::insights`, which aggregates it behind the
+    /// confidential gate, and for nothing else. A caller with an operational
+    /// need for one named cell's book reads the plane's other accessors and is
+    /// audited as such. See the insights module on why the two must not blur.
+    pub fn gross_notional_by_cell(&self) -> Vec<(String, Decimal)> {
+        self.positions
+            .iter()
+            .map(|(cell, positions)| {
+                let gross = positions
+                    .iter()
+                    .map(|position| position.signed_notional().abs())
+                    .fold(Decimal::ZERO, |sum, notional| {
+                        sum.checked_add(notional).unwrap_or(Decimal::MAX)
+                    });
+                (cell.clone(), gross)
+            })
+            .collect()
+    }
+
+    /// Realised loss per reporting cell, summed over its strategies.
+    pub fn realised_loss_by_cell(&self) -> Vec<(String, Decimal)> {
+        let mut by_cell: BTreeMap<String, Decimal> = BTreeMap::new();
+        for ((cell, _strategy), utilisation) in &self.utilisation {
+            let entry = by_cell.entry(cell.clone()).or_insert(Decimal::ZERO);
+            *entry = entry
+                .checked_add(utilisation.realised_loss)
+                .unwrap_or(Decimal::MAX);
+        }
+        by_cell.into_iter().collect()
+    }
+
     pub fn exposure(&self) -> &AggregateExposure {
         &self.exposure
     }
