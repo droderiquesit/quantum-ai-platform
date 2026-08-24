@@ -127,6 +127,31 @@ resource "google_container_cluster" "primary" {
     }
   }
 
+  # The managed Secret Manager CSI driver, which is what carries a credential
+  # from Secret Manager into a pod.
+  #
+  # Without it the chain had a hole in the middle: Terraform created the Secret
+  # Manager containers and granted each workload identity `secretAccessor` on
+  # the ones it needs, and the manifests asked for credentials — and nothing
+  # joined the two. Every `qip-api` pod would have stopped at
+  # `CreateContainerConfigError`, the rollout would have reported images pushed
+  # and a deployment started, and no pod would ever have run.
+  #
+  # Google's add-on rather than the upstream Helm chart: the driver is a
+  # privileged DaemonSet with read access to every secret its pods mount, so
+  # who patches it matters more than which version it is. The add-on also has
+  # no third-party chart to track, which is the same argument the dependency
+  # policy makes about crates.
+  #
+  # The secrets are mounted as files and read from disk. The alternative —
+  # syncing to a Kubernetes Secret and reading it through `secretKeyRef` — puts
+  # the plaintext in etcd and races on a fresh cluster, because the synced
+  # Secret does not exist until a pod has mounted the volume and the env var
+  # is resolved before that. See `infrastructure/kubernetes/base/secrets.yaml`.
+  secret_manager_config {
+    enabled = true
+  }
+
   # Logging and monitoring for the control plane as well as the workloads: an
   # audit trail that omits the control plane omits exactly the events an
   # attacker would generate.

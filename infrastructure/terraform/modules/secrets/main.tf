@@ -174,6 +174,30 @@ resource "google_secret_manager_secret_iam_member" "api_tokens" {
   member    = "serviceAccount:${google_service_account.workload["api"].email}"
 }
 
+# The capital-envelope key, readable by every central-plane workload.
+#
+# The API signs envelopes with it and the two brains verify and sign against
+# it; a cell verifies grants against the same key, and gets its own grant in
+# `modules/edge-cell`. Until this existed only the cells could read it — so the
+# process that *mints* the grants could not read the key it mints them under,
+# and the pod would have stopped at `ContainerCreating` when the CSI driver
+# failed to project a secret its identity was not allowed to fetch.
+#
+# One key rather than a signing key and a verification key: the envelope is
+# authenticated with an HMAC, which is symmetric, so the two are the same
+# bytes. Splitting the variable in two would produce a deployment where the
+# centre signs under one value and the cells verify under another, and the
+# failure — every grant rejected — reads as a mesh fault rather than a
+# configuration one.
+resource "google_secret_manager_secret_iam_member" "capital_envelope_key" {
+  for_each = var.service_accounts
+
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.platform["qip-capital-envelope-key"].secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.workload[each.key].email}"
+}
+
 # The venue credential is readable only where live trading is permitted at all.
 #
 # This is the infrastructure half of the live-trading control. The application

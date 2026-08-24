@@ -370,11 +370,21 @@ fn no_credential_appears_in_a_kubernetes_manifest() {
                 path.display()
             );
         }
-        // And the tokens specifically come from a secret.
+        // And the tokens specifically come from the secret store, as files
+        // projected by the CSI driver. `secretKeyRef` was the earlier shape
+        // and is refused now: it reads a synced Kubernetes Secret, which puts
+        // the plaintext in etcd and does not exist on a fresh cluster until
+        // after the first pod has already failed.
         if content.contains("QIP_TOKEN_") {
             assert!(
-                content.contains("secretKeyRef"),
-                "{} sets a token without a secret reference",
+                content.contains("secrets-store.csi.k8s.io"),
+                "{} sets a token without projecting it from the secret store",
+                path.display()
+            );
+            assert!(
+                !content.contains("secretKeyRef"),
+                "{} reads a credential through a synced Kubernetes Secret; \
+                 project it as a file through the CSI driver instead",
                 path.display()
             );
         }
@@ -1527,6 +1537,108 @@ fn the_bootstrap_script_sets_every_pipeline_variable_the_workflow_reads() {
 }
 
 #[test]
+fn every_credential_a_workload_mounts_exists_in_terraform_and_is_readable_by_it() {
+    // The chain this pins: a manifest names a path under the CSI mount; the
+    // SecretProviderClass projects a Secret Manager secret to that path; the
+    // secrets module creates that secret; and an IAM binding lets the
+    // workload's identity read it. Each link lived in a different file and
+    // nothing held them together, which is how the platform shipped with the
+    // API's tokens named in a Secret that nothing created.
+    let provider_classes = read("infrastructure/kubernetes/base/secrets.yaml");
+    let terraform_root = read("infrastructure/terraform/main.tf");
+    let secrets_module = read("infrastructure/terraform/modules/secrets/main.tf");
+
+    // Every path a SecretProviderClass projects, with the secret it comes from.
+    let mut projected: Vec<(String, String)> = Vec::new();
+    let mut resource = None;
+    for line in provider_classes.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("- resourceName:") {
+            resource = Some(rest.trim().trim_matches('"').to_string());
+        }
+        if let Some(rest) = trimmed.strip_prefix("path:")
+            && let Some(secret) = resource.take()
+        {
+            projected.push((secret, rest.trim().trim_matches('"').to_string()));
+        }
+    }
+    assert!(
+        projected.len() >= 6,
+        "only {} projections found in secrets.yaml; the parse is broken, not the file",
+        projected.len()
+    );
+
+    for (secret, _path) in &projected {
+        // The resource is projects/PROJECT/secrets/<name>-ENVIRONMENT/versions/…
+        // and Terraform creates it as "<name>-${var.environment}", so the
+        // in-repo spelling to look for is the bare name.
+        let name = secret
+            .split("/secrets/")
+            .nth(1)
+            .and_then(|rest| rest.split("/versions").next())
+            .and_then(|with_environment| with_environment.strip_suffix("-ENVIRONMENT"))
+            .unwrap_or_else(|| panic!("{secret} is not a Secret Manager version reference"));
+        assert!(
+            terraform_root.contains(&format!("\"{name}\"")),
+            "secrets.yaml projects {name} and the secrets module is never told to create it"
+        );
+    }
+
+    // Every workload that mounts a provider class can read what it projects.
+    // The envelope key is projected to every mount, so its IAM grant must
+    // cover every workload identity rather than one.
+    for manifest in ["api.yaml", "fastbrain.yaml", "deepbrain.yaml"] {
+        let content = read(&format!("infrastructure/kubernetes/base/{manifest}"));
+        if content.contains("capital-envelope-key") {
+            let grant = secrets_module
+                .split(
+                    "resource \"google_secret_manager_secret_iam_member\" \"capital_envelope_key\"",
+                )
+                .nth(1)
+                .and_then(|rest| rest.split("\nresource ").next())
+                .unwrap_or("");
+            assert!(
+                grant.contains("for_each = var.service_accounts"),
+                "{manifest} mounts the capital-envelope key and the secrets module does not \
+                 grant every workload identity read on it; the CSI driver would fail the \
+                 mount and the pod would sit in ContainerCreating"
+            );
+        }
+    }
+
+    // And the cells still get theirs through their own module, which is the
+    // one identity not covered by the central grant.
+    let edge = read("infrastructure/terraform/modules/edge-cell/main.tf");
+    assert!(
+        edge.contains("capital_envelope_key"),
+        "the edge-cell module no longer grants its cell read on the envelope key"
+    );
+}
+
+#[test]
+fn the_cluster_runs_the_driver_that_projects_the_secrets_the_manifests_mount() {
+    // The manifests ask for `secrets-store.csi.k8s.io` volumes. That driver is
+    // a cluster add-on, and a manifest that mounts it on a cluster without it
+    // produces pods stuck in ContainerCreating with an event nobody reads
+    // until the rollout times out. The two facts live in different languages
+    // in different directories, so this is the only place they meet.
+    let cluster = without_comments(&read("infrastructure/terraform/modules/cluster/main.tf"));
+    let manifests_mount_the_driver = manifest_documents()
+        .iter()
+        .any(|(_, document)| document.contains("secrets-store.csi.k8s.io"));
+    assert!(
+        manifests_mount_the_driver,
+        "no manifest mounts the secret-store driver any more; if the credential \
+         delivery changed shape, retire this test alongside secret_manager_config"
+    );
+    assert!(
+        cluster.contains("secret_manager_config"),
+        "the manifests mount secrets-store.csi.k8s.io volumes and the cluster \
+         never enables the Secret Manager CSI add-on"
+    );
+}
+
+#[test]
 fn production_is_never_deployed_automatically() {
     let deploy = read(".github/workflows/deploy.yml");
     assert!(
@@ -1961,10 +2073,19 @@ fn every_manifest_is_somewhere_something_applies_it() {
 /// so matching it is matching the actual requirement rather than a second
 /// statement of it.
 fn variables_the_binary_refuses_to_start_without(source: &str) -> Vec<String> {
-    source
-        .split("required(\"")
-        .skip(1)
-        .filter_map(|rest| rest.split('"').next())
+    // `required_secret(` is the credential variant of the same refusal, and a
+    // split on `required(` alone does not match it — which is exactly how the
+    // envelope key fell out of this walk when it moved to `qip_core::secret`
+    // and took a `_FILE` alternative. Both sites put the variable on the list
+    // the binary exits on, so both belong here.
+    ["required(\"", "required_secret(\""]
+        .iter()
+        .flat_map(|call| {
+            source
+                .split(call)
+                .skip(1)
+                .filter_map(|rest| rest.split('"').next())
+        })
         .map(str::to_string)
         .collect()
 }
@@ -1988,6 +2109,12 @@ fn every_variable_a_deployable_refuses_to_start_without_is_set_by_its_manifest()
                 continue;
             }
             for variable in variables_the_binary_refuses_to_start_without(&read(&source)) {
+                // `- name: {variable}_FILE` also satisfies the requirement:
+                // `qip_core::secret` accepts the file variant, and it is the
+                // one the manifests use for anything projected by the CSI
+                // driver. The plain match below matches it too, as a prefix —
+                // stated here so a reader does not think the file variant
+                // slips through unchecked.
                 assert!(
                     container.contains(&format!("- name: {variable}")),
                     "{binary} refuses to start without {variable} and {} does \

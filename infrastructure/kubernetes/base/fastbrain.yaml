@@ -188,6 +188,12 @@ spec:
             # refuses to start if an agent it would host holds
             # `call_language_model`. This is the deployment saying the same
             # thing: there is nothing here to call one with.
+            # The capital-envelope key, as a file. Absent, this process runs
+            # on the seed-derived default — reproducible, mintable by anyone
+            # who knows the seed, and refused outright once the autonomy
+            # ceiling permits live trading.
+            - name: QIP_CAPITAL_ENVELOPE_KEY_FILE
+              value: /var/run/secrets/qip/capital-envelope-key
           resources:
             # Requests equal limits. See the note at the top of the file.
             requests:
@@ -199,12 +205,24 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: secrets
+              mountPath: /var/run/secrets/qip
+              readOnly: true
       volumes:
         # The root filesystem is read-only, so anything needing to write gets
         # an explicit, size-bounded volume.
         - name: tmp
           emptyDir:
-            sizeLimit: 64Mi
+            sizeLimit: 64Mi        # The envelope key, projected from Secret Manager as this workload's
+        # own service account. A brain verifies and signs grants against the
+        # same key the API does; a brain running on the seed-derived default is
+        # refused outright once the ceiling permits live trading.
+        - name: secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: qip-envelope-key
 ---
 apiVersion: v1
 kind: Service

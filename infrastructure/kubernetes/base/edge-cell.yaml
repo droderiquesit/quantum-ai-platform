@@ -248,11 +248,12 @@ spec:
             # the state this StatefulSet exists to end.
             - name: QIP_MIRROR_PATH
               value: /var/lib/qip/journal
-            - name: QIP_CAPITAL_ENVELOPE_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: qip-capital-envelope-key
-                  key: verification_key
+            # The key this cell verifies capital grants against. It named a
+            # Kubernetes Secret `qip-capital-envelope-key` that nothing
+            # created, so the cell could never have started. Projected from
+            # Secret Manager by the CSI driver instead — see secrets.yaml.
+            - name: QIP_CAPITAL_ENVELOPE_KEY_FILE
+              value: /var/run/secrets/qip/capital-envelope-key
           resources:
             # Requests equal limits, for the same reason as the fast brain:
             # this is a hot path, and a hot path that is throttled or evicted
@@ -270,6 +271,9 @@ spec:
               mountPath: /var/lib/qip/state
             - name: journal
               mountPath: /var/lib/qip/journal
+            - name: secrets
+              mountPath: /var/run/secrets/qip
+              readOnly: true
           # The cell is the one workload with a volume that outlives its pod,
           # so it is the one that names a durable store. The journal drains
           # here through `StoreMirror`, and the retention policy on the claim
@@ -290,6 +294,15 @@ spec:
         - name: state
           emptyDir:
             sizeLimit: 4Gi
+        # The envelope verification key, projected from Secret Manager as the
+        # cell's own service account. A cell mounts this and nothing else: it
+        # verifies grants, and it has no business holding the API's tokens.
+        - name: secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: qip-envelope-key
   # The journal, per replica, outliving the pod that wrote it. Retained on
   # scale-down rather than deleted: a cell that is removed still has to be able
   # to answer for what it did while it ran.

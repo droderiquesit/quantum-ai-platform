@@ -97,7 +97,7 @@ impl NodeConfig {
         let mut missing = Vec::new();
         let cell_id = required("QIP_CELL_ID", &mut missing);
         let region = required("QIP_CELL_REGION", &mut missing);
-        let key = required("QIP_CAPITAL_ENVELOPE_KEY", &mut missing);
+        let key = required_secret("QIP_CAPITAL_ENVELOPE_KEY", &mut missing)?;
         let venues = required("QIP_VENUES", &mut missing);
 
         if !missing.is_empty() {
@@ -150,7 +150,7 @@ impl NodeConfig {
             cell_id,
             region,
             venues,
-            envelope_key: key.into_bytes(),
+            envelope_key: key,
             health_port,
             storage,
             mesh,
@@ -164,6 +164,25 @@ fn required(name: &str, missing: &mut Vec<String>) -> String {
         _ => {
             missing.push(name.to_string());
             String::new()
+        }
+    }
+}
+
+/// A required credential, from its variable or from the file the deployment
+/// mounted it at.
+///
+/// Separate from [`required`] because a credential has the second source and
+/// ordinary configuration does not, and because the two failures are not the
+/// same: a variable nobody set belongs in the collected `missing` list, while a
+/// file that is named and unreadable is a specific fault whose message names
+/// the path. Collapsing the second into "must be set" would send an operator
+/// looking for a variable that is, in fact, already set.
+fn required_secret(name: &str, missing: &mut Vec<String>) -> Result<Vec<u8>> {
+    match qip_core::secret::from_environment(name)? {
+        Some(value) if !value.trim().is_empty() => Ok(value.into_bytes()),
+        _ => {
+            missing.push(name.to_string());
+            Ok(Vec::new())
         }
     }
 }

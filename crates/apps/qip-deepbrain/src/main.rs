@@ -133,13 +133,18 @@ fn run() -> Result<()> {
     // envelope key when the deployment provides one, and refuse to run
     // live-capable on the seed-derived default. See `trust.rs` for why a
     // refusal and not a warning.
-    let provenance = qip_deepbrain::trust::harden_central(
-        &mut platform,
-        std::env::var(qip_deepbrain::trust::ENVELOPE_KEY_VARIABLE)
-            .ok()
-            .as_deref(),
-    )
-    .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    //
+    // Read through `qip_core::secret`, so the deployment may supply the key in
+    // a file rather than in the process environment. That is what the Secret
+    // Manager CSI driver projects into the pod, and a signing key in
+    // `/proc/<pid>/environ` is one every child process and every crash dump
+    // also has.
+    let envelope_key =
+        qip_core::secret::from_environment(qip_deepbrain::trust::ENVELOPE_KEY_VARIABLE)
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    let provenance =
+        qip_deepbrain::trust::harden_central(&mut platform, envelope_key.as_deref())
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
 
     // Read once, immediately after assembly, and carried through the run. It is
     // the boundary between what this process inherited from a previous run's

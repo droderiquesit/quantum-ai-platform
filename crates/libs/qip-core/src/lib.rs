@@ -20,6 +20,7 @@ pub mod kv;
 pub mod lineage;
 pub mod money;
 pub mod rng;
+pub mod secret;
 pub mod testing;
 pub mod time;
 
@@ -37,6 +38,7 @@ pub use kv::{KeyValueStore, KeyValueStoreExt};
 pub use lineage::{CausationId, CorrelationId, Lineage, TraceId};
 pub use money::{Currency, Money};
 pub use rng::{Rng, Xoshiro256};
+pub use secret::from_environment as secret_from_environment;
 pub use time::{Clock, Duration, ManualClock, SystemClock, Timestamp};
 
 /// Bundle of the ambient capabilities a deterministic component may use.

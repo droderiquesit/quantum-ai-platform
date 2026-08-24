@@ -77,13 +77,16 @@ fn run() -> Result<()> {
     // dispatches envelopes down the mesh, so the key installed here is the
     // key every cell verifies those grants against. See `trust.rs` for why a
     // refusal and not a warning.
-    let provenance = qip_api::trust::harden_central(
-        &mut platform,
-        std::env::var(qip_api::trust::ENVELOPE_KEY_VARIABLE)
-            .ok()
-            .as_deref(),
-    )
-    .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    //
+    // Read through `qip_core::secret`, so the deployment may supply the key in
+    // a file rather than in the process environment. That is what the Secret
+    // Manager CSI driver projects into the pod, and a signing key in
+    // `/proc/<pid>/environ` is one every child process and every crash dump
+    // also has.
+    let envelope_key = qip_core::secret::from_environment(qip_api::trust::ENVELOPE_KEY_VARIABLE)
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    let provenance = qip_api::trust::harden_central(&mut platform, envelope_key.as_deref())
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
 
     // The mesh backbone, where the deployment names cells to serve. Absent
     // configuration means the routes are absent: no listener binds, and the
@@ -109,7 +112,12 @@ fn run() -> Result<()> {
         ("QIP_TOKEN_APPROVER", Role::Approver),
         ("QIP_TOKEN_OPERATOR", Role::Operator),
     ] {
-        let Ok(token) = std::env::var(variable) else {
+        // Through `qip_core::secret`, so a deployment may mount the token as
+        // a file. A refusal here is fatal rather than skipped: a token whose
+        // file is named and unreadable must not become a role that quietly
+        // does not exist, which would leave the API running with fewer
+        // credentials than the operator configured and no indication of it.
+        let Some(token) = qip_core::secret::from_environment(variable)? else {
             continue;
         };
         if token.len() < 32 {

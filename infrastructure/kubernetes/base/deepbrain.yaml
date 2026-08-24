@@ -141,6 +141,12 @@ spec:
                 configMapKeyRef:
                   name: qip-config
                   key: log_level
+            # The capital-envelope key, as a file. Absent, this process runs
+            # on the seed-derived default — reproducible, mintable by anyone
+            # who knows the seed, and refused outright once the autonomy
+            # ceiling permits live trading.
+            - name: QIP_CAPITAL_ENVELOPE_KEY_FILE
+              value: /var/run/secrets/qip/capital-envelope-key
           resources:
             # Burstable rather than Guaranteed: a backtest wants whatever the
             # node has spare, and unlike the fast path it does not care about
@@ -156,6 +162,9 @@ spec:
               mountPath: /tmp
             - name: work
               mountPath: /var/lib/qip
+            - name: secrets
+              mountPath: /var/run/secrets/qip
+              readOnly: true
       volumes:
         - name: tmp
           emptyDir:
@@ -165,7 +174,16 @@ spec:
         # anything that is goes to the evidence bucket.
         - name: work
           emptyDir:
-            sizeLimit: 8Gi
+            sizeLimit: 8Gi        # The envelope key, projected from Secret Manager as this workload's
+        # own service account. A brain verifies and signs grants against the
+        # same key the API does; a brain running on the seed-derived default is
+        # refused outright once the ceiling permits live trading.
+        - name: secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: qip-envelope-key
 ---
 apiVersion: v1
 kind: Service

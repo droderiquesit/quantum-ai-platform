@@ -113,32 +113,27 @@ spec:
                 configMapKeyRef:
                   name: qip-config
                   key: autonomy_ceiling
-            # Credentials from mounted secrets, never from the image.
-            - name: QIP_TOKEN_OPERATOR
-              valueFrom:
-                secretKeyRef:
-                  name: qip-tokens
-                  key: operator
-            - name: QIP_TOKEN_APPROVER
-              valueFrom:
-                secretKeyRef:
-                  name: qip-tokens
-                  key: approver
-            - name: QIP_TOKEN_ANALYST
-              valueFrom:
-                secretKeyRef:
-                  name: qip-tokens
-                  key: analyst
-            - name: QIP_TOKEN_VIEWER
-              valueFrom:
-                secretKeyRef:
-                  name: qip-tokens
-                  key: viewer
-            - name: QIP_TOKEN_MONITOR
-              valueFrom:
-                secretKeyRef:
-                  name: qip-tokens
-                  key: monitor
+            # Credentials as files, never from the image and never in the
+            # environment. These named a Kubernetes Secret `qip-tokens` that
+            # nothing created, so every pod stopped at
+            # `CreateContainerConfigError`. They are now projected from Secret
+            # Manager by the CSI driver — see secrets.yaml for why files and
+            # not a synced Secret.
+            - name: QIP_TOKEN_OPERATOR_FILE
+              value: /var/run/secrets/qip/token-operator
+            - name: QIP_TOKEN_APPROVER_FILE
+              value: /var/run/secrets/qip/token-approver
+            - name: QIP_TOKEN_ANALYST_FILE
+              value: /var/run/secrets/qip/token-analyst
+            - name: QIP_TOKEN_VIEWER_FILE
+              value: /var/run/secrets/qip/token-viewer
+            - name: QIP_TOKEN_MONITOR_FILE
+              value: /var/run/secrets/qip/token-monitor
+            # The key this process signs capital envelopes with. Every cell
+            # verifies grants against it, so the centre signing with anything
+            # else produces grants no cell accepts.
+            - name: QIP_CAPITAL_ENVELOPE_KEY_FILE
+              value: /var/run/secrets/qip/capital-envelope-key
           resources:
             requests:
               cpu: 250m
@@ -164,12 +159,24 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: secrets
+              mountPath: /var/run/secrets/qip
+              readOnly: true
       volumes:
         # The root filesystem is read-only, so anything needing to write gets
         # an explicit, size-bounded volume.
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi
+        # Projected from Secret Manager by the managed CSI driver, as the pod's
+        # own service account. `readOnly: true` is required by the driver and
+        # is also the truth: nothing writes a credential back.
+        - name: secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: qip-api-secrets
 ---
 apiVersion: v1
 kind: Service
