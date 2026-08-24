@@ -193,7 +193,7 @@ fi
 echo
 echo "done. The infrastructure is applied and the pipeline can authenticate."
 echo
-echo "images deploy automatically when ci passes on main, or on demand with:"
+echo "images deploy automatically when ci passes on the default branch, or on demand with:"
 echo "  gh workflow run deploy --repo ${GITHUB_REPOSITORY} -f environment=${ENVIRONMENT}"
 echo
 echo "the cluster's autonomy ceiling is $(tfvar autonomy_ceiling): supplying a"
