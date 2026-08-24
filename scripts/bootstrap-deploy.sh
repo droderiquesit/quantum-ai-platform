@@ -134,17 +134,69 @@ if ! gcloud iam service-accounts describe "${BOOTSTRAP_SA}" >/dev/null 2>&1; the
     echo "  gcloud iam service-accounts create claude-builder" >&2
     exit 77
   fi
-  gcloud projects add-iam-policy-binding "${PROJECT}" \
+fi
+
+# A freshly created account is not immediately visible to the IAM APIs:
+# creation returns success and the next call answers "does not exist". That is
+# Google's documented eventual consistency, not a fault, so wait for the
+# account to become describable before granting anything to or on it.
+visible=false
+for _ in $(seq 1 18); do
+  if gcloud iam service-accounts describe "${BOOTSTRAP_SA}" >/dev/null 2>&1; then
+    visible=true
+    break
+  fi
+  echo "waiting for ${BOOTSTRAP_SA} to become visible…"
+  sleep 5
+done
+if [[ "${visible}" != true ]]; then
+  echo "${BOOTSTRAP_SA} was created but has not become visible after 90s; rerun this script" >&2
+  exit 75
+fi
+
+# The owner grant sits outside the creation branch on purpose. A previous run
+# that created the account and then failed here would otherwise leave an
+# account with no roles that every rerun skips past — an apply that fails
+# twenty minutes later, on the first resource, with a permissions error naming
+# nothing useful. Re-adding an existing binding is a no-op, so this costs an
+# already-correct project nothing. Retried, because the same propagation delay
+# that affects describe can refuse the first grant.
+granted=false
+for _ in $(seq 1 6); do
+  if gcloud projects add-iam-policy-binding "${PROJECT}" \
     --member="serviceAccount:${BOOTSTRAP_SA}" \
-    --role="roles/owner" --condition=None --quiet >/dev/null
+    --role="roles/owner" --condition=None --quiet >/dev/null 2>&1; then
+    granted=true
+    break
+  fi
+  echo "granting roles/owner to ${BOOTSTRAP_SA} failed; retrying in 10s…"
+  sleep 10
+done
+if [[ "${granted}" != true ]]; then
+  echo >&2
+  echo "could not grant roles/owner on ${PROJECT} to ${BOOTSTRAP_SA}." >&2
+  echo "a project owner must run:" >&2
+  echo "  gcloud projects add-iam-policy-binding ${PROJECT} \\" >&2
+  echo "    --member=\"serviceAccount:${BOOTSTRAP_SA}\" --role=\"roles/owner\"" >&2
+  exit 77
 fi
 
 # Grant yourself token-creator on the bootstrap account. Needs to succeed only
-# once; if you lack the authority to grant it, the error below says who to ask.
-if ! gcloud iam service-accounts add-iam-policy-binding "${BOOTSTRAP_SA}" \
-  --member="user:${ACCOUNT}" \
-  --role="roles/iam.serviceAccountTokenCreator" \
-  --condition=None --quiet >/dev/null 2>&1; then
+# once; if you lack the authority to grant it, the error below says who to
+# ask. Retried for the same propagation reason as the grant above.
+impersonation=false
+for _ in $(seq 1 6); do
+  if gcloud iam service-accounts add-iam-policy-binding "${BOOTSTRAP_SA}" \
+    --member="user:${ACCOUNT}" \
+    --role="roles/iam.serviceAccountTokenCreator" \
+    --condition=None --quiet >/dev/null 2>&1; then
+    impersonation=true
+    break
+  fi
+  echo "granting impersonation failed; retrying in 10s…"
+  sleep 10
+done
+if [[ "${impersonation}" != true ]]; then
   echo >&2
   echo "could not grant impersonation of ${BOOTSTRAP_SA} to ${ACCOUNT}." >&2
   echo "a project owner must run:" >&2
