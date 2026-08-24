@@ -47,7 +47,8 @@ than the API, which is at least honest.
 
 **It does not create the project.** A project is created inside a folder,
 under an organisation, with a billing account and a set of org policies, none
-of which this configuration has a variable for. `env/README.md` already says
+of which this configuration has a variable for. `infrastructure/environments/README.md`
+already says
 every environment should be a separate project for blast-radius reasons; which
 folder it lives in and what constrains it is a landing-zone decision this
 repository does not make.

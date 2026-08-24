@@ -2,7 +2,8 @@
 
 This configuration is project-scoped. Every environment is a separate Google
 project, because a blast radius that stops at a project boundary is the only
-kind that reliably stops, and `env/README.md` says so. There is no `org_id`
+kind that reliably stops, and `infrastructure/environments/README.md` says so.
+There is no `org_id`
 variable and this module deliberately does not add one: a variable that exists
 so a module can claim organisation-level reach, in a repository that has no
 organisation-level anything else, would be the beginning of a shell rather than

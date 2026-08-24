@@ -49,26 +49,60 @@ make the configuration harder to run from a different account later.
 
 Nothing below exists in this environment. This is the checklist.
 
-### To apply the infrastructure at all
+### Before `bootstrap-deploy.sh` can run
+
+The script does everything it can do without authority it does not have. These
+five it cannot, because each is a decision or a grant that belongs to whoever
+owns the project. It fails naming the one that is missing rather than part-way
+through.
+
+| Requirement | How to check it | Why the script cannot do it |
+|---|---|---|
+| The project exists | `gcloud projects describe project-d3f96b6b-852b-4460-b6d` | A project is created in a folder, under an organisation, with org policies — a landing-zone decision this repository does not make |
+| Billing is enabled on it | `gcloud beta billing projects describe <project>` | `container`, `cloudkms` and `artifactregistry` refuse to enable without it, and the error names billing rather than the API |
+| Service Usage and Cloud Resource Manager are on | `gcloud services list --enabled \| grep -E 'serviceusage\|cloudresourcemanager'` | Service Usage cannot enable itself. See `modules/services/BOOTSTRAP.md` |
+| `claude-builder@…` exists, with project admin | `gcloud iam service-accounts describe claude-builder@<project>.iam.gserviceaccount.com` | Creating an admin identity is the grant everything else rests on |
+| You can impersonate it | The script grants this and says who to ask if it cannot | Needs `roles/iam.serviceAccountTokenCreator`, which only a project owner can give |
+
+The identity running the first apply also needs
+`roles/serviceusage.serviceUsageAdmin`. The pipeline account deliberately does
+not hold it — enabling an API widens the project's attack surface, and a
+pipeline that can do that unreviewed is what several other decisions here exist
+to prevent. So the **first** apply is done by a person, and every later apply
+by the pipeline is a no-op against that module.
+
+### Tools
 
 | Requirement | Notes |
 |---|---|
-| `terraform` ≥ 1.9 | Not installed here |
-| `gcloud` CLI | Not installed here |
-| Credentials for `claude-builder` | See §3 — via impersonation, not a key file |
-| A GCS bucket for Terraform state | `backend "gcs"` is configured with prefix `qip/state`; the bucket is not created by this configuration, because state cannot bootstrap itself |
-| Project APIs enabled | container, compute, artifactregistry, secretmanager, cloudkms, iam, monitoring, logging, storage |
+| `terraform` ≥ 1.9 | v1.9.8, installed in this container. `validate` and `plan` run here; `apply` cannot, for want of credentials |
+| `gcloud` CLI | Not installed here, and not useful without credentials |
+| Credentials for `claude-builder` | See §3 — via impersonation, never a key file |
+| A GCS bucket for Terraform state | `bootstrap-deploy.sh` creates `<project>-qip-tfstate`, versioned. Terraform cannot: `backend "gcs"` is read before any resource is planned, so state cannot bootstrap itself |
+
+Cloud Shell (<https://shell.cloud.google.com>) has `gcloud`, `terraform` and
+`gh` preinstalled and is already authenticated as you, which is why it is the
+recommended place to run the script.
 
 ### For the deploy pipeline
 
-Set as GitHub Actions **variables** (not secrets — all three are identifiers):
+Six GitHub Actions **variables**, not secrets — every one is an identifier that
+appears in a resource name anyway. `bootstrap-deploy.sh` sets all six from the
+Terraform outputs; the table is here so they can be checked or set by hand.
 
 | Variable | Source |
 |---|---|
 | `GCP_PROJECT` | `project-d3f96b6b-852b-4460-b6d` |
-| `GCP_WORKLOAD_IDENTITY_PROVIDER` | `terraform output workload_identity_provider` |
-| `GCP_DEPLOY_SERVICE_ACCOUNT` | `terraform output deploy_service_account` — the Terraform-created one |
 | `GCP_REGION` | The Artifact Registry region |
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | `terraform output workload_identity_provider` |
+| `GCP_DEPLOY_SERVICE_ACCOUNT` | `terraform output deploy_service_account` — the Terraform-created one, not `claude-builder` |
+| `GCP_BINAUTHZ_ATTESTOR` | `terraform output binary_authorization_attestor` |
+| `GCP_BINAUTHZ_KEY_VERSION` | `terraform output binary_authorization_key_version` |
+
+The last two are what signs an image. Without them the cluster's Binary
+Authorization policy refuses every image the pipeline pushes, which surfaces as
+a pod that will not schedule rather than as a build that failed — so the
+`images` job refuses to start until both are set.
 
 There is deliberately **no** GitHub secret holding a key. The pipeline uses
 workload identity federation: GitHub mints a short-lived OIDC token, GCP
