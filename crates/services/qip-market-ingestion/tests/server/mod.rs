@@ -70,6 +70,56 @@ impl std::fmt::Debug for TestServer {
 impl TestServer {
     /// Always answer the same way.
     pub(crate) fn always(action: Action) -> Self {
+        Self::serving(move |_| action.clone())
+    }
+
+    /// Answer by request target, and by how many times that target has been hit.
+    ///
+    /// [`Self::always`] cannot describe a snapshot-plus-increment adapter: one
+    /// poll makes two requests to two different paths, and the cases worth
+    /// testing are exactly the ones where the second poll's answer differs from
+    /// the first's — a gap appearing, a rebuild being served.
+    ///
+    /// Each route is a substring matched against the request target and a
+    /// script of answers for it; the last answer repeats once the script runs
+    /// out, so a test only writes the responses it cares about. A target
+    /// matching no route is answered with a 404 naming it, so a mis-specified
+    /// route fails as a route problem rather than as a mysterious refusal.
+    ///
+    /// `allow(dead_code)` because each integration-test binary compiles this
+    /// module on its own, so a constructor only one binary needs is genuinely
+    /// unused in the others. The attribute sits on this item rather than on the
+    /// module so that an item no binary uses is still reported.
+    #[allow(dead_code)]
+    pub(crate) fn routed(routes: Vec<(&str, Vec<Action>)>) -> Self {
+        let mut routes: Vec<(String, Vec<Action>, usize)> = routes
+            .into_iter()
+            .map(|(needle, actions)| (needle.to_string(), actions, 0usize))
+            .collect();
+        Self::serving(move |request| {
+            for (needle, actions, hits) in routes.iter_mut() {
+                if !request.target.contains(needle.as_str()) {
+                    continue;
+                }
+                let index = (*hits).min(actions.len().saturating_sub(1));
+                *hits += 1;
+                return match actions.get(index) {
+                    Some(action) => action.clone(),
+                    None => Action::json(500, r#"{"error":"a route with no answers"}"#),
+                };
+            }
+            Action::json(
+                404,
+                format!(
+                    r#"{{"error":"no route matches","target":"{}"}}"#,
+                    request.target
+                ),
+            )
+        })
+    }
+
+    /// The shared listener, driven by whatever decides each answer.
+    fn serving(mut responder: impl FnMut(&RawRequest) -> Action + Send + 'static) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
         let address = listener
             .local_addr()
@@ -94,6 +144,7 @@ impl TestServer {
                         let _ = stream.set_read_timeout(Some(StdDuration::from_secs(5)));
                         thread_served.fetch_add(1, Ordering::SeqCst);
                         let request = read_request(&stream).unwrap_or_default();
+                        let action = responder(&request);
                         thread_requests
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -103,7 +154,6 @@ impl TestServer {
                         // connection: a client that has timed out must find the
                         // listener ready, exactly as it would against a real
                         // server.
-                        let action = action.clone();
                         std::thread::spawn(move || write_action(stream, &action));
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {

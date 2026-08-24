@@ -553,12 +553,15 @@ dependencies = [
 name = "qip-market-ingestion"
 version = "0.1.0"
 dependencies = [
+ "qip-contracts",
  "qip-core",
  "qip-events",
  "qip-financial",
  "qip-market",
  "qip-numerics",
  "qip-observability",
+ "qip-orderbook",
+ "qip-sequencing",
  "qip-transport",
  "serde",
  "serde_json",

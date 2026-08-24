@@ -21,6 +21,17 @@ qip-observability.workspace = true
 # bounded in every dimension a peer chooses. Both crates are below the
 # application layer, so the dependency edge is legal.
 qip-transport.workspace = true
+# The depth adapter builds a real book rather than a second implementation of
+# one. `qip-contracts` is the protocol-agnostic market message every venue
+# decodes into; `qip-orderbook` applies those messages and owns what a crossed,
+# locked or discarded book means; `qip-sequencing` owns gap detection. All
+# three are edge crates and this is a service, which is the direction
+# `qip-streaming`'s dependency on `qip-sequencing` already establishes. The
+# alternative was a private book and a private gap check inside this crate,
+# which is how two mechanisms end up disagreeing about whether a book is safe.
+qip-contracts.workspace = true
+qip-orderbook.workspace = true
+qip-sequencing.workspace = true
 
 [lints]
 workspace = true

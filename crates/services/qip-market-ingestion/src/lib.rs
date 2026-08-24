@@ -33,8 +33,31 @@
 //! so every record leaves with a [`qip_financial::quality::LicensingClass`] and
 //! a document that states none is refused rather than admitted under a default
 //! that would permit its raw text to be displayed.
+//!
+//! Two more adapters open sockets, and each closes the last gap in one class of
+//! input. [`depth::DepthFeedAdapter`] builds real order books — it fetches a
+//! depth snapshot, applies the vendor's increments through `qip_sequencing`'s
+//! gap detection, and feeds `qip_orderbook`, which had never seen a book this
+//! platform did not write itself. It is the first adapter here that holds
+//! *state* rather than decoding records, so its whole discipline is about a
+//! book being wrong rather than a record being wrong: a sequence gap forces a
+//! rebuild instead of a silent apply, a diverged book is withheld rather than
+//! published, and a crossed book is either the auction `qip_orderbook::auction`
+//! models or corruption to rebuild from — never something to normalise into a
+//! plausible shape.
+//!
+//! [`alternative::AlternativeFeedAdapter`] decodes satellite, IoT, mobility and
+//! web readings. It carries the document adapter's two disciplines and sharpens
+//! both: a reading has *three* instants — captured, processed, published — and
+//! only the last is one a consumer could have acted at; and because alternative
+//! data is the most restrictively licensed input a fund buys, a reading with no
+//! licensing class is refused. It adds a third: a vendor that filled a gap must
+//! say so, since [`qip_financial::quality::DataQuality`]'s default asserts a
+//! perfectly measured value and an unstated quality would arrive as one.
 
 pub mod adapter;
+pub mod alternative;
+pub mod depth;
 pub mod narrative;
 pub mod replay;
 pub mod rest;
@@ -45,6 +68,10 @@ pub use adapter::{
     AlternativeDataAdapter, DataAdapter, FundamentalsAdapter, MacroAdapter, MarketDataAdapter,
     NewsAdapter, SensedRecord, SourceDescriptor,
 };
+pub use alternative::{
+    AlternativeFeedAdapter, AlternativeFeedConfig, AlternativeStats, AlternativeSubject,
+};
+pub use depth::{DepthFeedAdapter, DepthFeedConfig, DepthInstrument, DepthStats};
 pub use narrative::{
     DocumentStats, NarrativeAdapter, NarrativeFeedConfig, NarrativeSubject, Revision,
 };
