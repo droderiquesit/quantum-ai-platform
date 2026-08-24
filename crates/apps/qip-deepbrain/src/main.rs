@@ -129,13 +129,25 @@ fn run() -> Result<()> {
         LimitSet::conservative_default(),
     )?;
 
+    // The trust root, before anything is served: install the operator's
+    // envelope key when the deployment provides one, and refuse to run
+    // live-capable on the seed-derived default. See `trust.rs` for why a
+    // refusal and not a warning.
+    let provenance = qip_deepbrain::trust::harden_central(
+        &mut platform,
+        std::env::var(qip_deepbrain::trust::ENVELOPE_KEY_VARIABLE)
+            .ok()
+            .as_deref(),
+    )
+    .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+
     // Read once, immediately after assembly, and carried through the run. It is
     // the boundary between what this process inherited from a previous run's
     // log and what it is itself accountable for handing to the archive.
     let inherited = node::restored_through(platform.event_log().records());
 
     banner(
-        &config, &cleared, &platform, &ceiling, bound, &archive, inherited,
+        provenance, &config, &cleared, &platform, &ceiling, bound, &archive, inherited,
     );
 
     let summary = node::run(
@@ -201,6 +213,7 @@ fn run() -> Result<()> {
 /// guarantee was checked, what this node will not do, whether the run stops on
 /// its own, where the evidence goes, and what a restart takes away.
 fn banner(
+    provenance: qip_deepbrain::trust::KeyProvenance,
     config: &DeepBrainConfig,
     cleared: &roster::ClearedRoster,
     platform: &Platform,
@@ -211,6 +224,7 @@ fn banner(
 ) {
     println!("qip-deepbrain health on {bound}");
     println!("  autonomy ceiling: {ceiling}");
+    println!("  envelope key:     {}", provenance.describe());
     println!("  agents:           {}", platform.organisation().len());
     println!(
         "  live trading:     {}",

@@ -109,6 +109,18 @@ fn run() -> Result<()> {
         LimitSet::conservative_default(),
     )?;
 
+    // The trust root, before anything is served: install the operator's
+    // envelope key when the deployment provides one, and refuse to run
+    // live-capable on the seed-derived default. See `trust.rs` for why a
+    // refusal and not a warning.
+    let provenance = qip_fastbrain::trust::harden_central(
+        &mut platform,
+        std::env::var(qip_fastbrain::trust::ENVELOPE_KEY_VARIABLE)
+            .ok()
+            .as_deref(),
+    )
+    .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+
     let status = Arc::new(Mutex::new(qip_fastbrain::status::NodeStatus::opening(
         &cleared,
         &config,
@@ -119,7 +131,7 @@ fn run() -> Result<()> {
     let stop = Arc::new(AtomicBool::new(false));
 
     banner(
-        &config, &cleared, &feed, &platform, &ceiling, bound, &archive,
+        provenance, &config, &cleared, &feed, &platform, &ceiling, bound, &archive,
     );
 
     // One thread for the listener, blocking, no async runtime. It reads the
@@ -197,6 +209,7 @@ fn run() -> Result<()> {
 /// guarantee was checked, what the feed is and is not, whether the run stops on
 /// its own, and what a restart takes away.
 fn banner(
+    provenance: qip_fastbrain::trust::KeyProvenance,
     config: &FastBrainConfig,
     cleared: &roster::ClearedRoster,
     feed: &Feed,
@@ -207,6 +220,7 @@ fn banner(
 ) {
     println!("qip-fastbrain health on {bound}");
     println!("  autonomy ceiling: {ceiling}");
+    println!("  envelope key:     {}", provenance.describe());
     println!("  agents:           {}", platform.organisation().len());
     println!(
         "  live trading:     {}",

@@ -41,3 +41,4 @@ pub mod health;
 pub mod node;
 pub mod roster;
 pub mod status;
+pub mod trust;
