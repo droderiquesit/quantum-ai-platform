@@ -11,6 +11,7 @@ needs the first line more than the reasoning.
 * [The book and the venue disagree](reconciliation-break.md)
 * [Deploying a new edge cell](deploying-an-edge-cell.md)
 * [Provisioning a managed Google service](provisioning-managed-services.md)
+* [Disaster recovery](disaster-recovery.md)
 
 And the standing list of what this build cannot reach:
 
