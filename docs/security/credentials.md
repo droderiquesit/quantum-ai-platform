@@ -152,7 +152,7 @@ cd quantum-ai-platform
 
 It enables the APIs, grants you impersonation, creates the versioned state
 bucket, runs `terraform init` and an **interactive** apply — it never
-auto-approves — and sets the four pipeline variables. It never creates,
+auto-approves — and sets the six pipeline variables. It never creates,
 downloads or reads a key. The rest of this section is the same flow by hand,
 kept because a script you cannot check against its documentation is a script
 you have to trust.

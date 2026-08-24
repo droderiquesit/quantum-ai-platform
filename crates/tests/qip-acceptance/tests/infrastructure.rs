@@ -1478,6 +1478,54 @@ fn nothing_deploys_that_has_not_passed_the_test_suite() {
     );
 }
 
+/// Every repository variable the pipeline reads, in the order they appear.
+///
+/// Matches `vars.GCP_…` rather than every `vars.…` so that a variable added
+/// for something other than Google Cloud does not make this test demand the
+/// bootstrap script set it.
+fn pipeline_variables_the_workflow_reads(workflow: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for (index, _) in workflow.match_indices("vars.GCP_") {
+        let name: String = workflow[index + "vars.".len()..]
+            .chars()
+            .take_while(|character| character.is_ascii_uppercase() || *character == '_')
+            .collect();
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+#[test]
+fn the_bootstrap_script_sets_every_pipeline_variable_the_workflow_reads() {
+    let workflow = read(".github/workflows/deploy.yml");
+    let bootstrap = read("scripts/bootstrap-deploy.sh");
+
+    let required = pipeline_variables_the_workflow_reads(&workflow);
+    // The premise: if this found nothing, the loop below would pass by being
+    // empty and this test would guard nothing at all.
+    assert!(
+        required.len() >= 4,
+        "found only {} pipeline variables in deploy.yml; the match is broken, \
+         not the workflow",
+        required.len()
+    );
+
+    // The failure this prevents: the script set four of the six variables the
+    // workflow reads, and the two it missed were the Binary Authorization
+    // pair. Terraform would apply cleanly, the pipeline would refuse to build,
+    // and the first person to press the button would find out. Nothing tied
+    // the two files together, so the gap could not be seen from either one.
+    for name in &required {
+        assert!(
+            bootstrap.contains(name.as_str()),
+            "deploy.yml reads {name} and scripts/bootstrap-deploy.sh never \
+             sets it, so the first deployment leaves it empty"
+        );
+    }
+}
+
 #[test]
 fn production_is_never_deployed_automatically() {
     let deploy = read(".github/workflows/deploy.yml");

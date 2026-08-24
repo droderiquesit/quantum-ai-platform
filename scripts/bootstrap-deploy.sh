@@ -12,12 +12,12 @@
 #   4. creates the Terraform state bucket if it does not exist
 #   5. terraform init + apply, impersonating claude-builder — apply shows its
 #      plan and asks before changing anything; this script never auto-approves
-#   6. sets the four GitHub Actions *variables* the deploy pipeline reads
+#   6. sets the six GitHub Actions *variables* the deploy pipeline reads
 #
 # What it deliberately never does: create, download or read a service-account
 # key. Authentication is your own identity impersonating the bootstrap
 # account, so credentials are short-lived and the audit log names a person.
-# There is no secret anywhere in this flow — the four pipeline values are
+# There is no secret anywhere in this flow — all six pipeline values are
 # identifiers, which is why they are variables and not GitHub secrets.
 #
 # Idempotent: every step either detects its work is already done or is safe
@@ -145,25 +145,49 @@ terraform -chdir="${TF_DIR}" apply -var-file="${TFVARS}"
 
 # --- 6. the pipeline variables -----------------------------------------------
 
-# Variables, not secrets: all four are identifiers that appear in resource
+# Variables, not secrets: all six are identifiers that appear in resource
 # names anyway. See docs/security/credentials.md for why that distinction is
 # load-bearing.
+#
+# Six, not four. `deploy.yml` refuses to build unless the two Binary
+# Authorization variables are set — an unattested image is one the cluster's
+# admission policy rejects, so a pipeline missing them would push images and
+# then fail at the point where no pod starts. Setting four of six here left
+# that failure for the first person to press the button.
 wip="$(terraform -chdir="${TF_DIR}" output -raw workload_identity_provider)"
 deploy_sa="$(terraform -chdir="${TF_DIR}" output -raw deploy_service_account)"
+attestor="$(terraform -chdir="${TF_DIR}" output -raw binary_authorization_attestor)"
+key_version="$(terraform -chdir="${TF_DIR}" output -raw binary_authorization_key_version)"
+
+declare -A pipeline_variables=(
+  [GCP_PROJECT]="${PROJECT}"
+  [GCP_REGION]="${REGION}"
+  [GCP_WORKLOAD_IDENTITY_PROVIDER]="${wip}"
+  [GCP_DEPLOY_SERVICE_ACCOUNT]="${deploy_sa}"
+  [GCP_BINAUTHZ_ATTESTOR]="${attestor}"
+  [GCP_BINAUTHZ_KEY_VERSION]="${key_version}"
+)
+
+# An output that came back empty is a variable that would be set to nothing,
+# which reads in the GitHub UI exactly like one that was set correctly.
+for name in "${!pipeline_variables[@]}"; do
+  [[ -n "${pipeline_variables[$name]}" ]] || {
+    echo "terraform produced no value for ${name}; not setting it" >&2
+    exit 65
+  }
+done
 
 if gh auth status >/dev/null 2>&1; then
-  gh variable set GCP_PROJECT --repo "${GITHUB_REPOSITORY}" --body "${PROJECT}"
-  gh variable set GCP_REGION --repo "${GITHUB_REPOSITORY}" --body "${REGION}"
-  gh variable set GCP_WORKLOAD_IDENTITY_PROVIDER --repo "${GITHUB_REPOSITORY}" --body "${wip}"
-  gh variable set GCP_DEPLOY_SERVICE_ACCOUNT --repo "${GITHUB_REPOSITORY}" --body "${deploy_sa}"
+  for name in "${!pipeline_variables[@]}"; do
+    gh variable set "${name}" --repo "${GITHUB_REPOSITORY}" --body "${pipeline_variables[$name]}"
+  done
   echo "pipeline variables set on ${GITHUB_REPOSITORY}"
 else
   echo
   echo "gh is not authenticated (run: gh auth login). Set the variables yourself:"
-  echo "  gh variable set GCP_PROJECT --repo ${GITHUB_REPOSITORY} --body \"${PROJECT}\""
-  echo "  gh variable set GCP_REGION --repo ${GITHUB_REPOSITORY} --body \"${REGION}\""
-  echo "  gh variable set GCP_WORKLOAD_IDENTITY_PROVIDER --repo ${GITHUB_REPOSITORY} --body \"${wip}\""
-  echo "  gh variable set GCP_DEPLOY_SERVICE_ACCOUNT --repo ${GITHUB_REPOSITORY} --body \"${deploy_sa}\""
+  for name in "${!pipeline_variables[@]}"; do
+    echo "  gh variable set ${name} --repo ${GITHUB_REPOSITORY} --body \"${pipeline_variables[$name]}\""
+  done
 fi
 
 echo
