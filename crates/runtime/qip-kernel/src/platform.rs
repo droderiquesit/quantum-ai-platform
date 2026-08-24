@@ -245,6 +245,13 @@ pub struct Platform {
     /// a process that runs for a year holds a year of them in memory and
     /// rescans all of them on every cycle.
     proposals: Vec<Proposal>,
+    /// Theses the reason stage approved and the decide stage has not yet
+    /// expressed. The audit's first-ranked finding was that this queue did not
+    /// exist: `stage_decide` unconditionally constructed the empty proposal,
+    /// so an approved thesis — however good — could never become a trade. A
+    /// thesis is queued once and drained once; re-expressing it every cycle
+    /// would pyramid the same idea until the mandate cap alone stopped it.
+    pending_theses: Vec<qip_portfolio_engine::construction::ApprovedThesis>,
     /// Proposals produced since assembly, including those aged out above.
     proposals_made: u64,
 }
@@ -559,6 +566,24 @@ impl TrackedCapital {
             .fold(self.cash, |sum, lot| sum + lot.quantity * lot.average_price)
     }
 
+    /// Open positions as signed weights of the given equity, at cost.
+    ///
+    /// At cost rather than at market, consistently with everything here:
+    /// weights against marks the platform does not track would disagree with
+    /// the equity they are divided by.
+    fn position_weights(&self, equity: Decimal) -> Vec<(String, f64)> {
+        if !equity.is_positive() {
+            return Vec::new();
+        }
+        self.positions
+            .iter()
+            .map(|(object, lot)| {
+                let notional = lot.quantity * lot.average_price;
+                (object.clone(), notional.to_f64() / equity.to_f64())
+            })
+            .collect()
+    }
+
     /// Statistic: drawdown of realised equity from its running peak.
     ///
     /// Realised-only, like everything here — adverse marks on open positions
@@ -720,6 +745,7 @@ impl Platform {
             capture_problems: Vec::new(),
             last_correlation: None,
             constructor: PortfolioConstructor::new(config.mandate, router)?,
+            pending_theses: Vec::new(),
             reasoning: ReasoningEngine::new(config.review),
             opportunities: OpportunityEngine::new(
                 DetectorRegistry::standard(),
@@ -1683,6 +1709,29 @@ impl Platform {
                 if !approved {
                     outcome = outcome
                         .with_problem(format!("rejected on review: {}", reasoned.review.rationale));
+                } else {
+                    match self.thesis_from(&opportunity, &reasoned) {
+                        Ok(thesis) => {
+                            self.pending_theses.push(thesis);
+                            // Bounded like the proposal working set: an idea
+                            // nobody sized for this many cycles is stale, and
+                            // the event log keeps the record.
+                            if self.pending_theses.len() > PROPOSAL_HISTORY {
+                                self.pending_theses
+                                    .drain(..self.pending_theses.len() - PROPOSAL_HISTORY);
+                            }
+                        }
+                        // An approved thesis that cannot be sized is reported,
+                        // not dropped silently — the difference between "we
+                        // chose not to" and "we could not" is the difference
+                        // an operator acts on.
+                        Err(reason) => {
+                            outcome = outcome.with_problem(format!(
+                                "approved but not sizeable: {}",
+                                reason.message()
+                            ));
+                        }
+                    }
                 }
                 outcome
             }
@@ -1705,6 +1754,136 @@ impl Platform {
         problems
             .into_iter()
             .fold(outcome, |acc, problem| acc.with_problem(problem))
+    }
+
+    /// Turn an approved hypothesis into the thesis construction can size.
+    ///
+    /// Every number here is traceable to something observed: the direction is
+    /// the claim's own implied sign, the conviction is the review's effective
+    /// confidence under that sign, the expected return is the reversion of the
+    /// anomaly's measured displacement, and the price is the last close this
+    /// platform saw. Where any of those is missing the thesis is refused with
+    /// the missing thing named — a `RegimeShift` has no inherent direction, an
+    /// instrument with no price history cannot be sized — because inventing a
+    /// number here would put fabricated conviction one governed approval away
+    /// from an order.
+    /// Size approved theses against the platform's own history and book.
+    ///
+    /// The covariance is estimated from the closes this platform observed —
+    /// the same series the simulate stage resamples — over the longest window
+    /// every named instrument shares. Too little shared history is a refusal
+    /// naming the count, not a guess: a covariance from a handful of points
+    /// is a number wearing the costume of an estimate, and the mandate's risk
+    /// bound would be enforced against the costume.
+    fn construct_from(
+        &self,
+        theses: &[qip_portfolio_engine::construction::ApprovedThesis],
+        now: Timestamp,
+    ) -> Result<qip_portfolio_engine::construction::ConstructionOutcome> {
+        const MIN_SHARED_RETURNS: usize = 20;
+
+        let mut returns: Vec<Vec<f64>> = Vec::with_capacity(theses.len());
+        for thesis in theses {
+            let series = self
+                .price_history
+                .get(thesis.object_id.as_str())
+                .ok_or_else(|| {
+                    Error::not_found(format!("{} has no price history", thesis.object_id))
+                })?;
+            let mut asset_returns = Vec::with_capacity(series.len().saturating_sub(1));
+            for pair in series.windows(2) {
+                if pair[0] != 0.0 {
+                    asset_returns.push(pair[1] / pair[0] - 1.0);
+                }
+            }
+            returns.push(asset_returns);
+        }
+        let shared = returns.iter().map(Vec::len).min().unwrap_or(0);
+        if shared < MIN_SHARED_RETURNS {
+            return Err(Error::invalid(format!(
+                "{shared} shared return observation(s) is too little history to estimate a \
+                 covariance for {} instrument(s); {MIN_SHARED_RETURNS} are needed",
+                theses.len()
+            )));
+        }
+        for series in &mut returns {
+            let start = series.len() - shared;
+            series.drain(..start);
+        }
+
+        let n = theses.len();
+        let mut covariance = vec![vec![0.0; n]; n];
+        for i in 0..n {
+            for j in i..n {
+                let value = qip_numerics::stats::covariance(&returns[i], &returns[j]);
+                covariance[i][j] = value;
+                covariance[j][i] = value;
+            }
+        }
+
+        // The book as weights of tracked equity, at cost — the same
+        // realised-only accounting the monitor watches, stated there.
+        let equity = self.capital.equity();
+        let current: std::collections::BTreeMap<String, f64> =
+            self.capital.position_weights(equity).into_iter().collect();
+
+        self.constructor.construct(
+            theses,
+            &covariance,
+            &current,
+            Money::new(equity, Currency::USD),
+            now,
+            now,
+            ProposalId::from_string(format!("prop-{}", self.cycle)),
+        )
+    }
+
+    fn thesis_from(
+        &self,
+        opportunity: &Opportunity,
+        reasoned: &qip_reasoning_engine::engine::ReasoningOutcome,
+    ) -> Result<qip_portfolio_engine::construction::ApprovedThesis> {
+        let object_id = opportunity
+            .affected_objects
+            .first()
+            .ok_or_else(|| Error::invalid("the opportunity names no instrument to size"))?;
+        let sign = reasoned.hypothesis.claim.implied_sign().ok_or_else(|| {
+            Error::invalid(format!(
+                "a {} claim has no inherent direction; what to do about it depends on the book",
+                reasoned.hypothesis.claim
+            ))
+        })?;
+        let price = self
+            .price_history
+            .get(object_id.as_str())
+            .and_then(|series| series.last())
+            .copied()
+            .ok_or_else(|| {
+                Error::not_found(format!(
+                    "{object_id} has no price history; a thesis cannot be sized without a \
+                     reference price"
+                ))
+            })?;
+        let anomaly = opportunity
+            .anomalies
+            .first()
+            .ok_or_else(|| Error::invalid("the opportunity carries no anomaly to measure"))?;
+        Ok(qip_portfolio_engine::construction::ApprovedThesis {
+            hypothesis_id: reasoned.hypothesis.hypothesis_id.to_string(),
+            object_id: object_id.clone(),
+            conviction: sign * reasoned.hypothesis.effective_confidence(),
+            // The reversion of what was measured: the anomaly observed a
+            // displacement from expectation, and the thesis is that it closes.
+            // Bounded to the mandate-scale range construction validates, so an
+            // extreme print proposes a large-but-finite return rather than an
+            // absurd one.
+            expected_return: (anomaly.expected - anomaly.observed).clamp(-0.5, 0.5),
+            price: Decimal::from_f64(price).ok_or_else(|| {
+                Error::numeric(format!(
+                    "{object_id}'s last close {price} is not representable as a Decimal"
+                ))
+            })?,
+        })
     }
 
     /// Turn an opportunity and the organisation's findings into a reviewed
@@ -1885,18 +2064,45 @@ impl Platform {
     }
 
     fn stage_decide(&mut self, now: Timestamp) -> StageOutcome {
-        // Construction expresses approved theses. With none approved this
-        // cycle there is nothing to size, and that is a normal state. The
-        // equity is the tracked number — the same one the risk monitor
-        // watches — so a proposal sized after a losing run is sized against
-        // the book that lost, not against the book at assembly.
-        let proposal = self.constructor.nothing_to_do(
-            ProposalId::from_string(format!("prop-{}", self.cycle)),
-            Money::new(self.capital.equity(), Currency::USD),
-            now,
-            now,
-            "no thesis cleared the action bar this cycle",
-        );
+        // Construction expresses approved theses. With none pending there is
+        // nothing to size, and that is a normal state. The equity is the
+        // tracked number — the same one the risk monitor watches — so a
+        // proposal sized after a losing run is sized against the book that
+        // lost, not against the book at assembly.
+        //
+        // Theses are drained, not read: a thesis expresses once. Re-expressing
+        // the queue every cycle would pyramid the same idea until the mandate
+        // cap alone stopped it.
+        let theses = std::mem::take(&mut self.pending_theses);
+        let proposal = if theses.is_empty() {
+            self.constructor.nothing_to_do(
+                ProposalId::from_string(format!("prop-{}", self.cycle)),
+                Money::new(self.capital.equity(), Currency::USD),
+                now,
+                now,
+                "no thesis cleared the action bar this cycle",
+            )
+        } else {
+            match self.construct_from(&theses, now) {
+                Ok(outcome) => outcome.proposal,
+                // A refusal is a normal state, and it is *this* cycle's
+                // record: the proposal says why nothing was sized, and the
+                // theses are not requeued — an idea that could not be sized
+                // against this history will not size better against the same
+                // history next cycle, and the event log keeps the attempt.
+                Err(error) => self.constructor.nothing_to_do(
+                    ProposalId::from_string(format!("prop-{}", self.cycle)),
+                    Money::new(self.capital.equity(), Currency::USD),
+                    now,
+                    now,
+                    format!(
+                        "{} thesis(es) approved and none sized: {}",
+                        theses.len(),
+                        error.message()
+                    ),
+                ),
+            }
+        };
         let legs = proposal.len();
         self.proposals.push(proposal);
         self.proposals_made += 1;
@@ -2953,5 +3159,124 @@ fn mechanism_for(
         | AnomalyKind::SentimentShift
         | AnomalyKind::AlternativeDataDivergence
         | AnomalyKind::UnexplainedMove => None,
+    }
+}
+
+#[cfg(test)]
+mod decide_tests {
+    //! The decide stage stops being a stub: unit tests, because the seam
+    //! between an approved thesis and a sized proposal is private on purpose —
+    //! the only public road to the queue is the reason stage's review.
+
+    use super::*;
+    use qip_financial::universe::Universe;
+    use qip_observability::Telemetry;
+    use qip_portfolio_engine::construction::ApprovedThesis;
+    use qip_risk::limits::LimitSet;
+
+    fn platform() -> Platform {
+        let config = PlatformConfig::default();
+        let (context, _clock) =
+            qip_core::Context::deterministic(Timestamp::from_secs(1_760_000_000), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles")
+    }
+
+    fn thesis(object: &str, conviction: f64) -> ApprovedThesis {
+        ApprovedThesis {
+            hypothesis_id: format!("HYP-{object}"),
+            object_id: qip_core::ObjectId::from_string(object),
+            conviction,
+            expected_return: 0.04 * conviction.signum(),
+            price: Decimal::from_int(100),
+        }
+    }
+
+    /// Alternating closes, so returns have real variance and a covariance
+    /// exists to estimate. A flat series has zero variance and a mandate risk
+    /// bound divided by it.
+    fn feed_history(platform: &mut Platform, object: &str, closes: usize) {
+        let series = platform
+            .price_history
+            .entry(object.to_string())
+            .or_default();
+        for index in 0..closes {
+            let wiggle = if index % 2 == 0 { 0.7 } else { -0.5 };
+            series.push(100.0 + index as f64 * 0.1 + wiggle);
+        }
+    }
+
+    #[test]
+    fn with_nothing_pending_the_decide_stage_still_reports_the_quiet_cycle() {
+        let mut platform = platform();
+        let now = Timestamp::from_secs(1_760_000_100);
+        platform.stage_decide(now);
+        let proposal = platform.proposals.last().expect("a proposal is recorded");
+        assert_eq!(
+            proposal.len(),
+            0,
+            "an empty cycle proposed legs from nothing"
+        );
+    }
+
+    #[test]
+    fn an_approved_thesis_becomes_a_draft_proposal_with_legs_and_is_drained() {
+        let mut platform = platform();
+        feed_history(&mut platform, "AAPL", 30);
+        feed_history(&mut platform, "MSFT", 30);
+        platform.pending_theses.push(thesis("AAPL", 0.6));
+        platform.pending_theses.push(thesis("MSFT", -0.4));
+
+        // The premise: before this change, stage_decide constructed the empty
+        // proposal unconditionally — the audit's first-ranked finding. If this
+        // assertion starts failing with zero legs, the stub is back.
+        let now = Timestamp::from_secs(1_760_000_100);
+        platform.stage_decide(now);
+        let proposal = platform.proposals.last().expect("a proposal is recorded");
+        assert!(
+            !proposal.is_empty(),
+            "two approved theses with thirty closes of shared history produced no legs; \
+             the decide stage has regressed to the unconditional empty proposal"
+        );
+        assert!(
+            !proposal.status.is_releasable(),
+            "a freshly constructed proposal must still need its governed approval; \
+             construction is not permission"
+        );
+        assert!(
+            platform.pending_theses.is_empty(),
+            "the queue was not drained; the same thesis would pyramid next cycle"
+        );
+    }
+
+    #[test]
+    fn too_little_shared_history_is_a_named_refusal_and_not_a_guessed_covariance() {
+        let mut platform = platform();
+        feed_history(&mut platform, "AAPL", 5);
+        platform.pending_theses.push(thesis("AAPL", 0.6));
+
+        let now = Timestamp::from_secs(1_760_000_100);
+        platform.stage_decide(now);
+        let proposal = platform.proposals.last().expect("a proposal is recorded");
+        assert_eq!(
+            proposal.len(),
+            0,
+            "five closes produced a sized proposal; the covariance was a costume"
+        );
+        assert!(
+            proposal.rationale.contains("too little history"),
+            "the quiet proposal does not say why nothing was sized: {}",
+            proposal.rationale
+        );
+        assert!(
+            platform.pending_theses.is_empty(),
+            "an unsizeable thesis was requeued; it will not size better against the same history"
+        );
     }
 }
