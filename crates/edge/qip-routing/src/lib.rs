@@ -23,6 +23,11 @@
 //!   and latency into a cost that goes into the routing choice, so a degrading
 //!   venue is routed away from automatically, and into a verdict with a reason,
 //!   so somebody can say why.
+//! * **Whether a resting order is still the right order.** [`reprice::Repricer`]
+//!   decides when a resting limit child has fallen too far behind the touch,
+//!   withdraws it by cancel-plus-new — never amend — and mints the replacement
+//!   for the remainder only after the cancel is acknowledged, under requote
+//!   budgets that stop it chasing a fast market.
 //!
 //! [`gateway::Gateway`] is the venue-facing surface.
 //! [`gateway::SimulatedGateway`] implements it against a book;
@@ -39,6 +44,7 @@ pub mod children;
 pub mod gateway;
 pub mod health;
 pub mod ordertype;
+pub mod reprice;
 pub mod router;
 pub mod venue;
 
@@ -51,6 +57,9 @@ pub use health::{HealthAssessment, HealthPolicy, HealthTracker, HealthVerdict, V
 pub use ordertype::{
     OrderTypeKind, OrderTypeSelection, PegReference, RoutedOrderType, Touch, Urgency,
     select_order_type,
+};
+pub use reprice::{
+    Drift, HoldReason, PendingReplace, RepriceDecision, RepricePolicy, Repricer, ThrottleScope,
 };
 pub use router::{
     ExclusionReason, RouteSlice, Router, RouterSettings, RoutingDecision, RoutingRequest,

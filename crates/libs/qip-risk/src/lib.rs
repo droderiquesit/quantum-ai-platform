@@ -1,7 +1,8 @@
-//! `qip-risk` — risk measurement and the limit engine.
+//! `qip-risk` — risk measurement, the limit engine, and the hedge engine.
 //!
-//! Two halves. [`metrics`] and [`factor`] measure risk; [`limits`] decides what
-//! is allowed.
+//! Three parts. [`metrics`] and [`factor`] measure risk; [`limits`] decides
+//! what is allowed; [`hedge`] proposes — never submits — orders that reduce a
+//! named exposure toward a declared target.
 //!
 //! The measurement half is deliberately explicit about its assumptions. There
 //! are two ways to compute value at risk from the same return series and they
@@ -16,9 +17,14 @@
 //! meaningful if it cannot be talked out of.
 
 pub mod factor;
+pub mod hedge;
 pub mod limits;
 pub mod metrics;
 
 pub use factor::{FactorRisk, RiskDecomposition};
+pub use hedge::{
+    HedgeAxis, HedgeEngine, HedgeExposures, HedgeInstrument, HedgeOutcome, HedgePolicy,
+    HedgeProposal, HedgeRefusal, HedgeSide, propose_hedge,
+};
 pub use limits::{Limit, LimitBreach, LimitCheck, LimitKind, LimitSet, RiskState, Severity};
 pub use metrics::{DrawdownProfile, RiskMetrics, TailRisk};
