@@ -943,3 +943,155 @@ fn a_bar_cannot_be_known_before_the_period_it_summarises_ended() {
         .expect("clamped forward to the close rather than dropped");
     assert_eq!(value.available_at, closed);
 }
+
+// --- bulk absorption --------------------------------------------------------
+
+/// A daily bar fixture for the batched-absorption tests.
+fn day_bar(object: &ObjectId, days_back: i64, close: i64) -> Bar {
+    Bar {
+        object_id: object.clone(),
+        venue: "XNYS".into(),
+        interval: Interval::Day,
+        open_time: days_ago(days_back),
+        open: Decimal::from_int(close),
+        high: Decimal::from_int(close + 1),
+        low: Decimal::from_int(close - 1),
+        close: Decimal::from_int(close),
+        volume: Decimal::from_int(1_000_000),
+        vwap: None,
+        trade_count: 5_000,
+        quality: DataQuality::clean(),
+    }
+}
+
+#[test]
+fn recording_many_values_is_indistinguishable_from_recording_them_one_by_one() {
+    // The premise of the batched path: it exists for speed, and speed that
+    // changed the answer would be a different feature store, not a faster one.
+    // The batch arrives newest-first — the order a feed replaying history
+    // actually uses, and the worst case for repeated insertion.
+    let mut one_by_one = FeatureStore::new();
+    let mut batched = FeatureStore::new();
+    for store in [&mut one_by_one, &mut batched] {
+        store.define(Feature::new("close", "last traded price", "test"));
+    }
+
+    let values: Vec<FeatureValue> = (0..50)
+        .map(|i| {
+            FeatureValue::new(
+                100.0 + f64::from(i),
+                days_ago(i64::from(i)),
+                days_ago(i64::from(i)),
+            )
+        })
+        .collect();
+    for value in &values {
+        one_by_one.record("close", "obj-a", value.clone());
+    }
+    batched.record_many("close", "obj-a", values);
+
+    for day in 0..50 {
+        let at = days_ago(day);
+        assert_eq!(
+            one_by_one.value_as_of("close", "obj-a", at, at),
+            batched.value_as_of("close", "obj-a", at, at),
+            "the batched store answers differently {day} day(s) ago"
+        );
+    }
+    assert_eq!(one_by_one.value_count(), batched.value_count());
+}
+
+#[test]
+fn a_batched_restatement_replaces_the_stored_value_exactly_as_record_would() {
+    // Two values for one instant would make "the value as of t" ambiguous, so
+    // the restatement rule has to survive the merge: the later value wins,
+    // whether it arrives against the stored series or inside the same batch.
+    let mut store = FeatureStore::new();
+    store.define(Feature::new("close", "last traded price", "test"));
+    store.record(
+        "close",
+        "obj-a",
+        FeatureValue::new(100.0, days_ago(1), days_ago(1)),
+    );
+
+    store.record_many(
+        "close",
+        "obj-a",
+        vec![
+            FeatureValue::new(101.0, days_ago(1), days_ago(1)),
+            FeatureValue::new(102.0, days_ago(1), days_ago(1)),
+        ],
+    );
+
+    let value = store
+        .value_as_of("close", "obj-a", days_ago(1), now())
+        .expect("the instant has exactly one value");
+    assert!(
+        approx_eq(value.value, 102.0, 1e-12),
+        "the last restatement did not win: {}",
+        value.value
+    );
+    assert_eq!(
+        store.value_count(),
+        1,
+        "a restatement must replace, not accumulate"
+    );
+}
+
+#[test]
+fn bars_absorbed_in_bulk_answer_point_in_time_reads_exactly_like_bars_absorbed_singly() {
+    let object = ObjectId::from_string("OBJ00000000000000000NWSC");
+    let mut singly = WorldModel::new();
+    let mut bulk = WorldModel::new();
+
+    // Newest-first, as a replaying feed hands them over.
+    let bars: Vec<Bar> = (0..40)
+        .map(|i| day_bar(&object, i64::from(i), 100 + i64::from(i)))
+        .collect();
+    for bar in &bars {
+        singly.absorb_bar(bar, bar.close_time());
+    }
+    bulk.absorb_bars(bars.iter().map(|bar| (bar, bar.close_time())));
+
+    for day in 0..40 {
+        let at = days_ago(day);
+        assert_eq!(
+            singly
+                .features()
+                .value_as_of("close", object.as_str(), at, at),
+            bulk.features()
+                .value_as_of("close", object.as_str(), at, at),
+            "bulk absorption changed the close readable {day} day(s) ago"
+        );
+        assert_eq!(
+            singly
+                .features()
+                .value_as_of("volume", object.as_str(), at, at),
+            bulk.features()
+                .value_as_of("volume", object.as_str(), at, at),
+            "bulk absorption changed the volume readable {day} day(s) ago"
+        );
+    }
+}
+
+#[test]
+fn bulk_absorption_applies_the_same_knowability_clamp_as_the_single_path() {
+    // A bar cannot have been knowable before the period it summarises ended;
+    // the batched path must clamp exactly as `absorb_bar` does, or a bulk
+    // replay would carry the look-ahead the single path refuses.
+    let object = ObjectId::from_string("OBJ00000000000000000NWSC");
+    let mut model = WorldModel::new();
+    let bar = day_bar(&object, 1, 100);
+    let closed = bar.close_time();
+
+    model.absorb_bars([(&bar, closed.saturating_sub(Duration::from_hours(1)))]);
+
+    let value = model
+        .features()
+        .current("close", object.as_str(), closed)
+        .expect("clamped forward to the close rather than dropped");
+    assert_eq!(
+        value.available_at, closed,
+        "a pre-close knowability claim survived the bulk path"
+    );
+}

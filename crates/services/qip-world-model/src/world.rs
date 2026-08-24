@@ -416,6 +416,51 @@ impl WorldModel {
         );
     }
 
+    /// Absorb many bars in one pass, each with its own knowability instant.
+    ///
+    /// Exactly [`WorldModel::absorb_bar`]'s semantics — the same clamp, the
+    /// same two features — batched so that a feed handing over history costs
+    /// one merge per series rather than one sorted insert per bar. History
+    /// typically arrives newest-first, which is the worst case for repeated
+    /// insertion: each bar would move everything already stored, and at feed
+    /// rates that quadratic cost is what separates absorbing a replay from
+    /// timing out on it.
+    pub fn absorb_bars<'a>(&mut self, bars: impl IntoIterator<Item = (&'a Bar, Timestamp)>) {
+        let mut closes: BTreeMap<String, Vec<FeatureValue>> = BTreeMap::new();
+        let mut volumes: BTreeMap<String, Vec<FeatureValue>> = BTreeMap::new();
+        for (bar, known_at) in bars {
+            let valid_at = bar.close_time();
+            // The same clamp as `absorb_bar`, for the same reason: a bar
+            // cannot have been knowable before the period it summarises had
+            // finished.
+            let available_at = if known_at < valid_at {
+                valid_at
+            } else {
+                known_at
+            };
+            let object = bar.object_id.as_str().to_string();
+            closes
+                .entry(object.clone())
+                .or_default()
+                .push(FeatureValue::new(
+                    bar.close.to_f64(),
+                    valid_at,
+                    available_at,
+                ));
+            volumes.entry(object).or_default().push(FeatureValue::new(
+                bar.volume.to_f64(),
+                valid_at,
+                available_at,
+            ));
+        }
+        for (subject, values) in closes {
+            self.features.record_many("close", &subject, values);
+        }
+        for (subject, values) in volumes {
+            self.features.record_many("volume", &subject, values);
+        }
+    }
+
     /// Recompute realised volatility for an object from its close history.
     pub fn recompute_volatility(&mut self, object_id: &str, window: usize, now: Timestamp) {
         let history = self.features.history("close", object_id, now);

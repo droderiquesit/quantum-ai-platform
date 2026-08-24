@@ -7,6 +7,7 @@
 //! what else is configured.
 
 use crate::central::CentralConfig;
+use qip_core::Decimal;
 use qip_core::error::Result;
 use qip_core::time::Duration;
 use qip_events::log::{Durability, EventLog};
@@ -201,6 +202,21 @@ pub struct PlatformConfig {
     #[serde(default = "default_data_user_agent")]
     pub data_user_agent: String,
 
+    /// The equity the platform's book starts with, in the mandate currency.
+    ///
+    /// Until this field existed the number lived as a hardcoded ten million
+    /// inside the kernel, and the risk monitor ran every cycle against that
+    /// constant — real-time in cadence, not in content. It is configuration
+    /// because it is a statement about the deployment's book, not about the
+    /// code; the platform then moves it with realised fills, so the monitor
+    /// and the decide stage watch a number the fills can change.
+    ///
+    /// `#[serde(default)]` returning that same ten million, so a
+    /// configuration stored before the field existed keeps deserialising to
+    /// exactly the behaviour it had.
+    #[serde(default = "default_initial_equity")]
+    pub initial_equity: Decimal,
+
     /// How deep a chain observation has to be buried before the platform will
     /// read state derived from it.
     ///
@@ -229,6 +245,13 @@ fn default_chain_confirmations() -> u32 {
     12
 }
 
+/// The ten million the kernel hardcoded before the field existed. Kept as the
+/// default so every stored configuration and every test that never chose a
+/// book size keeps the behaviour it had.
+fn default_initial_equity() -> Decimal {
+    Decimal::from_int(10_000_000)
+}
+
 impl Default for PlatformConfig {
     fn default() -> Self {
         Self {
@@ -246,6 +269,7 @@ impl Default for PlatformConfig {
             event_log: EventLogDestination::default(),
             owner: default_owner(),
             data_user_agent: default_data_user_agent(),
+            initial_equity: default_initial_equity(),
             chain_confirmations: default_chain_confirmations(),
         }
     }
@@ -312,6 +336,12 @@ impl PlatformConfig {
     /// State how deep a block must be buried before its state may be read.
     pub fn with_chain_confirmations(mut self, blocks: u32) -> Self {
         self.chain_confirmations = blocks;
+        self
+    }
+
+    /// State the equity the book starts with.
+    pub fn with_initial_equity(mut self, equity: Decimal) -> Self {
+        self.initial_equity = equity;
         self
     }
 
@@ -415,6 +445,28 @@ mod tests {
                 .contains("survives this process"),
             "the in-memory banner does not say that nothing outlives the process"
         );
+    }
+
+    #[test]
+    fn a_stored_configuration_without_an_initial_equity_deserialises_to_the_old_ten_million() {
+        // The compatibility contract of `#[serde(default)]`: an operator's
+        // config written before the book size was configurable must keep
+        // deserialising, and to the exact number the kernel used to hardcode
+        // — anything else would silently resize a deployed book.
+        let stored = serde_json::to_value(PlatformConfig::default())
+            .expect("the default configuration serialises");
+        let mut object = match stored {
+            serde_json::Value::Object(map) => map,
+            other => panic!("a configuration is a JSON object, not {other}"),
+        };
+        assert!(
+            object.remove("initial_equity").is_some(),
+            "the premise: the field is in the serialised form to be removed"
+        );
+
+        let restored: PlatformConfig = serde_json::from_value(serde_json::Value::Object(object))
+            .expect("a configuration without the field is still a configuration");
+        assert_eq!(restored.initial_equity, Decimal::from_int(10_000_000));
     }
 
     #[test]

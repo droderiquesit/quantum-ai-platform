@@ -142,6 +142,72 @@ impl FeatureStore {
         }
     }
 
+    /// Record many values for one series in a single merge.
+    ///
+    /// Semantically identical to calling [`FeatureStore::record`] once per
+    /// value — same ordering invariant, same restatement rule (a later value
+    /// for the same instant replaces the earlier one, within this batch as
+    /// against the stored series). It exists because the loop is quadratic
+    /// where this is linear: a feed handing over history typically arrives
+    /// newest-first, and each of *n* front-inserts into a sorted series moves
+    /// the whole series, which at feed rates is the difference between a
+    /// second and a minute.
+    pub fn record_many(&mut self, feature: &str, subject: &str, mut values: Vec<FeatureValue>) {
+        if values.is_empty() {
+            return;
+        }
+        // Stable sort by valid time, so equal-instant values keep the caller's
+        // order and the later one wins the restatement below — exactly what a
+        // sequence of `record` calls would have done.
+        values.sort_by_key(|value| value.valid_at.as_nanos());
+        let series = self
+            .values
+            .entry((feature.to_string(), subject.to_string()))
+            .or_default();
+
+        let existing = std::mem::take(series);
+        let mut merged: Vec<FeatureValue> = Vec::with_capacity(existing.len() + values.len());
+        // A restatement replaces rather than duplicates: two values for one
+        // instant would make "the value as of t" ambiguous.
+        fn push_replacing(series: &mut Vec<FeatureValue>, value: FeatureValue) {
+            match series.last_mut() {
+                Some(last) if last.valid_at == value.valid_at => *last = value,
+                _ => series.push(value),
+            }
+        }
+        let mut old_iter = existing.into_iter().peekable();
+        let mut new_iter = values.into_iter().peekable();
+        loop {
+            let ordering = match (old_iter.peek(), new_iter.peek()) {
+                (None, None) => break,
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (Some(old), Some(new)) => old.valid_at.as_nanos().cmp(&new.valid_at.as_nanos()),
+            };
+            match ordering {
+                std::cmp::Ordering::Less => {
+                    if let Some(value) = old_iter.next() {
+                        push_replacing(&mut merged, value);
+                    }
+                }
+                std::cmp::Ordering::Greater => {
+                    if let Some(value) = new_iter.next() {
+                        push_replacing(&mut merged, value);
+                    }
+                }
+                // The stored value and a new one describe the same instant:
+                // the new one is the restatement and the old one is dropped.
+                std::cmp::Ordering::Equal => {
+                    old_iter.next();
+                    if let Some(value) = new_iter.next() {
+                        push_replacing(&mut merged, value);
+                    }
+                }
+            }
+        }
+        *series = merged;
+    }
+
     /// The value for `subject` as of a point in both time dimensions.
     ///
     /// Returns the most recent value that both describes an instant at or

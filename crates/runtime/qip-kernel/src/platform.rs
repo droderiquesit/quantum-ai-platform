@@ -52,7 +52,7 @@ use qip_chain::{ChainState, ChainUpdate, Confirmations, ConfirmedView};
 use qip_contracts::edge::Deduction;
 use qip_contracts::governance::Usage;
 use qip_contracts::message::BookSide;
-use qip_contracts::venue::VenueId;
+use qip_contracts::venue::{VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
 use qip_core::ids::{DecisionKind, EventKind, ObjectId, OrderId, ProposalId};
 use qip_core::lineage::CorrelationId;
@@ -76,10 +76,13 @@ use qip_investment_agents::desk::{BookView, ComplianceView, Desk, MarketView, Ri
 use qip_learning_engine::attribution::Attributor;
 use qip_learning_engine::evaluation::ThesisEvaluator;
 use qip_learning_engine::feedback::FeedbackEngine;
+use qip_market::bar::Bar;
+use qip_market::corporate_action::CorporateActionKind;
 use qip_market::snapshot::MarketSnapshot;
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_mesh::catalog::Catalog;
 use qip_observability::Telemetry;
+use qip_opportunity_engine::catalyst::MarketEvent;
 use qip_opportunity_engine::detector::{DetectionContext, DetectorRegistry};
 use qip_opportunity_engine::engine::{EngineConfig, OpportunityEngine};
 use qip_opportunity_engine::opportunity::Opportunity;
@@ -109,6 +112,10 @@ use qip_twin::capture::{Action, Decision, OutcomeCapture, RealisedOutcome};
 use qip_twin::counterfactual::{
     ActualTrade, AlternativeMenu, CounterfactualEngine, CounterfactualSet,
 };
+use qip_world_model::WorldModel;
+use qip_world_model::features::{Feature, FeatureValue};
+use qip_world_model::graph::{Node, NodeKind};
+use qip_world_model::liquidity::{DepthObservation, LiquidityTopology};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -187,10 +194,31 @@ pub struct Platform {
     compute_spend: Decimal,
     /// Data licences the platform has read from. Empty until sources register.
     data_reads: DataReads,
-    /// Capture failures, surfaced by LEARN rather than swallowed. A record
-    /// that can lose an entry silently is not a record, and neither is one
-    /// that can fail to write silently.
+    /// Capture and absorption failures, surfaced by LEARN rather than
+    /// swallowed. A record that can lose an entry silently is not a record,
+    /// and neither is one that can fail to write silently.
     capture_problems: Vec<String>,
+
+    /// The platform's own world model — the one [`Platform::observe`] feeds.
+    ///
+    /// Distinct from the copy handed to the agents' desk at assembly: the
+    /// desk's sits behind a read-only capability gate inside an `Arc` every
+    /// agent shares, so there is deliberately no mutable path to it. The
+    /// absorbed state therefore lives here, where the UNDERSTAND stage reads
+    /// its coverage and the DISCOVER stage reads its series. Sharing one
+    /// instance with the desk would require interior mutability in the agent
+    /// runtime, which is a change with its own review; until then the desk's
+    /// copy is honestly a cold start, exactly as `Desk::empty` documents.
+    world: WorldModel,
+    /// Where liquidity lives per instrument across venues, fed from books and
+    /// quotes as they arrive, each at its own observed instant.
+    liquidity: LiquidityTopology,
+    /// Knowable market events for the catalyst path, in arrival order.
+    ///
+    /// Bounded twice: [`MARKET_EVENT_HISTORY`] caps the count and the
+    /// DISCOVER stage ages out anything older than [`MARKET_EVENT_RETENTION`]
+    /// — the catalyst detector links moves to events days old, not months.
+    market_events: Vec<MarketEvent>,
 
     // State carried between cycles.
     cycle: u64,
@@ -199,6 +227,15 @@ pub struct Platform {
     /// Price history per instrument, for the detectors.
     price_history: BTreeMap<String, Vec<f64>>,
     volume_history: BTreeMap<String, Vec<f64>>,
+    /// Quoted spread history per instrument, in basis points — the series the
+    /// liquidity-deterioration detector reads. A statistic, so `f64`.
+    spread_history: BTreeMap<String, Vec<f64>>,
+    /// Named surprise series — fundamentals against consensus, keyed
+    /// `entity:metric` — the series the observation detector reads.
+    observation_history: BTreeMap<String, Vec<f64>>,
+    /// The book as realised fills have moved it. What the risk monitor and
+    /// the decide stage read instead of the constant they used to watch.
+    capital: TrackedCapital,
     /// Opportunities found and not yet worked through.
     queue: Vec<Opportunity>,
     /// Recent proposals, most recent last, capped at [`PROPOSAL_HISTORY`].
@@ -218,11 +255,28 @@ pub struct Platform {
 /// small enough that the working set does not grow with uptime.
 const PROPOSAL_HISTORY: usize = 256;
 
-/// The book the platform sizes everything against.
+/// How many price levels per side a book observation sums into the liquidity
+/// topology.
 ///
-/// One constant rather than the same literal in six places, so a deployment
-/// that changes it changes it everywhere.
-const PLATFORM_EQUITY: i64 = 10_000_000;
+/// Three: the touch and the two levels behind it. Deep-book size is real but
+/// it is not the size a marketable order meets first, and a topology summed
+/// over forty levels would call a venue deep whose touch is empty.
+const BOOK_DEPTH_LEVELS: usize = 3;
+
+/// How many knowable market events the platform holds for the catalyst path.
+///
+/// A cap on count so the working set cannot grow with uptime; the DISCOVER
+/// stage additionally ages events out by [`MARKET_EVENT_RETENTION`]. Nothing
+/// is lost that mattered: the catalyst detector links moves to events at most
+/// days old, and every event's source record went through the event log.
+const MARKET_EVENT_HISTORY: usize = 1024;
+
+/// How old an event may be and still be offered to the detectors.
+///
+/// Thirty days: an order of magnitude past the catalyst detector's own
+/// three-day explanation window, so retention never decides what the detector
+/// sees — only that memory stays bounded.
+const MARKET_EVENT_RETENTION: Duration = Duration::from_days(30);
 
 /// How many blocks of undo history the chain state keeps.
 ///
@@ -386,6 +440,141 @@ impl EventBody for CycleJournalEntry {
     }
 }
 
+/// One open position at its average entry cost. Quantity is signed: negative
+/// is short.
+#[derive(Clone, Copy, Debug)]
+struct PositionLot {
+    quantity: Decimal,
+    average_price: Decimal,
+}
+
+/// The book's capital state, tracked from realised fills and nothing else.
+///
+/// Positions are carried at average entry cost, so equity here is the initial
+/// equity plus realised P&L minus costs paid. Unrealised P&L is deliberately
+/// excluded: the platform holds no marks, and a mark invented so the monitor
+/// has something to watch is exactly the fabricated number the risk stack
+/// exists to refuse. The trade-off is stated where it is read
+/// ([`Platform::risk_state`]): drawdown and daily loss driven by adverse
+/// marks are invisible until realised. Deterministic by construction — the
+/// same fills in the same order produce the same state, with no clock read
+/// anywhere.
+#[derive(Debug)]
+struct TrackedCapital {
+    /// Cash after every fill's notional and costs. Starts at the configured
+    /// initial equity — an unfilled book is all cash.
+    cash: Decimal,
+    /// P&L realised by position-reducing fills, cumulative.
+    realised_pnl: Decimal,
+    /// Commissions and fees paid, cumulative.
+    costs_paid: Decimal,
+    /// The highest equity seen, for the drawdown the monitor watches.
+    peak_equity: Decimal,
+    /// Open positions keyed by instrument.
+    positions: BTreeMap<String, PositionLot>,
+}
+
+impl TrackedCapital {
+    fn new(initial_equity: Decimal) -> Self {
+        Self {
+            cash: initial_equity,
+            realised_pnl: Decimal::ZERO,
+            costs_paid: Decimal::ZERO,
+            peak_equity: initial_equity,
+            positions: BTreeMap::new(),
+        }
+    }
+
+    /// Book one fill: move cash, update the lot, realise P&L on the reducing
+    /// portion.
+    ///
+    /// Average-cost accounting, written out once: a same-direction fill
+    /// re-averages the entry; an opposite-direction fill realises
+    /// `(price − average) × closed × direction` on the quantity it closes and
+    /// opens any remainder at the fill price. Closing to exactly zero removes
+    /// the lot, so an empty book is an empty map rather than a map of zeros.
+    fn apply_fill(
+        &mut self,
+        object_id: &str,
+        side: Side,
+        price: Decimal,
+        quantity: Decimal,
+        costs: Decimal,
+    ) {
+        self.costs_paid += costs;
+        let signed = match side {
+            Side::Buy => quantity,
+            Side::Sell => -quantity,
+        };
+        // A buy spends notional and costs; a sell earns notional less costs.
+        self.cash = self.cash - signed * price - costs;
+
+        if quantity.is_positive() {
+            let lot = self
+                .positions
+                .entry(object_id.to_string())
+                .or_insert(PositionLot {
+                    quantity: Decimal::ZERO,
+                    average_price: Decimal::ZERO,
+                });
+            if lot.quantity.signum() == 0 || lot.quantity.signum() == signed.signum() {
+                // Extending: re-average the entry over the combined size.
+                let combined = lot.quantity + signed;
+                let basis = lot.quantity.abs() * lot.average_price + quantity * price;
+                lot.average_price = basis.checked_div(combined.abs()).unwrap_or(price);
+                lot.quantity = combined;
+            } else {
+                // Reducing, possibly through zero.
+                let closing = quantity.min(lot.quantity.abs());
+                let direction = Decimal::from_int(i64::from(lot.quantity.signum()));
+                self.realised_pnl += (price - lot.average_price) * closing * direction;
+                let opened = quantity - closing;
+                if opened.is_positive() {
+                    // The fill flipped the position; the remainder is a new
+                    // lot entered at this fill's price.
+                    lot.quantity = if signed.is_positive() {
+                        opened
+                    } else {
+                        -opened
+                    };
+                    lot.average_price = price;
+                } else {
+                    lot.quantity += signed;
+                }
+            }
+            if lot.quantity.signum() == 0 {
+                self.positions.remove(object_id);
+            }
+        }
+
+        let equity = self.equity();
+        self.peak_equity = self.peak_equity.max(equity);
+    }
+
+    /// Cash plus open positions at cost: initial equity plus realised P&L
+    /// minus costs paid, exactly.
+    fn equity(&self) -> Decimal {
+        self.positions
+            .values()
+            .fold(self.cash, |sum, lot| sum + lot.quantity * lot.average_price)
+    }
+
+    /// Statistic: drawdown of realised equity from its running peak.
+    ///
+    /// Realised-only, like everything here — adverse marks on open positions
+    /// do not appear in it until they are realised.
+    fn drawdown(&self) -> f64 {
+        if !self.peak_equity.is_positive() {
+            return 0.0;
+        }
+        let equity = self.equity();
+        if equity >= self.peak_equity {
+            return 0.0;
+        }
+        (self.peak_equity - equity).to_f64() / self.peak_equity.to_f64()
+    }
+}
+
 impl Platform {
     /// Assemble a platform.
     ///
@@ -409,27 +598,31 @@ impl Platform {
         // here, so the chain continues from the last record on disk instead of
         // beginning again at sequence one.
         let event_log = config.event_log.open()?;
+        // The configured book size, used everywhere a "how big is the book"
+        // number is needed at assembly — one source instead of the same
+        // literal in six places.
+        let initial_equity = config.initial_equity;
 
         let desk = Arc::new(Desk::new(
             MarketView {
                 snapshot: MarketSnapshot::new(now),
                 universe,
             },
-            qip_world_model::WorldModel::new(),
+            WorldModel::new(),
             BookView {
                 portfolio: Portfolio::new(
                     PortfolioId::from_string("pf-main"),
                     "main",
                     Currency::USD,
-                    Decimal::from_int(10_000_000),
+                    initial_equity,
                     now,
                 ),
                 marks: BTreeMap::new(),
             },
             RiskView {
                 state: RiskState {
-                    equity: Decimal::from_int(10_000_000),
-                    cash: Decimal::from_int(10_000_000),
+                    equity: initial_equity,
+                    cash: initial_equity,
                     ..RiskState::default()
                 },
                 limits: limits.clone(),
@@ -485,14 +678,15 @@ impl Platform {
             delay + CAPITAL_HORIZON,
         )?;
 
+        let quarter_book = initial_equity
+            .checked_div(Decimal::from_int(4))
+            .unwrap_or(initial_equity);
+        let half_book = initial_equity
+            .checked_div(Decimal::from_int(2))
+            .unwrap_or(initial_equity);
         let pre_positioner = PrePositioningPlanner::new(
             CapitalAllocator::new(
-                AllocationLimits::new(
-                    Decimal::from_int(PLATFORM_EQUITY),
-                    Decimal::from_int(PLATFORM_EQUITY / 4),
-                    Decimal::from_int(PLATFORM_EQUITY / 2),
-                    Decimal::from_int(PLATFORM_EQUITY / 2),
-                )?,
+                AllocationLimits::new(initial_equity, quarter_book, half_book, half_book)?,
                 DrawdownSchedule::default(),
             ),
             TransferCostModel::new(
@@ -550,6 +744,12 @@ impl Platform {
             cycle: 0,
             price_history: BTreeMap::new(),
             volume_history: BTreeMap::new(),
+            spread_history: BTreeMap::new(),
+            observation_history: BTreeMap::new(),
+            world: WorldModel::new(),
+            liquidity: LiquidityTopology::default(),
+            market_events: Vec::new(),
+            capital: TrackedCapital::new(initial_equity),
             queue: Vec::new(),
             proposals: Vec::new(),
             proposals_made: 0,
@@ -708,6 +908,46 @@ impl Platform {
         &self.desk
     }
 
+    /// The platform's world model — the one [`Platform::observe`] feeds.
+    ///
+    /// Read-only: `observe` is the writer, and a second writer would be a
+    /// second story about what the platform believes.
+    pub fn world(&self) -> &WorldModel {
+        &self.world
+    }
+
+    /// Where liquidity lives, per instrument across venues, as fed from the
+    /// books and quotes the platform has observed.
+    pub fn liquidity(&self) -> &LiquidityTopology {
+        &self.liquidity
+    }
+
+    /// The knowable market events currently held for the catalyst path, in
+    /// arrival order.
+    pub fn market_events(&self) -> &[MarketEvent] {
+        &self.market_events
+    }
+
+    /// Equity as tracked from realised fills: the configured initial book
+    /// plus realised P&L minus costs paid, positions carried at cost.
+    ///
+    /// Excludes unrealised P&L, and says so: the platform holds no marks, and
+    /// realised-only is the honest number. This is what the risk monitor and
+    /// the decide stage read.
+    pub fn equity(&self) -> Decimal {
+        self.capital.equity()
+    }
+
+    /// P&L realised by position-reducing fills, cumulative.
+    pub fn realised_pnl(&self) -> Decimal {
+        self.capital.realised_pnl
+    }
+
+    /// Commissions and fees paid across every fill, cumulative.
+    pub fn trading_costs(&self) -> Decimal {
+        self.capital.costs_paid
+    }
+
     /// Score resolved theses and produce the calibration and lessons.
     ///
     /// Separate from the cycle because a thesis resolves on its own horizon
@@ -742,12 +982,55 @@ impl Platform {
     }
 
     /// Feed observations in. The SENSE stage's input.
+    ///
+    /// Every record kind lands somewhere it is genuinely consumed — the `_ =>`
+    /// arm that used to discard everything but bars is gone, and the exhaustive
+    /// match is what keeps a new record kind from quietly rejoining it:
+    ///
+    /// * **Bars** keep feeding the price/volume `f64` fast path the detectors
+    ///   scan, and additionally land in the world model's point-in-time
+    ///   feature store with both of their instants.
+    /// * **Trades and ticks** record the instrument's last traded price —
+    ///   the feature store's own definition of `close` — at the record's
+    ///   venue instant.
+    /// * **Quotes and books** feed the liquidity topology (per-venue depth at
+    ///   the observed instant) and the spread series the liquidity detector
+    ///   reads.
+    /// * **News, fundamentals and macro** go to the world model's absorbers
+    ///   — entity resolution, the evidence index, sentiment and surprise
+    ///   features — and become knowable [`MarketEvent`]s for the catalyst
+    ///   detector; fundamental surprises also join the observation series the
+    ///   surprise detector scans.
+    /// * **Corporate actions** become knowable events at their announcement —
+    ///   the announcement is the knowable happening; the ex-date is a schedule.
+    /// * **Reference data** asserts the instrument's identity in the graph,
+    ///   and a numeric value becomes a feature true from its effective date
+    ///   and knowable from its ingestion — a change effective next week is
+    ///   not readable this week.
+    /// * **Alternative data** lands as a per-dataset point-in-time feature
+    ///   with its observed and ingestion instants.
+    ///
+    /// Point in time, structurally: only the records' own instants travel.
+    /// This method reads no clock, so a replay absorbs exactly what the live
+    /// run absorbed. A market record carries no separate arrival stamp, so
+    /// its venue instant is its knowability — the ingestion adapters have
+    /// already withheld anything not yet knowable, and inventing a later
+    /// arrival here would be a number nobody measured.
+    ///
+    /// Returns the number of records taken in. A malformed depth observation
+    /// (negative depth, crossed book) is refused by the topology; the refusal
+    /// is surfaced as a LEARN-stage problem rather than swallowed.
     pub fn observe(&mut self, records: Vec<SensedRecord>) -> usize {
         let mut absorbed = 0;
+        // Bars are batched: history typically arrives newest-first, and one
+        // merge per series is linear where per-bar sorted inserts are
+        // quadratic in the series they build.
+        let mut bars: Vec<Box<Bar>> = Vec::new();
         for record in records {
             match record {
                 SensedRecord::Bar(bar) => {
                     let key = bar.object_id.as_str().to_string();
+                    self.ensure_world_object(key.as_str(), bar.close_time());
                     self.price_history
                         .entry(key.clone())
                         .or_default()
@@ -756,20 +1039,253 @@ impl Platform {
                         .entry(key)
                         .or_default()
                         .push(bar.volume.to_f64());
+                    bars.push(bar);
                     absorbed += 1;
                 }
-                SensedRecord::Quote(_)
-                | SensedRecord::Trade(_)
-                | SensedRecord::Tick(_)
-                | SensedRecord::Book(_) => {
+                SensedRecord::Trade(trade) => {
+                    self.ensure_world_object(trade.object_id.as_str(), trade.at);
+                    // "Last traded price" is the feature store's own
+                    // definition of `close`, and a trade is exactly that.
+                    self.world.features_mut().record(
+                        "close",
+                        trade.object_id.as_str(),
+                        FeatureValue::new(trade.price.to_f64(), trade.at, trade.at),
+                    );
                     absorbed += 1;
                 }
-                _ => {
+                SensedRecord::Tick(tick) => {
+                    self.ensure_world_object(tick.object_id.as_str(), tick.at);
+                    self.world.features_mut().record(
+                        "close",
+                        tick.object_id.as_str(),
+                        FeatureValue::new(tick.price.to_f64(), tick.at, tick.at),
+                    );
+                    absorbed += 1;
+                }
+                SensedRecord::Quote(quote) => {
+                    self.ensure_world_object(quote.object_id.as_str(), quote.at);
+                    if let Some(bps) = spread_bps(quote.bid, quote.ask) {
+                        self.spread_history
+                            .entry(quote.object_id.as_str().to_string())
+                            .or_default()
+                            .push(bps);
+                    }
+                    // A quote is one level of depth. A venue publishing a
+                    // live quote is quoting continuously as far as this
+                    // process can observe, which is what `Open` states.
+                    let observation = DepthObservation::new(
+                        quote.object_id.clone(),
+                        VenueId::new(quote.venue.clone()),
+                        VenueStatus::Open,
+                        quote.bid_size,
+                        quote.ask_size,
+                        quote.at,
+                    )
+                    .with_spread(quote.ask - quote.bid);
+                    self.absorb_depth(observation, quote.at);
+                    absorbed += 1;
+                }
+                SensedRecord::Book(book) => {
+                    self.ensure_world_object(book.object_id.as_str(), book.at);
+                    if let (Some(spread), Some(mid)) = (book.spread(), book.mid())
+                        && mid.is_positive()
+                    {
+                        self.spread_history
+                            .entry(book.object_id.as_str().to_string())
+                            .or_default()
+                            .push(spread.to_f64() / mid.to_f64() * 10_000.0);
+                    }
+                    let observation =
+                        DepthObservation::from_book(&book, BOOK_DEPTH_LEVELS, VenueStatus::Open);
+                    self.absorb_depth(observation, book.at);
+                    absorbed += 1;
+                }
+                SensedRecord::News(item) => {
+                    // Resolves entities, indexes the document as evidence and
+                    // records sentiment at the item's published instant; the
+                    // context supplies only entity-resolution bookkeeping,
+                    // never a knowability stamp.
+                    self.world.absorb_news(&item, &self.context);
+                    for event in MarketEvent::from_news(&item) {
+                        self.push_market_event(event);
+                    }
+                    absorbed += 1;
+                }
+                SensedRecord::Fundamental(update) => {
+                    self.define_fundamental_features(&update.metric, &update.provenance.source);
+                    self.world.absorb_fundamental(&update);
+                    if let Some(surprise) = update.surprise() {
+                        // The surprise series the observation detector scans,
+                        // keyed the way `SensedRecord::subject` names it.
+                        self.observation_history
+                            .entry(format!("{}:{}", update.entity_id, update.metric))
+                            .or_default()
+                            .push(surprise);
+                    }
+                    self.push_market_event(MarketEvent::from_fundamental(&update));
+                    absorbed += 1;
+                }
+                SensedRecord::Macro(observation) => {
+                    self.world.absorb_macro(&observation);
+                    self.push_market_event(MarketEvent::from_macro(&observation));
+                    absorbed += 1;
+                }
+                SensedRecord::CorporateAction(action) => {
+                    self.ensure_world_object(action.object_id.as_str(), action.announced_at);
+                    // The announcement is the knowable event; the ex-date is
+                    // a schedule. Modelling the ex-date as the happening
+                    // would make a dividend "knowable" weeks after everyone
+                    // traded on it.
+                    let class = corporate_action_class(&action.kind);
+                    let event = MarketEvent::new(
+                        format!("corp:{}:{}", action.object_id, action.ex_date.as_nanos()),
+                        action.object_id.as_str(),
+                        class,
+                        action.announced_at,
+                        action.announced_at,
+                    )
+                    .with_description(format!(
+                        "{class} on {} ex {}",
+                        action.object_id,
+                        action.ex_date.to_rfc3339()
+                    ));
+                    self.push_market_event(event);
+                    absorbed += 1;
+                }
+                SensedRecord::AlternativeData(point) => {
+                    let feature = format!("alt/{}/{}", point.dataset, point.metric);
+                    if self.world.features().definition(&feature).is_none() {
+                        self.world.features_mut().define(
+                            Feature::new(
+                                &feature,
+                                "alternative data series",
+                                point.provenance.source.clone(),
+                            )
+                            .with_staleness(Duration::from_days(30)),
+                        );
+                    }
+                    self.world.features_mut().record(
+                        &feature,
+                        &point.subject_id,
+                        FeatureValue {
+                            value: point.value,
+                            valid_at: point.observed_at,
+                            available_at: point.provenance.ingestion_time,
+                            confidence: point.quality.score(),
+                            imputed: false,
+                        },
+                    );
+                    absorbed += 1;
+                }
+                SensedRecord::ReferenceData(update) => {
+                    self.ensure_world_object(&update.object_id, update.provenance.ingestion_time);
+                    // A numeric value becomes a bitemporal feature: true from
+                    // its effective date, knowable from its ingestion. The
+                    // gap between the two is the whole point — a lot-size
+                    // change effective next week must not read as current
+                    // this week. A non-numeric value (a rename, a venue
+                    // change) has no bitemporal home in the feature store;
+                    // the identity node above still records the instrument,
+                    // and applying the change to identity ahead of its
+                    // effective date would be the look-ahead this route
+                    // exists to refuse.
+                    if let Ok(value) = update.new_value.trim().parse::<f64>()
+                        && value.is_finite()
+                    {
+                        let feature = format!("reference/{}", update.field);
+                        if self.world.features().definition(&feature).is_none() {
+                            self.world.features_mut().define(
+                                Feature::new(
+                                    &feature,
+                                    "reference data field",
+                                    update.provenance.source.clone(),
+                                )
+                                // Reference values persist until restated;
+                                // ten years is "no staleness bound" said
+                                // with a number.
+                                .with_staleness(Duration::from_days(3_650)),
+                            );
+                        }
+                        self.world.features_mut().record(
+                            &feature,
+                            &update.object_id,
+                            FeatureValue::new(
+                                value,
+                                update.effective_from,
+                                update.provenance.ingestion_time,
+                            ),
+                        );
+                    }
                     absorbed += 1;
                 }
             }
         }
+        if !bars.is_empty() {
+            self.world
+                .absorb_bars(bars.iter().map(|bar| (bar.as_ref(), bar.close_time())));
+        }
         absorbed
+    }
+
+    /// The instrument exists: make sure the graph says so.
+    ///
+    /// Ensure-only, because a node's `recorded_at` answers "when did the
+    /// platform first hear of this instrument" and re-observing it must not
+    /// rewrite that. `recorded_at` is the record's own knowable instant, never
+    /// the wall clock.
+    fn ensure_world_object(&mut self, object_id: &str, recorded_at: Timestamp) {
+        if self.world.graph().node(object_id).is_none() {
+            self.world.graph_mut().add_node(Node::new(
+                object_id,
+                NodeKind::FinancialObject,
+                object_id,
+                recorded_at,
+            ));
+        }
+    }
+
+    /// Hand a depth observation to the topology, surfacing a refusal.
+    ///
+    /// A refused observation (negative depth, crossed book) is a problem the
+    /// LEARN stage reports, not a reason to drop the batch and not a thing to
+    /// swallow: a map quietly missing a venue looks exactly like a venue with
+    /// no liquidity.
+    fn absorb_depth(&mut self, observation: DepthObservation, known_at: Timestamp) {
+        if let Err(error) = self.liquidity.absorb(observation, known_at) {
+            self.capture_problems.push(format!(
+                "a depth observation was refused: {}",
+                error.message()
+            ));
+        }
+    }
+
+    /// Define a fundamental metric and its surprise on first sight, with the
+    /// same lag and staleness the standard `revenue` definitions carry, so
+    /// point-in-time reads and the coverage line can see metrics the standard
+    /// set never named.
+    fn define_fundamental_features(&mut self, metric: &str, source: &str) {
+        let surprise = format!("{metric}_surprise");
+        for (name, description) in [
+            (metric, "reported fundamental"),
+            (surprise.as_str(), "reported fundamental against consensus"),
+        ] {
+            if self.world.features().definition(name).is_none() {
+                self.world.features_mut().define(
+                    Feature::new(name, description, source)
+                        .with_lag(Duration::from_days(30))
+                        .with_staleness(Duration::from_days(200)),
+                );
+            }
+        }
+    }
+
+    /// Hold a knowable event for the catalyst path, bounded by count.
+    fn push_market_event(&mut self, event: MarketEvent) {
+        self.market_events.push(event);
+        if self.market_events.len() > MARKET_EVENT_HISTORY {
+            let excess = self.market_events.len() - MARKET_EVENT_HISTORY;
+            self.market_events.drain(..excess);
+        }
     }
 
     /// Run one full pass through the loop.
@@ -975,11 +1491,30 @@ impl Platform {
         )
     }
 
-    fn stage_understand(&mut self, _now: Timestamp) -> StageOutcome {
-        // The world model is populated by the ingestion path; this stage
-        // reports what it holds so a cycle where nothing was absorbed is
-        // visible rather than merely quiet.
-        let instruments = self.price_history.len();
+    fn stage_understand(&mut self, now: Timestamp) -> StageOutcome {
+        // Read back from the world model at this instant in both time
+        // dimensions — not the price-history count this line used to quote
+        // while the model sat empty. A coverage line that cannot go down when
+        // absorption stops is not a coverage line.
+        let state = self.world.state_at(now, now);
+        let documents = self.world.index().len();
+        let liquidity = if self.liquidity.observation_count() == 0 {
+            String::new()
+        } else {
+            format!(
+                "; liquidity mapped for {} instrument(s) from {} depth observation(s)",
+                self.liquidity.instruments().len(),
+                self.liquidity.observation_count()
+            )
+        };
+        let events = if self.market_events.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "; {} knowable event(s) held for the catalyst path",
+                self.market_events.len()
+            )
+        };
         // The chain, when one has been observed, is part of what the platform
         // understands — and it is reported at the confirmation depth this
         // deployment stated, because head state is revisable and a detail that
@@ -1004,18 +1539,49 @@ impl Platform {
         };
         StageOutcome::ran(
             Stage::Understand,
-            instruments,
-            format!("world model covers {instruments} instrument(s){chain}"),
+            state.object_count + state.entity_count,
+            format!(
+                "world model holds {} instrument(s), {} entity(ies), {} relationship(s), \
+                 {} causal claim(s), {} readable feature value(s), {} document(s)\
+                 {liquidity}{events}{chain}",
+                state.object_count,
+                state.entity_count,
+                state.relationship_count,
+                state.causal_claim_count,
+                state.features.len(),
+                documents
+            ),
         )
     }
 
     fn stage_discover(&mut self, now: Timestamp) -> StageOutcome {
+        // Events past retention age out first, so the working set stays
+        // bounded on a long-running process. Retention is far outside the
+        // catalyst detector's own explanation window, so it never decides
+        // what the detector sees.
+        self.market_events
+            .retain(|event| now.since(event.known_at()) <= MARKET_EVENT_RETENTION);
+
         let mut detection = DetectionContext::new(now);
         for (subject, prices) in &self.price_history {
             detection = detection.with_prices(subject.clone(), prices.clone());
         }
         for (subject, volumes) in &self.volume_history {
             detection = detection.with_volumes(subject.clone(), volumes.clone());
+        }
+        for (subject, spreads) in &self.spread_history {
+            detection = detection.with_spreads(subject.clone(), spreads.clone());
+        }
+        for (series, values) in &self.observation_history {
+            detection = detection.with_observations(series.clone(), values.clone());
+        }
+        // Attaching events claims the stream was watched — the precondition
+        // for the detector ever calling a move *unexplained*. Claimed only
+        // once an intelligence record has actually arrived: an empty set with
+        // coverage would let "no events supplied" masquerade as "no catalyst
+        // existed".
+        if !self.market_events.is_empty() {
+            detection = detection.with_events(self.market_events.clone());
         }
 
         let found = self.opportunities.scan(&detection, &self.context);
@@ -1320,10 +1886,13 @@ impl Platform {
 
     fn stage_decide(&mut self, now: Timestamp) -> StageOutcome {
         // Construction expresses approved theses. With none approved this
-        // cycle there is nothing to size, and that is a normal state.
+        // cycle there is nothing to size, and that is a normal state. The
+        // equity is the tracked number — the same one the risk monitor
+        // watches — so a proposal sized after a losing run is sized against
+        // the book that lost, not against the book at assembly.
         let proposal = self.constructor.nothing_to_do(
             ProposalId::from_string(format!("prop-{}", self.cycle)),
-            Money::new(Decimal::from_int(10_000_000), Currency::USD),
+            Money::new(self.capital.equity(), Currency::USD),
             now,
             now,
             "no thesis cleared the action bar this cycle",
@@ -1496,7 +2065,7 @@ impl Platform {
 
         match self
             .attributor
-            .attribute(&periods, total, Decimal::from_int(10_000_000), now, now)
+            .attribute(&periods, total, self.capital.equity(), now, now)
         {
             Ok(attribution) => StageOutcome::ran(
                 Stage::Learn,
@@ -1515,12 +2084,36 @@ impl Platform {
 
     /// The current risk state, as the control functions see it.
     ///
-    /// Read from the desk rather than reconstructed, so the pre-trade check
-    /// and the monitor are looking at the same numbers as the risk agent.
+    /// Tracked from realised fills, deterministically: equity is the
+    /// configured initial book plus realised P&L minus costs paid, positions
+    /// are carried at average entry cost, and drawdown is realised equity
+    /// against its own peak. Until this existed the monitor ran every cycle
+    /// against a hardcoded ten million — real-time in cadence, constant in
+    /// content.
+    ///
+    /// Stated exclusions, because an honest smaller claim beats a fabricated
+    /// larger one: no unrealised P&L and no mark-to-market exposure — the
+    /// platform holds no marks, so an adverse move on an open position is
+    /// invisible here until a fill realises it; and no daily-loss figure —
+    /// the loop owns no day-boundary convention, and a "daily" number cut at
+    /// an arbitrary anchor would be a statement about the anchor.
     fn risk_state(&self) -> RiskState {
+        let mut position_notionals = BTreeMap::new();
+        let mut gross = Decimal::ZERO;
+        let mut net = Decimal::ZERO;
+        for (object, lot) in &self.capital.positions {
+            let notional = lot.quantity * lot.average_price;
+            gross += notional.abs();
+            net += notional;
+            position_notionals.insert(object.clone(), notional.abs());
+        }
         RiskState {
-            equity: Decimal::from_int(10_000_000),
-            cash: Decimal::from_int(10_000_000),
+            equity: self.capital.equity(),
+            cash: self.capital.cash,
+            gross_exposure: gross,
+            net_exposure: net,
+            position_notionals,
+            drawdown: self.capital.drawdown(),
             ..RiskState::default()
         }
     }
@@ -1656,6 +2249,18 @@ impl Platform {
                 DemandKind::Cash,
                 fill.at,
                 fill.notional().abs(),
+            );
+
+            // And it is capital that moved. This is the edge that makes the
+            // risk state real: the same fills the outcome capture records are
+            // the fills the monitor's equity is built from, so the two can
+            // never tell different stories.
+            self.capital.apply_fill(
+                object_id.as_str(),
+                side,
+                fill.price,
+                fill.quantity,
+                fill.costs,
             );
         }
     }
@@ -2112,7 +2717,10 @@ impl Platform {
         );
         let mut request = PrePositioningRequest::new(
             treasury,
-            Decimal::from_int(PLATFORM_EQUITY / 2),
+            self.config
+                .initial_equity
+                .checked_div(Decimal::from_int(2))
+                .unwrap_or(self.config.initial_equity),
             FxRates::new(Currency::USD),
         )?;
         for forecast in self.forecast_capital_demand(now, horizon) {
@@ -2235,6 +2843,40 @@ fn slippage_bps(arrival: Decimal, achieved: Decimal, side: Side) -> f64 {
         Side::Sell => -1.0,
     };
     direction * (achieved.to_f64() - arrival) / arrival * 10_000.0
+}
+
+/// Quoted spread in basis points — a statistic, and therefore `f64` like
+/// every other series the detectors read.
+///
+/// `None` for a crossed or one-sided quote: a spread computed from either
+/// would be a number about a book that should not reach a decision, and the
+/// liquidity detector reading it would learn something false.
+fn spread_bps(bid: Decimal, ask: Decimal) -> Option<f64> {
+    let bid = bid.to_f64();
+    let ask = ask.to_f64();
+    let mid = (bid + ask) / 2.0;
+    if mid <= 0.0 || ask < bid {
+        return None;
+    }
+    Some((ask - bid) / mid * 10_000.0)
+}
+
+/// The impact-history class a corporate action lands under.
+///
+/// Named per kind rather than one blanket class, because "what does an event
+/// of this class historically do" is only answerable if a split and a
+/// delisting are not the same class.
+fn corporate_action_class(kind: &CorporateActionKind) -> &'static str {
+    match kind {
+        CorporateActionKind::Split { .. } => "corporate_action/split",
+        CorporateActionKind::CashDividend { .. } => "corporate_action/cash_dividend",
+        CorporateActionKind::StockDividend { .. } => "corporate_action/stock_dividend",
+        CorporateActionKind::RightsIssue { .. } => "corporate_action/rights_issue",
+        CorporateActionKind::Merger { .. } => "corporate_action/merger",
+        CorporateActionKind::Spinoff { .. } => "corporate_action/spinoff",
+        CorporateActionKind::Delisting { .. } => "corporate_action/delisting",
+        CorporateActionKind::Renamed { .. } => "corporate_action/renamed",
+    }
 }
 
 /// The signing secret the central plane is assembled with.
