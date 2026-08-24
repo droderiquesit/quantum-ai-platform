@@ -44,7 +44,7 @@ output "spanner_database" {
 #
 # A deployment can render this and get the list of services it has switched on
 # that no adapter in this build can open. It is the infrastructure counterpart
-# of `StorageTarget::production_requirement`, and it exists so the mismatch is
+# of `StorageTarget::required_configuration`, and it exists so the mismatch is
 # something an operator reads at plan time rather than something they infer
 # from an empty database and a bill.
 output "enabled_without_an_adapter" {
@@ -53,7 +53,10 @@ output "enabled_without_an_adapter" {
     var.enable_bigquery ? "bigquery: StorageTarget::BigQuery has no adapter" : "",
     var.enable_alloydb ? "alloydb: StorageTarget::AlloyDb has no adapter, and this build has no Postgres driver" : "",
     var.enable_bigtable ? "bigtable: StorageTarget::Bigtable has no adapter" : "",
-    var.enable_memorystore ? "memorystore: StorageTarget::Memorystore has no adapter" : "",
+    # Memorystore has an adapter now, so what is reported is the transport
+    # mismatch instead: an instance requiring TLS that the in-tree plaintext
+    # client cannot reach without a proxy in front of it.
+    var.enable_memorystore && var.memorystore_transit_encryption ? "memorystore: the instance requires TLS and qip_storage::redis speaks plaintext; put a TLS-terminating proxy in the VPC or set memorystore_transit_encryption = false" : "",
     var.enable_spanner ? "spanner: StorageTarget::Spanner has no adapter" : "",
   ])
 }

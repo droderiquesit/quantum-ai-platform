@@ -302,9 +302,12 @@ resource "google_redis_instance" "cache" {
   tier           = "STANDARD_HA"
   memory_size_gb = 4
 
-  authorized_network      = var.network_id
-  connect_mode            = "PRIVATE_SERVICE_ACCESS"
-  transit_encryption_mode = "SERVER_AUTHENTICATION"
+  authorized_network = var.network_id
+  connect_mode       = "PRIVATE_SERVICE_ACCESS"
+  # See `memorystore_transit_encryption`: true gives the safer instance that
+  # the in-tree plaintext RESP client cannot reach without a proxy; false gives
+  # one it can reach, with cache traffic in clear text inside the VPC.
+  transit_encryption_mode = var.memorystore_transit_encryption ? "SERVER_AUTHENTICATION" : "DISABLED"
   auth_enabled            = true
 
   # Nothing here may be the only copy of anything. The rationale in

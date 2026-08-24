@@ -28,7 +28,7 @@ variable "network_id" {
 #
 # `qip_storage::provider::StorageTarget::is_implemented` returns true for
 # exactly three targets: Memory, File and Engine. Every managed target below
-# returns a `production_requirement` naming what it still needs, and the
+# returns a `required_configuration` naming what it still needs, and the
 # provider refuses to construct one rather than falling back to local files.
 #
 # So each of these is default-false, and that is not timidity. Provisioning a
@@ -95,6 +95,30 @@ variable "enable_spanner" {
   EOT
   type        = bool
   default     = false
+}
+
+variable "memorystore_transit_encryption" {
+  description = <<-EOT
+    Whether the cache requires TLS in transit.
+
+    Default true, which is the safer instance and the one this build's client
+    **cannot reach directly**: `qip_storage::redis` speaks RESP over a plain
+    `std::net::TcpStream`, because the workspace permits two third-party crates
+    and neither is a TLS stack. With this true, the deployment must put a
+    TLS-terminating proxy inside the VPC between the workload and the instance.
+
+    Setting it false makes the instance reachable by the client as written, at
+    the cost of cache traffic crossing the VPC in clear text. That is the same
+    trade `qip-transport` already documents and accepts for the mesh — peers
+    inside one VPC, default-deny egress, no route in from outside — so it is a
+    defensible choice rather than a broken one. It is not the default, because
+    the weaker option should be the one someone has to ask for.
+
+    Whichever is chosen, `StorageTarget::Memorystore`'s required configuration
+    names it, so the two cannot silently disagree.
+  EOT
+  type        = bool
+  default     = true
 }
 
 variable "deletion_protection" {
