@@ -1511,23 +1511,20 @@ fn pipeline_variables_the_workflow_reads(workflow: &str) -> Vec<String> {
 fn the_bootstrap_script_sets_every_pipeline_variable_the_workflow_reads() {
     let bootstrap = read("scripts/bootstrap-deploy.sh");
 
-    // Every workflow that reads `vars.GCP_*`, not just deploy.yml — infra.yml
-    // authenticates the same way, and a variable it reads that the bootstrap
-    // never sets is the same first-press failure in a different tab.
-    for workflow_file in [
-        ".github/workflows/deploy.yml",
-        ".github/workflows/infra.yml",
-    ] {
+    // deploy.yml only. infra.yml deliberately reads no repository variable:
+    // it derives its authentication from the environment's tfvars, because it
+    // exists to recover failed bootstraps and the variables are exactly what
+    // a failed bootstrap leaves unset — or worse. They were once set from a
+    // shell whose `terraform` was Cloud Shell's install-advisory stub, so
+    // the workload-identity variable held several lines of apt instructions.
+    // The test below pins that infra.yml stays variable-free.
+    for workflow_file in [".github/workflows/deploy.yml"] {
         let workflow = read(workflow_file);
         let required = pipeline_variables_the_workflow_reads(&workflow);
         // The premise: if this found nothing, the loop below would pass by
-        // being empty and this test would guard nothing at all. Two is the
-        // floor because infra.yml deliberately reads only the provider and
-        // the project — its service-account name is constructed, so a failed
-        // bootstrap that never set the variables cannot strand the workflow
-        // that exists to recover failed bootstraps.
+        // being empty and this test would guard nothing at all.
         assert!(
-            required.len() >= 2,
+            required.len() >= 4,
             "found only {} pipeline variables in {workflow_file}; the match is \
              broken, not the workflow",
             required.len()
@@ -1546,6 +1543,30 @@ fn the_bootstrap_script_sets_every_pipeline_variable_the_workflow_reads() {
                  never sets it, so the first deployment leaves it empty"
             );
         }
+    }
+}
+
+#[test]
+fn the_recovery_workflow_depends_on_no_repository_variable() {
+    // infra.yml recovers failed bootstraps, and repository variables are what
+    // a failed bootstrap leaves unset or garbled — once, literally, a
+    // multi-line apt install advisory where the workload-identity provider
+    // path belonged, because Cloud Shell's `terraform` was a stub that
+    // prints instructions. Everything infra.yml needs is derived from the
+    // committed tfvars instead; a `vars.` creeping back in reintroduces the
+    // dependency this workflow exists to not have.
+    let infra = read(".github/workflows/infra.yml");
+    assert!(
+        !infra.contains("${{ vars."),
+        "infra.yml reads a repository variable; derive the value from the \
+         environment's tfvars instead"
+    );
+    // And the derivation actually reads the two fields it constructs from.
+    for field in ["project_id", "project_number"] {
+        assert!(
+            infra.contains(field),
+            "infra.yml no longer derives {field} from the tfvars"
+        );
     }
 }
 

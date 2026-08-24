@@ -90,6 +90,20 @@ if ((${#missing[@]} > 0)); then
   exit 69
 fi
 
+# `command -v` is not enough for terraform: Cloud Shell ships a stub that
+# passes the check and prints apt install instructions instead of running.
+# One bootstrap trusted it, captured several lines of that advisory from
+# `terraform output`, and set them as the workload-identity variable — a
+# value that passed a non-empty check and failed authentication with an
+# error naming an invalid audience. Ask the binary what it is before
+# believing it.
+if ! terraform version 2>/dev/null | head -1 | grep -q '^Terraform v'; then
+  echo "the 'terraform' on PATH is not terraform (Cloud Shell installs a stub" >&2
+  echo "that prints install instructions). Install the real one and rerun:" >&2
+  echo "  sudo apt update && sudo apt install -y terraform" >&2
+  exit 69
+fi
+
 # Checked here, not at step 6 where it is used. Failing after a twenty-minute
 # apply for a login that takes thirty seconds would mean running the whole
 # script twice; nothing before step 6 depends on GitHub, but the point of one
@@ -277,14 +291,32 @@ declare -A pipeline_variables=(
   [GCP_INFRA_SERVICE_ACCOUNT]="${infra_sa}"
 )
 
-# An output that came back empty is a variable that would be set to nothing,
-# which reads in the GitHub UI exactly like one that was set correctly.
+# Shape-checked, not just non-empty. Non-empty let a Cloud Shell stub's
+# install advisory through as the workload-identity provider, so each value
+# is held to the one form it can legitimately take. Multi-line refuses first:
+# no identifier here contains a newline, and the advisory was nothing but.
 for name in "${!pipeline_variables[@]}"; do
-  [[ -n "${pipeline_variables[$name]}" ]] || {
-    echo "terraform produced no value for ${name}; not setting it" >&2
+  value="${pipeline_variables[$name]}"
+  [[ -n "${value}" && "${value}" != *$'\n'* ]] || {
+    echo "the value for ${name} is empty or spans lines; refusing to set it:" >&2
+    echo "${value}" >&2
     exit 65
   }
 done
+[[ "${wip}" =~ ^projects/[0-9]+/locations/global/workloadIdentityPools/.+/providers/.+$ ]] || {
+  echo "workload_identity_provider is not a provider resource name: ${wip}" >&2
+  exit 65
+}
+for account in "${deploy_sa}" "${infra_sa}"; do
+  [[ "${account}" =~ ^[a-z][a-z0-9-]*@[a-z0-9-]+\.iam\.gserviceaccount\.com$ ]] || {
+    echo "not a service-account email: ${account}" >&2
+    exit 65
+  }
+done
+[[ "${key_version}" =~ ^projects/.+/cryptoKeyVersions/[0-9]+$ ]] || {
+  echo "binary_authorization_key_version is not a key version name: ${key_version}" >&2
+  exit 65
+}
 
 if gh auth status >/dev/null 2>&1; then
   for name in "${!pipeline_variables[@]}"; do

@@ -86,15 +86,35 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      # The account name is constructed, not read from a variable. Terraform
-      # fixes it as qip-infra-<environment>@<project>, so constructing it here
-      # removes a dependency on the bootstrap's variable-setting step — which
-      # a failed apply skips, and this workflow exists precisely to recover
-      # failed applies.
+      # Everything this workflow needs to authenticate is derived from the
+      # environment's tfvars, and deliberately not from repository variables.
+      # The variables are set by the bootstrap's last step, which a failed
+      # apply skips — and once they were set from a shell whose `terraform`
+      # was Cloud Shell's install-advisory stub, so the workload-identity
+      # variable held several lines of apt instructions. This workflow exists
+      # to recover broken bootstraps, so it depends on nothing a broken
+      # bootstrap produces: the tfvars are reviewed, committed configuration.
+      - name: derive the identity from the tfvars
+        id: identity
+        run: |
+          set -euo pipefail
+          tfvars="infrastructure/environments/${{ inputs.environment }}/terraform.tfvars"
+          project="$(sed -n 's/^project_id[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
+          number="$(sed -n 's/^project_number[[:space:]]*=[[:space:]]*\([0-9]*\)/\1/p' "$tfvars" | head -1)"
+          [ -n "$project" ] && [ -n "$number" ] || {
+            echo "the tfvars carry no project_id/project_number; nothing to authenticate against" >&2
+            exit 1
+          }
+          {
+            echo "project=$project"
+            echo "provider=projects/$number/locations/global/workloadIdentityPools/qip-github-${{ inputs.environment }}/providers/github"
+            echo "account=qip-infra-${{ inputs.environment }}@$project.iam.gserviceaccount.com"
+          } >> "$GITHUB_OUTPUT"
+
       - uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: qip-infra-${{ inputs.environment }}@${{ vars.GCP_PROJECT }}.iam.gserviceaccount.com
+          workload_identity_provider: ${{ steps.identity.outputs.provider }}
+          service_account: ${{ steps.identity.outputs.account }}
 
       - uses: google-github-actions/setup-gcloud@v2
 
@@ -107,8 +127,8 @@ jobs:
       - name: the state bucket grant
         run: |
           gcloud storage buckets add-iam-policy-binding \
-            "gs://${{ vars.GCP_PROJECT }}-qip-tfstate" \
-            --member="serviceAccount:qip-infra-${{ inputs.environment }}@${{ vars.GCP_PROJECT }}.iam.gserviceaccount.com" \
+            "gs://${{ steps.identity.outputs.project }}-qip-tfstate" \
+            --member="serviceAccount:${{ steps.identity.outputs.account }}" \
             --role="roles/storage.objectAdmin" --quiet >/dev/null
 
       - uses: hashicorp/setup-terraform@v3
@@ -118,7 +138,7 @@ jobs:
       - name: terraform init
         run: |
           terraform -chdir=infrastructure/terraform init -input=false \
-            -backend-config="bucket=${{ vars.GCP_PROJECT }}-qip-tfstate"
+            -backend-config="bucket=${{ steps.identity.outputs.project }}-qip-tfstate"
 
       - name: plan
         if: inputs.action == 'plan'

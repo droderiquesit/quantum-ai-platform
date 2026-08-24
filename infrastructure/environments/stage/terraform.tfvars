@@ -24,6 +24,14 @@
 # collide on a name.
 project_id = "project-d3f96b6b-852b-4460-b6d"
 
+# The project's numeric id, recorded so nothing has to ask for it. It is an
+# identifier like the id above, Google's service agents are named by it, and
+# the workload-identity audience contains it — a workflow that can read this
+# file can construct its own authentication with no repository variable
+# involved, which matters because a variable set from a broken shell once
+# carried an install advisory where this number should have been.
+project_number = 601575011290
+
 environment      = "stage"
 region           = "europe-west2"
 autonomy_ceiling = "paper_trading"
