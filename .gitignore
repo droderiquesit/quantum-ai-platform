@@ -13,6 +13,13 @@ Cargo.lock.orig
 *.tfstate.*
 crash.log
 *.tfvars.local
+# Terraform merges `override.tf` and `*_override.tf` over the rest of the
+# configuration automatically, so a committed one silently changes what every
+# apply does. The usual local use is swapping the GCS backend for a local one
+# to run `plan` without credentials — committing that would point production
+# state at whichever workstation ran it last.
+override.tf
+*_override.tf
 
 # Editors / OS
 .DS_Store
