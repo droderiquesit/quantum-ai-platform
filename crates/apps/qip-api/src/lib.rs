@@ -25,6 +25,12 @@
 //! * [`missing`] is the inventory of what the platform does not expose, with
 //!   the reason for each. A console panel with nothing behind it names one of
 //!   these rather than rendering a zero it never observed.
+//! * [`stream::StreamKind`] is the live surface: five server-sent-event
+//!   streams under `/api/v1/stream`, what feeds each of them, and exactly what
+//!   a reconnecting client recovers. Nothing there is generated — four of the
+//!   five are views over the platform's own event log and the fifth reports
+//!   this process's observed health — because a dashboard cannot tell a
+//!   plausible number from a measured one.
 //!
 //! Every response carries a content-security policy of `default-src 'none'`
 //! with no script source at all. The web UI renders no JavaScript, so nothing
@@ -39,15 +45,20 @@ pub mod mesh;
 pub mod missing;
 pub mod openapi;
 pub mod routes;
+pub mod stream;
 pub mod trust;
 pub mod web;
 
 pub use auth::{Authenticator, Credential, Principal, RateLimiter, Role};
 pub use cells::{CellObservation, CellRegistry};
 pub use console::Console;
-pub use http::{Handler, Method, Request, Response, Server, ServerLimits};
+pub use http::{
+    Handler, Method, Request, Response, ResponseStream, Server, ServerLimits, StreamDecision,
+    StreamEnd, StreamOutcome, pump,
+};
 pub use mesh::{MeshBackbone, MeshSettings, MeshStatus, pending_capital};
 pub use openapi::document;
 pub use routes::{Api, ROUTES, Route};
+pub use stream::{EventSource, EventStream, SseEvent, StreamKind, StreamLimits};
 pub use trust::{ENVELOPE_KEY_VARIABLE, KeyProvenance, harden_central};
 pub use web::{Router, Web};

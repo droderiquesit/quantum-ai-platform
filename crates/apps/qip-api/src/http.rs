@@ -10,6 +10,15 @@
 //! that never sends anything and never closes. They are enforced while reading
 //! rather than after, so an oversized request is refused before it has been
 //! buffered.
+//!
+//! There are two shapes a request can be answered in. A [`Response`] is the
+//! whole answer, buffered and measured, which is what every REST endpoint
+//! returns. A [`ResponseStream`] is an answer with no length that is written
+//! for as long as the client stays — what [`crate::stream`] serves as
+//! server-sent events. [`pump`] is the loop that writes one, and its error
+//! handling is the load-bearing part: a client leaving an event stream does
+//! not say so, it stops reading, and the failed write is the only notice the
+//! server gets.
 
 use qip_core::error::{Error, Result};
 use std::collections::BTreeMap;
@@ -228,6 +237,34 @@ impl Response {
         }
     }
 
+    /// Encode the status line and headers of a response whose body has no
+    /// declared length.
+    ///
+    /// Deliberately omits `content-length`: the length of a live stream is not
+    /// known when the head is written and will not be known until the client
+    /// leaves, so the body is delimited by the close of the connection
+    /// instead. Declaring a length that later turns out to be wrong is worse
+    /// than declaring none — a client would stop reading at the wrong byte and
+    /// treat a truncated event as a complete one.
+    ///
+    /// `connection` is left to the caller for the same reason: [`encode`] can
+    /// hard-code `close` because it has just written the entire body, and a
+    /// stream cannot.
+    ///
+    /// [`encode`]: Response::encode
+    fn encode_open_head(&self) -> Vec<u8> {
+        let mut out = format!("HTTP/1.1 {} {}\r\n", self.status, self.reason()).into_bytes();
+        for (name, value) in &self.headers {
+            // The same sanitisation `encode` applies, and for the same reason:
+            // CR or LF in a header value would let a caller inject headers or
+            // a whole second response.
+            let sanitised: String = value.chars().filter(|c| *c != '\r' && *c != '\n').collect();
+            out.extend_from_slice(format!("{name}: {sanitised}\r\n").as_bytes());
+        }
+        out.extend_from_slice(b"\r\n");
+        out
+    }
+
     fn encode(&self, include_body: bool) -> Vec<u8> {
         let mut out = format!("HTTP/1.1 {} {}\r\n", self.status, self.reason()).into_bytes();
         for (name, value) in &self.headers {
@@ -248,6 +285,168 @@ impl Response {
 /// Something that answers requests.
 pub trait Handler: Send + Sync {
     fn handle(&self, request: &Request) -> Response;
+
+    /// Answer `request` with a live stream instead of a buffered response.
+    ///
+    /// [`StreamDecision::NotAStream`] — the default, and the answer for every
+    /// handler that has no streams — hands the request back to [`handle`].
+    ///
+    /// The three-way answer exists so that a stream request is put through its
+    /// handler's authorisation ladder exactly once. A two-way answer would
+    /// force a refused caller through the ladder a second time in `handle`,
+    /// which for a rate-limited API means one request spending two of the
+    /// caller's allowance. It also keeps the dangerous case impossible to
+    /// reach by accident: a stream head is a `200` written before the first
+    /// event, and there is no later point at which it can be taken back, so a
+    /// handler that has not authorised a caller must answer
+    /// [`StreamDecision::Refused`] with the status that says why.
+    ///
+    /// [`handle`]: Handler::handle
+    fn stream(&self, _request: &Request) -> StreamDecision {
+        StreamDecision::NotAStream
+    }
+}
+
+/// What a handler decided about streaming one request.
+pub enum StreamDecision {
+    /// Not a request for a stream. [`Handler::handle`] answers it.
+    NotAStream,
+    /// A request for a stream that the handler will not serve. The response
+    /// carries the status that says why — an unrecognised credential, a role
+    /// that is not enough, an exhausted allowance — and is written like any
+    /// other.
+    Refused(Response),
+    /// Take the connection over and write events until the client leaves.
+    Accepted(Box<dyn ResponseStream>),
+}
+
+impl std::fmt::Debug for StreamDecision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotAStream => f.write_str("NotAStream"),
+            Self::Refused(response) => f.debug_tuple("Refused").field(&response.status).finish(),
+            Self::Accepted(_) => f.write_str("Accepted"),
+        }
+    }
+}
+
+/// A response body written to the socket as it becomes available.
+///
+/// The [`Handler`] contract answers a request with a complete [`Response`],
+/// which is the right shape for every REST endpoint here and the wrong one for
+/// a live stream: a server-sent-event response has no length, is written over
+/// minutes, and ends when the client goes away rather than when the server has
+/// finished. This trait is the second shape, kept deliberately narrow — a
+/// producer of byte frames, and the headers that introduce them — so that
+/// everything an event stream knows lives in [`crate::stream`] and everything
+/// a socket knows lives here.
+pub trait ResponseStream: Send {
+    /// Headers the response head carries, in addition to the security headers.
+    ///
+    /// A header named here *replaces* the default of the same name rather than
+    /// appearing beside it. A stream that must say `cache-control: no-cache`
+    /// would otherwise emit it next to the `no-store` every other response
+    /// carries, and a proxy reading two directives is entitled to honour
+    /// either — which is how an event stream ends up served from a cache.
+    fn headers(&self) -> Vec<(String, String)>;
+
+    /// The next frame to write, or `None` when the stream is over.
+    ///
+    /// Blocking, and meant to be: the pacing of a live stream — how long to
+    /// wait for the next event, when to send a heartbeat, when to stop — is
+    /// the producer's decision, not the socket's.
+    ///
+    /// An implementation must return within a bounded time even when nothing
+    /// has happened. The only way this server learns a client has gone is a
+    /// failed write, so a producer that blocks indefinitely waiting for an
+    /// event is a connection that is never discovered to be dead, and a thread
+    /// held against [`ServerLimits::max_concurrent`] for as long as the process
+    /// runs.
+    fn next_frame(&mut self) -> Option<Vec<u8>>;
+}
+
+/// Why a streamed response stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StreamEnd {
+    /// The producer had nothing more to send and said so.
+    SourceFinished,
+    /// A write failed, which is how this server learns the client has gone.
+    ClientDisconnected,
+}
+
+/// What one streamed response did before it ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StreamOutcome {
+    /// Frames written, not counting the response head.
+    pub frames: usize,
+    /// Bytes written, including the response head.
+    pub bytes: usize,
+    pub end: StreamEnd,
+}
+
+/// Write a streamed response to `sink` until it ends or the client goes.
+///
+/// The error handling is the whole point. A client that closes an event stream
+/// does not say so — it stops reading, and the server finds out when a write
+/// fails with a broken pipe or a connection reset. That failure is the *normal*
+/// end of a stream and is treated as one: the loop stops and reports
+/// [`StreamEnd::ClientDisconnected`]. Propagating it, or panicking on it, would
+/// turn every closed browser tab into an incident and — because each connection
+/// is served on its own thread — a panic here would poison nothing but would
+/// still be logged as a failure that never happened.
+///
+/// Takes a `dyn Write` rather than a `TcpStream` so that the disconnect path
+/// can be exercised by a test with a writer that fails on demand. A path that
+/// only runs when a real client vanishes mid-stream is a path that is never
+/// tested.
+pub fn pump(sink: &mut dyn Write, body: &mut dyn ResponseStream) -> StreamOutcome {
+    let head = stream_head(body);
+    let mut bytes = head.len();
+    if sink.write_all(&head).is_err() || sink.flush().is_err() {
+        return StreamOutcome {
+            frames: 0,
+            bytes: 0,
+            end: StreamEnd::ClientDisconnected,
+        };
+    }
+
+    let mut frames = 0;
+    while let Some(frame) = body.next_frame() {
+        if sink.write_all(&frame).is_err() || sink.flush().is_err() {
+            return StreamOutcome {
+                frames,
+                bytes,
+                end: StreamEnd::ClientDisconnected,
+            };
+        }
+        // Flushed after every frame. An event that sits in a buffer waiting for
+        // company is not a live event, and the whole reason a client opened
+        // this connection instead of polling is that it wants the event now.
+        frames += 1;
+        bytes += frame.len();
+    }
+    StreamOutcome {
+        frames,
+        bytes,
+        end: StreamEnd::SourceFinished,
+    }
+}
+
+/// The response head that introduces a stream.
+///
+/// The security headers are the same ones every other response carries, with
+/// any the stream names itself replacing rather than joining them.
+fn stream_head(body: &dyn ResponseStream) -> Vec<u8> {
+    let mut response =
+        Response::new(200, "text/event-stream; charset=utf-8", Vec::new()).with_security_headers();
+    for (name, value) in body.headers() {
+        let lowered = name.to_ascii_lowercase();
+        response
+            .headers
+            .retain(|(existing, _)| existing.to_ascii_lowercase() != lowered);
+        response.headers.push((name, value));
+    }
+    response.encode_open_head()
 }
 
 impl<F> Handler for F
@@ -367,28 +566,51 @@ fn serve_connection(mut stream: TcpStream, handler: &dyn Handler, limits: Server
         .map(|address| address.to_string())
         .unwrap_or_else(|_| "unknown".to_string());
 
-    let response = match read_request(&stream, &peer, limits) {
-        Ok(request) => {
-            let head_only = request.method == Method::Head;
-            let mut response = handler.handle(&request).with_security_headers();
-            if head_only {
-                response.body.clear();
-            }
-            response
+    let request = match read_request(&stream, &peer, limits) {
+        Ok(request) => request,
+        Err(status) => {
+            let response = Response::json(
+                status,
+                format!(
+                    r#"{{"error":"{}"}}"#,
+                    match status {
+                        413 => "the request exceeds a server limit",
+                        408 => "the request timed out",
+                        _ => "the request could not be parsed",
+                    }
+                ),
+            )
+            .with_security_headers();
+            let _ = stream.write_all(&response.encode(true));
+            let _ = stream.flush();
+            return;
         }
-        Err(status) => Response::json(
-            status,
-            format!(
-                r#"{{"error":"{}"}}"#,
-                match status {
-                    413 => "the request exceeds a server limit",
-                    408 => "the request timed out",
-                    _ => "the request could not be parsed",
-                }
-            ),
-        )
-        .with_security_headers(),
     };
+
+    // A live stream takes the connection over, because its response has no
+    // length and is written for as long as the client stays. Offered before
+    // `handle` and never for `HEAD`: a HEAD asks for headers without a body,
+    // and answering it by holding the connection open for minutes writing
+    // events is the opposite of what was asked.
+    let mut refusal = None;
+    if request.method != Method::Head {
+        match handler.stream(&request) {
+            StreamDecision::Accepted(mut body) => {
+                let _ = pump(&mut stream, body.as_mut());
+                return;
+            }
+            StreamDecision::Refused(response) => refusal = Some(response),
+            StreamDecision::NotAStream => {}
+        }
+    }
+
+    let head_only = request.method == Method::Head;
+    let mut response = refusal
+        .unwrap_or_else(|| handler.handle(&request))
+        .with_security_headers();
+    if head_only {
+        response.body.clear();
+    }
 
     let _ = stream.write_all(&response.encode(true));
     let _ = stream.flush();

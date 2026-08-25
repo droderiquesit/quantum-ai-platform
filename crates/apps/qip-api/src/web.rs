@@ -10,7 +10,7 @@
 //! could stall a trading loop behind an HTML page, which is a bad trade.
 
 use crate::auth::{Authenticator, RateLimiter, Role};
-use crate::http::{Handler, Method, Request, Response};
+use crate::http::{Handler, Method, Request, Response, StreamDecision};
 use qip_kernel::Platform;
 use qip_web::pages::{Surface, render};
 use qip_web::view::{
@@ -300,5 +300,20 @@ impl Handler for Router {
             };
         }
         self.web.handle(request)
+    }
+
+    /// Forward the streaming decision to the API.
+    ///
+    /// Only the API has streams. Without this the router would answer every
+    /// stream request with `NotAStream` and the server would fall back to the
+    /// buffered path, which serves the stream's descriptor — a correct-looking
+    /// `200` that never sends a second event. That is the failure this
+    /// forwarding prevents, and it is invisible in every test that calls the
+    /// API directly rather than through the router.
+    fn stream(&self, request: &Request) -> StreamDecision {
+        if request.path.starts_with("/api") {
+            return self.api.stream(request);
+        }
+        StreamDecision::NotAStream
     }
 }

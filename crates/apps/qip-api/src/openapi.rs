@@ -34,6 +34,7 @@
 use crate::http::Method;
 use crate::json;
 use crate::routes::{DISCOVERY_PATH, OPENAPI_PATH, ROUTES, Route};
+use crate::stream::StreamKind;
 
 /// The OpenAPI version this document conforms to.
 const OPENAPI_VERSION: &str = "3.1.1";
@@ -152,11 +153,27 @@ fn operation(route: &Route) -> String {
 /// they are the same for every route by construction rather than by being
 /// copied onto each one.
 fn responses(route: &Route) -> String {
-    let success = format!(
-        r#""{}":{{"description":{},"content":{{"application/json":{{"schema":{{"type":"object"}}}}}}}}"#,
-        route.success,
-        json::string(route.summary)
-    );
+    // A live stream is not `application/json`, and a generated client told
+    // that it is will parse the first frame and stop. The media type and the
+    // reconnect semantics come from the same [`StreamKind`] the handler reads,
+    // so the document cannot describe a stream the server does not serve.
+    let success = match StreamKind::from_pattern(route.pattern) {
+        Some(kind) => format!(
+            r#""{}":{{"description":{},"content":{{"text/event-stream":{{"schema":{{"type":"string"}}}}}}}}"#,
+            route.success,
+            json::string(&format!(
+                "{} Source: {} Reconnect: {}",
+                route.summary,
+                kind.source(),
+                kind.replay_note()
+            ))
+        ),
+        None => format!(
+            r#""{}":{{"description":{},"content":{{"application/json":{{"schema":{{"type":"object"}}}}}}}}"#,
+            route.success,
+            json::string(route.summary)
+        ),
+    };
     let refusals = [
         (
             401,

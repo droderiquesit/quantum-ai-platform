@@ -10,8 +10,12 @@
 
 use crate::auth::{Authenticator, Principal, RateLimiter, Role};
 use crate::cells::{CellRegistry, describe_age};
-use crate::http::{Handler, Method, Request, Response};
+use crate::http::{Handler, Method, Request, Response, StreamDecision};
 use crate::json;
+use crate::stream::{
+    EventSource, EventStream, HealthPulse, LAST_EVENT_ID, LoggedEvents, PlatformHealth, StreamKind,
+    StreamLimits,
+};
 use qip_core::time::Timestamp;
 use qip_kernel::Platform;
 use qip_storage::ChainArchive;
@@ -265,6 +269,52 @@ pub const ROUTES: &[Route] = &[
         summary: "submitted quantum jobs and the classical run each is compared against",
         success: 200,
     },
+    // --- the live surface ---------------------------------------------------
+    //
+    // In the same table as everything else, so a security review reads one
+    // list rather than two. A stream is held open for minutes and carries the
+    // same data the equivalent REST route serves, so it requires the same
+    // authority: `/stream/orders` is `/orders` over time and is not a lower
+    // bar than it. What each stream carries, where it comes from and what a
+    // reconnect recovers is in `crate::stream::StreamKind`.
+    Route {
+        method: Method::Get,
+        pattern: "/stream/market",
+        required_role: Role::Viewer,
+        summary: StreamKind::Market.summary(),
+        success: 200,
+    },
+    Route {
+        method: Method::Get,
+        pattern: "/stream/signals",
+        required_role: Role::Viewer,
+        summary: StreamKind::Signals.summary(),
+        success: 200,
+    },
+    Route {
+        method: Method::Get,
+        pattern: "/stream/orders",
+        required_role: Role::Viewer,
+        summary: StreamKind::Orders.summary(),
+        success: 200,
+    },
+    Route {
+        method: Method::Get,
+        pattern: "/stream/positions",
+        required_role: Role::Viewer,
+        summary: StreamKind::Positions.summary(),
+        success: 200,
+    },
+    // The one stream a monitoring credential may read, matching `/health`:
+    // liveness and the halt state are what a monitor is for, and they carry
+    // no portfolio detail.
+    Route {
+        method: Method::Get,
+        pattern: "/stream/health",
+        required_role: Role::Monitor,
+        summary: StreamKind::Health.summary(),
+        success: 200,
+    },
 ];
 
 /// The API surface.
@@ -302,6 +352,18 @@ pub struct Api {
     /// the lock order is always platform first, then mesh, and no path takes
     /// them the other way around.
     mesh: Option<Arc<Mutex<crate::mesh::MeshBackbone>>>,
+    /// The bounds every live connection runs under.
+    ///
+    /// Held here rather than read from a constant so a test can open a stream
+    /// that ends in milliseconds instead of minutes. A test that had to wait
+    /// out the production lifetime bound to prove the connection ends is a
+    /// test nobody runs.
+    stream_limits: StreamLimits,
+    /// The health reading every subscriber to `/stream/health` shares.
+    ///
+    /// Shared so two dashboards watching the same process agree about which
+    /// transition they are looking at; see [`HealthPulse`].
+    pulse: Arc<HealthPulse>,
 }
 
 impl std::fmt::Debug for Api {
@@ -328,7 +390,20 @@ impl Api {
             cells: Arc::new(CellRegistry::default()),
             archive: None,
             mesh: None,
+            stream_limits: StreamLimits::default(),
+            pulse: Arc::new(HealthPulse::default()),
         }
+    }
+
+    /// Run live connections under `limits` rather than the defaults.
+    ///
+    /// The defaults are chosen for a browser behind a reverse proxy. A test
+    /// needs a connection that heartbeats and closes in milliseconds, and an
+    /// embedder behind a proxy with a shorter idle timeout than the usual
+    /// sixty seconds needs a shorter heartbeat than the usual ten.
+    pub fn with_stream_limits(mut self, limits: StreamLimits) -> Self {
+        self.stream_limits = limits;
+        self
     }
 
     /// Serve the mesh backbone this process assembled.
@@ -387,6 +462,42 @@ impl Api {
         ROUTES
             .iter()
             .find(|route| route.method == method && matches_pattern(route.pattern, suffix))
+    }
+
+    /// Authenticate, charge the allowance, and check the role.
+    ///
+    /// One ladder, called from both the buffered path and the streaming one,
+    /// so a stream cannot end up authorised by a check the REST surface does
+    /// not make — or, worse, by no check at all. Returns the refusal rather
+    /// than a bare error so each caller writes the same body a caller of the
+    /// equivalent REST route would receive.
+    fn admit(&self, request: &Request, route: &Route) -> std::result::Result<Principal, Response> {
+        let now = self.clock.now();
+        let principal = match self
+            .authenticator
+            .authenticate(request.header("authorization"), now)
+        {
+            Ok(principal) => principal,
+            Err(error) => {
+                return Err(Response::json(
+                    401,
+                    format!(r#"{{"error":{}}}"#, json::string(error.message())),
+                )
+                .with_header("www-authenticate", "Bearer"));
+            }
+        };
+
+        if !self.rate_limiter.permit(&principal.subject, now) {
+            return Err(Response::json(429, r#"{"error":"rate limit exceeded"}"#));
+        }
+
+        if let Err(error) = principal.require(route.required_role) {
+            return Err(Response::json(
+                403,
+                format!(r#"{{"error":{}}}"#, json::string(error.message())),
+            ));
+        }
+        Ok(principal)
     }
 
     fn dispatch(&self, request: &Request, principal: &Principal, route: &Route) -> Response {
@@ -454,6 +565,21 @@ impl Api {
                 unavailable("runs", crate::missing::NO_TRAINING_SERVICE),
             ),
             (Method::Get, "/quantum") => Response::json(200, quantum(&platform)),
+            // A stream asked for through the handler rather than over a socket
+            // — by a test, an embedder, or a client library that buffers a
+            // whole response before returning it. Answering with the stream's
+            // contract is more use than a refusal: it names the path, the
+            // media type, the topics it carries and exactly what a reconnect
+            // does and does not recover.
+            (Method::Get, pattern) if StreamKind::from_pattern(pattern).is_some() => {
+                match StreamKind::from_pattern(pattern) {
+                    Some(kind) => Response::json(200, kind.descriptor()),
+                    // Unreachable: the guard above just resolved it. Answered
+                    // rather than asserted, because a panic on a path that
+                    // cannot be taken is still a panic in a request handler.
+                    None => Response::json(404, r#"{"error":"no such stream"}"#),
+                }
+            }
             (Method::Post, "/cycle") => {
                 let report = platform.run_cycle(now);
                 // The hand-over happens here rather than inside the log's
@@ -547,8 +673,6 @@ impl Api {
 
 impl Handler for Api {
     fn handle(&self, request: &Request) -> Response {
-        let now = self.clock.now();
-
         // Discovery is unauthenticated on purpose: a client needs to know the
         // API version before it can present a credential correctly, and the
         // route table is not a secret.
@@ -580,32 +704,58 @@ impl Handler for Api {
             };
         };
 
-        let principal = match self
-            .authenticator
-            .authenticate(request.header("authorization"), now)
-        {
-            Ok(principal) => principal,
-            Err(error) => {
-                return Response::json(
-                    401,
-                    format!(r#"{{"error":{}}}"#, json::string(error.message())),
-                )
-                .with_header("www-authenticate", "Bearer");
-            }
+        match self.admit(request, route) {
+            Ok(principal) => self.dispatch(request, &principal, route),
+            Err(refusal) => refusal,
+        }
+    }
+
+    fn stream(&self, request: &Request) -> StreamDecision {
+        // Streams are read-only and live under one prefix. Anything else is
+        // not a stream request and is answered the ordinary way.
+        if request.method != Method::Get {
+            return StreamDecision::NotAStream;
+        }
+        let Some(suffix) = request.path.strip_prefix(VERSION_PREFIX) else {
+            return StreamDecision::NotAStream;
+        };
+        let Some(kind) = StreamKind::from_pattern(suffix) else {
+            return StreamDecision::NotAStream;
+        };
+        let Some(route) = Api::route_for(Method::Get, &request.path) else {
+            return StreamDecision::NotAStream;
         };
 
-        if !self.rate_limiter.permit(&principal.subject, now) {
-            return Response::json(429, r#"{"error":"rate limit exceeded"}"#);
-        }
+        // The same ladder every other route goes through, run once. A refusal
+        // is returned as a response rather than as "not a stream", because the
+        // head of an accepted stream is a 200 that cannot be withdrawn once
+        // written.
+        let principal = match self.admit(request, route) {
+            Ok(principal) => principal,
+            Err(refusal) => return StreamDecision::Refused(refusal),
+        };
+        let _ = principal;
 
-        if let Err(error) = principal.require(route.required_role) {
-            return Response::json(
-                403,
-                format!(r#"{{"error":{}}}"#, json::string(error.message())),
-            );
-        }
-
-        self.dispatch(request, &principal, route)
+        let source: Box<dyn EventSource> = match kind {
+            StreamKind::Health => Box::new(PlatformHealth::new(
+                self.platform.clone(),
+                self.cells.clone(),
+                self.pulse.clone(),
+                self.clock.clone(),
+            )),
+            log_backed => Box::new(LoggedEvents::new(
+                self.platform.clone(),
+                log_backed.topics(),
+                self.stream_limits.backlog,
+            )),
+        };
+        StreamDecision::Accepted(Box::new(EventStream::open(
+            kind,
+            source,
+            self.clock.clone(),
+            self.stream_limits,
+            request.header(LAST_EVENT_ID),
+        )))
     }
 }
 

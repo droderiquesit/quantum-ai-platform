@@ -191,6 +191,22 @@ fn run() -> Result<()> {
         qip_api::ROUTES.len(),
         qip_api::routes::OPENAPI_PATH
     );
+    // The live surface, in the same terms as the rest of the banner. An
+    // operator reading it should know how long a stream stays open and what a
+    // client is expected to do when it closes, before a dashboard is pointed
+    // at this process and found to reconnect every five minutes.
+    {
+        let limits = qip_api::stream::StreamLimits::default();
+        println!(
+            "  live streams:     {} server-sent-event stream(s) under {}{}; heartbeat every {}s, \
+             each connection closes after {}s and resumes on Last-Event-ID",
+            qip_api::stream::StreamKind::ALL.len(),
+            qip_api::routes::VERSION_PREFIX,
+            qip_api::stream::STREAM_PREFIX,
+            limits.heartbeat_after.as_secs(),
+            limits.max_duration.as_secs()
+        );
+    }
     println!(
         "  operator ui:      {} surface(s) and {} console view(s), no JavaScript",
         qip_web::Surface::all().len(),
