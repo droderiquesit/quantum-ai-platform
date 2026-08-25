@@ -16,23 +16,23 @@
 #
 # There is no service-account key anywhere here. The pipeline authenticates by
 # exchanging the OIDC token GitHub mints for one job, through the workload
-# identity pool the `cicd` Terraform module creates. Two repository variables
-# carry the result of that Terraform, and until they are set this workflow
-# cannot authenticate and says so:
+# identity pool the `cicd` Terraform module creates.
 #
-#   GCP_WORKLOAD_IDENTITY_PROVIDER   terraform output workload_identity_provider
-#   GCP_DEPLOY_SERVICE_ACCOUNT       terraform output deploy_service_account
-#   GCP_PROJECT                      the project the environment lives in
-#   GCP_REGION                       the region it lives in
+# **Nothing here is hand-configured.** Every value that authentication and
+# attestation need — the provider audience, the CI service account, the
+# Binary Authorization attestor and the key version that signs for it — is a
+# pure function of the project id and project number recorded in
+# `infrastructure/environments/<env>/terraform.tfvars`. The `derive the
+# identity from the tfvars` step reads that file and constructs all six.
 #
-# Two more carry the result of the `binaryauthorization` module. The cluster
-# refuses an image nothing has attested, so an unsigned image is one that
-# pushes successfully and is refused at admission later, appearing as a pod
-# that will not schedule rather than as a deployment that failed. The `images`
-# job therefore refuses to build at all until both are set:
-#
-#   GCP_BINAUTHZ_ATTESTOR            terraform output binary_authorization_attestor
-#   GCP_BINAUTHZ_KEY_VERSION         terraform output binary_authorization_key_version
+# They used to be repository variables a person pasted from `terraform
+# output`. One of those pastes came from a shell whose `terraform` was a stub
+# that printed apt install advice instead of a version; the advice landed in
+# `GCP_WORKLOAD_IDENTITY_PROVIDER`, and every run afterwards failed with
+# "Invalid value for audience" — a message naming neither the variable nor
+# the shell that filled it. A value nothing re-derives is a value that stays
+# wrong. `no_workflow_depends_on_a_repository_variable` in the acceptance
+# suite keeps them from coming back.
 name: deploy
 
 on:
