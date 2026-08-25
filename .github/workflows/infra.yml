@@ -131,30 +131,38 @@ jobs:
             --member="serviceAccount:${{ steps.identity.outputs.account }}" \
             --role="roles/storage.objectAdmin" --quiet >/dev/null
 
-      # Terraform reads the attestor's public key at plan time, so a plan
-      # cannot complete without a permission that only exists once the plan
-      # has applied — a read the configuration cannot bootstrap for itself.
-      # The account grants it to itself here (its projectIamAdmin makes that
-      # possible; modules/cicd documents why that is accepted), and waits only
-      # when the binding is new, because a fresh IAM grant can take a minute
-      # to bite. The same grant exists declaratively in modules/cicd, so an
-      # environment applied by the bootstrap never takes this path.
-      - name: the permission the plan needs before it can grant it
+      # Terraform refreshes existing state — reading the attestor's public
+      # key, the attestor resource itself — before it applies anything, so a
+      # role this same apply would grant declaratively is too late for the
+      # refresh that needs it. Two roles have hit this so far, each read at
+      # plan time by a resource that already exists from an earlier apply:
+      # cloudkms.publicKeyViewer (the attestor's signing key) and
+      # binaryauthorization.attestorsAdmin (the attestor itself, which needs
+      # more than read — Terraform diffs it, not just refreshes it). The
+      # account grants each to itself here — its projectIamAdmin makes that
+      # possible; modules/cicd documents why that is accepted — waiting only
+      # when a binding is new, since a fresh grant can take a minute to bite.
+      # Both exist declaratively in modules/cicd too, so an environment
+      # applied by the bootstrap (whose identity already holds project
+      # owner) never takes this path at all.
+      - name: the permissions the plan needs before it can grant them
         run: |
           set -euo pipefail
           account="${{ steps.identity.outputs.account }}"
           project="${{ steps.identity.outputs.project }}"
-          held="$(gcloud projects get-iam-policy "$project" \
-            --flatten="bindings[].members" \
-            --filter="bindings.role:roles/cloudkms.publicKeyViewer AND bindings.members:serviceAccount:$account" \
-            --format="value(bindings.role)")"
-          if [ -z "$held" ]; then
-            gcloud projects add-iam-policy-binding "$project" \
-              --member="serviceAccount:$account" \
-              --role="roles/cloudkms.publicKeyViewer" --quiet >/dev/null
-            echo "granted cloudkms.publicKeyViewer to $account; waiting for IAM to propagate"
-            sleep 60
-          fi
+          for role in roles/cloudkms.publicKeyViewer roles/binaryauthorization.attestorsAdmin; do
+            held="$(gcloud projects get-iam-policy "$project" \
+              --flatten="bindings[].members" \
+              --filter="bindings.role:$role AND bindings.members:serviceAccount:$account" \
+              --format="value(bindings.role)")"
+            if [ -z "$held" ]; then
+              gcloud projects add-iam-policy-binding "$project" \
+                --member="serviceAccount:$account" \
+                --role="$role" --quiet >/dev/null
+              echo "granted $role to $account; waiting for IAM to propagate"
+              sleep 60
+            fi
+          done
 
       - uses: hashicorp/setup-terraform@v3
         with:
