@@ -1623,6 +1623,41 @@ fn the_recovery_workflow_depends_on_no_repository_variable() {
 }
 
 #[test]
+fn nothing_deletes_a_cluster_the_configuration_has_not_declared_disposable() {
+    // The recovery step deletes a broken cluster with gcloud, going around
+    // Terraform's `deletion_protection` — which it must, because that guard
+    // is read from prior state and a tainted resource never gets the update
+    // that would clear it. Going around a safety check is only defensible
+    // while the authorisation for it is explicit, and the explicit thing is
+    // the environment's own committed tfvars: the delete is gated on the
+    // file already declaring cluster_deletion_protection = false. Remove the
+    // gate and the workflow deletes clusters on its own judgement.
+    let infra = read(".github/workflows/infra.yml");
+    let recovery = block_under(&infra, "- name: recover a cluster the taint has deadlocked");
+
+    let gate = recovery.find("cluster_deletion_protection");
+    let delete = recovery.find("gcloud container clusters delete");
+
+    let gate =
+        gate.expect("the recovery step no longer checks the tfvars before deleting a cluster");
+    let delete = delete.expect("the recovery step no longer deletes anything");
+    assert!(
+        gate < delete,
+        "the recovery step deletes the cluster before checking whether the \
+         configuration authorises it"
+    );
+
+    // And the delete is reached only for a cluster GKE does not call RUNNING:
+    // a healthy one is untainted instead, never destroyed.
+    assert!(
+        recovery.contains("untaint"),
+        "the recovery step no longer has the untaint path, so a healthy \
+         cluster tainted by a failed create-wait would be deleted rather \
+         than recovered"
+    );
+}
+
+#[test]
 fn the_teardown_writes_the_flag_to_state_before_it_reads_it() {
     // `down` is two commands, and the order is the whole point. GKE reads
     // `deletion_protection` from prior state during a destroy, never from
