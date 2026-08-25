@@ -179,6 +179,57 @@ jobs:
           terraform -chdir=infrastructure/terraform plan -input=false \
             -var-file="../environments/${{ inputs.environment }}/terraform.tfvars"
 
+      # A cluster tainted by a create that failed *after* the control plane
+      # came up is a false positive, and left alone it is unrecoverable.
+      #
+      # GKE creates a default node pool as part of cluster creation. When that
+      # pool cannot get nodes — a quota ceiling, most likely — the create call
+      # returns an error and Terraform marks the cluster tainted, which is
+      # correct by protocol: the create did fail. But the cluster object
+      # itself exists and its control plane is serving, which the very next
+      # refresh confirms by reading back an endpoint.
+      #
+      # Taint then becomes a trap. Terraform plans destroy-then-create for a
+      # tainted resource, with no in-place update first, so the destroy reads
+      # `deletion_protection` from *prior state* — where it is still true —
+      # and GKE refuses. The config saying false cannot reach state, because
+      # the only step that would write it there is the update that taint
+      # skips. The cluster can be neither replaced nor repaired.
+      #
+      # So: untaint, but only on evidence. `gcloud` is asked what the cluster
+      # is actually doing, and the taint is cleared only for a RUNNING one —
+      # where the resource is healthy and the taint records a create-wait
+      # rather than a broken cluster. A cluster in any other state keeps its
+      # taint and gets replaced, which is what taint is for.
+      - name: clear a taint that outlived the failure that set it
+        if: inputs.action == 'up'
+        run: |
+          set -euo pipefail
+          address='module.cluster.google_container_cluster.primary'
+          tainted="$(terraform -chdir=infrastructure/terraform show -json \
+            | jq -r --arg a "$address" '
+                [.values.root_module.child_modules[]?.resources[]?
+                 | select(.address == $a and .tainted == true)] | length')"
+          if [ "$tainted" = "0" ]; then
+            echo "no tainted cluster in state; nothing to recover"
+            exit 0
+          fi
+
+          cluster="qip-${{ inputs.environment }}"
+          status="$(gcloud container clusters list \
+            --project="${{ steps.identity.outputs.project }}" \
+            --filter="name=${cluster}" --format='value(status)' | head -1)"
+          echo "${cluster} is tainted in state; GKE reports status='${status:-<absent>}'"
+
+          if [ "$status" = "RUNNING" ]; then
+            terraform -chdir=infrastructure/terraform untaint "$address"
+            echo "untainted: the control plane is serving, so the taint recorded"
+            echo "a failed create-wait rather than a broken cluster"
+          else
+            echo "left tainted: GKE does not report it RUNNING, so replacement"
+            echo "is the correct action and the destroy below is meant to happen"
+          fi
+
       # -auto-approve because there is nobody at a prompt: the review is the
       # dispatch itself, recorded in the Actions log with who pressed it. The
       # prod refusal above is what keeps that acceptable.
@@ -191,6 +242,18 @@ jobs:
       - name: down
         if: inputs.action == 'down'
         run: |
+          set -euo pipefail
+          # Two steps, because `deletion_protection` is read from state during
+          # a destroy and not from configuration. An environment whose tfvars
+          # say false but whose state still says true — every environment that
+          # has never been applied since the flag became a variable — refuses
+          # its own teardown with "Cannot destroy cluster because
+          # deletion_protection is set to true". The apply is what writes the
+          # flag to state; it is targeted and almost always a no-op otherwise.
+          terraform -chdir=infrastructure/terraform apply -input=false -auto-approve \
+            -target=module.cluster \
+            -var-file="../environments/${{ inputs.environment }}/terraform.tfvars"
+
           # Targeted on purpose — see the header for why a full destroy is a
           # trap. Terraform also destroys everything that depends on the
           # cluster (the backup plan, the workload identity bindings), which

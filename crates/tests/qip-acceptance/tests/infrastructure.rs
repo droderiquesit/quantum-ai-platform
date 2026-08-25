@@ -1623,6 +1623,34 @@ fn the_recovery_workflow_depends_on_no_repository_variable() {
 }
 
 #[test]
+fn the_teardown_writes_the_flag_to_state_before_it_reads_it() {
+    // `down` is two commands, and the order is the whole point. GKE reads
+    // `deletion_protection` from prior state during a destroy, never from
+    // configuration, so an environment whose tfvars say false but whose state
+    // still says true refuses its own teardown — which is exactly how the
+    // first real teardown attempt failed, twice, once before the flag was a
+    // variable at all and once after. The targeted apply is what writes false
+    // into state; delete it and `down` breaks again, silently, and only for
+    // environments that have not been applied since.
+    let infra = read(".github/workflows/infra.yml");
+    let down = block_under(&infra, "- name: down");
+
+    let apply = down.find("terraform -chdir=infrastructure/terraform apply");
+    let destroy = down.find("terraform -chdir=infrastructure/terraform destroy");
+
+    let apply = apply.expect(
+        "infra.yml's down no longer applies before destroying, so deletion_protection \
+         never reaches state and the teardown refuses itself",
+    );
+    let destroy = destroy.expect("infra.yml's down no longer destroys anything");
+    assert!(
+        apply < destroy,
+        "infra.yml's down destroys before it applies, so the destroy still reads \
+         the old deletion_protection out of state"
+    );
+}
+
+#[test]
 fn the_infrastructure_workflow_cannot_touch_production() {
     // infra.yml holds the identity that can reshape an environment, which is
     // exactly why it must never offer prod. Two layers: prod absent from the
