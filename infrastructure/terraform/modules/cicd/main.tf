@@ -147,6 +147,14 @@ resource "google_project_iam_member" "infra_roles" {
     "roles/logging.admin",
     "roles/artifactregistry.admin",
     "roles/binaryauthorization.policyAdmin",
+    # policyAdmin manages the admission *policy* — the rule that says which
+    # images run — and is a distinct role from the attestor resource itself.
+    # `google_binary_authorization_attestor.build` needs create/get/update on
+    # the attestor, and the fourth infra run died reading it back:
+    # `binaryauthorization.attestors.get` denied, right after a plan that
+    # otherwise succeeded cleanly. Same curated-list gap as the KMS grant
+    # before it — a role named for the wrong half of the same product.
+    "roles/binaryauthorization.attestorsAdmin",
     "roles/containeranalysis.admin",
     "roles/gkebackup.admin",
   ])
