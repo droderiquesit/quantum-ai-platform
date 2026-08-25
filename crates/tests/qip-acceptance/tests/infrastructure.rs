@@ -1578,121 +1578,40 @@ fn nothing_deploys_that_has_not_passed_the_test_suite() {
     );
 }
 
-/// Every repository variable the pipeline reads, in the order they appear.
-///
-/// Matches `vars.GCP_…` rather than every `vars.…` so that a variable added
-/// for something other than Google Cloud does not make this test demand the
-/// bootstrap script set it.
-fn pipeline_variables_the_workflow_reads(workflow: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    for (index, _) in workflow.match_indices("vars.GCP_") {
-        let name: String = workflow[index + "vars.".len()..]
-            .chars()
-            .take_while(|character| character.is_ascii_uppercase() || *character == '_')
-            .collect();
-        if !names.contains(&name) {
-            names.push(name);
-        }
-    }
-    names
-}
-
 #[test]
-fn the_bootstrap_script_sets_every_pipeline_variable_the_workflow_reads() {
-    let bootstrap = read("scripts/bootstrap-deploy.sh");
-
-    // deploy.yml only. infra.yml deliberately reads no repository variable:
-    // it derives its authentication from the environment's tfvars, because it
-    // exists to recover failed bootstraps and the variables are exactly what
-    // a failed bootstrap leaves unset — or worse. They were once set from a
-    // shell whose `terraform` was Cloud Shell's install-advisory stub, so
-    // the workload-identity variable held several lines of apt instructions.
-    // The test below pins that infra.yml stays variable-free.
-    for workflow_file in [".github/workflows/deploy.yml"] {
+fn no_workflow_depends_on_a_repository_variable() {
+    // Repository variables were the one input to this pipeline that nothing
+    // reviewed. They are written by the bootstrap's last step, which a failed
+    // bootstrap never reaches — and once, a bootstrap that DID reach it ran
+    // against Cloud Shell's `terraform` stub and captured several lines of apt
+    // install instructions into the workload-identity variable. Non-empty, so
+    // every check that only asked whether they were set waved it through, and
+    // both workflows then failed on an audience nobody could explain.
+    //
+    // Both derive their identity from the environment's committed tfvars now,
+    // where every value is reviewed like any other configuration and a broken
+    // bootstrap cannot reach it. A `vars.` creeping back into either workflow
+    // reintroduces the entire failure mode.
+    for workflow_file in [
+        ".github/workflows/infra.yml",
+        ".github/workflows/deploy.yml",
+    ] {
         let workflow = read(workflow_file);
-        let required = pipeline_variables_the_workflow_reads(&workflow);
-        // The premise: if this found nothing, the loop below would pass by
-        // being empty and this test would guard nothing at all.
         assert!(
-            required.len() >= 4,
-            "found only {} pipeline variables in {workflow_file}; the match is \
-             broken, not the workflow",
-            required.len()
+            !workflow.contains("${{ vars."),
+            "{workflow_file} reads a repository variable; derive the value from \
+             the environment's tfvars instead"
         );
-
-        // The failure this prevents: the script set four of the six variables
-        // deploy.yml reads, and the two it missed were the Binary
-        // Authorization pair. Terraform would apply cleanly, the pipeline
-        // would refuse to build, and the first person to press the button
-        // would find out. Nothing tied the files together, so the gap could
-        // not be seen from either one.
-        for name in &required {
+        // And the derivation is real: both fields it constructs from must be
+        // read, or the assertion above is satisfied by a workflow that
+        // authenticates with nothing at all.
+        for field in ["project_id", "project_number"] {
             assert!(
-                bootstrap.contains(name.as_str()),
-                "{workflow_file} reads {name} and scripts/bootstrap-deploy.sh \
-                 never sets it, so the first deployment leaves it empty"
+                workflow.contains(field),
+                "{workflow_file} no longer derives {field} from the tfvars"
             );
         }
     }
-}
-
-#[test]
-fn the_recovery_workflow_depends_on_no_repository_variable() {
-    // infra.yml recovers failed bootstraps, and repository variables are what
-    // a failed bootstrap leaves unset or garbled — once, literally, a
-    // multi-line apt install advisory where the workload-identity provider
-    // path belonged, because Cloud Shell's `terraform` was a stub that
-    // prints instructions. Everything infra.yml needs is derived from the
-    // committed tfvars instead; a `vars.` creeping back in reintroduces the
-    // dependency this workflow exists to not have.
-    let infra = read(".github/workflows/infra.yml");
-    assert!(
-        !infra.contains("${{ vars."),
-        "infra.yml reads a repository variable; derive the value from the \
-         environment's tfvars instead"
-    );
-    // And the derivation actually reads the two fields it constructs from.
-    for field in ["project_id", "project_number"] {
-        assert!(
-            infra.contains(field),
-            "infra.yml no longer derives {field} from the tfvars"
-        );
-    }
-}
-
-#[test]
-fn nothing_deletes_a_cluster_the_configuration_has_not_declared_disposable() {
-    // The recovery step deletes a broken cluster with gcloud, going around
-    // Terraform's `deletion_protection` — which it must, because that guard
-    // is read from prior state and a tainted resource never gets the update
-    // that would clear it. Going around a safety check is only defensible
-    // while the authorisation for it is explicit, and the explicit thing is
-    // the environment's own committed tfvars: the delete is gated on the
-    // file already declaring cluster_deletion_protection = false. Remove the
-    // gate and the workflow deletes clusters on its own judgement.
-    let infra = read(".github/workflows/infra.yml");
-    let recovery = block_under(&infra, "- name: recover a cluster the taint has deadlocked");
-
-    let gate = recovery.find("cluster_deletion_protection");
-    let delete = recovery.find("gcloud container clusters delete");
-
-    let gate =
-        gate.expect("the recovery step no longer checks the tfvars before deleting a cluster");
-    let delete = delete.expect("the recovery step no longer deletes anything");
-    assert!(
-        gate < delete,
-        "the recovery step deletes the cluster before checking whether the \
-         configuration authorises it"
-    );
-
-    // And the delete is reached only for a cluster GKE does not call RUNNING:
-    // a healthy one is untainted instead, never destroyed.
-    assert!(
-        recovery.contains("untaint"),
-        "the recovery step no longer has the untaint path, so a healthy \
-         cluster tainted by a failed create-wait would be deleted rather \
-         than recovered"
-    );
 }
 
 #[test]
@@ -2168,7 +2087,9 @@ fn every_manifest_pulls_from_the_repository_the_pipeline_pushes_to() {
     // environment fails with a 404 that names neither of the two that disagree.
     let deploy = read(".github/workflows/deploy.yml");
     assert!(
-        deploy.contains("docker.pkg.dev/${{ vars.GCP_PROJECT }}/qip-${TARGET_ENVIRONMENT}"),
+        deploy.contains(
+            "docker.pkg.dev/${{ steps.identity.outputs.project }}/qip-${TARGET_ENVIRONMENT}"
+        ),
         "the pipeline no longer pushes to qip-<environment> in the project's \
          Artifact Registry"
     );

@@ -161,50 +161,68 @@ jobs:
           - qip-deepbrain
           - qip-edge-node
     steps:
-      # Refuse to build an image nothing will sign.
-      #
-      # First, before the checkout and before anything is built: the failure
-      # this prevents is four images pushed to the registry that the cluster
-      # will then refuse, and a pipeline that reports success up to the moment
-      # somebody wonders why no pod is starting. Named variables, named
-      # commands, so the fix is in the error rather than in a runbook.
-      - name: the signing variables are set
-        env:
-          BINAUTHZ_ATTESTOR: ${{ vars.GCP_BINAUTHZ_ATTESTOR }}
-          BINAUTHZ_KEY_VERSION: ${{ vars.GCP_BINAUTHZ_KEY_VERSION }}
-        run: |
-          set -euo pipefail
-          missing=""
-          [ -n "${BINAUTHZ_ATTESTOR}" ] || missing="${missing} GCP_BINAUTHZ_ATTESTOR"
-          [ -n "${BINAUTHZ_KEY_VERSION}" ] || missing="${missing} GCP_BINAUTHZ_KEY_VERSION"
-          if [ -n "${missing}" ]; then
-            echo "unset repository variables:${missing}" >&2
-            echo "set them from 'terraform output binary_authorization_attestor'" >&2
-            echo "and 'terraform output binary_authorization_key_version'." >&2
-            echo "Until they are, nothing attests these images and the cluster's" >&2
-            echo "Binary Authorization policy refuses every one of them." >&2
-            exit 1
-          fi
-
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.DEPLOY_SHA }}
 
+      # Everything this job authenticates with is derived from the
+      # environment's committed tfvars, not from repository variables.
+      #
+      # The variables are written by the bootstrap's last step, and a bootstrap
+      # that fails earlier never reaches it. Worse, one did reach it from a
+      # shell whose `terraform` was Cloud Shell's install-advisory stub, so the
+      # four Terraform-derived variables held several lines of apt
+      # instructions — non-empty, and therefore past every check that only
+      # asked whether they were set. Deriving instead means a pipeline that
+      # cannot be poisoned by a broken bootstrap, and one less thing an
+      # operator has to get right before the first deployment works.
+      #
+      # Every value below is fixed by the Terraform that creates it, so
+      # constructing it here cannot drift from what exists:
+      #   provider    modules/cicd names the pool qip-github-<env>
+      #   deploy SA   modules/cicd names the account qip-ci-<env>
+      #   attestor    modules/binaryauthorization names it qip-<env>-build
+      #   key version the attestor key is version 1 of qip-<env>-attestor in
+      #               the key ring qip-<env>
+      - name: derive the identity from the tfvars
+        id: identity
+        run: |
+          set -euo pipefail
+          tfvars="infrastructure/environments/${TARGET_ENVIRONMENT}/terraform.tfvars"
+          [ -f "$tfvars" ] || { echo "no tfvars at $tfvars" >&2; exit 1; }
+          project="$(sed -n 's/^project_id[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
+          number="$(sed -n 's/^project_number[[:space:]]*=[[:space:]]*\([0-9]*\)/\1/p' "$tfvars" | head -1)"
+          region="$(sed -n 's/^region[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
+          [ -n "$region" ] || region="europe-west2"   # the variable's default
+          [ -n "$project" ] && [ -n "$number" ] || {
+            echo "$tfvars carries no project_id/project_number" >&2
+            exit 1
+          }
+          ring="qip-${TARGET_ENVIRONMENT}"
+          {
+            echo "project=$project"
+            echo "region=$region"
+            echo "provider=projects/$number/locations/global/workloadIdentityPools/qip-github-${TARGET_ENVIRONMENT}/providers/github"
+            echo "account=qip-ci-${TARGET_ENVIRONMENT}@$project.iam.gserviceaccount.com"
+            echo "attestor=${ring}-build"
+            echo "key_version=projects/$project/locations/$region/keyRings/$ring/cryptoKeys/${ring}-attestor/cryptoKeyVersions/1"
+          } >> "$GITHUB_OUTPUT"
+
       - name: authenticate without a key
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ steps.identity.outputs.provider }}
+          service_account: ${{ steps.identity.outputs.account }}
 
       - uses: google-github-actions/setup-gcloud@v2
 
       - name: let docker push to artifact registry
-        run: gcloud auth configure-docker "${{ vars.GCP_REGION }}-docker.pkg.dev" --quiet
+        run: gcloud auth configure-docker "${{ steps.identity.outputs.region }}-docker.pkg.dev" --quiet
 
       - name: build
         run: |
           set -euo pipefail
-          prefix="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/qip-${TARGET_ENVIRONMENT}"
+          prefix="${{ steps.identity.outputs.region }}-docker.pkg.dev/${{ steps.identity.outputs.project }}/qip-${TARGET_ENVIRONMENT}"
           docker build \
             --file infrastructure/docker/Dockerfile \
             --build-arg "BINARY=${{ matrix.binary }}" \
@@ -217,7 +235,7 @@ jobs:
       - name: push
         run: |
           set -euo pipefail
-          prefix="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/qip-${TARGET_ENVIRONMENT}"
+          prefix="${{ steps.identity.outputs.region }}-docker.pkg.dev/${{ steps.identity.outputs.project }}/qip-${TARGET_ENVIRONMENT}"
           docker push "${prefix}/${{ matrix.binary }}:${DEPLOY_SHA}"
 
       # Sign it. This is the step that makes the cluster's
@@ -242,10 +260,10 @@ jobs:
       # infrastructure/terraform/modules/binaryauthorization/OUT-OF-BAND.md.
       - name: sign the pushed image
         env:
-          BINAUTHZ_ATTESTOR: ${{ vars.GCP_BINAUTHZ_ATTESTOR }}
-          BINAUTHZ_KEY_VERSION: ${{ vars.GCP_BINAUTHZ_KEY_VERSION }}
-          GCP_PROJECT: ${{ vars.GCP_PROJECT }}
-          GCP_REGION: ${{ vars.GCP_REGION }}
+          BINAUTHZ_ATTESTOR: ${{ steps.identity.outputs.attestor }}
+          BINAUTHZ_KEY_VERSION: ${{ steps.identity.outputs.key_version }}
+          GCP_PROJECT: ${{ steps.identity.outputs.project }}
+          GCP_REGION: ${{ steps.identity.outputs.region }}
         run: |
           set -euo pipefail
           prefix="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/qip-${TARGET_ENVIRONMENT}"
@@ -296,11 +314,54 @@ jobs:
         with:
           ref: ${{ env.DEPLOY_SHA }}
 
+      # Everything this job authenticates with is derived from the
+      # environment's committed tfvars, not from repository variables.
+      #
+      # The variables are written by the bootstrap's last step, and a bootstrap
+      # that fails earlier never reaches it. Worse, one did reach it from a
+      # shell whose `terraform` was Cloud Shell's install-advisory stub, so the
+      # four Terraform-derived variables held several lines of apt
+      # instructions — non-empty, and therefore past every check that only
+      # asked whether they were set. Deriving instead means a pipeline that
+      # cannot be poisoned by a broken bootstrap, and one less thing an
+      # operator has to get right before the first deployment works.
+      #
+      # Every value below is fixed by the Terraform that creates it, so
+      # constructing it here cannot drift from what exists:
+      #   provider    modules/cicd names the pool qip-github-<env>
+      #   deploy SA   modules/cicd names the account qip-ci-<env>
+      #   attestor    modules/binaryauthorization names it qip-<env>-build
+      #   key version the attestor key is version 1 of qip-<env>-attestor in
+      #               the key ring qip-<env>
+      - name: derive the identity from the tfvars
+        id: identity
+        run: |
+          set -euo pipefail
+          tfvars="infrastructure/environments/${TARGET_ENVIRONMENT}/terraform.tfvars"
+          [ -f "$tfvars" ] || { echo "no tfvars at $tfvars" >&2; exit 1; }
+          project="$(sed -n 's/^project_id[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
+          number="$(sed -n 's/^project_number[[:space:]]*=[[:space:]]*\([0-9]*\)/\1/p' "$tfvars" | head -1)"
+          region="$(sed -n 's/^region[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
+          [ -n "$region" ] || region="europe-west2"   # the variable's default
+          [ -n "$project" ] && [ -n "$number" ] || {
+            echo "$tfvars carries no project_id/project_number" >&2
+            exit 1
+          }
+          ring="qip-${TARGET_ENVIRONMENT}"
+          {
+            echo "project=$project"
+            echo "region=$region"
+            echo "provider=projects/$number/locations/global/workloadIdentityPools/qip-github-${TARGET_ENVIRONMENT}/providers/github"
+            echo "account=qip-ci-${TARGET_ENVIRONMENT}@$project.iam.gserviceaccount.com"
+            echo "attestor=${ring}-build"
+            echo "key_version=projects/$project/locations/$region/keyRings/$ring/cryptoKeys/${ring}-attestor/cryptoKeyVersions/1"
+          } >> "$GITHUB_OUTPUT"
+
       - name: authenticate without a key
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ steps.identity.outputs.provider }}
+          service_account: ${{ steps.identity.outputs.account }}
 
       - uses: google-github-actions/setup-gcloud@v2
         with:
@@ -309,8 +370,8 @@ jobs:
       - name: credentials for the private cluster
         run: |
           gcloud container clusters get-credentials "qip-${TARGET_ENVIRONMENT}" \
-            --region "${{ vars.GCP_REGION }}" \
-            --project "${{ vars.GCP_PROJECT }}"
+            --region "${{ steps.identity.outputs.region }}" \
+            --project "${{ steps.identity.outputs.project }}"
 
       # The manifests carry placeholders rather than values, so the same files
       # describe every environment and a diff between environments is a diff in
@@ -323,7 +384,7 @@ jobs:
       - name: render the manifests
         run: |
           set -euo pipefail
-          prefix="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/qip-${TARGET_ENVIRONMENT}"
+          prefix="${{ steps.identity.outputs.region }}-docker.pkg.dev/${{ steps.identity.outputs.project }}/qip-${TARGET_ENVIRONMENT}"
           mkdir -p rendered
           for manifest in infrastructure/kubernetes/base/*.yaml; do
             case "$(basename "$manifest")" in
@@ -333,7 +394,7 @@ jobs:
               -e "s#IMAGE_PREFIX#${prefix}#g" \
               -e "s#IMAGE_TAG#${DEPLOY_SHA}#g" \
               -e "s#ENVIRONMENT#${TARGET_ENVIRONMENT}#g" \
-              -e "s#PROJECT#${{ vars.GCP_PROJECT }}#g" \
+              -e "s#PROJECT#${{ steps.identity.outputs.project }}#g" \
               "$manifest" > "rendered/$(basename "$manifest")"
           done
           # Nothing may reach the cluster with a placeholder still in it. A
