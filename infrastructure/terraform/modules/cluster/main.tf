@@ -9,10 +9,34 @@ resource "google_container_cluster" "primary" {
   name     = "qip-${var.environment}"
   location = var.region
 
-  # The default pool is removed immediately and replaced with a managed one:
-  # the default pool cannot be configured with the node settings below.
+  # The default pool is removed immediately and replaced with the managed one
+  # below, which is where every node setting that outlives creation lives.
+  #
+  # It still has to be created first, though, and that is not free. This is a
+  # *regional* cluster, so `initial_node_count = 1` means one node per zone —
+  # three nodes, briefly, before Terraform deletes the pool.
   remove_default_node_pool = true
   initial_node_count       = 1
+
+  # What those three throwaway nodes boot from.
+  #
+  # Without this block they take GKE's own default, `pd-balanced` at 100GB,
+  # and `pd-balanced` counts against SSD_TOTAL_GB exactly as `pd-ssd` does.
+  # Three of them is 300GB against a fresh project's 250GB regional ceiling,
+  # so cluster creation failed on quota — twice, and the second time after
+  # the node-pool disks below had already been moved to `pd-standard`,
+  # because those settings were never what the default pool reads. The
+  # comment above used to say the default pool could not be configured; that
+  # is true of the node pool's own block and false of this one, which is
+  # precisely the trap.
+  #
+  # Same variables as the real pool, so an environment that shrinks its disks
+  # to fit a quota shrinks both and cannot fix one while the other still
+  # exceeds it.
+  node_config {
+    disk_type    = var.node_disk_type
+    disk_size_gb = var.node_disk_size_gb
+  }
 
   network    = var.network_id
   subnetwork = var.subnet_id

@@ -124,6 +124,44 @@ fn the_node_pool_does_not_use_the_default_service_account() {
 }
 
 #[test]
+fn the_throwaway_default_pool_boots_from_the_same_disks_the_real_one_does() {
+    // `remove_default_node_pool` deletes the default pool, but GKE creates it
+    // first, and on a regional cluster `initial_node_count = 1` is one node
+    // per zone. Left unconfigured those three take GKE's default disk,
+    // `pd-balanced` at 100GB — 300GB against the 250GB SSD_TOTAL_GB a fresh
+    // project gets, since pd-balanced draws on that quota exactly as pd-ssd
+    // does. Cluster creation then fails on quota, and it fails identically
+    // whatever the node pool's own disks say, because the default pool has
+    // never read them. Two applies died that way, the second after the node
+    // pool was already on pd-standard.
+    //
+    // So the cluster's own node_config must exist and must read the same
+    // variables: an environment that shrinks its disks to fit a ceiling has
+    // to shrink both, or it fixes the half that was never the problem.
+    let file = read("infrastructure/terraform/modules/cluster/main.tf");
+    let cluster = file
+        .split("resource \"google_container_node_pool\"")
+        .next()
+        .expect("the cluster module no longer declares a node pool after the cluster");
+
+    assert!(
+        cluster.contains("node_config {"),
+        "the cluster declares no node_config, so its throwaway default pool \
+         takes GKE's default disks and can exceed a quota the real pool fits"
+    );
+    for setting in [
+        "disk_type    = var.node_disk_type",
+        "disk_size_gb = var.node_disk_size_gb",
+    ] {
+        assert!(
+            cluster.contains(setting),
+            "the cluster's default pool does not take `{setting}`, so it can \
+             disagree with the pool that replaces it"
+        );
+    }
+}
+
+#[test]
 fn a_cluster_holding_a_book_cannot_be_deleted_by_accident() {
     // Was a hardcoded `true`. It is a variable now — `infra.yml down` and the
     // recovery from a tainted cluster both need to turn it off in the
