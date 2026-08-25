@@ -52,6 +52,10 @@ variable "autonomy_ceiling" {
 
     Setting this above paper_trading does not enable live trading. It permits
     two authenticated operators to enable it, which is a separate act.
+
+    None of the four environments may set it above paper_trading, and the
+    validation below refuses one that tries. See that validation for why the
+    refusal is here rather than only in the application.
   EOT
   type        = string
   default     = "paper_trading"
@@ -66,6 +70,36 @@ variable "autonomy_ceiling" {
       "autonomous_live",
     ], var.autonomy_ceiling)
     error_message = "The autonomy ceiling must be one of the six declared levels."
+  }
+
+  # The three live levels are declared above because the platform's domain
+  # model has six rungs and a value that is merely misspelt should fail
+  # differently from one that is spelt correctly and forbidden. This second
+  # validation is the forbidding one.
+  #
+  # It exists as its own gate rather than by shortening the list above so that
+  # the error an operator reads names the reason. "Must be one of the six
+  # declared levels" sent to somebody who typed `autonomous_live` — a level
+  # that is one of the six — would be a message that contradicts itself, and
+  # they would spend the next ten minutes checking their spelling.
+  #
+  # This is the earliest of the layers that refuse a live configuration, not
+  # the only one: it stops a bad value at `terraform plan`, before it reaches
+  # the qip-config ConfigMap the workloads read. It does not stop `kubectl edit
+  # configmap`, which is why the composition roots refuse the same values at
+  # start-up. Neither layer is redundant — this one catches the reviewed,
+  # committed mistake, and that one catches the unreviewed live edit.
+  validation {
+    condition = !contains([
+      "supervised_live",
+      "limited_autonomous_live",
+      "autonomous_live",
+    ], var.autonomy_ceiling)
+    error_message = <<-EOT
+      This platform is paper-trading only, and the autonomy ceiling names a
+      level at which orders reach a real venue. No environment may be applied
+      with it. Lower the ceiling to paper_trading, advisory or observation.
+    EOT
   }
 }
 

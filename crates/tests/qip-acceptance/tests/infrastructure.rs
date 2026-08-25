@@ -360,6 +360,81 @@ fn the_autonomy_ceiling_variable_accepts_only_the_declared_levels() {
     }
 }
 
+#[test]
+fn no_environment_can_be_applied_at_a_ceiling_that_reaches_a_real_venue() {
+    // `every_environment_ships_with_a_paper_trading_ceiling` asserts what the
+    // four committed files say today. This asserts what the *fifth* one, and
+    // any edit to the four, will be allowed to say — which is the part that
+    // survives somebody adding an environment.
+    //
+    // The refusal lives in Terraform because it is the earliest place a live
+    // value can be stopped: before the apply writes it into the `qip-config`
+    // ConfigMap that every workload reads its ceiling from. It is not the only
+    // place, and is not meant to be — Terraform cannot see a `kubectl edit
+    // configmap`, so the composition roots refuse the same values at start-up.
+    // This layer catches the reviewed, committed mistake; that one catches the
+    // unreviewed live edit.
+    let variables = read("infrastructure/terraform/variables.tf");
+
+    // The premise: there is a `validation` block that names the negation. A
+    // test that only searched for the three level names would pass on the
+    // *other* validation, the one that lists all six as permitted spellings.
+    assert!(
+        variables.contains("condition = !contains(["),
+        "no validation refuses anything; the ceiling variable admits every \
+         level it can spell"
+    );
+
+    // Each live rung named in that refusal. `AutonomyLevel::is_live` is the
+    // authority on which those are, so a seventh level added to the ladder as
+    // live is a level this test starts requiring — rather than one it silently
+    // stops covering, which a hardcoded list of three would do.
+    let live: Vec<_> = qip_risk_engine::autonomy::AutonomyLevel::all()
+        .into_iter()
+        .filter(|level| level.is_live())
+        .collect();
+    assert_eq!(
+        live.len(),
+        3,
+        "the ladder's live rungs changed; this test's premise needs rewriting"
+    );
+    let refusal = variables
+        .split("condition = !contains([")
+        .nth(1)
+        .unwrap_or_default();
+    // Terminated on the argument that closes the call, not on `])`: the list
+    // ends `], var.autonomy_ceiling)`, so a `])` delimiter finds nothing here
+    // and swallows the rest of the file — including the *other* validation,
+    // which names all six levels and would satisfy every assertion below.
+    let refusal = refusal
+        .split("], var.autonomy_ceiling)")
+        .next()
+        .unwrap_or_default();
+    for level in live {
+        // The quoted, comma-terminated token, not the bare name.
+        // `limited_autonomous_live` contains `autonomous_live` as a substring,
+        // so a bare `contains` reports the most permissive rung on the list
+        // when only the middle one is — which is how the first version of this
+        // test passed a mutation that deleted `autonomous_live` outright.
+        let entry = format!("\"{}\",", level.as_str());
+        assert!(
+            refusal.contains(&entry),
+            "{} reaches a real venue and the ceiling variable does not refuse it",
+            level.as_str()
+        );
+    }
+
+    // And the refusal stops at the live rungs. A validation that also refused
+    // `paper_trading` would pass every assertion above and make the platform
+    // unapplyable, which is a different failure and a worse one to debug.
+    for permitted in ["observation", "advisory", "paper_trading"] {
+        assert!(
+            !refusal.contains(&format!("\"{permitted}\",")),
+            "the ceiling variable refuses {permitted}, at which no order reaches a venue"
+        );
+    }
+}
+
 // --- Kubernetes -------------------------------------------------------------
 
 #[test]
