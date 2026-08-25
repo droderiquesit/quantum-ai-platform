@@ -49,7 +49,7 @@ itself into a deployment it has not earned.
 
 ## API Surface
 
-### HTTP Routes (31 endpoints)
+### HTTP Routes (36 endpoints)
 **Prefix:** `/api/v1`
 
 | Endpoint | Methods |

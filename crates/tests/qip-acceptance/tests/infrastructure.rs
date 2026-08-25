@@ -435,6 +435,74 @@ fn no_environment_can_be_applied_at_a_ceiling_that_reaches_a_real_venue() {
     }
 }
 
+#[test]
+fn every_attestation_command_the_pipeline_runs_has_a_grant_that_permits_it() {
+    // Three permission failures in a row taught the shape of this bug: a role
+    // named for the neighbouring half of the same product. `cloudkms.admin`
+    // manages keys and excludes the crypto operations. `binaryauthorization.
+    // policyAdmin` governs the policy and not the attestor resource. And
+    // `containeranalysis.notes.attacher` grants `attachOccurrence` but not
+    // `listOccurrences` — a verb apart on the same note, which cost a run that
+    // had already built and pushed four images before it asked.
+    //
+    // Each of those was found by a real apply rather than by reading, so this
+    // test works the other way round: from the gcloud commands the pipeline
+    // actually runs to the grant that permits each one. A command added to the
+    // workflow without its grant fails here rather than in a deployment.
+    let workflow = read(".github/workflows/deploy.yml");
+    let binauthz = read("infrastructure/terraform/modules/binaryauthorization/main.tf");
+
+    // The premise: the workflow really does run these, so the mapping below is
+    // about live commands rather than ones that were removed years ago.
+    for command in [
+        "gcloud container binauthz attestations list",
+        "gcloud container binauthz attestations sign-and-create",
+    ] {
+        assert!(
+            workflow.contains(command),
+            "the workflow no longer runs `{command}`; this test's premise needs rewriting"
+        );
+    }
+
+    // What each command asks of Google, and the role that answers it. Every
+    // one of these is a grant to the CI account — the identity the pipeline
+    // authenticates as — not to the infrastructure account, which never runs
+    // the images job.
+    for (need, role) in [
+        // `attestations list` filters a note's occurrences by artifact url.
+        (
+            "list the occurrences already on the note",
+            "roles/containeranalysis.notes.occurrences.viewer",
+        ),
+        // `sign-and-create` writes one, which is two acts: attach to the note,
+        // and create the occurrence the note points at.
+        (
+            "attach an occurrence to the note",
+            "roles/containeranalysis.notes.attacher",
+        ),
+        (
+            "create the occurrence",
+            "roles/containeranalysis.occurrences.editor",
+        ),
+        // It reads the attestor before signing for it,
+        (
+            "read the attestor being signed for",
+            "roles/binaryauthorization.attestorsViewer",
+        ),
+        // and signs with the KMS key version the attestor names.
+        ("sign with the attestor key", "roles/cloudkms.signerVerifier"),
+    ] {
+        let granted = binauthz
+            .split("resource \"")
+            .any(|block| block.contains(role) && block.contains("var.ci_service_account"));
+        assert!(
+            granted,
+            "nothing grants the pipeline account the role that lets it {need} \
+             ({role}); the images job will build and push before it discovers this"
+        );
+    }
+}
+
 // --- Kubernetes -------------------------------------------------------------
 
 #[test]

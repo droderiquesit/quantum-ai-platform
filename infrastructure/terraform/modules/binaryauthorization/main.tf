@@ -138,6 +138,27 @@ resource "google_container_analysis_note_iam_member" "ci_attaches" {
   member  = "serviceAccount:${var.ci_service_account}"
 }
 
+# List the occurrences already attached to this note, and only this note.
+#
+# `attestations list` is the pipeline's idempotency check: `sign-and-create`
+# refuses to write an attestation that already exists, and re-running a deploy
+# for an unchanged commit is a normal thing to do, so the step asks first. That
+# question is `containeranalysis.notes.listOccurrences`, which no role above
+# grants — `notes.attacher` grants `attachOccurrence`, a neighbouring verb on
+# the same resource, and the first real attestation run died on the difference
+# after the images had already been built and pushed.
+#
+# `notes.occurrences.viewer` carries that one permission and nothing else,
+# which is why it is here rather than `notes.viewer`: the pipeline needs to
+# know whether it has already signed these bytes, not to read the note.
+
+resource "google_container_analysis_note_iam_member" "ci_lists_occurrences" {
+  project = var.project_id
+  note    = google_container_analysis_note.attestation.name
+  role    = "roles/containeranalysis.notes.occurrences.viewer"
+  member  = "serviceAccount:${var.ci_service_account}"
+}
+
 # Create the occurrence itself. Occurrences are project-scoped, so this grant
 # cannot be narrowed to the note the way the one above is.
 #
