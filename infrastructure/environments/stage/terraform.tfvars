@@ -105,3 +105,7 @@ enable_security_command_center = false
 # could be running, and the consequence of getting it wrong is that their
 # pipeline pushes images and applies manifests here.
 github_repository = "droderiquesit/quantum-ai-platform"
+
+# Off, so infra.yml's `down` can actually destroy this cluster between test
+# sessions — see the same line in dev/terraform.tfvars.
+cluster_deletion_protection = false

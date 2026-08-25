@@ -90,6 +90,14 @@ github_repository = "droderiquesit/quantum-ai-platform"
 node_disk_type    = "pd-standard"
 node_disk_size_gb = 50
 
+# Off, so infra.yml's `down` can actually destroy this cluster between test
+# sessions and, separately, so a cluster left `tainted` by a failed create
+# (quota, a bad config) can be destroyed and recreated rather than stuck
+# forever. The provider default is true and refuses both with the same
+# message a deliberate teardown gets. Nothing here trades, so there is no
+# live book this protects.
+cluster_deletion_protection = false
+
 # Flip to true and re-apply after the first deployment is running: the four
 # workload alert policies name Prometheus metrics, and Cloud Monitoring
 # refuses a policy for a metric it has never ingested. While this is false

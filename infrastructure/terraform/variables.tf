@@ -656,6 +656,17 @@ variable "node_disk_size_gb" {
   default     = 100
 }
 
+variable "cluster_deletion_protection" {
+  description = <<-EOT
+    Whether the cluster may be destroyed at all — see modules/cluster. True
+    by default; set false in any environment `infra.yml down` tears down
+    between sessions, or the teardown, and any recovery from a tainted
+    cluster, is refused by the provider rather than by this configuration.
+  EOT
+  type        = bool
+  default     = true
+}
+
 variable "workload_metrics_exist" {
   description = <<-EOT
     Whether this project has ever ingested the platform's own Prometheus

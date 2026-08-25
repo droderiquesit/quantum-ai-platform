@@ -214,3 +214,18 @@ variable "node_disk_size_gb" {
     error_message = "The node disk size must be between 20 and 500 GB."
   }
 }
+
+variable "cluster_deletion_protection" {
+  description = <<-EOT
+    Whether Terraform (and the console) may destroy this cluster at all,
+    independent of and in addition to Terraform's own `prevent_destroy`.
+
+    True by default — deleting a cluster that could hold a live book should
+    take deliberate effort. Set false in any environment `infra.yml down` is
+    meant to tear down between sessions, or the teardown fails with the same
+    refusal a stuck, tainted cluster does: "Cannot destroy cluster because
+    deletion_protection is set to true."
+  EOT
+  type        = bool
+  default     = true
+}

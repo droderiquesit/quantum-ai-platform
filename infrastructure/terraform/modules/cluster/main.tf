@@ -244,8 +244,17 @@ resource "google_container_cluster" "primary" {
     }
   }
 
-  # Deleting a cluster that holds a live book should take deliberate effort.
-  deletion_protection = true
+  # Deleting a cluster that holds a live book should take deliberate effort —
+  # in an environment where a live book is the point. Everywhere else it is
+  # the opposite failure: `infra.yml down` exists specifically to destroy this
+  # resource between test sessions, to stop the meter, and the true-by-default
+  # provider setting silently defeated it. The first real teardown attempt
+  # found this the hard way — not on `down`, but earlier: a cluster half-built
+  # by a quota failure was left `tainted`, Terraform's correct next move is
+  # destroy-and-recreate, and this setting refused that too, with the same
+  # message a deliberate `down` would have hit. A tainted cluster nobody can
+  # destroy is a stuck deployment forever.
+  deletion_protection = var.cluster_deletion_protection
 
   resource_labels = var.labels
 }

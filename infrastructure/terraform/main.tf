@@ -193,6 +193,8 @@ module "cluster" {
   node_disk_type    = var.node_disk_type
   node_disk_size_gb = var.node_disk_size_gb
 
+  cluster_deletion_protection = var.cluster_deletion_protection
+
   # Where an operator may reach the control plane from. Never the whole
   # internet: a private cluster with a public control plane is a private
   # cluster in name only.

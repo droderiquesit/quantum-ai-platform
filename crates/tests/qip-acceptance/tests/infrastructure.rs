@@ -125,8 +125,26 @@ fn the_node_pool_does_not_use_the_default_service_account() {
 
 #[test]
 fn a_cluster_holding_a_book_cannot_be_deleted_by_accident() {
+    // Was a hardcoded `true`. It is a variable now — `infra.yml down` and the
+    // recovery from a tainted cluster both need to turn it off in the
+    // environments that need it off — so the safety property this test pins
+    // moved from "the module always says true" to "the module wires the
+    // field to the variable, and the variable defaults to true". Either
+    // check would pass with the field simply deleted, which is why both are
+    // asserted rather than one implying the other.
     let cluster = read("infrastructure/terraform/modules/cluster/main.tf");
-    assert!(sets(&cluster, "deletion_protection", "true"));
+    assert!(
+        cluster.contains("deletion_protection = var.cluster_deletion_protection"),
+        "the cluster no longer wires deletion_protection to the variable"
+    );
+
+    let variables = read("infrastructure/terraform/modules/cluster/variables.tf");
+    let declaration = block_under(&variables, "variable \"cluster_deletion_protection\" {");
+    assert!(
+        sets(&declaration, "default", "true"),
+        "cluster_deletion_protection no longer defaults to true, so a new \
+         environment's tfvars silently inherits a cluster nothing protects"
+    );
 }
 
 #[test]
@@ -238,6 +256,40 @@ fn no_environment_authorises_the_whole_internet() {
             "{environment} authorises the whole internet"
         );
     }
+}
+
+#[test]
+fn only_prod_lets_the_provider_refuse_to_destroy_its_cluster() {
+    // `deletion_protection` is a GKE provider setting, separate from and in
+    // addition to Terraform's own `prevent_destroy` — the module default is
+    // true, and it refuses a destroy with the same message whether the
+    // destroy is `infra.yml down` tearing a dev cluster down on purpose, or
+    // Terraform replacing a cluster a failed create left `tainted`. The first
+    // real teardown attempt hit the second case: a cluster nobody could
+    // recover from, in an environment with no live book to protect.
+    //
+    // dev, test and stage — every environment `infra.yml` will ever run
+    // `down` against — turn it off. prod does not: `infra.yml` already
+    // refuses prod outright, so this is defence in depth, not the only
+    // thing standing between an agent and a production cluster.
+    for environment in ["dev", "test", "stage"] {
+        let tfvars = without_comments(&read(&format!(
+            "infrastructure/environments/{environment}/terraform.tfvars"
+        )));
+        assert!(
+            tfvars.contains("cluster_deletion_protection = false"),
+            "{environment} leaves deletion_protection at its true default, so \
+             infra.yml's own down action — and recovery from a tainted \
+             cluster — would be refused by the provider"
+        );
+    }
+
+    let prod_tfvars = without_comments(&read("infrastructure/environments/prod/terraform.tfvars"));
+    assert!(
+        !prod_tfvars.contains("cluster_deletion_protection"),
+        "prod overrides deletion_protection; it should inherit the module's \
+         true default rather than a line that could be edited to false"
+    );
 }
 
 #[test]
