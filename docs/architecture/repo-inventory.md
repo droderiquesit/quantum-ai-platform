@@ -37,7 +37,15 @@ crates/apps/qip-deepbrain/src/health.rs:460
 - **TODO/FIXME/PLACEHOLDER:** 0 instances
 - **MOCK/STUB/demo:** 0 instances
 
-**Verdict:** Production-ready codebase with no test placeholders or incomplete implementations.
+**What that measures, and what it does not.** No `todo!()`, `unimplemented!()`,
+`TODO`, `FIXME`, `PLACEHOLDER`, `MOCK` or `STUB` appears anywhere outside test
+code, so no function in this workspace is a stub waiting to be written. That is
+a claim about completeness of implementation and nothing more. It says nothing
+about whether the platform has run against a live venue, sustained load, or
+survived a real outage — none of which it has yet been asked to do. A count of
+absent markers is the weakest evidence a codebase can offer about its own
+readiness, and reporting it as a readiness verdict is how a repository talks
+itself into a deployment it has not earned.
 
 ## API Surface
 
@@ -108,7 +116,7 @@ crates/apps/qip-deepbrain/src/health.rs:460
   - Full integration with IBM's `ibm_quantum_platform` channel
 
 ### Local Fallback
-- **Steepest-descent local search** (qip-numerics): Production solver when IBM unavailable
+- **Steepest-descent local search** (qip-numerics): the in-process solver used whenever IBM is unavailable, so an unreachable vendor degrades the answer rather than losing it
 - Both report unavailable state; IBM is primary, local is fallback
 
 ## Test Inventory
