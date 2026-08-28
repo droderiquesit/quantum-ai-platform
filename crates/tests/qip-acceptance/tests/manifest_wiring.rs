@@ -1136,3 +1136,94 @@ fn the_runbooks_own_substitution_leaves_every_variable_name_intact() {
         );
     }
 }
+
+#[test]
+fn every_metric_an_alert_policy_queries_is_one_the_platform_emits() {
+    // The alerting layer and the platform had no name in common.
+    //
+    // The four Cloud Monitoring policies query `qip_kill_switch_tripped`,
+    // `qip_live_fills_total`, `qip_limit_breaches` and
+    // `qip_permission_denials_total`. Before the kernel emitted anything,
+    // those four strings appeared in **zero** Rust files. So the layer was not
+    // merely gated off by `workload_metrics_exist = false` — it was
+    // unreachable by construction: no amount of emitting would have produced a
+    // descriptor any of those policies could match, and the flag could never
+    // honestly have been opened.
+    //
+    // Two independent artefacts naming the same fact will disagree, and the
+    // louder one will be wrong. This is the test that makes them agree.
+    let policies = read("infrastructure/terraform/modules/observability/main.tf");
+
+    let queried: BTreeSet<String> = policies
+        .match_indices("qip_")
+        .map(|(index, _)| {
+            policies[index..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect::<String>()
+        })
+        .collect();
+
+    // The premise. A regex that matched nothing would make every assertion
+    // below vacuous, and this file has already seen a parser read an empty set
+    // and report no violation in it.
+    assert!(
+        queried.len() >= 4,
+        "only {} metric name(s) were read out of the alert policies; the scan \
+         is not reaching them",
+        queried.len()
+    );
+
+    let emitted = read("crates/libs/qip-observability/src/metrics.rs");
+    for metric in &queried {
+        assert!(
+            emitted.contains(&format!("\"{metric}\"")),
+            "an alert policy queries {metric} and no metric declares that \
+             name. Cloud Monitoring refuses a policy naming a descriptor it \
+             has never ingested, so this policy cannot be created — and if it \
+             could, it would watch a series nothing produces."
+        );
+    }
+}
+
+#[test]
+fn something_collects_the_metrics_the_alert_policies_depend_on() {
+    // Emitting is not ingesting. The kernel records, the health servers serve
+    // a valid exposition, and the policies name the right series — and none of
+    // that reaches Cloud Monitoring unless something scrapes the pods. That
+    // last link was missing while the first three looked complete, which is
+    // exactly the shape of gap that survives review.
+    let monitoring = read("infrastructure/kubernetes/base/monitoring.yaml");
+    assert!(
+        monitoring.contains("kind: PodMonitoring"),
+        "nothing declares a collector, so the endpoints are scraped by no one"
+    );
+
+    // Each scraped workload must actually be one that runs the cycle, and must
+    // be selected by a label its own Deployment sets. A selector naming a
+    // label nothing carries scrapes zero pods and reports no error.
+    let mut scraped = 0usize;
+    for workload in ["qip-fastbrain", "qip-deepbrain"] {
+        assert!(
+            monitoring.contains(&format!("app: {workload}")),
+            "{workload} runs the cycle and nothing scrapes it"
+        );
+        let manifest = read(&format!(
+            "infrastructure/kubernetes/base/{}.yaml",
+            workload.trim_start_matches("qip-")
+        ));
+        assert!(
+            manifest.contains(&format!("app: {workload}")),
+            "the collector selects app={workload} and that workload's manifest \
+             sets no such label, so it scrapes nothing"
+        );
+        scraped += 1;
+    }
+    assert_eq!(scraped, 2, "the premise failed: no workload was checked");
+
+    // And the path is the one the health server actually answers on.
+    assert!(
+        monitoring.contains("path: /metrics"),
+        "the collector scrapes a path the health server does not serve"
+    );
+}
