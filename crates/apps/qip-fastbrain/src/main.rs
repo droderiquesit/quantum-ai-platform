@@ -92,6 +92,7 @@ fn run() -> Result<()> {
         .map_err(|error| Error::io(format!("the health listener has no address: {error}")))?;
 
     let mut feed = Feed::open(
+        config.live_feed.as_ref(),
         config.replay_path.as_deref(),
         config.seed,
         config.cycle_interval,

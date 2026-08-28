@@ -75,10 +75,52 @@ pub struct FastBrainConfig {
     pub storage: StorageSettings,
     /// A recorded JSONL feed to replay instead of the synthetic exchange.
     pub replay_path: Option<String>,
+    /// A licensed vendor to poll instead of either. `None` is the shipped
+    /// state and the only state any environment in this repository configures.
+    pub live_feed: Option<LiveFeedSettings>,
     /// The synthetic exchange's seed, so a session is reproducible.
     pub seed: u64,
     /// How long the shutdown flush may take before the node gives up on it.
     pub shutdown_budget: Duration,
+}
+
+/// What a live market-data vendor needs before this node will open one.
+///
+/// Every field is required and none has a default. That is the whole design:
+/// a partially configured live feed is the one failure mode worth refusing
+/// outright, because the alternative is a node that starts, reports itself
+/// healthy, silently falls back to a synthetic tape, and produces investment
+/// decisions from generated prices while an operator reads a dashboard that
+/// says the feed is live.
+///
+/// **No vendor is configured anywhere in this repository, deliberately.**
+/// `infrastructure/kubernetes/base/egress.yaml` declines to allowlist a
+/// market-data host for the same reason this struct has no default: there is
+/// no vendor in the workspace to derive one from, and inventing a hostname
+/// nobody holds a licence for would put it into a security control. Choosing
+/// the vendor, licensing its data and holding its credential are decisions
+/// this code cannot make. What it can do is make them configuration rather
+/// than engineering, which is what this is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiveFeedSettings {
+    /// `http://host[:port]` of the **egress proxy**, never of the vendor.
+    /// `qip_transport::http` speaks plaintext HTTP/1.1 and has no TLS stack,
+    /// so an address pointing straight at a vendor would send the credential
+    /// below across the internet in clear text.
+    pub base_url: String,
+    /// Path of the vendor's market-data endpoint under `base_url`.
+    pub path: String,
+    /// The vendor's symbols, in the vendor's own spelling.
+    pub symbols: Vec<String>,
+    /// Venue code stamped on every record from this feed.
+    pub venue: String,
+    /// The credential, already resolved. Read through `qip_core::secret`, so a
+    /// deployment may supply it in a file rather than in the environment — a
+    /// key in the environment is a key in `/proc/<pid>/environ`, every child
+    /// process, and every crash dump.
+    pub api_key: String,
+    /// Header the credential travels in, since vendors disagree.
+    pub api_key_header: String,
 }
 
 impl Default for FastBrainConfig {
@@ -93,6 +135,7 @@ impl Default for FastBrainConfig {
             archive_every: DEFAULT_ARCHIVE_EVERY,
             storage: StorageSettings::in_memory(),
             replay_path: None,
+            live_feed: None,
             seed: 20_260_822,
             shutdown_budget: DEFAULT_SHUTDOWN_BUDGET,
         }
@@ -178,6 +221,7 @@ impl FastBrainConfig {
             )
             .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?,
             replay_path: text(vars, "QIP_FASTBRAIN_REPLAY_PATH"),
+            live_feed: live_feed(vars)?,
             seed: number(vars, "QIP_FASTBRAIN_SEED")?.unwrap_or(defaults.seed),
             shutdown_budget,
         })
@@ -191,6 +235,97 @@ impl FastBrainConfig {
     pub fn run_is_bounded(&self) -> bool {
         self.max_cycles.is_some() || self.max_runtime.is_some()
     }
+}
+
+/// Resolve a live vendor, or refuse a half-configured one.
+///
+/// Absent is `None` — no vendor is configured in any environment here, and
+/// that is the shipped state. **Partially present is an error**, not a
+/// fallback, and that asymmetry is the entire point of this function.
+///
+/// A node that fell back to the synthetic exchange because one of six
+/// variables was missing would start, report itself healthy, and produce
+/// investment decisions from generated prices while its dashboard said the
+/// feed was live. Silence is the failure that costs the most here, because
+/// nothing downstream can tell a synthetic tape from a licensed one once the
+/// records look the same. `is_production_grade` comes off the adapter's own
+/// descriptor for the same reason.
+///
+/// The credential is read through `qip_core::secret`, which accepts the
+/// `_FILE` indirection the Secret Manager CSI driver projects, so a deployment
+/// never has to put a key in the environment.
+fn live_feed(vars: &BTreeMap<String, String>) -> Result<Option<LiveFeedSettings>> {
+    const BASE_URL: &str = "QIP_MARKET_DATA_BASE_URL";
+    const PATH: &str = "QIP_MARKET_DATA_PATH";
+    const SYMBOLS: &str = "QIP_MARKET_DATA_SYMBOLS";
+    const VENUE: &str = "QIP_MARKET_DATA_VENUE";
+    const KEY: &str = "QIP_MARKET_DATA_KEY";
+    const HEADER: &str = "QIP_MARKET_DATA_KEY_HEADER";
+
+    let api_key = qip_core::secret::resolve_from(
+        KEY,
+        text(vars, KEY),
+        text(vars, &format!("{KEY}{}", qip_core::secret::FILE_SUFFIX)),
+    )?;
+
+    let present: Vec<&str> = [BASE_URL, PATH, SYMBOLS, VENUE, HEADER]
+        .into_iter()
+        .filter(|name| text(vars, name).is_some())
+        .chain(api_key.as_ref().map(|_| KEY))
+        .collect();
+    if present.is_empty() {
+        return Ok(None);
+    }
+
+    let require = |name: &str| -> Result<String> {
+        text(vars, name).ok_or_else(|| {
+            Error::invalid(format!(
+                "a live market-data feed is partly configured — {} — and {name} is missing. A \
+                 half-configured feed is refused rather than quietly replaced by the synthetic \
+                 exchange, because a node trading generated prices while reporting a live feed \
+                 is the failure nothing downstream can detect. Set every variable, or none.",
+                present.join(", ")
+            ))
+        })
+    };
+
+    let base_url = require(BASE_URL)?;
+    // The transport has no TLS stack, so `https` is refused at construction
+    // anyway; saying so here names the deployment mistake instead of surfacing
+    // it as a connection error at the first poll.
+    if base_url.starts_with("https://") {
+        return Err(Error::invalid(format!(
+            "{BASE_URL} is {base_url}. `qip_transport::http` speaks plaintext HTTP/1.1 and has \
+             no TLS stack: point this at the in-cluster egress proxy, which terminates TLS to \
+             the vendor, never at the vendor itself"
+        )));
+    }
+
+    let symbols: Vec<String> = require(SYMBOLS)?
+        .split(',')
+        .map(|symbol| symbol.trim().to_string())
+        .filter(|symbol| !symbol.is_empty())
+        .collect();
+    if symbols.is_empty() {
+        return Err(Error::invalid(format!(
+            "{SYMBOLS} names no symbol this node could ask for"
+        )));
+    }
+
+    Ok(Some(LiveFeedSettings {
+        base_url,
+        path: require(PATH)?,
+        symbols,
+        venue: require(VENUE)?,
+        api_key: api_key.ok_or_else(|| {
+            Error::invalid(format!(
+                "a live market-data feed is configured and no credential was resolved. Set {KEY}, \
+                 or {KEY}{} to the path the Secret Manager CSI driver projects it to.",
+                qip_core::secret::FILE_SUFFIX
+            ))
+        })?,
+        api_key_header: require(HEADER)?,
+    }))
 }
 
 /// A non-empty value, trimmed. Empty is treated as unset: a variable set to the
@@ -328,5 +463,113 @@ mod tests {
             .expect("a time bound is valid");
         assert_eq!(by_time.max_runtime, Some(Duration::from_secs(30)));
         assert!(by_time.run_is_bounded());
+    }
+}
+
+#[cfg(test)]
+mod live_feed_tests {
+    use super::*;
+
+    fn full() -> Vec<(&'static str, &'static str)> {
+        vec![
+            (
+                "QIP_MARKET_DATA_BASE_URL",
+                "http://qip-egress.qip.svc.cluster.local:9105",
+            ),
+            ("QIP_MARKET_DATA_PATH", "/v1/quotes"),
+            ("QIP_MARKET_DATA_SYMBOLS", "AAPL,MSFT"),
+            ("QIP_MARKET_DATA_VENUE", "XNAS"),
+            ("QIP_MARKET_DATA_KEY", "not-a-key"),
+            ("QIP_MARKET_DATA_KEY_HEADER", "x-api-key"),
+        ]
+    }
+
+    fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn no_live_vendor_is_configured_and_that_is_not_an_error() {
+        // The shipped state, and the state every environment in this
+        // repository is in. A node with no vendor runs the synthetic exchange
+        // and says so at start-up; it does not refuse to start.
+        let config = FastBrainConfig::parse(&BTreeMap::new()).expect("an empty environment parses");
+        assert!(config.live_feed.is_none());
+    }
+
+    #[test]
+    fn a_fully_configured_vendor_is_accepted_with_every_field_carried_through() {
+        // The premise for every refusal test below: the complete set is
+        // genuinely accepted. A resolver that refused everything would pass
+        // all the negative cases and be useless.
+        let config = FastBrainConfig::parse(&map(&full())).expect("a complete vendor parses");
+        let live = config.live_feed.expect("the vendor was resolved");
+        assert_eq!(live.symbols, vec!["AAPL".to_string(), "MSFT".to_string()]);
+        assert_eq!(live.venue, "XNAS");
+        assert_eq!(live.api_key_header, "x-api-key");
+        assert!(live.base_url.starts_with("http://"));
+    }
+
+    #[test]
+    fn a_half_configured_vendor_is_refused_rather_than_silently_replaced() {
+        // The failure this resolver exists to prevent, checked one missing
+        // variable at a time. A node that fell back to the synthetic exchange
+        // because one of six variables was absent would start, report itself
+        // healthy, and produce investment decisions from generated prices
+        // while its dashboard said the feed was live — and nothing downstream
+        // can tell the two tapes apart once the records look the same.
+        for omitted in [
+            "QIP_MARKET_DATA_BASE_URL",
+            "QIP_MARKET_DATA_PATH",
+            "QIP_MARKET_DATA_SYMBOLS",
+            "QIP_MARKET_DATA_VENUE",
+            "QIP_MARKET_DATA_KEY",
+            "QIP_MARKET_DATA_KEY_HEADER",
+        ] {
+            let partial: Vec<(&str, &str)> = full()
+                .into_iter()
+                .filter(|(name, _)| *name != omitted)
+                .collect();
+            // Premise: five of the six are still present, so this is a
+            // half-configured vendor and not an unconfigured one.
+            assert_eq!(partial.len(), 5, "the fixture stopped being partial");
+
+            let error = FastBrainConfig::parse(&map(&partial))
+                .expect_err(&format!("omitting {omitted} was accepted"));
+            assert!(
+                error.message().contains(omitted)
+                    || error.message().contains("credential was resolved"),
+                "omitting {omitted} produced a message that does not name it: {}",
+                error.message()
+            );
+        }
+    }
+
+    #[test]
+    fn a_vendor_address_over_tls_is_refused_by_name() {
+        // `qip_transport::http` has no TLS stack, so `https` fails at
+        // construction anyway. Refusing it here names the deployment mistake
+        // — the address should be the in-cluster egress proxy, which
+        // terminates TLS to the vendor — instead of surfacing it as a
+        // connection error at the first poll, hours later.
+        let mut pairs = full();
+        pairs[0].1 = "https://vendor.example.com";
+        let error = FastBrainConfig::parse(&map(&pairs)).expect_err("https was accepted");
+        assert!(
+            error.message().contains("egress proxy"),
+            "the refusal does not point at the proxy: {}",
+            error.message()
+        );
+    }
+
+    #[test]
+    fn a_vendor_naming_no_symbol_is_refused() {
+        let mut pairs = full();
+        pairs[2].1 = " , ,";
+        let error = FastBrainConfig::parse(&map(&pairs)).expect_err("an empty symbol list parsed");
+        assert!(error.message().contains("names no symbol"));
     }
 }

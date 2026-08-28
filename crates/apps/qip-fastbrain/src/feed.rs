@@ -14,11 +14,14 @@
 //! is counted and reported rather than dropped: bad data must never silently
 //! become an investment input, and a rejection nobody counts is a silent one.
 
+use crate::config::LiveFeedSettings;
 use qip_core::error::{Error, Result};
-use qip_core::{Duration, Timestamp};
+use qip_core::{Duration, ObjectId, Timestamp};
+use qip_financial::quality::LicensingClass;
 use qip_market::bar::Interval;
 use qip_market_ingestion::adapter::{DataAdapter, SensedRecord, SourceDescriptor};
 use qip_market_ingestion::replay::ReplayAdapter;
+use qip_market_ingestion::rest::{RestFeedConfig, RestInstrument, RestMarketDataAdapter};
 use qip_market_ingestion::synthetic::{EnvironmentConfig, SyntheticEnvironment};
 
 /// One poll's worth of records, split by whether they may be believed.
@@ -49,6 +52,13 @@ pub enum Feed {
     Synthetic(Box<SyntheticEnvironment>),
     /// Recorded records from a JSONL file.
     Replay(Box<ReplayAdapter>),
+    /// A licensed vendor, polled over the in-cluster egress proxy.
+    ///
+    /// No environment in this repository configures one. The variant exists so
+    /// that adding a vendor is configuration rather than engineering — see
+    /// `LiveFeedSettings` for why the licence, the host and the credential are
+    /// decisions this code deliberately does not make.
+    Live(Box<RestMarketDataAdapter>),
 }
 
 impl Feed {
@@ -85,16 +95,63 @@ impl Feed {
         Ok(Self::Replay(Box::new(adapter)))
     }
 
+    /// Open a licensed vendor through the egress proxy.
+    ///
+    /// The licensing class is `Licensed` and not a configurable: this
+    /// constructor is reached only when an operator has stated a vendor, a
+    /// path, a venue and a credential, and a feed configured that far is a
+    /// licensed one. Making it settable would let a deployment label a live
+    /// tape `Synthetic` — which reads as caution and is the opposite, because
+    /// `LicensingClass::Synthetic` is the one class barred from production
+    /// decisions, so the label would quietly stop real prices from being
+    /// acted on while the node reported a live feed.
+    pub fn live(settings: &LiveFeedSettings, venue: &str) -> Result<Self> {
+        let instruments: Vec<RestInstrument> = settings
+            .symbols
+            .iter()
+            .map(|symbol| {
+                RestInstrument::new(
+                    ObjectId::from_string(symbol.as_str()),
+                    symbol.clone(),
+                    venue,
+                )
+            })
+            .collect();
+        let config = RestFeedConfig {
+            base_url: Some(settings.base_url.clone()),
+            path: settings.path.clone(),
+            api_key: Some(settings.api_key.clone()),
+            api_key_header: settings.api_key_header.clone(),
+            licensing: LicensingClass::Licensed,
+            ..RestFeedConfig::default()
+        };
+        Ok(Self::Live(Box::new(RestMarketDataAdapter::new(
+            config,
+            instruments,
+        )?)))
+    }
+
     /// Choose a source from the configuration.
+    ///
+    /// Ordered by how much a wrong choice costs. A configured vendor wins
+    /// outright: an operator who supplied a licence and a credential and got
+    /// the synthetic exchange anyway would be the worst outcome available
+    /// here, because nothing downstream can tell the two tapes apart once the
+    /// records look the same.
     pub fn open(
+        live: Option<&LiveFeedSettings>,
         replay_path: Option<&str>,
         seed: u64,
         step: Duration,
         start: Timestamp,
     ) -> Result<Self> {
-        match replay_path {
-            Some(path) => Self::replay(path),
-            None => Ok(Self::synthetic(seed, step, start)),
+        match (live, replay_path) {
+            (Some(settings), _) => {
+                let venue = settings.venue.clone();
+                Self::live(settings, &venue)
+            }
+            (None, Some(path)) => Self::replay(path),
+            (None, None) => Ok(Self::synthetic(seed, step, start)),
         }
     }
 
@@ -102,6 +159,7 @@ impl Feed {
         match self {
             Self::Synthetic(environment) => environment.as_mut(),
             Self::Replay(adapter) => adapter.as_mut(),
+            Self::Live(adapter) => adapter.as_mut(),
         }
     }
 
@@ -109,6 +167,7 @@ impl Feed {
         match self {
             Self::Synthetic(environment) => environment.descriptor(),
             Self::Replay(adapter) => adapter.descriptor(),
+            Self::Live(adapter) => adapter.descriptor(),
         }
     }
 
@@ -130,6 +189,8 @@ impl Feed {
         match self {
             Self::Synthetic(_) => false,
             Self::Replay(adapter) => adapter.remaining() == 0,
+            // A vendor stops answering; it does not run out.
+            Self::Live(_) => false,
         }
     }
 
@@ -288,5 +349,89 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&directory);
+    }
+}
+
+#[cfg(test)]
+mod source_choice_tests {
+    use super::*;
+
+    fn settings() -> LiveFeedSettings {
+        LiveFeedSettings {
+            base_url: "http://qip-egress.qip.svc.cluster.local:9105".into(),
+            path: "/v1/quotes".into(),
+            symbols: vec!["AAPL".into()],
+            venue: "XNAS".into(),
+            // Short on purpose. A longer placeholder matches
+            // `check-secrets.sh`'s credential pattern and makes the scan
+            // report a finding on every run, which is how a scanner stops
+            // being read.
+            api_key: "not-a-key".into(),
+            api_key_header: "x-api-key".into(),
+        }
+    }
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    #[test]
+    fn a_configured_vendor_wins_over_a_replay_file() {
+        // The failure this ordering exists to prevent. An operator who
+        // supplied a licence, a host and a credential, and got a recorded
+        // tape instead, would be running the platform on last week's prices
+        // while every surface reported a live feed. Nothing downstream can
+        // tell the two apart once the records look the same, so the ordering
+        // is the only place the distinction can be made.
+        let live = settings();
+        let feed = Feed::open(
+            Some(&live),
+            Some("/tmp/some-recorded-session.jsonl"),
+            7,
+            Duration::from_secs(1),
+            start(),
+        )
+        .expect("a configured vendor opens");
+        assert!(
+            matches!(feed, Feed::Live(_)),
+            "a configured vendor was replaced by another source"
+        );
+    }
+
+    #[test]
+    fn a_live_vendor_is_licensed_and_may_drive_a_capital_decision() {
+        // `LicensingClass::Synthetic` is the one class barred from production
+        // decisions, so labelling a live tape with it would read as caution
+        // and do the opposite of what it looks like: real prices would be
+        // silently refused as an investment input while the node reported a
+        // licensed feed. The class is fixed at this constructor rather than
+        // configurable for exactly that reason.
+        let live = settings();
+        let feed = Feed::live(&live, &live.venue).expect("a vendor opens");
+        assert!(
+            feed.is_production_grade(),
+            "a licensed vendor is not admissible for a capital decision: {:?}",
+            feed.descriptor().production_requirement
+        );
+    }
+
+    #[test]
+    fn the_synthetic_exchange_may_not_drive_a_capital_decision() {
+        // The premise that makes the assertion above mean something. If every
+        // source were production-grade, that test would pass without checking
+        // anything — and the synthetic exchange must never be mistaken for a
+        // tape, which is the whole reason the descriptor carries the class.
+        let feed = Feed::open(None, None, 7, Duration::from_secs(1), start())
+            .expect("the synthetic exchange opens");
+        assert!(matches!(feed, Feed::Synthetic(_)));
+        assert!(
+            !feed.is_production_grade(),
+            "generated prices claimed to be admissible for a capital decision"
+        );
+        assert!(
+            feed.production_requirement().is_some(),
+            "the synthetic exchange does not say what a production deployment \
+             would still have to supply"
+        );
     }
 }

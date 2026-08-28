@@ -69,6 +69,21 @@ pub fn from_environment(variable: &str) -> Result<Option<String>> {
 /// reading the environment concurrently is undefined — is not available to a
 /// test here. A pure function takes the decision out of the part that cannot
 /// be exercised.
+///
+/// Public for the same reason it exists: a composition root that has already
+/// collected its variables into a map — because that is how it makes its own
+/// configuration testable — should resolve a credential through the same rule
+/// as everything else rather than reimplement the `_FILE` indirection beside
+/// it. A second implementation of this rule is a second place for the two
+/// sources to disagree.
+pub fn resolve_from(
+    variable: &str,
+    direct: Option<String>,
+    path: Option<String>,
+) -> Result<Option<String>> {
+    resolve(variable, direct, path)
+}
+
 fn resolve(variable: &str, direct: Option<String>, path: Option<String>) -> Result<Option<String>> {
     let file_variable = format!("{variable}{FILE_SUFFIX}");
     match (direct, path) {
