@@ -141,6 +141,20 @@ impl RiskMonitor {
         self.policy
     }
 
+    /// The limits this monitor enforces.
+    ///
+    /// Exposed so a caller can populate the `RiskState` fields the limits it
+    /// actually holds will read. Two of the limit kinds —
+    /// [`LimitKind::MaxValueAtRisk`] and [`LimitKind::MaxExpectedShortfall`] —
+    /// look their figure up in a map keyed by confidence and record nothing
+    /// when the key is absent, so a caller that guesses which confidences to
+    /// compute produces a limit that silently never evaluates. Reading them
+    /// from here means the key is derived from the same value the limit will
+    /// format, and cannot drift from it.
+    pub fn limits(&self) -> &LimitSet {
+        &self.limits
+    }
+
     pub fn observations(&self) -> &[Observation] {
         &self.observations
     }

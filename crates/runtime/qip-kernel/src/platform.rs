@@ -103,7 +103,7 @@ use qip_prediction::resolution::{
 use qip_quantum::provider::SimulatedProvider;
 use qip_reasoning_engine::engine::{ReasoningEngine, ReasoningOutcome};
 use qip_reasoning_engine::hypothesis::Claim;
-use qip_risk::limits::{LimitSet, RiskState};
+use qip_risk::limits::{LimitKind, LimitSet, RiskState};
 use qip_risk_engine::autonomy::AutonomyController;
 use qip_risk_engine::monitor::RiskMonitor;
 use qip_risk_engine::pretrade::PreTradeChecker;
@@ -280,6 +280,13 @@ pub struct Platform {
     /// a process that runs for a year holds a year of them in memory and
     /// rescans all of them on every cycle.
     proposals: Vec<Proposal>,
+    /// The book's equity, one sample per cycle, oldest first.
+    ///
+    /// The series the value-at-risk and expected-shortfall limits are computed
+    /// from. Realised-only, like everything else the capital tracker holds —
+    /// see `risk_state` for what that excludes and why it is still worth
+    /// having.
+    equity_history: Vec<f64>,
     /// Theses the reason stage approved and the decide stage has not yet
     /// expressed. The audit's first-ranked finding was that this queue did not
     /// exist: `stage_decide` unconditionally constructed the empty proposal,
@@ -296,6 +303,16 @@ pub struct Platform {
 /// Large enough that a cycle can still see what the previous ones decided,
 /// small enough that the working set does not grow with uptime.
 const PROPOSAL_HISTORY: usize = 256;
+
+/// How many cycles of the book's own equity the platform keeps, for the tail
+/// statistics the risk limits read.
+///
+/// Two hundred and fifty-six closes is roughly a trading year at one sample a
+/// cycle, which is enough for a 99% quantile to be estimated from more than a
+/// handful of observations rather than from the single worst one. Bounded like
+/// every other working set here: the event log is the record, and a series
+/// that grew with uptime would make the oldest deployment the slowest.
+const EQUITY_HISTORY: usize = 256;
 
 /// How many price levels per side a book observation sums into the liquidity
 /// topology.
@@ -960,6 +977,7 @@ impl Platform {
             capital: TrackedCapital::new(initial_equity),
             queue: Vec::new(),
             proposals: Vec::new(),
+            equity_history: Vec::new(),
             proposals_made: 0,
         };
         platform.describe_metrics();
@@ -1646,6 +1664,7 @@ impl Platform {
         // rung, and a ledger that never resets would refuse every rung after
         // the first few hours of uptime. The running total is kept separately
         // and is monotone.
+        self.record_equity();
         let charged = self.charge_cycle(&stages);
         for problem in charged {
             if let Some(learn) = stages.last_mut() {
@@ -1753,6 +1772,35 @@ impl Platform {
         let elapsed = at.since(*mark);
         *mark = at;
         stages.push(outcome.with_elapsed(elapsed));
+    }
+
+    /// Record the book's equity for this cycle, bounded.
+    ///
+    /// Sampled once per cycle rather than per fill, so the series is evenly
+    /// spaced in cycles and a quantile over it means "a bad cycle" rather than
+    /// "a bad moment during a busy one". A per-fill series would weight the
+    /// cycles that traded most, which is the opposite of what a tail statistic
+    /// wants.
+    fn record_equity(&mut self) {
+        self.equity_history.push(self.capital.equity().to_f64());
+        if self.equity_history.len() > EQUITY_HISTORY {
+            self.equity_history
+                .drain(..self.equity_history.len() - EQUITY_HISTORY);
+        }
+    }
+
+    /// The book's period returns, from the equity series.
+    ///
+    /// Simple returns between consecutive samples. A step from a non-positive
+    /// equity is skipped rather than divided by: a book that reached zero has
+    /// no meaningful return, and dividing by it would produce an infinity that
+    /// poisons every statistic downstream of it.
+    fn equity_returns(&self) -> Vec<f64> {
+        self.equity_history
+            .windows(2)
+            .filter(|w| w[0] > 0.0)
+            .map(|w| (w[1] - w[0]) / w[0])
+            .collect()
     }
 
     /// Charge the rungs this cycle actually used.
@@ -3370,6 +3418,44 @@ impl Platform {
             net += notional;
             position_notionals.insert(object.clone(), notional.abs());
         }
+        // The tail statistics the limits read. Until these were populated,
+        // `LimitKind::MaxValueAtRisk` and `LimitKind::MaxExpectedShortfall`
+        // both looked their figure up in a map that was always empty, took the
+        // `None` arm, and recorded nothing — so two limits that
+        // `LimitSet::conservative_default` ships by default, and that every
+        // deployment therefore believed it had, could never fire. A control
+        // that cannot fire reads as protection and is not.
+        //
+        // The keys are derived from each configured limit's own confidence,
+        // formatted exactly as the limit will format it. Computing a fixed set
+        // of confidences here instead would put the key on one side of a
+        // rounding boundary and the lookup on the other — `{:.2}` of 0.975 is
+        // one such value, and the default expected-shortfall limit uses it —
+        // and the limit would go on silently never evaluating with no visible
+        // difference from today.
+        let returns = self.equity_returns();
+        let mut value_at_risk = BTreeMap::new();
+        let mut expected_shortfall = BTreeMap::new();
+        if returns.len() >= 2 {
+            for limit in &self.monitor.limits().limits {
+                match limit.kind {
+                    LimitKind::MaxValueAtRisk { confidence, .. } => {
+                        value_at_risk.insert(
+                            format!("{confidence:.2}"),
+                            qip_risk::metrics::historical_var(&returns, confidence),
+                        );
+                    }
+                    LimitKind::MaxExpectedShortfall { confidence, .. } => {
+                        expected_shortfall.insert(
+                            format!("{confidence:.2}"),
+                            qip_risk::metrics::expected_shortfall(&returns, confidence),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         RiskState {
             equity: self.capital.equity(),
             cash: self.capital.cash,
@@ -3377,6 +3463,8 @@ impl Platform {
             net_exposure: net,
             position_notionals,
             drawdown: self.capital.drawdown(),
+            value_at_risk,
+            expected_shortfall,
             ..RiskState::default()
         }
     }
@@ -4347,6 +4435,152 @@ mod decide_tests {
             proposal.len(),
             0,
             "an empty cycle proposed legs from nothing"
+        );
+    }
+
+    #[test]
+    fn the_expected_shortfall_limit_can_actually_fire() {
+        // `.claude/rules/domains/risk-and-execution.md` names this limit as
+        // the template for what not to add: `RiskState::expected_shortfall`
+        // was always empty, so `LimitKind::MaxExpectedShortfall` looked its
+        // figure up, took the `None` arm and recorded nothing. It could not
+        // fire under any book. `LimitSet::conservative_default` ships it, so
+        // every deployment believed it held a control it did not have — and
+        // the same was true of `MaxValueAtRisk`.
+        //
+        // A control that cannot fire reads as protection and is not. This test
+        // exists to prove this one now can.
+        let mut platform = platform();
+
+        // An equity path with a real left tail. Mostly small gains, then a run
+        // of losses far outside them — which is precisely the shape expected
+        // shortfall exists to price and that a volatility number would report
+        // as merely elevated.
+        for equity in [
+            100_000.0, 100_400.0, 100_900.0, 101_200.0, 101_500.0, 101_100.0, 101_600.0, 102_000.0,
+            101_800.0, 102_300.0, 96_000.0, 90_500.0, 84_000.0,
+        ] {
+            platform.equity_history.push(equity);
+        }
+
+        let state = platform.risk_state();
+
+        // The premise, before the conclusion. If the map is empty the
+        // assertion below would be measuring nothing — which is exactly the
+        // state this test was written to end, so it must be checked and not
+        // assumed.
+        let shortfall = state
+            .expected_shortfall
+            .get("0.97")
+            .copied()
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected shortfall was not computed for the confidence the \
+                     default limit names; the map holds {:?}",
+                    state.expected_shortfall.keys().collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            shortfall > 0.0,
+            "a book that lost sixteen percent over three cycles has an expected \
+             shortfall of {shortfall}"
+        );
+
+        // And it is expected shortfall, not value at risk wearing its name.
+        // Both are positive on a book with a tail and both breach the same
+        // bound, so an assertion that the number is large cannot tell them
+        // apart — a mutation swapping one for the other passed until this
+        // check existed.
+        //
+        // The defining relationship separates them: expected shortfall is the
+        // mean loss *beyond* the value-at-risk point, so it is never smaller,
+        // and on a series whose tail is genuinely worse than its threshold it
+        // is strictly larger. That inequality is the whole reason the platform
+        // sizes on this number rather than on VaR.
+        let var_at_same_confidence =
+            qip_risk::metrics::historical_var(&platform.equity_returns(), 0.975);
+        assert!(
+            shortfall > var_at_same_confidence,
+            "expected shortfall ({shortfall}) is not greater than value at risk \
+             ({var_at_same_confidence}) at the same confidence, so the figure \
+             being recorded is not the mean of the tail beyond the threshold"
+        );
+
+        // And the limit reads it and breaches. The default bound is 0.08; the
+        // tail above is far past it.
+        let breached = LimitSet::conservative_default()
+            .check(&state)
+            .breaches
+            .into_iter()
+            .any(|breach| breach.limit_name == "expected-shortfall");
+        assert!(
+            breached,
+            "expected shortfall is {shortfall} against a limit of 0.08 and the \
+             limit did not breach; it is still incapable of firing"
+        );
+    }
+
+    #[test]
+    fn running_a_cycle_records_the_book_equity_the_tail_limits_read() {
+        // The seam between the two halves, and the one a mutation caught as
+        // untested. The other tail-risk tests push equity into the series
+        // directly, so deleting the per-cycle sample broke nothing they could
+        // see — and in a real deployment the series would stay empty, the maps
+        // would stay empty, and both limits would go back to never firing with
+        // no test anywhere objecting.
+        //
+        // A statistic computed from a series nothing appends to is the same
+        // defect as a map nothing populates, one layer down.
+        let mut platform = platform();
+        assert!(
+            platform.equity_history.is_empty(),
+            "the premise failed: the series was not empty before the first cycle"
+        );
+
+        let start = Timestamp::from_secs(1_760_000_100);
+        for step in 0..3 {
+            platform.run_cycle(start.saturating_add(Duration::from_secs(step * 60)));
+        }
+
+        assert_eq!(
+            platform.equity_history.len(),
+            3,
+            "three cycles ran and the equity series holds {} sample(s)",
+            platform.equity_history.len()
+        );
+        assert!(
+            platform.equity_history.iter().all(|equity| *equity > 0.0),
+            "a sample is non-positive, so the return series would divide by it"
+        );
+    }
+
+    #[test]
+    fn a_quiet_book_does_not_breach_the_tail_limits() {
+        // The other half, and the half that makes the first one mean
+        // something. A limit that fires on every book is not a control either
+        // — it is an outage — and a test that only ever asserts a breach
+        // cannot tell the two apart.
+        let mut platform = platform();
+        for step in 0..13 {
+            platform
+                .equity_history
+                .push(100_000.0 + f64::from(step) * 120.0);
+        }
+
+        let state = platform.risk_state();
+        assert!(
+            !state.expected_shortfall.is_empty(),
+            "the premise failed: nothing was computed, so no conclusion about \
+             not breaching is available"
+        );
+        let breaches = LimitSet::conservative_default().check(&state).breaches;
+        assert!(
+            !breaches
+                .iter()
+                .any(|breach| breach.limit_name == "expected-shortfall"
+                    || breach.limit_name == "value-at-risk"),
+            "a book that only gained breached a tail limit: {:?}",
+            breaches.iter().map(|b| &b.limit_name).collect::<Vec<_>>()
         );
     }
 
