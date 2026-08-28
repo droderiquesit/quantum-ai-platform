@@ -30,6 +30,7 @@ qip-api.workspace = true
 # The risk limits the platform is assembled with. Held here rather than
 # defaulted inside the kernel so the node states the limits it runs under.
 qip-risk.workspace = true
+qip-risk-engine.workspace = true
 # The bar interval the synthetic exchange is asked for. A node cycling ten
 # times a second fed minute bars is blind between minutes, so the cadence is
 # chosen from the cycle interval rather than left at the environment's default.

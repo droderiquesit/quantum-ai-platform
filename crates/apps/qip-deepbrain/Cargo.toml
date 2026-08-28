@@ -26,6 +26,7 @@ qip-storage.workspace = true
 qip-agents.workspace = true
 qip-investment-agents.workspace = true
 qip-risk.workspace = true
+qip-risk-engine.workspace = true
 qip-kernel.workspace = true
 # The evolution loop: the grammar and trial ledger, the harness that scores a
 # generated candidate on observed bars, and the evidence types the factory's

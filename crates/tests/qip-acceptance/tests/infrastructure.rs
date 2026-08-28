@@ -490,7 +490,10 @@ fn every_attestation_command_the_pipeline_runs_has_a_grant_that_permits_it() {
             "roles/binaryauthorization.attestorsViewer",
         ),
         // and signs with the KMS key version the attestor names.
-        ("sign with the attestor key", "roles/cloudkms.signerVerifier"),
+        (
+            "sign with the attestor key",
+            "roles/cloudkms.signerVerifier",
+        ),
     ] {
         let granted = binauthz
             .split("resource \"")

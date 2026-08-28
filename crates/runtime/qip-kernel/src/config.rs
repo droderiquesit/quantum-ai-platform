@@ -225,6 +225,33 @@ pub struct PlatformConfig {
     /// and by what the state is being used for.
     #[serde(default = "default_chain_confirmations")]
     pub chain_confirmations: u32,
+
+    /// The most confidence the REASON stage will ever demand of an answer
+    /// before it spends anything on reaching one.
+    ///
+    /// A ceiling rather than the requirement itself. The requirement is the
+    /// opportunity's own `rank.importance` — the platform's statement of how
+    /// much the observation matters if it is real, and the number the
+    /// opportunity queue is already ordered by — so a marginal observation is
+    /// not held to the same standard as a structural break. This caps it,
+    /// because importance saturates at one and
+    /// `qip_cost_router::IntelligenceTier`'s top rung reaches 0.99: a
+    /// requirement taken straight from importance would be unreachable at
+    /// exactly the observations that matter most, and the platform would
+    /// refuse to reason about precisely the things it exists to reason about.
+    ///
+    /// The default sits at the resolving power the adversarial panel is
+    /// documented to reach, which is what makes the panel the cheapest rung
+    /// capable of answering a consequential question rather than the rung the
+    /// stage reaches for by habit. Lowering it is a deliberate statement that
+    /// a single agent's answer is good enough for this deployment, and the
+    /// router will then route below the panel and the panel will not convene.
+    ///
+    /// `#[serde(default)]` for the same reason every field below it carries
+    /// one: a configuration stored before this field existed keeps
+    /// deserialising, to the behaviour the platform had when it was written.
+    #[serde(default = "default_reasoning_confidence_bar")]
+    pub reasoning_confidence_bar: f64,
 }
 
 /// The owner recorded against anything this deployment registers.
@@ -252,6 +279,20 @@ fn default_initial_equity() -> Decimal {
     Decimal::from_int(10_000_000)
 }
 
+/// The resolving power `qip_cost_router::IntelligenceTier::MultiAgentReasoning`
+/// is documented to reach.
+///
+/// Stated as the same figure on purpose. The panel's whole claim is that it
+/// buys disagreement, which is the only thing that catches a confidently wrong
+/// single agent; the rung below it reaches 0.85 on one opinion. Setting the
+/// ceiling at the panel's own figure is therefore the statement that a
+/// consequential decision is worth an argument, and it is a statement rather
+/// than an accident because a deployment that disagrees has to change this
+/// number in a diff somebody reviews.
+fn default_reasoning_confidence_bar() -> f64 {
+    0.90
+}
+
 impl Default for PlatformConfig {
     fn default() -> Self {
         Self {
@@ -271,6 +312,7 @@ impl Default for PlatformConfig {
             data_user_agent: default_data_user_agent(),
             initial_equity: default_initial_equity(),
             chain_confirmations: default_chain_confirmations(),
+            reasoning_confidence_bar: default_reasoning_confidence_bar(),
         }
     }
 }
@@ -342,6 +384,17 @@ impl PlatformConfig {
     /// State the equity the book starts with.
     pub fn with_initial_equity(mut self, equity: Decimal) -> Self {
         self.initial_equity = equity;
+        self
+    }
+
+    /// State the most confidence the REASON stage may demand of an answer.
+    ///
+    /// Not clamped on the way in. A bar outside `(0, 1]` is not a probability,
+    /// and `qip_cost_router::DecisionContext::validate` refuses it by name on
+    /// every cycle rather than quietly routing as though a plausible value had
+    /// been configured — which is the failure a clamp here would introduce.
+    pub fn with_reasoning_confidence_bar(mut self, bar: f64) -> Self {
+        self.reasoning_confidence_bar = bar;
         self
     }
 

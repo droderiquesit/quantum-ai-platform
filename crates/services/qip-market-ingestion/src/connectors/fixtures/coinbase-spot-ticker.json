@@ -1,0 +1,15 @@
+{
+  "exchanges": [
+    {
+      "target": "/products/BTC-USD/ticker",
+      "answers": [
+        {
+          "status": 200,
+          "media_type": "application/json",
+          "latency_ms": 84,
+          "body": "{\"ask\":\"64231.55\",\"bid\":\"64230.11\",\"volume\":\"9184.42736519\",\"trade_id\":712553481,\"price\":\"64230.99\",\"size\":\"0.00184300\",\"time\":\"2026-08-24T14:59:41.812734Z\"}"
+        }
+      ]
+    }
+  ]
+}

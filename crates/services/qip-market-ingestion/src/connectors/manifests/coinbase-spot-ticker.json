@@ -1,0 +1,35 @@
+{
+  "source_id": "coinbase-spot-ticker",
+  "provider": "Coinbase Exchange public market-data API (api.exchange.coinbase.com). Free, unauthenticated, no signup.",
+  "asset_class": "crypto",
+  "region": "global",
+  "protocol": "rest",
+  "schema": {
+    "version": "1.0",
+    "required_fields": [
+      { "path": "trade_id", "kind": "number" },
+      { "path": "price", "kind": "decimal_string" },
+      { "path": "size", "kind": "decimal_string" },
+      { "path": "time", "kind": "timestamp" }
+    ],
+    "unknown_fields": "ignore"
+  },
+  "auth": { "scheme": "none" },
+  "endpoint": {
+    "path": "/products/BTC-USD/ticker",
+    "health_path": "/products/BTC-USD/ticker"
+  },
+  "rate_limit": { "requests": 8, "per_ms": 1000, "burst": 10 },
+  "retry": {
+    "max_attempts": 4,
+    "initial_backoff_ms": 250,
+    "max_backoff_ms": 8000,
+    "multiplier": 3,
+    "jitter_basis_points": 2500
+  },
+  "poll_interval_ms": 2000,
+  "freshness_sla_ms": 120000,
+  "publication_delay_ms": 0,
+  "licensing": "public",
+  "max_events_per_batch": 8
+}

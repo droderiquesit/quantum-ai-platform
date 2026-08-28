@@ -80,6 +80,49 @@ impl AutonomyLevel {
             .ok_or_else(|| Error::invalid(format!("unknown autonomy level: {s}")))
     }
 
+    /// The ceiling a *deployment* may be started at.
+    ///
+    /// [`Self::parse`] answers "is this one of the six levels", which is the
+    /// right question for a domain model that has six. This answers "may a
+    /// process be started here", and the answer for the three live levels is
+    /// no, whatever the configuration says.
+    ///
+    /// The ladder keeps all six because the levels are real and the code that
+    /// reasons about them — [`Self::is_live`], [`Self::requires_human_release`],
+    /// the controller's escalation rules — has to keep working. What this
+    /// removes is the path from a configuration value to a running process at
+    /// one of them. A composition root that reads its ceiling through here
+    /// cannot be talked into live trading by an environment variable, a
+    /// ConfigMap, or a Terraform apply that slipped through review.
+    ///
+    /// Absent configuration is [`Self::PaperTrading`], not an error: a
+    /// deployment that says nothing about its ceiling gets the shipped
+    /// default, and a deployment that says something forbidden is told so
+    /// rather than quietly lowered — a process that silently ignores the
+    /// configuration it was given is one whose operator believes something
+    /// false about it.
+    ///
+    /// This is the innermost of the layers that refuse a live ceiling. The
+    /// outermost is a `terraform plan` validation, which stops a live value
+    /// before it is ever written into the ConfigMap the workloads read. That
+    /// one catches the reviewed, committed mistake; this one catches the
+    /// unreviewed live edit that Terraform never sees.
+    pub fn deployable(configured: Option<&str>) -> Result<Self> {
+        let Some(configured) = configured else {
+            return Ok(Self::PaperTrading);
+        };
+        let level = Self::parse(configured)?;
+        if level.is_live() {
+            return Err(Error::denied(format!(
+                "this deployment is configured at autonomy level '{}', at which orders \
+                 reach a real venue. This platform is paper-trading only and will not \
+                 start there. Set the ceiling to paper_trading, advisory or observation",
+                level.as_str()
+            )));
+        }
+        Ok(level)
+    }
+
     pub fn all() -> Vec<Self> {
         vec![
             Self::Observation,

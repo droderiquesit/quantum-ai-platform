@@ -43,6 +43,7 @@ use qip_financial::universe::Universe;
 use qip_kernel::{Platform, PlatformConfig};
 use qip_observability::Telemetry;
 use qip_risk::limits::LimitSet;
+use qip_risk_engine::autonomy::AutonomyLevel;
 use qip_storage::ChainArchive;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -98,7 +99,20 @@ fn run() -> Result<()> {
     )
     .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
 
-    let platform_config = PlatformConfig::default();
+    // The ceiling this deployment is permitted to run at. Read here for the
+    // first time: `fastbrain.yaml` has always set QIP_AUTONOMY_CEILING from
+    // the qip-config ConfigMap, and this binary has always ignored it and used
+    // the shipped default. That failed safe — the default is paper trading —
+    // but it meant an operator lowering the ceiling to `observation` in the
+    // ConfigMap changed nothing here, which is a control that reads as present
+    // and is not.
+    //
+    // `deployable` refuses the three live levels outright rather than lowering
+    // them, so a ConfigMap edited past review stops this process instead of
+    // starting it somewhere it should not be.
+    let platform_config = PlatformConfig::default().with_live_ceiling(AutonomyLevel::deployable(
+        std::env::var("QIP_AUTONOMY_CEILING").ok().as_deref(),
+    )?);
     let context = qip_core::Context::new(clock.clone(), platform_config.seed);
     let ceiling = platform_config.autonomy_ceiling.to_string();
     let mut platform = Platform::new(

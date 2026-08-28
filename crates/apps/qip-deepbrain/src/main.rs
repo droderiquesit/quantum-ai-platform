@@ -50,6 +50,7 @@ use qip_financial::universe::Universe;
 use qip_kernel::{Platform, PlatformConfig};
 use qip_observability::Telemetry;
 use qip_risk::limits::LimitSet;
+use qip_risk_engine::autonomy::AutonomyLevel;
 use qip_storage::ChainArchive;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -118,7 +119,15 @@ fn run() -> Result<()> {
     // The kernel is told where its event log goes, so a deployment with a
     // durable path gets a chain that continues across a restart of this process
     // rather than one that begins again at sequence one.
-    let platform_config = PlatformConfig::default().with_event_log(config.event_log.clone());
+    // The ceiling, read here for the first time — see the same block in
+    // qip-fastbrain: `deepbrain.yaml` set QIP_AUTONOMY_CEILING and this binary
+    // never read it, so the ConfigMap presented a control that did nothing.
+    // `deployable` refuses a live level rather than quietly lowering it.
+    let platform_config = PlatformConfig::default()
+        .with_event_log(config.event_log.clone())
+        .with_live_ceiling(AutonomyLevel::deployable(
+            std::env::var("QIP_AUTONOMY_CEILING").ok().as_deref(),
+        )?);
     let context = qip_core::Context::new(clock.clone(), platform_config.seed);
     let ceiling = platform_config.autonomy_ceiling.to_string();
     let mut platform = Platform::new(

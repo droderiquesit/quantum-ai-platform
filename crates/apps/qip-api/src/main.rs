@@ -47,12 +47,17 @@ fn run() -> Result<()> {
 
     let address = std::env::var("QIP_API_ADDRESS").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
 
-    // The autonomy ceiling. Paper trading unless the environment explicitly
-    // raises it, and raising it is a deployment decision.
-    let ceiling = match std::env::var("QIP_AUTONOMY_CEILING") {
-        Ok(value) => AutonomyLevel::parse(&value)?,
-        Err(_) => AutonomyLevel::PaperTrading,
-    };
+    // The autonomy ceiling, read through the one constructor that refuses a
+    // live one. This used to be `AutonomyLevel::parse`, which accepts all six
+    // levels because the domain model has six — so `QIP_AUTONOMY_CEILING=
+    // autonomous_live` started this process live-capable, and the only thing
+    // standing between it and a real venue was that nobody had set it.
+    //
+    // Nothing is silently lowered: a live value is a refusal to start, not a
+    // demotion to paper. An operator who configured live trading and got a
+    // running paper process would believe something false about their
+    // deployment, which is worse than a pod that will not start and says why.
+    let ceiling = AutonomyLevel::deployable(std::env::var("QIP_AUTONOMY_CEILING").ok().as_deref())?;
 
     // Resolved and proven writable before anything else is built. Failing here
     // costs a restart; failing at the first archived cycle costs the record of

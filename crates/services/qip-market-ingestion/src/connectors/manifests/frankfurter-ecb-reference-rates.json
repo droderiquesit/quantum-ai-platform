@@ -1,0 +1,35 @@
+{
+  "source_id": "frankfurter-ecb-reference-rates",
+  "provider": "Frankfurter (api.frankfurter.app), which republishes the European Central Bank's daily euro foreign-exchange reference rates. Free, unauthenticated, no signup.",
+  "asset_class": "fx",
+  "region": "europe",
+  "protocol": "poll",
+  "schema": {
+    "version": "1.0",
+    "required_fields": [
+      { "path": "base", "kind": "string" },
+      { "path": "date", "kind": "timestamp" },
+      { "path": "rates", "kind": "object" }
+    ],
+    "unknown_fields": "ignore"
+  },
+  "auth": { "scheme": "none" },
+  "endpoint": {
+    "path": "/latest",
+    "query": { "base": "EUR", "symbols": "USD,GBP,JPY" },
+    "health_path": "/latest"
+  },
+  "rate_limit": { "requests": 1, "per_ms": 60000, "burst": 2 },
+  "retry": {
+    "max_attempts": 3,
+    "initial_backoff_ms": 500,
+    "max_backoff_ms": 30000,
+    "multiplier": 4,
+    "jitter_basis_points": 2000
+  },
+  "poll_interval_ms": 3600000,
+  "freshness_sla_ms": 345600000,
+  "publication_delay_ms": 57600000,
+  "licensing": "public",
+  "max_events_per_batch": 64
+}

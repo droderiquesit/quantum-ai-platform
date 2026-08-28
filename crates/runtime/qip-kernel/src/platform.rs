@@ -59,7 +59,11 @@ use qip_core::lineage::CorrelationId;
 use qip_core::lineage::{Lineage, TraceId};
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Currency, Decimal, Hasher256, Money, PortfolioId};
-use qip_cost_router::{ComputeLedger, CostEngine, DataCostModel, DataReads, IntelligenceTier};
+use qip_cost_router::{
+    ComputeLedger, Conditions, CostEngine, DataCostModel, DataReads, DecisionContext, Determinism,
+    Horizon, IntelligenceTier, MarketRegime, Region as CostRegion, Router, Routing, TierCharge,
+    VolatilityRegime,
+};
 use qip_data_finder::finder::{DataFinder, FinderConfig};
 use qip_data_finder::probe::SourceProbe;
 use qip_data_finder::source::SourceCandidate;
@@ -69,6 +73,7 @@ use qip_events::{EventBody, EventFilter, Topic};
 use qip_execution_engine::broker::{Broker, SimulatedBroker, SimulationSettings};
 use qip_execution_engine::oms::{OrderManager, RefusalReason, SubmissionResult};
 use qip_execution_engine::order::{Order, OrderType, Side};
+use qip_financial::asset_class::AssetClass;
 use qip_financial::costs::{LiquidityProfile, TransactionCostModel};
 use qip_financial::universe::Universe;
 use qip_investment_agents::Organisation;
@@ -186,6 +191,35 @@ pub struct Platform {
     pre_positioner: PrePositioningPlanner,
     /// Observed demand per lane, in arrival order.
     demand_history: BTreeMap<(CapitalLocation, DemandKind), Vec<DemandObservation>>,
+    /// Places the REASON stage's question on the intelligence ladder before
+    /// the platform answers it.
+    ///
+    /// Held rather than constructed per cycle so the cost ceiling a decision
+    /// is judged against is one value for the process, and
+    /// [`qip_cost_router::RoutingPolicy::default`] rather than a configured
+    /// one because that type's own documentation says a deployment raising it
+    /// has to say so in a diff. A ceiling that could be widened at runtime is
+    /// a ceiling that gets widened on the cycle it binds.
+    cost_router: Router,
+    /// What the most recent cycle's REASON stage was routed to, and whether
+    /// the panel was convened as a result.
+    ///
+    /// The single record of that decision. [`Platform::charge_cycle`] bills
+    /// from it rather than from what the stage happened to produce, so there
+    /// is one answer to "what did this cycle cost" instead of a ledger and a
+    /// separate assertion that can disagree with it.
+    reason_routing: Option<ReasonRouting>,
+    /// The asset class of every instrument this platform was assembled to
+    /// trade, taken from the universe at assembly.
+    ///
+    /// A projection of reference data rather than a second copy of a facility.
+    /// The universe itself lives behind the desk's `read_market_data`
+    /// capability gate and the composition root holds no agent context to
+    /// unlock it — see [`Platform::world`] for the same trade-off made the
+    /// other way. Reference data does not change under the platform, so a
+    /// projection of it cannot drift from the desk's copy the way absorbed
+    /// state would.
+    asset_classes: BTreeMap<String, AssetClass>,
     /// Turns what a decision spent into what its edge has to survive.
     cost_engine: CostEngine,
     /// The rungs the most recent cycle actually used.
@@ -305,6 +339,48 @@ const CAPITAL_HORIZON: Duration = Duration::from_days(1);
 /// regions runs a cell per region, which is what `docs/adr/0008` describes.
 const HOME_REGION: &str = "home";
 
+/// How many of a subject's most recent returns stand for "now" when the
+/// platform describes the conditions a routing decision was made under.
+///
+/// Twenty sessions: long enough that one print does not define the regime,
+/// short enough that a month-old calm still reads as calm. It is deliberately
+/// far shorter than the history it is compared against — a window as long as
+/// the series would measure the series against itself and every tape would
+/// come out normal.
+const REGIME_WINDOW: usize = 20;
+
+/// Ratios of recent realised volatility to the subject's own long-run realised
+/// volatility, and the band each one puts the tape in.
+///
+/// Measured against the instrument's own history rather than a cross-sectional
+/// figure, because a name that is always volatile is not in an extreme regime
+/// merely for being itself, and calling it one would score every model that
+/// ever traded it under a condition it was never in.
+const VOLATILITY_BANDS: [(f64, VolatilityRegime); 3] = [
+    (0.5, VolatilityRegime::Low),
+    (1.5, VolatilityRegime::Normal),
+    (3.0, VolatilityRegime::High),
+];
+
+/// Realised drawdown past which the platform calls the conditions a crisis.
+///
+/// Its own book is the only aggregate stress this process can observe: it
+/// holds no cross-sectional correlation estimate and no funding series, and
+/// `qip_cost_router::MarketRegime::Crisis` is about correlations going to one.
+/// Ten percent of realised equity is far outside the ordinary variation of a
+/// book that is working and well inside the drawdown schedule the capital
+/// allocator would already be cutting into, so it names a state an operator
+/// would recognise rather than a threshold chosen to fire.
+const CRISIS_DRAWDOWN: f64 = 0.10;
+
+/// How far above its own median a subject's recent quoted spread has to sit
+/// before the platform calls the book thin.
+///
+/// Three times: a spread that has tripled is not a wide market, it is a market
+/// whose price has become an opinion, which is what
+/// `qip_cost_router::MarketRegime::Illiquid` says.
+const ILLIQUID_SPREAD_MULTIPLE: f64 = 3.0;
+
 // --- what the platform records, in the shapes the services take -------------
 
 /// A falsifiable claim the REASON stage made, and what became of it.
@@ -404,6 +480,97 @@ impl SourceAssessment {
             .iter()
             .filter(|decision| decision.is_registered())
             .count()
+    }
+}
+
+/// Where the REASON stage's question was placed on the intelligence ladder,
+/// and what the platform did about it.
+///
+/// The reason this is a recorded value and not a log line. `qip-cost-router`
+/// exists to refuse a rung that costs more than the decision is worth, and a
+/// refusal nobody can read afterwards is indistinguishable from a stage that
+/// quietly did nothing. So the routing keeps the router's own `rationale` — the
+/// sentence naming the rung, the money and the confidence it was weighed
+/// against — and keeps it whether the panel convened or not.
+///
+/// It is also the only thing [`Platform::charge_cycle`] bills the REASON stage
+/// from. Before it existed, the ledger asserted a
+/// [`IntelligenceTier::MultiAgentReasoning`] rung from the fact that the stage
+/// had produced findings, which is a second, independent claim about what a
+/// cycle cost — and the moment the router declines, the two disagree and the
+/// louder one is wrong.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ReasonRouting {
+    /// The cycle whose REASON stage this was.
+    pub cycle: u64,
+    /// The opportunity the decision was about.
+    pub opportunity_id: String,
+    /// What was being decided, as the router was asked it.
+    pub subject: String,
+    /// Where it landed, or `None` when the router refused to place it at all.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub routing: Option<Routing>,
+    /// Why, in the router's own words — its rationale when a rung was found,
+    /// its refusal message when none was.
+    pub rationale: String,
+    /// Whether the agent organisation was actually dispatched.
+    pub dispatched: bool,
+    /// The rung the platform actually ran on, which is not always the rung the
+    /// router placed the decision on.
+    ///
+    /// The organisation is the only reasoner this platform has, and it sits at
+    /// [`IntelligenceTier::MultiAgentReasoning`]. When the router places a
+    /// decision lower — a tiny model would have sufficed — there is nothing at
+    /// that rung to run it, so the platform either convenes the panel or
+    /// answers nothing. It convenes, and records here that it did, because the
+    /// ledger has to bill what ran rather than what was chosen. The gap between
+    /// this and [`Self::tier`] is the measured case for building the cheaper
+    /// rung.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub convened: Option<IntelligenceTier>,
+}
+
+impl ReasonRouting {
+    /// The rung the decision was placed on, or `None` when it was refused.
+    pub fn tier(&self) -> Option<IntelligenceTier> {
+        self.routing.as_ref().map(Routing::tier)
+    }
+
+    /// Every rung the cycle is charged for on account of this decision.
+    ///
+    /// Empty unless the panel actually convened, and that is the honest
+    /// answer rather than a convenience: a rung the platform declined to climb
+    /// is a rung nothing ran on. Billing for it would make declining cost the
+    /// same as dispatching, which would remove the only pressure the router
+    /// applies.
+    pub fn charges(&self) -> Vec<TierCharge> {
+        self.convened.map(TierCharge::of).into_iter().collect()
+    }
+
+    /// What this decision cost, exact. Zero when nothing was convened.
+    pub fn cost(&self) -> Decimal {
+        self.charges()
+            .iter()
+            .fold(Decimal::ZERO, |sum, charge| sum + charge.cost)
+    }
+
+    fn record(
+        cycle: u64,
+        opportunity: &Opportunity,
+        subject: String,
+        routing: Option<Routing>,
+        rationale: String,
+        convened: Option<IntelligenceTier>,
+    ) -> Self {
+        Self {
+            cycle,
+            opportunity_id: opportunity.opportunity_id.as_str().to_string(),
+            subject,
+            routing,
+            rationale,
+            dispatched: convened.is_some(),
+            convened,
+        }
     }
 }
 
@@ -628,6 +795,17 @@ impl Platform {
         // literal in six places.
         let initial_equity = config.initial_equity;
 
+        // Taken before the universe moves into the desk, where it is only
+        // reachable with a capability grant this process has no context to
+        // present. The routing record has to be able to say what asset class a
+        // decision was made in, and an opportunity about an instrument the
+        // platform holds no reference data for is one it could never size into
+        // the book anyway.
+        let asset_classes: BTreeMap<String, AssetClass> = universe
+            .iter()
+            .map(|object| (object.object_id.as_str().to_string(), object.asset_class))
+            .collect();
+
         let desk = Arc::new(Desk::new(
             MarketView {
                 snapshot: MarketSnapshot::new(now),
@@ -739,6 +917,9 @@ impl Platform {
             pre_positioner,
             demand_history: BTreeMap::new(),
             cost_engine: CostEngine::new(DataCostModel::new()),
+            cost_router: Router::default(),
+            reason_routing: None,
+            asset_classes,
             cycle_ledger: None,
             compute_spend: Decimal::ZERO,
             data_reads: DataReads::new(),
@@ -1401,10 +1582,15 @@ impl Platform {
             match outcome.stage {
                 // The detectors are fitted estimators evaluated in process.
                 Stage::Discover => tiers.push(IntelligenceTier::StatisticalModel),
-                // The organisation is a panel of agents reasoning against each
-                // other, and only when it produced something.
-                Stage::Reason if outcome.produced > 0 => {
-                    tiers.push(IntelligenceTier::MultiAgentReasoning);
+                // The panel is billed from the router's own record of where
+                // the decision was placed, never from the fact that findings
+                // came back. Those were two independent claims about what a
+                // cycle cost, and they disagree the moment the router declines
+                // — which it now can.
+                Stage::Reason => {
+                    if let Some(routing) = &self.reason_routing {
+                        tiers.extend(routing.charges().into_iter().map(|charge| charge.tier));
+                    }
                 }
                 // Resampling a path is a counterfactual run, not a rule.
                 Stage::Simulate if outcome.produced > 0 => {
@@ -1636,10 +1822,349 @@ impl Platform {
         outcome
     }
 
+    /// Put a price, a deadline and a confidence bar on the REASON stage's
+    /// question, so the router has something to weigh.
+    ///
+    /// **`value_at_stake` is not the notional.** `DecisionContext` documents
+    /// the distinction and the affordability rule depends on it: quoting the
+    /// notional makes every rung look affordable, which is exactly the check
+    /// being defeated. What is at stake here is the difference between acting
+    /// on this opportunity and not — so it is the book's equity scaled by how
+    /// much of it this opportunity could plausibly move, which is the
+    /// detector's own `importance` discounted by its `confidence` that the
+    /// observation is real rather than noise. An opportunity the detectors are
+    /// half sure about is worth half as much to get right.
+    ///
+    /// The context is refused rather than clamped where that product rounds to
+    /// nothing. `DecisionContext::validate` rejects a non-positive value, and
+    /// substituting a floor would route an opportunity worth nothing as though
+    /// it were a real decision — which is the failure this whole path exists
+    /// to prevent.
+    fn reason_decision_context(
+        &self,
+        opportunity: &Opportunity,
+        subject: String,
+    ) -> Result<DecisionContext> {
+        let share = opportunity.rank.importance * opportunity.rank.confidence;
+        let share = Decimal::from_f64(share)
+            .ok_or_else(|| Error::numeric("the opportunity's rank is not a representable share"))?;
+        let value_at_stake = self
+            .capital
+            .equity()
+            .checked_mul(share)
+            .ok_or_else(|| Error::numeric("the value at stake in this decision overflowed"))?;
+
+        // The deadline, not the horizon. The horizon is how long the
+        // implication takes to play out; `expires_at` is when the opportunity
+        // stops being worth acting on, and an answer arriving after it is
+        // worthless however good it is.
+        let latency_budget = opportunity.expires_at.since(self.context.now());
+
+        Ok(DecisionContext::new(
+            subject,
+            value_at_stake,
+            latency_budget,
+            // The bar the detectors already had to clear for the opportunity to
+            // be queued at all, reused rather than reinvented: a separate
+            // constant here would let the platform investigate something it had
+            // already decided was not credible enough to look at.
+            opportunity.rank.confidence,
+            // A thesis is an estimate. It is not a pre-trade risk check, and
+            // the router's `Required` arm returns a type that cannot name a
+            // model rung — see `qip_cost_router::router`, where that is the
+            // structural guarantee keeping risk checks off the ladder.
+            Determinism::NotRequired,
+            self.routing_conditions(opportunity),
+        ))
+    }
+
+    /// Describe the market this decision is being made in.
+    ///
+    /// Every field is read off something the platform already tracks. Nothing
+    /// here is asked of a vendor and nothing is guessed: a routing record whose
+    /// conditions were invented would make the model reputation book — which is
+    /// keyed on exactly this label — an index over fiction.
+    fn routing_conditions(&self, opportunity: &Opportunity) -> Conditions {
+        // The asset class of the first instrument the opportunity concerns.
+        // An opportunity spanning classes is routed under the one it names
+        // first rather than under a blend, because the reputation key has to be
+        // a value a later lookup can reproduce.
+        let asset_class = opportunity
+            .affected_objects
+            .first()
+            .and_then(|object| self.asset_classes.get(object.as_str()))
+            .copied()
+            .unwrap_or(AssetClass::Equity);
+
+        let subject = opportunity
+            .affected_objects
+            .first()
+            .map(|object| object.as_str().to_string())
+            .unwrap_or_default();
+
+        Conditions::new(
+            asset_class,
+            CostRegion::new(HOME_REGION),
+            self.market_regime(&subject),
+            self.volatility_regime(&subject),
+            Self::routing_horizon(opportunity.horizon),
+        )
+    }
+
+    /// Which of the five regimes the tape is in, on the evidence this process
+    /// holds.
+    ///
+    /// The order is a precedence, not a search: a book in drawdown is in a
+    /// crisis whatever its spreads say, and a market whose price has become an
+    /// opinion is illiquid whatever its returns say. Trending versus
+    /// mean-reverting is decided last and only for a subject with enough
+    /// history to tell them apart — below that the honest answer is `Quiet`,
+    /// which is a regime and not a missing value.
+    fn market_regime(&self, subject: &str) -> MarketRegime {
+        if self.capital.drawdown() >= CRISIS_DRAWDOWN {
+            return MarketRegime::Crisis;
+        }
+        if self.spread_has_widened(subject) {
+            return MarketRegime::Illiquid;
+        }
+        let Some(returns) = self.recent_returns(subject) else {
+            return MarketRegime::Quiet;
+        };
+        if returns.len() < 3 {
+            return MarketRegime::Quiet;
+        }
+        // Sign persistence: how often a move is followed by a move the same
+        // way. Above half the tape continues, below half it comes back. The
+        // measure is crude and deliberately so — it needs no fitted parameter,
+        // so it cannot be the thing that is stale when the regime turns.
+        let pairs = returns.windows(2).filter(|w| w[0] != 0.0 && w[1] != 0.0);
+        let (same, total) = pairs.fold((0usize, 0usize), |(same, total), w| {
+            let continued = usize::from(w[0].is_sign_positive() == w[1].is_sign_positive());
+            (same + continued, total + 1)
+        });
+        if total == 0 {
+            return MarketRegime::Quiet;
+        }
+        if same * 2 > total {
+            MarketRegime::Trending
+        } else {
+            MarketRegime::MeanReverting
+        }
+    }
+
+    /// How violent the tape is, relative to the subject's own history.
+    ///
+    /// Relative rather than absolute because a fixed basis-point threshold
+    /// would call every digital asset extreme and every government bond low,
+    /// which says something about the asset class and nothing about the day.
+    fn volatility_regime(&self, subject: &str) -> VolatilityRegime {
+        let Some(values) = self.observation_history.get(subject) else {
+            return VolatilityRegime::Normal;
+        };
+        if values.len() <= REGIME_WINDOW + 1 {
+            // Not enough history to compare a window against. `Normal` is the
+            // answer that claims least: it neither excuses spending on a quiet
+            // tape nor refuses it on a violent one.
+            return VolatilityRegime::Normal;
+        }
+        let returns = Self::returns_of(values);
+        let long_run = Self::deviation(&returns);
+        let recent = Self::deviation(&returns[returns.len().saturating_sub(REGIME_WINDOW)..]);
+        if long_run <= 0.0 {
+            return VolatilityRegime::Normal;
+        }
+        let ratio = recent / long_run;
+        VOLATILITY_BANDS
+            .iter()
+            .find(|(ceiling, _)| ratio < *ceiling)
+            .map_or(VolatilityRegime::Extreme, |(_, band)| *band)
+    }
+
+    /// Whether the subject's recent quoted spread sits far enough above its own
+    /// median that the price should be treated as an opinion.
+    fn spread_has_widened(&self, subject: &str) -> bool {
+        let Some(series) = self.spread_history.get(subject) else {
+            return false;
+        };
+        if series.len() < 3 {
+            return false;
+        }
+        let mut sorted = series.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let median = sorted[sorted.len() / 2];
+        if median <= 0.0 {
+            return false;
+        }
+        series
+            .last()
+            .is_some_and(|latest| latest / median >= ILLIQUID_SPREAD_MULTIPLE)
+    }
+
+    /// The subject's most recent returns, or `None` where nothing has been
+    /// observed for it.
+    fn recent_returns(&self, subject: &str) -> Option<Vec<f64>> {
+        let values = self.observation_history.get(subject)?;
+        if values.len() < 2 {
+            return None;
+        }
+        let returns = Self::returns_of(values);
+        let from = returns.len().saturating_sub(REGIME_WINDOW);
+        Some(returns[from..].to_vec())
+    }
+
+    /// Simple returns of a price series, skipping any step from a
+    /// non-positive price rather than dividing by it.
+    fn returns_of(values: &[f64]) -> Vec<f64> {
+        values
+            .windows(2)
+            .filter(|w| w[0] > 0.0)
+            .map(|w| (w[1] - w[0]) / w[0])
+            .collect()
+    }
+
+    /// Population standard deviation. Zero for fewer than two observations,
+    /// which every caller above treats as "cannot tell" rather than as "calm".
+    fn deviation(values: &[f64]) -> f64 {
+        if values.len() < 2 {
+            return 0.0;
+        }
+        let n = values.len() as f64;
+        let mean = values.iter().sum::<f64>() / n;
+        (values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n).sqrt()
+    }
+
+    /// Which horizon band an opportunity's own horizon falls in.
+    fn routing_horizon(horizon: Duration) -> Horizon {
+        let seconds = horizon.as_nanos() / 1_000_000_000;
+        match seconds {
+            ..=0 => Horizon::Microsecond,
+            1..=86_400 => Horizon::Intraday,
+            86_401..=604_800 => Horizon::Daily,
+            604_801..=2_592_000 => Horizon::Weekly,
+            _ => Horizon::Strategic,
+        }
+    }
+
     fn stage_reason(&mut self, now: Timestamp, lineage: &Lineage) -> StageOutcome {
         let Some(opportunity) = self.queue.first().cloned() else {
             return StageOutcome::ran(Stage::Reason, 0, "nothing in the queue to reason about");
         };
+
+        // Where this decision belongs on the intelligence ladder, asked before
+        // anything is spent reaching it. Convening the organisation is the most
+        // expensive thing a cycle does, and until this call existed it was done
+        // unconditionally for whatever sat at the head of the queue — then
+        // billed for afterwards, from the fact that findings had come back.
+        // That is not a cost control; it is a receipt.
+        let subject = format!("whether to act on '{}'", opportunity.headline);
+        let context = match self.reason_decision_context(&opportunity, subject.clone()) {
+            Ok(context) => context,
+            Err(error) => {
+                let rationale = error.message().to_string();
+                self.reason_routing = Some(ReasonRouting::record(
+                    self.cycle,
+                    &opportunity,
+                    subject,
+                    None,
+                    rationale.clone(),
+                    None,
+                ));
+                return StageOutcome::ran(
+                    Stage::Reason,
+                    0,
+                    format!("the panel was not convened: {rationale}"),
+                );
+            }
+        };
+
+        let placed = match self.cost_router.select(&context) {
+            Ok(placed) => placed,
+            // The router refused to place the decision at all: no rung reaches
+            // the confidence this opportunity needs at a price it is worth, or
+            // the opportunity could not be priced. Either way the panel does
+            // not convene, and the stage says so in the router's own words
+            // rather than reporting an empty queue.
+            Err(error) => {
+                let rationale = error.message().to_string();
+                self.reason_routing = Some(ReasonRouting::record(
+                    self.cycle,
+                    &opportunity,
+                    subject,
+                    None,
+                    rationale.clone(),
+                    None,
+                ));
+                return StageOutcome::ran(
+                    Stage::Reason,
+                    0,
+                    format!("the panel was not convened: {rationale}"),
+                );
+            }
+        };
+
+        // The organisation is the only reasoner this platform has, and it sits
+        // at the MultiAgentReasoning rung. So the question is not "did the
+        // router pick this rung" — it usually picks a cheaper one, because a
+        // cheaper one would genuinely suffice and none is implemented. The
+        // question the cost router actually exists to answer is whether this
+        // rung costs more than the decision is worth, and that is what is asked
+        // here.
+        //
+        // Getting this wrong in the other direction is worse than overspending:
+        // a gate that refused every decision the router placed below the panel
+        // would decline nearly all of them, and the REASON stage would go
+        // silently dead while every rationale read as a deliberate saving.
+        const PANEL: IntelligenceTier = IntelligenceTier::MultiAgentReasoning;
+        // `assess` fails only where the context or policy is invalid, and both
+        // were validated by the `select` above. It is still handled rather than
+        // unwrapped: a refusal the platform cannot explain must not become a
+        // panel it convenes anyway.
+        let refusal = if placed.tier() >= PANEL {
+            None
+        } else {
+            match self.cost_router.assess(PANEL, &context) {
+                Ok(verdict) if verdict.is_usable() => None,
+                Ok(verdict) => Some(verdict.reason(PANEL)),
+                Err(error) => Some(error.message().to_string()),
+            }
+        };
+
+        let placed_rationale = placed.rationale().to_string();
+        if let Some(rationale) = refusal {
+            self.reason_routing = Some(ReasonRouting::record(
+                self.cycle,
+                &opportunity,
+                subject,
+                Some(placed),
+                rationale.clone(),
+                None,
+            ));
+            return StageOutcome::ran(
+                Stage::Reason,
+                0,
+                format!("the panel was not convened: {rationale}"),
+            );
+        }
+
+        // Convening. The rationale keeps the router's own sentence — including
+        // the case where it named a cheaper rung — so the record shows both
+        // where the decision belonged and what the platform had available.
+        let rationale = if placed.tier() < PANEL {
+            format!(
+                "{placed_rationale}; convened at {} regardless, the only rung this platform implements",
+                PANEL.as_str()
+            )
+        } else {
+            placed_rationale
+        };
+        self.reason_routing = Some(ReasonRouting::record(
+            self.cycle,
+            &opportunity,
+            subject,
+            Some(placed),
+            rationale,
+            Some(PANEL),
+        ));
 
         let brief = qip_agents::finding::AgentBrief::new(
             opportunity.headline.clone(),

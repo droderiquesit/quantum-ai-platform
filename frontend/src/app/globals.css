@@ -1,0 +1,428 @@
+@import "tailwindcss";
+
+/*
+ * The console's design tokens.
+ *
+ * The palette is deliberately narrow. Green and red mean direction — a gain, a
+ * loss, a breach — and are never used to decorate a heading or a border, so a
+ * flash of either on this screen always means something. Everything structural
+ * is grey; the one chromatic exception is the amber reserved for the paper
+ * trading declaration, which appears nowhere else.
+ */
+@theme {
+  --color-void: #07090c;
+  --color-sunken: #0a0d11;
+  --color-surface: #0e1116;
+  --color-raised: #131820;
+  --color-line: #1b212b;
+  --color-line-strong: #2b3441;
+
+  --color-ink: #dde5ee;
+  --color-ink-dim: #8b95a5;
+  --color-ink-faint: #5b6472;
+
+  --color-accent: #4c9aff;
+  --color-accent-dim: #1d3a63;
+
+  --color-paper: #e3a72f;
+  --color-paper-dim: #3a2c0c;
+
+  --color-up: #34c27b;
+  --color-down: #ff5d54;
+  --color-warn: #e3a72f;
+  --color-halt: #ff3b30;
+
+  --font-sans: "Inter", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "SFMono-Regular", "JetBrains Mono", "Menlo", "Consolas",
+    "Liberation Mono", monospace;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--color-void);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Numerals line up in columns or they cannot be compared at a glance. */
+.num,
+table,
+input,
+select,
+textarea {
+  font-variant-numeric: tabular-nums;
+}
+
+.num {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: -0.01em;
+}
+
+::selection {
+  background: var(--color-accent-dim);
+  color: var(--color-ink);
+}
+
+*:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+  border-radius: 2px;
+}
+
+/* Thin scrollbars: a dense table loses too much width to the default. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--color-line-strong);
+  border-radius: 0;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* --- structure ---------------------------------------------------------- */
+
+.eyebrow {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--color-ink-faint);
+}
+
+.panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--color-line);
+  background: var(--color-sunken);
+}
+
+.panel-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--color-ink);
+  white-space: nowrap;
+}
+
+.panel-body {
+  padding: 10px;
+  min-width: 0;
+}
+
+.panel-body-flush {
+  padding: 0;
+  min-width: 0;
+}
+
+/* --- tabular data ------------------------------------------------------- */
+
+.dt {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+}
+
+.dt thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--color-sunken);
+  border-bottom: 1px solid var(--color-line-strong);
+  padding: 5px 10px;
+  text-align: left;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--color-ink-faint);
+  white-space: nowrap;
+}
+
+.dt tbody td {
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--color-line);
+  white-space: nowrap;
+  color: var(--color-ink);
+}
+
+.dt tbody tr:hover td {
+  background: var(--color-raised);
+}
+
+.dt tbody tr[data-alert="true"] td {
+  background: color-mix(in srgb, var(--color-down) 9%, transparent);
+}
+
+.dt .n {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+/* --- chips and status --------------------------------------------------- */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 18px;
+  padding: 0 6px;
+  border: 1px solid var(--color-line-strong);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-ink-dim);
+  white-space: nowrap;
+}
+
+.chip[data-tone="ok"] {
+  color: var(--color-up);
+  border-color: color-mix(in srgb, var(--color-up) 45%, transparent);
+}
+
+.chip[data-tone="warn"] {
+  color: var(--color-warn);
+  border-color: color-mix(in srgb, var(--color-warn) 45%, transparent);
+}
+
+.chip[data-tone="bad"] {
+  color: var(--color-down);
+  border-color: color-mix(in srgb, var(--color-down) 55%, transparent);
+}
+
+.chip[data-tone="info"] {
+  color: var(--color-accent);
+  border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.dot[data-pulse="true"] {
+  animation: pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dot[data-pulse="true"] {
+    animation: none;
+  }
+}
+
+/* --- controls ----------------------------------------------------------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--color-line-strong);
+  background: var(--color-raised);
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 90ms linear, border-color 90ms linear, color 90ms linear;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--color-line);
+  border-color: var(--color-ink-faint);
+}
+
+.btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.btn[data-variant="primary"] {
+  border-color: color-mix(in srgb, var(--color-accent) 60%, transparent);
+  color: var(--color-accent);
+}
+
+.btn[data-variant="primary"]:hover:not(:disabled) {
+  background: var(--color-accent-dim);
+}
+
+.btn[data-variant="danger"] {
+  border-color: color-mix(in srgb, var(--color-halt) 60%, transparent);
+  color: var(--color-halt);
+}
+
+.btn[data-variant="danger"]:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-halt) 16%, transparent);
+}
+
+.btn[data-variant="ghost"] {
+  background: transparent;
+  border-color: transparent;
+  color: var(--color-ink-dim);
+}
+
+.btn[data-variant="ghost"]:hover:not(:disabled) {
+  color: var(--color-ink);
+  background: var(--color-raised);
+}
+
+.field-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-ink-faint);
+  margin-bottom: 4px;
+}
+
+.input,
+.select,
+.textarea {
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  background: var(--color-sunken);
+  border: 1px solid var(--color-line-strong);
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.textarea {
+  height: auto;
+  padding: 6px 8px;
+  font-family: var(--font-sans);
+  resize: vertical;
+}
+
+.input::placeholder,
+.textarea::placeholder {
+  color: var(--color-ink-faint);
+}
+
+.input[aria-invalid="true"],
+.select[aria-invalid="true"] {
+  border-color: var(--color-down);
+}
+
+.select {
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--color-ink-dim) 50%),
+    linear-gradient(135deg, var(--color-ink-dim) 50%, transparent 50%);
+  background-position: calc(100% - 14px) 12px, calc(100% - 9px) 12px;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 26px;
+}
+
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--color-line-strong);
+}
+
+.seg button {
+  height: 26px;
+  padding: 0 10px;
+  background: transparent;
+  color: var(--color-ink-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  cursor: pointer;
+  border-right: 1px solid var(--color-line-strong);
+}
+
+.seg button:last-child {
+  border-right: none;
+}
+
+.seg button[aria-pressed="true"] {
+  background: var(--color-accent-dim);
+  color: var(--color-ink);
+}
+
+/* --- direction ---------------------------------------------------------- */
+
+[data-direction="positive"] {
+  color: var(--color-up);
+}
+
+[data-direction="negative"] {
+  color: var(--color-down);
+}
+
+[data-direction="flat"] {
+  color: var(--color-ink-dim);
+}
+
+/* --- the paper trading declaration -------------------------------------- */
+
+.paper-strip {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--color-paper-dim) 0 10px,
+    #2c2109 10px 20px
+  );
+  border-bottom: 1px solid color-mix(in srgb, var(--color-paper) 40%, transparent);
+}
+
+.paper-strip-inner {
+  background: var(--color-void);
+}

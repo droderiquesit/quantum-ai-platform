@@ -57,6 +57,8 @@
 
 pub mod adapter;
 pub mod alternative;
+pub mod connector;
+pub mod connectors;
 pub mod depth;
 pub mod narrative;
 pub mod replay;
@@ -71,6 +73,14 @@ pub use adapter::{
 pub use alternative::{
     AlternativeFeedAdapter, AlternativeFeedConfig, AlternativeStats, AlternativeSubject,
 };
+pub use connector::{
+    Checkpoint, ConnectorHealth, ConnectorRuntime, ContractHarness, ContractReport, Cursor,
+    DedupWindow, EventFingerprint, FeedHeartbeat, Liveness, MarketEventEnvelope, PollOutcome,
+    PollReport, Quarantine, QuarantineReason, RateLimiter, RawEvent, RuntimeConfig, SchemaGuard,
+    SourceConnector, SourceEmulator, SourceManifest, SourceRequest, SourceResponse,
+    SourceTransport,
+};
+pub use connectors::{CoinbaseTickerConnector, FrankfurterRatesConnector};
 pub use depth::{DepthFeedAdapter, DepthFeedConfig, DepthInstrument, DepthStats};
 pub use narrative::{
     DocumentStats, NarrativeAdapter, NarrativeFeedConfig, NarrativeSubject, Revision,
