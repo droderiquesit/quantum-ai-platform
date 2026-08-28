@@ -246,6 +246,22 @@ fn run() -> Result<()> {
             if let Some(round) = &outcome.evolution {
                 println!("  {}", round.describe());
             }
+            if let Some(round) = &outcome.learning {
+                println!("  {}", round.describe());
+                // Named individually, not summed. An operator needs to know
+                // *which* model has moved away from what it was fitted on, and
+                // which feature carried it there.
+                for observation in &round.drift {
+                    if observation.above_threshold {
+                        println!(
+                            "    drift: {} is at {:.3} on {}, past its threshold",
+                            observation.reference,
+                            observation.population_stability_index,
+                            observation.worst_feature
+                        );
+                    }
+                }
+            }
             println!(
                 "  {:>10} {:>4}  {}s against a {}s cadence{}",
                 "elapsed",

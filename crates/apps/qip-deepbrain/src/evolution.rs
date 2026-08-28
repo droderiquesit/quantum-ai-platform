@@ -33,6 +33,7 @@
 //! trial count still rises for every scored candidate, discarded or not —
 //! that is the whole point of the ledger.
 
+use crate::learning::{LearningConfig, LearningDesk, LearningRound, LearningStats};
 use crate::succession::{ChallengeSummary, SuccessionDesk, SuccessionStats};
 use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
@@ -83,6 +84,12 @@ pub struct EvolutionConfig {
     /// round deflates the holdout of everything the generative search finds
     /// alongside it.
     pub challengers: usize,
+    /// How the learning desk is tuned.
+    ///
+    /// Carried here rather than hard-coded inside the desk so a deployment can
+    /// turn it off and a test can reach it. A knob nothing can set is a
+    /// constant with a longer name.
+    pub learning: LearningConfig,
 }
 
 impl Default for EvolutionConfig {
@@ -95,6 +102,7 @@ impl Default for EvolutionConfig {
             max_weight: 0.5,
             history_cap: 2048,
             challengers: 4,
+            learning: LearningConfig::default(),
         }
     }
 }
@@ -188,6 +196,7 @@ pub struct EvolutionEngine {
     history: BTreeMap<String, Vec<Bar>>,
     foundries: BTreeMap<String, StrategyFoundry>,
     desk: SuccessionDesk,
+    learning: LearningDesk,
     stats: EvolutionStats,
 }
 
@@ -217,6 +226,7 @@ impl EvolutionEngine {
         universe: Universe,
     ) -> Result<Self> {
         let desk = SuccessionDesk::new(config.challengers, ChallengerPolicy::default())?;
+        let config_learning = config.learning.clone();
         Ok(Self {
             config,
             adapter,
@@ -225,6 +235,7 @@ impl EvolutionEngine {
             history: BTreeMap::new(),
             foundries: BTreeMap::new(),
             desk,
+            learning: LearningDesk::new(config_learning, seed),
             stats: EvolutionStats::default(),
         })
     }
@@ -232,6 +243,32 @@ impl EvolutionEngine {
     /// What the succession desk has done across the node's lifetime.
     pub const fn succession_stats(&self) -> SuccessionStats {
         self.desk.stats()
+    }
+
+    /// What the learning desk has done across the node's lifetime.
+    pub const fn learning_stats(&self) -> LearningStats {
+        self.learning.stats()
+    }
+
+    /// Fit a model on the deepest subject and measure the standing ones for
+    /// drift, on the learning desk's own cadence.
+    ///
+    /// Separate from [`Self::maybe_turn`] and on its own cadence, because
+    /// fitting a function and searching for a strategy answer different
+    /// questions at different rates. They share a subject: the one the node can
+    /// most readily trade is also the one whose bars carry the most signal to
+    /// learn from.
+    pub fn maybe_learn(&mut self, cycle: u64, now: Timestamp) -> Result<Option<LearningRound>> {
+        let Some((subject, bars)) = self
+            .history
+            .iter()
+            .filter_map(|(subject, bars)| depth(bars).map(|depth| (subject, bars, depth)))
+            .max_by(|left, right| left.2.total_cmp(&right.2))
+            .map(|(subject, bars, _)| (ObjectId::from_string(subject), bars.clone()))
+        else {
+            return Ok(None);
+        };
+        self.learning.maybe_learn(&subject, &bars, cycle, now)
     }
 
     pub const fn stats(&self) -> EvolutionStats {
@@ -1331,6 +1368,47 @@ mod tests {
             error.message().contains("mutated a different parent"),
             "the refusal does not name the cause: {}",
             error.message()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_node_fits_and_registers_a_model_rather_than_only_being_able_to() -> Result<()> {
+        // The defect this closes was not that the model machinery was wrong.
+        // It was that no running process built a registry, fitted anything, or
+        // called `register_fit` -- so `drift_score` was 0.0 on every card that
+        // could exist and the drift branch of `decision_eligibility` could not
+        // fire. A desk that compiles and is never called is the same gap in a
+        // new place, so this test drives it through the engine.
+        let mut platform = platform()?;
+        let mut engine = engine(1);
+        let mut now = start();
+        for _ in 0..((engine.config.minimum_bars as i64 + 30) * 6) {
+            now = now.saturating_add(Duration::from_mins(1));
+            engine.sense(&mut platform, now)?;
+        }
+        // The premise: nothing has been fitted, and the cadence is about to
+        // permit one.
+        assert_eq!(engine.learning_stats().rounds, 0);
+
+        let mut round = None;
+        for cycle in 1..=16u64 {
+            if let Some(produced) = engine.maybe_learn(cycle, now)? {
+                round = Some(produced);
+                break;
+            }
+        }
+        let round = round.ok_or_else(|| {
+            Error::not_found("a learning round within sixteen cycles of the default cadence")
+        })?;
+        assert!(
+            round.registration.is_some(),
+            "the round fitted nothing: {:?}",
+            round.ineligible
+        );
+        assert!(
+            engine.learning_stats().registered + engine.learning_stats().without_skill >= 1,
+            "a model was registered without the desk counting it"
         );
         Ok(())
     }

@@ -99,6 +99,12 @@ pub struct StepOutcome {
     pub observed: usize,
     /// What the evolution round did, on the cycles where one ran.
     pub evolution: Option<crate::evolution::RoundSummary>,
+    /// What the learning round did, on the cycles where one ran.
+    ///
+    /// A separate field and a separate cadence: fitting a function and
+    /// searching for a strategy are different questions, and a cycle line that
+    /// merged them would not say which one produced nothing.
+    pub learning: Option<crate::learning::LearningRound>,
     /// Measured on a monotonic clock, so a wall-clock adjustment mid-cycle
     /// cannot invent or erase an overrun.
     pub elapsed: Duration,
@@ -142,6 +148,7 @@ pub fn step(platform: &mut Platform, now: Timestamp, interval: Duration) -> Step
         elapsed,
         observed: 0,
         evolution: None,
+        learning: None,
     }
 }
 
@@ -294,6 +301,11 @@ pub fn run(
         // round's backtests are work the cycle's budget never promised.
         if let Some(engine) = evolution.as_deref_mut() {
             outcome.evolution = engine.maybe_turn(platform, cycles, now)?;
+            // After the search, on its own cadence. A model fitted from this
+            // cycle's bars and a strategy searched over them describe the same
+            // window, which is what makes the two rounds comparable after the
+            // fact.
+            outcome.learning = engine.maybe_learn(cycles, now)?;
         }
         if !outcome.report.traversed_every_stage() {
             failed += 1;
@@ -922,6 +934,104 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn the_cycle_drives_the_learning_desk_and_not_merely_the_search() {
+        // The gap this closes was never that the model machinery was wrong. It
+        // was that nothing called it: no running process built a registry,
+        // fitted anything, or recorded a drift score, so the drift branch of
+        // `decision_eligibility` could not fire. A desk wired to the engine but
+        // not reached by the cycle would be the same gap one layer further in,
+        // so this drives it through `run` rather than through the engine.
+        let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(start()));
+        let mut platform = platform(clock.clone());
+        let config = DeepBrainConfig {
+            max_cycles: Some(12),
+            ..brisk()
+        };
+        let status = shared(&config);
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let mut engine = crate::evolution::EvolutionEngine::new(
+            crate::evolution::EvolutionConfig {
+                // The search off, the learning on: this test is about the
+                // second loop, and a failing search would otherwise be able to
+                // produce the same silence.
+                every_cycles: 0,
+                learning: crate::learning::LearningConfig {
+                    every_cycles: 1,
+                    minimum_bars: 64,
+                    ..crate::learning::LearningConfig::default()
+                },
+                ..crate::evolution::EvolutionConfig::default()
+            },
+            Box::new(qip_market_ingestion::synthetic::SyntheticEnvironment::demo(
+                start(),
+                qip_market_ingestion::synthetic::EnvironmentConfig {
+                    seed: 7,
+                    step: Duration::from_mins(1),
+                    ..qip_market_ingestion::synthetic::EnvironmentConfig::default()
+                },
+            )),
+            7,
+            Universe::new(),
+        )
+        .expect("the engine assembles");
+
+        // Feed the engine enough history that a fit is possible at all. The
+        // manual clock the loop runs on does not advance, so the adapter would
+        // otherwise produce nothing and this test would pass for want of data
+        // rather than fail for want of wiring.
+        let mut fed = start();
+        for _ in 0..600 {
+            fed = fed.saturating_add(Duration::from_mins(1));
+            engine.sense(&mut platform, fed).expect("the adapter feeds");
+        }
+
+        let mut learned = 0usize;
+        let mut registered = 0usize;
+        run(
+            &mut platform,
+            &archive(),
+            &config,
+            &status,
+            &stop,
+            &clock,
+            0,
+            Some(&mut engine),
+            |outcome| {
+                if let Some(round) = &outcome.learning {
+                    learned += 1;
+                    if round.registration.is_some() {
+                        registered += 1;
+                    }
+                }
+            },
+        )
+        .expect("the loop runs");
+
+        // The premise: the search really was off, so nothing here can be
+        // attributed to it.
+        assert_eq!(
+            engine.stats().rounds,
+            0,
+            "the search ran, so a learning round could be riding on its cadence"
+        );
+        assert!(
+            learned > 0,
+            "twelve cycles produced no learning round at all; the cycle is not driving the desk"
+        );
+        assert!(
+            registered > 0,
+            "{learned} learning round(s) ran and none fitted a model, so nothing reached the \
+             registry"
+        );
+        assert_eq!(
+            engine.learning_stats().rounds as usize,
+            learned,
+            "the desk and the cycle disagree about how many rounds ran"
+        );
     }
 
     #[test]

@@ -302,6 +302,7 @@ name = "qip-deepbrain"
 version = "0.1.0"
 dependencies = [
  "qip-agents",
+ "qip-ai",
  "qip-api",
  "qip-contracts",
  "qip-core",
@@ -313,12 +314,15 @@ dependencies = [
  "qip-lifecycle",
  "qip-market",
  "qip-market-ingestion",
+ "qip-numerics",
  "qip-observability",
+ "qip-quant",
  "qip-risk",
  "qip-risk-engine",
  "qip-simulation-engine",
  "qip-storage",
  "qip-strategy",
+ "qip-training",
  "serde",
  "serde_json",
 ]
