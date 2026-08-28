@@ -94,7 +94,7 @@ use qip_opportunity_engine::opportunity::Opportunity;
 use qip_optimization_engine::router::ComputeRouter;
 use qip_portfolio::portfolio::Portfolio;
 use qip_portfolio_engine::construction::PortfolioConstructor;
-use qip_portfolio_engine::proposal::Proposal;
+use qip_portfolio_engine::proposal::{Proposal, ProposalStatus};
 use qip_prediction::resolution::{
     Comparison, Observations, Proposition, ResolutionCriteria, ResolutionSource, SettlementRule,
     SourceKind, UndeterminedRule, Verdict,
@@ -2679,6 +2679,68 @@ impl Platform {
         self.monitor
             .enforce(&action, self.autonomy.kill_switch_mut(), now);
 
+        let mut sign_off_problems: Vec<String> = Vec::new();
+        // Sign off the drafts, or do not. `Proposal::approve` requires two
+        // controls because a single approver is a single point of failure, and
+        // until this call existed nothing in the platform called it at all:
+        // every proposal stayed a draft, `is_releasable` was permanently
+        // false, and the release loop below was unreachable code. The platform
+        // sized positions it could never act on.
+        //
+        // Both signatures are deterministic and neither is a model. The risk
+        // monitor has already ruled above, on this cycle's own book; the
+        // compliance report must cover all six governance controls and find
+        // every one of them enforced. A model may propose, but it does not
+        // sign — which is the property `.claude/rules/domains/risk-and-execution.md`
+        // exists to protect.
+        let compliance = self.compliance_report(now).and_then(|report| {
+            report.require_fully_enforced()?;
+            Ok(())
+        });
+        let signable = action.permits_new_risk() && compliance.is_ok();
+        if !signable {
+            let reason = if action.permits_new_risk() {
+                compliance
+                    .err()
+                    .map(|error| error.message().to_string())
+                    .unwrap_or_else(|| "compliance did not sign".to_string())
+            } else {
+                format!("the risk monitor is at {}", action.as_str())
+            };
+            // Said once per cycle, not once per proposal: a stage that repeats
+            // the same refusal for every draft buries the reason in its own
+            // noise.
+            sign_off_problems.push(format!("no proposal was signed off: {reason}"));
+        }
+        if signable {
+            let at = now;
+            for proposal in &mut self.proposals {
+                if !matches!(proposal.status, ProposalStatus::Draft) {
+                    continue;
+                }
+                // A proposal with no legs proposes nothing. `stage_decide`
+                // records one on every quiet cycle so the log says the cycle
+                // ran and chose not to trade, and signing those off would put
+                // a risk and a compliance signature against a decision neither
+                // control examined — filling the audit trail with approvals
+                // that approved nothing, and making a real approval harder to
+                // find rather than easier.
+                if proposal.is_empty() {
+                    continue;
+                }
+                if let Err(error) = proposal.approve(
+                    at,
+                    vec!["risk-monitor".to_string(), "compliance".to_string()],
+                ) {
+                    sign_off_problems.push(format!(
+                        "{} could not be approved: {}",
+                        proposal.proposal_id.as_str(),
+                        error.message()
+                    ));
+                }
+            }
+        }
+
         let releasable = self
             .proposals
             .iter()
@@ -2718,14 +2780,157 @@ impl Platform {
             if !action.permits_new_risk() {
                 outcome = outcome.with_problem(format!("new risk is blocked: {}", action.as_str()));
             }
+            // Why nothing was signable reaches the report on this path too.
+            // Without it, a cycle blocked by an unenforced compliance control
+            // is indistinguishable from a quiet cycle with nothing to trade,
+            // and those need different actions from an operator.
+            for problem in sign_off_problems {
+                outcome = outcome.with_problem(problem);
+            }
             return outcome;
         }
 
-        StageOutcome::ran(
+        // Release them. Until this loop existed the stage counted approved
+        // proposals and returned, so the platform sensed, reasoned, sized and
+        // approved — and then never acted, not even against the simulator.
+        // Nine rows of the canonical architecture starved on this one seam,
+        // and LEARN had nothing to attribute because no fill the cycle
+        // produced ever existed.
+        //
+        // Every order goes through `submit_order`, which is the only path to a
+        // venue: it re-reads risk state, runs the deterministic pre-trade
+        // controls, consults the autonomy ceiling and the kill switch, and
+        // records the result — accepted or refused — on the same hash chain.
+        // There is deliberately no second path. A release loop that built
+        // orders and handed them to the broker directly would be a way around
+        // every control in the paragraph above.
+        let mut released = 0usize;
+        let mut refused = 0usize;
+        let mut problems: Vec<String> = sign_off_problems.clone();
+
+        let approved: Vec<Proposal> = self
+            .proposals
+            .iter()
+            .filter(|proposal| proposal.status.is_releasable())
+            .cloned()
+            .collect();
+
+        for proposal in &approved {
+            for (index, leg) in proposal.legs.iter().enumerate() {
+                // A leg that would trade nothing is not an order. Submitting a
+                // zero-quantity order would consume a control decision and a
+                // ledger row to accomplish nothing, and would make the
+                // released count a lie about how much the platform did.
+                if !leg.quantity.is_positive() {
+                    continue;
+                }
+
+                // Derived from the proposal and the leg's position within it,
+                // never from a clock or a counter. Two runs of the same cycle
+                // over the same inputs produce the same order ids, which is
+                // what lets a replay be compared to the original rather than
+                // merely resembling it. It is also the idempotency key: a
+                // retry cannot manufacture a second order for the same leg.
+                let order_id =
+                    OrderId::from_string(format!("ord-{}-{index}", proposal.proposal_id.as_str()));
+
+                let order = Order::new(
+                    order_id,
+                    leg.object_id.clone(),
+                    Self::release_side(leg.side),
+                    leg.quantity,
+                    // Market, because the simulated broker fills against the
+                    // book it was given and a limit price invented here would
+                    // be a number with no source. A working-algo order type is
+                    // a scheduling decision the execution engine owns, and it
+                    // belongs there rather than in the stage that releases.
+                    OrderType::Market,
+                    leg.reference_price,
+                    proposal.proposal_id.as_str().to_string(),
+                    leg.hypotheses.clone(),
+                    "platform",
+                    now,
+                );
+
+                match self.submit_order(order, now) {
+                    Ok(()) => released += 1,
+                    // A refusal is an outcome, not an error to abort on. The
+                    // control said no and `submit_order` has already put that
+                    // on the record; stopping the loop here would let one
+                    // refused leg silently prevent every later proposal from
+                    // being offered to the controls at all.
+                    Err(error) => {
+                        refused += 1;
+                        problems.push(format!(
+                            "{} leg {index} was refused: {}",
+                            proposal.proposal_id.as_str(),
+                            error.message()
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Move every proposal offered to the controls out of `Approved`, so a
+        // later cycle cannot offer it again. Without this the same approved
+        // proposal is re-released on every subsequent cycle, and the platform
+        // pyramids one decision into a position nobody sized — the exact
+        // duplicate-order failure the idempotent order id is a second line of
+        // defence against, not a substitute for.
+        //
+        // A refused leg still marks its proposal released. It was offered to
+        // the controls and they ruled; re-offering the same proposal next
+        // cycle would ask the same question of the same book and record the
+        // same refusal indefinitely.
+        let offered: Vec<String> = approved
+            .iter()
+            .map(|proposal| proposal.proposal_id.as_str().to_string())
+            .collect();
+        for proposal in &mut self.proposals {
+            if offered.contains(&proposal.proposal_id.as_str().to_string()) {
+                if let Err(error) = proposal.release(now) {
+                    problems.push(format!(
+                        "{} was released but its status could not be advanced: {}",
+                        proposal.proposal_id.as_str(),
+                        error.message()
+                    ));
+                }
+            }
+        }
+
+        let mut outcome = StageOutcome::ran(
             Stage::Act,
-            releasable,
-            format!("{releasable} proposal(s) ready to release"),
-        )
+            released,
+            format!(
+                "{released} order(s) released from {} approved proposal(s), {refused} refused; \
+                 risk monitor says {}",
+                approved.len(),
+                action.as_str()
+            ),
+        );
+        for problem in problems {
+            outcome = outcome.with_problem(problem);
+        }
+        outcome
+    }
+
+    /// Carry a proposal leg's direction across to the execution engine's own.
+    ///
+    /// Two crates declare a `Side` and neither may depend on the other — a service
+    /// owning its domain means owning its vocabulary. The kernel is the only place
+    /// that composes both, so the translation lives here, which is the same reason
+    /// the rest of the wiring does.
+    ///
+    /// Matched exhaustively and deliberately: a third direction added to either
+    /// enum becomes a compile error here rather than falling through a wildcard to
+    /// a default. A `_ => Buy` arm in this function would turn a new sell-like
+    /// variant into a purchase, silently, in the one function standing between a
+    /// sizing decision and an order.
+    const fn release_side(side: qip_portfolio_engine::proposal::Side) -> Side {
+        match side {
+            qip_portfolio_engine::proposal::Side::Buy => Side::Buy,
+            qip_portfolio_engine::proposal::Side::Sell => Side::Sell,
+        }
     }
 
     fn stage_learn(&mut self, now: Timestamp) -> StageOutcome {
@@ -3713,6 +3918,27 @@ mod decide_tests {
         .expect("the platform assembles")
     }
 
+    /// A platform whose book is small enough that one sized leg fits inside
+    /// the conservative single-order notional limit.
+    ///
+    /// The limit is untouched. Only the equity the weights are fractions of is
+    /// smaller, which is the honest way to test a release: a control that has
+    /// to be relaxed for the happy path to pass is a control the happy path
+    /// was never inside.
+    fn small_book_platform() -> Platform {
+        let config = PlatformConfig::default().with_initial_equity(Decimal::from_int(200_000));
+        let (context, _clock) =
+            qip_core::Context::deterministic(Timestamp::from_secs(1_760_000_000), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles")
+    }
+
     fn thesis(object: &str, conviction: f64) -> ApprovedThesis {
         ApprovedThesis {
             hypothesis_id: format!("HYP-{object}"),
@@ -3747,6 +3973,157 @@ mod decide_tests {
             proposal.len(),
             0,
             "an empty cycle proposed legs from nothing"
+        );
+    }
+
+    #[test]
+    fn a_sized_proposal_is_signed_by_two_controls_and_released_as_orders() {
+        // The trading spine's last seam. Until this passed, `stage_act`
+        // counted approved proposals and returned without submitting anything,
+        // and nothing anywhere called `Proposal::approve` — so every proposal
+        // stayed a draft, `is_releasable` was permanently false, and the
+        // release path was unreachable code. The platform sized positions it
+        // could never act on, and LEARN had no fill of its own to attribute.
+        // A book small enough that a sized leg clears
+        // `LimitSet::conservative_default`'s single-order notional cap on its
+        // merits. The default test book is large enough that one leg is 800k
+        // against a 250k limit — a legitimate refusal, asserted separately in
+        // `an_order_over_the_notional_limit_is_refused_and_recorded`. Raising
+        // the limit to fit the order would have turned a working control into
+        // a passing test, which is the trade this repository does not make.
+        let mut platform = small_book_platform();
+        feed_history(&mut platform, "AAPL", 30);
+        feed_history(&mut platform, "MSFT", 30);
+        platform.pending_theses.push(thesis("AAPL", 0.6));
+        platform.pending_theses.push(thesis("MSFT", -0.4));
+
+        let now = Timestamp::from_secs(1_760_000_100);
+        platform.stage_decide(now);
+
+        // The premise, asserted before the conclusion: there is something to
+        // release. A release assertion over an empty proposal would pass by
+        // measuring nothing.
+        let sized = platform.proposals.last().expect("a proposal is recorded");
+        assert!(!sized.is_empty(), "the premise failed: no legs were sized");
+        assert!(
+            !sized.status.is_releasable(),
+            "construction is not permission; a fresh proposal must be a draft"
+        );
+        let legs = sized.legs.len();
+
+        let correlation = CorrelationId::from_string("corr-release");
+        let outcome = platform.stage_act(now, &correlation);
+
+        // Two controls signed, and both are named. A single approver is a
+        // single point of failure, which is why `approve` refuses one name.
+        let released = platform
+            .proposals
+            .iter()
+            .find(|proposal| matches!(proposal.status, ProposalStatus::Released { .. }))
+            .expect("the sized proposal was released");
+        assert_eq!(
+            released.checks_passed,
+            vec!["risk-monitor".to_string(), "compliance".to_string()],
+            "the proposal was released without both control signatures"
+        );
+
+        // And it became orders — one per leg, each naming the proposal that
+        // caused it.
+        assert_eq!(
+            outcome.produced, legs,
+            "{legs} leg(s) were sized and {} order(s) were released: {} :: problems={:?}",
+            outcome.produced, outcome.detail, outcome.problems
+        );
+        let orders: Vec<_> = platform.orders.orders().collect();
+        assert_eq!(orders.len(), legs, "an order object is missing");
+        assert!(
+            orders
+                .iter()
+                .all(|order| order.proposal_id == released.proposal_id.as_str()),
+            "an order was released that cannot name the proposal that caused it"
+        );
+
+        // Nothing reached a real venue.
+        assert!(!platform.orders.has_live_fills());
+        assert!(!platform.is_live_capable());
+    }
+
+    #[test]
+    fn an_order_over_the_notional_limit_is_refused_and_recorded() {
+        // The other half of the release path, and the more important half. The
+        // controls are not decoration: a leg sized against the default test
+        // book is 800k against a 250k single-order notional cap, and the
+        // deterministic pre-trade check refuses it before it reaches the
+        // broker.
+        //
+        // This test is why `a_sized_proposal_is_signed_by_two_controls_and_released_as_orders`
+        // uses a smaller book rather than a larger limit. Both paths are real
+        // and both are asserted; relaxing the limit would have deleted this
+        // one silently.
+        let mut platform = platform();
+        feed_history(&mut platform, "AAPL", 30);
+        feed_history(&mut platform, "MSFT", 30);
+        platform.pending_theses.push(thesis("AAPL", 0.6));
+        platform.pending_theses.push(thesis("MSFT", -0.4));
+
+        let now = Timestamp::from_secs(1_760_000_100);
+        let correlation = CorrelationId::from_string("corr-refused");
+        platform.stage_decide(now);
+        let sized = platform.proposals.last().expect("a proposal is recorded");
+        assert!(
+            !sized.is_empty(),
+            "the premise failed: nothing was sized, so nothing could be refused"
+        );
+
+        let outcome = platform.stage_act(now, &correlation);
+        assert_eq!(
+            outcome.produced, 0,
+            "an order over the notional limit reached the broker: {}",
+            outcome.detail
+        );
+        assert!(
+            outcome
+                .problems
+                .iter()
+                .any(|problem| problem.contains("order-notional")),
+            "the refusal did not name the control that made it: {:?}",
+            outcome.problems
+        );
+        // Refused, not lost: nothing filled, and the platform is still paper.
+        assert!(platform.orders.fills().is_empty());
+        assert!(!platform.orders.has_live_fills());
+    }
+
+    #[test]
+    fn a_released_proposal_is_not_released_a_second_time() {
+        // The duplicate-order failure. An approved proposal left in `Approved`
+        // is re-offered on every later cycle, so one sizing decision pyramids
+        // into a position nobody chose. The idempotent order id would collide
+        // downstream, but relying on that would be a second control covering
+        // for a missing first one.
+        let mut platform = small_book_platform();
+        feed_history(&mut platform, "AAPL", 30);
+        feed_history(&mut platform, "MSFT", 30);
+        platform.pending_theses.push(thesis("AAPL", 0.6));
+        platform.pending_theses.push(thesis("MSFT", -0.4));
+
+        let now = Timestamp::from_secs(1_760_000_100);
+        let correlation = CorrelationId::from_string("corr-twice");
+        platform.stage_decide(now);
+        let first = platform.stage_act(now, &correlation);
+        assert!(
+            first.produced > 0,
+            "the premise failed: nothing was released on the first pass, so a \
+             second pass cannot demonstrate anything"
+        );
+
+        // A second ACT with no new proposal must release nothing.
+        let later = now.saturating_add(Duration::from_secs(60));
+        let second = platform.stage_act(later, &correlation);
+        assert_eq!(
+            second.produced, 0,
+            "the same proposal was released twice: {}",
+            second.detail
         );
     }
 
