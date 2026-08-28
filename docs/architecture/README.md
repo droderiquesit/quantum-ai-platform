@@ -115,3 +115,22 @@ constraints including the ones its own relaxation dropped, and a quantum answer
 must beat the baseline by a stated margin. Running QAOA against the simulator
 validates the formulation and proves nothing whatever about advantage —
 simulating the circuit costs more than solving the problem it encodes.
+
+## Reading order, and where the rest lives
+
+This document is the shape of the system. Three companions carry the detail:
+
+1. `docs/adr/` — twelve numbered decisions. The reasoning is the point, and
+   several of them are settled: reopening one takes a new ADR, not an argument.
+2. `docs/architecture/canonical-platform.md` — the target architecture as 104
+   addressable component ids.
+3. `docs/architecture/diagram-reconciliation.md` — each id scored against the
+   tree, with implementation path, runtime evidence, named test and gap. A row
+   counts as complete only where both an implementation and a *named passing
+   test* exist, and any component no deployable binary composes is capped at
+   "implemented but unverified" however good its own tests are.
+
+The rules an agent must follow when changing this architecture are in
+`.claude/rules/architecture/`; the per-area constraints are in
+`.claude/rules/domains/`. `docs/claude/SIX_LEVEL_SYSTEM.md` maps how those fit
+together.

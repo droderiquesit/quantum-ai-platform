@@ -280,8 +280,12 @@ pub enum AuthScheme {
 ///
 /// [`Self::new`] refuses anything that is not `SCREAMING_SNAKE_CASE`, which is
 /// what stops a pasted key from being written where a variable name belongs:
-/// `sk-live-9f2a` and `AKIAIOSFODNN7EXAMPLE/abc` both fail, and the refusal
-/// arrives at manifest load rather than after the key is in git history.
+/// `sk-live-9f2a` and an AWS access-key id followed by `/abc` both fail, and
+/// the refusal arrives at manifest load rather than after the key is in git
+/// history. The key id is described rather than spelled because a literal
+/// one — even AWS's published example — trips `./scripts/check-secrets.sh`
+/// on every run, and a scanner that always reports something is a scanner
+/// people stop reading.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SecretRef {
