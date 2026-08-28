@@ -121,10 +121,16 @@ spec:
             failureThreshold: 3
           env:
             # The health surface this node serves. QIP_API_ADDRESS is not read
-            # by this binary — it serves its own listener, not the API's.
+            # by this binary — it serves its own listener, not the API's — and
+            # until now this file said exactly that and set it anyway, two
+            # lines apart. A variable a workload does not read is not inert:
+            # it is a value an operator can change, in a manifest that appears
+            # to accept it, with no effect whatsoever. The same class of defect
+            # kept QIP_MESH_CELLS out of every manifest and QIP_MIRROR_PATH in
+            # edge-cell.yaml after the binary began refusing it, so it is now
+            # checked rather than commented — see
+            # crates/tests/qip-acceptance/tests/manifest_wiring.rs.
             - name: QIP_DEEPBRAIN_HEALTH_ADDRESS
-              value: "0.0.0.0:8080"
-            - name: QIP_API_ADDRESS
               value: "0.0.0.0:8080"
             - name: QIP_AUTONOMY_CEILING
               valueFrom:
@@ -136,11 +142,12 @@ spec:
                 configMapKeyRef:
                   name: qip-config
                   key: cycle_interval_seconds
-            - name: QIP_LOG_LEVEL
-              valueFrom:
-                configMapKeyRef:
-                  name: qip-config
-                  key: log_level
+            # No QIP_LOG_LEVEL. Nothing in this workspace reads one — the
+            # binaries write their banner and their refusals to stdout and
+            # stderr unconditionally — so the `log_level` ConfigMap key it read
+            # from was a dial connected to nothing, and it has gone with it. A
+            # log level worth having is a change to the code that emits the
+            # lines, not a key three manifests agree to pass to nobody.
             # The capital-envelope key, as a file. Absent, this process runs
             # on the seed-derived default — reproducible, mintable by anyone
             # who knows the seed, and refused outright once the autonomy

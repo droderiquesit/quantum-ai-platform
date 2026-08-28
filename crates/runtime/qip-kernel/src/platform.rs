@@ -87,6 +87,7 @@ use qip_market::snapshot::MarketSnapshot;
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_mesh::catalog::Catalog;
 use qip_observability::Telemetry;
+use qip_observability::metrics::{labels, names};
 use qip_opportunity_engine::catalyst::MarketEvent;
 use qip_opportunity_engine::detector::{DetectionContext, DetectorRegistry};
 use qip_opportunity_engine::engine::{EngineConfig, OpportunityEngine};
@@ -902,7 +903,7 @@ impl Platform {
             SettlementCalendar::weekday(SettlementConvention::T1)?,
         );
 
-        Ok(Self {
+        let platform = Self {
             central,
             insights: crate::central::insights::CellInsights::new(config.seed),
             data_finder,
@@ -960,7 +961,105 @@ impl Platform {
             queue: Vec::new(),
             proposals: Vec::new(),
             proposals_made: 0,
-        })
+        };
+        platform.describe_metrics();
+        Ok(platform)
+    }
+
+    /// Say what each metric the loop publishes means, once, here.
+    ///
+    /// Here because this is the only function that runs exactly once per
+    /// platform and knows the whole loop. A `# HELP` line is what an operator
+    /// reads when a series they have never seen appears at three in the
+    /// morning, and a name alone does not tell them whether a rising number is
+    /// the platform working or the platform failing — `qip_orders_refused_total`
+    /// climbing is a control doing its job, `qip_journal_write_failures_total`
+    /// climbing is trading with no record.
+    ///
+    /// Describing creates no series. Every name below stays absent from
+    /// `/metrics` until something records it, which is the property that makes
+    /// the export answer "what has this process actually done" rather than
+    /// "what could it have done".
+    fn describe_metrics(&self) {
+        let metrics = &self.telemetry.metrics;
+        metrics.describe(names::CYCLES_RUN, "cycles of the eight-stage loop begun");
+        metrics.describe(
+            names::CYCLE_DURATION_MS,
+            "wall time for one full cycle, on the injected clock",
+        );
+        metrics.describe(
+            names::STAGE_RUNS,
+            "stage outcomes, labelled by stage and by whether the stage ran at all",
+        );
+        metrics.describe(
+            names::STAGE_DURATION_MS,
+            "wall time for one stage, on the injected clock",
+        );
+        metrics.describe(
+            names::STAGE_PROBLEMS,
+            "problems a stage reported without stopping the cycle",
+        );
+        metrics.describe(
+            names::EVENT_LOG_ENTRIES,
+            "entries in the hash-chained event log",
+        );
+        metrics.describe(
+            names::JOURNAL_FAILURES,
+            "cycles that ran but could not be journalled; the platform traded with no record",
+        );
+        metrics.describe(
+            names::EVENTS_PUBLISHED,
+            "cycle records sealed onto the durable transport",
+        );
+        metrics.describe(
+            names::PROPOSALS_SIGNED,
+            "proposals that took both the risk and the compliance signature",
+        );
+        metrics.describe(
+            names::PROPOSALS_UNSIGNED,
+            "cycles in which no proposal could be signed, labelled by the control that withheld",
+        );
+        metrics.describe(
+            names::ORDERS_SUBMITTED,
+            "orders the control path accepted and sent to a venue",
+        );
+        metrics.describe(
+            names::ORDERS_REFUSED,
+            "orders a control refused, labelled by the control that refused them",
+        );
+        metrics.describe(names::ORDERS_FILLED, "fills received, by venue");
+        metrics.describe(
+            names::RISK_EVALUATIONS,
+            "passes of the risk monitor over the book",
+        );
+        metrics.describe(
+            names::REASON_ROUTINGS,
+            "cost-router placements of the REASON decision, and whether the panel convened",
+        );
+        metrics.describe(
+            names::CYCLE_COMPUTE_COST,
+            "compute units the last cycle's ledger charged",
+        );
+        metrics.describe(
+            names::COMPUTE_SPEND,
+            "compute units charged since the process started",
+        );
+        metrics.describe(
+            names::KILL_SWITCH_TRIPPED,
+            "1 while the kill switch is globally tripped and nothing may trade",
+        );
+        metrics.describe(
+            names::LIVE_FILLS,
+            "fills that did not come from a simulated venue; must stay at zero",
+        );
+        metrics.describe(
+            names::LIMIT_BREACHES,
+            "risk limits blocking as of the last pass of the monitor",
+        );
+        metrics.describe(
+            names::PERMISSION_DENIALS,
+            "agent attempts at something the agent's manifest does not grant",
+        );
     }
 
     pub fn config(&self) -> &PlatformConfig {
@@ -1509,19 +1608,38 @@ impl Platform {
         self.last_correlation = Some(correlation_id.clone());
         let lineage = Lineage::root(correlation_id.clone(), "kernel");
         let started_at = now;
+        self.telemetry.metrics.count(names::CYCLES_RUN, labels([]));
+
         // The stages run in order and every one of them runs: a cycle that
         // fails at REASON still reaches LEARN, because LEARN is what would
         // eventually notice that REASON keeps failing.
-        let mut stages = vec![
-            self.stage_sense(now),
-            self.stage_understand(now),
-            self.stage_discover(now),
-            self.stage_reason(now, &lineage),
-            self.stage_simulate(now),
-            self.stage_decide(now),
-            self.stage_act(now, &correlation_id),
-            self.stage_learn(now),
-        ];
+        //
+        // Each is timed as it returns rather than all of them being handed the
+        // one `now` the caller passed. `StageOutcome::elapsed` and
+        // `StageOutcome::with_elapsed` have existed since the loop was written
+        // and nothing ever called the setter, so every stage in every report
+        // and every journal entry claimed to have taken zero time. An operator
+        // asking which stage is slow got eight zeros — a field that looks like
+        // a measurement and is a constant is worse than no field, because it
+        // answers the question wrongly instead of admitting it cannot.
+        let mut stages = Vec::with_capacity(Stage::all().len());
+        let mut mark = self.context.now();
+        let sensed = self.stage_sense(now);
+        self.finish_stage(&mut stages, sensed, &mut mark);
+        let understood = self.stage_understand(now);
+        self.finish_stage(&mut stages, understood, &mut mark);
+        let discovered = self.stage_discover(now);
+        self.finish_stage(&mut stages, discovered, &mut mark);
+        let reasoned = self.stage_reason(now, &lineage);
+        self.finish_stage(&mut stages, reasoned, &mut mark);
+        let simulated = self.stage_simulate(now);
+        self.finish_stage(&mut stages, simulated, &mut mark);
+        let decided = self.stage_decide(now);
+        self.finish_stage(&mut stages, decided, &mut mark);
+        let acted = self.stage_act(now, &correlation_id);
+        self.finish_stage(&mut stages, acted, &mut mark);
+        let learned = self.stage_learn(now);
+        self.finish_stage(&mut stages, learned, &mut mark);
 
         // Charge what the cycle consumed. A ledger per cycle rather than one
         // per process: the agent budget inside it is what refuses the next
@@ -1545,21 +1663,96 @@ impl Platform {
             halted: self.autonomy.kill_switch().is_globally_tripped(),
         };
 
+        for outcome in &report.stages {
+            let stage = labels([("stage", outcome.stage.as_str())]);
+            let mut ran = stage.clone();
+            ran.insert("ran".to_string(), outcome.ran.to_string());
+            self.telemetry.metrics.count(names::STAGE_RUNS, ran);
+            // Statistics are `f64` and money is `Decimal`; a duration is a
+            // statistic, and this is where nanoseconds on the injected clock
+            // become the milliseconds the latency buckets are cut in.
+            self.telemetry.metrics.observe_latency_ms(
+                names::STAGE_DURATION_MS,
+                stage.clone(),
+                outcome.elapsed.as_nanos() as f64 / 1_000_000.0,
+            );
+            if !outcome.problems.is_empty() {
+                self.telemetry.metrics.increment(
+                    names::STAGE_PROBLEMS,
+                    stage,
+                    outcome.problems.len() as u64,
+                );
+            }
+        }
+        self.telemetry.metrics.observe_latency_ms(
+            names::CYCLE_DURATION_MS,
+            labels([]),
+            self.context.now().since(started_at).as_nanos() as f64 / 1_000_000.0,
+        );
+        // The gauge the `qip_kill_switch_tripped` alert policy queries. Set on
+        // every cycle rather than only when it changes: a gauge written once at
+        // the moment of a trip goes stale the instant the scrape interval
+        // misses it, and an alert reading `max() > 0` over a series that
+        // stopped reporting sees nothing rather than sees a halt.
+        self.telemetry.metrics.gauge(
+            names::KILL_SWITCH_TRIPPED,
+            labels([]),
+            if report.halted { 1.0 } else { 0.0 },
+        );
+
         // The journal is written last, so it records the cycle that happened
         // rather than the one that was about to. A journal failure is a problem
         // on the cycle and not the end of it: a process that stopped trading
         // because it could not write its own diary would be a worse outcome
         // than one that traded and said it could not write it down.
-        if let Err(error) = self.journal_cycle(&report, now) {
-            if let Some(learn) = report.stages.last_mut() {
-                learn.problems.push(format!(
-                    "the cycle journal was not written: {}",
-                    error.message()
-                ));
+        //
+        // Which is exactly why it is counted. "Traded and could not write it
+        // down" is the state nobody notices from a report that still says the
+        // cycle ran, and `qip_journal_write_failures_total` is the only place
+        // it is a number rather than a sentence in a problem list.
+        match self.journal_cycle(&report, now) {
+            Ok(()) => self
+                .telemetry
+                .metrics
+                .count(names::EVENTS_PUBLISHED, labels([("topic", "cycle")])),
+            Err(error) => {
+                self.telemetry
+                    .metrics
+                    .count(names::JOURNAL_FAILURES, labels([]));
+                if let Some(learn) = report.stages.last_mut() {
+                    learn.problems.push(format!(
+                        "the cycle journal was not written: {}",
+                        error.message()
+                    ));
+                }
             }
         }
         report.events_logged = self.event_log.len();
+        self.telemetry.metrics.gauge(
+            names::EVENT_LOG_ENTRIES,
+            labels([]),
+            report.events_logged as f64,
+        );
         report
+    }
+
+    /// Close one stage off: time it on the injected clock and keep it.
+    ///
+    /// The clock is the platform's own rather than the wall, so a replay
+    /// against a [`qip_core::ManualClock`] reports the durations that clock
+    /// says elapsed. That makes a replayed cycle's stage timings reproducible
+    /// instead of a fresh measurement of the replay machine, which is the same
+    /// reason every other time in this loop comes from the injected clock.
+    fn finish_stage(
+        &self,
+        stages: &mut Vec<StageOutcome>,
+        outcome: StageOutcome,
+        mark: &mut Timestamp,
+    ) {
+        let at = self.context.now();
+        let elapsed = at.since(*mark);
+        *mark = at;
+        stages.push(outcome.with_elapsed(elapsed));
     }
 
     /// Charge the rungs this cycle actually used.
@@ -1617,6 +1810,29 @@ impl Platform {
             }
         }
         self.compute_spend += ledger.total_cost();
+
+        // The bill, read off the ledger that was just charged rather than
+        // recomputed from the stage list. Recomputing would be a second claim
+        // about what the cycle cost, and the two would disagree the first time
+        // the budget refused a rung part-way through — the ledger would hold
+        // the truncated bill and the recomputation the full one, with the
+        // larger and wronger number being the one on the dashboard.
+        //
+        // A compute charge is a `Decimal` and a metric is an `f64`; this is the
+        // crossing point, and it is here rather than at the export because the
+        // ledger's own arithmetic must stay exact right up to the moment the
+        // number leaves the platform.
+        self.telemetry.metrics.gauge(
+            names::CYCLE_COMPUTE_COST,
+            labels([]),
+            ledger.total_cost().to_f64(),
+        );
+        self.telemetry.metrics.gauge(
+            names::COMPUTE_SPEND,
+            labels([]),
+            self.compute_spend.to_f64(),
+        );
+
         self.cycle_ledger = Some(ledger);
         problems
     }
@@ -2045,6 +2261,42 @@ impl Platform {
         }
     }
 
+    /// Keep the REASON routing record, and count it.
+    ///
+    /// The only way `reason_routing` is written, and that is the point rather
+    /// than tidiness. There are four paths out of REASON — the context could
+    /// not be built, the router refused to place the decision, the panel's rung
+    /// cost more than the decision was worth, and the panel convened — and a
+    /// counter incremented at three of them would report a decline rate that
+    /// silently excluded whichever one somebody forgot. Routing the assignment
+    /// through here makes the record and the metric the same act: a fifth path
+    /// added later cannot store a routing without also counting it, because
+    /// there is no other way to store one.
+    ///
+    /// Labelled by the rung the router chose and by whether the panel actually
+    /// convened, which is the pair that matters: `qip-cost-router` exists to
+    /// place decisions below the panel, and a placement that is never followed
+    /// by a convening is a saving while a placement that always is means the
+    /// router is a receipt rather than a control. Both label values come from
+    /// closed enums, so the series count is bounded by the ladder.
+    fn place_reason_routing(&mut self, routing: ReasonRouting) {
+        self.telemetry.metrics.count(
+            names::REASON_ROUTINGS,
+            labels([
+                ("tier", routing.tier().map_or("none", |tier| tier.as_str())),
+                (
+                    "outcome",
+                    if routing.dispatched {
+                        "convened"
+                    } else {
+                        "declined"
+                    },
+                ),
+            ]),
+        );
+        self.reason_routing = Some(routing);
+    }
+
     fn stage_reason(&mut self, now: Timestamp, lineage: &Lineage) -> StageOutcome {
         let Some(opportunity) = self.queue.first().cloned() else {
             return StageOutcome::ran(Stage::Reason, 0, "nothing in the queue to reason about");
@@ -2061,7 +2313,7 @@ impl Platform {
             Ok(context) => context,
             Err(error) => {
                 let rationale = error.message().to_string();
-                self.reason_routing = Some(ReasonRouting::record(
+                self.place_reason_routing(ReasonRouting::record(
                     self.cycle,
                     &opportunity,
                     subject,
@@ -2086,7 +2338,7 @@ impl Platform {
             // rather than reporting an empty queue.
             Err(error) => {
                 let rationale = error.message().to_string();
-                self.reason_routing = Some(ReasonRouting::record(
+                self.place_reason_routing(ReasonRouting::record(
                     self.cycle,
                     &opportunity,
                     subject,
@@ -2131,7 +2383,7 @@ impl Platform {
 
         let placed_rationale = placed.rationale().to_string();
         if let Some(rationale) = refusal {
-            self.reason_routing = Some(ReasonRouting::record(
+            self.place_reason_routing(ReasonRouting::record(
                 self.cycle,
                 &opportunity,
                 subject,
@@ -2157,7 +2409,7 @@ impl Platform {
         } else {
             placed_rationale
         };
-        self.reason_routing = Some(ReasonRouting::record(
+        self.place_reason_routing(ReasonRouting::record(
             self.cycle,
             &opportunity,
             subject,
@@ -2176,12 +2428,34 @@ impl Platform {
         .about_entities(opportunity.affected_entities.clone());
 
         let report = self.organisation.dispatch(&brief, now, lineage);
+        self.telemetry
+            .metrics
+            .increment(names::AGENT_RUNS, labels([]), report.runs.len() as u64);
         let mut problems: Vec<String> = report
             .failed
             .iter()
             .map(|agent| format!("{agent} failed"))
             .collect();
+        if !report.failed.is_empty() {
+            self.telemetry.metrics.increment(
+                names::AGENT_FAILURES,
+                labels([]),
+                report.failed.len() as u64,
+            );
+        }
+        // The counter the `qip_permission_denials_total` alert policy queries.
+        // Counted per offending agent rather than per cycle, because an agent
+        // reaching for the same thing it was denied on every cycle and an
+        // agent that did it once look identical in a per-cycle count, and only
+        // the first is a manifest that needs changing or an agent that needs
+        // stopping. The agent id is a roster name from a committed manifest —
+        // never a credential, an account or anything a caller supplied — so it
+        // is safe as a label and its cardinality is the roster's size.
         for violation in report.permission_violations() {
+            self.telemetry.metrics.count(
+                names::PERMISSION_DENIALS,
+                labels([("agent", violation.agent_id.as_str())]),
+            );
             problems.push(format!(
                 "{} attempted something its manifest does not grant",
                 violation.agent_id
@@ -2679,6 +2953,28 @@ impl Platform {
         self.monitor
             .enforce(&action, self.autonomy.kill_switch_mut(), now);
 
+        self.telemetry
+            .metrics
+            .count(names::RISK_EVALUATIONS, labels([]));
+        // The gauge the `qip_limit_breaches` alert policy queries, read off the
+        // observation the monitor just recorded rather than recounted from the
+        // action it returned. `MonitorAction` carries breaches as sentences and
+        // only on two of its five arms, so counting them from there would
+        // report zero breaches on a global halt — the one moment the number
+        // matters most. The observation holds the whole `LimitCheck`.
+        //
+        // Set unconditionally, including to zero. A gauge only written when
+        // something is wrong never falls back, and an alert on `max() > 0`
+        // would stay lit after the breach cleared.
+        let blocking = self
+            .monitor
+            .observations()
+            .last()
+            .map_or(0, |observation| observation.check.blocking().len());
+        self.telemetry
+            .metrics
+            .gauge(names::LIMIT_BREACHES, labels([]), blocking as f64);
+
         let mut sign_off_problems: Vec<String> = Vec::new();
         // Sign off the drafts, or do not. `Proposal::approve` requires two
         // controls because a single approver is a single point of failure, and
@@ -2711,9 +3007,28 @@ impl Platform {
             // the same refusal for every draft buries the reason in its own
             // noise.
             sign_off_problems.push(format!("no proposal was signed off: {reason}"));
+            // Labelled by which of the two signatures was withheld, never by
+            // the reason text. The reason is a message that names a particular
+            // control and a particular number, so as a label it would mint a
+            // new series per distinct failure and bury the shape of the problem
+            // in its own detail. Which control refused is the question a
+            // dashboard answers; why is the question the stage report and the
+            // event log answer.
+            self.telemetry.metrics.count(
+                names::PROPOSALS_UNSIGNED,
+                labels([(
+                    "control",
+                    if action.permits_new_risk() {
+                        "compliance"
+                    } else {
+                        "risk-monitor"
+                    },
+                )]),
+            );
         }
         if signable {
             let at = now;
+            let mut signed = 0u64;
             for proposal in &mut self.proposals {
                 if !matches!(proposal.status, ProposalStatus::Draft) {
                     continue;
@@ -2728,16 +3043,28 @@ impl Platform {
                 if proposal.is_empty() {
                     continue;
                 }
-                if let Err(error) = proposal.approve(
+                match proposal.approve(
                     at,
                     vec!["risk-monitor".to_string(), "compliance".to_string()],
                 ) {
-                    sign_off_problems.push(format!(
+                    // Counted from `approve` returning, not from the draft
+                    // being offered to it. A proposal that reached this call
+                    // and was rejected by it is not a signed proposal, and a
+                    // counter incremented before the call would say the
+                    // signatures were taken whenever they were merely asked
+                    // for.
+                    Ok(()) => signed += 1,
+                    Err(error) => sign_off_problems.push(format!(
                         "{} could not be approved: {}",
                         proposal.proposal_id.as_str(),
                         error.message()
-                    ));
+                    )),
                 }
+            }
+            if signed > 0 {
+                self.telemetry
+                    .metrics
+                    .increment(names::PROPOSALS_SIGNED, labels([]), signed);
             }
         }
 
@@ -3120,6 +3447,22 @@ impl Platform {
                 },
                 |refusal| (gate_of(refusal), refusal.describe()),
             );
+            // Labelled with the same gate name the twin's `Rejected` record
+            // carries, from the same `gate_of` call, so the count on a
+            // dashboard and the rows in the event log cannot name different
+            // controls for the same refusal. `gate_of` matches `RefusalReason`
+            // exhaustively, so the label's cardinality is that enum's and a new
+            // refusal reason is a compile error there rather than a new series
+            // appearing here unannounced.
+            //
+            // Recorded on the refusal path specifically, not inferred later
+            // from the absence of a fill: an order that was accepted and simply
+            // did not fill is not an order a control refused, and a metric that
+            // could not tell those apart would make the controls look like they
+            // fire constantly.
+            self.telemetry
+                .metrics
+                .count(names::ORDERS_REFUSED, labels([("control", gate.as_str())]));
             self.capture(
                 now,
                 &correlation,
@@ -3136,6 +3479,37 @@ impl Platform {
         };
 
         let venue = VenueId::new(venue);
+        // Every control said yes and the order reached a venue. Counted here,
+        // at the one place in the platform that learns an order was accepted,
+        // rather than in the release loop that asked: the release loop knows
+        // what it offered, and what was offered and what was accepted are the
+        // two numbers that must never be sourced from the same count.
+        self.telemetry
+            .metrics
+            .count(names::ORDERS_SUBMITTED, labels([("venue", venue.as_str())]));
+
+        for fill in &result.fills {
+            self.telemetry
+                .metrics
+                .count(names::ORDERS_FILLED, labels([("venue", venue.as_str())]));
+            // The counter the `qip_live_fills_total` alert policy queries, and
+            // in a paper deployment it must stay at zero forever. Read from
+            // `fill.simulated` — the fill's own account of where it came from —
+            // rather than from the autonomy ceiling or any other configured
+            // value, for the reason `OrderManager::has_live_fills` gives: a
+            // configuration is exactly the thing that gets confused between a
+            // test and a deployment, and a paper-trading assertion that trusts
+            // configuration asserts nothing about what actually happened.
+            //
+            // This does not gate anything; three other layers do that. It is
+            // the alarm for the case where all three somehow did not.
+            if !fill.simulated {
+                self.telemetry
+                    .metrics
+                    .count(names::LIVE_FILLS, labels([("venue", venue.as_str())]));
+            }
+        }
+
         let placed = self.capture(
             now,
             &correlation,

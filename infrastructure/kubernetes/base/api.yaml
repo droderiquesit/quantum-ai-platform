@@ -113,6 +113,25 @@ spec:
                 configMapKeyRef:
                   name: qip-config
                   key: autonomy_ceiling
+            # The cells this process serves on the mesh backbone, as
+            # `cell=bind-address` pairs. Unset, `qip-api` builds no mesh at
+            # all: no listener binds, `/api/v1/mesh` answers `available:
+            # false`, and the start-up banner says the deltas have nowhere to
+            # land here. That was the shipped state of every deployment until
+            # this line existed — a cell published its state at a peer where
+            # nothing listened, and no capital grant, recall or reconciliation
+            # halt could travel in either direction.
+            #
+            # The bind side is `0.0.0.0` because the peer is another pod. The
+            # cell's half of the pair — the URL it dials — is the
+            # `mesh_peer_<cell>` key in the same ConfigMap, and
+            # `manifest_wiring.rs` refuses a commit where the two disagree
+            # about a port.
+            - name: QIP_MESH_CELLS
+              valueFrom:
+                configMapKeyRef:
+                  name: qip-config
+                  key: mesh_cells
             # Credentials as files, never from the image and never in the
             # environment. These named a Kubernetes Secret `qip-tokens` that
             # nothing created, so every pod stopped at
@@ -190,6 +209,65 @@ spec:
     - name: http
       port: 8080
       targetPort: http
+---
+# The mesh backbone, on its own Service, and the reason it is not a second
+# port on the one above.
+#
+# `sessionAffinity: ClientIP` is the whole point of this document, and it
+# cannot go on the operator Service. Affinity is a property of the Service,
+# not of a port: putting it there would pin every request from the ingress
+# controller — which is one source address for all operator traffic — to a
+# single API replica, and quietly undo the only autoscaler in this repository.
+#
+# ## What the affinity buys
+#
+# The mesh state is per process. Each replica binds its own listeners, holds
+# its own delta inbox and its own capital spool, and a `CapitalDispatcher`
+# hands a grant to the inbox of the replica that dispatched it. A cell polling
+# a round-robin Service therefore reaches the replica holding its envelope
+# only some of the time, and a poll is a destructive read with a single
+# cursor — so the polls that land elsewhere return nothing and the cell waits
+# for luck. Pinning by client IP makes a cell's publishes and its polls land
+# on one replica for as long as that replica lives.
+#
+# ## What it does not buy, said plainly
+#
+# It does not make the plane's mesh state shared, and nothing here does. A
+# replica that goes away takes its inbox and its undelivered spool with it —
+# the spool lands in whatever `QIP_STORAGE_TARGET` names, which is `memory` in
+# this deployment, so it does not survive the pod either. Re-dispatch is what
+# recovers from that: the centre offers a live envelope again on the next
+# `POST /cycle`, and the inbox's dedup window, the receiver's absorbed-key
+# memory and the cell's own applied-grant memory each absorb the duplicate.
+# Delivery is at-least-once by design in both directions.
+#
+# Nor does it help the *cell* side of the same problem: edge-cell.yaml runs two
+# pods per cell and says at length why, and the two have different source
+# addresses, so they pin to different replicas and only one of them receives a
+# given envelope. That is the same "one cell that speaks with several voices"
+# the StatefulSet comment already names, and it is not closed by anything in
+# this file.
+#
+# Both are the state-in-the-process problem the autoscaler note below reaches
+# for twice already, and the honest fix is the same one: move the state out.
+apiVersion: v1
+kind: Service
+metadata:
+  name: qip-api-mesh
+  namespace: qip
+spec:
+  selector:
+    app: qip-api
+  sessionAffinity: ClientIP
+  ports:
+    # One published port per cell, matching that cell's entry in the
+    # `mesh_cells` ConfigMap key. The port is the cell's identity on this
+    # transport, so a port published here that no listener binds is a
+    # connection that hangs, and a listener with no port published is a cell
+    # that cannot reach the centre at all.
+    - name: mesh-london-1
+      port: 9110
+      targetPort: 9110
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget

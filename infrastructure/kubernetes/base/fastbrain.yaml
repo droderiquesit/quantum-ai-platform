@@ -177,11 +177,9 @@ spec:
                 configMapKeyRef:
                   name: qip-config
                   key: autonomy_ceiling
-            - name: QIP_LOG_LEVEL
-              valueFrom:
-                configMapKeyRef:
-                  name: qip-config
-                  key: log_level
+            # No QIP_LOG_LEVEL: nothing in this workspace reads one, so the
+            # `log_level` key it came from was a dial connected to nothing.
+            # deepbrain.yaml carries the full argument.
             # There is deliberately no model endpoint, no model credential and
             # no secret of any kind here. Nothing on the fast path may consult
             # a language model — ADR 0008, consequence 3 — and the binary

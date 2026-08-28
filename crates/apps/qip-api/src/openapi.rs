@@ -33,7 +33,7 @@
 
 use crate::http::Method;
 use crate::json;
-use crate::routes::{DISCOVERY_PATH, OPENAPI_PATH, ROUTES, Route};
+use crate::routes::{DISCOVERY_PATH, OPENAPI_PATH, ROUTES, Route, SCRAPE_PATH};
 use crate::stream::StreamKind;
 
 /// The OpenAPI version this document conforms to.
@@ -167,6 +167,17 @@ fn responses(route: &Route) -> String {
                 kind.source(),
                 kind.replay_note()
             ))
+        ),
+        // The scrape surface is not `application/json` either, for the same
+        // reason and with the same consequence: a generated client told it is
+        // JSON will fail to parse `# HELP` and report the endpoint broken. It
+        // is named here rather than inferred from the pattern because there is
+        // exactly one such route and a predicate over one case is a rule
+        // pretending to be general.
+        None if route.pattern == SCRAPE_PATH => format!(
+            r#""{}":{{"description":{},"content":{{"text/plain":{{"schema":{{"type":"string"}}}}}}}}"#,
+            route.success,
+            json::string(route.summary)
         ),
         None => format!(
             r#""{}":{{"description":{},"content":{{"application/json":{{"schema":{{"type":"object"}}}}}}}}"#,

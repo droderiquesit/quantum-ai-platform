@@ -202,26 +202,53 @@ spec:
           env:
             - name: QIP_HEALTH_PORT
               value: "8080"
-            # The same config-map keys every other workload reads.
+            # The store, named as literals rather than from the config map:
+            # this is the one workload with a volume that outlives its pod, so
+            # it is the one that may say `engine` without having nowhere to
+            # write it.
             - name: QIP_STORAGE_TARGET
               value: "engine"
             - name: QIP_STORAGE_ROOT
               value: "/var/lib/qip/journal"
+            # The autonomy ceiling, and the one variable in this file that
+            # `qip-edge-node` does not read. It is set anyway, and the reason
+            # is worth writing down rather than leaving as an inconsistency
+            # somebody deletes.
+            #
+            # A cell's ceiling is structural: `qip_edge::Cell` has no
+            # constructor taking a ceiling other than paper trading, which is
+            # the third of the three layers in
+            # .claude/rules/01-security-and-safety.md and the strongest of
+            # them — there is no value of this variable that could raise it.
+            # The composition-root layer, which is where a live value stops a
+            # process, is implemented in qip-api, qip-fastbrain and
+            # qip-deepbrain and not here.
+            #
+            # So this line is a governance marker rather than a control, and
+            # `nothing_added_here_raises_the_autonomy_ceiling_anywhere` in the
+            # infrastructure suite asserts every workload takes the ceiling
+            # from the same named resource — a cell whose manifest silently
+            # opted out of that assertion would be the one workload nobody
+            # could see the ceiling of. `manifest_wiring.rs` carries it as its
+            # single allowlisted exception, named there with this reasoning,
+            # and the exception ends the day `qip-edge-node` reads the value
+            # and refuses a live one at start-up like its three siblings.
             - name: QIP_AUTONOMY_CEILING
               valueFrom:
                 configMapKeyRef:
                   name: qip-config
                   key: autonomy_ceiling
-            - name: QIP_CYCLE_INTERVAL_SECONDS
-              valueFrom:
-                configMapKeyRef:
-                  name: qip-config
-                  key: cycle_interval_seconds
-            - name: QIP_LOG_LEVEL
-              valueFrom:
-                configMapKeyRef:
-                  name: qip-config
-                  key: log_level
+            # Neither QIP_CYCLE_INTERVAL_SECONDS nor QIP_LOG_LEVEL is set
+            # here any more, and their absence is the correction rather than an
+            # omission. `qip-edge-node` reads neither: it has no scheduler at
+            # all, so its journal flush and its one mesh exchange ride the
+            # liveness probe below — `periodSeconds: 10` is this cell's real
+            # cadence, and the binary's own comment calls that a compromise
+            # rather than a design. An operator who changed
+            # `cycle_interval_seconds` in the ConfigMap changed nothing about
+            # this workload, which is worse than having no dial: a dial that
+            # does not turn anything is read as a dial that does.
+            #
             # Which cell this is. It must match the `cell` field of every
             # envelope the central plane grants here, because the cell refuses
             # one addressed elsewhere.
@@ -241,13 +268,34 @@ spec:
             # here with no firewall rule is a venue the cell cannot open.
             - name: QIP_VENUES
               value: "CELL_VENUES"
-            # The key capital envelopes are verified against. From a secret
-            # reference, never from the image and never from a literal.
-            # Where the hash-chained journal is shipped. Without it the node
-            # warns at startup and holds the record in memory only, which is
-            # the state this StatefulSet exists to end.
-            - name: QIP_MIRROR_PATH
-              value: /var/lib/qip/journal
+            # Where the central plane is, for this cell specifically.
+            #
+            # The port is the cell's identity on this transport — the centre
+            # binds one listener per cell and a mesh poll is a destructive read
+            # with a single cursor — so this URL cannot be one shared value.
+            # The per-cell key is how a per-cell value reaches a manifest that
+            # is rendered by substituting CELL_ID: the runbook's existing
+            # `s#CELL_ID#london-1#g` turns `mesh_peer_CELL_ID` into
+            # `mesh_peer_london-1`, so no new placeholder is introduced and
+            # nothing in docs/operations/deploying-an-edge-cell.md has to
+            # change for this to work.
+            #
+            # `optional: true`, and that is a statement about ADR 0008 rather
+            # than caution about a missing key. A cell decides alone; a cell
+            # with no peer is detached, which is a legitimate state and not a
+            # misconfiguration, so a missing key must leave the variable unset
+            # and let the node start and say it is detached. A required
+            # reference would instead hold the pod at
+            # `CreateContainerConfigError` — turning "the centre has not been
+            # told about this cell yet" into "this cell does not run", which is
+            # exactly backwards for an architecture whose whole argument is
+            # that a cell survives losing the centre.
+            - name: QIP_MESH_PEER
+              valueFrom:
+                configMapKeyRef:
+                  name: qip-config
+                  key: mesh_peer_CELL_ID
+                  optional: true
             # The key this cell verifies capital grants against. It named a
             # Kubernetes Secret `qip-capital-envelope-key` that nothing
             # created, so the cell could never have started. Projected from
@@ -280,10 +328,15 @@ spec:
           # is Retain: a cell that has been removed still has to account for
           # what it did while it ran.
           #
-          # QIP_MIRROR_PATH used to select this destination on its own. The
-          # node now refuses to start if it is set, rather than ignoring it,
-          # because a cell deployed with the old variable would write its
-          # journal nowhere while its configuration still claimed a path.
+          # QIP_MIRROR_PATH used to select this destination on its own, and
+          # this file went on setting it after the node stopped reading it.
+          # That is not a stale comment, it is a cell that could not start:
+          # `NodeConfig::from_env` refuses a non-empty QIP_MIRROR_PATH and
+          # exits 78 rather than ignoring it, so every pod of every cell
+          # deployed from this manifest died in a configuration-error loop —
+          # the refusal working exactly as intended, against a manifest nobody
+          # had updated. It names QIP_STORAGE_TARGET and QIP_STORAGE_ROOT as
+          # the replacement, which are the two set above.
       volumes:
         - name: tmp
           emptyDir:
@@ -453,7 +506,22 @@ spec:
       ports:
         - protocol: TCP
           port: VENUE_PORT
-    # 2. The central plane.
+    # 2. The central plane: the API on 8080, and the mesh lane on the port
+    #    this cell was given in `mesh_cells`.
+    #
+    #    Two ports rather than one because the mesh is not served on the API's
+    #    port. `qip-api` binds a separate listener per cell — the address is
+    #    the cell's identity, since a poll is a destructive read with one
+    #    cursor and nothing else on the wire names the cell — and the
+    #    `qip-api-mesh` Service publishes them. Permitting 8080 alone is how
+    #    this cell would publish every delta into a connection the policy
+    #    drops, with no error anywhere: a default-deny namespace answers an
+    #    unpermitted flow by hanging, not by refusing.
+    #
+    #    The port is literal here because a NetworkPolicy cannot read a
+    #    ConfigMap, so it is the same number as `mesh_cells` and
+    #    `mesh_peer_CELL_ID` written a third time. `manifest_wiring.rs` is what
+    #    keeps the three honest; do not change one of them alone.
     - to:
         - podSelector:
             matchLabels:
@@ -461,6 +529,8 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+        - protocol: TCP
+          port: 9110
     # 3. Google APIs, through private access.
     - to:
         - ipBlock:

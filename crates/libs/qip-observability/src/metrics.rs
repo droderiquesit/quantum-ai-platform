@@ -263,18 +263,32 @@ impl Snapshot {
     }
 }
 
+/// Everything one registry holds, behind one lock.
+///
+/// The documentation lives beside the series rather than only on them, and in
+/// the same mutex rather than a second one. Two locks would need an ordering
+/// rule between them, and an ordering rule that exists only in a comment is a
+/// deadlock waiting for the first person who does not read it.
+#[derive(Debug, Default)]
+struct Registry {
+    series: BTreeMap<String, Series>,
+    /// Help text by metric name, whether or not that metric has been recorded
+    /// yet. See [`Metrics::describe`] for why it is kept apart from the series.
+    help: BTreeMap<String, String>,
+}
+
 /// Thread-safe metric registry.
 #[derive(Debug)]
 pub struct Metrics {
     service: String,
-    series: Mutex<BTreeMap<String, Series>>,
+    registry: Mutex<Registry>,
 }
 
 impl Metrics {
     pub fn new(service: impl Into<String>) -> Self {
         Self {
             service: service.into(),
-            series: Mutex::new(BTreeMap::new()),
+            registry: Mutex::new(Registry::default()),
         }
     }
 
@@ -284,7 +298,7 @@ impl Metrics {
 
     /// Increment a counter.
     pub fn increment(&self, name: &str, labels: Labels, by: u64) {
-        self.upsert(name, labels, "", |value| match value {
+        self.upsert(name, labels, |value| match value {
             MetricValue::Counter(v) => *v += by,
             other => *other = MetricValue::Counter(by),
         });
@@ -297,7 +311,7 @@ impl Metrics {
 
     /// Set a gauge.
     pub fn gauge(&self, name: &str, labels: Labels, value: f64) {
-        self.upsert(name, labels, "", |slot| *slot = MetricValue::Gauge(value));
+        self.upsert(name, labels, |slot| *slot = MetricValue::Gauge(value));
     }
 
     /// Record an observation into a histogram, creating it with `bounds` on
@@ -309,7 +323,7 @@ impl Metrics {
         value: f64,
         template: fn() -> Histogram,
     ) {
-        self.upsert(name, labels, "", |slot| match slot {
+        self.upsert(name, labels, |slot| match slot {
             MetricValue::Histogram(h) => h.observe(value),
             other => {
                 let mut h = template();
@@ -329,40 +343,54 @@ impl Metrics {
         self.observe_with(name, labels, value, Histogram::unit_interval);
     }
 
-    /// Attach documentation to a metric name.
+    /// Attach documentation to a metric name, before or after it is recorded.
+    ///
+    /// The order used to matter and silently should not have. This walked the
+    /// series that existed and set their help, so a component that described
+    /// its metrics where it was assembled — the one place that knows what they
+    /// mean, and the one place guaranteed to run once — described nothing,
+    /// because no series existed yet. The help text was dropped without a word
+    /// and every later `# HELP` line in the export read as a bare metric name.
+    ///
+    /// So the text is kept by name and applied to a series when it is created,
+    /// as well as back-filled onto the series already recorded. Describing a
+    /// metric still does not create it: a documented name that nothing ever
+    /// records must stay absent from the export, because a series that appears
+    /// merely by being mentioned is a metric nobody emits reading as one
+    /// somebody does.
     pub fn describe(&self, name: &str, help: impl Into<String>) {
         let help = help.into();
-        let mut guard = self.series.lock().unwrap_or_else(|e| e.into_inner());
-        for series in guard.values_mut() {
+        let mut guard = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        for series in guard.series.values_mut() {
             if series.name == name {
-                series.help = help.clone();
+                series.help.clone_from(&help);
             }
         }
+        guard.help.insert(name.to_string(), help);
     }
 
-    fn upsert<F: FnOnce(&mut MetricValue)>(
-        &self,
-        name: &str,
-        labels: Labels,
-        help: &str,
-        update: F,
-    ) {
+    fn upsert<F: FnOnce(&mut MetricValue)>(&self, name: &str, labels: Labels, update: F) {
         let key = series_key(name, &labels);
-        let mut guard = self.series.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = guard.entry(key).or_insert_with(|| Series {
+        let mut guard = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        // Split borrow: the help map is read only when a series is created, so
+        // the common path — a counter that already exists being incremented —
+        // does not clone the documentation on every increment.
+        let Registry { series, help } = &mut *guard;
+        let entry = series.entry(key).or_insert_with(|| Series {
             name: name.to_string(),
             labels,
             value: MetricValue::Counter(0),
-            help: help.to_string(),
+            help: help.get(name).cloned().unwrap_or_default(),
         });
         update(&mut entry.value);
     }
 
     pub fn snapshot(&self) -> Snapshot {
-        let guard = self.series.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = self.registry.lock().unwrap_or_else(|e| e.into_inner());
         Snapshot {
             service: self.service.clone(),
             series: guard
+                .series
                 .values()
                 .map(|s| SeriesSnapshot {
                     name: s.name.clone(),
@@ -374,10 +402,17 @@ impl Metrics {
         }
     }
 
+    /// Discard every recorded series.
+    ///
+    /// The documentation survives. A description is registered once where a
+    /// component is assembled, and a reset that forgot it would leave every
+    /// series recorded afterwards undocumented for the life of the process —
+    /// with no second call to put it back.
     pub fn reset(&self) {
-        self.series
+        self.registry
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+            .series
             .clear();
     }
 }
@@ -442,4 +477,53 @@ pub mod names {
 
     // Cost
     pub const COMPUTE_COST: &str = "qip_compute_cost_units_total";
+
+    // The cycle. One turn of SENSE → … → LEARN, as the kernel runs it.
+    pub const CYCLES_RUN: &str = "qip_cycles_total";
+    pub const CYCLE_DURATION_MS: &str = "qip_cycle_duration_milliseconds";
+    pub const STAGE_RUNS: &str = "qip_stage_runs_total";
+    pub const STAGE_DURATION_MS: &str = "qip_stage_duration_milliseconds";
+    pub const STAGE_PROBLEMS: &str = "qip_stage_problems_total";
+    /// Entries in the platform's own hash-chained event log. A gauge rather
+    /// than a counter: it is the length of a log, not a rate of appends, and
+    /// an operator asking whether the chain is growing wants the length.
+    pub const EVENT_LOG_ENTRIES: &str = "qip_event_log_entries";
+    pub const JOURNAL_FAILURES: &str = "qip_journal_write_failures_total";
+
+    // Release. What the ACT stage signed, offered and got back.
+    pub const PROPOSALS_SIGNED: &str = "qip_proposals_signed_total";
+    pub const PROPOSALS_UNSIGNED: &str = "qip_proposals_unsigned_total";
+    pub const ORDERS_REFUSED: &str = "qip_orders_refused_total";
+
+    // Reasoning. Where the cost router put the decision, and whether the panel
+    // convened as a result.
+    pub const REASON_ROUTINGS: &str = "qip_reason_routings_total";
+
+    /// What one cycle's [`qip_capital::ComputeLedger`] charged, and the running
+    /// total since the process started.
+    ///
+    /// Both gauges, and deliberately not the `_total` counter above them: a
+    /// compute charge is a `Decimal`, and a `u64` counter would truncate every
+    /// fractional charge to zero — a bill that reads as free because each line
+    /// on it rounded down. The crossing from `Decimal` to `f64` happens at the
+    /// recording site and is commented there.
+    pub const CYCLE_COMPUTE_COST: &str = "qip_cycle_compute_cost_units";
+    pub const COMPUTE_SPEND: &str = "qip_compute_spend_units";
+
+    /// The four names the Cloud Monitoring alert policies in
+    /// `infrastructure/terraform/modules/observability/main.tf` query.
+    ///
+    /// Spelled to match those queries exactly, and that is the whole point of
+    /// them being here. The policies are gated behind `workload_metrics_exist`
+    /// because Cloud Monitoring refuses a policy naming a descriptor it has
+    /// never ingested — and until these were emitted no descriptor by these
+    /// names could ever exist, so the gate could never be opened. Nothing else
+    /// in the tree spelled them; the alerting layer and the platform had no
+    /// name in common. Renaming any one of these breaks an alert policy that
+    /// cannot say why it broke, so change these and the Terraform together or
+    /// not at all.
+    pub const KILL_SWITCH_TRIPPED: &str = "qip_kill_switch_tripped";
+    pub const LIVE_FILLS: &str = "qip_live_fills_total";
+    pub const LIMIT_BREACHES: &str = "qip_limit_breaches";
+    pub const PERMISSION_DENIALS: &str = "qip_permission_denials_total";
 }

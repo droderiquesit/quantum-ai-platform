@@ -7,7 +7,7 @@
 //! every read and write, and no async runtime — the same shape `qip-fastbrain`
 //! and `qip-edge-node` use, for the same reason.
 //!
-//! Three questions have three answers, because they are three different
+//! Four questions have four answers, because they are four different
 //! questions:
 //!
 //! * `/health` — is the process alive and answering? Always 200 while this
@@ -19,6 +19,11 @@
 //!   halted, stalled, persistently failing, or still warming up. Note that
 //!   *slow* is not on that list; see [`crate::status::Unready`].
 //! * `/` — everything, as JSON, for a person rather than a probe.
+//! * `/metrics` — what the node has recorded, in Prometheus text exposition.
+//!   Not a probe and not a health question: it is the surface a scrape reads,
+//!   and it exists here because this node runs the cycle. A process that
+//!   records metrics nowhere anything can read them is exactly as observable
+//!   as one that records none.
 //!
 //! `/quiesce` is the only request that changes anything, and it is refused
 //! unless it arrived over loopback and used POST. A stop button reachable from
@@ -79,6 +84,14 @@ pub struct Response {
     pub code: u16,
     pub reason: &'static str,
     pub body: String,
+    /// What the body is, on the wire.
+    ///
+    /// Carried rather than assumed since the scrape surface joined the probes.
+    /// Every answer here used to be JSON and the renderer said so unread; a
+    /// Prometheus exposition served under `application/json` is one a scraper
+    /// refuses and a person debugging it cannot see the reason for, because
+    /// the body it prints looks exactly right.
+    pub content_type: &'static str,
     /// Whether answering this request means the node has been asked to stop.
     pub quiesce_requested: bool,
 }
@@ -89,6 +102,19 @@ impl Response {
             code,
             reason,
             body,
+            content_type: "application/json",
+            quiesce_requested: false,
+        }
+    }
+
+    /// Prometheus text exposition. The version is part of the media type and a
+    /// scraper reads it to decide how to parse what follows.
+    fn exposition(body: String) -> Self {
+        Self {
+            code: 200,
+            reason: "OK",
+            body,
+            content_type: "text/plain; version=0.0.4; charset=utf-8",
             quiesce_requested: false,
         }
     }
@@ -96,10 +122,11 @@ impl Response {
     /// The bytes on the wire.
     pub fn render(&self) -> String {
         format!(
-            "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+            "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
              Cache-Control: no-store\r\nConnection: close\r\n\r\n{}",
             self.code,
             self.reason,
+            self.content_type,
             self.body.len(),
             self.body
         )
@@ -144,11 +171,24 @@ pub fn respond(request: &Request, status: &NodeStatus, now: Timestamp) -> Respon
             Response {
                 code: 202,
                 reason: "Accepted",
+                content_type: "application/json",
                 body: r#"{"quiescing":true,"note":"the node stops after the cycle in flight, which on this node may be minutes"}"#
                     .to_string(),
                 quiesce_requested: true,
             }
         }
+        // What this node has recorded, for a scrape. Served from the same
+        // registry the cycle writes to, so a number here is a number something
+        // put there rather than one this surface computed from the status it
+        // was already rendering. Those would be two claims about one fact, and
+        // the status view is a snapshot while the registry is a history: a
+        // refusal that happened and was superseded is gone from the first and
+        // permanent in the second.
+        //
+        // Empty until the first cycle records something, which is the honest
+        // answer for a node that has not run one yet rather than a bank of
+        // zeroes it has no evidence for.
+        ("GET" | "HEAD", "/metrics") => Response::exposition(status.metrics().snapshot().to_prometheus()),
         ("GET" | "HEAD", "/quiesce") => Response::json(
             405,
             "Method Not Allowed",
@@ -158,7 +198,7 @@ pub fn respond(request: &Request, status: &NodeStatus, now: Timestamp) -> Respon
         _ => Response::json(
             404,
             "Not Found",
-            r#"{"error":"no such endpoint; this node serves /, /health, /ready and /quiesce"}"#
+            r#"{"error":"no such endpoint; this node serves /, /health, /ready, /metrics and /quiesce"}"#
                 .to_string(),
         ),
     }
@@ -231,13 +271,21 @@ fn answer(
     let now = clock.now();
     let response = match Request::parse(line, from_loopback) {
         Some(request) => {
-            let status = match status.lock() {
-                Ok(guard) => guard,
+            // Cloned, and the guard dropped before a byte is rendered. The
+            // surface used to hold this lock across the whole render, which was
+            // tolerable while every answer was a small status blob and is not
+            // now that one of them serialises the entire metric registry. This
+            // is the slow path and a stalled cycle here is judged against a
+            // generous ceiling, which is exactly why it matters: a render that
+            // blocked the loop would be charged to the loop, and the surface
+            // reporting the stall would be the thing causing it.
+            let snapshot = match status.lock() {
+                Ok(guard) => guard.clone(),
                 // A poisoned reporting lock must not silence the surface that
                 // says whether the node is alive.
-                Err(poisoned) => poisoned.into_inner(),
+                Err(poisoned) => poisoned.into_inner().clone(),
             };
-            respond(&request, &status, now)
+            respond(&request, &snapshot, now)
         }
         None => Response::json(
             400,
@@ -264,6 +312,9 @@ mod tests {
     use crate::config::DeepBrainConfig;
     use crate::status::CycleRecord;
     use qip_core::Duration;
+    use qip_observability::Metrics;
+    use qip_observability::metrics::{labels, names};
+    use std::sync::Arc;
 
     fn start() -> Timestamp {
         Timestamp::from_secs(1_760_000_000)
@@ -431,7 +482,12 @@ mod tests {
 
     #[test]
     fn an_unknown_path_is_a_four_oh_four_that_names_the_endpoints_that_exist() {
-        let response = respond(&get("/metrics"), &status(), start());
+        // `/portfolio` rather than `/metrics`: this test used `/metrics` as its
+        // unknown path until the node began serving one, at which point it was
+        // asserting that a route which exists returns 404. The example has to
+        // be a path this surface genuinely does not serve, and the realistic
+        // mistake is reaching a node with a path the API serves.
+        let response = respond(&get("/portfolio"), &status(), start());
         assert_eq!(response.code, 404);
         assert!(response.body.contains("/ready"));
     }
@@ -460,5 +516,69 @@ mod tests {
             panic!("the response has no body separator");
         };
         assert_eq!(body.len(), response.body.len());
+    }
+
+    #[test]
+    fn the_scrape_surface_serves_what_was_recorded_and_says_it_is_not_json() {
+        // The node's whole reason for serving this: the registry the cycle
+        // writes to is the one a scrape reads. A surface wired to a registry of
+        // its own would answer every scrape empty forever while the loop
+        // recorded diligently into another — which is the defect this endpoint
+        // was added to close, and it would look identical from outside.
+        let registry = Arc::new(Metrics::new("test"));
+
+        // The premise: before anything is recorded the surface answers, and
+        // answers with nothing. A test that only checked the populated case
+        // could not tell an endpoint that works from one that always returns
+        // the same body.
+        let empty = respond(
+            &get("/metrics"),
+            &status().with_metrics(registry.clone()),
+            start(),
+        );
+        assert_eq!(empty.code, 200);
+        assert!(
+            empty.body.is_empty(),
+            "a node that has recorded nothing must serve nothing, not zeroes it has no \
+             evidence for: {}",
+            empty.body
+        );
+
+        registry.count(
+            names::ORDERS_REFUSED,
+            labels([("control", "pre-trade-risk")]),
+        );
+        let response = respond(&get("/metrics"), &status().with_metrics(registry), start());
+        assert_eq!(response.code, 200);
+        assert!(
+            response
+                .body
+                .contains("qip_orders_refused_total{control=\"pre-trade-risk\"} 1"),
+            "the scrape surface did not serve the recorded series: {}",
+            response.body
+        );
+        // A scraper reads the media type to decide how to parse the body, and
+        // `application/json` in front of `# HELP` is a refusal a person
+        // debugging it cannot see, because the body looks exactly right.
+        assert!(
+            response.content_type.starts_with("text/plain"),
+            "a Prometheus exposition served as {}",
+            response.content_type
+        );
+        assert!(
+            response.render().contains("Content-Type: text/plain"),
+            "the rendered response still claims JSON: {}",
+            response.render()
+        );
+    }
+
+    #[test]
+    fn a_probe_answer_is_still_json_after_the_scrape_surface_was_added() {
+        // The content type became a field when the exposition arrived. Every
+        // other answer must be unaffected, or adding observability broke the
+        // probes it was added to support.
+        let response = respond(&get("/ready"), &status(), start());
+        assert_eq!(response.content_type, "application/json");
+        assert!(response.render().contains("Content-Type: application/json"));
     }
 }

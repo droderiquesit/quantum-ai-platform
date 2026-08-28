@@ -377,3 +377,86 @@ fn every_metric_shape_survives_a_json_round_trip() {
     let clock: Arc<dyn Clock> = clock();
     assert!(clock.now() > Timestamp::EPOCH);
 }
+
+#[test]
+fn a_metric_described_before_it_is_first_recorded_keeps_its_documentation() {
+    // Describing used to walk the series that already existed, so a component
+    // describing its metrics where it is assembled — the one place that knows
+    // what they mean and the one place guaranteed to run once — described
+    // nothing at all, and every `# HELP` line afterwards read as a bare metric
+    // name. The order must not matter.
+    let metrics = Metrics::new("test");
+    metrics.describe(names::ORDERS_REFUSED, "orders a control refused");
+
+    // The premise: describing creates no series, so the assertion below is
+    // about help surviving until a record arrives rather than about a series
+    // that was there all along.
+    assert!(
+        metrics.snapshot().series.is_empty(),
+        "describing a metric must not bring it into existence; a name nothing records \
+         must stay absent from the export"
+    );
+
+    metrics.count(
+        names::ORDERS_REFUSED,
+        labels([("control", "pre-trade-risk")]),
+    );
+    let text = metrics.snapshot().to_prometheus();
+    assert!(
+        text.contains("# HELP qip_orders_refused_total orders a control refused"),
+        "the description registered before the first record was lost: {text}"
+    );
+}
+
+#[test]
+fn describing_a_metric_after_it_is_recorded_still_reaches_the_series_already_there() {
+    // The direction that already worked, kept as a test because the fix for the
+    // other direction is where it would be broken.
+    let metrics = Metrics::new("test");
+    metrics.gauge(names::PORTFOLIO_VALUE, labels([]), 1.0);
+    assert!(
+        metrics
+            .snapshot()
+            .to_prometheus()
+            .contains("# HELP qip_portfolio_value \n"),
+        "the premise: the series starts undocumented"
+    );
+
+    metrics.describe(names::PORTFOLIO_VALUE, "the book, marked");
+    assert!(
+        metrics
+            .snapshot()
+            .to_prometheus()
+            .contains("# HELP qip_portfolio_value the book, marked")
+    );
+}
+
+#[test]
+fn resetting_the_registry_discards_the_series_and_keeps_the_documentation() {
+    // A description is registered once, where a component is assembled. A reset
+    // that forgot it would leave every series recorded afterwards undocumented
+    // for the life of the process, with no second call to put it back.
+    let metrics = Metrics::new("test");
+    metrics.describe(names::ORDERS_FILLED, "fills received");
+    metrics.count(names::ORDERS_FILLED, labels([]));
+    assert_eq!(
+        metrics.snapshot().counter_total(names::ORDERS_FILLED),
+        1,
+        "the premise: there is a series to discard"
+    );
+
+    metrics.reset();
+    assert!(
+        metrics.snapshot().series.is_empty(),
+        "reset must discard what was recorded"
+    );
+
+    metrics.count(names::ORDERS_FILLED, labels([]));
+    assert!(
+        metrics
+            .snapshot()
+            .to_prometheus()
+            .contains("# HELP qip_orders_filled_total fills received"),
+        "the documentation did not survive the reset"
+    );
+}

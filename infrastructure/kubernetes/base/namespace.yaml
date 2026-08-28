@@ -218,6 +218,63 @@ spec:
         - protocol: TCP
           port: 443
 ---
+# The mesh backbone's ingress: a cell reaching the centre.
+#
+# A separate policy rather than a port added to `allow-api-ingress` above,
+# for the reason egress.yaml gives for splitting the proxy's route out of
+# `allow-api-egress` — policies are additive, and the day somebody revokes the
+# mesh the revocation should be a deleted document rather than a careful edit
+# inside a rule that also carries the operator interface's only way in.
+#
+# Without this the mesh is configured and dead. `mesh_cells` in config.yaml
+# tells `qip-api` to bind a listener for each cell and `mesh_peer_<cell>` tells
+# each cell where to dial, and the namespace's default deny drops the flow
+# regardless: an unpermitted flow here does not error, it hangs, and a cell
+# whose publish hangs reports a circuit-open breaker rather than a policy. The
+# cell's own half of this pair is in edge-cell.yaml, which permits the egress;
+# both are needed, and the egress alone is what this namespace had.
+#
+# ## What this rule cannot express, stated because it is a real residual
+#
+# The port is the cell's identity on this transport, so a pod that can reach
+# port 9110 can drain london-1's capital inbox — a poll is a destructive read
+# with a single cursor, so a grant read by anybody else is a grant london-1
+# never receives. This selector is `app: qip-edge-node`, every cell, because
+# namespace.yaml is applied unrendered and cannot carry CELL_ID; a per-cell
+# rule needs the cell's port as a literal beside a `qip.io/cell` selector,
+# which is a per-cell document and a placeholder the cell runbook does not
+# substitute today.
+#
+# What the residual is and is not: a stolen envelope cannot be *used*, because
+# it is signed and carries the cell it is scoped to, and a cell refuses one
+# addressed elsewhere. The exposure is denial — a cell starved of capital by
+# another cell in the same namespace — and it needs a compromised cell pod to
+# reach at all. The narrower rule is the right one to write when a cell's port
+# can be rendered per cell; widening this to a port *range* to save an edit
+# when a second cell arrives would be the opposite move, and is why the port
+# is named one at a time.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-api-mesh-ingress
+  namespace: qip
+spec:
+  podSelector:
+    matchLabels:
+      app: qip-api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: qip-edge-node
+      ports:
+        # One per cell in `mesh_cells`. A cell whose port is missing here
+        # publishes into a connection that hangs.
+        - protocol: TCP
+          port: 9110
+---
 # The fast brain accepts traffic from the API and nothing else.
 #
 # The API is how an operator trips the kill switch, so this is the path a halt

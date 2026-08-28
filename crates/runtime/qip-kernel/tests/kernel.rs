@@ -24,6 +24,7 @@ use qip_kernel::platform::Platform;
 use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
+use qip_observability::metrics::{Snapshot, labels, names};
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 use qip_risk_engine::autonomy::{AutonomyLevel, OperatorIdentity};
 
@@ -580,5 +581,398 @@ fn a_log_destination_that_cannot_be_opened_fails_assembly_rather_than_the_first_
     );
 
     let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
+}
+
+// --- what the loop records about itself -------------------------------------
+//
+// Until these existed, nothing in the platform wrote to `Telemetry` at all.
+// Every process constructed one, every process handed it to the kernel, and
+// the kernel never called it — so `/metrics` served an empty surface and the
+// four Cloud Monitoring alert policies were gated off behind
+// `workload_metrics_exist = false` because no descriptor by their names had
+// ever been ingested. These tests are what keeps that from happening again
+// quietly: each asserts a specific fact reached a specific series, so deleting
+// an emission fails a test rather than leaving a dashboard that is merely
+// blank, which reads as a quiet platform rather than a blind one.
+
+fn recorded(platform: &Platform) -> Snapshot {
+    platform.telemetry().metrics.snapshot()
+}
+
+#[test]
+fn a_cycle_records_one_run_and_one_timed_outcome_for_every_stage_it_ran() -> Result<()> {
+    let mut platform = platform(PlatformConfig::default())?;
+
+    // The premise: the surface is empty before a cycle runs. Without this the
+    // assertions below would pass against a registry pre-loaded by assembly,
+    // and would be asserting that `Platform::new` records rather than that the
+    // cycle does.
+    assert_eq!(
+        recorded(&platform).counter_total(names::CYCLES_RUN),
+        0,
+        "the registry is not empty before the first cycle; these assertions would not be \
+         about the cycle"
+    );
+
+    let report = platform.run_cycle(start());
+    assert!(
+        report.traversed_every_stage(),
+        "every stage must have run, or the per-stage counts below prove nothing:\n{}",
+        report.summarise()
+    );
+
+    let snapshot = recorded(&platform);
+    assert_eq!(snapshot.counter_total(names::CYCLES_RUN), 1);
+    assert_eq!(
+        snapshot.counter_total(names::STAGE_RUNS),
+        8,
+        "one outcome per stage, labelled; a total of eight is what says the loop reported \
+         each stage rather than the cycle once"
+    );
+
+    for stage in Stage::all() {
+        let by_stage = labels([("stage", stage.as_str())]);
+        assert_eq!(
+            snapshot.counter(
+                names::STAGE_RUNS,
+                &labels([("ran", "true"), ("stage", stage.as_str())])
+            ),
+            1,
+            "{} ran but was not counted as having run",
+            stage.as_str()
+        );
+        // The duration is asserted as an observation having been made, not as a
+        // value: the clock these tests inject is manual and does not advance,
+        // so every stage genuinely took zero. A count of one per stage is the
+        // fact under test — `StageOutcome::with_elapsed` existed and was never
+        // called, so every stage claimed zero because nothing timed it rather
+        // than because nothing elapsed.
+        let histogram = snapshot
+            .histogram(names::STAGE_DURATION_MS, &by_stage)
+            .unwrap_or_else(|| panic!("{} recorded no duration at all", stage.as_str()));
+        assert_eq!(
+            histogram.count,
+            1,
+            "{} was timed twice or not at all",
+            stage.as_str()
+        );
+    }
+
+    assert_eq!(
+        snapshot
+            .histogram(names::CYCLE_DURATION_MS, &labels([]))
+            .map(|h| h.count),
+        Some(1)
+    );
+    Ok(())
+}
+
+#[test]
+fn the_length_of_the_event_log_and_the_journal_write_are_recorded_as_the_cycle_seals_itself()
+-> Result<()> {
+    let mut platform = platform(PlatformConfig::default())?;
+    let report = platform.run_cycle(start());
+
+    // The premise: the cycle really did journal itself, so the counter below is
+    // counting a write that happened rather than agreeing with an absence.
+    assert!(
+        report.events_logged > 0,
+        "the cycle logged nothing; there is no journal write to count"
+    );
+
+    let snapshot = recorded(&platform);
+    assert_eq!(
+        snapshot.gauge(names::EVENT_LOG_ENTRIES, &labels([])),
+        Some(report.events_logged as f64),
+        "the gauge must be the log's own length, not a number computed beside it"
+    );
+    assert_eq!(
+        snapshot.counter(names::EVENTS_PUBLISHED, &labels([("topic", "cycle")])),
+        1
+    );
+    assert_eq!(
+        snapshot.counter_total(names::JOURNAL_FAILURES),
+        0,
+        "nothing failed to journal, so the failure counter must not have been touched"
+    );
+
+    // A second cycle moves the gauge, which is what distinguishes a gauge that
+    // is set from one that was written once at assembly.
+    let second = platform.run_cycle(start().saturating_add(Duration::from_mins(5)));
+    assert!(second.events_logged > report.events_logged);
+    assert_eq!(
+        recorded(&platform).gauge(names::EVENT_LOG_ENTRIES, &labels([])),
+        Some(second.events_logged as f64)
+    );
+    Ok(())
+}
+
+#[test]
+fn an_order_refused_by_a_control_is_counted_against_that_control_and_not_another() -> Result<()> {
+    // Two orders refused by two different gates. One counter with a `control`
+    // label is only useful if the label distinguishes them; a single
+    // `orders_refused` total would say the controls fired twice and leave an
+    // operator to guess which.
+    let mut platform = platform(PlatformConfig::default())?;
+
+    let untraceable = platform.order_from(
+        object("AAA"),
+        Side::Buy,
+        dec!("1000"),
+        dec!("100"),
+        "prop-1",
+        Vec::new(),
+        start(),
+    );
+    let error = platform
+        .submit_order(untraceable, start())
+        .expect_err("an order tracing to no hypothesis must be refused");
+    assert!(
+        error.message().contains("nobody can explain"),
+        "{}",
+        error.message()
+    );
+
+    // 20,000 at 100 is 2m against 10m of equity: 20% in one name against a 10%
+    // cap, so this one is refused by the pre-trade risk check rather than by
+    // validation.
+    let oversized = platform.order_from(
+        object("AAA"),
+        Side::Buy,
+        dec!("20000"),
+        dec!("100"),
+        "prop-2",
+        vec!["hyp-1".to_string()],
+        start(),
+    );
+    let error = platform
+        .submit_order(oversized, start())
+        .expect_err("an order breaching a limit must be refused");
+    assert!(
+        error.message().contains("risk refused"),
+        "{}",
+        error.message()
+    );
+
+    let snapshot = recorded(&platform);
+    assert_eq!(
+        snapshot.counter(
+            names::ORDERS_REFUSED,
+            &labels([("control", "order-validation")])
+        ),
+        1
+    );
+    assert_eq!(
+        snapshot.counter(
+            names::ORDERS_REFUSED,
+            &labels([("control", "pre-trade-risk")])
+        ),
+        1
+    );
+    assert_eq!(
+        snapshot.counter_total(names::ORDERS_SUBMITTED),
+        0,
+        "nothing reached a venue, so nothing may be counted as submitted"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_accepted_order_is_counted_where_it_reached_a_venue_and_its_fills_are_not_live() -> Result<()>
+{
+    let mut platform = platform(PlatformConfig::default())?;
+    let order = platform.order_from(
+        object("AAA"),
+        Side::Buy,
+        dec!("1000"),
+        dec!("100"),
+        "prop-1",
+        vec!["hyp-1".to_string()],
+        start(),
+    );
+    platform.submit_order(order, start())?;
+
+    // The premise: a fill really happened. An assertion that the live-fill
+    // counter is zero proves nothing on a platform that filled nothing at all,
+    // which is exactly the shape of test this rule exists to forbid.
+    assert!(
+        !platform.orders().fills().is_empty(),
+        "no fill occurred; the live-fill assertion below would hold vacuously"
+    );
+
+    let snapshot = recorded(&platform);
+    assert_eq!(snapshot.counter_total(names::ORDERS_SUBMITTED), 1);
+    assert_eq!(
+        snapshot.counter_total(names::ORDERS_FILLED),
+        platform.orders().fills().len() as u64
+    );
+    assert_eq!(
+        snapshot.counter_total(names::LIVE_FILLS),
+        0,
+        "a paper platform filled against a simulated venue and must record no live fill"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_reason_stage_records_where_the_router_put_the_decision_and_whether_the_panel_convened()
+-> Result<()> {
+    let mut platform = platform(PlatformConfig::default())?;
+    platform.observe(bars("AAA", 120));
+    let report = platform.run_cycle(start());
+
+    // The premise: there was something to reason about. On an empty queue
+    // REASON returns before it routes anything, and the assertions below would
+    // be about a stage that never ran.
+    let reason = report.stage(Stage::Reason).expect("REASON reports");
+    assert!(
+        !reason.detail.contains("nothing in the queue"),
+        "the queue was empty, so no routing decision was made: {}",
+        reason.detail
+    );
+
+    let snapshot = recorded(&platform);
+    assert_eq!(
+        snapshot.counter_total(names::REASON_ROUTINGS),
+        1,
+        "exactly one routing decision per cycle that reasoned"
+    );
+
+    // And it agrees with what the stage itself said happened. These are two
+    // independently produced accounts of one decision — a sentence for an
+    // operator and a counter for a dashboard — and a counter that disagreed
+    // with the report beside it would be the more believed of the two because
+    // it is the one on a screen.
+    let expected = if reason.detail.contains("the panel was not convened") {
+        "declined"
+    } else {
+        "convened"
+    };
+    let outcomes: Vec<&str> = snapshot
+        .series
+        .iter()
+        .filter(|series| series.name == names::REASON_ROUTINGS)
+        .filter_map(|series| series.labels.get("outcome").map(String::as_str))
+        .collect();
+    assert_eq!(
+        outcomes,
+        vec![expected],
+        "the counter and the stage report disagree about the same decision: {}",
+        reason.detail
+    );
+
+    // And the rung is labelled with a name from the ladder rather than left
+    // off. A routing counter that cannot say where the decision was placed
+    // records that a decision happened, which nobody was in doubt about.
+    let tiers: Vec<&str> = snapshot
+        .series
+        .iter()
+        .filter(|series| series.name == names::REASON_ROUTINGS)
+        .filter_map(|series| series.labels.get("tier").map(String::as_str))
+        .collect();
+    assert_eq!(tiers.len(), 1, "the routing series carries no tier label");
+    assert_ne!(
+        tiers[0], "none",
+        "the router placed the decision somewhere, but the label says it did not"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_compute_a_cycle_was_charged_is_read_off_the_ledger_rather_than_recomputed() -> Result<()> {
+    let mut platform = platform(PlatformConfig::default())?;
+    platform.observe(bars("AAA", 120));
+    platform.run_cycle(start());
+
+    // The premise: the cycle was charged something. A gauge asserted equal to a
+    // ledger total that is itself zero would pass however the gauge was set.
+    let charged = platform.last_cycle_cost();
+    assert!(
+        charged.is_positive(),
+        "the cycle was charged nothing; there is no bill to check the gauge against"
+    );
+
+    let snapshot = recorded(&platform);
+    assert!(
+        qip_core::testing::approx_eq(
+            snapshot
+                .gauge(names::CYCLE_COMPUTE_COST, &labels([]))
+                .expect("the cycle cost was recorded"),
+            charged.to_f64(),
+            1e-9,
+        ),
+        "the gauge is not the ledger's own total"
+    );
+    assert!(
+        qip_core::testing::approx_eq(
+            snapshot
+                .gauge(names::COMPUTE_SPEND, &labels([]))
+                .expect("the running total was recorded"),
+            platform.compute_spend().to_f64(),
+            1e-9,
+        ),
+        "the running total on the gauge is not the platform's own"
+    );
+
+    // A second cycle must move the running total past one cycle's charge, or
+    // the gauge is the per-cycle number under a second name.
+    platform.run_cycle(start().saturating_add(Duration::from_mins(5)));
+    let after = recorded(&platform)
+        .gauge(names::COMPUTE_SPEND, &labels([]))
+        .expect("the running total is still recorded");
+    assert!(
+        after > charged.to_f64(),
+        "the running total did not accumulate across cycles: {after} against {charged}"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_kill_switch_gauge_the_alert_policy_queries_falls_back_when_the_halt_is_cleared() -> Result<()>
+{
+    // `qip_kill_switch_tripped` is queried by a Cloud Monitoring policy as
+    // `max(...) > 0`. A gauge only written when something is wrong stays lit
+    // after the halt clears, so both directions are the property under test.
+    let mut platform = platform(PlatformConfig::default())?;
+    platform.run_cycle(start());
+    assert_eq!(
+        recorded(&platform).gauge(names::KILL_SWITCH_TRIPPED, &labels([])),
+        Some(0.0),
+        "a platform that is not halted must report zero, not report nothing"
+    );
+
+    platform.autonomy_mut().kill_switch_mut().trip_global(
+        start(),
+        "operator",
+        "a halt raised so the gauge has something to report".to_string(),
+    );
+    // The premise: the switch really is tripped, or the gauge below could read
+    // one for any reason at all.
+    assert!(
+        platform.autonomy().kill_switch().is_globally_tripped(),
+        "the kill switch did not trip"
+    );
+    platform.run_cycle(start().saturating_add(Duration::from_mins(5)));
+    assert_eq!(
+        recorded(&platform).gauge(names::KILL_SWITCH_TRIPPED, &labels([])),
+        Some(1.0)
+    );
+
+    let cleared_at = start().saturating_add(Duration::from_mins(10));
+    platform.autonomy_mut().kill_switch_mut().clear_global(
+        &OperatorIdentity::verified("operator-a", "desk", cleared_at),
+        cleared_at,
+    )?;
+    assert!(
+        !platform.autonomy().kill_switch().is_globally_tripped(),
+        "the halt did not clear"
+    );
+    platform.run_cycle(start().saturating_add(Duration::from_mins(15)));
+    assert_eq!(
+        recorded(&platform).gauge(names::KILL_SWITCH_TRIPPED, &labels([])),
+        Some(0.0),
+        "the gauge stayed lit after the halt cleared; the alert would never resolve"
+    );
     Ok(())
 }

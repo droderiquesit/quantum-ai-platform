@@ -115,10 +115,19 @@ fn run() -> Result<()> {
     )?);
     let context = qip_core::Context::new(clock.clone(), platform_config.seed);
     let ceiling = platform_config.autonomy_ceiling.to_string();
+    // The registry handle is taken before the telemetry moves into the
+    // platform, because the health thread below serves a scrape from it and
+    // must read the same one the cycle writes to. A registry constructed
+    // separately for the health thread would answer every scrape empty forever
+    // while the platform recorded into one nothing could reach — which is the
+    // shape of the defect this whole surface exists to close, rebuilt one
+    // level up.
+    let telemetry = Telemetry::new("qip-fastbrain", clock.clone());
+    let metrics = telemetry.metrics.clone();
     let mut platform = Platform::new(
         platform_config,
         context,
-        Telemetry::new("qip-fastbrain", clock.clone()),
+        telemetry,
         Universe::new(),
         LimitSet::conservative_default(),
     )?;
@@ -140,13 +149,16 @@ fn run() -> Result<()> {
         qip_fastbrain::trust::harden_central(&mut platform, envelope_key.as_deref())
             .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
 
-    let status = Arc::new(Mutex::new(qip_fastbrain::status::NodeStatus::opening(
-        &cleared,
-        &config,
-        feed.descriptor().name,
-        feed.is_production_grade(),
-        started,
-    )));
+    let status = Arc::new(Mutex::new(
+        qip_fastbrain::status::NodeStatus::opening(
+            &cleared,
+            &config,
+            feed.descriptor().name,
+            feed.is_production_grade(),
+            started,
+        )
+        .with_metrics(metrics),
+    ));
     let stop = Arc::new(AtomicBool::new(false));
 
     banner(

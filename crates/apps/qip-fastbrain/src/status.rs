@@ -11,7 +11,9 @@
 //! it rather than inferred from a hang.
 
 use qip_core::{Duration, Timestamp};
+use qip_observability::Metrics;
 use serde::Serialize;
+use std::sync::Arc;
 
 use crate::config::FastBrainConfig;
 use crate::roster::ClearedRoster;
@@ -53,6 +55,22 @@ pub struct NodeStatus {
     last_cycle_problems: Vec<String>,
     halted: bool,
     stopping: bool,
+
+    /// The metric registry the cycle records into.
+    ///
+    /// Held here because this struct is what the health thread and the run loop
+    /// already share, and the scrape surface has to read the registry the loop
+    /// writes to rather than one of its own. A second registry made for the
+    /// health thread would answer every scrape with an empty surface forever
+    /// while the platform recorded diligently into one nothing could reach —
+    /// which is the defect this whole surface exists to close, rebuilt one
+    /// level up.
+    ///
+    /// Defaulted to an empty registry rather than made a constructor argument
+    /// so that a status can be built before the platform exists, which is the
+    /// order both nodes start in: the surface answers `warming` before there is
+    /// anything to record. [`Self::with_metrics`] installs the real one.
+    metrics: Arc<Metrics>,
 }
 
 /// Why the node is not ready to be sent work.
@@ -134,6 +152,7 @@ impl NodeStatus {
             last_cycle_problems: Vec::new(),
             halted: false,
             stopping: false,
+            metrics: Arc::new(Metrics::new("qip-fastbrain")),
         }
     }
 
@@ -233,6 +252,26 @@ impl NodeStatus {
 
     pub fn is_ready(&self, now: Timestamp) -> bool {
         self.unready(now).is_none()
+    }
+
+    /// Use the platform's own metric registry rather than the empty one this
+    /// status was built with.
+    ///
+    /// Called once, in the composition root, with the handle taken from the
+    /// telemetry before it moves into the platform. Taking it any later is not
+    /// possible in one of the two nodes — deepbrain serves its health surface
+    /// before it assembles a platform — and taking it from a different
+    /// telemetry would produce a scrape surface that is empty while the loop
+    /// records into another registry entirely.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Arc<Metrics>) -> Self {
+        self.metrics = metrics;
+        self
+    }
+
+    /// The registry the scrape surface serves from.
+    pub fn metrics(&self) -> &Metrics {
+        &self.metrics
     }
 
     /// The serialisable snapshot the health surface renders.

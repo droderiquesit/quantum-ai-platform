@@ -98,9 +98,19 @@ fn run() -> Result<()> {
         .local_addr()
         .map_err(|error| Error::io(format!("the health listener has no address: {error}")))?;
 
-    let status = Arc::new(Mutex::new(qip_deepbrain::status::NodeStatus::opening(
-        &cleared, &config, started,
-    )));
+    // Built here rather than inline at `Platform::new` below, because the
+    // health thread starts before the platform does and the scrape surface it
+    // serves has to read the same registry the cycle will write to. A second
+    // registry made for the health thread would answer every scrape with an
+    // empty surface forever, while the platform recorded diligently into one
+    // nothing could reach.
+    let telemetry = Telemetry::new("qip-deepbrain", clock.clone());
+    let metrics = telemetry.metrics.clone();
+
+    let status = Arc::new(Mutex::new(
+        qip_deepbrain::status::NodeStatus::opening(&cleared, &config, started)
+            .with_metrics(metrics),
+    ));
     let stop = Arc::new(AtomicBool::new(false));
 
     // Serving starts here, before the platform exists. Until the first cycle
@@ -133,7 +143,7 @@ fn run() -> Result<()> {
     let mut platform = Platform::new(
         platform_config,
         context,
-        Telemetry::new("qip-deepbrain", clock.clone()),
+        telemetry,
         Universe::new(),
         LimitSet::conservative_default(),
     )?;

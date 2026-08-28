@@ -34,6 +34,15 @@ pub const DISCOVERY_PATH: &str = VERSION_PREFIX;
 /// Where the generated OpenAPI document is served.
 pub const OPENAPI_PATH: &str = "/api/v1/openapi.json";
 
+/// The one route that answers in Prometheus text exposition rather than JSON.
+///
+/// Named once so the handler and the generated OpenAPI document cannot come to
+/// different conclusions about the media type. A document that promises JSON
+/// where the server sends `# HELP` produces a client that reports the endpoint
+/// broken, and the endpoint is the one an operator reaches for when they
+/// already believe something is broken.
+pub const SCRAPE_PATH: &str = "/metrics";
+
 /// One route's declaration.
 #[derive(Clone, Copy, Debug)]
 pub struct Route {
@@ -173,9 +182,10 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         method: Method::Get,
-        pattern: "/metrics",
+        pattern: SCRAPE_PATH,
         required_role: Role::Monitor,
-        summary: "counters and gauges, for a scrape that holds no portfolio authority",
+        summary: "what the platform recorded, in Prometheus text exposition, for a scrape that \
+                  holds no portfolio authority",
         success: 200,
     },
     Route {
@@ -534,7 +544,7 @@ impl Api {
             (Method::Get, "/agents") => Response::json(200, agents(&platform)),
             (Method::Get, "/autonomy") => Response::json(200, autonomy(&platform)),
             (Method::Get, "/system") => Response::json(200, system(&platform)),
-            (Method::Get, "/metrics") => Response::json(200, metrics(&platform)),
+            (Method::Get, "/metrics") => Response::text(200, scrape(&platform)),
             (Method::Get, "/regions") => {
                 Response::json(200, regions(&platform, self.cells.as_ref(), now))
             }
@@ -853,6 +863,14 @@ fn status(platform: &Platform, archive: Option<&ChainArchive>, mesh: Option<&str
     )
 }
 
+/// The console's counts, counted from the platform's state.
+///
+/// Kept as it was, and deliberately not merged with [`scrape`]. This answers
+/// "how big is the book right now" for a person reading a page; that answers
+/// "what has this process done since it started" for a scrape. The two are
+/// different questions and the second cannot be derived from the first — a
+/// refusal that happened and was then superseded is gone from the state and
+/// permanent in the counter.
 fn metrics(platform: &Platform) -> String {
     format!(
         r#"{{"cycles":{},"events_logged":{},"opportunities_queued":{},"proposals":{},"orders":{},"fills":{},"refusals":{},"live_fills":{}}}"#,
@@ -865,6 +883,32 @@ fn metrics(platform: &Platform) -> String {
         platform.orders().refusals().len(),
         platform.orders().has_live_fills()
     )
+}
+
+/// What the platform actually recorded, in Prometheus text exposition.
+///
+/// This endpoint used to serve the same eight inferred counts as
+/// [`metrics`] — a JSON object recomputed from platform state at the moment of
+/// the request. It was a second claim about facts the platform already knew,
+/// and the two disagreed the moment anything was superseded: an order refused
+/// on cycle four and released on cycle five left `refusals` reading one, then
+/// one forever, whatever happened next.
+///
+/// It is also why nothing could scrape this platform. A scrape needs text
+/// exposition, Cloud Monitoring will not create a metric descriptor from a
+/// bespoke JSON object, and the four alert policies in
+/// `infrastructure/terraform/modules/observability/main.tf` are gated behind
+/// `workload_metrics_exist` precisely because no descriptor by their names had
+/// ever been ingested. Serving the recorded surface here is what makes a
+/// descriptor possible; the scrape configuration and the flag are still
+/// separate work, and neither should be turned on before a pod has been seen
+/// to scrape.
+///
+/// Empty until the first cycle records something, and that is correct rather
+/// than a gap: a scrape of a process that has done nothing should return
+/// nothing, not zeroes it has no evidence for.
+fn scrape(platform: &Platform) -> String {
+    platform.telemetry().metrics.snapshot().to_prometheus()
 }
 
 fn governance(platform: &Platform, now: Timestamp) -> String {
@@ -1446,4 +1490,138 @@ fn quantum(platform: &Platform) -> String {
              reported alone"
         )
     )
+}
+
+#[cfg(test)]
+#[allow(clippy::panic_in_result_fn)]
+mod tests {
+    use super::*;
+    use qip_core::error::Result;
+    use qip_core::{Context, Timestamp};
+    use qip_financial::universe::Universe;
+    use qip_kernel::config::PlatformConfig;
+    use qip_observability::Telemetry;
+    use qip_risk::limits::LimitSet;
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    fn platform() -> Result<Platform> {
+        let config = PlatformConfig::default();
+        let (context, _clock) = Context::deterministic(start(), config.seed);
+        Platform::new(
+            config,
+            context,
+            // Not `silent()`: the metric registry inside a silent telemetry is
+            // a real one — only the logger is quietened — and this test is
+            // about what reaches that registry.
+            Telemetry::new("qip-api-test", context_clock()),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )
+    }
+
+    fn context_clock() -> std::sync::Arc<dyn qip_core::Clock> {
+        std::sync::Arc::new(qip_core::ManualClock::new(start()))
+    }
+
+    #[test]
+    fn the_scrape_surface_serves_what_the_platform_recorded_and_not_counts_computed_beside_it()
+    -> Result<()> {
+        let mut platform = platform()?;
+
+        // The premise, and the defect this endpoint had: a platform that has
+        // recorded nothing serves nothing. It used to serve eight counts
+        // recomputed from state, so it was never empty and never evidence of
+        // anything — a scrape of a process that had done nothing looked
+        // identical to a scrape of one that had.
+        assert!(
+            scrape(&platform).is_empty(),
+            "a process that has recorded nothing must scrape empty: {}",
+            scrape(&platform)
+        );
+
+        platform.run_cycle(start());
+        let text = scrape(&platform);
+        assert!(
+            text.contains("# TYPE qip_cycles_total counter"),
+            "the scrape surface carries no type declaration; a scraper cannot ingest it: {text}"
+        );
+        assert!(
+            text.contains("\nqip_cycles_total 1\n"),
+            "the cycle the platform ran did not reach the scrape surface: {text}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_scrape_surface_and_the_console_counts_answer_two_different_questions() -> Result<()> {
+        // Both are served, and deliberately: `/system/metrics` is how big the
+        // book is now, `/metrics` is what this process has done since it
+        // started. Serving the first at the second's path is what made this
+        // platform unscrapeable, so the test is that they are not the same
+        // answer wearing two names.
+        let mut platform = platform()?;
+        platform.run_cycle(start());
+
+        let console = metrics(&platform);
+        let scraped = scrape(&platform);
+        assert!(
+            console.starts_with('{'),
+            "the console surface stopped being JSON: {console}"
+        );
+        assert!(
+            !scraped.starts_with('{'),
+            "the scrape surface is JSON again: {scraped}"
+        );
+        assert!(
+            !scraped.is_empty() && scraped != console,
+            "the two surfaces returned the same body"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_generated_document_says_the_scrape_surface_is_text_and_the_rest_is_json() {
+        // A generated client told `/metrics` is JSON parses `# HELP` and
+        // reports the endpoint broken — and it is the endpoint an operator
+        // reaches for when they already believe something is broken.
+        let document = crate::openapi::document();
+        let scrape_path = format!("{VERSION_PREFIX}{SCRAPE_PATH}");
+        assert!(
+            document.contains(&scrape_path),
+            "the scrape route is missing from the document"
+        );
+
+        // Split at the scrape path so the media type asserted is the one on
+        // that operation rather than one anywhere in a document that mentions
+        // both. A `contains("text/plain")` over the whole document would pass
+        // however wrongly the route was described.
+        let (_, after) = document
+            .split_once(&format!("{}:", json::string(&scrape_path)))
+            .expect("the path key is present");
+        let operation = after
+            .split_once("},\"/api/v1/")
+            .map_or(after, |(operation, _)| operation);
+        assert!(
+            operation.contains("text/plain"),
+            "the scrape operation is not declared as text: {operation}"
+        );
+        assert!(
+            !operation.contains("application/json"),
+            "the scrape operation is still declared as JSON: {operation}"
+        );
+
+        let (_, health) = document
+            .split_once(&format!("{}:", json::string("/api/v1/health")))
+            .expect("the health path is present");
+        let health = health
+            .split_once("},\"/api/v1/")
+            .map_or(health, |(operation, _)| operation);
+        assert!(
+            health.contains("application/json"),
+            "an ordinary route stopped being JSON: {health}"
+        );
+    }
 }
