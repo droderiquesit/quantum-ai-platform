@@ -976,3 +976,82 @@ fn the_kill_switch_gauge_the_alert_policy_queries_falls_back_when_the_halt_is_cl
     );
     Ok(())
 }
+
+#[test]
+fn every_pass_of_the_risk_monitor_is_recorded_with_the_breach_count_it_saw() -> Result<()> {
+    // The monitor runs whether or not there is anything to trade, and
+    // `qip_limit_breaches` is queried by a Cloud Monitoring policy as
+    // `max(...) > 0`. Both halves matter: a pass that is not counted makes a
+    // silent monitor indistinguishable from a busy one, and a gauge written
+    // only when something is wrong never falls back, so the alert stays lit
+    // after the breach clears.
+    let mut platform = platform(PlatformConfig::default())?;
+    platform.run_cycle(start());
+
+    let snapshot = recorded(&platform);
+    assert_eq!(
+        snapshot.counter_total(names::RISK_EVALUATIONS),
+        1,
+        "the ACT stage ran, so the monitor observed the book exactly once"
+    );
+    assert_eq!(
+        snapshot.gauge(names::LIMIT_BREACHES, &labels([])),
+        Some(0.0),
+        "a book inside its limits must report zero breaches, not report nothing; \
+         `max() > 0` over a series that stopped reporting sees no halt rather than a halt"
+    );
+
+    // A second cycle is a second pass. Without this the counter could be set
+    // once at assembly and every assertion above would still hold.
+    platform.run_cycle(start().saturating_add(Duration::from_mins(5)));
+    assert_eq!(
+        recorded(&platform).counter_total(names::RISK_EVALUATIONS),
+        2
+    );
+    Ok(())
+}
+
+#[test]
+fn the_panel_records_the_agents_that_ran_and_records_no_denial_it_did_not_have() -> Result<()> {
+    // `qip_permission_denials_total` is the second of the four names the alert
+    // policies query. Asserting it is zero is only worth anything if agents
+    // actually ran — a panel that never convened has no permission to violate,
+    // and a test that could not tell those apart would pass forever.
+    let mut platform = platform(PlatformConfig::default())?;
+    platform.observe(bars("AAA", 120));
+    let report = platform.run_cycle(start());
+
+    let reason = report.stage(Stage::Reason).expect("REASON reports");
+    assert!(
+        !reason.detail.contains("nothing in the queue"),
+        "the panel did not convene, so no agent ran and the denial count is vacuous: {}",
+        reason.detail
+    );
+
+    let snapshot = recorded(&platform);
+    assert!(
+        snapshot.counter_total(names::AGENT_RUNS) > 0,
+        "the panel convened but no agent run was recorded"
+    );
+    assert_eq!(
+        snapshot.counter_total(names::PERMISSION_DENIALS),
+        0,
+        "an agent on the shipped roster reached past its manifest, or a run was miscounted \
+         as a denial"
+    );
+
+    // The problems the stage reported reach the counter too, and they must
+    // agree: the sentence an operator reads and the number on a dashboard are
+    // two accounts of the same cycle, and the number is the more believed.
+    let problems: usize = report
+        .stages
+        .iter()
+        .map(|outcome| outcome.problems.len())
+        .sum();
+    assert_eq!(
+        snapshot.counter_total(names::STAGE_PROBLEMS),
+        problems as u64,
+        "the problem counter and the cycle report disagree about the same cycle"
+    );
+    Ok(())
+}

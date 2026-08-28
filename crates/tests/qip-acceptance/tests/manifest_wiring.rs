@@ -1047,3 +1047,92 @@ fn the_mesh_port_is_permitted_by_the_policies_that_would_otherwise_drop_it() {
          nothing"
     );
 }
+
+/// Every placeholder the edge-cell runbook substitutes, and the value the test
+/// renders it to. Read from the runbook itself below rather than trusted from
+/// this list — the list only supplies substitutions.
+/// Only the two placeholders that are substrings of a `QIP_` variable name are
+/// delimited. `IMAGE_PREFIX`, `IMAGE_TAG`, `ENVIRONMENT` and `PROJECT` are
+/// substituted by `deploy.yml` with their bare names and collide with nothing;
+/// delimiting them would break the pipeline, which greps its rendered output to
+/// prove no placeholder survived.
+const CELL_RENDERINGS: [(&str, &str); 7] = [
+    ("__CELL_ID__", "london-1"),
+    ("__CELL_REGION__", "europe-west2"),
+    ("CELL_VENUES", "sim-1"),
+    ("IMAGE_PREFIX", "eu.gcr.io/example"),
+    ("IMAGE_TAG", "abc123"),
+    ("ENVIRONMENT", "dev"),
+    ("PROJECT", "example-project"),
+];
+
+#[test]
+fn the_runbooks_own_substitution_leaves_every_variable_name_intact() {
+    // A cell deployed by the documented procedure could not start.
+    //
+    // The runbook rendered the manifest with `sed s#CELL_ID#london-1#g`, and
+    // `CELL_ID` is a substring of `QIP_CELL_ID`. The global substitution
+    // rewrote the environment variable's *name* as well as its value, so the
+    // rendered manifest set `QIP_london-1` and `QIP_europe-west2`, and
+    // `qip-edge-node` exited 78 with "QIP_CELL_ID, QIP_CELL_REGION must be
+    // set". The manifest was correct, the binary was correct, and the one
+    // command joining them destroyed the names.
+    //
+    // Fixed structurally rather than by escaping the two colliding names: the
+    // placeholders are delimited (`__CELL_ID__`) so no placeholder can be a
+    // substring of an identifier at all. This test renders the manifest with
+    // the runbook's own placeholders and asserts the names survive, which is
+    // the property that was silently false.
+    let manifest = read("infrastructure/kubernetes/base/edge-cell.yaml");
+    let runbook = read("docs/operations/deploying-an-edge-cell.md");
+
+    // The premise: the runbook and the manifest agree on the placeholders. A
+    // render that substituted nothing would pass every assertion below by
+    // leaving an already-correct manifest untouched.
+    for (placeholder, _) in CELL_RENDERINGS {
+        assert!(
+            manifest.contains(placeholder),
+            "the manifest has no {placeholder}; this test is rendering nothing"
+        );
+        assert!(
+            runbook.contains(placeholder),
+            "the runbook does not substitute {placeholder}, so the documented \
+             procedure leaves it in the applied manifest"
+        );
+    }
+    // The two that collide must be delimited, and that is the fix rather than
+    // an incidental style: a bare `CELL_ID` is a substring of `QIP_CELL_ID`.
+    for delimited in ["__CELL_ID__", "__CELL_REGION__"] {
+        assert!(
+            manifest.contains(delimited),
+            "{delimited} is not delimited in the manifest, so a global \
+             substitution of it will rewrite the variable name that contains it"
+        );
+    }
+
+    let mut rendered = manifest.clone();
+    for (placeholder, value) in CELL_RENDERINGS {
+        rendered = rendered.replace(placeholder, value);
+    }
+
+    // Nothing unrendered survives. An unsubstituted placeholder reaches the
+    // cluster as a literal and fails at a much less obvious moment.
+    assert!(
+        !rendered.contains("__"),
+        "the rendered manifest still carries a placeholder: {}",
+        rendered
+            .lines()
+            .find(|line| line.contains("__"))
+            .unwrap_or_default()
+    );
+
+    // And every variable the binary requires still has its own name. This is
+    // the assertion the bug would have failed.
+    for required in ["QIP_CELL_ID", "QIP_CELL_REGION", "QIP_VENUES"] {
+        assert!(
+            rendered.contains(required),
+            "rendering the manifest destroyed {required}; a substitution has \
+             rewritten a variable name rather than only its value"
+        );
+    }
+}

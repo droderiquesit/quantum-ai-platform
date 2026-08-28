@@ -58,8 +58,8 @@ should expect to correct it.
    trades should not appear unattended.
 
    ```sh
-   sed -e "s#CELL_ID#london-1#g" \
-       -e "s#CELL_REGION#europe-west2#g" \
+   sed -e "s#__CELL_ID__#london-1#g" \
+       -e "s#__CELL_REGION__#europe-west2#g" \
        -e "s#CELL_VENUES#<venue ids, comma separated>#g" \
        -e "s#IMAGE_PREFIX#$(terraform output -raw image_prefix)#g" \
        -e "s#IMAGE_TAG#<commit sha>#g" \

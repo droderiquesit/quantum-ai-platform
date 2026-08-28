@@ -1,6 +1,6 @@
 # An edge cell.
 #
-# One of these per cell. `CELL_ID`, `CELL_REGION` and `CELL_VENUES` are
+# One of these per cell. `__CELL_ID__`, `__CELL_REGION__` and `CELL_VENUES` are
 # substituted at deploy time, the same way `ENVIRONMENT`, `PROJECT` and
 # `IMAGE_TAG` are — see docs/operations/deploying-an-edge-cell.md.
 #
@@ -18,21 +18,21 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: qip-edge-CELL_ID
+  name: qip-edge-__CELL_ID__
   namespace: qip
   annotations:
     # Matches the workload identity binding the edge-cell Terraform module
-    # creates for `qip/qip-edge-CELL_ID`.
-    iam.gke.io/gcp-service-account: qip-edge-CELL_ID-ENVIRONMENT@PROJECT.iam.gserviceaccount.com
+    # creates for `qip/qip-edge-__CELL_ID__`.
+    iam.gke.io/gcp-service-account: qip-edge-__CELL_ID__-ENVIRONMENT@PROJECT.iam.gserviceaccount.com
 ---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: qip-edge-CELL_ID
+  name: qip-edge-__CELL_ID__
   namespace: qip
   labels:
     app: qip-edge-node
-    qip.io/cell: CELL_ID
+    qip.io/cell: __CELL_ID__
 spec:
   # A StatefulSet rather than a Deployment, for one reason: the journal.
   # A cell's hash-chained decision record is evidence — the answer to "why did
@@ -43,7 +43,7 @@ spec:
   # Book and feature state stays on emptyDir below, deliberately: a cell
   # rebuilds its books from the feed, and state that survived a restart would
   # be state nobody reconciled against the venue.
-  serviceName: qip-edge-CELL_ID
+  serviceName: qip-edge-__CELL_ID__
   # Cells are independent; there is no leader to elect and no ordering to
   # respect, so replicas start together rather than one at a time.
   podManagementPolicy: Parallel
@@ -87,14 +87,14 @@ spec:
   selector:
     matchLabels:
       app: qip-edge-node
-      qip.io/cell: CELL_ID
+      qip.io/cell: __CELL_ID__
   template:
     metadata:
       labels:
         app: qip-edge-node
-        qip.io/cell: CELL_ID
+        qip.io/cell: __CELL_ID__
     spec:
-      serviceAccountName: qip-edge-CELL_ID
+      serviceAccountName: qip-edge-__CELL_ID__
       automountServiceAccountToken: false
       # Long enough to cancel every resting order and write the cell's closing
       # evidence. A cell killed with orders live leaves the book holding risk
@@ -103,7 +103,7 @@ spec:
       # The cell runs in its own region or it does not run.
       #
       # This is one line against the quietest failure in the whole deployment.
-      # `CELL_REGION` is substituted into `QIP_CELL_REGION` below, where it is
+      # `__CELL_REGION__` is substituted into `QIP_CELL_REGION` below, where it is
       # a string the cell reports about itself; nothing until now made it a
       # statement about where the pods are. The Terraform module creates the
       # cell's subnet, identity and firewall rules in that region and creates
@@ -126,7 +126,7 @@ spec:
       # has no nodes, and docs/operations/multi-region.md is what it would
       # take to give it some.
       nodeSelector:
-        topology.kubernetes.io/region: CELL_REGION
+        topology.kubernetes.io/region: __CELL_REGION__
       # Two replicas of a latency-sensitive workload on the same node share a
       # failure and a network card, and gain nothing.
       affinity:
@@ -135,7 +135,7 @@ spec:
             - labelSelector:
                 matchLabels:
                   app: qip-edge-node
-                  qip.io/cell: CELL_ID
+                  qip.io/cell: __CELL_ID__
               topologyKey: kubernetes.io/hostname
       # And across zones as well as across nodes. The rule above already keeps
       # the two pods off one machine; this keeps them out of one zone, which is
@@ -159,7 +159,7 @@ spec:
               # above and the policies below name it: two cells in one
               # namespace selected only by `app` would be spread against each
               # other, and one cell's placement would depend on another's.
-              qip.io/cell: CELL_ID
+              qip.io/cell: __CELL_ID__
       # This one serves, unlike the two central-plane workloads. `qip-edge-node`
       # binds `QIP_HEALTH_PORT` and answers every request with the cell's state,
       # so the probes below point at something that exists rather than at the
@@ -253,9 +253,9 @@ spec:
             # envelope the central plane grants here, because the cell refuses
             # one addressed elsewhere.
             - name: QIP_CELL_ID
-              value: "CELL_ID"
+              value: "__CELL_ID__"
             - name: QIP_CELL_REGION
-              value: "CELL_REGION"
+              value: "__CELL_REGION__"
             # The venues this cell is configured for. `qip-edge-node` refuses to
             # start without it and refuses an empty list — a cell with no venue
             # has nothing to do, and one that started anyway would report itself
@@ -274,8 +274,8 @@ spec:
             # binds one listener per cell and a mesh poll is a destructive read
             # with a single cursor — so this URL cannot be one shared value.
             # The per-cell key is how a per-cell value reaches a manifest that
-            # is rendered by substituting CELL_ID: the runbook's existing
-            # `s#CELL_ID#london-1#g` turns `mesh_peer_CELL_ID` into
+            # is rendered by substituting __CELL_ID__: the runbook's existing
+            # `s#__CELL_ID__#london-1#g` turns `mesh_peer_CELL_ID` into
             # `mesh_peer_london-1`, so no new placeholder is introduced and
             # nothing in docs/operations/deploying-an-edge-cell.md has to
             # change for this to work.
@@ -367,7 +367,7 @@ spec:
         name: journal
         labels:
           app: qip-edge-node
-          qip.io/cell: CELL_ID
+          qip.io/cell: __CELL_ID__
       spec:
         accessModes: ["ReadWriteOnce"]
         # Named rather than left to the cluster's default class, and the
@@ -403,12 +403,12 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: qip-edge-CELL_ID
+  name: qip-edge-__CELL_ID__
   namespace: qip
 spec:
   selector:
     app: qip-edge-node
-    qip.io/cell: CELL_ID
+    qip.io/cell: __CELL_ID__
   ports:
     - name: http
       port: 8080
@@ -417,14 +417,14 @@ spec:
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: qip-edge-CELL_ID
+  name: qip-edge-__CELL_ID__
   namespace: qip
 spec:
   minAvailable: 1
   selector:
     matchLabels:
       app: qip-edge-node
-      qip.io/cell: CELL_ID
+      qip.io/cell: __CELL_ID__
 ---
 # An edge cell accepts traffic from the API and nothing else.
 #
@@ -448,7 +448,7 @@ spec:
       # The cell as well as the workload. Two cells in one namespace selected
       # only by `app` would each get the other's venue rule, which is a wider
       # grant than either was given.
-      qip.io/cell: CELL_ID
+      qip.io/cell: __CELL_ID__
   policyTypes:
     - Ingress
   ingress:
@@ -495,7 +495,7 @@ spec:
       # The cell as well as the workload. Two cells in one namespace selected
       # only by `app` would each get the other's venue rule, which is a wider
       # grant than either was given.
-      qip.io/cell: CELL_ID
+      qip.io/cell: __CELL_ID__
   policyTypes:
     - Egress
   egress:
