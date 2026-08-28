@@ -34,6 +34,7 @@ use qip_lifecycle::ledger::LifecycleLedger;
 use qip_numerics::stats;
 use qip_strategy::catalogue::FeatureCatalogue;
 use qip_strategy::compile::StrategyCompiler;
+use qip_strategy::ir::Expr;
 use qip_strategy::ir::Type;
 
 const PERIODS_PER_YEAR: f64 = 252.0;
@@ -1314,5 +1315,84 @@ fn a_champion_holding_no_capital_is_reported_stale() -> Result<()> {
     assert_eq!(stale[0].1, challenger.id());
     assert_eq!(book.dethrone(&subject).as_ref(), Some(challenger.id()));
     assert!(book.is_empty());
+    Ok(())
+}
+
+/// Every `Compare` node in `expr`, as `(left, right)` pairs.
+fn comparisons(expr: &Expr, into: &mut Vec<(Expr, Expr)>) {
+    match expr {
+        Expr::Compare { left, right, .. } => {
+            into.push(((**left).clone(), (**right).clone()));
+            comparisons(left, into);
+            comparisons(right, into);
+        }
+        Expr::Logical { left, right, .. } | Expr::Arithmetic { left, right, .. } => {
+            comparisons(left, into);
+            comparisons(right, into);
+        }
+        Expr::Negate(inner) | Expr::Magnitude(inner) | Expr::Invert(inner) | Expr::Widen(inner) => {
+            comparisons(inner, into)
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn a_price_or_a_count_is_never_compared_against_a_bare_constant() -> Result<()> {
+    // The defect this prevents was measured, not imagined. The literal grid
+    // tops out at 100, and the features it was compared against carry prices,
+    // traded sizes and bar counts whose magnitude is the instrument's. Against
+    // a bond at 98.4, a volume in the thousands, or a tally that only rises,
+    // every such comparison is a constant -- and because a generated
+    // strategy's first rule is the protective one, a constant-true first rule
+    // makes the strategy permanently flat.
+    //
+    // Observed before the fix: across eight generated candidates over 190
+    // periods, the first rule of every strategy fired on every single
+    // decision, no later rule was ever reached, no entry signal was ever
+    // emitted, and the backtest returned a perfectly flat equity curve which
+    // the holdout gate then scored as a Sharpe ratio.
+    //
+    // A statistic is standardised, so `momentum > 0.5` means something at any
+    // price level and stays legal. A price does not, so it is compared against
+    // another feature of its own type instead.
+    let subject = subject();
+    let grammar = grammar_over(&subject)?;
+    let catalogue = catalogue(&subject)?;
+    let mut rng = Xoshiro256::seeded(0x51ED);
+
+    let mut found = Vec::new();
+    for _ in 0..400 {
+        comparisons(&grammar.condition(&mut rng), &mut found);
+    }
+    // The premise: comparisons were generated at all, and some of them are on
+    // unscaled features -- otherwise the assertion below holds vacuously.
+    assert!(!found.is_empty(), "the grammar generated no comparison");
+    let unscaled: Vec<_> = found
+        .iter()
+        .filter(|(left, _)| match left {
+            Expr::Feature(key) => matches!(
+                catalogue.type_of(key),
+                Some(Type::Exact) | Some(Type::Count)
+            ),
+            _ => false,
+        })
+        .collect();
+    assert!(
+        !unscaled.is_empty(),
+        "no comparison read a price or a count, so this proves nothing about them"
+    );
+
+    for (left, right) in unscaled.iter().copied() {
+        assert!(
+            matches!(right, Expr::Feature(_)),
+            "an unscaled feature was compared against the constant {right:?}; a threshold is \
+             only a threshold when the quantity has a known scale"
+        );
+        assert_ne!(
+            left, right,
+            "a feature was compared against itself, which is a constant by another route"
+        );
+    }
     Ok(())
 }

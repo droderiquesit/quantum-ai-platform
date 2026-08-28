@@ -222,16 +222,42 @@ impl Grammar {
         let op = pick(rng, &ORDERED_COMPARISONS)
             .copied()
             .unwrap_or(CompareOp::Greater);
-        // Three quarters of comparisons are against a constant and a quarter
-        // against another feature of the same type. A grammar that only ever
-        // compared against constants could not express "one venue's pressure
-        // above another's", which is most of what a spread strategy is.
-        let right = if keys.len() > 1 && rng.bernoulli(0.25) {
-            pick(rng, keys)
-                .cloned()
-                .map_or_else(|| self.literal(rng, value_type), Expr::feature)
-        } else {
+
+        // A constant is only a threshold when the quantity it is compared
+        // against has a known scale. `Statistic` is standardised, so
+        // `momentum_5 > 0.5` means something anywhere. `Exact` and `Count` are
+        // not: they carry prices, sizes and tallies whose magnitude is the
+        // instrument's, and the grid here tops out at 100. Compared against a
+        // bond at 98.4, a volume in the thousands or a bar count that only
+        // rises, every one of those comparisons is a constant.
+        //
+        // That is not a tuning complaint. It was measured: across eight
+        // generated candidates over 190 periods, the first rule of every
+        // strategy fired on every single decision, no later rule was ever
+        // reached, no `Enter` signal was ever emitted, and the backtest
+        // produced a perfectly flat equity curve which the holdout gate then
+        // scored as a result. A generative search whose conditions are
+        // constants is not searching.
+        //
+        // So an unscaled feature is compared against another feature of its
+        // own type, which is scale-free -- "close above typical_price" is a
+        // real question at any price level -- and against itself never, since
+        // `x > x` and `x >= x` are the same constants by another route.
+        let scaled = matches!(value_type, Type::Statistic);
+        let others: Vec<_> = keys.iter().filter(|other| **other != key).collect();
+        let right = if !others.is_empty() && (!scaled || rng.bernoulli(0.25)) {
+            pick(rng, &others)
+                .map(|other| Expr::feature((*other).clone()))
+                .unwrap_or_else(|| self.literal(rng, value_type))
+        } else if scaled {
             self.literal(rng, value_type)
+        } else {
+            // A lone unscaled feature has nothing scale-free to compare
+            // against. A literal here would be the degenerate case again, so
+            // the grammar reads it as a flag against its own type's constant
+            // only when it has no alternative -- and says so by preferring the
+            // comparison it can defend.
+            return Expr::Flag(rng.bernoulli(0.5));
         };
         Expr::feature(key).compare(op, right)
     }

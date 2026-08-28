@@ -119,6 +119,16 @@ pub struct BacktestResult {
     /// Reads served through the point-in-time view, evidence that the strategy
     /// went through the guard rather than around it.
     pub guarded_reads: usize,
+    /// Orders replaced by a later decision before they came due.
+    ///
+    /// Only one decision is held at a time, so a strategy rebalancing faster
+    /// than its own decision lag overwrites its pending order every step and
+    /// never trades. That is a defensible policy -- the latest signal is the
+    /// one you would send -- but it was silent, and silence is what made it
+    /// expensive: a run with two thousand rebalances, zero fills and a
+    /// perfectly flat equity curve looked exactly like a strategy that chose
+    /// not to trade. Counting it is what tells the two apart.
+    pub superseded: usize,
 }
 
 impl BacktestResult {
@@ -280,6 +290,7 @@ impl Backtester {
         let mut missing_prices: Vec<String> = Vec::new();
         let mut pending: Option<(Timestamp, BTreeMap<String, f64>)> = None;
         let mut rebalance_count = 0usize;
+        let mut superseded = 0usize;
         let mut guarded_reads = 0usize;
         let mut finished_at = started_at;
 
@@ -328,7 +339,12 @@ impl Backtester {
             {
                 rebalance_count += 1;
                 match clock.executable_at() {
-                    Some(execute_at) => pending = Some((execute_at, targets)),
+                    Some(execute_at) => {
+                        if pending.is_some() {
+                            superseded += 1;
+                        }
+                        pending = Some((execute_at, targets));
+                    }
                     None => {
                         // The decision lag runs past the end of the data. A
                         // backtest that filled it anyway would award every run
@@ -381,6 +397,7 @@ impl Backtester {
             total_spread,
             total_impact,
             rebalance_count,
+            superseded,
             guarded_reads,
         })
     }

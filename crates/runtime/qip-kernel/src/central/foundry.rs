@@ -69,6 +69,7 @@ use qip_core::error::{Error, Result};
 use qip_evolution::challenger::TrialLedger;
 use qip_evolution::generate::{Candidate, GenerationRun, StrategyGenerator};
 use qip_evolution::grammar::Grammar;
+use qip_evolution::mutate::MutationRun;
 use qip_lifecycle::evidence::{
     CrossValidationRun, HoldoutEvidence, LeakageAudit, StrategyEvidence,
 };
@@ -150,6 +151,32 @@ impl StrategyFoundry {
     /// Candidates the compiler refused across the whole search.
     pub const fn refused(&self) -> usize {
         self.ledger.refused()
+    }
+
+    /// The ledger itself, for a comparison that must declare the search size.
+    ///
+    /// Lent read-only. [`qip_evolution::challenger::ChallengerEntry::from_ledger`]
+    /// takes the count from here rather than from a caller, so the number a
+    /// challenger's Sharpe is deflated by is the number of candidates actually
+    /// tried and not one the caller computed to suit the answer.
+    pub const fn ledger(&self) -> &TrialLedger {
+        &self.ledger
+    }
+
+    /// Fold a round of challengers into the same count the search keeps.
+    ///
+    /// A mutation round is a search: every challenger minted from the champion
+    /// is another draw from the distribution the winner will be picked out of.
+    /// Counting them separately -- or not at all -- would let a challenger be
+    /// deflated by the generative search alone while the edits that actually
+    /// produced it went unrecorded, which is the multiple-comparisons problem
+    /// with extra steps.
+    ///
+    /// It goes through the foundry rather than the caller reaching the ledger
+    /// directly, because the ledger is monotonic and that property is only
+    /// worth anything while nothing outside can hold it mutably.
+    pub fn record_mutation(&mut self, run: &MutationRun) {
+        self.ledger.record_mutation(run);
     }
 
     pub const fn rounds(&self) -> u32 {

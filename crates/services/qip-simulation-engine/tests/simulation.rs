@@ -972,3 +972,86 @@ fn a_stress_test_on_a_book_with_no_equity_is_refused() {
     let scenario = standard_library().into_iter().next().unwrap();
     assert!(tester.apply(&scenario, &exposures(), 0.0, start()).is_err());
 }
+
+/// Rebalances on every bar, so it always has a decision in flight.
+struct AlwaysRebalancing {
+    symbol: &'static str,
+    weight: f64,
+}
+
+impl BacktestStrategy for AlwaysRebalancing {
+    fn name(&self) -> &str {
+        "always-rebalancing"
+    }
+
+    fn should_rebalance(&self, _view: &PointInTimeView<'_>) -> bool {
+        true
+    }
+
+    fn target_weights(&mut self, _view: &PointInTimeView<'_>) -> BTreeMap<String, f64> {
+        BTreeMap::from([(object(self.symbol).as_str().to_string(), self.weight)])
+    }
+}
+
+#[test]
+fn an_order_replaced_before_it_came_due_is_counted_rather_than_dropped_in_silence() -> Result<()> {
+    // Only one decision is held at a time, so a strategy rebalancing faster
+    // than its own decision lag overwrites its pending order every step and
+    // never trades. Keeping the latest signal is defensible; being silent
+    // about it was not.
+    //
+    // This was expensive in practice. The evolution loop asked for a one-day
+    // lag on one-minute bars, and the result -- two thousand rebalances, zero
+    // fills, a perfectly flat equity curve -- was indistinguishable from a
+    // strategy that had simply chosen not to trade. The holdout gate scored
+    // that flat line as a Sharpe ratio.
+    let days = 40;
+    let mut clock = SimulationClock::new(
+        v_shaped("AAA", days),
+        // Ten days of lag against daily bars: every decision is replaced nine
+        // times before the one that survives comes due.
+        ExecutionAssumptions::intraday(Duration::from_days(10)),
+    )?;
+    let mut strategy = AlwaysRebalancing {
+        symbol: "AAA",
+        weight: 0.5,
+    };
+    let result = Backtester::new(BacktestConfig::default())?.run(
+        &mut strategy,
+        &mut clock,
+        &universe_of(&["AAA"]),
+    )?;
+
+    // The premise: the strategy really did keep asking. Without this, a
+    // supersession count of zero would be correct rather than a missing signal.
+    assert!(
+        result.rebalance_count > 1,
+        "the strategy rebalanced {} time(s), so nothing could be superseded",
+        result.rebalance_count
+    );
+    assert!(
+        result.superseded > 0,
+        "{} rebalance(s) against a ten-day lag on daily bars superseded nothing",
+        result.rebalance_count
+    );
+
+    // And the same strategy at a one-bar lag supersedes nothing, because each
+    // order comes due before the next decision is taken. Without this half, the
+    // counter could be incrementing on every rebalance and still pass above.
+    let mut clock = SimulationClock::new(v_shaped("AAA", days), ExecutionAssumptions::next_bar())?;
+    let mut strategy = AlwaysRebalancing {
+        symbol: "AAA",
+        weight: 0.5,
+    };
+    let prompt = Backtester::new(BacktestConfig::default())?.run(
+        &mut strategy,
+        &mut clock,
+        &universe_of(&["AAA"]),
+    )?;
+    assert!(prompt.rebalance_count > 1);
+    assert_eq!(
+        prompt.superseded, 0,
+        "an order that comes due before the next decision was counted as superseded"
+    );
+    Ok(())
+}

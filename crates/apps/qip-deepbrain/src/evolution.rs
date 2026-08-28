@@ -33,9 +33,13 @@
 //! trial count still rises for every scored candidate, discarded or not —
 //! that is the whole point of the ledger.
 
+use crate::succession::{ChallengeSummary, SuccessionDesk, SuccessionStats};
 use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
-use qip_core::{ObjectId, Timestamp};
+use qip_core::{Decimal, ObjectId, Timestamp};
+use qip_evolution::challenger::ChallengerPolicy;
+use qip_evolution::cost_model::NetReturns;
+use qip_evolution::generate::Candidate;
 use qip_evolution::grammar::Grammar;
 use qip_evolution::palette::FeaturePalette;
 use qip_financial::universe::Universe;
@@ -47,6 +51,7 @@ use qip_market_ingestion::adapter::{DataAdapter, SensedRecord};
 use qip_simulation_engine::backtest::{BacktestConfig, Backtester};
 use qip_simulation_engine::clock::{ExecutionAssumptions, SimulationClock};
 use qip_simulation_engine::harness::{CompiledHarness, WARM_UP_BARS, bar_catalogue};
+use qip_strategy::compile::StrategyCompiler;
 use std::collections::BTreeMap;
 
 /// How the evolution loop is tuned. Every knob is a policy with a reason,
@@ -71,6 +76,13 @@ pub struct EvolutionConfig {
     /// Bars kept per instrument. Bounded so a long-running research node's
     /// memory is a function of configuration, not uptime.
     pub history_cap: usize,
+    /// Challengers minted from the champion each round.
+    ///
+    /// Small for the same reason `candidates` is, and for one more: every
+    /// challenger is folded into the same trial ledger, so a large challenge
+    /// round deflates the holdout of everything the generative search finds
+    /// alongside it.
+    pub challengers: usize,
 }
 
 impl Default for EvolutionConfig {
@@ -82,6 +94,7 @@ impl Default for EvolutionConfig {
             holdout_fraction: 0.25,
             max_weight: 0.5,
             history_cap: 2048,
+            challengers: 4,
         }
     }
 }
@@ -127,6 +140,8 @@ pub struct RoundSummary {
     /// The search's cumulative trial count after this round — the number
     /// every holdout is deflated by.
     pub trials: usize,
+    /// What the champion/challenger contest concluded, where one ran.
+    pub challenge: Option<ChallengeSummary>,
 }
 
 impl RoundSummary {
@@ -162,8 +177,17 @@ pub struct EvolutionEngine {
     config: EvolutionConfig,
     adapter: Box<dyn DataAdapter>,
     seed: u64,
+    /// The instruments a backtest may trade.
+    ///
+    /// The same universe the platform was assembled with, and not a fresh
+    /// empty one. A backtest against an empty universe rejects every order as
+    /// an unknown instrument, fills nothing, and returns a perfectly flat
+    /// equity curve -- which the gate then reads as a strategy with no
+    /// volatility rather than as a strategy that never traded.
+    universe: Universe,
     history: BTreeMap<String, Vec<Bar>>,
     foundries: BTreeMap<String, StrategyFoundry>,
+    desk: SuccessionDesk,
     stats: EvolutionStats,
 }
 
@@ -172,21 +196,42 @@ impl std::fmt::Debug for EvolutionEngine {
         f.debug_struct("EvolutionEngine")
             .field("config", &self.config)
             .field("subjects", &self.history.len())
+            .field("champions", &self.desk.champions())
             .field("stats", &self.stats)
             .finish_non_exhaustive()
     }
 }
 
 impl EvolutionEngine {
-    pub fn new(config: EvolutionConfig, adapter: Box<dyn DataAdapter>, seed: u64) -> Self {
-        Self {
+    /// Build the crank.
+    ///
+    /// Refuses a configuration whose challenge round is empty rather than
+    /// treating it as "challenges off": a desk that mints nothing still holds
+    /// champions and still reports rounds, which reads as a comparison that
+    /// happened and found nothing. `every_cycles = 0` is how a deployment says
+    /// it does not want this loop, and it says so visibly.
+    pub fn new(
+        config: EvolutionConfig,
+        adapter: Box<dyn DataAdapter>,
+        seed: u64,
+        universe: Universe,
+    ) -> Result<Self> {
+        let desk = SuccessionDesk::new(config.challengers, ChallengerPolicy::default())?;
+        Ok(Self {
             config,
             adapter,
             seed,
+            universe,
             history: BTreeMap::new(),
             foundries: BTreeMap::new(),
+            desk,
             stats: EvolutionStats::default(),
-        }
+        })
+    }
+
+    /// What the succession desk has done across the node's lifetime.
+    pub const fn succession_stats(&self) -> SuccessionStats {
+        self.desk.stats()
     }
 
     pub const fn stats(&self) -> EvolutionStats {
@@ -234,8 +279,21 @@ impl EvolutionEngine {
             .history
             .iter()
             .filter(|(_, bars)| bars.len() >= self.config.minimum_bars)
-            .max_by_key(|(_, bars)| bars.len())
-            .map(|(subject, bars)| (subject.clone(), bars.clone()))
+            // Ranked by liquidity, not by bar count. Every subject on this
+            // feed accumulates bars at the same rate, so ranking by count is
+            // really ranking by key order -- and the synthetic exchange's
+            // illiquid government bond sorts last, so every round this node had
+            // ever run searched the instrument whose orders the impact model
+            // most often refuses. Thin bars give rejected orders, rejected
+            // orders give a flat equity curve, and a flat curve is a round that
+            // spent its trials on a question with no answer.
+            //
+            // The statistic is the one `tradeable_capital` sizes against, so
+            // "where can we trade" and "how much can we trade" are one rule
+            // rather than two that happen to agree.
+            .filter_map(|(subject, bars)| depth(bars).map(|depth| (subject, bars, depth)))
+            .max_by(|left, right| left.2.total_cmp(&right.2))
+            .map(|(subject, bars, _)| (subject.clone(), bars.clone()))
         else {
             return Ok(None);
         };
@@ -294,23 +352,28 @@ impl EvolutionEngine {
         // local arena for evaluation. The compiler is deterministic over the
         // same catalogue, and the harness's own plan-versus-arena check would
         // refuse the pairing if that ever stopped being true.
-        let pending: Vec<_> = foundry
-            .pending()
-            .iter()
-            .map(|candidate| (candidate.id().clone(), candidate.spec().clone()))
-            .collect();
+        let pending: Vec<Candidate> = foundry.pending().to_vec();
         let object = ObjectId::from_string(subject);
-        for (id, spec) in pending {
-            let scored = self.evaluate(&object, &spec, &bars);
+        let mut admitted: Vec<Candidate> = Vec::new();
+        for candidate in pending {
+            let id = candidate.id().clone();
+            let scored = self.evaluate(&object, candidate.spec(), &bars);
             let foundry = self
                 .foundries
                 .get_mut(subject)
                 .ok_or_else(|| Error::not_found("the foundry that just searched"))?;
             match scored {
-                Ok(holdout) => {
-                    match foundry.register(platform.central_mut().factory_mut(), &id, holdout, now)
-                    {
-                        Ok(()) => summary.registered += 1,
+                Ok(scored) => {
+                    match foundry.register(
+                        platform.central_mut().factory_mut(),
+                        &id,
+                        scored.holdout,
+                        now,
+                    ) {
+                        Ok(()) => {
+                            summary.registered += 1;
+                            admitted.push(candidate);
+                        }
                         Err(_) => {
                             foundry.discard(&id);
                             summary.discarded += 1;
@@ -323,31 +386,225 @@ impl EvolutionEngine {
                 }
             }
         }
+        summary.challenge = Some(self.contest(platform, subject, &object, &bars, &admitted, now)?);
+        // Read after the contest: a challenge round mints challengers, and
+        // every one of them is a trial. Reading the count before would report
+        // a smaller search than the one the holdouts were deflated by.
         if let Some(foundry) = self.foundries.get(subject) {
             summary.trials = foundry.trials();
         }
         Ok(summary)
     }
 
+    /// Install a first champion, or mount a challenge against the one there is.
+    ///
+    /// Runs after registration because a champion has to be a strategy the
+    /// factory's gate admitted. A candidate the gate refused is not a champion
+    /// that happens to be unproven; it is one the platform has already declined.
+    fn contest(
+        &mut self,
+        platform: &mut Platform,
+        subject: &str,
+        object: &ObjectId,
+        bars: &[Bar],
+        admitted: &[Candidate],
+        now: Timestamp,
+    ) -> Result<ChallengeSummary> {
+        let mut summary = ChallengeSummary {
+            subject: subject.to_string(),
+            ..ChallengeSummary::default()
+        };
+
+        // A demoted champion must stop being the parent every challenger is
+        // mutated from. A search descending from a strategy the platform has
+        // already stopped trusting is the quiet way an automated loop keeps
+        // investing in a dead line.
+        summary.refusals.extend(
+            self.desk
+                .retire_demoted(platform.central().factory().ledger()),
+        );
+
+        if self.desk.champion(subject).is_none() {
+            // The bootstrap. Deliberately the *first* candidate the gate
+            // admitted this round and not the highest-scoring one: picking the
+            // best of a fresh search is precisely the multiple-comparisons
+            // error the trial ledger exists to deflate, and a bootstrap has
+            // nothing to deflate against. The challenge loop is what improves
+            // on it, under a count.
+            let Some(first) = admitted.first() else {
+                return Ok(summary);
+            };
+            match self
+                .desk
+                .install_first(platform.central().factory().ledger(), object, first, now)
+            {
+                Ok(succession) => summary.crowned = Some(succession.champion.to_string()),
+                Err(error) => summary.refusals.push(error.message().to_string()),
+            }
+            return Ok(summary);
+        }
+
+        let Some(champion) = self.desk.champion(subject).cloned() else {
+            return Ok(summary);
+        };
+
+        // Champion and challengers are compiled into one arena, over the same
+        // catalogue, so a challenger is type-checked against exactly the
+        // vocabulary its parent was.
+        let mut compiler = StrategyCompiler::new(bar_catalogue(object)?);
+        let grammar = Grammar::over(FeaturePalette::from_catalogue(
+            &bar_catalogue(object)?,
+            object,
+        )?);
+        // A different corner of the stream from the generative search on the
+        // same subject, so the two are not drawing the same edits.
+        let seed = self.seed ^ fold(subject) ^ 0x9e37_79b9_7f4a_7c15;
+
+        let run = {
+            let Self {
+                desk, foundries, ..
+            } = self;
+            let foundry = foundries
+                .get_mut(subject)
+                .ok_or_else(|| Error::not_found("the foundry that just searched"))?;
+            desk.mint(subject, foundry, &mut compiler, grammar, seed)
+        };
+        let Some(run) = run else {
+            return Ok(summary);
+        };
+        summary.minted = run.accepted().len() + run.rejected().len();
+        summary.refused = run.rejected().len();
+
+        // The champion is re-scored on this round's window rather than
+        // compared against whatever it scored when it was crowned. A number
+        // from an older, shorter window is not evidence about this one, and
+        // the challenger test refuses two series of different lengths for
+        // exactly that reason.
+        let champion_net = match self.evaluate(object, champion.spec(), bars) {
+            Ok(scored) => scored.net,
+            Err(error) => {
+                summary
+                    .refusals
+                    .push(format!("the champion could not be re-scored: {error}"));
+                return Ok(summary);
+            }
+        };
+
+        // Scored first, judged second: scoring needs the engine immutably and
+        // judging needs the desk mutably.
+        let mut scored: Vec<(usize, NetReturns)> = Vec::new();
+        for (index, challenger) in run.accepted().iter().enumerate() {
+            match self.evaluate(object, challenger.candidate().spec(), bars) {
+                Ok(result) => scored.push((index, result.net)),
+                Err(error) => summary.refusals.push(error.message().to_string()),
+            }
+        }
+
+        let ledger = platform.central().factory().ledger();
+        let Self {
+            desk, foundries, ..
+        } = self;
+        let foundry = foundries
+            .get(subject)
+            .ok_or_else(|| Error::not_found("the foundry that just searched"))?;
+        for (index, net) in scored {
+            let Some(challenger) = run.accepted().get(index) else {
+                continue;
+            };
+            match desk.judge(
+                ledger,
+                object,
+                challenger,
+                champion_net.clone(),
+                net,
+                PERIODS_PER_YEAR,
+                foundry,
+                now,
+            ) {
+                Ok(Some(succession)) => {
+                    summary.compared += 1;
+                    summary.winners += 1;
+                    summary.crowned = Some(succession.champion.to_string());
+                    // One succession per round. A second would crown a
+                    // challenger of a champion that no longer reigns, which is
+                    // a comparison against something that is no longer there.
+                    break;
+                }
+                Ok(None) => summary.compared += 1,
+                // A refusal is not a loss. "The comparison could not be made"
+                // and "the challenger lost" are different facts, and counting
+                // the first as the second would make the champion look like it
+                // keeps surviving.
+                Err(error) => summary.refusals.push(error.message().to_string()),
+            }
+        }
+        Ok(summary)
+    }
+
     /// Score one candidate on the subject's own history.
+    ///
+    /// Returns the gate's evidence and the same holdout tail as a cost-charged
+    /// series, because the challenger test refuses a window that was charged
+    /// nothing -- a strategy that traded for a year and paid nothing has a
+    /// backtest, not a result.
     fn evaluate(
         &self,
         subject: &ObjectId,
         spec: &qip_strategy::ir::StrategySpec,
         bars: &[Bar],
-    ) -> Result<HoldoutInputs> {
+    ) -> Result<Scored> {
         let mut compiler = qip_strategy::compile::StrategyCompiler::new(bar_catalogue(subject)?);
         let compiled = compiler.compile(spec)?;
         let mut harness =
             CompiledHarness::new(compiled, compiler.into_program(), self.config.max_weight)?;
-        let mut clock = SimulationClock::new(bars.to_vec(), ExecutionAssumptions::next_bar())?;
-        let result = Backtester::new(BacktestConfig::default())?.run(
-            &mut harness,
-            &mut clock,
-            &Universe::new(),
+        // The lag is the data's own spacing, not a day.
+        // `ExecutionAssumptions::next_bar` hard-codes `Duration::from_days(1)`
+        // and is documented as the default *for a daily strategy*; these bars
+        // are minutes apart. Asked for a day of lag on minute bars, every
+        // decision in the final 1,440 bars became unexecutable and every
+        // earlier one was superseded before it came due -- two thousand
+        // rebalances, zero fills, and a flat equity curve that the holdout
+        // gate scored as a real result. `allow_same_bar_fill` stays false, so
+        // this is still "decide on this bar, trade at the next" and never on
+        // the bar that produced the signal.
+        let mut clock = SimulationClock::new(
+            bars.to_vec(),
+            ExecutionAssumptions::intraday(bar_interval(bars)),
         )?;
+        // Capital sized to the data, not to an institutional default.
+        // `BacktestConfig::default` starts with ten million, which against a
+        // one-minute bar of this synthetic exchange is a full-weight order
+        // worth three thousand times the volume traded in the window. The
+        // impact model refuses it -- correctly, since the square-root law is
+        // calibrated on modest participation and extrapolating it "would
+        // return a number rather than an answer" -- so every order was
+        // rejected and the equity curve was flat. A backtest whose orders
+        // cannot execute against the observed volume is measuring the size,
+        // not the strategy.
+        let config = BacktestConfig {
+            initial_capital: tradeable_capital(bars, self.config.max_weight)?,
+            ..BacktestConfig::default()
+        };
+        let result = Backtester::new(config)?.run(&mut harness, &mut clock, &self.universe)?;
 
-        let returns = result.returns;
+        // A run that never traded is not a strategy with no volatility; it is
+        // no evidence at all. Refusing here is what stops a flat line reaching
+        // the gate as a Sharpe ratio, and it names the two causes worth
+        // checking rather than reporting a bare zero.
+        if result.fills.is_empty() {
+            return Err(Error::invalid(format!(
+                "{} rebalance(s) produced no fill over {} period(s): {} order(s) were refused \
+                 and {} were superseded before they came due. A holdout in which nothing \
+                 traded is not evidence, whatever Sharpe ratio it computes",
+                result.rebalance_count,
+                result.returns.len(),
+                result.rejected.len(),
+                result.superseded,
+            )));
+        }
+
+        let charges = period_charges(&result);
+        let returns = result.returns.clone();
         let holdout_len = ((returns.len() as f64) * self.config.holdout_fraction) as usize;
         if holdout_len < WARM_UP_BARS {
             return Err(Error::invalid(format!(
@@ -401,11 +658,22 @@ impl EvolutionEngine {
             })
             .collect();
 
-        Ok(HoldoutInputs {
+        // The charge series is built alongside the equity curve the returns
+        // come from, so the two are aligned by construction and the tail slice
+        // is the same window on both.
+        let charged = &charges[split..];
+        let gross: Vec<f64> = tail
+            .iter()
+            .zip(charged)
+            .map(|(net, charge)| net + charge)
+            .collect();
+        let net = NetReturns::of(&gross, charged)?;
+
+        let holdout = HoldoutInputs {
             returns: tail.to_vec(),
             in_sample_folds: in_sample,
             out_of_sample_folds: out_of_sample,
-            periods_per_year: 252.0,
+            periods_per_year: PERIODS_PER_YEAR,
             cross_validation: CrossValidationRun {
                 folds: FOLDS,
                 label_horizon: LABEL_HORIZON,
@@ -418,9 +686,161 @@ impl EvolutionEngine {
                 timings,
                 restated_without_snapshots: Vec::new(),
             },
-        })
+        };
+        Ok(Scored { holdout, net })
     }
 }
+
+/// One candidate scored: the gate's evidence, and the holdout tail as a
+/// cost-charged series.
+struct Scored {
+    holdout: HoldoutInputs,
+    net: NetReturns,
+}
+
+/// Recover, per period, the cost the equity curve already absorbed.
+///
+/// The backtester's returns are net: the fills' commission, spread and impact
+/// are inside the equity curve before the return is taken. `NetReturns` wants
+/// the deduction visible next to the result it changed, so the charge is
+/// reconstructed here from the fills rather than asserted -- and
+/// `NetReturns::is_costless` can then notice a window that paid nothing, which
+/// is a cost model that is switched off rather than a strategy that is free.
+///
+/// A fill at instant `t` belongs to the period ending at the first curve point
+/// at or after it, matching `equity_returns`, which takes each return over the
+/// interval between consecutive curve points. The charge is expressed in
+/// return units by dividing by the equity the period started from -- the same
+/// denominator the return itself uses.
+///
+/// This is the crossing point between money and statistics: fills carry
+/// `Decimal` costs, and everything downstream of here is `f64` because a
+/// Sharpe ratio is not money.
+fn period_charges(result: &qip_simulation_engine::backtest::BacktestResult) -> Vec<f64> {
+    let curve = &result.equity_curve;
+    let periods = curve.len().saturating_sub(1);
+    let mut charges = vec![0.0; periods];
+    if periods == 0 {
+        return charges;
+    }
+    for fill in &result.fills {
+        // The period whose closing instant is the first at or after the fill.
+        let index = curve.partition_point(|(at, _)| *at < fill.at);
+        if index == 0 || index > periods {
+            continue;
+        }
+        let opening = curve[index - 1].1.to_f64();
+        if opening.abs() < 1e-12 {
+            continue;
+        }
+        charges[index - 1] += fill.cost.total() / opening;
+    }
+    charges
+}
+
+/// The capital a full-weight position can be taken with against this data.
+///
+/// A position of `max_weight` must sit inside the impact model's participation
+/// limit on the bars the strategy actually trades on, or the order is refused
+/// and the run measures nothing.
+///
+/// Sized off the tenth percentile of traded notional rather than the median,
+/// because the binding case is the thin bar and not the typical one: at the
+/// median, nine tenths of a run clears and the tenth is refused, which is
+/// enough to leave a candidate with four fills over a hundred and eighty
+/// decisions. `PARTICIPATION` is then half the impact model's own 20% ceiling,
+/// so an ordinary bar has room to spare.
+///
+/// A quantile rather than the mean: one opening print many times the typical
+/// size would drag a mean upward and size every order in the run off a bar
+/// that happened once.
+///
+/// Refuses rather than defaults when the data has no volume at all. A run
+/// against an instrument nothing traded cannot produce evidence, and quietly
+/// choosing a capital figure would produce a backtest that looks like one.
+fn tradeable_capital(bars: &[Bar], max_weight: f64) -> Result<Decimal> {
+    /// Half the impact model's own ceiling, leaving room on a thin bar.
+    const PARTICIPATION: f64 = 0.10;
+
+    let mut traded: Vec<f64> = bars
+        .iter()
+        .map(|bar| bar.volume.to_f64() * bar.close.to_f64())
+        .filter(|notional| *notional > 0.0)
+        .collect();
+    if traded.is_empty() {
+        return Err(Error::invalid(format!(
+            "no bar of the {} observed traded at all; an instrument nothing traded cannot be \
+             backtested, and choosing a capital figure anyway would produce a run that looks \
+             like evidence",
+            bars.len()
+        )));
+    }
+    traded.sort_by(f64::total_cmp);
+    // The tenth percentile of the bars that traded, not the median: the
+    // binding case is the thin bar, not the typical one. At the median, nine
+    // tenths of a run clears and the tenth is refused -- measured, that left a
+    // candidate with four fills across a hundred and eighty decisions.
+    //
+    // Quiet bars are not a defect at this frequency. An order landing on one
+    // is refused for that bar and the run continues; what must not happen is
+    // every order being refused, which is what an institutional default does
+    // against a one-minute bar.
+    let thin = traded[traded.len() / 10];
+    // `max_weight` is the ceiling the harness scales conviction against, so
+    // this is the largest position a candidate can ask for.
+    let weight = if max_weight > 0.0 { max_weight } else { 1.0 };
+    Decimal::from_f64(thin * PARTICIPATION / weight).ok_or_else(|| {
+        Error::numeric(format!(
+            "a thin-bar notional of {thin} does not yield a representable capital figure"
+        ))
+    })
+}
+
+/// How much this instrument trades: mean notional across every bar.
+///
+/// The statistic a subject is *chosen* by, which is a different question from
+/// the one it is *sized* by above. Depth asks "where can a search produce
+/// evidence at all"; the thin-bar percentile asks "how large an order clears
+/// there". Averaging across every bar rather than only the traded ones is what
+/// makes the difference visible: an instrument quiet in nine bars of ten has a
+/// tenth the depth of one that trades continuously, however similar their
+/// traded bars look.
+///
+/// `None` when nothing traded in any bar.
+fn depth(bars: &[Bar]) -> Option<f64> {
+    if bars.is_empty() {
+        return None;
+    }
+    let total: f64 = bars
+        .iter()
+        .map(|bar| bar.volume.to_f64() * bar.close.to_f64())
+        .sum();
+    (total > 0.0).then(|| total / bars.len() as f64)
+}
+
+/// The spacing of the data, taken as the gap between the first two bars.
+///
+/// Used as the execution lag so a decision trades at the *next* bar whatever
+/// the bar is. Falls back to a day when there is nothing to measure, matching
+/// [`ExecutionAssumptions::next_bar`] -- a single bar cannot be backtested
+/// anyway, and the minimum-history bar refuses long before this is reached.
+fn bar_interval(bars: &[Bar]) -> qip_core::Duration {
+    match bars {
+        [first, second, ..] => qip_core::Duration::from_secs(
+            second
+                .close_time()
+                .as_secs()
+                .saturating_sub(first.close_time().as_secs())
+                .max(1),
+        ),
+        _ => qip_core::Duration::from_days(1),
+    }
+}
+
+/// Daily bars. Stated once so the holdout evidence and the challenger
+/// comparison annualise on the same basis -- two annualisations of the same
+/// series that disagree produce two Sharpe ratios for one strategy.
+const PERIODS_PER_YEAR: f64 = 252.0;
 
 /// A tiny deterministic fold of a subject name into the seed. Not a hash
 /// with any properties beyond "different names, almost always different
@@ -436,12 +856,20 @@ fn fold(subject: &str) -> u64 {
 #[allow(clippy::panic_in_result_fn)]
 mod tests {
     use super::*;
+    use qip_contracts::FeatureKey;
+    use qip_contracts::SignalKind;
     use qip_core::{Context, Duration};
+    use qip_evolution::cost_model::NetReturns;
+    use qip_financial::asset_class::InstrumentType;
+    use qip_financial::extensions::{BondDetails, CouponFrequency, DayCount, Extension, Seniority};
+    use qip_financial::object::FinancialObject;
     use qip_financial::universe::Universe;
     use qip_kernel::config::PlatformConfig;
+    use qip_lifecycle::ledger::LifecycleLedger;
     use qip_market_ingestion::synthetic::{EnvironmentConfig, SyntheticEnvironment};
     use qip_observability::Telemetry;
     use qip_risk::limits::LimitSet;
+    use qip_strategy::ir::{Expr, Rule, StrategySpec};
 
     fn start() -> Timestamp {
         Timestamp::from_secs(1_760_000_000)
@@ -460,6 +888,13 @@ mod tests {
     }
 
     fn engine(every: u64) -> EvolutionEngine {
+        engine_with(EvolutionConfig {
+            every_cycles: every,
+            ..EvolutionConfig::default()
+        })
+    }
+
+    fn engine_with(config: EvolutionConfig) -> EvolutionEngine {
         let step = Duration::from_mins(1);
         let synthetic = EnvironmentConfig {
             seed: 7,
@@ -467,14 +902,472 @@ mod tests {
             ..EnvironmentConfig::default()
         };
         let adapter = Box::new(SyntheticEnvironment::demo(start(), synthetic));
-        EvolutionEngine::new(
-            EvolutionConfig {
-                every_cycles: every,
-                ..EvolutionConfig::default()
-            },
-            adapter,
-            7,
+        EvolutionEngine::new(config, adapter, 7, synthetic_universe())
+            .expect("the default challenge round is non-empty")
+    }
+
+    /// A universe holding the synthetic exchange's own instruments.
+    ///
+    /// Built from `SyntheticEnvironment::demo`'s instrument list -- the same
+    /// source that produces the bars -- rather than invented, so the backtest
+    /// prices and the reference data describe one instrument each. The
+    /// instrument type comes from the venue, which is how the demo
+    /// distinguishes its four exchange-listed equities from its one
+    /// over-the-counter government bond; it is a fixture decision, stated here
+    /// because the contract multiplier it implies reaches the P&L.
+    fn synthetic_universe() -> Universe {
+        let environment = SyntheticEnvironment::demo(start(), EnvironmentConfig::default());
+        let mut universe = Universe::new();
+        for instrument in environment.instruments() {
+            let bond = instrument.venue == "OTC";
+            let kind = if bond {
+                InstrumentType::GovernmentBond
+            } else {
+                InstrumentType::CommonStock
+            };
+            let mut builder = FinancialObject::builder(
+                instrument.object_id.clone(),
+                instrument.symbol.clone(),
+                kind,
+            )
+            .venue(instrument.venue.clone())
+            .price(
+                qip_core::Decimal::from_f64(instrument.state.price)
+                    .unwrap_or(qip_core::Decimal::ONE),
+            )
+            .provenance(qip_financial::Provenance::synthetic(
+                "qip-deepbrain-evolution-test",
+                start(),
+            ));
+            if bond {
+                // The object model refuses a bond with no maturity, which is
+                // correct: a fixed-income instrument without one has no
+                // duration and no price. The terms below are the fixture's,
+                // stated rather than defaulted.
+                builder = builder.extension(Extension::Bond(BondDetails {
+                    issuer: "synthetic sovereign".into(),
+                    coupon_rate: 0.0425,
+                    coupon_frequency: CouponFrequency::SemiAnnual,
+                    maturity: start().saturating_add(Duration::from_days(3653)),
+                    issue_date: start(),
+                    face_value: qip_core::Decimal::from_int(100),
+                    day_count: DayCount::ActualActual,
+                    seniority: Seniority::SeniorUnsecured,
+                    credit_rating: None,
+                    yield_to_maturity: 0.0431,
+                    modified_duration: 8.2,
+                    convexity: 58.0,
+                    option_adjusted_spread_bps: 0.0,
+                    callable: false,
+                    puttable: false,
+                    inflation_index: None,
+                }));
+            }
+            let object = builder
+                .build(start())
+                .expect("the synthetic exchange's own instrument is a valid object");
+            universe
+                .insert(object)
+                .expect("each synthetic instrument is distinct");
+        }
+        universe
+    }
+
+    /// Sense enough minutes that a subject crosses the minimum-history bar,
+    /// then run `rounds` rounds, feeding more history between each.
+    fn run_rounds(rounds: u64) -> Result<(Platform, EvolutionEngine, Vec<RoundSummary>)> {
+        let mut platform = platform()?;
+        let mut engine = engine(1);
+        let mut now = start();
+        for _ in 0..((engine.config.minimum_bars as i64 + 30) * 2) {
+            now = now.saturating_add(Duration::from_mins(1));
+            engine.sense(&mut platform, now)?;
+        }
+        let mut summaries = Vec::new();
+        for round in 1..=rounds {
+            if let Some(summary) = engine.maybe_turn(&mut platform, round, now)? {
+                summaries.push(summary);
+            }
+            for _ in 0..120 {
+                now = now.saturating_add(Duration::from_mins(1));
+                engine.sense(&mut platform, now)?;
+            }
+        }
+        Ok((platform, engine, summaries))
+    }
+
+    #[test]
+    fn the_first_round_crowns_a_champion_from_a_candidate_the_gate_admitted() -> Result<()> {
+        // Before this module nothing was ever named the strategy that speaks
+        // for an instrument, so nothing could ever be replaced and the whole
+        // champion/challenger apparatus was unreachable from any deployed
+        // path.
+        let (_platform, engine, summaries) = run_rounds(1)?;
+        let first = summaries
+            .first()
+            .ok_or_else(|| Error::not_found("a round on a cadence of every cycle"))?;
+        // The premise: the gate admitted something. A round that registered
+        // nothing has no candidate to crown and would pass this vacuously.
+        assert!(
+            first.registered >= 1,
+            "no candidate was registered, so the crowning is untested: {first:?}"
+        );
+        let challenge = first
+            .challenge
+            .as_ref()
+            .ok_or_else(|| Error::not_found("the contest that follows registration"))?;
+        assert!(
+            challenge.crowned.is_some(),
+            "the first round installed no champion: {:?}",
+            challenge.refusals
+        );
+        assert_eq!(engine.succession_stats().installations, 1);
+        assert_eq!(engine.desk.champions(), 1);
+        // And a bootstrap is not a comparison: nothing was minted or judged.
+        assert_eq!(challenge.minted, 0);
+        assert_eq!(engine.succession_stats().comparisons, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn a_champion_the_ledger_has_not_demoted_survives_into_the_next_round() -> Result<()> {
+        // Written against a real regression. The desk first used
+        // `ChampionBook::stale`, which returns champions whose stage no longer
+        // holds capital -- true of every candidate-stage champion, because a
+        // bottom-rung strategy has never held capital. It dethroned the
+        // incumbent every round: three rounds produced three installations,
+        // zero challenges, and a contest that could never run.
+        let (_platform, engine, summaries) = run_rounds(3)?;
+        assert!(
+            summaries.len() >= 3,
+            "the premise failed: only {} round(s) ran",
+            summaries.len()
+        );
+        assert_eq!(
+            engine.succession_stats().installations,
+            1,
+            "the champion was reinstalled, so it did not survive its round"
+        );
+        assert!(
+            engine.succession_stats().challenges >= 2,
+            "no challenge round ran after the bootstrap: {:?}",
+            engine.succession_stats()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn every_challenger_minted_is_counted_as_a_trial() -> Result<()> {
+        // The multiple-comparisons invariant. Minting challengers from the
+        // champion and reporting the best one, deflated only by the generative
+        // search that produced their parent, is the problem the trial ledger
+        // exists to prevent -- with extra steps.
+        let (_platform, engine, summaries) = run_rounds(2)?;
+        let (first, second) = match summaries.as_slice() {
+            [first, second, ..] => (first, second),
+            other => {
+                return Err(Error::not_found(format!("two rounds; got {}", other.len())));
+            }
+        };
+        let challenge = second
+            .challenge
+            .as_ref()
+            .ok_or_else(|| Error::not_found("the second round's contest"))?;
+        // The premise: challengers were actually minted. With none, the trial
+        // arithmetic below would hold for the wrong reason.
+        assert!(
+            challenge.minted > 0,
+            "no challenger was minted, so the count is untested: {challenge:?}"
+        );
+        assert_eq!(
+            second.trials - first.trials,
+            engine.config.candidates + challenge.minted,
+            "the ledger grew by the generative search alone; the {} challenger(s) minted \
+             from the champion were not counted",
+            challenge.minted
+        );
+        assert_eq!(engine.succession_stats().challenges, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn an_instrument_nothing_traded_is_not_searched_even_when_it_is_the_only_candidate()
+    -> Result<()> {
+        // The ranking already puts an untradeable instrument last, so this is
+        // the case only the filter can decide: it is the sole subject with
+        // enough history, and the round must refuse rather than search it.
+        // Every order would be rejected by the impact model, the equity curve
+        // would be flat, and the trials would be spent on a question with no
+        // answer.
+        let mut platform = platform()?;
+        let mut engine = engine(1);
+        let mut now = start();
+        for _ in 0..((engine.config.minimum_bars as i64 + 30) * 2) {
+            now = now.saturating_add(Duration::from_mins(1));
+            engine.sense(&mut platform, now)?;
+        }
+
+        let untradeable = "OBJ000000000000000UST10Y";
+        let bars = engine
+            .history
+            .get(untradeable)
+            .cloned()
+            .ok_or_else(|| Error::not_found("the bond's own history"))?;
+        // The premise, in two parts: it has enough history to be eligible, and
+        // it genuinely cannot be traded.
+        assert!(
+            bars.len() >= engine.config.minimum_bars,
+            "the premise failed: the bond has too little history to be eligible anyway"
+        );
+        assert!(
+            tradeable_capital(&bars, engine.config.max_weight).is_err(),
+            "the premise failed: the bond is thick enough to backtest, so this proves nothing"
+        );
+
+        engine.history.clear();
+        engine.history.insert(untradeable.to_string(), bars);
+        assert!(
+            engine.maybe_turn(&mut platform, 1, now)?.is_none(),
+            "the round searched an instrument on which nothing traded"
+        );
+        // And the trial ledger did not move: a refused round is not a search.
+        assert_eq!(platform.central().factory().candidates().count(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn a_run_in_which_nothing_traded_is_refused_rather_than_scored() -> Result<()> {
+        // The failure this whole change exists for. Before it, an empty
+        // universe and a day-long decision lag on minute bars meant every
+        // backtest returned a perfectly flat equity curve, and the holdout
+        // gate scored that flat line as a Sharpe ratio.
+        let (_platform, engine, summaries) = run_rounds(1)?;
+        let subject = ObjectId::from_string(
+            summaries
+                .first()
+                .map(|summary| summary.subject.clone())
+                .ok_or_else(|| Error::not_found("a round"))?,
+        );
+        let bars = engine
+            .history
+            .get(subject.as_str())
+            .cloned()
+            .ok_or_else(|| Error::not_found("the subject's own history"))?;
+        // The premise: this instrument is tradeable, so nothing about the data
+        // is what stops the run. Only the strategy is.
+        assert!(
+            tradeable_capital(&bars, engine.config.max_weight).is_ok(),
+            "the premise failed: the subject cannot be backtested at all"
+        );
+
+        // A strategy that compiles, reads a real feature, fires on every bar
+        // and stands down every time. It is the shape every generated
+        // candidate had before the grammar fix, and it must not be scoreable.
+        let spec = StrategySpec::new(
+            qip_contracts::StrategyId::new("always-stands"),
+            subject.clone(),
+            Duration::from_secs(60),
         )
+        .with_rule(Rule::new(
+            "stand",
+            SignalKind::Stand,
+            Expr::feature(FeatureKey::new("up_bar", subject.clone())),
+            Expr::Exact(qip_core::Decimal::ONE),
+            Expr::Statistic(0.5),
+            100,
+        ));
+
+        let error = match engine.evaluate(&subject, &spec, &bars) {
+            Err(error) => error,
+            Ok(_) => {
+                return Err(Error::invalid(
+                    "a strategy that never took a position was scored as evidence",
+                ));
+            }
+        };
+        assert!(
+            error.message().contains("is not evidence"),
+            "the refusal does not name the cause: {}",
+            error.message()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_deeper_instrument_is_searched_even_when_a_thinner_one_has_more_history() -> Result<()> {
+        // Ranking by bar count is really ranking by key order on this feed:
+        // every subject accumulates bars at the same rate, so the tie is broken
+        // by name. That is how the synthetic exchange's illiquid government
+        // bond -- which sorts last -- came to be the subject of every round
+        // this node had ever run.
+        //
+        // Both subjects below are tradeable, so the depth *filter* cannot
+        // decide this; only the ranking can.
+        let mut platform = platform()?;
+        let mut engine = engine(1);
+        let mut now = start();
+        for _ in 0..((engine.config.minimum_bars as i64 + 30) * 2) {
+            now = now.saturating_add(Duration::from_mins(1));
+            engine.sense(&mut platform, now)?;
+        }
+
+        let deep = "OBJ00000000000000000VNTG";
+        let thin = "OBJ00000000000000000ATFB";
+        let mut deep_bars = engine
+            .history
+            .get(deep)
+            .cloned()
+            .ok_or_else(|| Error::not_found("the deep instrument's history"))?;
+        let thin_bars = engine
+            .history
+            .get(thin)
+            .cloned()
+            .ok_or_else(|| Error::not_found("the thin instrument's history"))?;
+
+        // Give the deeper instrument *less* history, so bar count and depth
+        // point at different subjects and only one of them can be deciding.
+        deep_bars.truncate(engine.config.minimum_bars + 1);
+        let deep_depth = depth(&deep_bars).ok_or_else(|| Error::not_found("the deep depth"))?;
+        let thin_depth = depth(&thin_bars).ok_or_else(|| Error::not_found("the thin depth"))?;
+        assert!(
+            deep_depth > thin_depth,
+            "the premise failed: {deep} is not the deeper of the two"
+        );
+        assert!(
+            deep_bars.len() < thin_bars.len(),
+            "the premise failed: the deeper instrument does not have less history"
+        );
+        assert!(
+            tradeable_capital(&thin_bars, engine.config.max_weight).is_ok(),
+            "the premise failed: the thinner instrument is filtered out anyway, so the \
+             ranking is not what decides"
+        );
+
+        engine.history.clear();
+        engine.history.insert(deep.to_string(), deep_bars);
+        engine.history.insert(thin.to_string(), thin_bars);
+
+        let summary = engine
+            .maybe_turn(&mut platform, 1, now)?
+            .ok_or_else(|| Error::not_found("a round over two eligible subjects"))?;
+        assert_eq!(
+            summary.subject, deep,
+            "the round searched the instrument with more bars rather than the one it can \
+             most readily trade"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_challenger_derived_from_a_different_champion_is_not_judged_against_this_one() -> Result<()>
+    {
+        // A verdict is about a pair. Judging a challenger that mutated some
+        // other parent would report a comparison that was never made, and the
+        // succession it could produce would crown a strategy against a champion
+        // it had never faced.
+        let subject = ObjectId::from_string("OBJ00000000000000000VNTG");
+        let mut foundry = StrategyFoundry::new(
+            bar_catalogue(&subject)?,
+            Grammar::over(FeaturePalette::from_catalogue(
+                &bar_catalogue(&subject)?,
+                &subject,
+            )?),
+            "central-research",
+            qip_contracts::venue::VenueId::new("XSIM"),
+            "test",
+            11,
+        )?;
+        foundry.search(4)?;
+        let candidates: Vec<Candidate> = foundry.pending().to_vec();
+        // The premise: two *distinct* candidates, so "derived from a different
+        // champion" is a real difference and not the same strategy twice.
+        assert!(
+            candidates.len() >= 2,
+            "the search produced {} candidate(s); two are needed",
+            candidates.len()
+        );
+        assert_ne!(candidates[0].id(), candidates[1].id());
+
+        let ledger = LifecycleLedger::new();
+        let mut here = SuccessionDesk::new(2, ChallengerPolicy::default())?;
+        let mut elsewhere = SuccessionDesk::new(2, ChallengerPolicy::default())?;
+        here.install_first(&ledger, &subject, &candidates[0], start())?;
+        elsewhere.install_first(&ledger, &subject, &candidates[1], start())?;
+
+        let mut compiler = StrategyCompiler::new(bar_catalogue(&subject)?);
+        let grammar = Grammar::over(FeaturePalette::from_catalogue(
+            &bar_catalogue(&subject)?,
+            &subject,
+        )?);
+        let run = elsewhere
+            .mint(subject.as_str(), &mut foundry, &mut compiler, grammar, 13)
+            .ok_or_else(|| Error::not_found("a challenge round from the other champion"))?;
+        let challenger = run
+            .accepted()
+            .first()
+            .ok_or_else(|| Error::not_found("an accepted challenger"))?;
+        // The premise: this challenger really did mutate the other champion.
+        assert_eq!(challenger.champion(), candidates[1].id());
+
+        let returns = vec![0.001_f64; 300];
+        let error = match here.judge(
+            &ledger,
+            &subject,
+            challenger,
+            NetReturns::flat_bps(&returns, 5.0)?,
+            NetReturns::flat_bps(&returns, 5.0)?,
+            PERIODS_PER_YEAR,
+            &foundry,
+            start(),
+        ) {
+            Err(error) => error,
+            Ok(_) => {
+                return Err(Error::invalid(
+                    "a challenger of another champion was judged against this one",
+                ));
+            }
+        };
+        assert!(
+            error.message().contains("mutated a different parent"),
+            "the refusal does not name the cause: {}",
+            error.message()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn capital_is_sized_so_a_full_weight_order_clears_the_participation_limit() -> Result<()> {
+        // Ten million against a one-minute bar is an order worth three
+        // thousand times the volume traded in the window, and the impact model
+        // refuses it -- so every order was rejected and the curve was flat.
+        let (_platform, engine, _) = run_rounds(1)?;
+        let bars = engine
+            .history
+            .values()
+            .find(|bars| tradeable_capital(bars, engine.config.max_weight).is_ok())
+            .ok_or_else(|| Error::not_found("a subject that traded"))?;
+        let capital = tradeable_capital(bars, engine.config.max_weight)?;
+        // The premise: the institutional default is the thing being replaced.
+        let default = BacktestConfig::default().initial_capital;
+        assert!(
+            capital < default,
+            "the sized capital {capital} is not below the {default} default, so nothing changed"
+        );
+        // A full-weight order must sit inside the impact model's own ceiling
+        // on a bar of ordinary size.
+        let mut notionals: Vec<f64> = bars
+            .iter()
+            .map(|bar| bar.volume.to_f64() * bar.close.to_f64())
+            .filter(|notional| *notional > 0.0)
+            .collect();
+        notionals.sort_by(f64::total_cmp);
+        let typical = notionals[notionals.len() / 2];
+        let order = capital.to_f64() * engine.config.max_weight;
+        assert!(
+            order < typical * 0.20,
+            "a full-weight order of {order} is above 20% of a typical bar's {typical}"
+        );
+        Ok(())
     }
 
     #[test]

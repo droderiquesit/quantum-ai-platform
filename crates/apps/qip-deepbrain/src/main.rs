@@ -212,7 +212,16 @@ fn run() -> Result<()> {
         evolution_config,
         adapter,
         platform.config().seed,
-    );
+        // The research node has no reference-data source yet, so this is
+        // empty and the loop's backtests will refuse every candidate with
+        // "no fill" rather than register a flat equity curve as evidence.
+        // That refusal is the point: before this, an empty universe rejected
+        // every order silently and the gate scored the resulting flat line as
+        // a real holdout. Wiring a reference-data feed is what turns the loop
+        // back on, and until then it is visibly off rather than invisibly
+        // producing nothing.
+        Universe::new(),
+    )?;
     println!(
         "  evolution:        {}",
         if evolution.enabled() {
