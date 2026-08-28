@@ -25,11 +25,11 @@ Consequence-ordered. Each item names the evidence that closes it.
 | # | Work | Why it is here | Evidence that closes it |
 |---|---|---|---|
 | 1 | ~~Close the trading spine~~ | **Done.** Nine diagram rows starved on it and LEARN had no fill to attribute | 3 tests, 4 mutations fired |
-| 2 | Emit telemetry | Blocks all of area 6 and the entire alerting layer behind it | A metric recorded at its seam, a test asserting it, `/metrics` non-empty |
-| 3 | Wire the mesh in manifests | A complete tested backbone serves nothing in any deployment | A test asserting every var a manifest sets is one a binary reads, and the converse |
-| 4 | Deploy the TLS egress proxy | Blocks *every* live vendor adapter — quantum, ML, market data, brokers, chain | Six egress tests green, each mutation-verified |
-| 5 | Compute expected shortfall | A configured limit that cannot fire reads as protection and is not | `MaxExpectedShortfall` demonstrably firing on a breaching book |
-| 6 | Wire one live market source | Every deployment's data is synthetic; area 1 cannot be called real until one source is | A cycle absorbing live data behind the licensing gate |
+| 2 | ~~Emit telemetry~~ | **Done.** It also uncovered that the alert policies named metrics nothing emitted — the layer was unreachable, not merely gated | Metrics at their seams, a collector, and a test binding both halves to the same names |
+| 3 | ~~Wire the mesh in manifests~~ | **Done.** | The env-var correspondence test, both directions |
+| 4 | ~~Deploy the TLS egress proxy~~ | **Done.** Manifest committed; it unblocks item 6 | Twelve egress tests, each mutation-verified |
+| 5 | ~~Compute expected shortfall~~ | **Done.** Two limits, not one — VaR shared the defect | Both firing on a book with a tail, both quiet on one without |
+| 6 | **Wire one live market source** | **Next.** Every deployment's data is synthetic or replayed; `feed.rs` opens nothing else. Area 1 cannot be called real until one source is, and the egress proxy has now removed the blocker | A cycle absorbing live data behind the licensing gate |
 | 7 | Multi-leg execution | Area 5's remaining half: reservation, deadlines, leg risk, unwind | Deterministic recovery tests for partial and failed legs |
 | 8 | Champion/challenger and drift | Area 7's promotion path | Shadow evaluation with a recorded promotion and a rollback |
 

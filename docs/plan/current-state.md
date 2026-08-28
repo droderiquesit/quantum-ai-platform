@@ -60,21 +60,46 @@ Each was invisible until the one before it was fixed:
 
 ## Known gaps, stated plainly
 
-- **Nothing writes to `Telemetry`.** `/metrics` serves an empty surface, and
-  the four Cloud Monitoring alert policies are gated off *because* no metric
-  descriptor has ever been ingested. The platform is not observable.
-- **`RiskState::expected_shortfall` is always empty**, so the
-  `MaxExpectedShortfall` limit is structurally incapable of firing. A control
-  that cannot fire reads as protection and is not.
-- **The mesh is turned on in no manifest.** A complete, tested backbone serves
-  nothing in any deployment.
-- **No TLS egress proxy is deployed**, so every live vendor adapter — IBM
-  Quantum, Vertex AI, market data, brokers, chain RPC — is inert in the
-  cluster. The HTTP client speaks plaintext HTTP/1.1 by design.
-- **Live data sources are unwired.** `feed.rs` can open Synthetic or Replay
-  only.
+Five gaps this document reported when it was written have since been closed,
+and are recorded below as closed rather than deleted — a plan that quietly
+drops what it once said was broken cannot be audited against.
+
+**Closed:**
+
+- ~~Nothing writes to `Telemetry`.~~ The kernel now records at the seams where
+  facts become known, and a collector scrapes the brains. The deeper defect
+  this uncovered: the four Cloud Monitoring alert policies queried metric names
+  that appeared in **zero** Rust files, so the alerting layer was unreachable
+  by construction rather than merely gated off. Both halves now name the same
+  series, and a test asserts they keep doing so.
+- ~~`RiskState::expected_shortfall` is always empty.~~ Both it and
+  `value_at_risk` are populated from the book's own realised equity path, keyed
+  by each configured limit's own confidence. Two limits that
+  `conservative_default` ships can now fire, and tests prove they fire on a
+  book with a tail and stay quiet on one without.
+- ~~The mesh is turned on in no manifest.~~ Wired, with a test asserting every
+  variable a manifest sets is one its binary reads, and the converse.
+- ~~No TLS egress proxy is deployed.~~ The manifest is committed, with twelve
+  mutation-verified tests.
+- ~~Every stage reported `Duration::ZERO`.~~ `StageOutcome::with_elapsed` had
+  existed since the loop was written and was never called.
+
+**Still open:**
+
+- **Live data sources are unwired.** `qip-fastbrain`'s `feed.rs` can open
+  `Synthetic` or `Replay` and nothing else, so every deployment's data is
+  generated or replayed. The live REST adapter exists and is reached only from
+  tests. This is the largest remaining gap in canonical area 1, and the egress
+  proxy landing is what unblocks it.
+- **`workload_metrics_exist` is still `false`** in every environment, and
+  correctly so: the endpoints exist and a collector is declared, but no pod has
+  been observed to scrape. Flipping it requires that evidence.
 - **The Secret Manager CSI credential chain has never been exercised live.**
 - **`infra.yml down` has never been run against a live cluster.**
+- **Multi-leg execution is unbuilt** — reservation, deadlines, leg risk and
+  unwind. Canonical area 5's remaining half.
+- **Champion/challenger and drift detection are unwired**, so the Evolution
+  Brain has no promotion path.
 
 ## Latency
 
