@@ -17,6 +17,28 @@
 //! passes after somebody deletes the thing it was checking, and this file
 //! covers a control whose absence is silent — a proxy that reaches one host too
 //! many produces no error anywhere.
+//!
+//! That is not a hypothetical warning here; it is this file's own history. Six
+//! of these checks were wrong the first time they were run, and every one of
+//! them was wrong about how to read the manifest rather than about the manifest:
+//!
+//!   * Four read only the block form `key: value`, while the bootstrap writes
+//!     every socket address, every port and every certificate matcher in the
+//!     flow form `{ key: value }`. Each read an empty list for the key it was
+//!     about, and each was one relaxed premise away from passing forever while
+//!     guarding nothing.
+//!   * One scraped every `cluster:` in the bootstrap and found the `node:`
+//!     block's own statistics name, which is not a route to anywhere.
+//!   * One could not tell the sentence `# No iam.gke.io/gcp-service-account
+//!     annotation, deliberately` from the annotation itself, and so failed on
+//!     the documentation of the property it existed to check.
+//!
+//! `values_of`, `key_count` and `declares_key` below are the fix, and all three
+//! match a key in mapping position with its delimiter. That is not fastidious:
+//! `address` is a suffix of `socket_address`, `port` of `targetPort`, and
+//! `validation_context` of `common_tls_context`, so a substring match reports a
+//! listener's bind address as an internet destination and a port name as a port
+//! number.
 
 use qip_acceptance::{files_with_extension, read};
 
@@ -25,6 +47,13 @@ const MANIFEST: &str = "infrastructure/kubernetes/base/egress.yaml";
 
 /// The in-cluster name every adapter address must resolve through.
 const PROXY_AUTHORITY: &str = "qip-egress.qip.svc.cluster.local";
+
+/// The trust store every upstream is verified against.
+///
+/// The path the distroless Envoy image carries. A `validation_context` naming
+/// a file that is not in the image fails closed — Envoy refuses to start — so
+/// this is checked for drift rather than for danger.
+const CA_BUNDLE: &str = "/etc/ssl/certs/ca-certificates.crt";
 
 /// The vendor hosts the proxy may reach, and the adapter each was derived from.
 ///
@@ -74,6 +103,85 @@ fn without_comments(content: &str) -> String {
         .join("\n")
 }
 
+/// Every place a key appears in mapping position, as the text following it.
+///
+/// Two forms are matched because the manifest uses both: the block form
+/// `key: value`, and the flow form `socket_address: { address: X, port_value:
+/// N }` that every address, port and certificate matcher in the bootstrap is
+/// written in. A parser that read the block form alone returned nothing for
+/// `address`, `port_value` and `exact` — the failure this file was committed
+/// with, and the reason the premise assertions in every caller are load-bearing
+/// rather than decorative.
+///
+/// The key is matched with its delimiter. What precedes it must be a mapping or
+/// list boundary, so `address` does not match inside `socket_address` and
+/// `port` does not match inside `targetPort`; what follows the value ends it,
+/// so a flow mapping yields one value per key rather than the rest of the line.
+///
+/// Occurrences with an empty tail are kept here — they are the block keys whose
+/// value is the indented block beneath them — because the fact that
+/// `match_typed_subject_alt_names:` is present at all is exactly what one
+/// caller needs to know.
+fn occurrences_of(text: &str, key: &str) -> Vec<String> {
+    let needle = format!("{key}:");
+    let mut found = Vec::new();
+    for line in without_comments(text).lines() {
+        for (index, _) in line.match_indices(needle.as_str()) {
+            let boundary = line[..index]
+                .chars()
+                .next_back()
+                .is_none_or(|previous| matches!(previous, ' ' | '{' | ','));
+            if !boundary {
+                continue;
+            }
+            let tail = &line[index + needle.len()..];
+            let value = tail.split([',', '}']).next().unwrap_or(tail);
+            found.push(value.trim().trim_matches('"').trim().to_string());
+        }
+    }
+    found
+}
+
+/// The values of every `key:` in a block of configuration, comments excluded.
+fn values_of(text: &str, key: &str) -> Vec<String> {
+    occurrences_of(text, key)
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+/// How many times a key appears, whatever it carries.
+///
+/// For the keys whose value is a block rather than a scalar: their presence is
+/// the property, and their absence is what the check is looking for.
+fn key_count(text: &str, key: &str) -> usize {
+    occurrences_of(text, key).len()
+}
+
+/// Whether the manifest declares a key, in live YAML or in the pod that is
+/// committed commented out.
+///
+/// Two things have to be told apart here, and `contains` tells neither. A `#`
+/// in front of a key is not an absence: the Deployment at the foot of this
+/// manifest is real configuration waiting on four out-of-band edits, and an
+/// operator will uncomment it as written. But prose about a key is not the key
+/// — the ServiceAccount above it explains that it carries no
+/// `iam.gke.io/gcp-service-account` annotation, and a check that read the raw
+/// text failed on that sentence, which is to say it failed on the documentation
+/// of the property it was written to enforce.
+///
+/// So: uncomment every line, then require the key in mapping position, which is
+/// the only form Kubernetes would act on.
+fn declares_key(manifest: &str, key: &str) -> bool {
+    let mapping = format!("{key}:");
+    manifest.lines().any(|line| {
+        line.trim_start()
+            .trim_start_matches(['#', ' '])
+            .trim_start_matches("- ")
+            .starts_with(&mapping)
+    })
+}
+
 /// The Envoy bootstrap, as the text of the block scalar that carries it.
 ///
 /// Sliced out of the manifest rather than parsed, and bounded by the document
@@ -99,21 +207,70 @@ fn bootstrap() -> String {
     body
 }
 
-/// The values of every `key:` in a block of configuration, comments excluded.
+/// One block of the bootstrap, bounded by the block that follows it.
 ///
-/// Trailing `}` and quotes are trimmed because the manifest writes some of
-/// these inside flow mappings — `matcher: { exact: host }` — and a check that
-/// only matched the block form would silently stop matching the day one was
-/// reformatted.
-fn values_of(text: &str, key: &str) -> Vec<String> {
-    without_comments(text)
-        .lines()
-        .filter_map(|line| {
-            line.trim()
-                .strip_prefix(&format!("{key}:"))
-                .map(|value| value.trim().trim_matches(['"', '}', ' ']).to_string())
+/// Bounded rather than open-ended, and the difference is not cosmetic: a check
+/// reading "the listeners" that ran on past `clusters:` would read the five
+/// upstream port 443s as listener ports, and a Service publishing 443 would
+/// satisfy it. Both ends must be found, so a reshaped bootstrap fails here
+/// rather than quietly widening what a caller is looking at.
+fn section(bootstrap: &str, opening: &str, closing: Option<&str>) -> String {
+    let body = bootstrap.split(opening).nth(1).unwrap_or_else(|| {
+        panic!(
+            "the bootstrap has no `{}` block, so every check reading it is \
+             reading nothing at all",
+            opening.trim()
+        )
+    });
+    match closing {
+        None => body.to_string(),
+        Some(end) => {
+            let (block, _) = body.split_once(end).unwrap_or_else(|| {
+                panic!(
+                    "the `{}` block is not followed by `{}`; the bootstrap has \
+                     been reshaped and this block now runs into the next",
+                    opening.trim(),
+                    end.trim()
+                )
+            });
+            block.to_string()
+        }
+    }
+}
+
+/// The admin interface's own configuration.
+fn admin_block(bootstrap: &str) -> String {
+    section(bootstrap, "\n    admin:\n", Some("\n    static_resources:"))
+}
+
+/// The listeners, and nothing that follows them.
+fn listeners_block(bootstrap: &str) -> String {
+    section(bootstrap, "\n      listeners:\n", Some("\n      clusters:"))
+}
+
+/// The clusters, which are the last thing in the bootstrap.
+fn clusters_block(bootstrap: &str) -> String {
+    section(bootstrap, "\n      clusters:\n", None)
+}
+
+/// The top-level entries of a `listeners:` or `clusters:` block, as name and
+/// body.
+///
+/// Split on the eight-space `- name:` that a top-level entry is indented with,
+/// which is the only place that indent occurs: a network filter's `name:` sits
+/// at sixteen and a transport socket's at twelve. Per-entry bodies rather than
+/// one bag of values is what lets a check name *which* cluster lost its
+/// certificate matcher, and stops five matchers on one cluster satisfying a
+/// count of five.
+fn entries_of(block: &str) -> Vec<(String, String)> {
+    let padded = format!("\n{block}");
+    padded
+        .split("\n        - name: ")
+        .skip(1)
+        .map(|entry| {
+            let (name, body) = entry.split_once('\n').unwrap_or((entry, ""));
+            (name.trim().to_string(), body.to_string())
         })
-        .filter(|value| !value.is_empty())
         .collect()
 }
 
@@ -141,30 +298,47 @@ fn the_egress_proxy_dials_only_the_vendor_hosts_the_adapters_named() {
     // makes this one not that is the set of clusters declared in its bootstrap.
     let bootstrap = bootstrap();
 
-    // Premise: the file really does declare upstream addresses. `socket_address`
-    // also carries the listener bind addresses, so the upstreams are the ones
-    // that are not a bind address — filtered here by taking the `address:`
-    // values that are hostnames rather than 0.0.0.0 or loopback.
+    // Premise. Every address in this file is written inside a flow mapping, and
+    // the parser this check first shipped with matched the block form only: it
+    // read an empty list, filtered it to another empty list, and reported that
+    // nothing outside the allowlist was dialled. Six binds and five upstreams
+    // is eleven; fewer than ten means the socket addresses have moved and this
+    // check is looking at nothing again.
     let addresses = values_of(&bootstrap, "address");
     assert!(
         addresses.len() >= 10,
         "only {addresses:?} were read out of the bootstrap; the socket_address \
          blocks have been reshaped and this check is filtering an empty list"
     );
-    let upstreams: Vec<String> = addresses
+
+    // `socket_address` carries both the listener binds and the upstream dials.
+    // The binds are the wildcard and loopback; everything else is somewhere
+    // this proxy will connect out to. A listener bound to a particular address
+    // would be read here as an upstream and refused — which is the direction
+    // this should fail in, because that is also a manifest nobody reviewed.
+    let (bound, dialled): (Vec<String>, Vec<String>) = addresses
         .into_iter()
-        .filter(|address| address != "0.0.0.0" && address != "127.0.0.1")
-        .collect();
+        .partition(|address| address == "0.0.0.0" || address == "127.0.0.1");
+
+    // Premise, second half: the partition discriminates. Both sides being
+    // populated is what separates a working filter from one that passed
+    // everything or nothing, and only one of those two mistakes is visible in
+    // the assertion below.
+    assert!(
+        bound.len() >= 5,
+        "only {bound:?} bind addresses were found beside {dialled:?}; the rule \
+         that tells a bind from a dial has stopped telling them apart"
+    );
     assert_eq!(
-        upstreams.len(),
+        dialled.len(),
         ALLOWED_UPSTREAMS.len(),
-        "the bootstrap dials {upstreams:?}; the allowlist this test carries is \
+        "the bootstrap dials {dialled:?}; the allowlist this test carries is \
          {:?}. A destination added in one place and not the other is a \
          destination nobody reviewed.",
         ALLOWED_UPSTREAMS.map(|(host, _)| host)
     );
 
-    for upstream in &upstreams {
+    for upstream in &dialled {
         assert!(
             ALLOWED_UPSTREAMS.iter().any(|(host, _)| host == upstream),
             "the proxy dials {upstream}, which no adapter in this workspace \
@@ -183,7 +357,7 @@ fn the_egress_proxy_dials_only_the_vendor_hosts_the_adapters_named() {
 
     for (host, provenance) in ALLOWED_UPSTREAMS {
         assert!(
-            upstreams.iter().any(|upstream| upstream == host),
+            dialled.iter().any(|upstream| upstream == host),
             "{host} is on this test's allowlist ({provenance}) and the \
              bootstrap does not dial it. Either the adapter stopped needing it \
              — in which case delete both — or the destination was dropped and \
@@ -201,11 +375,13 @@ fn the_proxy_rewrites_the_authority_to_a_host_on_the_same_allowlist() {
     // somewhere the previous test would not have seen.
     let bootstrap = bootstrap();
     let rewrites = values_of(&bootstrap, "host_rewrite_literal");
+    // Premise: there is at least one rewrite per upstream. Every upstream here
+    // is a public vendor that rejects a request whose `host:` header names a
+    // cluster service, so this is also the check that the proxy works at all.
     assert!(
-        !rewrites.is_empty(),
-        "no route rewrites the authority. Every upstream here is a public \
-         vendor that rejects a request whose `host:` header names a cluster \
-         service, so this is also the check that the proxy works at all."
+        rewrites.len() >= ALLOWED_UPSTREAMS.len(),
+        "only {rewrites:?} routes rewrite the authority, for {} upstreams",
+        ALLOWED_UPSTREAMS.len()
     );
     for rewrite in &rewrites {
         assert!(
@@ -213,6 +389,14 @@ fn the_proxy_rewrites_the_authority_to_a_host_on_the_same_allowlist() {
             "a route rewrites the authority to {rewrite}, which is not on the \
              allowlist. The rewrite decides which vendor believes it was \
              addressed."
+        );
+    }
+    for (host, provenance) in ALLOWED_UPSTREAMS {
+        assert!(
+            rewrites.iter().any(|rewrite| rewrite == host),
+            "no route rewrites the authority to {host} ({provenance}), so \
+             whatever reaches it is addressed to the proxy's own cluster name \
+             and answered with a 404 the operator will read as the vendor's"
         );
     }
 }
@@ -224,22 +408,56 @@ fn every_route_names_a_cluster_the_bootstrap_actually_declares() {
     // that silently stops working — which on this path reads as the vendor
     // being down.
     let bootstrap = bootstrap();
-    let routed = values_of(&bootstrap, "cluster");
-    let declared = values_of(&bootstrap, "cluster_name");
+    let listeners = listeners_block(&bootstrap);
+    let clusters = clusters_block(&bootstrap);
+
+    // Routes are read out of the listeners, not out of the whole bootstrap.
+    // The `node:` block above them sets `cluster: qip-egress`, which is this
+    // proxy's own name for its statistics and not a destination; the check that
+    // scraped every `cluster:` in the file reported it as a route to an
+    // undeclared upstream and failed for a reason that had nothing to do with
+    // the manifest. That is the first thing to go wrong again if these blocks
+    // move, so it is asserted rather than assumed.
+    let routed = values_of(&listeners, "cluster");
     assert!(
         routed.len() >= 5,
         "only {routed:?} routes were read; the route blocks have been reshaped"
     );
     assert!(
-        declared.len() >= 5,
-        "only {declared:?} clusters were read; `load_assignment` has been \
-         reshaped and this check has stopped checking"
+        !routed.iter().any(|cluster| cluster == "qip-egress"),
+        "the routes read as {routed:?}, which includes the proxy's own node \
+         name; the listeners block now contains the `node:` block and this \
+         check is reading a statistics prefix as a destination"
     );
+
+    // A cluster is named twice — once as the cluster's own `name`, which is
+    // what a route resolves against, and once as its `load_assignment`'s
+    // `cluster_name`. Both are checked: endpoints filed under a name no cluster
+    // has is the same 503 with a longer diagnosis.
+    let declared: Vec<String> = entries_of(&clusters)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(
+        declared.len(),
+        ALLOWED_UPSTREAMS.len(),
+        "{declared:?} clusters were read, for {} allowlisted upstreams; the \
+         cluster list has been reshaped and this check has stopped checking",
+        ALLOWED_UPSTREAMS.len()
+    );
+    let assigned = values_of(&clusters, "cluster_name");
+    assert_eq!(
+        assigned, declared,
+        "the clusters are named {declared:?} and their load assignments are \
+         filed under {assigned:?}. Envoy resolves a route against the first and \
+         finds its endpoints under the second."
+    );
+
     for cluster in &routed {
         assert!(
             declared.contains(cluster),
-            "a route sends traffic to {cluster}, which no `load_assignment` \
-             declares. Envoy answers 503 for this rather than refusing to load."
+            "a route sends traffic to {cluster}, which no cluster declares. \
+             Envoy answers 503 for this rather than refusing to load."
         );
     }
     for cluster in &declared {
@@ -260,60 +478,110 @@ fn every_upstream_is_verified_against_a_named_certificate_and_not_merely_a_trust
     // a bearer token onwards, a DNS answer would then be enough to redirect
     // that credential to anyone who can obtain a certificate for a host of
     // their own — which is everyone.
+    //
+    // Checked per cluster rather than by counting the file's matchers, because
+    // five matchers and five upstreams is also what two matchers on one cluster
+    // and none on another look like from a distance.
     let bootstrap = bootstrap();
-    let snis = values_of(&bootstrap, "sni");
-    let matched = values_of(&bootstrap, "exact");
-    let cas = values_of(&bootstrap, "trusted_ca");
-    let minimums = values_of(&bootstrap, "tls_minimum_protocol_version");
-
+    let clusters = entries_of(&clusters_block(&bootstrap));
     assert_eq!(
-        snis.len(),
+        clusters.len(),
         ALLOWED_UPSTREAMS.len(),
-        "{snis:?} carry an SNI. An upstream with no SNI reaches a shared \
-         front end that answers with the wrong certificate, and the connection \
-         fails in a way that reads as the vendor being broken."
-    );
-    assert_eq!(
-        matched.len(),
-        ALLOWED_UPSTREAMS.len(),
-        "{matched:?} subject-alternative-name matchers were found, for {} \
-         upstreams. An upstream with no matcher accepts any certificate that \
-         chains to a public root.",
+        "{:?} clusters were read, for {} allowlisted upstreams; a cluster this \
+         check cannot see is a cluster whose certificate it cannot check",
+        clusters.iter().map(|(name, _)| name).collect::<Vec<_>>(),
         ALLOWED_UPSTREAMS.len()
     );
-    assert_eq!(
-        cas.len(),
-        ALLOWED_UPSTREAMS.len(),
-        "{cas:?} trusted CA bundles were found. An upstream TLS context with \
-         no validation context verifies nothing at all."
-    );
 
-    for sni in &snis {
-        assert!(
-            ALLOWED_UPSTREAMS.iter().any(|(host, _)| host == sni),
-            "the proxy offers SNI {sni}, which is not an allowlisted host"
-        );
-        assert!(
-            matched.contains(sni),
-            "the proxy offers SNI {sni} and accepts a certificate that does \
-             not have to carry that name"
-        );
-    }
-    for minimum in &minimums {
+    for (name, body) in &clusters {
+        // Premise, per cluster: this really is a block that dials one host.
+        // Everything below compares against that host, so reading no host means
+        // comparing nothing against nothing.
+        let dialled = values_of(body, "address");
         assert_eq!(
-            minimum, "TLSv1_2",
-            "an upstream accepts {minimum}. TLS 1.0 and 1.1 are the versions \
+            dialled.len(),
+            1,
+            "the cluster {name} dials {dialled:?}. One cluster, one upstream \
+             host: a second endpoint here is a destination that inherits the \
+             first one's certificate matcher and is not the host it names."
+        );
+        let host = dialled[0].as_str();
+
+        // Without a transport socket Envoy speaks plaintext to port 443, which
+        // fails — the safe direction — but fails in a way that reads as the
+        // vendor being down rather than as a deleted TLS context.
+        assert_eq!(
+            key_count(body, "transport_socket"),
+            1,
+            "the cluster {name} has no upstream TLS context, so it speaks \
+             plaintext to a port that expects TLS"
+        );
+        assert_eq!(
+            values_of(body, "sni"),
+            vec![host.to_string()],
+            "the cluster {name} dials {host} and offers SNI {:?}. An upstream \
+             with no SNI, or with somebody else's, reaches a shared front end \
+             that answers with the wrong certificate.",
+            values_of(body, "sni")
+        );
+
+        // `validation_context` is a suffix-neighbour of `common_tls_context`,
+        // which is why this is counted with a delimited match rather than a
+        // `contains` — the enclosing block would have satisfied a `contains`
+        // for as long as the file existed.
+        assert_eq!(
+            key_count(body, "validation_context"),
+            1,
+            "the cluster {name} verifies nothing at all: there is no \
+             validation context under its TLS context"
+        );
+        assert_eq!(
+            values_of(body, "filename"),
+            vec![CA_BUNDLE.to_string()],
+            "the cluster {name} trusts {:?} rather than the image's CA bundle",
+            values_of(body, "filename")
+        );
+
+        // The part worth not deleting, and the reason this test has its name.
+        assert_eq!(
+            key_count(body, "match_typed_subject_alt_names"),
+            1,
+            "the cluster {name} has no subject-alternative-name matcher. It \
+             now accepts any certificate that chains to a public root, so a DNS \
+             answer is enough to redirect the token it carries."
+        );
+        assert_eq!(
+            values_of(body, "san_type"),
+            vec!["DNS".to_string()],
+            "the cluster {name} matches {:?} rather than a DNS name",
+            values_of(body, "san_type")
+        );
+        assert_eq!(
+            values_of(body, "exact"),
+            vec![host.to_string()],
+            "the cluster {name} dials {host} and accepts a certificate for \
+             {:?}. A matcher that names another host is the same hole as no \
+             matcher, with a line in the diff saying otherwise.",
+            values_of(body, "exact")
+        );
+        assert!(
+            ALLOWED_UPSTREAMS
+                .iter()
+                .any(|(allowed, _)| *allowed == host),
+            "the cluster {name} pins a certificate for {host}, which is not on \
+             the allowlist"
+        );
+
+        assert_eq!(
+            values_of(body, "tls_minimum_protocol_version"),
+            vec!["TLSv1_2".to_string()],
+            "the cluster {name} accepts {:?}. TLS 1.0 and 1.1 are the versions \
              whose weaknesses are exploitable by whoever is between this pod \
-             and the vendor, which on this path is a NAT gateway and the \
-             public internet."
+             and the vendor, which on this path is a NAT gateway and the public \
+             internet.",
+            values_of(body, "tls_minimum_protocol_version")
         );
     }
-    assert_eq!(
-        minimums.len(),
-        ALLOWED_UPSTREAMS.len(),
-        "{minimums:?} minimum protocol versions were set, for {} upstreams",
-        ALLOWED_UPSTREAMS.len()
-    );
 }
 
 #[test]
@@ -348,7 +616,7 @@ fn the_proxy_image_is_pinned_by_digest_rather_than_by_a_tag() {
 }
 
 #[test]
-fn every_address_the_manifests_hand_a_workload_points_at_the_proxy() {
+fn no_manifest_sends_a_workload_out_of_the_cluster_except_through_the_proxy() {
     // The whole point of the proxy is defeated by one manifest that sets an
     // adapter's base URL to the vendor. Both failure shapes are checked: an
     // `https` address, which the transport refuses at construction and is
@@ -374,10 +642,49 @@ fn every_address_the_manifests_hand_a_workload_points_at_the_proxy() {
                  that works.",
                 path.display()
             );
+            // The property is about addresses that *leave the cluster*, which
+            // is what the comment above says and what the earlier version of
+            // this assertion did not implement: it refused every `http://`
+            // address, including in-cluster service DNS. The mesh's own peer
+            // address — one pod calling another over the cluster network —
+            // tripped it, and that packet never touches the internet, so no
+            // credential crosses it in clear text.
+            //
+            // Matched on the authority's suffix rather than as a substring.
+            // `contains(".svc.cluster.local")` would also accept
+            // `vendor.example.com.svc.cluster.local.attacker.net`, which is a
+            // public host wearing the suffix as a prefix of its own — exactly
+            // the substring trap that has already let a mutation through
+            // elsewhere in this repository.
+            let authority = address
+                .split_once("://")
+                .map(|(_, rest)| rest)
+                .unwrap_or(address)
+                .split(['/', '?'])
+                .next()
+                .unwrap_or("")
+                .rsplit_once(':')
+                .map_or_else(
+                    || {
+                        address
+                            .split_once("://")
+                            .map(|(_, rest)| rest)
+                            .unwrap_or(address)
+                            .split(['/', '?'])
+                            .next()
+                            .unwrap_or("")
+                            .to_string()
+                    },
+                    |(host, _port)| host.to_string(),
+                );
+            let stays_in_cluster = authority.ends_with(".svc.cluster.local")
+                || authority.ends_with(".svc")
+                || !authority.contains('.');
             assert!(
-                address.contains(PROXY_AUTHORITY),
-                "{} configures {address}, which is not the egress proxy. An \
-                 adapter pointed straight at a vendor over plaintext sends its \
+                address.contains(PROXY_AUTHORITY) || stays_in_cluster,
+                "{} configures {address}, whose authority {authority} is \
+                 neither the egress proxy nor an in-cluster name. An adapter \
+                 pointed straight at a vendor over plaintext sends its \
                  credential across the internet in clear text.",
                 path.display()
             );
@@ -414,41 +721,90 @@ fn every_port_the_proxy_publishes_is_a_listener_and_the_health_port_is_not_publi
         published.len() >= 4,
         "only {published:?} ports are published; the Service has been reshaped"
     );
-
-    let listening: Vec<String> = values_of(&bootstrap(), "port_value");
+    // `port` is a suffix of `targetPort`, and the target is a port *name*.
+    // Reading one as the other would compare `gcp` against a listener's number
+    // for as long as this file lasted, and never match.
     assert!(
-        listening.len() >= 5,
-        "only {listening:?} listener ports were read out of the bootstrap"
+        published
+            .iter()
+            .all(|port| port.chars().all(|c| c.is_ascii_digit())),
+        "the Service publishes {published:?}, which includes something that is \
+         not a port number"
     );
+
+    // Listener ports come from the listeners block alone. Read from the whole
+    // bootstrap they would include every upstream's 443, and a Service
+    // publishing 443 would then satisfy this check.
+    let bootstrap = bootstrap();
+    let listeners = entries_of(&listeners_block(&bootstrap));
+    assert_eq!(
+        listeners.len(),
+        5,
+        "{:?} listeners were read; there are four destination listeners and \
+         the health listener, and a listener this check cannot see is a port \
+         nothing below constrains",
+        listeners.iter().map(|(name, _)| name).collect::<Vec<_>>()
+    );
+    let mut listening: Vec<(String, String)> = Vec::new();
+    for (name, body) in &listeners {
+        let ports = values_of(body, "port_value");
+        assert_eq!(
+            ports.len(),
+            1,
+            "the listener {name} binds {ports:?}; one listener, one port is \
+             what makes the port a destination selector"
+        );
+        listening.push((name.clone(), ports[0].clone()));
+    }
 
     for port in &published {
         assert!(
-            listening.contains(port),
+            listening.iter().any(|(_, bound)| bound == port),
             "the Service publishes {port} and the bootstrap has no listener on \
              it. A Service port with nothing behind it is a connection that \
              hangs, which is the failure that takes longest to diagnose."
         );
     }
+
     // The health listener answers a probe and forwards to no cluster. It is
     // deliberately absent from the Service: a probe endpoint on a Service is a
     // thing that ends up behind a load balancer.
-    assert!(
-        listening.contains(&"9900".to_string()),
-        "the bootstrap has no health listener, so the pod's probes have \
-         nothing to hit that is not the admin interface"
+    let (_, health) = listening.iter().find(|(name, _)| name == "health").expect(
+        "the bootstrap has no listener named `health`, so the pod's probes have \
+         nothing to hit that is not the admin interface",
+    );
+    assert_eq!(
+        health, "9900",
+        "the health listener has moved to {health}; the Deployment's probes \
+         name the port by its container-port name and would go on hitting \
+         whatever is called `health` there"
     );
     assert!(
-        !published.contains(&"9900".to_string()),
+        !published.contains(health),
         "the Service publishes the health listener"
     );
+    for (name, port) in &listening {
+        assert!(
+            name == "health" || published.contains(port),
+            "the listener {name} binds {port} and no Service publishes it. A \
+             listener with no Service in front is reachable by pod IP and \
+             constrained by nothing anybody reviewed."
+        );
+    }
+
     // And the admin interface, which serves /quitquitquit and a config dump, is
-    // bound to loopback and therefore cannot be published even by accident.
-    assert!(
-        listening.contains(&"9901".to_string()),
-        "the admin port was not read; this check is looking at the wrong block"
+    // bound to loopback and therefore cannot be published even by accident —
+    // but the Service is checked anyway, because loopback and the Service are
+    // two edits and only one of them is in this file's admin block.
+    let admin = values_of(&admin_block(&bootstrap), "port_value");
+    assert_eq!(
+        admin,
+        vec!["9901".to_string()],
+        "the admin interface binds {admin:?}; this check is looking at the \
+         wrong block or the interface has moved"
     );
     assert!(
-        !published.contains(&"9901".to_string()),
+        !published.contains(&admin[0]),
         "the Service publishes the Envoy admin interface, which is an \
          unauthenticated stop button and a dump of every upstream"
     );
@@ -461,14 +817,18 @@ fn the_admin_interface_is_bound_to_loopback_and_nothing_else() {
     // that prints request headers. Bound to the pod address, all three are
     // reachable by anything the ingress policy admits.
     let bootstrap = bootstrap();
-    let admin = bootstrap
-        .split("\n    admin:\n")
-        .nth(1)
-        .expect("the bootstrap declares an admin interface")
-        .split("\n    static_resources:")
-        .next()
-        .expect("the admin block ends before the resources")
-        .to_string();
+    let admin = admin_block(&bootstrap);
+    // Premise: this block binds something. The check that read only block-form
+    // mappings found no address in a flow mapping and compared an empty list
+    // against loopback, which is the shape that passes the day somebody deletes
+    // the binding entirely.
+    assert_eq!(
+        key_count(&admin, "socket_address"),
+        1,
+        "the admin block binds {} socket addresses; it is not the block this \
+         check thinks it is",
+        key_count(&admin, "socket_address")
+    );
     let addresses = values_of(&admin, "address");
     assert_eq!(
         addresses,
@@ -524,6 +884,12 @@ fn neither_the_fast_path_nor_an_edge_cell_may_reach_the_proxy() {
     // And nothing gave it the other half either: an egress rule on the fast
     // brain naming the proxy would be the same hole approached from the client
     // side, and it would be invisible to the check above.
+    //
+    // Counted as it goes, because this half is a scan and a scan that selects
+    // nothing reports no violation. If the label these policies are written
+    // against ever changes, the loop below silently examines zero documents and
+    // this test starts asserting that a set it never built contains nothing.
+    let mut examined = 0usize;
     for path in files_with_extension("infrastructure/kubernetes", "yaml") {
         let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
         for document in content.split("\nkind: NetworkPolicy\n").skip(1) {
@@ -542,6 +908,7 @@ fn neither_the_fast_path_nor_an_edge_cell_may_reach_the_proxy() {
             if selected != "qip-fastbrain" && selected != "qip-edge-node" {
                 continue;
             }
+            examined += 1;
             assert!(
                 !document.contains("qip-egress"),
                 "{} gives {selected} an egress rule naming the proxy",
@@ -549,6 +916,13 @@ fn neither_the_fast_path_nor_an_edge_cell_may_reach_the_proxy() {
             );
         }
     }
+    assert!(
+        examined >= 2,
+        "only {examined} network policies governing the fast brain or an edge \
+         cell were found; namespace.yaml carries an ingress and an egress rule \
+         for the fast brain alone, so this scan is matching on something that \
+         has been renamed and is checking nothing"
+    );
 }
 
 #[test]
@@ -599,6 +973,25 @@ fn the_proxy_holds_no_credential_and_no_identity_in_the_project() {
     // the traffic already flowing: no mounted secret, no service-account token,
     // no workload-identity binding to a Google service account, and no shell.
     let manifest = read(MANIFEST);
+
+    // Premise. Every assertion below is an absence, and an absence is worth
+    // nothing unless the thing looking for the key can find one that is there.
+    // The pod is committed commented out, so `declares_key` uncomments before
+    // it matches; these three are what demonstrate it still does. If the pod
+    // moves to another file, this fails here rather than reporting that a
+    // manifest with no pod in it has no credential in it.
+    for present in [
+        "serviceAccountName",
+        "automountServiceAccountToken",
+        "readOnlyRootFilesystem",
+    ] {
+        assert!(
+            declares_key(&manifest, present),
+            "egress.yaml no longer declares {present}, so it no longer carries \
+             the pod and every absence checked below is vacuous"
+        );
+    }
+
     for (marker, why) in [
         (
             "iam.gke.io/gcp-service-account",
@@ -615,15 +1008,22 @@ fn the_proxy_holds_no_credential_and_no_identity_in_the_project() {
             "the same, read out of etcd instead of the secret store",
         ),
     ] {
+        // In mapping position, not anywhere in the text. The ServiceAccount in
+        // this manifest explains in prose that it carries no
+        // `iam.gke.io/gcp-service-account` annotation, and the check that read
+        // the raw file failed on that sentence — on the documentation of the
+        // property it exists to enforce, which is how a reviewer learns to
+        // delete the sentence rather than keep the property.
         assert!(
-            !manifest.contains(marker),
+            !declares_key(&manifest, marker),
             "egress.yaml carries {marker}: {why}"
         );
     }
     assert!(
-        manifest.lines().any(
-            |line| line.trim_start_matches(['#', ' ']) == "automountServiceAccountToken: false"
-        ),
+        manifest
+            .lines()
+            .any(|line| line.trim_start_matches(['#', ' ']).trim_end()
+                == "automountServiceAccountToken: false"),
         "the proxy pod mounts a service-account token, which is a credential \
          for the Kubernetes API on the pod most exposed to the internet"
     );
