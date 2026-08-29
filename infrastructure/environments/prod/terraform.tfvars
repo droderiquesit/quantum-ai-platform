@@ -83,29 +83,29 @@ max_node_count = 8
 authorised_networks = []
 
 edge_cells = {
-#   "dallas-1" = {
-#     region       = "us-south1"
-#     subnet_cidr  = "10.65.0.0/20"
-#     pod_cidr     = "10.65.16.0/20"
-#     service_cidr = "10.65.32.0/20"
-#     venues       = {}
-#   }
-#   # Council Bluffs, Iowa — about 400km from the Chicago venues.
-#   "chicago-1" = {
-#     region       = "us-central1"
-#     subnet_cidr  = "10.66.0.0/20"
-#     pod_cidr     = "10.66.16.0/20"
-#     service_cidr = "10.66.32.0/20"
-#     venues       = {}
-#   }
-#   # Ashburn, Virginia — about 300km from the NY/NJ venues.
-#   "newyork-1" = {
-#     region       = "us-east4"
-#     subnet_cidr  = "10.67.0.0/20"
-#     pod_cidr     = "10.67.16.0/20"
-#     service_cidr = "10.67.32.0/20"
-#     venues       = {}
-#   }
+  #   "dallas-1" = {
+  #     region       = "us-south1"
+  #     subnet_cidr  = "10.65.0.0/20"
+  #     pod_cidr     = "10.65.16.0/20"
+  #     service_cidr = "10.65.32.0/20"
+  #     venues       = {}
+  #   }
+  #   # Council Bluffs, Iowa — about 400km from the Chicago venues.
+  #   "chicago-1" = {
+  #     region       = "us-central1"
+  #     subnet_cidr  = "10.66.0.0/20"
+  #     pod_cidr     = "10.66.16.0/20"
+  #     service_cidr = "10.66.32.0/20"
+  #     venues       = {}
+  #   }
+  #   # Ashburn, Virginia — about 300km from the NY/NJ venues.
+  #   "newyork-1" = {
+  #     region       = "us-east4"
+  #     subnet_cidr  = "10.67.0.0/20"
+  #     pod_cidr     = "10.67.16.0/20"
+  #     service_cidr = "10.67.32.0/20"
+  #     venues       = {}
+  #   }
   "london-1" = {
     region       = "europe-west2"
     subnet_cidr  = "10.68.0.0/20"
@@ -113,42 +113,42 @@ edge_cells = {
     service_cidr = "10.68.32.0/20"
     venues       = {}
   }
-#   "frankfurt-1" = {
-#     region       = "europe-west3"
-#     subnet_cidr  = "10.69.0.0/20"
-#     pod_cidr     = "10.69.16.0/20"
-#     service_cidr = "10.69.32.0/20"
-#     venues       = {}
-#   }
-#   "singapore-1" = {
-#     region       = "asia-southeast1"
-#     subnet_cidr  = "10.70.0.0/20"
-#     pod_cidr     = "10.70.16.0/20"
-#     service_cidr = "10.70.32.0/20"
-#     venues       = {}
-#   }
-#   "tokyo-1" = {
-#     region       = "asia-northeast1"
-#     subnet_cidr  = "10.71.0.0/20"
-#     pod_cidr     = "10.71.16.0/20"
-#     service_cidr = "10.71.32.0/20"
-#     venues       = {}
-#   }
-#   "saopaulo-1" = {
-#     region       = "southamerica-east1"
-#     subnet_cidr  = "10.72.0.0/20"
-#     pod_cidr     = "10.72.16.0/20"
-#     service_cidr = "10.72.32.0/20"
-#     venues       = {}
-#   }
-#   # Doha, Qatar — about 380km from Dubai.
-#   "dubai-1" = {
-#     region       = "me-central1"
-#     subnet_cidr  = "10.73.0.0/20"
-#     pod_cidr     = "10.73.16.0/20"
-#     service_cidr = "10.73.32.0/20"
-#     venues       = {}
-#   }
+  #   "frankfurt-1" = {
+  #     region       = "europe-west3"
+  #     subnet_cidr  = "10.69.0.0/20"
+  #     pod_cidr     = "10.69.16.0/20"
+  #     service_cidr = "10.69.32.0/20"
+  #     venues       = {}
+  #   }
+  #   "singapore-1" = {
+  #     region       = "asia-southeast1"
+  #     subnet_cidr  = "10.70.0.0/20"
+  #     pod_cidr     = "10.70.16.0/20"
+  #     service_cidr = "10.70.32.0/20"
+  #     venues       = {}
+  #   }
+  #   "tokyo-1" = {
+  #     region       = "asia-northeast1"
+  #     subnet_cidr  = "10.71.0.0/20"
+  #     pod_cidr     = "10.71.16.0/20"
+  #     service_cidr = "10.71.32.0/20"
+  #     venues       = {}
+  #   }
+  #   "saopaulo-1" = {
+  #     region       = "southamerica-east1"
+  #     subnet_cidr  = "10.72.0.0/20"
+  #     pod_cidr     = "10.72.16.0/20"
+  #     service_cidr = "10.72.32.0/20"
+  #     venues       = {}
+  #   }
+  #   # Doha, Qatar — about 380km from Dubai.
+  #   "dubai-1" = {
+  #     region       = "me-central1"
+  #     subnet_cidr  = "10.73.0.0/20"
+  #     pod_cidr     = "10.73.16.0/20"
+  #     service_cidr = "10.73.32.0/20"
+  #     venues       = {}
+  #   }
 }
 
 # Off, in production, and this is the line most likely to be changed by
