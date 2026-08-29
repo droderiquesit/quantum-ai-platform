@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { Chip } from "@/components/data/Bits";
@@ -10,6 +11,8 @@ import { navItemFor } from "@/lib/nav";
 import { CommandPalette } from "./CommandPalette";
 import { InstallApp } from "./InstallApp";
 import { ConnectionIndicator } from "./ConnectionIndicator";
+import { EnvironmentBadge } from "./EnvironmentBadge";
+import { ThemeToggle } from "./ThemeToggle";
 import { KillSwitch } from "./KillSwitch";
 import { MobileTabBar } from "./MobileTabBar";
 import { NavBar, NavRail } from "./Nav";
@@ -52,12 +55,20 @@ function Header() {
 
   return (
     <header className="flex h-[44px] shrink-0 items-center gap-2 border-b border-[color:var(--color-line)] bg-[color:var(--color-surface)] px-2 sm:gap-3 sm:px-3">
-      <div className="flex shrink-0 items-baseline gap-2">
-        <span className="num text-[13px] font-semibold tracking-[0.14em] text-[color:var(--color-ink)]">
-          QIP
-        </span>
-        <span className="num hidden text-[10px] tracking-[0.16em] text-[color:var(--color-ink-faint)] sm:inline">
-          COMMAND CENTRE
+      <div className="flex shrink-0 items-center gap-2">
+        {/* The orbit mark, inline so it inherits the theme's ink. */}
+        <svg width="18" height="18" viewBox="0 0 32 32" aria-hidden="true" className="shrink-0">
+          <ellipse cx="16" cy="16" rx="13" ry="6" fill="none" stroke="var(--color-accent)" strokeWidth="2" transform="rotate(-28 16 16)" />
+          <ellipse cx="16" cy="16" rx="13" ry="6" fill="none" stroke="var(--color-quantum)" strokeWidth="2" transform="rotate(28 16 16)" opacity="0.85" />
+          <circle cx="16" cy="16" r="3" fill="var(--color-ink)" />
+        </svg>
+        <span className="flex items-baseline gap-2">
+          <span className="num text-[13px] font-semibold tracking-[0.14em] text-[color:var(--color-ink)]">
+            PEOS
+          </span>
+          <span className="num hidden text-[10px] tracking-[0.16em] text-[color:var(--color-ink-faint)] sm:inline">
+            QUANTUM AI
+          </span>
         </span>
       </div>
       <span
@@ -75,8 +86,24 @@ function Header() {
           and a flex child without it is the first thing a narrow viewport
           truncates. */}
       <div className="ml-auto flex shrink-0 items-center gap-1.5 sm:gap-2">
+        <span className="hidden md:inline-flex">
+          <EnvironmentBadge />
+        </span>
+        {/* Not a badge with a count: a count would need the risk, orders and
+            governance reads in the shell on every page. The alerts page owns
+            deriving them; the header owns being one tap from it. */}
+        <Link
+          href="/command/alerts"
+          className="btn"
+          data-variant="ghost"
+          aria-label="Alerts and incidents"
+          title="Alerts and incidents"
+        >
+          ⚠
+        </Link>
         <UtcClock />
         <ConnectionIndicator />
+        <ThemeToggle />
         <CommandPalette />
         <KillSwitch />
       </div>
@@ -104,12 +131,11 @@ function UtcClock() {
 function StatusBar() {
   const feeds = useConnections();
   const { status, health } = usePlatform();
-  const environment = process.env.NEXT_PUBLIC_QIP_ENVIRONMENT ?? "unset";
   const scopes = status.data?.halted_scopes ?? [];
 
   return (
     <footer className="hidden h-[22px] shrink-0 items-center gap-3 overflow-x-auto border-t border-[color:var(--color-line)] bg-[color:var(--color-sunken)] px-3 text-[10px] text-[color:var(--color-ink-faint)] md:flex">
-      <Chip tone="info">{environment}</Chip>
+      <EnvironmentBadge />
       <span className="num">gateway /api/gateway → /api/v1</span>
       <span className="num">{feeds.length} feed(s)</span>
       {status.data ? (

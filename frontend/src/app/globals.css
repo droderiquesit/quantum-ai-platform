@@ -10,27 +10,35 @@
  * trading declaration, which appears nowhere else.
  */
 @theme {
-  --color-void: #07090c;
-  --color-sunken: #0a0d11;
-  --color-surface: #0e1116;
-  --color-raised: #131820;
-  --color-line: #1b212b;
-  --color-line-strong: #2b3441;
+  --color-void: #07060e;
+  --color-sunken: #0b0a15;
+  --color-surface: #100f1d;
+  --color-raised: #171629;
+  --color-line: #201f36;
+  --color-line-strong: #322f52;
 
-  --color-ink: #dde5ee;
-  --color-ink-dim: #8b95a5;
-  --color-ink-faint: #5b6472;
+  --color-ink: #e7e6f4;
+  --color-ink-dim: #9a98b6;
+  --color-ink-faint: #636383;
 
-  --color-accent: #4c9aff;
-  --color-accent-dim: #1d3a63;
+  --color-accent: #8f7bff;
+  --color-accent-dim: #282057;
+
+  --color-quantum: #35c8e8;
 
   --color-paper: #e3a72f;
   --color-paper-dim: #3a2c0c;
+  --color-paper-dim-2: #2c2109;
 
-  --color-up: #34c27b;
-  --color-down: #ff5d54;
+  --color-up: #2ecc8f;
+  --color-down: #ff5d6e;
   --color-warn: #e3a72f;
   --color-halt: #ff3b30;
+
+  --color-env-simulation: #4c9aff;
+  --color-env-paper: #b39bff;
+  --color-env-staging: #e3a72f;
+  --color-env-live: #ff3b30;
 
   --font-sans: "Inter", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
@@ -38,8 +46,50 @@
     "Liberation Mono", monospace;
 }
 
+/*
+ * Two themes, one token contract.
+ *
+ * Dark is the identity and the default; light re-values the same custom
+ * properties under [data-theme="light"], set on <html> before first paint by
+ * the inline script in the root layout. No component knows which theme it is
+ * in — a component that did would eventually be right in one theme only.
+ */
 :root {
   color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --color-void: #f1f1f7;
+  --color-sunken: #e9e9f1;
+  --color-surface: #ffffff;
+  --color-raised: #f6f6fb;
+  --color-line: #dedeea;
+  --color-line-strong: #c3c3d9;
+
+  --color-ink: #1b1a2e;
+  --color-ink-dim: #4e4f6e;
+  --color-ink-faint: #7f809b;
+
+  --color-accent: #5d48d6;
+  --color-accent-dim: #e7e2fb;
+
+  --color-quantum: #0d7f9e;
+
+  --color-paper: #8a6206;
+  --color-paper-dim: #f3e2b6;
+  --color-paper-dim-2: #ecd69c;
+
+  --color-up: #0c8f62;
+  --color-down: #d8394f;
+  --color-warn: #9a6f0a;
+  --color-halt: #cd2018;
+
+  --color-env-simulation: #1f6fd6;
+  --color-env-paper: #6d48e0;
+  --color-env-staging: #9a6f0a;
+  --color-env-live: #cd2018;
 }
 
 html,
@@ -436,7 +486,7 @@ textarea {
   background: repeating-linear-gradient(
     -45deg,
     var(--color-paper-dim) 0 10px,
-    #2c2109 10px 20px
+    var(--color-paper-dim-2) 10px 20px
   );
   border-bottom: 1px solid color-mix(in srgb, var(--color-paper) 40%, transparent);
 }

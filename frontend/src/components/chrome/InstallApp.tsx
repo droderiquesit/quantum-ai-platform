@@ -143,7 +143,7 @@ export function InstallApp() {
     >
       <div className="flex min-w-0 flex-col gap-0.5">
         <span className="text-[12.5px] font-medium text-[color:var(--color-ink)]">
-          Install QIP Paper on this device
+          Install PEOS Quantum AI on this device
         </span>
         <span className="text-[11px] leading-relaxed text-[color:var(--color-ink-dim)]">
           {ios

@@ -15,19 +15,19 @@ import type { MetadataRoute } from "next";
  */
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "QIP Command Centre — paper trading",
-    short_name: "QIP Paper",
+    name: "PEOS Quantum AI — paper trading",
+    short_name: "PEOS Paper",
     // Read on the install sheet, where it may be the only sentence a person
     // sees before adding this to a home screen. It says the boundary first.
     description:
-      "Paper-trading operator console for the QIP platform. Simulated execution only: no control in this application can submit a live order.",
+      "Paper-trading operator console for the PEOS Quantum AI platform. Simulated execution only: no control in this application can submit a live order.",
     id: "/?surface=installed",
     start_url: "/?surface=installed",
     scope: "/",
     display: "standalone",
     orientation: "portrait-primary",
-    background_color: "#07090c",
-    theme_color: "#07090c",
+    background_color: "#07060e",
+    theme_color: "#07060e",
     categories: ["finance", "productivity"],
     dir: "ltr",
     lang: "en",
