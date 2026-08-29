@@ -94,7 +94,7 @@ function Header() {
             deriving them; the header owns being one tap from it. */}
         <Link
           href="/command/alerts"
-          className="btn"
+          className="btn hidden md:inline-flex"
           data-variant="ghost"
           aria-label="Alerts and incidents"
           title="Alerts and incidents"
@@ -103,8 +103,15 @@ function Header() {
         </Link>
         <UtcClock />
         <ConnectionIndicator />
-        <ThemeToggle />
-        <CommandPalette />
+        <span className="hidden sm:inline-flex">
+          <ThemeToggle />
+        </span>
+        {/* A keyboard-shortcut affordance has no business on a touch phone,
+            and at 412px it was the difference between the kill switch on
+            screen and off it. */}
+        <span className="hidden sm:inline-flex">
+          <CommandPalette />
+        </span>
         <KillSwitch />
       </div>
     </header>

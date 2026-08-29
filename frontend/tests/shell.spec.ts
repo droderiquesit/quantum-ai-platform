@@ -17,6 +17,16 @@ const ROUTES = [
   "/data-sources",
   "/order-entry",
   "/system",
+  // One from each of the sections added for the PEOS eight-section map, so a
+  // new section cannot ship a route the declaration is missing from.
+  "/command/alerts",
+  "/intelligence/predictions",
+  "/research/quantum",
+  "/portfolio/pnl",
+  "/risk/audit",
+  "/execution/fills",
+  "/operations/telemetry",
+  "/admin/autonomy",
 ] as const;
 
 test("the paper trading declaration is on every route", async ({ page }) => {

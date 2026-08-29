@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { NAV, NAV_ITEMS } from "@/lib/nav";
+import { ThemeToggle } from "./ThemeToggle";
 
 /**
  * The phone's navigation: five destinations at the thumb, everything else in a
@@ -67,9 +68,13 @@ export function MobileTabBar() {
           >
             <div className="sticky top-0 flex items-center justify-between gap-2 border-b border-[color:var(--color-line)] bg-[color:var(--color-surface)] px-4 py-2.5">
               <span className="text-[13px] font-medium text-[color:var(--color-ink)]">Sections</span>
-              <button type="button" className="btn" data-variant="ghost" onClick={() => setOpen(false)}>
-                Close
-              </button>
+              <span className="ml-auto flex items-center gap-1.5">
+                {/* The phone header has no room for this; the sheet does. */}
+                <ThemeToggle />
+                <button type="button" className="btn" data-variant="ghost" onClick={() => setOpen(false)}>
+                  Close
+                </button>
+              </span>
             </div>
             {NAV.map((group) => (
               <div key={group.label} className="flex flex-col border-b border-[color:var(--color-line)] py-2 last:border-b-0">
