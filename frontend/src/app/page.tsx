@@ -1,21 +1,34 @@
 "use client";
 
 import { usePlatform } from "@/components/chrome/PlatformProvider";
-import { Chip, Freshness, Metric, MetricRow, StatusChip } from "@/components/data/Bits";
+import { Chip, Freshness, StatusChip } from "@/components/data/Bits";
+import { Kpi, KpiRow } from "@/components/data/Kpi";
 import { Panel, PanelBody, PanelHead, TableWell } from "@/components/data/Panel";
 import { RunCycleCard } from "@/components/data/RunCycle";
 import { EmptyBlock, LoadingBlock, ResourceView, UnavailableBlock } from "@/components/data/States";
+import { AreaChart, Bars, Gauge } from "@/components/viz/primitives";
 import { platform } from "@/lib/api/client";
-import { isUnavailable, type Opportunities, type Portfolio, type Risk, type SystemMetrics } from "@/lib/api/types";
+import {
+  isUnavailable,
+  type Opportunities,
+  type Portfolio,
+  type Risk,
+  type SystemMetrics,
+} from "@/lib/api/types";
 import { formatCount, formatPercent } from "@/lib/format";
 import { useResource } from "@/lib/hooks/useResource";
+import { describeWindow, useSeries } from "@/lib/hooks/useSeries";
 
 /**
- * What an operator needs in the first ten seconds: whether the platform is
- * running, what authority it is running under, whether the book disagrees with
- * any venue, and what the loop has produced.
+ * The first screen: posture, throughput, and what the loop is holding.
+ *
+ * Chart-led, but every curve on it is a series this browser accumulated by
+ * polling — the platform serves counters, not history. Each one carries the
+ * window it was observed over for that reason. The alternative, drawing a
+ * counter as though it were a recorded time series, would put a plausible
+ * trend on the most-read screen in the console with nothing behind it.
  */
-export default function ExecutiveOverview() {
+export default function CommandOverview() {
   const { health, status } = usePlatform();
 
   const metrics = useResource<SystemMetrics>(platform.systemMetrics, {
@@ -38,148 +51,184 @@ export default function ExecutiveOverview() {
     label: "GET /opportunities",
     intervalMs: 10_000,
   });
-  const pnl = useResource<unknown>(platform.pnl, {
-    key: "pnl-summary",
-    label: "GET /pnl",
-    intervalMs: 30_000,
-  });
+
+  const data = metrics.data;
+  const cycles = useSeries(data?.cycles ?? null);
+  const events = useSeries(data?.events_logged ?? null);
+  const queued = useSeries(data?.opportunities_queued ?? null);
+  const proposals = useSeries(data?.proposals ?? null);
+  const orders = useSeries(data?.orders ?? null);
+  const fills = useSeries(data?.fills ?? null);
+  const refusals = useSeries(data?.refusals ?? null);
 
   const halted = health.data?.halted ?? status.data?.halted ?? null;
   const breaks = health.data?.reconciliation_breaks ?? null;
+
+  // Refusals over everything the risk engine ruled on. Undefined rather than
+  // zero when nothing has been ruled on: a desk with no orders has no refusal
+  // rate, and drawing one at 0% would read as "nothing is being refused".
+  const ruled = data === null ? 0 : data.orders + data.refusals;
+  const refusalRate = data === null || ruled === 0 ? null : data.refusals / ruled;
 
   return (
     <div className="flex flex-col gap-3 p-3">
       <Panel>
         <PanelHead
-          title="Platform state"
+          title="Posture"
           meta={<Freshness resource={health} name="platform health" />}
           actions={
             <>
+              <StatusChip
+                tone={halted === null ? "warn" : halted ? "bad" : "ok"}
+                label={halted === null ? "halt state unknown" : halted ? "HALTED" : "running"}
+                pulse={halted === false}
+              />
               {status.data ? (
-                <Chip tone="info">
-                  autonomy {status.data.autonomy} / ceiling {status.data.ceiling}
+                <Chip
+                  tone="info"
+                  title={`autonomy ${status.data.autonomy}, ceiling ${status.data.ceiling}`}
+                >
+                  {/* Said once when the two agree. Repeating the same word is
+                      what pushed this chip off the right of a phone. */}
+                  {status.data.autonomy === status.data.ceiling
+                    ? `${status.data.autonomy} · at ceiling`
+                    : `${status.data.autonomy} · ceiling ${status.data.ceiling}`}
                 </Chip>
               ) : null}
+              <Chip tone={health.data?.live_capable ? "bad" : "ok"}>
+                {health.data === null
+                  ? "live capability unread"
+                  : health.data.live_capable
+                    ? "live-capable"
+                    : "cannot reach a live venue"}
+              </Chip>
             </>
           }
         />
         <PanelBody>
-          {health.loading && health.outcome === null ? (
-            <LoadingBlock rows={2} label="reading /health" />
+          {metrics.loading && metrics.outcome === null ? (
+            <LoadingBlock rows={2} label="reading /system/metrics" />
           ) : (
-            <MetricRow>
-              <Metric
-                label="Halt state"
-                value={halted === null ? "unknown" : halted ? "HALTED" : "running"}
-                tone={halted === null ? "warn" : halted ? "bad" : "ok"}
-                hint={health.data ? `status: ${health.data.status}` : "no answer from /health"}
+            <KpiRow>
+              <Kpi
+                label="Cycles"
+                value={formatCount(data?.cycles)}
+                series={cycles}
+                trend="accent"
+                note="loop iterations since this process started"
               />
-              <Metric
+              <Kpi
+                label="Events logged"
+                value={formatCount(data?.events_logged)}
+                series={events}
+                trend="accent"
+                note={
+                  status.data?.archived === null
+                    ? "in-memory only — nothing archived"
+                    : `${formatCount(status.data?.archived)} archived to storage`
+                }
+                tone={status.data?.archived === null ? "warn" : "neutral"}
+              />
+              <Kpi
+                label="Opportunities queued"
+                value={formatCount(data?.opportunities_queued)}
+                series={queued}
+                note="found by DISCOVER, awaiting REASON"
+              />
+              <Kpi
+                label="Proposals"
+                value={formatCount(data?.proposals)}
+                series={proposals}
+                note="cleared the action bar in DECIDE"
+              />
+              <Kpi
+                label="Orders"
+                value={formatCount(data?.orders)}
+                series={orders}
+                note="released by ACT against the simulator"
+              />
+              <Kpi
+                label="Fills"
+                value={formatCount(data?.fills)}
+                series={fills}
+                tone={data?.live_fills ? "bad" : "neutral"}
+                note={data?.live_fills ? "A LIVE FILL IS PRESENT" : "every fill simulated"}
+              />
+              <Kpi
+                label="Refusals"
+                value={formatCount(data?.refusals)}
+                series={refusals}
+                trend="down"
+                tone={data !== undefined && data !== null && data.refusals > 0 ? "warn" : "neutral"}
+                note="risk said no before an order existed"
+              />
+              <Kpi
                 label="Reconciliation breaks"
                 value={breaks === null ? "—" : formatCount(breaks)}
                 tone={breaks !== null && breaks > 0 ? "bad" : "ok"}
-                hint="book against venue"
+                note="the book against the venue"
               />
-              <Metric
-                label="Cycles"
-                value={formatCount(status.data?.cycles)}
-                hint="loop iterations since start"
-              />
-              <Metric
-                label="Events logged"
-                value={formatCount(status.data?.events)}
-                hint={
-                  status.data?.archived === null
-                    ? "nothing archived: in-memory only"
-                    : `${formatCount(status.data?.archived)} archived`
-                }
-                tone={status.data?.archived === null ? "warn" : undefined}
-              />
-              <Metric
-                label="Live capable"
-                value={
-                  health.data === null ? "—" : health.data.live_capable ? "yes" : "no"
-                }
-                tone={health.data?.live_capable ? "bad" : "ok"}
-                hint="whether the process can reach a live venue"
-              />
-              <Metric
-                label="Mesh"
-                value={status.data ? (status.data.mesh.served ? "served" : "not served") : "—"}
-                tone={status.data && !status.data.mesh.served ? "warn" : undefined}
-                hint="central half of the backbone"
-              />
-            </MetricRow>
+            </KpiRow>
           )}
         </PanelBody>
       </Panel>
 
-      <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
+      <div className="grid grid-cols-1 gap-3 xl:grid-cols-[2fr_1fr]">
         <Panel>
-          <PanelHead title="Loop throughput" meta={<Freshness resource={metrics} name="metrics" />} />
+          <PanelHead
+            title="Event log growth"
+            meta={<Freshness resource={metrics} name="metrics" />}
+            actions={<Chip>observed by this tab</Chip>}
+          />
           <PanelBody>
-            <ResourceView resource={metrics} loadingRows={3}>
-              {(data) => (
-                <dl className="flex flex-col">
-                  <KV label="Opportunities queued" value={formatCount(data.opportunities_queued)} />
-                  <KV label="Proposals" value={formatCount(data.proposals)} />
-                  <KV label="Orders" value={formatCount(data.orders)} />
-                  <KV label="Fills" value={formatCount(data.fills)} />
-                  <KV label="Refusals" value={formatCount(data.refusals)} />
-                  <div className="flex items-baseline justify-between gap-4 py-1">
-                    <dt className="text-[11px] text-[color:var(--color-ink-dim)]">
-                      Any live fill
-                    </dt>
-                    <dd>
-                      <Chip tone={data.live_fills ? "bad" : "ok"}>
-                        {data.live_fills ? "yes — not paper only" : "no"}
-                      </Chip>
-                    </dd>
-                  </div>
-                </dl>
-              )}
-            </ResourceView>
+            <AreaChart
+              values={events.values}
+              label="events logged"
+              height={168}
+              caption={
+                <>
+                  {describeWindow(events)}. The platform serves a counter, not a curve; this line is
+                  what this browser watched it do. Reload and it starts again.
+                </>
+              }
+            />
           </PanelBody>
         </Panel>
 
         <Panel>
-          <PanelHead title="Book" meta={<Freshness resource={portfolio} name="portfolio" />} />
+          <PanelHead title="Decision funnel" meta={<Freshness resource={metrics} name="metrics" />} />
           <PanelBody>
-            <ResourceView resource={portfolio} loadingRows={3}>
-              {(data) => (
-                <dl className="flex flex-col">
-                  <KV label="Proposals" value={formatCount(data.proposals)} />
-                  <KV label="Orders" value={formatCount(data.orders)} />
-                  <KV label="Fills" value={formatCount(data.fills)} />
-                  <div className="flex items-baseline justify-between gap-4 py-1">
-                    <dt className="text-[11px] text-[color:var(--color-ink-dim)]">Paper only</dt>
-                    <dd>
-                      <Chip tone={data.paper_only ? "ok" : "bad"}>
-                        {data.paper_only ? "yes" : "NO — live fills present"}
-                      </Chip>
-                    </dd>
+            <ResourceView resource={metrics} loadingRows={4}>
+              {(m) => (
+                <div className="flex flex-col gap-3">
+                  <Bars
+                    items={[
+                      { label: "Queued", value: m.opportunities_queued, tone: "accent" },
+                      { label: "Proposed", value: m.proposals, tone: "accent" },
+                      { label: "Ordered", value: m.orders, tone: "accent" },
+                      { label: "Filled", value: m.fills, tone: "up" },
+                      { label: "Refused", value: m.refusals, tone: "down" },
+                    ]}
+                  />
+                  <div className="flex items-center justify-between gap-3 border-t border-[color:var(--color-line)] pt-3">
+                    {refusalRate === null ? (
+                      <p className="text-[11px] leading-relaxed text-[color:var(--color-ink-faint)]">
+                        No refusal rate: nothing has been ruled on yet. A rate of 0% here would say
+                        the risk engine is passing everything, which is a different claim.
+                      </p>
+                    ) : (
+                      <Gauge
+                        fraction={refusalRate}
+                        label="refused"
+                        caption={`${formatCount(m.refusals)} of ${formatCount(ruled)} ruled on`}
+                        tone={refusalRate > 0.5 ? "warn" : "accent"}
+                      />
+                    )}
+                    <Chip tone={m.live_fills ? "bad" : "ok"}>
+                      {m.live_fills ? "live fill present" : "paper only"}
+                    </Chip>
                   </div>
-                  <p className="pt-2 text-[11px] leading-relaxed text-[color:var(--color-ink-faint)]">
-                    Position-level detail is behind the desk&rsquo;s capability gate and is not
-                    served over HTTP. These are counts, not a book.
-                  </p>
-                </dl>
-              )}
-            </ResourceView>
-          </PanelBody>
-        </Panel>
-
-        <Panel>
-          <PanelHead title="Profit and loss" meta={<Freshness resource={pnl} name="P&L" />} />
-          <PanelBody>
-            <ResourceView resource={pnl} loadingRows={3}>
-              {() => (
-                <EmptyBlock headline="The platform returned a P&L body this console does not model.">
-                  <p>
-                    <code className="num">GET /api/v1/pnl</code> answered with data rather than an
-                    absence. Attribution rendering is not implemented here yet.
-                  </p>
-                </EmptyBlock>
+                </div>
               )}
             </ResourceView>
           </PanelBody>
@@ -188,33 +237,29 @@ export default function ExecutiveOverview() {
 
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
         <Panel>
-          <PanelHead
-            title="Risk posture"
-            meta={<Freshness resource={risk} name="risk" />}
-          />
+          <PanelHead title="Risk posture" meta={<Freshness resource={risk} name="risk" />} />
           <PanelBody>
             <ResourceView resource={risk} loadingRows={4}>
-              {(data) => {
-                const switchState = data.kill_switch;
-                const concentrations = data.concentrations;
+              {(r) => {
+                const concentrations = r.concentrations;
                 return (
                   <div className="flex flex-col gap-2">
                     <div className="flex flex-wrap items-center gap-2">
                       <StatusChip
-                        tone={switchState.halted ? "bad" : "ok"}
-                        label={switchState.halted ? "kill switch tripped" : "kill switch clear"}
+                        tone={r.kill_switch.halted ? "bad" : "ok"}
+                        label={r.kill_switch.halted ? "kill switch tripped" : "kill switch clear"}
                       />
-                      {switchState.halted_scopes.map((scope) => (
+                      {r.kill_switch.halted_scopes.map((scope) => (
                         <Chip key={scope} tone="bad">
                           {scope}
                         </Chip>
                       ))}
-                      <Chip>{switchState.clearances} clearance(s)</Chip>
+                      <Chip>{r.kill_switch.clearances} clearance(s)</Chip>
                     </div>
-                    {switchState.halted && switchState.reason ? (
+                    {r.kill_switch.halted && r.kill_switch.reason ? (
                       <p className="text-[11.5px] text-[color:var(--color-ink-dim)]">
-                        Tripped by <span className="num">{switchState.tripped_by || "unknown"}</span>:{" "}
-                        {switchState.reason}
+                        Tripped by <span className="num">{r.kill_switch.tripped_by || "unknown"}</span>:{" "}
+                        {r.kill_switch.reason}
                       </p>
                     ) : null}
                     {isUnavailable(concentrations) ? (
@@ -266,8 +311,8 @@ export default function ExecutiveOverview() {
           />
           <PanelBody flush>
             <ResourceView resource={opportunities} loadingRows={5}>
-              {(data) =>
-                data.opportunities.length === 0 ? (
+              {(q) =>
+                q.opportunities.length === 0 ? (
                   <EmptyBlock headline="The queue is empty.">
                     <p>
                       Observed, not assumed: <code className="num">GET /api/v1/opportunities</code>{" "}
@@ -287,19 +332,15 @@ export default function ExecutiveOverview() {
                           <th scope="col" className="n">
                             Confidence
                           </th>
-                          <th scope="col">Detectors</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {data.opportunities.map((opportunity) => (
+                        {q.opportunities.map((opportunity) => (
                           <tr key={opportunity.id}>
                             <td className="num">{opportunity.id}</td>
                             <td className="whitespace-normal">{opportunity.headline}</td>
                             <td className="n">{opportunity.score.toFixed(3)}</td>
                             <td className="n">{formatPercent(opportunity.confidence)}</td>
-                            <td className="num text-[10px] text-[color:var(--color-ink-dim)]">
-                              {opportunity.detectors.join(", ") || "—"}
-                            </td>
                           </tr>
                         ))}
                       </tbody>
@@ -312,23 +353,40 @@ export default function ExecutiveOverview() {
         </Panel>
       </div>
 
-      <RunCycleCard
-        onRan={() => {
-          metrics.refresh();
-          portfolio.refresh();
-          opportunities.refresh();
-          status.refresh();
-        }}
-      />
-    </div>
-  );
-}
+      <div className="grid grid-cols-1 gap-3 xl:grid-cols-[1fr_2fr]">
+        <Panel>
+          <PanelHead title="Book" meta={<Freshness resource={portfolio} name="portfolio" />} />
+          <PanelBody>
+            <ResourceView resource={portfolio} loadingRows={3}>
+              {(book) => (
+                <div className="flex flex-col gap-2">
+                  <KpiRow>
+                    <Kpi label="Proposals" value={formatCount(book.proposals)} />
+                    <Kpi label="Orders" value={formatCount(book.orders)} />
+                    <Kpi label="Fills" value={formatCount(book.fills)} />
+                  </KpiRow>
+                  <Chip tone={book.paper_only ? "ok" : "bad"}>
+                    {book.paper_only ? "paper only" : "NO — live fills present"}
+                  </Chip>
+                  <p className="text-[11px] leading-relaxed text-[color:var(--color-ink-faint)]">
+                    Position-level detail sits behind the desk&rsquo;s capability gate and is not
+                    served over HTTP. These are counts, not a book.
+                  </p>
+                </div>
+              )}
+            </ResourceView>
+          </PanelBody>
+        </Panel>
 
-function KV({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-baseline justify-between gap-4 border-b border-[color:var(--color-line)] py-1 last:border-b-0">
-      <dt className="text-[11px] text-[color:var(--color-ink-dim)]">{label}</dt>
-      <dd className="num text-[12px]">{value}</dd>
+        <RunCycleCard
+          onRan={() => {
+            metrics.refresh();
+            portfolio.refresh();
+            opportunities.refresh();
+            status.refresh();
+          }}
+        />
+      </div>
     </div>
   );
 }

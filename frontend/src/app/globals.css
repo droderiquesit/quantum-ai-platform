@@ -124,11 +124,23 @@ textarea {
 .panel-head {
   display: flex;
   align-items: center;
-  gap: 10px;
+  /* Wrapping, not scrolling. A panel head carries the freshness chip and the
+     refresh control, and on a phone a head that overflows puts the age of the
+     data off-screen — which is the one thing a reader must never have to
+     scroll for. */
+  flex-wrap: wrap;
+  gap: 6px 10px;
   min-height: 30px;
-  padding: 0 10px;
+  padding: 5px 10px;
   border-bottom: 1px solid var(--color-line);
   background: var(--color-sunken);
+}
+
+@media (min-width: 768px) {
+  .panel-head {
+    flex-wrap: nowrap;
+    padding: 0 10px;
+  }
 }
 
 .panel-title {
@@ -211,6 +223,12 @@ textarea {
   text-transform: uppercase;
   color: var(--color-ink-dim);
   white-space: nowrap;
+  /* A chip never wraps, so on a narrow screen a long one would run off the
+     right edge and take its meaning with it. Truncating keeps it inside the
+     panel; the full text stays in the element's `title`. */
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .chip[data-tone="ok"] {

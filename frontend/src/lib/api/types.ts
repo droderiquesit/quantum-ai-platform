@@ -340,3 +340,30 @@ export interface Discovery {
   readonly version: string;
   readonly routes: readonly DiscoveryRoute[];
 }
+
+/**
+ * The subset of the platform's OpenAPI document this console reads.
+ *
+ * Only the fields it renders are modelled. The document is generated from the
+ * server's own route table at the moment it is requested, so it describes the
+ * surface the running process is actually serving — which is why this console
+ * reads it rather than rendering the static table in `endpoints.ts`. When the
+ * two disagree, the document is right and the table is stale.
+ */
+export interface OpenApiOperation {
+  readonly operationId?: string;
+  readonly summary?: string;
+  readonly description?: string;
+  readonly tags?: readonly string[];
+  readonly "x-required-role"?: string;
+}
+
+export interface OpenApiDocument {
+  readonly openapi: string;
+  readonly info: {
+    readonly title: string;
+    readonly version: string;
+    readonly description?: string;
+  };
+  readonly paths: Readonly<Record<string, Readonly<Record<string, OpenApiOperation>>>>;
+}

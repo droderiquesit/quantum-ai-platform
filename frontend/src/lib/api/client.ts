@@ -201,6 +201,15 @@ export const platform = {
   training: (signal?: AbortSignal) => request<unknown>("/training", withSignal(signal)),
   quantum: (signal?: AbortSignal) => request<T.Quantum>("/quantum", withSignal(signal)),
 
+  /**
+   * The route table the process is serving right now.
+   *
+   * Read live rather than assumed from `endpoints.ts`: a console that lists
+   * routes from a constant will keep listing one the platform stopped serving.
+   */
+  openapi: (signal?: AbortSignal) =>
+    request<T.OpenApiDocument>("/openapi.json", withSignal(signal)),
+
   runCycle: () => request<T.CycleReport>("/cycle", { method: "POST" }),
   tripKillSwitch: (reason: string) =>
     request<T.KillSwitchResponse>("/kill-switch", { method: "POST", query: { reason } }),

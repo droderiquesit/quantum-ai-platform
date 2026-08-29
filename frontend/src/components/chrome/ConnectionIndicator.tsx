@@ -63,7 +63,7 @@ export function ConnectionIndicator() {
           label={summary.label}
           pulse={summary.health === "live"}
         />
-        <span className="num text-[10px] text-[color:var(--color-ink-faint)]">
+        <span className="num hidden text-[10px] text-[color:var(--color-ink-faint)] sm:inline">
           {summary.open}/{summary.total}
         </span>
       </button>

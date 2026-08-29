@@ -8,8 +8,10 @@ import { useConnections } from "@/lib/hooks/connections";
 import { useNow } from "@/lib/hooks/useNow";
 import { navItemFor } from "@/lib/nav";
 import { CommandPalette } from "./CommandPalette";
+import { InstallApp } from "./InstallApp";
 import { ConnectionIndicator } from "./ConnectionIndicator";
 import { KillSwitch } from "./KillSwitch";
+import { MobileTabBar } from "./MobileTabBar";
 import { NavBar, NavRail } from "./Nav";
 import { PaperTradingBanner } from "./PaperTradingBanner";
 import { PlatformProvider, usePlatform } from "./PlatformProvider";
@@ -26,6 +28,9 @@ export function AppShell({ children }: { children: ReactNode }) {
         </a>
         <PaperTradingBanner />
         <Header />
+        {/* Tablet keeps the scrolling strip; a phone gets thumb-reachable tabs
+            at the bottom instead. Both are rendered and one is hidden per
+            breakpoint, so a link is always in the accessibility tree. */}
         <NavBar />
         <div className="flex min-h-0 flex-1">
           <NavRail />
@@ -34,6 +39,8 @@ export function AppShell({ children }: { children: ReactNode }) {
           </main>
         </div>
         <StatusBar />
+        <MobileTabBar />
+        <InstallApp />
       </div>
     </PlatformProvider>
   );
@@ -44,23 +51,30 @@ function Header() {
   const item = navItemFor(pathname);
 
   return (
-    <header className="flex h-[44px] shrink-0 items-center gap-3 border-b border-[color:var(--color-line)] bg-[color:var(--color-surface)] px-3">
-      <div className="flex items-baseline gap-2">
+    <header className="flex h-[44px] shrink-0 items-center gap-2 border-b border-[color:var(--color-line)] bg-[color:var(--color-surface)] px-2 sm:gap-3 sm:px-3">
+      <div className="flex shrink-0 items-baseline gap-2">
         <span className="num text-[13px] font-semibold tracking-[0.14em] text-[color:var(--color-ink)]">
           QIP
         </span>
-        <span className="num text-[10px] tracking-[0.16em] text-[color:var(--color-ink-faint)]">
+        <span className="num hidden text-[10px] tracking-[0.16em] text-[color:var(--color-ink-faint)] sm:inline">
           COMMAND CENTRE
         </span>
       </div>
-      <span className="h-[18px] w-px bg-[color:var(--color-line-strong)]" aria-hidden="true" />
-      <h1 className="truncate text-[12.5px] font-medium text-[color:var(--color-ink)]">
+      <span
+        className="hidden h-[18px] w-px bg-[color:var(--color-line-strong)] sm:block"
+        aria-hidden="true"
+      />
+      <h1 className="min-w-0 truncate text-[12.5px] font-medium text-[color:var(--color-ink)]">
         {item?.label ?? "Not found"}
       </h1>
-      <span className="hidden truncate text-[11px] text-[color:var(--color-ink-faint)] xl:inline">
+      <span className="hidden min-w-0 truncate text-[11px] text-[color:var(--color-ink-faint)] xl:inline">
         {item?.description ?? ""}
       </span>
-      <div className="ml-auto flex items-center gap-2">
+      {/* `shrink-0` on the control cluster is load-bearing: the kill switch is
+          the one thing on this console that must be reachable at every width,
+          and a flex child without it is the first thing a narrow viewport
+          truncates. */}
+      <div className="ml-auto flex shrink-0 items-center gap-1.5 sm:gap-2">
         <UtcClock />
         <ConnectionIndicator />
         <CommandPalette />
@@ -94,7 +108,7 @@ function StatusBar() {
   const scopes = status.data?.halted_scopes ?? [];
 
   return (
-    <footer className="flex h-[22px] shrink-0 items-center gap-3 overflow-x-auto border-t border-[color:var(--color-line)] bg-[color:var(--color-sunken)] px-3 text-[10px] text-[color:var(--color-ink-faint)]">
+    <footer className="hidden h-[22px] shrink-0 items-center gap-3 overflow-x-auto border-t border-[color:var(--color-line)] bg-[color:var(--color-sunken)] px-3 text-[10px] text-[color:var(--color-ink-faint)] md:flex">
       <Chip tone="info">{environment}</Chip>
       <span className="num">gateway /api/gateway → /api/v1</span>
       <span className="num">{feeds.length} feed(s)</span>

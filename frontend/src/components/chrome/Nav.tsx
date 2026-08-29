@@ -53,7 +53,7 @@ export function NavBar() {
   return (
     <nav
       aria-label="Sections (compact)"
-      className="flex shrink-0 items-stretch gap-0 overflow-x-auto border-b border-[color:var(--color-line)] bg-[color:var(--color-sunken)] lg:hidden"
+      className="hidden shrink-0 items-stretch gap-0 overflow-x-auto border-b border-[color:var(--color-line)] bg-[color:var(--color-sunken)] md:flex lg:hidden"
     >
       {NAV.flatMap((group) => group.items).map((item) => {
         const active = pathname === item.href;
