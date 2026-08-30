@@ -24,6 +24,24 @@
 # index for quay.io/argoproj/argocd:v3.5.2, resolved 2026-08-30.
 quay.io/argoproj/argocd@sha256:e2aadfae709d904e87f46ba4aa49601d827b3022db22cd4d03aae816a2e7097b vendor/argocd v3.5.2
 
+# cert-manager v1.21.1 — Kargo's prerequisite (webhook certificates). All
+# three scanned 0 CRITICAL at adoption. Digests are the multi-arch indexes
+# for the v1.21.1 tags, resolved 2026-08-31.
+quay.io/jetstack/cert-manager-controller@sha256:416a2d76870d996460e62bd7f521bf14fa017be9e3e904aab92163a331fcb61a vendor/cert-manager-controller v1.21.1
+quay.io/jetstack/cert-manager-webhook@sha256:d8b3961b51c8c7320633f8208dc46bf88aa13804d0f7cbe48a096b2c523cee42 vendor/cert-manager-webhook v1.21.1
+quay.io/jetstack/cert-manager-cainjector@sha256:ccf6b919ec0500745a47a910118f834f9636d0aac1ff221245cd2557ed8c7c98 vendor/cert-manager-cainjector v1.21.1
+
+# Kargo v1.11.2 — the promotion engine (ADR 0017). Scanned 0 CRITICAL at
+# adoption. Digest is the multi-arch index for ghcr.io/akuity/kargo:v1.11.2,
+# resolved 2026-08-31.
+#
+# Deliberately NOT here: ghcr.io/dexidp/dex. The full Argo CD install ships
+# it for SSO, this platform has no SSO configured, and v2.45.1 scanned with
+# five CRITICALs (a stale alpine OpenSSL and a vulnerable gRPC in dex
+# itself). The install excludes the dex Deployment instead of this file
+# acknowledging findings in a component nothing uses.
+ghcr.io/akuity/kargo@sha256:e1028c697953736421d37abb9266faf6e6876e8f5982811862b38022a9c2fb6f vendor/kargo v1.11.2
+
 # Redis, Argo CD's cache. Deliberately NOT the 8.2.3 its v3.5.2 manifests
 # pin: that image sits on a stale alpine 3.22.3 whose OpenSSL carries a
 # fixable CRITICAL (CVE-2026-31789), while 8.4.2-alpine's rebuild on 3.22.4
