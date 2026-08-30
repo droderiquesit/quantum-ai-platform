@@ -21,6 +21,11 @@ ARG BINARY
 
 # musl-dev is the only build dependency: alpine's Rust images target musl, which
 # is what makes the output static.
+# Unpinned deliberately (hadolint DL3018): musl-dev tracks the alpine minor
+# inside the pinned rust image tag above, which is the actual version pin.
+# Pinning here would break every time alpine rotates the package revision,
+# and the failure would name a package version nobody chose.
+# hadolint ignore=DL3018
 RUN apk add --no-cache musl-dev
 
 WORKDIR /src

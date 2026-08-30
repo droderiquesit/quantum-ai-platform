@@ -235,13 +235,19 @@ jobs:
       # here is worth stopping the line for. After the push would be too
       # late: a signed, attested, vulnerable image is admissible.
       - name: scan image
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          scan-type: image
-          image-ref: "${{ steps.identity.outputs.region }}-docker.pkg.dev/${{ steps.identity.outputs.project }}/qip-${{ env.TARGET_ENVIRONMENT }}/${{ matrix.binary }}:${{ env.DEPLOY_SHA }}"
-          severity: CRITICAL,HIGH
-          exit-code: "1"
-          ignore-unfixed: true
+        run: |
+          set -euo pipefail
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
+            | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg >/dev/null
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" \
+            | sudo tee /etc/apt/sources.list.d/trivy.list >/dev/null
+          sudo apt-get update -qq && sudo apt-get install -y -qq trivy
+          prefix="${{ steps.identity.outputs.region }}-docker.pkg.dev/${{ steps.identity.outputs.project }}/qip-${TARGET_ENVIRONMENT}"
+          trivy image \
+            --severity CRITICAL,HIGH \
+            --exit-code 1 \
+            --ignore-unfixed \
+            "${prefix}/${{ matrix.binary }}:${DEPLOY_SHA}"
 
       # Tagged by commit and never by `latest`. The registry refuses to move a
       # tag onto different bytes, so a tag names one image for ever and a

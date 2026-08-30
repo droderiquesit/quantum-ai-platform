@@ -13,13 +13,14 @@
 # rather than on whether the parse found anything.
 set -uo pipefail
 
-readonly OUTPUT="$(mktemp)"
+OUTPUT="$(mktemp)"
+readonly OUTPUT
 trap 'rm -f "$OUTPUT"' EXIT
 
 # `--no-fail-fast` so every target runs; without it the first failing binary
 # stops the others and the totals are a lower bound nobody labelled as one.
 # The workspace lives under backend/ (ADR 0016).
-cd "$(dirname "${BASH_SOURCE[0]}")/../backend"
+cd "$(dirname "${BASH_SOURCE[0]}")/../backend" || exit 1
 cargo test --workspace --all-features --no-fail-fast >"$OUTPUT" 2>&1
 readonly STATUS=$?
 

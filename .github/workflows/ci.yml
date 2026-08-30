@@ -195,14 +195,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: aquasecurity/trivy-action@0.28.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          severity: CRITICAL,HIGH
-          exit-code: "1"
-          ignore-unfixed: true
-          skip-dirs: vendor,docs/architecture/capital-ai-v4
+      # Installed from Aqua's signed apt repository rather than a marketplace
+      # action: the action's version tags have moved before, and a gate that
+      # fails on "unable to resolve action" is a gate testing nothing.
+      - name: install trivy
+        run: |
+          set -euo pipefail
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
+            | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg >/dev/null
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" \
+            | sudo tee /etc/apt/sources.list.d/trivy.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq trivy
+      - name: scan
+        run: |
+          trivy fs \
+            --severity CRITICAL,HIGH \
+            --exit-code 1 \
+            --ignore-unfixed \
+            --skip-dirs vendor,docs/architecture/capital-ai-v4 \
+            .
 
   # The meta-linter: actionlint on the workflows, shellcheck on the gate
   # scripts, hadolint on the Dockerfile, gitleaks over the tree. Scope and

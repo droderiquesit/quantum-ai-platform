@@ -40,7 +40,8 @@ case "${ENVIRONMENT}" in
     ;;
 esac
 
-readonly REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+readonly REPO_ROOT
 readonly TFVARS="${REPO_ROOT}/infrastructure/environments/${ENVIRONMENT}/terraform.tfvars"
 readonly TF_DIR="${REPO_ROOT}/infrastructure/terraform"
 
@@ -54,8 +55,10 @@ readonly TF_DIR="${REPO_ROOT}/infrastructure/terraform"
 tfvar() {
   sed -n "s/^${1}[[:space:]]*=[[:space:]]*\"\(.*\)\"/\1/p" "${TFVARS}" | head -1
 }
-readonly PROJECT="$(tfvar project_id)"
-readonly GITHUB_REPOSITORY="$(tfvar github_repository)"
+PROJECT="$(tfvar project_id)"
+readonly PROJECT
+GITHUB_REPOSITORY="$(tfvar github_repository)"
+readonly GITHUB_REPOSITORY
 REGION="$(tfvar region)"
 [[ -n "${REGION}" ]] || REGION="europe-west2" # the variable's default
 readonly REGION

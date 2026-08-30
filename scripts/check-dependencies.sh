@@ -36,7 +36,8 @@ readonly PERMITTED=(
 
 # The Rust workspace lives under backend/ (ADR 0016); resolve it from the
 # script's own location so the gate passes or fails identically from any cwd.
-readonly LOCKFILE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/backend/Cargo.lock"
+LOCKFILE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/backend/Cargo.lock"
+readonly LOCKFILE
 
 if [[ ! -f "$LOCKFILE" ]]; then
   echo "backend/Cargo.lock is missing; the build is not reproducible without it" >&2

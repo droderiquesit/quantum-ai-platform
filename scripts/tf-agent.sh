@@ -12,7 +12,8 @@
 # docs/security/credentials.md.
 set -euo pipefail
 
-readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly REPO_ROOT
 readonly TF_DIR="${REPO_ROOT}/infrastructure/terraform"
 readonly SA="claude-builder@algorik-dev.iam.gserviceaccount.com"
 
