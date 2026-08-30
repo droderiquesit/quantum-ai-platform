@@ -42,10 +42,12 @@ __pycache__/
 # Terraform saved plans — resolved configuration, never committed.
 *.tfplan
 
-# Trunk local state — only trunk.yaml and shared config are source.
-.trunk/logs/
-.trunk/actions/
-.trunk/out/
-.trunk/tools/
-.trunk/plugins/
-.trunk/notifications/
+# Trunk local state — only trunk.yaml and shared config are source. No
+# trailing slashes: trunk creates these as symlinks into its cache, and a
+# dir-only pattern does not match a symlink.
+.trunk/logs
+.trunk/actions
+.trunk/out
+.trunk/tools
+.trunk/plugins
+.trunk/notifications
