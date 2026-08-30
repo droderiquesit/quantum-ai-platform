@@ -166,3 +166,64 @@ export function Sidebar({
     </>
   );
 }
+
+/**
+ * The phone's tab bar: the installed app's primary navigation, in the
+ * portal's own design language — same tokens, same icons, same emerald
+ * active state — so the "mobile app" is visibly the same product.
+ *
+ * Four primary surfaces plus Menu, which opens the full off-canvas sidebar:
+ * a strip that tried to carry all thirty-four destinations would carry none
+ * of them reachably. Phones only; tablets and desktops keep the sidebar.
+ */
+const TABS = [
+  { href: "/", label: "Dashboard", icon: "layout-dashboard" },
+  { href: "/signals", label: "Opportunities", icon: "radio" },
+  { href: "/portfolio", label: "Portfolio", icon: "wallet" },
+  { href: "/risk", label: "Risk", icon: "shield-check" },
+] as const;
+
+export function MobileTabBar({ onMenu }: { onMenu: () => void }) {
+  const pathname = usePathname();
+  const inTabs = TABS.some((tab) => tab.href === pathname);
+
+  return (
+    <nav
+      aria-label="Primary (phone)"
+      data-testid="mobile-tab-bar"
+      className="fixed inset-x-0 bottom-0 z-40 md:hidden glass border-t border-border"
+      style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
+    >
+      <div className="flex items-stretch">
+        {TABS.map((tab) => {
+          const active = pathname === tab.href;
+          return (
+            <Link
+              key={tab.href}
+              href={tab.href}
+              aria-current={active ? "page" : undefined}
+              className={`flex min-h-[56px] flex-1 flex-col items-center justify-center gap-1 text-[10px] font-semibold transition-colors ${
+                active ? "text-accent" : "text-muted hover:text-text"
+              }`}
+            >
+              <Icon name={tab.icon} className="w-5 h-5 shrink-0" />
+              {tab.label}
+            </Link>
+          );
+        })}
+        <button
+          type="button"
+          onClick={onMenu}
+          aria-label="All sections"
+          data-testid="tab-bar-menu"
+          className={`flex min-h-[56px] flex-1 flex-col items-center justify-center gap-1 text-[10px] font-semibold transition-colors ${
+            !inTabs ? "text-accent" : "text-muted hover:text-text"
+          }`}
+        >
+          <Icon name="menu" className="w-5 h-5 shrink-0" />
+          Menu
+        </button>
+      </div>
+    </nav>
+  );
+}

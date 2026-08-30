@@ -98,6 +98,29 @@ test.describe("the phone layout", () => {
     }
   });
 
+  test("the tab bar reaches the primary surfaces and its Menu opens the full navigation", async ({
+    page,
+  }) => {
+    // The installed app's thumb navigation. Four primary destinations plus
+    // Menu — a strip carrying all thirty-four would carry none reachably.
+    await servePlatform(page, healthy());
+    await page.goto("/");
+    const bar = page.getByTestId("mobile-tab-bar");
+    await expect(bar).toBeVisible();
+    for (const href of ["/", "/signals", "/portfolio", "/risk"]) {
+      await expect(bar.locator(`a[href="${href}"]`), `${href} missing from the tab bar`).toHaveCount(1);
+    }
+    await page.getByTestId("tab-bar-menu").click();
+    // The overlay is rendered only while the panel is open, so its presence
+    // is the fact of openness. A link inside the off-canvas panel still
+    // measures as "visible" while translated off-screen — asserting it
+    // proved nothing, and the mutation run said so.
+    await expect(
+      page.getByTestId("sidebar-overlay"),
+      "Menu did not open the full navigation",
+    ).toBeVisible();
+  });
+
   test("choosing a section closes the off-canvas panel it was chosen from", async ({ page }) => {
     await servePlatform(page, healthy());
     await page.goto("/");

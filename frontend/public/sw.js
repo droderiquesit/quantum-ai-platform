@@ -14,7 +14,7 @@
 
 // Bumping this evicts every previous cache on activate. The build's own asset
 // hashes handle staleness within a version; this handles the worker itself.
-const VERSION = "peos-shell-v2";
+const VERSION = "algorik-shell-v3";
 const SHELL = `${VERSION}-shell`;
 const ASSETS = `${VERSION}-assets`;
 

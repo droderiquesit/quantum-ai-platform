@@ -33,7 +33,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#071b4d",
+  themeColor: "#050709",
   width: "device-width",
   initialScale: 1,
   // The installed app runs edge to edge; fixed controls position themselves

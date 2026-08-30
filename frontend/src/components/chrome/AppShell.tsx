@@ -10,7 +10,7 @@ import { EnvironmentBadge } from "./EnvironmentBadge";
 import { Icon } from "./icons";
 import { InstallApp } from "./InstallApp";
 import { KillSwitch } from "./KillSwitch";
-import { Sidebar, useSidebar } from "./Nav";
+import { MobileTabBar, Sidebar, useSidebar } from "./Nav";
 import { PaperTradingBanner } from "./PaperTradingBanner";
 import { PlatformProvider, usePlatform } from "./PlatformProvider";
 import { ThemeToggle } from "./ThemeToggle";
@@ -54,8 +54,12 @@ function Chrome({ children }: { children: ReactNode }) {
         <div id="content" tabIndex={-1} className="min-w-0">
           {children}
         </div>
+        {/* Clearance for the phone tab bar, so the last row of any page is
+            never parked underneath it. */}
+        <div className="h-[64px] md:hidden" aria-hidden="true" />
       </main>
 
+      <MobileTabBar onMenu={() => setMobileOpen(true)} />
       <InstallApp />
     </div>
   );
