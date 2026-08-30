@@ -1,0 +1,507 @@
+# The API and operator interface.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: qip-api
+  namespace: qip
+  annotations:
+    # Bound to the Google service account by workload identity, so no key file
+    # ever exists on disk.
+    iam.gke.io/gcp-service-account: qip-api-{{ required "environment is required" .Values.environment }}@{{ required "project is required" .Values.project }}.iam.gserviceaccount.com
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qip-api
+  namespace: qip
+  labels:
+    app: qip-api
+spec:
+  # No `replicas` here, deliberately: the autoscaler at the bottom of this file
+  # owns the number.
+  #
+  # The pipeline deploys with `kubectl apply --server-side`, which makes
+  # whoever names a field its owner. A `replicas: 2` committed here would be
+  # reasserted on every deploy, so a rollout during a busy hour would cut a
+  # scaled-out API back to two and leave the autoscaler to climb again from
+  # under load — a capacity dip caused by deploying, at the moment capacity
+  # was being used. The floor lives in `minReplicas` instead, where nothing
+  # overwrites it.
+  selector:
+    matchLabels:
+      app: qip-api
+  template:
+    metadata:
+      labels:
+        app: qip-api
+    spec:
+      serviceAccountName: qip-api
+      # No automatic token mount: the workload authenticates through workload
+      # identity, and a mounted token is a credential nothing needs.
+      automountServiceAccountToken: false
+      # Spread across zones, not merely across nodes.
+      #
+      # The cluster is regional and its pool runs nodes in three zones. Nothing
+      # otherwise stops the scheduler placing every API replica in one of them,
+      # and losing that zone would take the whole operator interface with it —
+      # including the path an operator uses to trip the kill switch, which is
+      # the one thing that must be reachable while something is going wrong.
+      #
+      # `ScheduleAnyway` rather than `DoNotSchedule`, and that is the whole
+      # decision. A hard constraint on a pool this size turns an unsatisfiable
+      # spread into pods that stay Pending: during a zone outage — exactly when
+      # the replacements are needed — the surviving zones would refuse them,
+      # because accepting one would breach the skew. That is an availability
+      # feature causing the outage it was added to prevent. Soft spreads when
+      # it can and schedules when it cannot, so the worst case is a badly
+      # balanced API rather than no API.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: qip-api
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: qip-api
+          image: {{ required "imagePrefix is required" .Values.imagePrefix }}/qip-api@{{ include "qip.digest" (dict "value" .Values.images.api "name" "images.api") }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: QIP_API_ADDRESS
+              value: "0.0.0.0:8080"
+            # No volume outlives this pod, so this says so rather than
+            # naming a durable store it has nowhere to write. The API holds
+            # no source of record: its state is rebuilt from the feed and the
+            # central plane, and what it must not lose — the event log's hash
+            # chain — needs either a volume of its own or the Cloud Storage
+            # adapter, which now exists and needs a TLS-terminating proxy at
+            # QIP_GCP_ENDPOINT and a token source before it can be reached.
+            #
+            # Set explicitly rather than left to the binary's default, because
+            # a durability question answered by omission is one nobody
+            # revisits when a volume finally exists.
+            #
+            # What giving it that volume would actually take, and why it is not
+            # one field: the foot of this file. It is not a `Retain` policy and
+            # a claim — it converts this workload to a StatefulSet, which
+            # changes what the autoscaler below is doing.
+            - name: QIP_STORAGE_TARGET
+              valueFrom:
+                configMapKeyRef:
+                  name: qip-config
+                  key: storage_target
+            # The autonomy ceiling. Set from a config map so that changing it
+            # is a visible change to a named resource rather than an argument
+            # buried in a command line.
+            - name: QIP_AUTONOMY_CEILING
+              valueFrom:
+                configMapKeyRef:
+                  name: qip-config
+                  key: autonomy_ceiling
+            # The cells this process serves on the mesh backbone, as
+            # `cell=bind-address` pairs. Unset, `qip-api` builds no mesh at
+            # all: no listener binds, `/api/v1/mesh` answers `available:
+            # false`, and the start-up banner says the deltas have nowhere to
+            # land here. That was the shipped state of every deployment until
+            # this line existed — a cell published its state at a peer where
+            # nothing listened, and no capital grant, recall or reconciliation
+            # halt could travel in either direction.
+            #
+            # The bind side is `0.0.0.0` because the peer is another pod. The
+            # cell's half of the pair — the URL it dials — is the
+            # `mesh_peer_<cell>` key in the same ConfigMap, and
+            # `manifest_wiring.rs` refuses a commit where the two disagree
+            # about a port.
+            - name: QIP_MESH_CELLS
+              valueFrom:
+                configMapKeyRef:
+                  name: qip-config
+                  key: mesh_cells
+            # Credentials as files, never from the image and never in the
+            # environment. These named a Kubernetes Secret `qip-tokens` that
+            # nothing created, so every pod stopped at
+            # `CreateContainerConfigError`. They are now projected from Secret
+            # Manager by the CSI driver — see secrets.yaml for why files and
+            # not a synced Secret.
+            - name: QIP_TOKEN_OPERATOR_FILE
+              value: /var/run/secrets/qip/token-operator
+            - name: QIP_TOKEN_APPROVER_FILE
+              value: /var/run/secrets/qip/token-approver
+            - name: QIP_TOKEN_ANALYST_FILE
+              value: /var/run/secrets/qip/token-analyst
+            - name: QIP_TOKEN_VIEWER_FILE
+              value: /var/run/secrets/qip/token-viewer
+            - name: QIP_TOKEN_MONITOR_FILE
+              value: /var/run/secrets/qip/token-monitor
+            # The key this process signs capital envelopes with. Every cell
+            # verifies grants against it, so the centre signing with anything
+            # else produces grants no cell accepts.
+            - name: QIP_CAPITAL_ENVELOPE_KEY_FILE
+              value: /var/run/secrets/qip/capital-envelope-key
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              # A memory limit without a CPU limit lets a busy pod starve its
+              # neighbours; a CPU limit without a memory limit lets a leak take
+              # down the node. Both, always.
+              cpu: "2"
+              memory: 1Gi
+          livenessProbe:
+            httpGet:
+              path: /api/v1
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /api/v1
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: secrets
+              mountPath: /var/run/secrets/qip
+              readOnly: true
+      volumes:
+        # The root filesystem is read-only, so anything needing to write gets
+        # an explicit, size-bounded volume.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        # Projected from Secret Manager by the managed CSI driver, as the pod's
+        # own service account. `readOnly: true` is required by the driver and
+        # is also the truth: nothing writes a credential back.
+        - name: secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: qip-api-secrets
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qip-api
+  namespace: qip
+spec:
+  selector:
+    app: qip-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+# The mesh backbone, on its own Service, and the reason it is not a second
+# port on the one above.
+#
+# `sessionAffinity: ClientIP` is the whole point of this document, and it
+# cannot go on the operator Service. Affinity is a property of the Service,
+# not of a port: putting it there would pin every request from the ingress
+# controller — which is one source address for all operator traffic — to a
+# single API replica, and quietly undo the only autoscaler in this repository.
+#
+# ## What the affinity buys
+#
+# The mesh state is per process. Each replica binds its own listeners, holds
+# its own delta inbox and its own capital spool, and a `CapitalDispatcher`
+# hands a grant to the inbox of the replica that dispatched it. A cell polling
+# a round-robin Service therefore reaches the replica holding its envelope
+# only some of the time, and a poll is a destructive read with a single
+# cursor — so the polls that land elsewhere return nothing and the cell waits
+# for luck. Pinning by client IP makes a cell's publishes and its polls land
+# on one replica for as long as that replica lives.
+#
+# ## What it does not buy, said plainly
+#
+# It does not make the plane's mesh state shared, and nothing here does. A
+# replica that goes away takes its inbox and its undelivered spool with it —
+# the spool lands in whatever `QIP_STORAGE_TARGET` names, which is `memory` in
+# this deployment, so it does not survive the pod either. Re-dispatch is what
+# recovers from that: the centre offers a live envelope again on the next
+# `POST /cycle`, and the inbox's dedup window, the receiver's absorbed-key
+# memory and the cell's own applied-grant memory each absorb the duplicate.
+# Delivery is at-least-once by design in both directions.
+#
+# Nor does it help the *cell* side of the same problem: edge-cell.yaml runs two
+# pods per cell and says at length why, and the two have different source
+# addresses, so they pin to different replicas and only one of them receives a
+# given envelope. That is the same "one cell that speaks with several voices"
+# the StatefulSet comment already names, and it is not closed by anything in
+# this file.
+#
+# Both are the state-in-the-process problem the autoscaler note below reaches
+# for twice already, and the honest fix is the same one: move the state out.
+apiVersion: v1
+kind: Service
+metadata:
+  name: qip-api-mesh
+  namespace: qip
+spec:
+  selector:
+    app: qip-api
+  sessionAffinity: ClientIP
+  ports:
+    # One published port per cell, matching that cell's entry in the
+    # `mesh_cells` ConfigMap key. The port is the cell's identity on this
+    # transport, so a port published here that no listener binds is a
+    # connection that hangs, and a listener with no port published is a cell
+    # that cannot reach the centre at all.
+    - name: mesh-london-1
+      port: 9110
+      targetPort: 9110
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: qip-api
+  namespace: qip
+spec:
+  # `maxUnavailable: 1` rather than `minAvailable: 1`, because the replica
+  # count is no longer fixed.
+  #
+  # The two say the same thing at two replicas and diverge above it: with the
+  # autoscaler at six, `minAvailable: 1` would permit a drain to take five at
+  # once and leave one replica holding the traffic that needed six. As
+  # `maxUnavailable` the budget stays proportionate to whatever the autoscaler
+  # has decided — one replica leaves at a time, at any size.
+  #
+  # What it must never become is `minAvailable` equal to the replica count.
+  # Node auto-upgrade is enabled on this pool and drains nodes without asking:
+  # a budget that forbids every voluntary eviction does not protect the API,
+  # it stalls the upgrade against it until somebody deletes the budget during
+  # an incident.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: qip-api
+---
+# The only autoscaler in this repository, and the reason it is the only one.
+#
+# The API is a request/response server: work arrives from outside, one replica
+# handles one request, and a second replica halves what each one carries. That
+# is the property a horizontal autoscaler needs, and it is the property the
+# other three workloads do not have — each of them runs its own loop at its own
+# cadence, so a replica added to them duplicates the work rather than sharing
+# it. Each of those manifests says so at the point where somebody would go to
+# add the autoscaler they are missing.
+#
+# CPU only, deliberately. The obvious second metric is memory and it would be
+# actively wrong here: this process holds the event index, the rate-limit
+# counters and the cell registry in memory, so its footprint tracks how much
+# has happened rather than how busy it is, and it does not come back down when
+# traffic does. An autoscaler targeting memory would add replicas because the
+# day had been long, and would never remove them.
+#
+# `averageUtilization: 300` is not a typo. The autoscaler measures against the
+# container's *request*, and this container requests 250m against a 2 CPU
+# limit — the request is a scheduling floor, not an estimate of steady state.
+# 300% of 250m is 750m, a little over a third of the limit, which adds a
+# replica while there is still headroom rather than once requests are already
+# queueing behind a throttled runtime. Raising the request to something like
+# steady state and using a conventional 70% would say the same thing more
+# plainly, but the request is also what the scheduler packs on, so that is a
+# change to how this pod is placed and not only to how it scales.
+#
+# minReplicas is 2: one replica has nowhere to fail to, no zone to be spread
+# across, and would make the disruption budget above unable to allow a single
+# eviction.
+#
+# maxReplicas is 6, and it is a capacity number rather than an ambition. The
+# pool is regional with two nodes per zone across three zones and there is no
+# cluster autoscaler, so nothing here can summon a node: six replicas at 250m
+# is 1.5 CPU of requests, which fits the pool as committed. An autoscaler whose
+# maximum does not fit does not add capacity, it leaves pods Pending.
+#
+# Six is also where more replicas stop helping, for reasons that are not
+# capacity and are not fixed by raising this number:
+#
+#   * Rate-limit counters are per process. Six replicas means a caller's real
+#     allowance is six times the one this process believes it is enforcing.
+#   * A cell's report reaches whichever replica the Service picked, and the
+#     registry that records it is per process too. The more replicas, the
+#     smaller the share of reports each one sees, and the likelier the console
+#     served by one of the others calls a cell stale that is not. It is a
+#     display concern — the risk aggregate is rebuilt from the reports
+#     themselves — but it is a real one, and it gets worse with every replica.
+#
+# Both would be closed by moving that state out of the process rather than by
+# scaling further, which is the honest next step and is not this change.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: qip-api
+  namespace: qip
+spec:
+  # Written inline on purpose, and it must stay that way. The acceptance suite
+  # finds workloads by looking for a line reading `kind: Deployment` at any
+  # indentation; a block-style target puts exactly that line in this document
+  # and makes an autoscaler look like a Deployment with no containers, no
+  # service account and no probes, which fails several checks that have nothing
+  # to do with autoscaling.
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: qip-api
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 300
+  behavior:
+    scaleUp:
+      # A minute of agreement before acting, then at most double. Traffic
+      # arrives faster than it leaves, so this side is the permissive one.
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+    scaleDown:
+      # Slow, and one replica at a time. Every replica removed takes its
+      # rate-limit counters and its record of which cells have reported with
+      # it, so shedding four at once loses most of what the console knows;
+      # and a set that flaps discards it repeatedly while a node drain is
+      # trying to make progress against the disruption budget above.
+      stabilizationWindowSeconds: 600
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 300
+# ---------------------------------------------------------------------------
+# The chain this workload does not keep, and why closing it is not a manifest
+# change.
+#
+# docs/operations/disaster-recovery.md puts the event log's hash chain at the
+# top of what is irreplaceable: it is the audit trail, and it cannot be
+# recomputed from anything. `qip-api` opens a `ChainArchive` over whatever
+# `QIP_STORAGE_TARGET` resolves to, before it builds anything else, so that a
+# store it cannot write to stops the start-up rather than being discovered at
+# the first archived cycle. On the shipped configuration that target is
+# `memory`, and the archive it opens is one nothing survives.
+#
+# ## What a durable chain here would actually take
+#
+# Three things, and they are not separable.
+#
+#   * **A volume that outlives the pod.** The only one here is a 64Mi
+#     `emptyDir` for `/tmp`, which outlives nothing. A single
+#     PersistentVolumeClaim shared by the replicas is not the answer either:
+#     a persistent disk is `ReadWriteOnce`, so one claim pins every replica to
+#     one node and turns the zone spread above into a decoration.
+#   * **`QIP_STORAGE_TARGET=engine`, set here rather than in the config map.**
+#     `qip-fastbrain` reads the same `storage_target` key and has no volume at
+#     all, so raising the shared key raises it for a workload with nowhere to
+#     write: `StorageSettings::preflight` round-trips a value before anything
+#     serves, and the fast brain would stop at start-up. config.yaml says this
+#     in its own comment — a workload that overrides the shared key must also
+#     have somewhere to write — and edge-cell.yaml is the precedent for how,
+#     setting the literal beside its own claim.
+#   * **`QIP_STORAGE_ROOT` pointing into that volume.** This one is not
+#     optional and cannot be staged. `QIP_STORAGE_ROOT` set while the target is
+#     `memory` is an explicit refusal to start, not a warning: an operator who
+#     configured a path believes the process persists, and the binary would
+#     rather not start than hold that belief falsely. So the volume, the target
+#     and the root arrive in one commit or the API does not come up.
+#
+# Per-replica claims mean `volumeClaimTemplates`, and `volumeClaimTemplates`
+# mean this stops being a Deployment. That is the point where the change stops
+# being mechanical.
+#
+# ## A StatefulSet with an autoscaler is not a Deployment with one
+#
+# It is legal — `scaleTargetRef` takes a StatefulSet — and it is a different
+# animal.
+#
+# Every replica takes its own claim from the template and therefore keeps its
+# own chain. That is not, in itself, a distortion: the event log is per
+# process, like the rate-limit counters and the cell registry the autoscaler
+# comment above already names, so `qip-api` at six replicas already holds six
+# unrelated event logs. Making them durable preserves the shape rather than
+# inventing it.
+#
+# Nor is it the edge cell's failure, and it is worth saying why not, because
+# the two look alike. edge-cell.yaml refuses an autoscaler partly because one
+# would mint evidence volumes on a load spike and orphan them permanently on
+# the way back down. Here `maxReplicas` is 6 and a StatefulSet's ordinals are
+# stable, so the set of claims is bounded at six and ordinal 4 re-adopts its
+# own disk when it returns — `ChainArchive::open` continues whatever chain it
+# finds. Bounded and reused is not orphaned.
+#
+# What does change is the property the chain exists to have. A single chain's
+# linkage proves nothing was removed from its middle: a missing entry breaks
+# it at that point, which is the whole design. Six chains prove that of each of
+# the six, and prove nothing about a seventh having existed and been deleted —
+# because nothing durable records how many there ever were. The count is a CPU
+# threshold's decision, and scale-down-then-up leaves a chain that verifies
+# cleanly across a gap in wall-clock time that nothing in it marks. Tamper
+# evidence within a shard, none across them, and the shard count chosen by
+# load.
+#
+# `persistentVolumeClaimRetentionPolicy` would also have to be `Retain` in both
+# directions. `Retain` is already the Kubernetes default, which is the danger:
+# `whenScaled: Delete` is the tidy-looking edit somebody makes to stop unused
+# claims accumulating, and here it means a quiet afternoon deletes an audit
+# trail.
+#
+# ## The three ways out, and what each costs
+#
+#   1. **StatefulSet, keep this autoscaler.** Buys durability now. Costs the
+#      paragraph above: an audit trail sharded by load, with no record of the
+#      shard count. Also needs `.github/workflows/deploy.yml` changed in the
+#      same commit — its rollout wait is kind-qualified `deployment/qip-api`,
+#      and that file already says what happens to a workload converted to a
+#      StatefulSet without it — plus a headless governing Service for
+#      `serviceName`.
+#   2. **StatefulSet, fixed replicas, no autoscaler.** Buys one chain per
+#      known replica and a count nobody varies. Costs the only autoscaler in
+#      this repository, on the one workload whose horizontal scaling is
+#      genuinely correct — requests arrive from outside and a replica serves
+#      one. Trading real elasticity for durability, when the durability could
+#      instead be had by moving the state.
+#   3. **One writer that is not a replica.** Either the chain moves to a store
+#      several processes can share, or the archiving leaves this process for a
+#      singleton that owns it. The first is not available today:
+#      `ChainArchive` holds a process-local `Mutex` across the store write, and
+#      `open` takes the last key as its tail — two processes over one store
+#      read the same tail and write two entries claiming the same predecessor,
+#      which is a fork rather than a chain. It is the same interleaving
+#      fastbrain.yaml refuses a second replica for, and closing it is a
+#      compare-and-set in `qip-storage`, not a field here.
+#
+# ## Why this file stops at describing them
+#
+# Choosing between the three is a decision about what the audit trail has to
+# prove — whether an evidence set whose piece count was chosen by an autoscaler
+# is evidence — and that is a question for whoever answers to a regulator with
+# it, not one a manifest should settle by being edited. Option 3 is the honest
+# one and it is the same sentence the autoscaler above already reaches for the
+# rate-limit counters and the cell registry: move that state out of the
+# process. The chain is the third piece of it, and the only one where losing it
+# is irreversible rather than cosmetic.
+#
+# Until then this workload is a Deployment with an `emptyDir`, and
+# `QIP_STORAGE_TARGET` is set from the config map explicitly so that the
+# durability question is answered in the open rather than by omission.

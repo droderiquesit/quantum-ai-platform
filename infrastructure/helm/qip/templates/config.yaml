@@ -1,0 +1,92 @@
+# The platform's configuration.
+#
+# The autonomy ceiling lives here rather than in an image or a command line,
+# so that changing what the platform is permitted to do is a change to a named
+# resource that appears in a diff and in an audit log.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qip-config
+  namespace: qip
+data:
+  # Paper trading. Raising this permits two authenticated operators to enable
+  # live trading; it does not enable it.
+  autonomy_ceiling: "paper_trading"
+
+  # Which store a workload uses, read as QIP_STORAGE_TARGET.
+  #
+  # `memory` is the default here and it is a statement rather than a
+  # placeholder: a workload keeps nothing across a restart unless it has a
+  # volume to keep it on, and only the edge cell has one. The three
+  # implemented targets are memory, file and engine; the six managed ones are
+  # ports that refuse construction, so naming one here would stop a pod
+  # starting rather than upgrading its durability.
+  #
+  # A workload that overrides this must also have somewhere to write: the
+  # root filesystem is read-only by design, so `engine` without a mounted
+  # volume fails at start-up. That failure is deliberate — `StorageSettings::
+  # preflight` round-trips a value before the process serves anything, so a
+  # misconfigured store is found at boot rather than at the first audit write.
+  storage_target: "memory"
+  cycle_interval_seconds: "300"
+
+  # --- the mesh backbone ----------------------------------------------------
+  #
+  # Both halves of the wire live here, in one resource, because they are two
+  # statements of one fact and the failure mode is that they disagree.
+  #
+  # `qip-api` binds one listener per cell (`QIP_MESH_CELLS`, parsed as
+  # `cell=host:port`) and a cell publishes its state deltas and polls its
+  # capital envelopes at that address (`QIP_MESH_PEER`). The address *is* the
+  # cell's identity on this transport: a mesh poll is a destructive read with a
+  # single cursor, so two cells sharing one address would discard each other's
+  # capital grants, and nothing else on the wire names the cell. That is why
+  # every cell needs its own port rather than a path or a header.
+  #
+  # Until this key existed neither variable appeared in any manifest, so the
+  # whole backbone was dead in every deployment: cells published deltas at a
+  # peer where nothing listened, the centre drained an inbox nothing filled,
+  # and no recall or reconciliation halt could ever reach a cell. The code was
+  # complete and tested the whole time — which is the point. A feature nothing
+  # configures is a feature nobody has.
+  #
+  # ## Adding a cell
+  #
+  # Three lines, and `manifest_wiring.rs` fails the build if you write two of
+  # them: an entry here, a `mesh_peer_<cell>` below whose port matches it, a
+  # port on the `qip-api-mesh` Service, and a port on `allow-api-mesh-ingress`
+  # in namespace.yaml. Kubernetes cannot read a ConfigMap into a Service or
+  # into a NetworkPolicy, so the port is written more than once and no amount
+  # of care makes that safe on its own; the test is what makes it safe.
+  #
+  # ## Why one cell is shipped and not the union of every environment's
+  #
+  # `london-1` is the only cell `test` and `prod` name in their tfvars, and the
+  # only one that can schedule at all: edge-cell.yaml pins a cell to its own
+  # region and `modules/cluster` creates one regional pool. `stage` also names
+  # `newyork-1` and `tokyo-1`, whose pods stay Pending by design.
+  #
+  # A cell missing from this list is not a silent failure, which is what makes
+  # the short list safe: its `mesh_peer_<cell>` key is absent too, the
+  # reference in edge-cell.yaml is `optional: true`, so the node starts with no
+  # peer and prints `awaiting QIP_MESH_PEER for the central plane` in the same
+  # list as every other production requirement it cannot satisfy. ADR 0008
+  # makes a detached cell a legitimate state, not a misconfiguration — so the
+  # honest default is a cell that knows it is detached rather than one that
+  # believes it is attached to a port nothing binds.
+  mesh_cells: "london-1=0.0.0.0:9110"
+
+  # Where each cell finds the centre. The port must be the one that cell was
+  # given above; the key is `mesh_peer_` plus the cell id, because
+  # edge-cell.yaml is rendered per cell by substituting the cell-id placeholder and this is the
+  # only way a per-cell value reaches it without a placeholder the runbook does
+  # not know to replace.
+  #
+  # `qip-api-mesh` rather than `qip-api`: the mesh Service pins a cell to one
+  # API replica by client IP, and api.yaml explains at length why that affinity
+  # must not be put on the Service the operator interface is served from.
+  #
+  # `http://`, never `https://`. `qip_transport::http` has no TLS stack and
+  # refuses the scheme by name rather than downgrading it, and this hop does
+  # not leave the cluster network.
+  mesh_peer_london-1: "http://qip-api-mesh.qip.svc.cluster.local:9110"

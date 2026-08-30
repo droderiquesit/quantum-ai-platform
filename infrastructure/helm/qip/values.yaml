@@ -1,0 +1,84 @@
+# No default for imagePrefix, environment, project or any images.* /
+# cell.imageDigest value: the sed render this chart replaces refused a
+# placeholder left in the output, and `required` on an absent key is how that
+# refusal survives the move from a grep over rendered text to a property of
+# the templating engine (ADR 0017). A key absent here is a render that fails
+# loudly instead of applying a ConfigMap or a workload-identity annotation
+# with a hole in it.
+
+# The registry path images are pulled from, e.g.
+# "us-east4-docker.pkg.dev/algorik-dev/qip-dev". Was IMAGE_PREFIX in the
+# sed-rendered manifests.
+# imagePrefix:
+
+# The environment name, e.g. "dev", "test", "stage". Used in workload-identity
+# service-account emails and in the journal StorageClass's tracking label. Was
+# ENVIRONMENT.
+# environment:
+
+# The GCP project id the environment lives in, e.g. "algorik-dev". Used in
+# workload-identity service-account emails and in the Secret Manager resource
+# names the CSI driver mounts. Was PROJECT.
+# project:
+
+# The image digest deployed for each central-plane binary — full
+# "sha256:<hex>" references Binary Authorization's admission webhook actually
+# admits, not the "<image>:<tag>" the webhook refuses to even evaluate
+# (.github/workflows/deploy.yml, commit 28e005a: the attestor signs bytes, so
+# the reference applied must be the reference attested, or the pipeline
+# signs one name and deploys another). Was `qip-<binary>:IMAGE_TAG` in the
+# sed-rendered manifests; now `qip-<binary>@<digest>`.
+#
+# Deliberately absent even in values-dev.yaml, same reasoning IMAGE_TAG had:
+# a digest is Kargo freight, promoted per release, never a standing
+# environment default. `templates/_helpers.tpl`'s `qip.digest` refuses a
+# value that is present but not "sha256:"-prefixed — a tag smuggled into this
+# slot fails here, at render time, rather than at the admission webhook.
+#
+# images:
+#   api: "sha256:<hex>"
+#   fastbrain: "sha256:<hex>"
+#   deepbrain: "sha256:<hex>"
+
+# The edge cell this release renders. Every other template in this chart is
+# rendered once per environment; this one is rendered once per cell, applied
+# deliberately by the runbook in docs/operations/deploying-an-edge-cell.md,
+# never by the environment pipeline (ADR 0008: bringing a cell up is a
+# decision, not a side effect).
+cell:
+  # A cell is opt-in. False renders templates/edge-cell.yaml to nothing.
+  enabled: false
+
+  # The cell id. Goes in the ServiceAccount, StatefulSet, Service and
+  # PodDisruptionBudget names, the pod labels and selectors, the
+  # workload-identity annotation, QIP_CELL_ID, and the mesh peer's ConfigMap
+  # key — the same string in every one of those places, because a mismatch
+  # anywhere is a cell that starts and then rejects every grant it is sent.
+  # Was __CELL_ID__.
+  # id: "london-1"
+
+  # The cell's region, matched against the node's
+  # topology.kubernetes.io/region so the pod schedules only where this
+  # cluster actually has nodes for it. Was __CELL_REGION__.
+  # region: "europe-west2"
+
+  # The qip-edge-node image digest, full "sha256:<hex>". Was
+  # `qip-edge-node:IMAGE_TAG`; docs/operations/deploying-an-edge-cell.md step 7
+  # now resolves the digest from the registry before rendering, for the same
+  # admission-webhook reason as images.* above. Refused if it is not
+  # "sha256:"-prefixed by the same `qip.digest` helper.
+  # imageDigest: "sha256:<hex>"
+
+  # The venues this cell is configured for, keyed by venue id. Each entry's
+  # cidr/port becomes one egress rule to that venue in allow-edge-egress, and
+  # the sorted list of keys becomes QIP_VENUES (comma-separated) — the same
+  # shape docs/operations/deploying-an-edge-cell.md step 7 produces by hand
+  # with CELL_VENUES, and step 9 produces by hand with VENUE_CIDR/VENUE_PORT.
+  # An empty map fails closed the same way the node itself refuses to start
+  # with no venue: a cell with nothing to reach has nothing to do.
+  #
+  # venues:
+  #   cme:
+  #     cidr: "203.0.113.0/24"
+  #     port: 443
+  venues: {}

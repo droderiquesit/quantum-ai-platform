@@ -1,0 +1,13 @@
+# ADR 0017: the chart replaces the sed-rendered manifests in
+# infrastructure/kubernetes/base/ one template at a time, proven equivalent by
+# rendered diff before the sed path retires. No dependency is declared because
+# nothing here composes another chart; it is a 1:1 rendering of what the
+# pipeline already applies.
+apiVersion: v2
+name: qip
+description: >-
+  The platform's Kubernetes workloads, network policy and secret plumbing —
+  a template-for-template conversion of infrastructure/kubernetes/base/,
+  introduced beside it per ADR 0017 rather than in place of it.
+type: application
+version: 0.1.0

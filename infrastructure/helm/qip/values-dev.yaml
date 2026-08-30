@@ -1,0 +1,12 @@
+# dev's standing values. images.* (and, when a cell is rendered,
+# cell.imageDigest) are deliberately absent: each is a per-binary digest
+# Kargo promotes, not an environment default, so it is supplied per release
+# (`--set images.api=sha256:… --set images.fastbrain=sha256:… --set
+# images.deepbrain=sha256:…`, or a promotion writing them back to this file's
+# sibling in the values the release actually uses) rather than pinned here
+# where a pin would go stale the moment it was committed — and would still be
+# a tag's problem restated, since a digest pinned once is a digest that never
+# tracks what CI actually attested for the next commit.
+environment: dev
+project: algorik-dev
+imagePrefix: us-east4-docker.pkg.dev/algorik-dev/qip-dev
