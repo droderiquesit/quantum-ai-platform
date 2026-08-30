@@ -209,11 +209,16 @@ jobs:
           sudo apt-get install -y -qq trivy
       - name: scan
         run: |
+          # check-secrets.sh is skipped for the same reason it excludes
+          # itself from its own scan: it contains the detection patterns,
+          # and a scanner that flags another scanner's regex as a leaked
+          # key produces exactly one thing — a red build nobody believes.
           trivy fs \
             --severity CRITICAL,HIGH \
             --exit-code 1 \
             --ignore-unfixed \
             --skip-dirs vendor,docs/architecture/capital-ai-v4 \
+            --skip-files scripts/check-secrets.sh \
             .
 
   # The meta-linter: actionlint on the workflows, shellcheck on the gate
