@@ -9,5 +9,9 @@
   "exports": {
     ".": "./src/index.tsx"
   },
-  "sideEffects": false
+  "sideEffects": false,
+  "peerDependencies": {
+    "react": ">=19",
+    "react-dom": ">=19"
+  }
 }

@@ -24,32 +24,32 @@
 /* ALGORIK-TOKENS:BEGIN — generated from @algorik/design-tokens. Do not edit by hand. */
 :root {
   color-scheme: dark;
-  --color-canvas: #07060e;
-  --color-surface: #100f1d;
-  --color-surface-elevated: #171629;
-  --color-surface-sunken: #0b0a15;
-  --color-border: #201f36;
-  --color-border-strong: #322f52;
-  --color-text-primary: #e7e6f4;
-  --color-text-muted: #9a98b6;
-  --color-text-faint: #636383;
-  --color-text-on-brand: #0b0a15;
-  --color-brand-primary: #8f7bff;
-  --color-brand-primary-muted: #282057;
-  --color-brand-secondary: #35c8e8;
-  --color-accent: #35c8e8;
+  --color-canvas: #040a1c;
+  --color-surface: #071b4d;
+  --color-surface-elevated: #0c2560;
+  --color-surface-sunken: #030714;
+  --color-border: #12306e;
+  --color-border-strong: #1e4595;
+  --color-text-primary: #e8eefc;
+  --color-text-muted: #93a6cf;
+  --color-text-faint: #5f74a3;
+  --color-text-on-brand: #ffffff;
+  --color-brand-primary: #2f7dfb;
+  --color-brand-primary-muted: #0d2a63;
+  --color-brand-secondary: #00c3fd;
+  --color-accent: #6d5cf6;
   --color-success: #2ecc8f;
   --color-warning: #e3a72f;
   --color-critical: #ff5d6e;
-  --color-information: #8f7bff;
+  --color-information: #2f7dfb;
   --color-gain: #2ecc8f;
   --color-loss: #ff5d6e;
-  --color-simulation: #4c9aff;
-  --color-paper: #b39bff;
+  --color-simulation: #00c3fd;
+  --color-paper: #6d5cf6;
   --color-stage: #e3a72f;
   --color-live: #ff3b30;
-  --color-focus: #8f7bff;
-  --color-disabled: #4a4a63;
+  --color-focus: #2f7dfb;
+  --color-disabled: #3d4d75;
 
   /* aliases — see ALIASES in scripts/generate-theme-css.mjs */
   --color-void: var(--color-canvas);
@@ -77,32 +77,32 @@
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --color-canvas: #f1f1f7;
+  --color-canvas: #f4f7fd;
   --color-surface: #ffffff;
-  --color-surface-elevated: #f6f6fb;
-  --color-surface-sunken: #e9e9f1;
-  --color-border: #dedeea;
-  --color-border-strong: #c3c3d9;
-  --color-text-primary: #1b1a2e;
-  --color-text-muted: #4e4f6e;
-  --color-text-faint: #7f809b;
+  --color-surface-elevated: #f8fafe;
+  --color-surface-sunken: #e9eef8;
+  --color-border: #d8e1f2;
+  --color-border-strong: #b4c4e0;
+  --color-text-primary: #071b4d;
+  --color-text-muted: #41547d;
+  --color-text-faint: #6f80a4;
   --color-text-on-brand: #ffffff;
-  --color-brand-primary: #5d48d6;
-  --color-brand-primary-muted: #e7e2fb;
-  --color-brand-secondary: #0d7f9e;
-  --color-accent: #0d7f9e;
+  --color-brand-primary: #1550c8;
+  --color-brand-primary-muted: #e2ecfd;
+  --color-brand-secondary: #0b6f93;
+  --color-accent: #4634c0;
   --color-success: #0c8f62;
   --color-warning: #9a6f0a;
   --color-critical: #d8394f;
-  --color-information: #5d48d6;
+  --color-information: #1550c8;
   --color-gain: #0c8f62;
   --color-loss: #d8394f;
-  --color-simulation: #1f6fd6;
-  --color-paper: #6d48e0;
+  --color-simulation: #0b6f93;
+  --color-paper: #4634c0;
   --color-stage: #9a6f0a;
   --color-live: #cd2018;
-  --color-focus: #5d48d6;
-  --color-disabled: #9a9ab0;
+  --color-focus: #1550c8;
+  --color-disabled: #94a2bd;
 }
 /* ALGORIK-TOKENS:END */
 

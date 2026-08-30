@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
+import { AlgorikWordmark } from "@algorik/brand";
 import { Chip } from "@/components/data/Bits";
 import { formatClock, formatCount, formatUtcDate } from "@/lib/format";
 import { useConnections } from "@/lib/hooks/connections";
@@ -56,20 +57,10 @@ function Header() {
   return (
     <header className="flex h-[44px] shrink-0 items-center gap-2 border-b border-[color:var(--color-line)] bg-[color:var(--color-surface)] px-2 sm:gap-3 sm:px-3">
       <div className="flex shrink-0 items-center gap-2">
-        {/* The orbit mark, inline so it inherits the theme's ink. */}
-        <svg width="18" height="18" viewBox="0 0 32 32" aria-hidden="true" className="shrink-0">
-          <ellipse cx="16" cy="16" rx="13" ry="6" fill="none" stroke="var(--color-accent)" strokeWidth="2" transform="rotate(-28 16 16)" />
-          <ellipse cx="16" cy="16" rx="13" ry="6" fill="none" stroke="var(--color-quantum)" strokeWidth="2" transform="rotate(28 16 16)" opacity="0.85" />
-          <circle cx="16" cy="16" r="3" fill="var(--color-ink)" />
-        </svg>
-        <span className="flex items-baseline gap-2">
-          <span className="num text-[13px] font-semibold tracking-[0.14em] text-[color:var(--color-ink)]">
-            PEOS
-          </span>
-          <span className="num hidden text-[10px] tracking-[0.16em] text-[color:var(--color-ink-faint)] sm:inline">
-            QUANTUM AI
-          </span>
-        </span>
+        {/* The shipped Algorik lockup. On a phone the qualifier is dropped
+            before the logo is, because the logo is the thing that tells a
+            user which product they are looking at. */}
+        <AlgorikWordmark size={17} onDark qualifier="Portal" />
       </div>
       <span
         className="hidden h-[18px] w-px bg-[color:var(--color-line-strong)] sm:block"

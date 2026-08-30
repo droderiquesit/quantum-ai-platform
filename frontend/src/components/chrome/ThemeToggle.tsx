@@ -17,7 +17,7 @@ import { useCallback, useSyncExternalStore } from "react";
  * storage can be denied, in which case the choice holds for the session and
  * is simply not remembered.
  */
-const KEY = "peos.theme";
+const KEY = "algorik.theme";
 
 function subscribe(onChange: () => void): () => void {
   const observer = new MutationObserver(onChange);

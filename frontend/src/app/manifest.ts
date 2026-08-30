@@ -15,33 +15,33 @@ import type { MetadataRoute } from "next";
  */
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "PEOS Quantum AI — paper trading",
-    short_name: "PEOS Paper",
+    name: "Algorik — paper trading",
+    short_name: "Algorik",
     // Read on the install sheet, where it may be the only sentence a person
     // sees before adding this to a home screen. It says the boundary first.
     description:
-      "Paper-trading operator console for the PEOS Quantum AI platform. Simulated execution only: no control in this application can submit a live order.",
+      "Algorik customer portal — paper trading. Simulated execution only: no control in this application can submit a live order.",
     id: "/?surface=installed",
     start_url: "/?surface=installed",
     scope: "/",
     display: "standalone",
     orientation: "portrait-primary",
-    background_color: "#07060e",
-    theme_color: "#07060e",
+    background_color: "#ffffff",
+    theme_color: "#071b4d",
     categories: ["finance", "productivity"],
     dir: "ltr",
     lang: "en",
     icons: [
-      { src: "/icons/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
-      { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+      { src: "/brand/android-chrome-192x192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+      { src: "/brand/android-chrome-512x512.png", sizes: "512x512", type: "image/png", purpose: "any" },
       {
-        src: "/icons/maskable-192.png",
+        src: "/brand/maskable-192.png",
         sizes: "192x192",
         type: "image/png",
         purpose: "maskable",
       },
       {
-        src: "/icons/maskable-512.png",
+        src: "/brand/maskable-512.png",
         sizes: "512x512",
         type: "image/png",
         purpose: "maskable",

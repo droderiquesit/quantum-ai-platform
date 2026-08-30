@@ -1,21 +1,51 @@
 /**
- * The Algorik brand: one mark, one wordmark, one set of rules.
+ * The Algorik brand: the shipped mark, the wordmark, and the rules.
  *
- * Original work, drawn in this repository. Nothing here derives from a
- * purchased template or a third-party product's assets — `grep -rni algorik`
- * over the tree returned nothing when this programme began, so there was no
- * supplied brand to integrate and none has been borrowed since.
+ * The assets are the real ones, supplied with the licensed brand package and
+ * kept in `packages/brand/assets/`: the horizontal logo, the icon set, the
+ * favicon, the Apple touch icon and the Android Chrome icons. Nothing here is
+ * drawn from imagination — an earlier revision of this file carried an
+ * invented "aperture" mark, written when the repository contained no Algorik
+ * assets at all, and it is gone.
  *
- * The mark is an **aperture**: four arcs opening around a centre point. It
- * reads as a lens (the platform observes), as an iris (it opens by degrees —
- * simulation, paper, stage), and at 16px as a solid ring, which is the only
- * size test that matters for a favicon.
+ * The mark is an "A" inside two crossed orbital rings whose gradient runs
+ * cyan through blue to violet over navy. Those are the colours
+ * `@algorik/design-tokens` is derived from, which is why a surface that uses
+ * the tokens already matches the logo without anyone matching them by eye.
  *
- * Everything is `currentColor` or a token. The mark inherits the surface it
- * sits on, so it needs no light and dark variants and cannot go stale against
- * a theme change.
+ * Components here render the raster assets rather than re-drawing them as SVG.
+ * A hand-traced copy of a supplied logo is a second logo that drifts from the
+ * first, and the brand guide names these files as the approved artwork.
  */
 import type { CSSProperties } from "react";
+
+/** Where the approved artwork lives, relative to a surface's public root. */
+export const brandAssets = {
+  /** Full horizontal lockup for headers and heroes, dark ink on transparent. */
+  logo: "/brand/algorik-logo-transparent-1024w.png",
+  /** The same lockup in white, for navy and photographic backgrounds. */
+  logoWhite: "/brand/algorik-logo-white-1024w.png",
+  /** Icon only, for tight spaces and app surfaces. */
+  icon: "/brand/algorik-icon-master-transparent.png",
+  favicon: "/brand/favicon.ico",
+  appleTouchIcon: "/brand/apple-touch-icon.png",
+  androidChrome192: "/brand/android-chrome-192x192.png",
+  androidChrome512: "/brand/android-chrome-512x512.png",
+} as const;
+
+/**
+ * Brand colours, as sampled from the shipped icon.
+ *
+ * Stated here so a surface that needs the literal brand hue — an OG image, an
+ * email template, a `theme-color` meta tag — takes it from the same place the
+ * design tokens were derived from, rather than from a screenshot.
+ */
+export const brandColors = {
+  navy: "#071b4d",
+  cyan: "#00c3fd",
+  blue: "#005df8",
+  violet: "#3700db",
+} as const;
 
 export interface MarkProps {
   readonly size?: number;
@@ -26,116 +56,80 @@ export interface MarkProps {
 }
 
 /**
- * The aperture mark.
+ * The icon-only mark.
  *
- * Four arcs at 90° with a deliberate gap: a closed ring is a hundred other
- * logos, and the gaps are what make it recognisable at a glance in a browser
- * tab. Arc weight is a fixed proportion of the box so it thins correctly when
- * scaled rather than turning into a blob at 16px.
+ * `title` decides the accessibility role: given one it is an image with a
+ * name, without one it is hidden. A logo that announces itself on every page
+ * of a dense console is noise to a screen-reader user, and one that is silent
+ * where it stands alone as a home link is a missing label.
  */
 export function AlgorikMark({ size = 24, title, className, style }: MarkProps) {
-  const stroke = size * 0.11;
-  const radius = size * 0.34;
-  const centre = size / 2;
-  // 62° of arc per quadrant leaves 28° of gap — enough to read as separated
-  // at 16px without the ring falling apart into four unrelated ticks.
-  const sweep = 62;
-
-  const arc = (startDegrees: number) => {
-    const toPoint = (degrees: number) => {
-      const radians = (degrees * Math.PI) / 180;
-      return `${(centre + radius * Math.cos(radians)).toFixed(2)},${(
-        centre + radius * Math.sin(radians)
-      ).toFixed(2)}`;
-    };
-    return `M${toPoint(startDegrees)}A${radius},${radius} 0 0 1 ${toPoint(startDegrees + sweep)}`;
-  };
-
   return (
-    <svg
+    <img
+      src={brandAssets.icon}
       width={size}
       height={size}
-      viewBox={`0 0 ${size} ${size}`}
-      className={className}
-      style={style}
-      role={title ? "img" : undefined}
-      aria-label={title}
+      alt={title ?? ""}
       aria-hidden={title ? undefined : true}
-      focusable="false"
-    >
-      {[0, 90, 180, 270].map((start, index) => (
-        <path
-          key={start}
-          d={arc(start + 14)}
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={stroke}
-          strokeLinecap="round"
-          // The two trailing arcs sit back so the mark reads as an opening
-          // aperture rather than a static ring.
-          opacity={index % 2 === 0 ? 1 : 0.55}
-        />
-      ))}
-      <circle cx={centre} cy={centre} r={size * 0.085} fill="currentColor" />
-    </svg>
+      className={className}
+      style={{ display: "block", objectFit: "contain", ...style }}
+      draggable={false}
+    />
   );
 }
 
 export interface WordmarkProps extends MarkProps {
   /** Product qualifier, e.g. "Portal" or "Admin". Rendered lighter. */
   readonly qualifier?: string;
-  /** Hide the mark where one already appears nearby. */
-  readonly markless?: boolean;
+  /** Use the white lockup, for navy or photographic grounds. */
+  readonly onDark?: boolean;
 }
 
 /**
- * The lockup: mark, name, and an optional surface qualifier.
+ * The full lockup: the supplied horizontal logo, plus an optional qualifier.
  *
  * The qualifier is how a reader knows which Algorik surface they are on
- * without the surfaces having to look different from each other. It is the
- * quiet half of the lockup on purpose — "Algorik" is the constant.
+ * without the surfaces needing to look different from one another. It is the
+ * quiet half of the lockup on purpose — "Algorik" is the constant, and the
+ * logo artwork itself is never altered to accommodate it.
  */
 export function AlgorikWordmark({
   size = 24,
   qualifier,
-  markless = false,
-  title,
+  onDark = false,
+  title = "Algorik",
   className,
   style,
 }: WordmarkProps) {
   return (
     <span
       className={className}
-      style={{ display: "inline-flex", alignItems: "center", gap: size * 0.34, ...style }}
+      style={{ display: "inline-flex", alignItems: "center", gap: size * 0.42, ...style }}
     >
-      {markless ? null : <AlgorikMark size={size} title={title} />}
-      <span style={{ display: "inline-flex", alignItems: "baseline", gap: size * 0.3 }}>
+      <img
+        src={onDark ? brandAssets.logoWhite : brandAssets.logo}
+        alt={title}
+        height={size}
+        // The supplied lockup is close to 5:2. Width follows from height so the
+        // artwork is never stretched to fit a box.
+        width={Math.round(size * 2.5)}
+        style={{ display: "block", height: size, width: "auto" }}
+        draggable={false}
+      />
+      {qualifier ? (
         <span
           style={{
-            fontSize: size * 0.66,
-            fontWeight: 600,
-            letterSpacing: "0.02em",
-            color: "var(--color-text-primary)",
+            fontSize: size * 0.44,
+            fontWeight: 500,
+            letterSpacing: "0.13em",
+            textTransform: "uppercase",
+            color: "var(--color-text-faint)",
             lineHeight: 1,
           }}
         >
-          Algorik
+          {qualifier}
         </span>
-        {qualifier ? (
-          <span
-            style={{
-              fontSize: size * 0.42,
-              fontWeight: 500,
-              letterSpacing: "0.13em",
-              textTransform: "uppercase",
-              color: "var(--color-text-faint)",
-              lineHeight: 1,
-            }}
-          >
-            {qualifier}
-          </span>
-        ) : null}
-      </span>
+      ) : null}
     </span>
   );
 }

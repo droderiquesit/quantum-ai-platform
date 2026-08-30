@@ -100,12 +100,23 @@ mobile application or licensed template in the tree. The existing frontend is a
 single Next.js console, currently branded PEOS Quantum AI, with 11 permitted
 packages and 22 passing Playwright tests.
 
-Resolution: Algorik is therefore a **rebrand plus new surfaces**, not an
-integration of supplied assets. The brand package is authored in-tree as
-original work. No asset is scraped from any preview or third-party product.
-The brief's "reuse existing resources" instruction is satisfied against what
-actually exists — the console's component system, chart primitives, API client,
-state components, hooks and tests — inventoried in §5.
+**Superseded by commit `c12b98f`.** The licensed package arrived while this
+programme was in its second slice: the SignalAIX admin template
+(`frontend/admin/`), a landing template (`frontend/landing/`), the Cryptrix
+mobile PWA (`frontend/mobile/`), and the real Algorik brand assets
+(`frontend/logos/`) — horizontal logo, icon set, favicon, Apple touch icon,
+Android Chrome icons and a `site.webmanifest` declaring `#071B4D`.
+
+The resolution above is therefore **withdrawn**. The brand is not authored
+in-tree: `packages/brand` now serves the supplied artwork, and
+`packages/design-tokens` derives its colours from the shipped icon — navy
+`#071B4D`, cyan `#00c3fd`, blue `#005df8`, violet `#3700db`, sampled rather
+than chosen. The invented "aperture" mark written under the old assumption has
+been deleted.
+
+The rest of §5's inventory stands: the console's component system, chart
+primitives, API client, state components, hooks and tests are reused as
+recorded, and were preserved through the merge that brought the templates in.
 
 ### C4 — Monorepo move vs. preserving working, tested code
 

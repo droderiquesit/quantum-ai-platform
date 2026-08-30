@@ -24,7 +24,7 @@ interface InstallPromptEvent extends Event {
   readonly userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
 }
 
-const DISMISSED = "qip.install.dismissed";
+const DISMISSED = "algorik.install.dismissed";
 
 /** Nothing to subscribe to: these facts do not change within a page view. */
 function inert(): () => void {
@@ -143,7 +143,7 @@ export function InstallApp() {
     >
       <div className="flex min-w-0 flex-col gap-0.5">
         <span className="text-[12.5px] font-medium text-[color:var(--color-ink)]">
-          Install PEOS Quantum AI on this device
+          Install Algorik on this device
         </span>
         <span className="text-[11px] leading-relaxed text-[color:var(--color-ink-dim)]">
           {ios

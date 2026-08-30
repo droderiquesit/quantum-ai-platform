@@ -12,6 +12,14 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Vendored licensed template packages. They are third-party source kept
+    // as the visual reference and their own build output — linting them
+    // reports thousands of findings nobody can act on without editing a
+    // licensed artefact, which would drown the findings that matter.
+    "admin/**",
+    "landing/**",
+    "mobile/**",
+    "logos/**",
   ]),
 ]);
 

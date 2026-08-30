@@ -21,6 +21,15 @@
  * Consumed two ways: as CSS custom properties emitted by `cssVariables()`, and
  * as plain values by any platform that has no CSS — which is why this file
  * imports nothing and knows nothing about the DOM.
+ *
+ * **Where these values come from.** The brand colours are sampled from the
+ * shipped Algorik logo (`packages/brand/assets/algorik-icon-512x512.png`),
+ * not chosen here: navy `#071B4D` is the surface the mark is drawn on and the
+ * `theme_color` its own `site.webmanifest` declares, and the ring gradient
+ * runs cyan `#00c3fd` through blue `#005df8` to violet `#3700db`. The tokens
+ * below are those hues adjusted only for contrast against each theme's
+ * canvas — a token that cannot be traced back to the mark is one that will
+ * drift away from it.
  */
 
 /** A theme's complete semantic colour set. Both themes define every key. */
@@ -71,38 +80,38 @@ export interface ColorScale {
  * dim so screens are legible, and the brand was drawn for it.
  */
 export const dark: ColorScale = {
-  canvas: "#07060e",
-  surface: "#100f1d",
-  surfaceElevated: "#171629",
-  surfaceSunken: "#0b0a15",
-  border: "#201f36",
-  borderStrong: "#322f52",
+  canvas: "#040a1c",
+  surface: "#071b4d",
+  surfaceElevated: "#0c2560",
+  surfaceSunken: "#030714",
+  border: "#12306e",
+  borderStrong: "#1e4595",
 
-  textPrimary: "#e7e6f4",
-  textMuted: "#9a98b6",
-  textFaint: "#636383",
-  textOnBrand: "#0b0a15",
+  textPrimary: "#e8eefc",
+  textMuted: "#93a6cf",
+  textFaint: "#5f74a3",
+  textOnBrand: "#ffffff",
 
-  brandPrimary: "#8f7bff",
-  brandPrimaryMuted: "#282057",
-  brandSecondary: "#35c8e8",
-  accent: "#35c8e8",
+  brandPrimary: "#2f7dfb",
+  brandPrimaryMuted: "#0d2a63",
+  brandSecondary: "#00c3fd",
+  accent: "#6d5cf6",
 
   success: "#2ecc8f",
   warning: "#e3a72f",
   critical: "#ff5d6e",
-  information: "#8f7bff",
+  information: "#2f7dfb",
 
   gain: "#2ecc8f",
   loss: "#ff5d6e",
 
-  simulation: "#4c9aff",
-  paper: "#b39bff",
+  simulation: "#00c3fd",
+  paper: "#6d5cf6",
   stage: "#e3a72f",
   live: "#ff3b30",
 
-  focus: "#8f7bff",
-  disabled: "#4a4a63",
+  focus: "#2f7dfb",
+  disabled: "#3d4d75",
 };
 
 /**
@@ -111,38 +120,38 @@ export const dark: ColorScale = {
  * is why the brand darkens here rather than staying put.
  */
 export const light: ColorScale = {
-  canvas: "#f1f1f7",
+  canvas: "#f4f7fd",
   surface: "#ffffff",
-  surfaceElevated: "#f6f6fb",
-  surfaceSunken: "#e9e9f1",
-  border: "#dedeea",
-  borderStrong: "#c3c3d9",
+  surfaceElevated: "#f8fafe",
+  surfaceSunken: "#e9eef8",
+  border: "#d8e1f2",
+  borderStrong: "#b4c4e0",
 
-  textPrimary: "#1b1a2e",
-  textMuted: "#4e4f6e",
-  textFaint: "#7f809b",
+  textPrimary: "#071b4d",
+  textMuted: "#41547d",
+  textFaint: "#6f80a4",
   textOnBrand: "#ffffff",
 
-  brandPrimary: "#5d48d6",
-  brandPrimaryMuted: "#e7e2fb",
-  brandSecondary: "#0d7f9e",
-  accent: "#0d7f9e",
+  brandPrimary: "#1550c8",
+  brandPrimaryMuted: "#e2ecfd",
+  brandSecondary: "#0b6f93",
+  accent: "#4634c0",
 
   success: "#0c8f62",
   warning: "#9a6f0a",
   critical: "#d8394f",
-  information: "#5d48d6",
+  information: "#1550c8",
 
   gain: "#0c8f62",
   loss: "#d8394f",
 
-  simulation: "#1f6fd6",
-  paper: "#6d48e0",
+  simulation: "#0b6f93",
+  paper: "#4634c0",
   stage: "#9a6f0a",
   live: "#cd2018",
 
-  focus: "#5d48d6",
-  disabled: "#9a9ab0",
+  focus: "#1550c8",
+  disabled: "#94a2bd",
 };
 
 /**

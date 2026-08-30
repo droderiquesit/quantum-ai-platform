@@ -4,21 +4,21 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: {
-    default: "PEOS Quantum AI — paper trading",
-    template: "%s · PEOS Quantum AI (paper)",
+    default: "Algorik — paper trading",
+    template: "%s · Algorik (paper)",
   },
   description:
-    "Operator console for the PEOS Quantum AI platform. Paper trading only: no control here can send a live order.",
+    "Algorik customer portal. Paper trading only: no control here can send a live order.",
   robots: { index: false, follow: false },
-  applicationName: "PEOS Quantum AI",
+  applicationName: "Algorik",
   manifest: "/manifest.webmanifest",
   icons: {
     icon: [
-      { url: "/icon.svg", type: "image/svg+xml" },
-      { url: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
-      { url: "/icons/icon-512.png", sizes: "512x512", type: "image/png" },
+      { url: "/brand/favicon.ico", sizes: "any" },
+      { url: "/brand/android-chrome-192x192.png", sizes: "192x192", type: "image/png" },
+      { url: "/brand/android-chrome-512x512.png", sizes: "512x512", type: "image/png" },
     ],
-    apple: [{ url: "/icons/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
+    apple: [{ url: "/brand/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
   },
   /**
    * iOS installs from Safari's share sheet and reads these rather than the
@@ -27,14 +27,14 @@ export const metadata: Metadata = {
    */
   appleWebApp: {
     capable: true,
-    title: "PEOS Quantum AI",
+    title: "Algorik",
     statusBarStyle: "black",
   },
   formatDetection: { telephone: false, date: false, address: false, email: false },
 };
 
 export const viewport: Viewport = {
-  themeColor: "#07060e",
+  themeColor: "#071b4d",
   width: "device-width",
   initialScale: 1,
   // The installed app runs edge to edge; fixed controls position themselves
@@ -50,7 +50,7 @@ export const viewport: Viewport = {
  * Dark is the default and stores no attribute, so a browser with storage
  * denied simply gets the default.
  */
-const THEME_BOOT = `try{if(localStorage.getItem("peos.theme")==="light")document.documentElement.dataset.theme="light"}catch(e){}`;
+const THEME_BOOT = `try{if(localStorage.getItem("algorik.theme")==="light")document.documentElement.dataset.theme="light"}catch(e){}`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
