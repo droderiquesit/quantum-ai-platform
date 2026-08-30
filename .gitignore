@@ -27,3 +27,6 @@ override.tf
 .vscode/
 *.swp
 node_modules/
+
+# Worker gateway spend ledger — local, never committed.
+.worker-spend.jsonl
