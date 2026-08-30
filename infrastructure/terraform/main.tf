@@ -638,3 +638,15 @@ module "scc" {
 
   depends_on = [module.services]
 }
+
+module "identity" {
+  source = "./modules/identity"
+
+  # Customer identity, per environment. Off everywhere until an environment's
+  # tfvars opts in — a plan for an environment that has not decided to run
+  # customer sign-in must not create a customer directory as a side effect.
+  enabled            = var.enable_identity_platform
+  project_id         = var.project_id
+  authorized_domains = var.identity_authorized_domains
+  mfa_state          = var.identity_mfa_state
+}

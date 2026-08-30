@@ -712,3 +712,21 @@ variable "workload_metrics_exist" {
   type        = bool
   default     = false
 }
+
+variable "enable_identity_platform" {
+  description = "Run Google Cloud Identity Platform for customer sign-in in this environment. Customer identity only — the admin surface uses IAP and workforce identity, a separate trust model on purpose."
+  type        = bool
+  default     = false
+}
+
+variable "identity_authorized_domains" {
+  description = "Domains customer authentication may redirect back to. Populated with real deployment outputs (Cloud Run hostnames) and, at migration, the algorik.ai domains. Never a wildcard."
+  type        = list(string)
+  default     = ["localhost"]
+}
+
+variable "identity_mfa_state" {
+  description = "Customer MFA posture: OFF, ENABLED (optional), or MANDATORY. MANDATORY locks out every unenrolled account when it applies."
+  type        = string
+  default     = "ENABLED"
+}

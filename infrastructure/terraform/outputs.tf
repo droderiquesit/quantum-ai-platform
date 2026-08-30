@@ -253,3 +253,8 @@ output "infra_service_account" {
   EOT
   value       = module.cicd.infra_service_account
 }
+
+output "identity_frontend_environment" {
+  description = "Environment keys the Algorik applications read for customer identity. Empty until an environment enables identity. The browser API key is deliberately not an output — it is delivered through configuration, never round-tripped through Terraform output into logs."
+  value       = module.identity.frontend_environment
+}

@@ -30,3 +30,7 @@ node_modules/
 
 # Worker gateway spend ledger — local, never committed.
 .worker-spend.jsonl
+
+# Development identity stores — local users and sessions, never committed.
+.algorik-dev/
+.algorik-test-identity/
