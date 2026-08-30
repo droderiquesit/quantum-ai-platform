@@ -11,9 +11,9 @@ export default function Funfact() {
                             <div className="funfact-block-one">
                                 <div className="inner-box">
                                     <div className="count-outer">
-                                        <CounterUp end={150} />+<span className="text">Countries</span>
+                                        <CounterUp end={8} /><span className="text">Loop stages</span>
                                     </div>
-                                    <p>Trade policies and agreements shape the trading landscape of countries</p>
+                                    <p>Sense to learn — every cycle traverses all eight, and reports what each stage produced and refused.</p>
                                 </div>
                             </div>
                         </div>
@@ -21,9 +21,9 @@ export default function Funfact() {
                             <div className="funfact-block-one">
                                 <div className="inner-box">
                                     <div className="count-outer">
-                                        <CounterUp end={40} />+<span className="text">Million Invest</span>
+                                        <CounterUp end={3} /><span className="text">Paper-trading safeguards</span>
                                     </div>
-                                    <p>Investing a million dollars in trading represents a significant opportunity and</p>
+                                    <p>Infrastructure, process start-up, and the type system each refuse a live order independently of the other two.</p>
                                 </div>
                             </div>
                         </div>
@@ -31,9 +31,9 @@ export default function Funfact() {
                             <div className="funfact-block-one">
                                 <div className="inner-box">
                                     <div className="count-outer">
-                                        <CounterUp end={90} />+<span className="text">Awards</span>
+                                        <CounterUp end={59} /><span className="text">Rust crates</span>
                                     </div>
-                                    <p>Trading awards recognize excellence and achievement within the financial</p>
+                                    <p>One workspace, two runtime dependencies, zero unsafe blocks — an audit surface a person can actually read.</p>
                                 </div>
                             </div>
                         </div>

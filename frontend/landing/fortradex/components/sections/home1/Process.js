@@ -17,24 +17,24 @@ export default function Process() {
                                     <div className="inner-box">
                                         <div className="shape" style={{ backgroundImage: "url(assets/images/shape/shape-3.png)" }}></div>
                                         <span className="count-text">1</span>
-                                        <h3>Sign up, It's Free!</h3>
-                                        <p>Our team will set up your account and help you build job to  easy-to-use web dashboard.</p>
+                                        <h3>Create your account</h3>
+                                        <p>Sign up and land in a simulated desk — the full platform with zero capital at risk.</p>
                                     </div>
                                 </div>
                                 <div className="process-block-one">
                                     <div className="inner-box">
                                         <div className="shape" style={{ backgroundImage: "url(assets/images/shape/shape-3.png)" }}></div>
                                         <span className="count-text">2</span>
-                                        <h3>Find best Deals and Invest</h3>
-                                        <p>Create and Trade anywhere from 1-100% openings with just a few clicks. customize your own.</p>
+                                        <h3>Watch the loop reason</h3>
+                                        <p>Opportunities, agent debate, risk refusals and paper executions stream to your dashboard as they happen.</p>
                                     </div>
                                 </div>
                                 <div className="process-block-one">
                                     <div className="inner-box">
                                         <div className="shape" style={{ backgroundImage: "url(assets/images/shape/shape-3.png)" }}></div>
                                         <span className="count-text">3</span>
-                                        <h3>Get you profit back</h3>
-                                        <p>View market, reviews, and rosters before forex arrive on the site, and post reviews and pay, effortlessly.</p>
+                                        <h3>Audit every decision</h3>
+                                        <p>Trace any outcome back through the hash-chained log to the evidence it stood on.</p>
                                     </div>
                                 </div>
                             </div>

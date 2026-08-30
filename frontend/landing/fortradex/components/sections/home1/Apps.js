@@ -1,5 +1,7 @@
 import Link from "next/link"
 
+const PORTAL = process.env.NEXT_PUBLIC_ALGORIK_PORTAL_URL ?? "http://127.0.0.1:3400"
+
 export default function Apps() {
   return (
     <>
@@ -11,16 +13,11 @@ export default function Apps() {
                     <div className="content_block_two">
                         <div className="content-box">
                             <div className="sec-title light pb_40">
-                                <span className="sub-title mb_14">Download App</span>
-                                <h2>Download Trading App</h2>
-                                <p>We use cookines to understand how you use our website and to give you the best possible experience.</p>
+                                <span className="sub-title mb_14">The app</span>
+                                <h2>Take Algorik with you</h2>
+                                <p>Install the portal on any phone straight from the browser — same design, same session, same paper-trading guarantees. Offline it shows nothing rather than a stale book.</p>
                             </div>
-                            <ul className="download-list clearfix">
-                                <li><Link href="/"><i className="fab fa-apple"></i></Link></li>
-                                <li><Link href="/"><img src="assets/images/icons/icon-2.png" alt=""/></Link></li>
-                                <li><Link href="/"><i className="fab fa-android"></i></Link></li>
-                                <li><Link href="/"><img src="assets/images/icons/icon-6.png" alt=""/></Link></li>
-                            </ul>
+                            <div className="btn-box"><a href={`${PORTAL}/sign-up`} className="theme-btn btn-one">Open the portal</a></div>
                         </div>
                     </div>
                 </div>

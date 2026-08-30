@@ -30,8 +30,8 @@ export default function About() {
                         <div className="content_block_one">
                             <div className="content-box mr_80">
                                 <div className="sec-title pb_30">
-                                    <span className="sub-title mb_14">Account</span>
-                                    <h2>Trading Accounts</h2>
+                                    <span className="sub-title mb_14">The platform</span>
+                                    <h2>What Algorik is</h2>
                                 </div>
                                 <ul className="accordion-box">
                                     <li className="accordion block active-block">
@@ -41,7 +41,7 @@ export default function About() {
                                         </div>
                                         <div className={isActive.key == 1 ? "acc-content current" : "acc-content"}>
                                             <div className="content">
-                                                <p>As a brokerage firm or trading platform. We are dedicated to providing innovative and user-friendly trading</p>
+                                                <p>A research desk’s decision loop: market sensing, an agent panel that argues before it acts, and execution against simulators only. Paper trading is the product, not a phase.</p>
                                             </div>
                                         </div>
                                     </li>
@@ -52,7 +52,7 @@ export default function About() {
                                         </div>
                                         <div className={isActive.key == 2 ? "acc-content current" : "acc-content"}>
                                             <div className="content">
-                                                <p>As a brokerage firm or trading platform. We are dedicated to providing innovative and user-friendly trading</p>
+                                                <p>Each cycle detects opportunities, sizes them under hard limits checked before an order exists, executes on paper, and scores its own reasoning afterwards.</p>
                                             </div>
                                         </div>
                                     </li>
@@ -63,7 +63,7 @@ export default function About() {
                                         </div>
                                         <div className={isActive.key == 3 ? "acc-content current" : "acc-content"}>
                                             <div className="content">
-                                                <p>As a brokerage firm or trading platform. We are dedicated to providing innovative and user-friendly trading</p>
+                                                <p>An eight-stage loop writes every step to a hash-chained event log. If a number is on a screen, the platform can show where it came from.</p>
                                             </div>
                                         </div>
                                     </li>

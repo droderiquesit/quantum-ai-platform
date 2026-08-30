@@ -11,17 +11,14 @@ export default function Subscribe() {
                     <div className="row align-items-center">
                         <div className="col-lg-6 col-md-12 col-sm-12 text-column">
                             <div className="text-box">
-                                <h2>Subscribe for latest update</h2>
+                                <h2>Questions? Talk to the desk.</h2>
                             </div>
                         </div>
                         <div className="col-lg-6 col-md-12 col-sm-12 form-column">
                             <div className="form-inner">
-                                <form method="post" action="/contact">
-                                    <div className="form-group">
-                                        <input type="email" name="email" placeholder="Email Address" required/>
-                                        <button type="submit" className="theme-btn btn-one">Subscribe<i className="icon-26"></i></button>
+                                <div className="form-group" style={{ textAlign: "right" }}>
+                                        <a href="/contact" className="theme-btn btn-one">Contact us<i className="icon-26"></i></a>
                                     </div>
-                                </form>
                             </div>
                         </div>
                     </div>
