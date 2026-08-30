@@ -1,7 +1,17 @@
+import { join } from "node:path";
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  /**
+   * Cloud Run serves the portal from the standalone output: a self-contained
+   * server.js plus only the node_modules the trace proves are reached. The
+   * tracing root is the frontend/ workspace root, not this app — without it
+   * the tracer treats hoisted workspace dependencies as outside the project
+   * and the container starts without them.
+   */
+  output: "standalone",
+  outputFileTracingRoot: join(__dirname, ".."),
   /**
    * The shared Algorik packages ship TypeScript source, not built output.
    * Building each would need a bundler per package, which is a dependency,

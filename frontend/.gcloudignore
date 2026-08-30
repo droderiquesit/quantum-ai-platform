@@ -1,0 +1,10 @@
+# Cloud Build uploads for the portal image: source only. Everything below is
+# rebuilt inside the container or is local test output; uploading it turns a
+# seconds-long submit into a gigabyte one.
+node_modules/
+**/node_modules/
+portal/.next/
+portal/test-results/
+portal/playwright-report/
+portal/tsconfig.tsbuildinfo
+landing/

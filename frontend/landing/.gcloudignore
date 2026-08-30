@@ -1,0 +1,5 @@
+# Cloud Build uploads for the landing image: source only.
+node_modules/
+.next/
+test-results/
+playwright-report/
