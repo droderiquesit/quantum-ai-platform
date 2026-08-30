@@ -22,14 +22,14 @@
  * as plain values by any platform that has no CSS — which is why this file
  * imports nothing and knows nothing about the DOM.
  *
- * **Where these values come from.** The brand colours are sampled from the
- * shipped Algorik logo (`packages/brand/assets/algorik-icon-512x512.png`),
- * not chosen here: navy `#071B4D` is the surface the mark is drawn on and the
- * `theme_color` its own `site.webmanifest` declares, and the ring gradient
- * runs cyan `#00c3fd` through blue `#005df8` to violet `#3700db`. The tokens
- * below are those hues adjusted only for contrast against each theme's
- * canvas — a token that cannot be traced back to the mark is one that will
- * drift away from it.
+ * **Where these values come from.** Per ADR 0015 the licensed SignalAIX
+ * template is the visual source of truth, so both themes carry its palette
+ * verbatim (`frontend/admin/source-code/src/css/common.css`): emerald accent,
+ * indigo secondary, slate light theme, near-black dark. The Algorik logo
+ * (navy/cyan/blue/violet) remains the brand *mark* and reads correctly on
+ * these surfaces; the interface colour system is the template's own, because
+ * "the same as what was purchased" is the requirement and a hand-matched
+ * approximation is the thing that drifts.
  */
 
 /** A theme's complete semantic colour set. Both themes define every key. */
@@ -80,38 +80,38 @@ export interface ColorScale {
  * dim so screens are legible, and the brand was drawn for it.
  */
 export const dark: ColorScale = {
-  canvas: "#040a1c",
-  surface: "#071b4d",
-  surfaceElevated: "#0c2560",
-  surfaceSunken: "#030714",
-  border: "#12306e",
-  borderStrong: "#1e4595",
+  canvas: "#050709",
+  surface: "#0a0d12",
+  surfaceElevated: "#10141c",
+  surfaceSunken: "#030507",
+  border: "#1a1f2e",
+  borderStrong: "#252c3f",
 
-  textPrimary: "#e8eefc",
-  textMuted: "#93a6cf",
-  textFaint: "#5f74a3",
-  textOnBrand: "#ffffff",
+  textPrimary: "#f1f5f9",
+  textMuted: "#94a3b8",
+  textFaint: "#64748b",
+  textOnBrand: "#052e22",
 
-  brandPrimary: "#2f7dfb",
-  brandPrimaryMuted: "#0d2a63",
-  brandSecondary: "#00c3fd",
-  accent: "#6d5cf6",
+  brandPrimary: "#10b981",
+  brandPrimaryMuted: "#0a2f25",
+  brandSecondary: "#6366f1",
+  accent: "#6366f1",
 
-  success: "#2ecc8f",
-  warning: "#e3a72f",
-  critical: "#ff5d6e",
-  information: "#2f7dfb",
+  success: "#10b981",
+  warning: "#f59e0b",
+  critical: "#ef4444",
+  information: "#0ea5e9",
 
-  gain: "#2ecc8f",
-  loss: "#ff5d6e",
+  gain: "#10b981",
+  loss: "#ef4444",
 
-  simulation: "#00c3fd",
-  paper: "#6d5cf6",
-  stage: "#e3a72f",
-  live: "#ff3b30",
+  simulation: "#0ea5e9",
+  paper: "#6366f1",
+  stage: "#f59e0b",
+  live: "#ef4444",
 
-  focus: "#2f7dfb",
-  disabled: "#3d4d75",
+  focus: "#10b981",
+  disabled: "#475569",
 };
 
 /**
@@ -120,38 +120,38 @@ export const dark: ColorScale = {
  * is why the brand darkens here rather than staying put.
  */
 export const light: ColorScale = {
-  canvas: "#f4f7fd",
+  canvas: "#f8fafc",
   surface: "#ffffff",
-  surfaceElevated: "#f8fafe",
-  surfaceSunken: "#e9eef8",
-  border: "#d8e1f2",
-  borderStrong: "#b4c4e0",
+  surfaceElevated: "#f1f5f9",
+  surfaceSunken: "#eef2f7",
+  border: "#e2e8f0",
+  borderStrong: "#cbd5e1",
 
-  textPrimary: "#071b4d",
-  textMuted: "#41547d",
-  textFaint: "#6f80a4",
+  textPrimary: "#0f172a",
+  textMuted: "#64748b",
+  textFaint: "#94a3b8",
   textOnBrand: "#ffffff",
 
-  brandPrimary: "#1550c8",
-  brandPrimaryMuted: "#e2ecfd",
-  brandSecondary: "#0b6f93",
-  accent: "#4634c0",
+  brandPrimary: "#059669",
+  brandPrimaryMuted: "#d1fae5",
+  brandSecondary: "#6366f1",
+  accent: "#6366f1",
 
-  success: "#0c8f62",
-  warning: "#9a6f0a",
-  critical: "#d8394f",
-  information: "#1550c8",
+  success: "#059669",
+  warning: "#d97706",
+  critical: "#dc2626",
+  information: "#0284c7",
 
-  gain: "#0c8f62",
-  loss: "#d8394f",
+  gain: "#059669",
+  loss: "#dc2626",
 
-  simulation: "#0b6f93",
-  paper: "#4634c0",
-  stage: "#9a6f0a",
-  live: "#cd2018",
+  simulation: "#0284c7",
+  paper: "#6366f1",
+  stage: "#d97706",
+  live: "#dc2626",
 
-  focus: "#1550c8",
-  disabled: "#94a2bd",
+  focus: "#059669",
+  disabled: "#94a3b8",
 };
 
 /**

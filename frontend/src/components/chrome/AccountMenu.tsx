@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Icon } from "./icons";
 
 /**
  * Who is signed in, and the way out.
@@ -80,36 +81,35 @@ export function AccountMenu() {
     <div className="relative" ref={container}>
       <button
         type="button"
-        className="btn"
-        data-variant="ghost"
+        className="flex size-11 items-center justify-center rounded-xl bg-panel border border-border hover:bg-border/50 transition-colors"
         data-testid="account-menu"
         aria-expanded={open}
         aria-haspopup="menu"
         onClick={() => setOpen((value) => !value)}
         title={user.email}
       >
-        <span className="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[color:var(--color-brand-primary-muted)] text-[10px] font-semibold text-[color:var(--color-brand-primary)]">
+        <span className="flex w-8 h-8 items-center justify-center rounded-full bg-gradient-to-br from-emerald-500 to-indigo-500 text-white text-sm font-bold">
           {label.slice(0, 1).toUpperCase()}
         </span>
-        <span className="num hidden max-w-[140px] truncate text-[10.5px] md:inline">{label}</span>
       </button>
       {open ? (
         <div
           role="menu"
-          className="absolute right-0 top-[30px] z-[80] min-w-[200px] border border-[color:var(--color-border-strong)] bg-[color:var(--color-surface)] shadow-lg"
+          className="absolute right-0 top-[52px] z-[80] w-64 mt-2 rounded-2xl bg-panel border border-border shadow-2xl overflow-hidden"
         >
-          <div className="border-b border-[color:var(--color-border)] px-3 py-2">
-            <p className="truncate text-[12px] text-[color:var(--color-text-primary)]">{label}</p>
-            <p className="num truncate text-[10px] text-[color:var(--color-text-faint)]">{user.email}</p>
+          <div className="p-4 border-b border-border">
+            <p className="truncate text-sm font-semibold text-text">{label}</p>
+            <p className="truncate text-xs text-muted">{user.email}</p>
           </div>
           <button
             type="button"
             role="menuitem"
-            className="block w-full px-3 py-2 text-left text-[12px] text-[color:var(--color-text-primary)] hover:bg-[color:var(--color-surface-elevated)]"
+            className="flex w-full items-center gap-2 px-4 py-3 text-left text-sm text-text hover:bg-border/40"
             data-testid="sign-out"
             onClick={() => void signOut()}
             disabled={busy}
           >
+            <Icon name="log-out" className="w-4 h-4" />
             {busy ? "Signing out…" : "Sign out"}
           </button>
         </div>

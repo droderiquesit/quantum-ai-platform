@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useSyncExternalStore } from "react";
+import { Icon } from "./icons";
 
 /**
  * The dark/light switch.
@@ -37,11 +38,9 @@ export function ThemeToggle() {
 
   const flip = useCallback(() => {
     const next = theme === "dark" ? "light" : "dark";
-    if (next === "light") {
-      document.documentElement.dataset.theme = "light";
-    } else {
-      delete document.documentElement.dataset.theme;
-    }
+    // Stamped explicitly in both directions: the template's dark: utilities
+    // match an ancestor attribute, so "dark by absence" would leave them off.
+    document.documentElement.dataset.theme = next;
     try {
       window.localStorage.setItem(KEY, next);
     } catch {
@@ -52,15 +51,14 @@ export function ThemeToggle() {
   return (
     <button
       type="button"
-      className="btn"
-      data-variant="ghost"
+      className="flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-border/50 transition-colors"
       data-testid="theme-toggle"
       onClick={flip}
       aria-pressed={theme === "light"}
       aria-label={theme === "dark" ? "Switch to the light theme" : "Switch to the dark theme"}
       title={theme === "dark" ? "Light theme" : "Dark theme"}
     >
-      {theme === "dark" ? "☀" : "☾"}
+      <Icon name={theme === "dark" ? "sun" : "moon"} />
     </button>
   );
 }

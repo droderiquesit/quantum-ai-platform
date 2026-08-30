@@ -49,7 +49,7 @@ export const viewport: Viewport = {
  * Dark is the default and stores no attribute, so a browser with storage
  * denied simply gets the default.
  */
-const THEME_BOOT = `try{if(localStorage.getItem("algorik.theme")==="light")document.documentElement.dataset.theme="light"}catch(e){}`;
+const THEME_BOOT = `try{document.documentElement.dataset.theme=localStorage.getItem("algorik.theme")==="light"?"light":"dark"}catch(e){document.documentElement.dataset.theme="dark"}`;
 
 /**
  * The root layout carries only what every surface shares: the document, the

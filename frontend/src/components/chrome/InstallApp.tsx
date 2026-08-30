@@ -137,7 +137,7 @@ export function InstallApp() {
 
   return (
     <aside
-      className="fixed inset-x-2 bottom-[64px] z-[70] flex items-start gap-3 border border-[color:var(--color-line-strong)] bg-[color:var(--color-surface)] px-3 py-2.5 shadow-lg md:bottom-2 lg:hidden"
+      className="fixed inset-x-2 bottom-3 z-[70] flex items-start gap-3 rounded-2xl border border-border bg-panel px-3 py-2.5 shadow-2xl lg:hidden"
       style={{ marginBottom: "env(safe-area-inset-bottom, 0px)" }}
       aria-label="Install this console"
     >

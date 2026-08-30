@@ -14,20 +14,21 @@
     "test:report": "playwright show-report"
   },
   "dependencies": {
+    "@algorik/analytics": "*",
+    "@algorik/api-client": "*",
+    "@algorik/auth": "*",
+    "@algorik/brand": "*",
+    "@algorik/charts": "*",
+    "@algorik/design-tokens": "*",
+    "@algorik/feature-flags": "*",
+    "@algorik/shared-types": "*",
+    "@algorik/testing": "*",
+    "@algorik/ui": "*",
+    "@algorik/validation": "*",
+    "chart.js": "^4.5.1",
     "next": "16.3.2",
     "react": "19.2.8",
-    "react-dom": "19.2.8",
-    "@algorik/brand": "*",
-    "@algorik/design-tokens": "*",
-    "@algorik/ui": "*",
-    "@algorik/charts": "*",
-    "@algorik/auth": "*",
-    "@algorik/api-client": "*",
-    "@algorik/shared-types": "*",
-    "@algorik/validation": "*",
-    "@algorik/analytics": "*",
-    "@algorik/feature-flags": "*",
-    "@algorik/testing": "*"
+    "react-dom": "19.2.8"
   },
   "devDependencies": {
     "@playwright/test": "1.56.1",

@@ -49,6 +49,17 @@ const lightScale = scale("light");
  * the ones that are ready to go.
  */
 const ALIASES = [
+  // SignalAIX's own token names (ADR 0015), so the licensed template's CSS
+  // and markup run against our generated variables unmodified.
+  ["bg", "canvas"],
+  ["panel", "surface"],
+  ["text", "text-primary"],
+  ["muted", "text-muted"],
+  ["accent-secondary", "brand-secondary"],
+  ["secondary", "brand-secondary"],
+  ["error", "critical"],
+  ["info", "information"],
+
   ["void", "canvas"],
   ["sunken", "surface-sunken"],
   ["raised", "surface-elevated"],
@@ -75,10 +86,28 @@ const ALIASES = [
 const aliasBlock = (indent) =>
   ALIASES.map(([from, to]) => `${indent}--color-${from}: var(--color-${to});`).join("\n");
 
+// Template tokens with no semantic sibling, per theme (glass blur ground and
+// the template's fixed category hues), emitted verbatim from its common.css.
+const TEMPLATE_LITERALS = {
+  dark: [
+    ["glass", "rgba(10, 13, 18, 0.9)"],
+    ["teal", "#14b8a6"], ["orange", "#f97316"], ["crypto", "#f7931a"],
+    ["defi", "#627eea"], ["ai", "#10b981"], ["cyber", "#00f5a0"], ["eth", "#627eea"],
+  ],
+  light: [
+    ["glass", "rgba(255, 255, 255, 0.85)"],
+    ["teal", "#0d9488"], ["orange", "#ea580c"], ["crypto", "#f7931a"],
+    ["defi", "#627eea"], ["ai", "#059669"], ["cyber", "#00c98a"], ["eth", "#627eea"],
+  ],
+};
+const literalBlock = (theme, indent) =>
+  TEMPLATE_LITERALS[theme].map(([name, value]) => `${indent}--color-${name}: ${value};`).join("\n");
+
 const generated = `${BEGIN}
 :root {
   color-scheme: dark;
 ${block(dark, "  ")}
+${literalBlock("dark", "  ")}
 
   /* aliases — see ALIASES in scripts/generate-theme-css.mjs */
 ${aliasBlock("  ")}
@@ -87,6 +116,7 @@ ${aliasBlock("  ")}
 :root[data-theme="light"] {
   color-scheme: light;
 ${block(lightScale, "  ")}
+${literalBlock("light", "  ")}
 }
 ${END}`;
 

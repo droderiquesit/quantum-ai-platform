@@ -14,23 +14,30 @@ const PHONE = devices["Pixel 7"].viewport;
 test.describe("the phone layout", () => {
   test.use({ viewport: PHONE });
 
-  test("a phone gets thumb-reachable tabs and the desk rail does not follow it", async ({
+  test("the hamburger opens the off-canvas navigation and the overlay closes it", async ({
     page,
   }) => {
     await servePlatform(page, healthy());
     await page.goto("/");
-    const bar = page.getByTestId("mobile-tab-bar");
-    await expect(bar, "no tab bar at phone width").toBeVisible();
-    // The premise: the desk rail exists in the tree, and is hidden here rather
-    // than absent — a nav that vanished from the accessibility tree at one
-    // breakpoint would be unreachable to a screen reader on that device.
-    await expect(page.getByRole("navigation", { name: "Sections" })).toBeHidden();
-    await expect(page.getByRole("navigation", { name: "Sections (compact)" })).toBeHidden();
+    // The premise: on a phone the sidebar starts off-canvas.
+    const overlay = page.getByTestId("sidebar-overlay");
+    await expect(page.getByTestId("mobile-menu")).toBeVisible();
+
+    await page.getByTestId("mobile-menu").click();
+    await expect(overlay).toBeVisible();
+    await expect(
+      page.getByTestId("sidebar").getByRole("link", { name: "Executive dashboard" }),
+    ).toBeVisible();
+
+    await overlay.click({ position: { x: 5, y: 5 } });
+    await expect(
+      page.getByTestId("sidebar").getByRole("link", { name: "Executive dashboard" }),
+    ).toBeHidden();
   });
 
   test("the kill switch stays reachable when the header has no room", async ({ page }) => {
-    // It has been pushed off the right edge before, by a wordmark and a feed
-    // ratio that had no business outranking it.
+    // It has been pushed off the right edge before, by chrome that had no
+    // business outranking it.
     await servePlatform(page, healthy());
     await page.goto("/");
     const control = page.getByTestId("kill-switch-open");
@@ -43,17 +50,11 @@ test.describe("the phone layout", () => {
     ).toBeLessThanOrEqual(PHONE?.width ?? 0);
   });
 
-  test("every section is reachable from the More sheet", async ({ page }) => {
+  test("every section is reachable from the off-canvas sidebar", async ({ page }) => {
     await servePlatform(page, healthy());
     await page.goto("/");
-    // The premise: the bar itself carries only a few, so the rest must be
-    // somewhere or they are unreachable on a phone.
-    const onBar = await page.getByTestId("mobile-tab-bar").getByRole("link").count();
-    expect(onBar, "the tab bar carries every section, so this proves nothing").toBeLessThan(8);
-
-    await page.getByRole("button", { name: "All sections" }).click();
-    const sheet = page.getByRole("dialog", { name: "All sections" });
-    await expect(sheet).toBeVisible();
+    await page.getByTestId("mobile-menu").click();
+    const sidebar = page.getByTestId("sidebar");
     for (const href of [
       "/",
       "/signals",
@@ -91,21 +92,24 @@ test.describe("the phone layout", () => {
       "/admin/access",
     ]) {
       await expect(
-        sheet.locator(`a[href="${href}"]`),
+        sidebar.locator(`a[href="${href}"]`),
         `${href} is not reachable from a phone`,
       ).toHaveCount(1);
     }
   });
 
-  test("choosing a section closes the sheet it was chosen from", async ({ page }) => {
+  test("choosing a section closes the off-canvas panel it was chosen from", async ({ page }) => {
     await servePlatform(page, healthy());
     await page.goto("/");
-    await page.getByRole("button", { name: "All sections" }).click();
-    const sheet = page.getByRole("dialog", { name: "All sections" });
-    await expect(sheet).toBeVisible();
-    await sheet.locator('a[href="/capital"]').click();
+    await page.getByTestId("mobile-menu").click();
+    const capitalLink = page.getByTestId("sidebar").locator('a[href="/capital"]');
+    await expect(capitalLink).toBeVisible();
+    await capitalLink.click();
     await expect(page).toHaveURL(/\/capital$/);
-    await expect(sheet, "the sheet stayed over the page it navigated to").toHaveCount(0);
+    await expect(
+      page.getByTestId("sidebar-overlay"),
+      "the panel stayed over the page it navigated to",
+    ).toBeHidden();
   });
 });
 

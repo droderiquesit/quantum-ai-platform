@@ -1,4 +1,13 @@
 @import "tailwindcss";
+@import "./signalaix.css";
+
+/*
+ * The template's `dark:` utilities, keyed to this app's theme attribute. The
+ * template used a `.dark` class; here dark is stamped as data-theme="dark" by
+ * the boot script so both the template's variants and our tokens follow one
+ * switch.
+ */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
 /*
  * The console's design tokens.
@@ -24,34 +33,50 @@
 /* ALGORIK-TOKENS:BEGIN — generated from @algorik/design-tokens. Do not edit by hand. */
 :root {
   color-scheme: dark;
-  --color-canvas: #040a1c;
-  --color-surface: #071b4d;
-  --color-surface-elevated: #0c2560;
-  --color-surface-sunken: #030714;
-  --color-border: #12306e;
-  --color-border-strong: #1e4595;
-  --color-text-primary: #e8eefc;
-  --color-text-muted: #93a6cf;
-  --color-text-faint: #5f74a3;
-  --color-text-on-brand: #ffffff;
-  --color-brand-primary: #2f7dfb;
-  --color-brand-primary-muted: #0d2a63;
-  --color-brand-secondary: #00c3fd;
-  --color-accent: #6d5cf6;
-  --color-success: #2ecc8f;
-  --color-warning: #e3a72f;
-  --color-critical: #ff5d6e;
-  --color-information: #2f7dfb;
-  --color-gain: #2ecc8f;
-  --color-loss: #ff5d6e;
-  --color-simulation: #00c3fd;
-  --color-paper: #6d5cf6;
-  --color-stage: #e3a72f;
-  --color-live: #ff3b30;
-  --color-focus: #2f7dfb;
-  --color-disabled: #3d4d75;
+  --color-canvas: #050709;
+  --color-surface: #0a0d12;
+  --color-surface-elevated: #10141c;
+  --color-surface-sunken: #030507;
+  --color-border: #1a1f2e;
+  --color-border-strong: #252c3f;
+  --color-text-primary: #f1f5f9;
+  --color-text-muted: #94a3b8;
+  --color-text-faint: #64748b;
+  --color-text-on-brand: #052e22;
+  --color-brand-primary: #10b981;
+  --color-brand-primary-muted: #0a2f25;
+  --color-brand-secondary: #6366f1;
+  --color-accent: #6366f1;
+  --color-success: #10b981;
+  --color-warning: #f59e0b;
+  --color-critical: #ef4444;
+  --color-information: #0ea5e9;
+  --color-gain: #10b981;
+  --color-loss: #ef4444;
+  --color-simulation: #0ea5e9;
+  --color-paper: #6366f1;
+  --color-stage: #f59e0b;
+  --color-live: #ef4444;
+  --color-focus: #10b981;
+  --color-disabled: #475569;
+  --color-glass: rgba(10, 13, 18, 0.9);
+  --color-teal: #14b8a6;
+  --color-orange: #f97316;
+  --color-crypto: #f7931a;
+  --color-defi: #627eea;
+  --color-ai: #10b981;
+  --color-cyber: #00f5a0;
+  --color-eth: #627eea;
 
   /* aliases — see ALIASES in scripts/generate-theme-css.mjs */
+  --color-bg: var(--color-canvas);
+  --color-panel: var(--color-surface);
+  --color-text: var(--color-text-primary);
+  --color-muted: var(--color-text-muted);
+  --color-accent-secondary: var(--color-brand-secondary);
+  --color-secondary: var(--color-brand-secondary);
+  --color-error: var(--color-critical);
+  --color-info: var(--color-information);
   --color-void: var(--color-canvas);
   --color-sunken: var(--color-surface-sunken);
   --color-raised: var(--color-surface-elevated);
@@ -77,32 +102,40 @@
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --color-canvas: #f4f7fd;
+  --color-canvas: #f8fafc;
   --color-surface: #ffffff;
-  --color-surface-elevated: #f8fafe;
-  --color-surface-sunken: #e9eef8;
-  --color-border: #d8e1f2;
-  --color-border-strong: #b4c4e0;
-  --color-text-primary: #071b4d;
-  --color-text-muted: #41547d;
-  --color-text-faint: #6f80a4;
+  --color-surface-elevated: #f1f5f9;
+  --color-surface-sunken: #eef2f7;
+  --color-border: #e2e8f0;
+  --color-border-strong: #cbd5e1;
+  --color-text-primary: #0f172a;
+  --color-text-muted: #64748b;
+  --color-text-faint: #94a3b8;
   --color-text-on-brand: #ffffff;
-  --color-brand-primary: #1550c8;
-  --color-brand-primary-muted: #e2ecfd;
-  --color-brand-secondary: #0b6f93;
-  --color-accent: #4634c0;
-  --color-success: #0c8f62;
-  --color-warning: #9a6f0a;
-  --color-critical: #d8394f;
-  --color-information: #1550c8;
-  --color-gain: #0c8f62;
-  --color-loss: #d8394f;
-  --color-simulation: #0b6f93;
-  --color-paper: #4634c0;
-  --color-stage: #9a6f0a;
-  --color-live: #cd2018;
-  --color-focus: #1550c8;
-  --color-disabled: #94a2bd;
+  --color-brand-primary: #059669;
+  --color-brand-primary-muted: #d1fae5;
+  --color-brand-secondary: #6366f1;
+  --color-accent: #6366f1;
+  --color-success: #059669;
+  --color-warning: #d97706;
+  --color-critical: #dc2626;
+  --color-information: #0284c7;
+  --color-gain: #059669;
+  --color-loss: #dc2626;
+  --color-simulation: #0284c7;
+  --color-paper: #6366f1;
+  --color-stage: #d97706;
+  --color-live: #dc2626;
+  --color-focus: #059669;
+  --color-disabled: #94a3b8;
+  --color-glass: rgba(255, 255, 255, 0.85);
+  --color-teal: #0d9488;
+  --color-orange: #ea580c;
+  --color-crypto: #f7931a;
+  --color-defi: #627eea;
+  --color-ai: #059669;
+  --color-cyber: #00c98a;
+  --color-eth: #627eea;
 }
 /* ALGORIK-TOKENS:END */
 
@@ -178,8 +211,10 @@ textarea {
 }
 
 .panel {
+  border-radius: 1rem; /* the template card radius */
   background: var(--color-surface);
   border: 1px solid var(--color-line);
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -188,6 +223,8 @@ textarea {
 .panel-head {
   display: flex;
   align-items: center;
+  border-top-left-radius: 1rem;
+  border-top-right-radius: 1rem;
   /* Wrapping, not scrolling. A panel head carries the freshness chip and the
      refresh control, and on a phone a head that overflows puts the age of the
      data off-screen — which is the one thing a reader must never have to
@@ -275,6 +312,7 @@ textarea {
 /* --- chips and status --------------------------------------------------- */
 
 .chip {
+  border-radius: 0.45rem;
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -346,6 +384,7 @@ textarea {
 /* --- controls ----------------------------------------------------------- */
 
 .btn {
+  border-radius: 0.6rem;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -416,6 +455,7 @@ textarea {
 .input,
 .select,
 .textarea {
+  border-radius: 0.6rem;
   width: 100%;
   height: 28px;
   padding: 0 8px;
@@ -454,6 +494,8 @@ textarea {
 }
 
 .seg {
+  border-radius: 0.6rem;
+  overflow: hidden;
   display: inline-flex;
   border: 1px solid var(--color-line-strong);
 }

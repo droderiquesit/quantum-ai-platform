@@ -20,3 +20,4 @@ no stated reversal condition cannot be revisited honestly.
 | [0012](0012-where-a-library-earns-its-place.md) | A dependency is admitted only where getting it wrong is silent, the problem is specialist, and a maintained implementation exists |
 | [0013](0013-identity-verification-earns-a-dependency.md) | Verifying an identity token earns a dependency; issuing sessions does not |
 | [0014](0014-one-design-system-four-surfaces.md) | One design system, four surfaces, no second router |
+| [0015](0015-licensed-templates-are-the-visual-source-of-truth.md) | The licensed templates are the visual source of truth |
