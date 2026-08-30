@@ -26,3 +26,4 @@ override.tf
 .idea/
 .vscode/
 *.swp
+node_modules/

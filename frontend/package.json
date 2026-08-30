@@ -1,8 +1,8 @@
 {
-  "name": "qip-command-center",
+  "name": "@algorik/portal",
   "version": "0.1.0",
   "private": true,
-  "description": "Institutional trading command centre for the QIP platform. Paper trading only.",
+  "description": "Algorik customer portal. Paper trading only: no control here submits a live order.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -16,7 +16,18 @@
   "dependencies": {
     "next": "16.3.2",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "@algorik/brand": "*",
+    "@algorik/design-tokens": "*",
+    "@algorik/ui": "*",
+    "@algorik/charts": "*",
+    "@algorik/auth": "*",
+    "@algorik/api-client": "*",
+    "@algorik/shared-types": "*",
+    "@algorik/validation": "*",
+    "@algorik/analytics": "*",
+    "@algorik/feature-flags": "*",
+    "@algorik/testing": "*"
   },
   "devDependencies": {
     "@playwright/test": "1.56.1",

@@ -10,87 +10,101 @@
  * trading declaration, which appears nowhere else.
  */
 @theme {
-  --color-void: #07060e;
-  --color-sunken: #0b0a15;
-  --color-surface: #100f1d;
-  --color-raised: #171629;
-  --color-line: #201f36;
-  --color-line-strong: #322f52;
-
-  --color-ink: #e7e6f4;
-  --color-ink-dim: #9a98b6;
-  --color-ink-faint: #636383;
-
-  --color-accent: #8f7bff;
-  --color-accent-dim: #282057;
-
-  --color-quantum: #35c8e8;
-
-  --color-paper: #e3a72f;
-  --color-paper-dim: #3a2c0c;
-  --color-paper-dim-2: #2c2109;
-
-  --color-up: #2ecc8f;
-  --color-down: #ff5d6e;
-  --color-warn: #e3a72f;
-  --color-halt: #ff3b30;
-
-  --color-env-simulation: #4c9aff;
-  --color-env-paper: #b39bff;
-  --color-env-staging: #e3a72f;
-  --color-env-live: #ff3b30;
-
+  /*
+   * Non-colour tokens Tailwind needs at build time. Colours are not here:
+   * they are generated below from @algorik/design-tokens, which is the single
+   * source of truth for every Algorik surface.
+   */
   --font-sans: "Inter", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
   --font-mono: ui-monospace, "SF Mono", "SFMono-Regular", "JetBrains Mono", "Menlo", "Consolas",
     "Liberation Mono", monospace;
 }
 
-/*
- * Two themes, one token contract.
- *
- * Dark is the identity and the default; light re-values the same custom
- * properties under [data-theme="light"], set on <html> before first paint by
- * the inline script in the root layout. No component knows which theme it is
- * in — a component that did would eventually be right in one theme only.
- */
+/* ALGORIK-TOKENS:BEGIN — generated from @algorik/design-tokens. Do not edit by hand. */
 :root {
   color-scheme: dark;
+  --color-canvas: #07060e;
+  --color-surface: #100f1d;
+  --color-surface-elevated: #171629;
+  --color-surface-sunken: #0b0a15;
+  --color-border: #201f36;
+  --color-border-strong: #322f52;
+  --color-text-primary: #e7e6f4;
+  --color-text-muted: #9a98b6;
+  --color-text-faint: #636383;
+  --color-text-on-brand: #0b0a15;
+  --color-brand-primary: #8f7bff;
+  --color-brand-primary-muted: #282057;
+  --color-brand-secondary: #35c8e8;
+  --color-accent: #35c8e8;
+  --color-success: #2ecc8f;
+  --color-warning: #e3a72f;
+  --color-critical: #ff5d6e;
+  --color-information: #8f7bff;
+  --color-gain: #2ecc8f;
+  --color-loss: #ff5d6e;
+  --color-simulation: #4c9aff;
+  --color-paper: #b39bff;
+  --color-stage: #e3a72f;
+  --color-live: #ff3b30;
+  --color-focus: #8f7bff;
+  --color-disabled: #4a4a63;
+
+  /* aliases — see ALIASES in scripts/generate-theme-css.mjs */
+  --color-void: var(--color-canvas);
+  --color-sunken: var(--color-surface-sunken);
+  --color-raised: var(--color-surface-elevated);
+  --color-line: var(--color-border);
+  --color-line-strong: var(--color-border-strong);
+  --color-ink: var(--color-text-primary);
+  --color-ink-dim: var(--color-text-muted);
+  --color-ink-faint: var(--color-text-faint);
+  --color-accent: var(--color-brand-primary);
+  --color-accent-dim: var(--color-brand-primary-muted);
+  --color-quantum: var(--color-brand-secondary);
+  --color-up: var(--color-gain);
+  --color-down: var(--color-loss);
+  --color-warn: var(--color-warning);
+  --color-halt: var(--color-critical);
+  --color-paper: var(--color-paper);
+  --color-paper-dim: var(--color-brand-primary-muted);
+  --color-env-simulation: var(--color-simulation);
+  --color-env-paper: var(--color-paper);
+  --color-env-staging: var(--color-stage);
+  --color-env-live: var(--color-live);
 }
 
 :root[data-theme="light"] {
   color-scheme: light;
-
-  --color-void: #f1f1f7;
-  --color-sunken: #e9e9f1;
+  --color-canvas: #f1f1f7;
   --color-surface: #ffffff;
-  --color-raised: #f6f6fb;
-  --color-line: #dedeea;
-  --color-line-strong: #c3c3d9;
-
-  --color-ink: #1b1a2e;
-  --color-ink-dim: #4e4f6e;
-  --color-ink-faint: #7f809b;
-
-  --color-accent: #5d48d6;
-  --color-accent-dim: #e7e2fb;
-
-  --color-quantum: #0d7f9e;
-
-  --color-paper: #8a6206;
-  --color-paper-dim: #f3e2b6;
-  --color-paper-dim-2: #ecd69c;
-
-  --color-up: #0c8f62;
-  --color-down: #d8394f;
-  --color-warn: #9a6f0a;
-  --color-halt: #cd2018;
-
-  --color-env-simulation: #1f6fd6;
-  --color-env-paper: #6d48e0;
-  --color-env-staging: #9a6f0a;
-  --color-env-live: #cd2018;
+  --color-surface-elevated: #f6f6fb;
+  --color-surface-sunken: #e9e9f1;
+  --color-border: #dedeea;
+  --color-border-strong: #c3c3d9;
+  --color-text-primary: #1b1a2e;
+  --color-text-muted: #4e4f6e;
+  --color-text-faint: #7f809b;
+  --color-text-on-brand: #ffffff;
+  --color-brand-primary: #5d48d6;
+  --color-brand-primary-muted: #e7e2fb;
+  --color-brand-secondary: #0d7f9e;
+  --color-accent: #0d7f9e;
+  --color-success: #0c8f62;
+  --color-warning: #9a6f0a;
+  --color-critical: #d8394f;
+  --color-information: #5d48d6;
+  --color-gain: #0c8f62;
+  --color-loss: #d8394f;
+  --color-simulation: #1f6fd6;
+  --color-paper: #6d48e0;
+  --color-stage: #9a6f0a;
+  --color-live: #cd2018;
+  --color-focus: #5d48d6;
+  --color-disabled: #9a9ab0;
 }
+/* ALGORIK-TOKENS:END */
 
 html,
 body {

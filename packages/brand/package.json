@@ -1,0 +1,13 @@
+{
+  "name": "@algorik/brand",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Approved Algorik logos, wordmark and the rules for using them.",
+  "type": "module",
+  "main": "./src/index.tsx",
+  "types": "./src/index.tsx",
+  "exports": {
+    ".": "./src/index.tsx"
+  },
+  "sideEffects": false
+}
