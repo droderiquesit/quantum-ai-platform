@@ -22,3 +22,4 @@ no stated reversal condition cannot be revisited honestly.
 | [0014](0014-one-design-system-four-surfaces.md) | One design system, four surfaces, no second router |
 | [0015](0015-licensed-templates-are-the-visual-source-of-truth.md) | The licensed templates are the visual source of truth |
 | [0016](0016-repository-layout.md) | One layout: backend, frontend, data, infrastructure — each top-level directory answers one question |
+| [0017](0017-gitops-delivery.md) | Delivery becomes GitOps: a Helm chart, Argo CD sync, Kargo promotion |
