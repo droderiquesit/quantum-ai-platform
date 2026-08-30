@@ -57,6 +57,20 @@ resource "google_container_cluster" "primary" {
     master_ipv4_cidr_block  = "172.16.0.0/28"
   }
 
+  # The IAM-gated path in: GKE's DNS-based endpoint. The control plane keeps
+  # no public IP — the flag above stays true and the acceptance test that
+  # holds it there keeps passing — but the deploy pipeline runs on
+  # GitHub-hosted runners with no path into the VPC, and its kubectl died at
+  # 172.16.0.2 with an i/o timeout. This endpoint terminates at Google's
+  # front door, where every request must present valid IAM credentials
+  # before it reaches the API server; the alternative was a self-hosted
+  # runner in the VPC that nobody here operates.
+  control_plane_endpoints_config {
+    dns_endpoint_config {
+      allow_external_traffic = true
+    }
+  }
+
   # Even with a private endpoint, the ranges that may reach it are named. Two
   # controls rather than one, because the first is a configuration flag and
   # configuration flags get changed.

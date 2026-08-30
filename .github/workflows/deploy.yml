@@ -393,9 +393,13 @@ jobs:
 
       - name: credentials for the private cluster
         run: |
+          # --dns-endpoint: the control plane keeps no public IP; this resolves
+          # the IAM-gated DNS front door instead of the private 172.16.0.2 a
+          # GitHub-hosted runner can never reach.
           gcloud container clusters get-credentials "qip-${TARGET_ENVIRONMENT}" \
             --region "${{ steps.identity.outputs.region }}" \
-            --project "${{ steps.identity.outputs.project }}"
+            --project "${{ steps.identity.outputs.project }}" \
+            --dns-endpoint
 
       # The manifests carry placeholders rather than values, so the same files
       # describe every environment and a diff between environments is a diff in
