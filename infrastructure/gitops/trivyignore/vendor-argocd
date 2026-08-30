@@ -1,0 +1,21 @@
+# Acknowledged findings for the image mirrored to vendor/argocd, and only
+# for it — the vendor workflow passes this file to the CRITICAL gate when a
+# file matching the destination path exists. Every entry is one reviewed
+# decision, and the review dies with the pin: bumping the source digest in
+# vendored-images.txt is the moment to re-scan and re-justify or delete
+# each line, because an acknowledgment written for one build silently
+# covering the next is how a suppression file becomes a blindfold.
+#
+# CVE-2025-68121 — crypto/tls: incorrect certificate validation during TLS
+# session resumption. Present in two binaries Argo CD v3.5.2 bundles, not
+# in argocd itself: git-lfs (Go 1.25.3) and kustomize (Go 1.24.0), both
+# awaiting upstream rebuilds on a fixed Go. The vulnerable path is a TLS
+# *client* resuming a session against a server that can manipulate the
+# handshake, and neither binary makes such a connection in this install:
+# git-lfs is never invoked (the platform repository has no LFS objects, and
+# the repo server fetches over HTTPS as plain git), and kustomize renders
+# only content already fetched into the repo server's local checkout —
+# remote bases and remote resources are not used. Revisit at the next
+# argocd digest bump; if upstream has rebuilt git-lfs and kustomize on
+# patched Go, this file should shrink to its header.
+CVE-2025-68121

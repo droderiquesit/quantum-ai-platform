@@ -1,0 +1,120 @@
+# What each Argo CD component may reach, and nothing else.
+#
+# ADR 0017 names the boundary this file holds: "if Argo CD's egress allowance
+# ever widens beyond git and the control plane, the reconciler has become the
+# attack path the default-deny posture exists to prevent." The upstream
+# install ships ingress policies for its components; egress is deliberately
+# left to the operator, and this is that half. Flows are split per component
+# so revoking one is a deleted document rather than a careful edit inside a
+# rule that also carries another component's only route.
+#
+# The control-plane address is the private endpoint range from
+# modules/cluster (`master_ipv4_cidr_block = "172.16.0.0/28"`). It appears
+# here as a literal because a NetworkPolicy cannot read Terraform; the
+# cluster module names this file beside that value so a change touches both.
+---
+# The application controller reconciles: it reads and writes the Kubernetes
+# API, asks the repo server for rendered manifests, and caches in Redis.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-application-controller-egress
+  namespace: argocd
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-application-controller
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 172.16.0.0/28
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: argocd-repo-server
+      ports:
+        - protocol: TCP
+          port: 8081
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: argocd-redis
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+# The repo server fetches git over HTTPS and caches in Redis. The git
+# allowance is everything on 443 that is not private address space, because
+# GitHub publishes no stable narrow range; the residual — any pod matching
+# this selector can reach any public 443 — is confined to the one component
+# whose job is fetching from the internet, which is why nothing else in this
+# namespace carries the rule. A tighter form routes through an egress proxy
+# the way qip-egress documents, and inherits that file's reasoning when the
+# desk decides the residual matters more than the moving parts.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-repo-server-egress
+  namespace: argocd
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-repo-server
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: argocd-redis
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+# The applicationset controller expands generators: the Kubernetes API for
+# its ApplicationSet resources, and the repo server for git generators. It
+# does not reach the internet itself — git goes through the repo server.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-applicationset-controller-egress
+  namespace: argocd
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-applicationset-controller
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 172.16.0.0/28
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: argocd-repo-server
+      ports:
+        - protocol: TCP
+          port: 8081
+# Redis has no egress policy on purpose: a cache initiates nothing, and under
+# the namespace's default deny an absent policy is a refusal, not an
+# oversight.

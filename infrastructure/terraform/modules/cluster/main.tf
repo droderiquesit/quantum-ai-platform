@@ -54,7 +54,12 @@ resource "google_container_cluster" "primary" {
     # The control plane has no public endpoint either. Reaching it needs a
     # path into the VPC.
     enable_private_endpoint = true
-    master_ipv4_cidr_block  = "172.16.0.0/28"
+    # This range is repeated as a literal in
+    # infrastructure/gitops/argocd/base/egress-policies.yaml, which permits
+    # the reconciler's path to the API server — a NetworkPolicy cannot read
+    # Terraform. Changing it here without changing it there leaves Argo CD
+    # unable to reconcile, silently.
+    master_ipv4_cidr_block = "172.16.0.0/28"
   }
 
   # The IAM-gated path in: GKE's DNS-based endpoint. The control plane keeps

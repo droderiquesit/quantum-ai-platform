@@ -24,7 +24,11 @@
 # index for quay.io/argoproj/argocd:v3.5.2, resolved 2026-08-30.
 quay.io/argoproj/argocd@sha256:e2aadfae709d904e87f46ba4aa49601d827b3022db22cd4d03aae816a2e7097b vendor/argocd v3.5.2
 
-# Redis, Argo CD's cache — the version its v3.5.2 manifests pin. Digest is
-# the multi-arch index for public.ecr.aws/docker/library/redis:8.2.3-alpine,
-# resolved 2026-08-30.
-public.ecr.aws/docker/library/redis@sha256:08ad0b1d280850169a790dba1393ff7a90aef951fc19632cf4d3ce4f78e679ba vendor/redis 8.2.3-alpine
+# Redis, Argo CD's cache. Deliberately NOT the 8.2.3 its v3.5.2 manifests
+# pin: that image sits on a stale alpine 3.22.3 whose OpenSSL carries a
+# fixable CRITICAL (CVE-2026-31789), while 8.4.2-alpine's rebuild on 3.22.4
+# scans clean of criticals. Argo CD uses redis as a pure cache, so it takes
+# redis's own rebuild cadence rather than inheriting upstream's stale pin.
+# Digest is the multi-arch index for
+# public.ecr.aws/docker/library/redis:8.4.2-alpine, resolved 2026-08-30.
+public.ecr.aws/docker/library/redis@sha256:e1b6db24cb4fdd89f4bc9be09f671ea3bec92fbd7042554f76c34aa2be9b59ad vendor/redis 8.4.2-alpine

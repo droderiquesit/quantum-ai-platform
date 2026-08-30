@@ -1,0 +1,11 @@
+# Argo CD core, as this platform runs it: the verbatim upstream install plus
+# the namespace governance and egress posture upstream leaves to the
+# operator. Environment overlays substitute the vendored image digests; this
+# base carries everything that is true in every environment.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: argocd
+resources:
+  - namespace.yaml
+  - upstream/core-install-v3.5.2.yaml
+  - egress-policies.yaml
