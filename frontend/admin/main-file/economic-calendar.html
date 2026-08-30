@@ -1,0 +1,1054 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <script>
+      if (localStorage.getItem("theme") === "light") document.documentElement.classList.remove("dark");
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Economic Calendar - SignalAIX | AI Forex & Crypto Trading Signals</title>
+    <link rel="icon" type="image/png" href="assets/images/favicon.png" />
+    <link rel="apple-touch-icon" href="assets/images/favicon.png" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <link href="css/index.css" rel="stylesheet"></head>
+  <body id="economic-calendar">
+    <div id="loader">
+      <div class="spinner"></div>
+      <div class="loader-text">Loading SignalAIX...</div>
+    </div>
+
+    <div id="sidebarOverlay" class="fixed inset-0 bg-black/50 z-40 hidden lg:hidden transition-opacity duration-300 opacity-0" aria-hidden="true"></div>
+<aside class="sidebar" id="sidebar">
+  <!-- ======================================
+       Start Logo Section
+       ====================================== -->
+  <div class="logo-section flex items-center gap-3 p-5 border-b border-border shrink-0">
+    <img src="assets/images/logo.png" alt="SignalAIX" class="w-10 h-10 rounded-xl object-contain shrink-0" />
+    <div class="logo-text flex-1 min-w-0">
+      <p class="text-lg font-bold text-text leading-tight">SignalAIX</p>
+      <p class="text-xs text-muted truncate">AI Forex & Crypto Signals</p>
+    </div>
+    <button class="lg:hidden! flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:bg-border/60 hover:text-text transition js-mobile-menu-toggle" aria-label="Close sidebar">
+      <i data-lucide="x" class="w-5 h-5"></i>
+    </button>
+  </div>
+
+  <!-- ======================================
+       Start Navigation
+       ====================================== -->
+  <nav class="py-4 flex-1">
+    <!-- MAIN -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Main</div>
+
+    <a href="./index.html" class="nav-item active flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Dashboard">
+      <i data-lucide="layout-dashboard" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Dashboard</span>
+    </a>
+
+    <a href="./live-signals.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Live Signals">
+      <i data-lucide="radio" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Live Signals</span>
+      <span class="live-dot ml-auto nav-text"></span>
+    </a>
+
+    <a href="./ai-signal-generator.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Signal Generator">
+      <i data-lucide="sparkles" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Signal Generator</span>
+    </a>
+
+    <a href="./market-overview.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Market Overview">
+      <i data-lucide="globe" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Market Overview</span>
+    </a>
+
+    <!-- AI INTELLIGENCE -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">AI Intelligence</div>
+
+    <a href="./ai-market-summary.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Market Summary">
+      <i data-lucide="brain-circuit" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Market Summary</span>
+    </a>
+
+    <a href="./ai-prediction-models.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Prediction Models">
+      <i data-lucide="line-chart" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Prediction Models</span>
+    </a>
+
+    <a href="./ai-risk-analyzer.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Risk Analyzer">
+      <i data-lucide="shield-alert" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Risk Analyzer</span>
+    </a>
+
+    <a href="./ai-trade-journal.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Trade Journal">
+      <i data-lucide="notebook-pen" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Trade Journal</span>
+    </a>
+
+    <a href="./ai-strategy-builder.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Strategy Builder">
+      <i data-lucide="blocks" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Strategy Builder</span>
+    </a>
+
+    <!-- TRADING TOOLS -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Trading Tools</div>
+
+    <a href="./forex-heatmap.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Forex Heatmap">
+      <i data-lucide="grid-3x3" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Forex Heatmap</span>
+    </a>
+
+    <a href="./crypto-heatmap.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Crypto Heatmap">
+      <i data-lucide="layout-grid" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Crypto Heatmap</span>
+    </a>
+
+    <a href="./trend-scanner.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Trend Scanner">
+      <i data-lucide="scan-line" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Trend Scanner</span>
+    </a>
+
+    <a href="./pattern-detection.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Pattern Detection">
+      <i data-lucide="waypoints" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Pattern Detection</span>
+    </a>
+
+    <a href="./volatility-index.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Volatility Index">
+      <i data-lucide="activity" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Volatility Index</span>
+    </a>
+
+    <a href="./economic-calendar.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Economic Calendar">
+      <i data-lucide="calendar-clock" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Economic Calendar</span>
+    </a>
+
+    <a href="./news-sentiment.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="News & Sentiment">
+      <i data-lucide="newspaper" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">News & Sentiment</span>
+    </a>
+
+    <a href="./correlation-matrix.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Correlation Matrix">
+      <i data-lucide="table-2" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Correlation Matrix</span>
+    </a>
+
+    <!-- MARKET ANALYTICS -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Market Analytics</div>
+
+    <a href="./forex-analytics.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Forex Analytics">
+      <i data-lucide="candlestick-chart" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Forex Analytics</span>
+    </a>
+
+    <a href="./crypto-analytics.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Crypto Analytics">
+      <i data-lucide="bitcoin" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Crypto Analytics</span>
+    </a>
+
+    <a href="./top-gainers-losers.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Top Gainers & Losers">
+      <i data-lucide="arrow-up-down" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Top Gainers & Losers</span>
+    </a>
+
+    <a href="./market-sentiment.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Market Sentiment">
+      <i data-lucide="gauge" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Market Sentiment</span>
+    </a>
+
+    <a href="./liquidity-zones.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Liquidity Zones">
+      <i data-lucide="droplets" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Liquidity Zones</span>
+    </a>
+
+    <a href="./price-action-monitor.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Price Action Monitor">
+      <i data-lucide="move-up-right" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Price Action Monitor</span>
+    </a>
+
+    <!-- PORTFOLIO -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Portfolio</div>
+
+    <a href="./my-portfolio.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="My Portfolio">
+      <i data-lucide="pie-chart" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">My Portfolio</span>
+    </a>
+
+    <a href="./open-positions.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Open Positions">
+      <i data-lucide="layers" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Open Positions</span>
+    </a>
+
+    <a href="./trade-history.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Trade History">
+      <i data-lucide="history" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Trade History</span>
+    </a>
+
+    <a href="./performance-analytics.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Performance Analytics">
+      <i data-lucide="bar-chart-3" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Performance Analytics</span>
+    </a>
+
+    <a href="./risk-metrics.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Risk Metrics">
+      <i data-lucide="shield-check" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Risk Metrics</span>
+    </a>
+
+    <a href="./pl-overview.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="P/L Overview">
+      <i data-lucide="wallet" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">P/L Overview</span>
+    </a>
+
+    <!-- WATCHLISTS -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Watchlists</div>
+
+    <a href="./forex-pairs.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Forex Pairs">
+      <i data-lucide="dollar-sign" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Forex Pairs</span>
+    </a>
+
+    <a href="./crypto-pairs.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Crypto Pairs">
+      <i data-lucide="coins" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Crypto Pairs</span>
+    </a>
+
+    <a href="./custom-alerts.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Custom Alerts">
+      <i data-lucide="bell-ring" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Custom Alerts</span>
+    </a>
+
+    <a href="./saved-signals.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Saved Signals">
+      <i data-lucide="bookmark" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Saved Signals</span>
+    </a>
+
+    <!-- AUTOMATION -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Automation</div>
+
+    <a href="./bot-center.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Bot Center">
+      <i data-lucide="bot" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Bot Center</span>
+    </a>
+
+    <a href="./auto-signal-forwarder.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Auto-Signal Forwarder">
+      <i data-lucide="forward" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Auto-Signal Forwarder</span>
+    </a>
+
+    <a href="./webhook-automations.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Webhook Automations">
+      <i data-lucide="webhook" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Webhook Automations</span>
+    </a>
+
+    <a href="./api-integrations.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="API Integrations">
+      <i data-lucide="plug" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">API Integrations</span>
+    </a>
+
+    <!-- ACCOUNT -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Account</div>
+
+    <a href="./profile-security.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Profile & Security">
+      <i data-lucide="user-cog" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Profile & Security</span>
+    </a>
+
+    <a href="./notification-settings.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Notification Settings">
+      <i data-lucide="bell" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Notification Settings</span>
+      <span class="ml-auto bg-red-500 text-white text-xs px-2 py-0.5 rounded-full nav-text">5</span>
+    </a>
+
+    <a href="./connected-exchanges.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Connected Exchanges">
+      <i data-lucide="link-2" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Connected Exchanges</span>
+    </a>
+
+    <a href="./subscription-billing.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Subscription & Billing">
+      <i data-lucide="crown" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Subscription & Billing</span>
+      <span class="ml-auto text-[10px] font-bold px-2 py-0.5 rounded-md bg-accent text-white nav-text">PRO</span>
+    </a>
+
+    <a href="./help-center.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Help Center">
+      <i data-lucide="help-circle" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Help Center</span>
+    </a>
+  </nav>
+
+  <!-- ======================================
+       Start User Section
+       ====================================== -->
+  <div class="user-section mt-auto p-4 border-t border-border shrink-0">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-full flex items-center justify-center shrink-0 bg-gradient-to-br from-emerald-500 to-teal-500">
+        <span class="text-white font-semibold text-sm">AK</span>
+      </div>
+      <div class="user-info flex-1 min-w-0">
+        <p class="font-semibold text-sm text-text truncate">Alex Kim</p>
+        <p class="text-xs text-muted truncate">alex@signalaix.io</p>
+      </div>
+    </div>
+  </div>
+</aside>
+
+
+    <main class="main-content" id="mainContent">
+      <header class="sticky top-0 z-50 glass @container">
+  <div class="flex items-center justify-between px-2 sm:px-6 py-2 sm:py-4">
+    <div class="flex items-center gap-2 sm:gap-4">
+      <!-- Mobile Menu Button -->
+      <button class="lg:hidden flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 transition js-mobile-menu-toggle" id="mobileMenuBtn" aria-label="Toggle Mobile Menu">
+        <i data-lucide="menu" class="w-5 h-5"></i>
+      </button>
+
+      <!-- Sidebar Toggle (Desktop) -->
+      <button class="hidden lg:flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 transition js-sidebar-toggle" aria-label="Toggle Sidebar">
+        <i data-lucide="panel-left" class="w-5 h-5"></i>
+      </button>
+
+      <!-- Search -->
+      <div class="relative hidden md:block">
+        <i data-lucide="search" class="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-muted"></i>
+        <input type="text" id="globalSearch" placeholder="Search signals, pairs, markets... (⌘K)" class="w-80 pl-10 pr-4 py-2.5 rounded-xl bg-bg border border-border text-sm text-text placeholder:text-muted focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 transition" />
+      </div>
+    </div>
+
+    <div class="flex items-center gap-2 sm:gap-3">
+      <!-- Live Status -->
+      <div class="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-500/10 text-emerald-500 text-[11px] font-semibold">
+        <span class="live-dot !bg-emerald-500"></span>
+        LIVE
+      </div>
+
+      <!-- Quick Generate Signal -->
+      <button class="flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 hover:border-accent/30 transition js-open-drawer" data-drawer-type="quickTrade" aria-label="Generate Signal">
+        <i data-lucide="zap" class="w-5 h-5"></i>
+      </button>
+
+      <!-- Notifications -->
+      <div class="dropdown">
+        <button class="relative flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 transition js-dropdown-toggle" aria-label="Toggle Notifications">
+          <i data-lucide="bell" class="w-5 h-5"></i>
+          <span class="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-xs rounded-full flex items-center justify-center">5</span>
+        </button>
+        <div class="dropdown-menu w-75 min-[400px]:w-80 mt-2 rounded-2xl bg-panel border border-border shadow-2xl overflow-hidden max-[420px]:-left-[153px]! max-[450px]:-left-[183px]! max-[430px]:right-0!">
+          <div class="p-4 border-b border-border flex items-center justify-between">
+            <h2 class="text-base font-semibold text-text">Notifications</h2>
+            <span class="text-xs font-medium text-accent">5 new</span>
+          </div>
+          <div class="max-h-72 overflow-y-auto">
+            <div class="flex items-start gap-3 p-4 hover:bg-border/30 transition cursor-pointer">
+              <div class="w-9 h-9 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="trending-up" class="w-4 h-4 text-emerald-500"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-medium text-text truncate">New BUY signal: EUR/USD</p>
+                <p class="text-xs text-muted">AI confidence 92% · 2 min ago</p>
+              </div>
+            </div>
+            <div class="flex items-start gap-3 p-4 hover:bg-border/30 transition cursor-pointer">
+              <div class="w-9 h-9 rounded-full bg-amber-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="alert-triangle" class="w-4 h-4 text-amber-500"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-medium text-text truncate">High volatility on BTC/USDT</p>
+                <p class="text-xs text-muted">15 min ago</p>
+              </div>
+            </div>
+            <div class="flex items-start gap-3 p-4 hover:bg-border/30 transition cursor-pointer">
+              <div class="w-9 h-9 rounded-full bg-sky-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="sparkles" class="w-4 h-4 text-sky-500"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-medium text-text truncate">AI model retrained — accuracy +3%</p>
+                <p class="text-xs text-muted">1 hour ago</p>
+              </div>
+            </div>
+          </div>
+          <div class="p-3 border-t border-border">
+            <button class="w-full text-center text-sm font-medium text-accent hover:underline">View all notifications</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Theme Toggle -->
+      <button
+        class="flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 transition"
+        id="themeToggle"
+        aria-label="Toggle Theme"
+        onclick="
+          document.documentElement.classList.toggle('dark');
+          localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+        "
+      >
+        <i data-lucide="moon" class="w-5 h-5 dark:hidden"></i>
+        <i data-lucide="sun" class="w-5 h-5 hidden dark:block"></i>
+      </button>
+
+      <!-- Profile Dropdown -->
+      <div class="dropdown">
+        <button class="flex items-center gap-2 p-1 rounded-xl hover:bg-border/50 transition js-dropdown-toggle">
+          <span class="w-9 h-9 rounded-full bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center">
+            <span class="text-white font-semibold text-sm">AK</span>
+          </span>
+          <i data-lucide="chevron-down" class="w-4 h-4 text-muted hidden sm:block"></i>
+        </button>
+        <div class="dropdown-menu w-56 mt-2 rounded-2xl bg-panel border border-border shadow-2xl overflow-hidden p-2">
+          <div class="p-3 mb-1 border-b border-border">
+            <p class="font-semibold text-text">Alex Kim</p>
+            <p class="text-xs text-muted">Pro Trader</p>
+          </div>
+          <a href="./index.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-text hover:bg-accent/10 transition">
+            <i data-lucide="user" class="w-4 h-4"></i>
+            <span>My Profile</span>
+          </a>
+          <a href="./index.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-text hover:bg-accent/10 transition">
+            <i data-lucide="settings" class="w-4 h-4"></i>
+            <span>Settings</span>
+          </a>
+          <a href="./index.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-text hover:bg-accent/10 transition">
+            <i data-lucide="help-circle" class="w-4 h-4"></i>
+            <span>Help & Support</span>
+          </a>
+          <div class="mt-1 pt-1 border-t border-border">
+            <a href="./index.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-red-500 hover:bg-red-500/10 transition">
+              <i data-lucide="log-out" class="w-4 h-4"></i>
+              <span>Logout</span>
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+
+      <div class="inner-content max-sm:px-3 max-lg:px-4 max-lg:py-6 lg:p-6 space-y-6">
+        <!-- Page header -->
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div>
+            <div class="flex items-center gap-2 flex-wrap">
+              <h1 class="text-2xl md:text-3xl font-bold text-text">Economic Calendar</h1>
+              <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-500 text-[11px] font-semibold shrink-0"><span class="live-dot !bg-emerald-500"></span>LIVE</span>
+            </div>
+            <p class="text-sm text-muted mt-1">Track market-moving events worldwide</p>
+          </div>
+          <div class="flex items-center gap-3 flex-wrap">
+            <button id="ecFilters" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition"><i data-lucide="funnel" class="w-4 h-4 shrink-0"></i><span class="hidden sm:inline">Filters</span></button>
+            <div class="dropdown">
+              <button class="js-dropdown-toggle inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition"><i data-lucide="download" class="w-4 h-4 shrink-0"></i><span class="hidden sm:inline">Export</span></button>
+              <div class="dropdown-menu w-52 mt-2 rounded-xl bg-panel border border-border shadow-2xl overflow-hidden p-1.5">
+                <button class="ec-export flex w-full items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition" data-format="csv"><i data-lucide="file-text" class="w-4 h-4 shrink-0"></i>Export as CSV</button>
+                <button class="ec-export flex w-full items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition" data-format="pdf"><i data-lucide="file" class="w-4 h-4 shrink-0"></i>Export as PDF</button>
+                <button class="ec-export flex w-full items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition" data-format="excel"><i data-lucide="table" class="w-4 h-4 shrink-0"></i>Export as Excel</button>
+                <button class="ec-export flex w-full items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition" data-format="ical"><i data-lucide="calendar-plus" class="w-4 h-4 shrink-0"></i>Add to Calendar</button>
+              </div>
+            </div>
+            <button id="ecRefresh" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-indigo-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition"><i data-lucide="refresh-cw" class="w-4 h-4 shrink-0"></i><span class="hidden sm:inline">Refresh</span></button>
+          </div>
+        </div>
+
+        <!-- Stat cards -->
+        <div class="grid grid-cols-1 xs:grid-cols-2 @4xl/content:grid-cols-4 gap-4">
+          <div class="bg-panel border border-border rounded-2xl p-4 sm:p-5 hover:border-accent/40 transition">
+            <div class="flex items-center justify-between gap-2 mb-3"><div class="w-11 h-11 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center shrink-0"><i data-lucide="triangle-alert" class="w-5 h-5 text-white shrink-0"></i></div><span class="px-2 py-0.5 rounded-md bg-red-500/15 text-red-500 text-[11px] font-semibold whitespace-nowrap">High Impact</span></div>
+            <p class="text-3xl font-bold text-text mb-1">8</p><p class="text-sm text-muted">Events Today</p>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-4 sm:p-5 hover:border-accent/40 transition">
+            <div class="flex items-center justify-between gap-2 mb-3"><div class="w-11 h-11 rounded-xl bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center shrink-0"><i data-lucide="circle-alert" class="w-5 h-5 text-white shrink-0"></i></div><span class="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-500 text-[11px] font-semibold whitespace-nowrap">Medium</span></div>
+            <p class="text-3xl font-bold text-text mb-1">12</p><p class="text-sm text-muted">Events Today</p>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-4 sm:p-5 hover:border-accent/40 transition">
+            <div class="flex items-center justify-between gap-2 mb-3"><div class="w-11 h-11 rounded-xl bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center shrink-0"><i data-lucide="info" class="w-5 h-5 text-white shrink-0"></i></div><span class="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-500 text-[11px] font-semibold whitespace-nowrap">Low Impact</span></div>
+            <p class="text-3xl font-bold text-text mb-1">15</p><p class="text-sm text-muted">Events Today</p>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-4 sm:p-5 hover:border-accent/40 transition">
+            <div class="flex items-center justify-between gap-2 mb-3"><div class="w-11 h-11 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center shrink-0"><i data-lucide="clock" class="w-5 h-5 text-white shrink-0"></i></div><span class="px-2 py-0.5 rounded-md bg-indigo-500/15 text-indigo-400 text-[11px] font-semibold whitespace-nowrap">Upcoming</span></div>
+            <p class="text-3xl font-bold text-text mb-1">5</p><p class="text-sm text-muted">Next 2 Hours</p>
+          </div>
+        </div>
+
+        <!-- Tabs + filters card -->
+        <div class="bg-panel border border-border rounded-2xl p-4 lg:p-6">
+          <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-6">
+            <div class="flex gap-1 p-1 rounded-xl bg-bg border border-border overflow-x-auto">
+              <button class="ec-tab active shrink-0 inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-muted whitespace-nowrap transition" data-tab="calendar"><i data-lucide="calendar" class="w-4 h-4 shrink-0"></i>Calendar View</button>
+              <button class="ec-tab shrink-0 inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-muted whitespace-nowrap transition" data-tab="list"><i data-lucide="list" class="w-4 h-4 shrink-0"></i>List View</button>
+              <button class="ec-tab shrink-0 inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-muted whitespace-nowrap transition" data-tab="timeline"><i data-lucide="git-branch" class="w-4 h-4 shrink-0"></i>Timeline</button>
+              <button class="ec-tab shrink-0 inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-muted whitespace-nowrap transition" data-tab="analytics"><i data-lucide="chart-column" class="w-4 h-4 shrink-0"></i>Analytics</button>
+            </div>
+          </div>
+
+          <!-- Filter chips -->
+          <div class="flex flex-wrap items-center gap-2 mb-6">
+            <button class="ec-impact active inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="all">All Events</button>
+            <button class="ec-impact inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="high">High Impact</button>
+            <button class="ec-impact inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="medium">Medium Impact</button>
+            <button class="ec-impact inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="low">Low Impact</button>
+            <span class="h-6 w-px bg-border mx-1 hidden sm:block"></span>
+            <button class="ec-ccy inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="usd">🇺🇸 USD</button>
+            <button class="ec-ccy inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="eur">🇪🇺 EUR</button>
+            <button class="ec-ccy inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="gbp">🇬🇧 GBP</button>
+            <button class="ec-ccy inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="jpy">🇯🇵 JPY</button>
+            <button class="ec-ccy inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="aud">🇦🇺 AUD</button>
+            <button class="ec-ccy inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="cad">🇨🇦 CAD</button>
+            <button class="ec-ccy inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="chf">🇨🇭 CHF</button>
+            <button class="ec-ccy inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="nzd">🇳🇿 NZD</button>
+          </div>
+
+          <!-- Date nav -->
+          <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-6 gap-4">
+            <div class="flex items-center gap-2 flex-wrap">
+              <button id="ecPrevDay" class="w-9 h-9 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition shrink-0"><i data-lucide="chevron-left" class="w-5 h-5 shrink-0"></i></button>
+              <button id="ecTodayBtn" class="px-4 py-2 rounded-lg bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition shrink-0">Today</button>
+              <button id="ecNextDay" class="w-9 h-9 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition shrink-0"><i data-lucide="chevron-right" class="w-5 h-5 shrink-0"></i></button>
+              <span class="font-semibold text-text sm:ml-2" id="ecCurrentDate">June 3, 2026</span>
+            </div>
+            <div class="relative w-full sm:w-48 sm:shrink-0">
+              <i data-lucide="search" class="w-4 h-4 text-muted absolute left-3 top-1/2 -translate-y-1/2 shrink-0"></i>
+              <input type="text" id="ecSearch" placeholder="Search events..." class="w-full pl-9 pr-3 py-2 rounded-lg bg-bg border border-border text-text text-sm placeholder:text-muted focus:outline-none focus:border-accent" />
+            </div>
+          </div>
+
+          <!-- Tab: Calendar (table) -->
+          <div class="tab-content active" id="ec-calendar">
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm whitespace-nowrap min-w-[820px]">
+                <thead>
+                  <tr class="text-left text-[11px] uppercase tracking-wide text-muted border-b border-border">
+                    <th class="px-4 py-3 font-semibold">Time</th>
+                    <th class="px-4 py-3 font-semibold">Currency</th>
+                    <th class="px-4 py-3 font-semibold">Impact</th>
+                    <th class="px-4 py-3 font-semibold">Event</th>
+                    <th class="px-4 py-3 font-semibold">Actual</th>
+                    <th class="px-4 py-3 font-semibold">Forecast</th>
+                    <th class="px-4 py-3 font-semibold">Previous</th>
+                    <th class="px-4 py-3 font-semibold">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="ecTableBody">
+<tr class="ec-event ec-open border-b border-border hover:bg-bg/60 transition cursor-pointer" data-id="1" data-time="08:30" data-ccy="USD" data-flag="🇺🇸" data-impact="high" data-event="Non-Farm Payrolls" data-actual="256K" data-forecast="180K" data-previous="212K" data-cat="Employment" data-src="Bureau of Labor Statistics" data-pairs="EUR/USD,GBP/USD,USD/JPY" data-desc="The Non-Farm Payrolls report measures the change in the number of people employed during the previous month, excluding the farming industry.">
+<td class="px-4 py-4"><div class="flex items-center gap-2"><span class="font-medium text-text">08:30</span></div></td>
+<td class="px-4 py-4"><div class="flex items-center gap-2"><span class="text-lg shrink-0">🇺🇸</span><span class="font-medium text-text">USD</span></div></td>
+<td class="px-4 py-4"><div class="flex gap-1"><span class="w-1.5 h-1.5 rounded-full bg-red-500"></span><span class="w-1.5 h-1.5 rounded-full bg-red-500"></span><span class="w-1.5 h-1.5 rounded-full bg-red-500"></span></div></td>
+<td class="px-4 py-4"><div><p class="font-medium text-text">Non-Farm Payrolls</p><p class="text-xs text-muted">Employment</p></div></td>
+<td class="px-4 py-4"><span class="text-emerald-500 font-semibold">256K</span></td>
+<td class="px-4 py-4 text-muted">180K</td>
+<td class="px-4 py-4 text-muted">212K</td>
+<td class="px-4 py-4"><div class="flex gap-2"><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Added to Watchlist" data-toast-msg="Event has been added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="You will be notified before this event"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i></button></div></td>
+</tr>
+<tr class="ec-event ec-open border-b border-border hover:bg-bg/60 transition cursor-pointer" data-id="2" data-time="08:30" data-ccy="USD" data-flag="🇺🇸" data-impact="high" data-event="Unemployment Rate" data-actual="4.1%" data-forecast="4.2%" data-previous="4.2%" data-cat="Employment" data-src="Bureau of Labor Statistics" data-pairs="EUR/USD,GBP/USD,USD/JPY" data-desc="The Unemployment Rate measures the percentage of the total work force that is unemployed and actively seeking employment.">
+<td class="px-4 py-4"><div class="flex items-center gap-2"><span class="font-medium text-text">08:30</span></div></td>
+<td class="px-4 py-4"><div class="flex items-center gap-2"><span class="text-lg shrink-0">🇺🇸</span><span class="font-medium text-text">USD</span></div></td>
+<td class="px-4 py-4"><div class="flex gap-1"><span class="w-1.5 h-1.5 rounded-full bg-red-500"></span><span class="w-1.5 h-1.5 rounded-full bg-red-500"></span><span class="w-1.5 h-1.5 rounded-full bg-red-500"></span></div></td>
+<td class="px-4 py-4"><div><p class="font-medium text-text">Unemployment Rate</p><p class="text-xs text-muted">Employment</p></div></td>
+<td class="px-4 py-4"><span class="text-red-500 font-semibold">4.1%</span></td>
+<td class="px-4 py-4 text-muted">4.2%</td>
+<td class="px-4 py-4 text-muted">4.2%</td>
+<td class="px-4 py-4"><div class="flex gap-2"><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Added to Watchlist" data-toast-msg="Event has been added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="You will be notified before this event"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i></button></div></td>
+</tr>
+<tr class="ec-event ec-open border-b border-border hover:bg-bg/60 transition cursor-pointer" data-id="3" data-time="10:00" data-ccy="EUR" data-flag="🇪🇺" data-impact="medium" data-event="ECB President Lagarde Speaks" data-actual="-" data-forecast="-" data-previous="-" data-cat="Central Bank" data-src="European Central Bank" data-pairs="EUR/USD,EUR/GBP,EUR/JPY" data-desc="European Central Bank President Christine Lagarde is scheduled to speak about monetary policy.">
+<td class="px-4 py-4"><div class="flex items-center gap-2"><span class="font-medium text-text">10:00</span></div></td>
+<td class="px-4 py-4"><div class="flex items-center gap-2"><span class="text-lg shrink-0">🇪🇺</span><span class="font-medium text-text">EUR</span></div></td>
+<td class="px-4 py-4"><div class="flex gap-1"><span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span><span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span><span class="w-1.5 h-1.5 rounded-full bg-border"></span></div></td>
+<td class="px-4 py-4"><div><p class="font-medium text-text">ECB President Lagarde Speaks</p><p class="text-xs text-muted">Central Bank</p></div></td>
+<td class="px-4 py-4"><span class="text-muted font-semibold">-</span></td>
+<td class="px-4 py-4 text-muted">-</td>
+<td class="px-4 py-4 text-muted">-</td>
+<td class="px-4 py-4"><div class="flex gap-2"><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Added to Watchlist" data-toast-msg="Event has been added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="You will be notified before this event"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i></button></div></td>
+</tr>
+<tr class="ec-event ec-open border-b border-border hover:bg-bg/60 transition cursor-pointer" data-id="4" data-time="10:00" data-ccy="USD" data-flag="🇺🇸" data-impact="medium" data-event="ISM Manufacturing PMI" data-actual="-" data-forecast="48.2" data-previous="46.5" data-cat="Manufacturing" data-src="Institute for Supply Management" data-pairs="EUR/USD,GBP/USD,USD/JPY" data-desc="The ISM Manufacturing PMI measures the level of a diffusion index based on surveyed purchasing managers.">
+<td class="px-4 py-4"><div class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0"></span><span class="font-medium text-text">10:00</span></div></td>
+<td class="px-4 py-4"><div class="flex items-center gap-2"><span class="text-lg shrink-0">🇺🇸</span><span class="font-medium text-text">USD</span></div></td>
+<td class="px-4 py-4"><div class="flex gap-1"><span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span><span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span><span class="w-1.5 h-1.5 rounded-full bg-border"></span></div></td>
+<td class="px-4 py-4"><div><p class="font-medium text-text">ISM Manufacturing PMI</p><p class="text-xs text-muted">Manufacturing</p></div></td>
+<td class="px-4 py-4"><span class="text-muted font-semibold">-</span></td>
+<td class="px-4 py-4 text-muted">48.2</td>
+<td class="px-4 py-4 text-muted">46.5</td>
+<td class="px-4 py-4"><div class="flex gap-2"><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Added to Watchlist" data-toast-msg="Event has been added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="You will be notified before this event"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i></button></div></td>
+</tr>
+<tr class="ec-event ec-open border-b border-border hover:bg-bg/60 transition cursor-pointer" data-id="5" data-time="11:30" data-ccy="GBP" data-flag="🇬🇧" data-impact="high" data-event="BoE Interest Rate Decision" data-actual="-" data-forecast="4.75%" data-previous="4.75%" data-cat="Central Bank" data-src="Bank of England" data-pairs="GBP/USD,EUR/GBP,GBP/JPY" data-desc="The Bank of England announces its interest rate decision, a key indicator for monetary policy.">
+<td class="px-4 py-4"><div class="flex items-center gap-2"><span class="font-medium text-text">11:30</span></div></td>
+<td class="px-4 py-4"><div class="flex items-center gap-2"><span class="text-lg shrink-0">🇬🇧</span><span class="font-medium text-text">GBP</span></div></td>
+<td class="px-4 py-4"><div class="flex gap-1"><span class="w-1.5 h-1.5 rounded-full bg-red-500"></span><span class="w-1.5 h-1.5 rounded-full bg-red-500"></span><span class="w-1.5 h-1.5 rounded-full bg-red-500"></span></div></td>
+<td class="px-4 py-4"><div><p class="font-medium text-text">BoE Interest Rate Decision</p><p class="text-xs text-muted">Central Bank</p></div></td>
+<td class="px-4 py-4"><span class="text-muted font-semibold">-</span></td>
+<td class="px-4 py-4 text-muted">4.75%</td>
+<td class="px-4 py-4 text-muted">4.75%</td>
+<td class="px-4 py-4"><div class="flex gap-2"><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Added to Watchlist" data-toast-msg="Event has been added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="You will be notified before this event"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i></button></div></td>
+</tr>
+<tr class="ec-event ec-open border-b border-border hover:bg-bg/60 transition cursor-pointer" data-id="6" data-time="13:30" data-ccy="CAD" data-flag="🇨🇦" data-impact="medium" data-event="Trade Balance" data-actual="-" data-forecast="-2.1B" data-previous="-1.3B" data-cat="Trade" data-src="Statistics Canada" data-pairs="USD/CAD,CAD/JPY,AUD/CAD" data-desc="Trade Balance measures the difference in value between imported and exported goods.">
+<td class="px-4 py-4"><div class="flex items-center gap-2"><span class="font-medium text-text">13:30</span></div></td>
+<td class="px-4 py-4"><div class="flex items-center gap-2"><span class="text-lg shrink-0">🇨🇦</span><span class="font-medium text-text">CAD</span></div></td>
+<td class="px-4 py-4"><div class="flex gap-1"><span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span><span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span><span class="w-1.5 h-1.5 rounded-full bg-border"></span></div></td>
+<td class="px-4 py-4"><div><p class="font-medium text-text">Trade Balance</p><p class="text-xs text-muted">Trade</p></div></td>
+<td class="px-4 py-4"><span class="text-muted font-semibold">-</span></td>
+<td class="px-4 py-4 text-muted">-2.1B</td>
+<td class="px-4 py-4 text-muted">-1.3B</td>
+<td class="px-4 py-4"><div class="flex gap-2"><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Added to Watchlist" data-toast-msg="Event has been added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="You will be notified before this event"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i></button></div></td>
+</tr>
+<tr class="ec-event ec-open border-b border-border hover:bg-bg/60 transition cursor-pointer" data-id="7" data-time="14:00" data-ccy="USD" data-flag="🇺🇸" data-impact="medium" data-event="Factory Orders m/m" data-actual="-" data-forecast="-0.3%" data-previous="0.2%" data-cat="Manufacturing" data-src="Census Bureau" data-pairs="EUR/USD,GBP/USD,USD/JPY" data-desc="Factory Orders measures the change in the total value of new purchase orders placed with manufacturers.">
+<td class="px-4 py-4"><div class="flex items-center gap-2"><span class="font-medium text-text">14:00</span></div></td>
+<td class="px-4 py-4"><div class="flex items-center gap-2"><span class="text-lg shrink-0">🇺🇸</span><span class="font-medium text-text">USD</span></div></td>
+<td class="px-4 py-4"><div class="flex gap-1"><span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span><span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span><span class="w-1.5 h-1.5 rounded-full bg-border"></span></div></td>
+<td class="px-4 py-4"><div><p class="font-medium text-text">Factory Orders m/m</p><p class="text-xs text-muted">Manufacturing</p></div></td>
+<td class="px-4 py-4"><span class="text-muted font-semibold">-</span></td>
+<td class="px-4 py-4 text-muted">-0.3%</td>
+<td class="px-4 py-4 text-muted">0.2%</td>
+<td class="px-4 py-4"><div class="flex gap-2"><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Added to Watchlist" data-toast-msg="Event has been added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="You will be notified before this event"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i></button></div></td>
+</tr>
+<tr class="ec-event ec-open border-b border-border hover:bg-bg/60 transition cursor-pointer" data-id="8" data-time="15:00" data-ccy="AUD" data-flag="🇦🇺" data-impact="low" data-event="RBA Meeting Minutes" data-actual="-" data-forecast="-" data-previous="-" data-cat="Central Bank" data-src="Reserve Bank of Australia" data-pairs="AUD/USD,AUD/JPY,AUD/CAD" data-desc="The Reserve Bank of Australia releases the minutes of its monetary policy meeting.">
+<td class="px-4 py-4"><div class="flex items-center gap-2"><span class="font-medium text-text">15:00</span></div></td>
+<td class="px-4 py-4"><div class="flex items-center gap-2"><span class="text-lg shrink-0">🇦🇺</span><span class="font-medium text-text">AUD</span></div></td>
+<td class="px-4 py-4"><div class="flex gap-1"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span><span class="w-1.5 h-1.5 rounded-full bg-border"></span><span class="w-1.5 h-1.5 rounded-full bg-border"></span></div></td>
+<td class="px-4 py-4"><div><p class="font-medium text-text">RBA Meeting Minutes</p><p class="text-xs text-muted">Central Bank</p></div></td>
+<td class="px-4 py-4"><span class="text-muted font-semibold">-</span></td>
+<td class="px-4 py-4 text-muted">-</td>
+<td class="px-4 py-4 text-muted">-</td>
+<td class="px-4 py-4"><div class="flex gap-2"><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Added to Watchlist" data-toast-msg="Event has been added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="You will be notified before this event"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i></button></div></td>
+</tr>
+<tr class="ec-event ec-open border-b border-border hover:bg-bg/60 transition cursor-pointer" data-id="9" data-time="19:00" data-ccy="JPY" data-flag="🇯🇵" data-impact="high" data-event="BoJ Policy Rate" data-actual="-" data-forecast="-0.10%" data-previous="-0.10%" data-cat="Central Bank" data-src="Bank of Japan" data-pairs="USD/JPY,EUR/JPY,GBP/JPY" data-desc="The Bank of Japan announces its policy rate decision.">
+<td class="px-4 py-4"><div class="flex items-center gap-2"><span class="font-medium text-text">19:00</span></div></td>
+<td class="px-4 py-4"><div class="flex items-center gap-2"><span class="text-lg shrink-0">🇯🇵</span><span class="font-medium text-text">JPY</span></div></td>
+<td class="px-4 py-4"><div class="flex gap-1"><span class="w-1.5 h-1.5 rounded-full bg-red-500"></span><span class="w-1.5 h-1.5 rounded-full bg-red-500"></span><span class="w-1.5 h-1.5 rounded-full bg-red-500"></span></div></td>
+<td class="px-4 py-4"><div><p class="font-medium text-text">BoJ Policy Rate</p><p class="text-xs text-muted">Central Bank</p></div></td>
+<td class="px-4 py-4"><span class="text-muted font-semibold">-</span></td>
+<td class="px-4 py-4 text-muted">-0.10%</td>
+<td class="px-4 py-4 text-muted">-0.10%</td>
+<td class="px-4 py-4"><div class="flex gap-2"><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Added to Watchlist" data-toast-msg="Event has been added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="You will be notified before this event"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i></button></div></td>
+</tr>
+<tr class="ec-event ec-open border-b border-border hover:bg-bg/60 transition cursor-pointer" data-id="10" data-time="21:30" data-ccy="CHF" data-flag="🇨🇭" data-impact="low" data-event="CPI m/m" data-actual="-" data-forecast="0.1%" data-previous="0.0%" data-cat="Inflation" data-src="Federal Statistical Office" data-pairs="USD/CHF,EUR/CHF,CHF/JPY" data-desc="Consumer Price Index measures the change in the price of goods and services.">
+<td class="px-4 py-4"><div class="flex items-center gap-2"><span class="font-medium text-text">21:30</span></div></td>
+<td class="px-4 py-4"><div class="flex items-center gap-2"><span class="text-lg shrink-0">🇨🇭</span><span class="font-medium text-text">CHF</span></div></td>
+<td class="px-4 py-4"><div class="flex gap-1"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span><span class="w-1.5 h-1.5 rounded-full bg-border"></span><span class="w-1.5 h-1.5 rounded-full bg-border"></span></div></td>
+<td class="px-4 py-4"><div><p class="font-medium text-text">CPI m/m</p><p class="text-xs text-muted">Inflation</p></div></td>
+<td class="px-4 py-4"><span class="text-muted font-semibold">-</span></td>
+<td class="px-4 py-4 text-muted">0.1%</td>
+<td class="px-4 py-4 text-muted">0.0%</td>
+<td class="px-4 py-4"><div class="flex gap-2"><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Added to Watchlist" data-toast-msg="Event has been added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="You will be notified before this event"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i></button></div></td>
+</tr>
+<tr class="ec-event ec-open border-b border-border hover:bg-bg/60 transition cursor-pointer" data-id="11" data-time="23:00" data-ccy="NZD" data-flag="🇳🇿" data-impact="medium" data-event="Business NZ PMI" data-actual="-" data-forecast="47.5" data-previous="46.8" data-cat="Manufacturing" data-src="BusinessNZ" data-pairs="NZD/USD,NZD/JPY,AUD/NZD" data-desc="The Business NZ PMI measures the level of a diffusion index based on surveyed purchasing managers.">
+<td class="px-4 py-4"><div class="flex items-center gap-2"><span class="font-medium text-text">23:00</span></div></td>
+<td class="px-4 py-4"><div class="flex items-center gap-2"><span class="text-lg shrink-0">🇳🇿</span><span class="font-medium text-text">NZD</span></div></td>
+<td class="px-4 py-4"><div class="flex gap-1"><span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span><span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span><span class="w-1.5 h-1.5 rounded-full bg-border"></span></div></td>
+<td class="px-4 py-4"><div><p class="font-medium text-text">Business NZ PMI</p><p class="text-xs text-muted">Manufacturing</p></div></td>
+<td class="px-4 py-4"><span class="text-muted font-semibold">-</span></td>
+<td class="px-4 py-4 text-muted">47.5</td>
+<td class="px-4 py-4 text-muted">46.8</td>
+<td class="px-4 py-4"><div class="flex gap-2"><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Added to Watchlist" data-toast-msg="Event has been added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="You will be notified before this event"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i></button></div></td>
+</tr>
+<tr class="ec-event ec-open border-b border-border hover:bg-bg/60 transition cursor-pointer opacity-60" data-id="12" data-time="02:00" data-ccy="EUR" data-flag="🇪🇺" data-impact="low" data-event="German Industrial Production m/m" data-actual="0.5%" data-forecast="0.3%" data-previous="-0.3%" data-cat="Manufacturing" data-src="German Federal Statistical Office" data-pairs="EUR/USD,EUR/GBP,EUR/JPY" data-desc="Industrial Production measures the change in the total value of output produced by manufacturers.">
+<td class="px-4 py-4"><div class="flex items-center gap-2"><span class="font-medium text-text">02:00</span></div></td>
+<td class="px-4 py-4"><div class="flex items-center gap-2"><span class="text-lg shrink-0">🇪🇺</span><span class="font-medium text-text">EUR</span></div></td>
+<td class="px-4 py-4"><div class="flex gap-1"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span><span class="w-1.5 h-1.5 rounded-full bg-border"></span><span class="w-1.5 h-1.5 rounded-full bg-border"></span></div></td>
+<td class="px-4 py-4"><div><p class="font-medium text-text">German Industrial Production m/m</p><p class="text-xs text-muted">Manufacturing</p></div></td>
+<td class="px-4 py-4"><span class="text-emerald-500 font-semibold">0.5%</span></td>
+<td class="px-4 py-4 text-muted">0.3%</td>
+<td class="px-4 py-4 text-muted">-0.3%</td>
+<td class="px-4 py-4"><div class="flex gap-2"><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Added to Watchlist" data-toast-msg="Event has been added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="You will be notified before this event"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i></button></div></td>
+</tr>
+<tr class="ec-event ec-open border-b border-border hover:bg-bg/60 transition cursor-pointer opacity-60" data-id="13" data-time="04:30" data-ccy="GBP" data-flag="🇬🇧" data-impact="medium" data-event="Construction PMI" data-actual="52.6" data-forecast="51.8" data-previous="51.4" data-cat="Manufacturing" data-src="Markit" data-pairs="GBP/USD,EUR/GBP,GBP/JPY" data-desc="Construction PMI measures the level of a diffusion index based on surveyed purchasing managers.">
+<td class="px-4 py-4"><div class="flex items-center gap-2"><span class="font-medium text-text">04:30</span></div></td>
+<td class="px-4 py-4"><div class="flex items-center gap-2"><span class="text-lg shrink-0">🇬🇧</span><span class="font-medium text-text">GBP</span></div></td>
+<td class="px-4 py-4"><div class="flex gap-1"><span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span><span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span><span class="w-1.5 h-1.5 rounded-full bg-border"></span></div></td>
+<td class="px-4 py-4"><div><p class="font-medium text-text">Construction PMI</p><p class="text-xs text-muted">Manufacturing</p></div></td>
+<td class="px-4 py-4"><span class="text-emerald-500 font-semibold">52.6</span></td>
+<td class="px-4 py-4 text-muted">51.8</td>
+<td class="px-4 py-4 text-muted">51.4</td>
+<td class="px-4 py-4"><div class="flex gap-2"><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Added to Watchlist" data-toast-msg="Event has been added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="You will be notified before this event"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i></button></div></td>
+</tr>
+</tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Tab: List -->
+          <div class="tab-content" id="ec-list">
+            <div class="space-y-4">
+<div class="ec-event ec-open bg-bg border border-border rounded-xl p-4 sm:p-5 cursor-pointer hover:border-accent/40 transition" data-id="1" data-time="08:30" data-ccy="USD" data-flag="🇺🇸" data-impact="high" data-event="Non-Farm Payrolls" data-actual="256K" data-forecast="180K" data-previous="212K" data-cat="Employment" data-src="Bureau of Labor Statistics" data-pairs="EUR/USD,GBP/USD,USD/JPY" data-desc="The Non-Farm Payrolls report measures the change in the number of people employed during the previous month, excluding the farming industry.">
+<div class="flex items-start justify-between gap-4">
+<div class="flex items-start gap-4 min-w-0">
+<div class="w-12 h-12 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center shrink-0"><span class="text-2xl">🇺🇸</span></div>
+<div class="min-w-0"><div class="flex items-center gap-2 mb-1 flex-wrap"><h4 class="font-semibold text-text">Non-Farm Payrolls</h4><span class="px-2 py-0.5 rounded-md bg-red-500/15 text-red-500 text-xs font-semibold capitalize">high</span></div>
+<p class="text-sm text-muted mb-2">USD • Employment • 08:30</p>
+<div class="flex flex-wrap gap-x-6 gap-y-1 text-sm"><div><span class="text-muted">Actual: </span><span class="text-emerald-500 font-semibold">256K</span></div><div><span class="text-muted">Forecast: </span><span class="font-semibold text-text">180K</span></div><div><span class="text-muted">Previous: </span><span class="font-semibold text-text">212K</span></div></div></div></div>
+<div class="flex gap-2 shrink-0"><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Added to Watchlist" data-toast-msg="Event has been added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="You will be notified before this event"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i></button></div>
+</div></div>
+<div class="ec-event ec-open bg-bg border border-border rounded-xl p-4 sm:p-5 cursor-pointer hover:border-accent/40 transition" data-id="2" data-time="08:30" data-ccy="USD" data-flag="🇺🇸" data-impact="high" data-event="Unemployment Rate" data-actual="4.1%" data-forecast="4.2%" data-previous="4.2%" data-cat="Employment" data-src="Bureau of Labor Statistics" data-pairs="EUR/USD,GBP/USD,USD/JPY" data-desc="The Unemployment Rate measures the percentage of the total work force that is unemployed and actively seeking employment.">
+<div class="flex items-start justify-between gap-4">
+<div class="flex items-start gap-4 min-w-0">
+<div class="w-12 h-12 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center shrink-0"><span class="text-2xl">🇺🇸</span></div>
+<div class="min-w-0"><div class="flex items-center gap-2 mb-1 flex-wrap"><h4 class="font-semibold text-text">Unemployment Rate</h4><span class="px-2 py-0.5 rounded-md bg-red-500/15 text-red-500 text-xs font-semibold capitalize">high</span></div>
+<p class="text-sm text-muted mb-2">USD • Employment • 08:30</p>
+<div class="flex flex-wrap gap-x-6 gap-y-1 text-sm"><div><span class="text-muted">Actual: </span><span class="text-red-500 font-semibold">4.1%</span></div><div><span class="text-muted">Forecast: </span><span class="font-semibold text-text">4.2%</span></div><div><span class="text-muted">Previous: </span><span class="font-semibold text-text">4.2%</span></div></div></div></div>
+<div class="flex gap-2 shrink-0"><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Added to Watchlist" data-toast-msg="Event has been added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="You will be notified before this event"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i></button></div>
+</div></div>
+<div class="ec-event ec-open bg-bg border border-border rounded-xl p-4 sm:p-5 cursor-pointer hover:border-accent/40 transition" data-id="3" data-time="10:00" data-ccy="EUR" data-flag="🇪🇺" data-impact="medium" data-event="ECB President Lagarde Speaks" data-actual="-" data-forecast="-" data-previous="-" data-cat="Central Bank" data-src="European Central Bank" data-pairs="EUR/USD,EUR/GBP,EUR/JPY" data-desc="European Central Bank President Christine Lagarde is scheduled to speak about monetary policy.">
+<div class="flex items-start justify-between gap-4">
+<div class="flex items-start gap-4 min-w-0">
+<div class="w-12 h-12 rounded-xl bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center shrink-0"><span class="text-2xl">🇪🇺</span></div>
+<div class="min-w-0"><div class="flex items-center gap-2 mb-1 flex-wrap"><h4 class="font-semibold text-text">ECB President Lagarde Speaks</h4><span class="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-500 text-xs font-semibold capitalize">medium</span></div>
+<p class="text-sm text-muted mb-2">EUR • Central Bank • 10:00</p>
+<div class="flex flex-wrap gap-x-6 gap-y-1 text-sm"><div><span class="text-muted">Actual: </span><span class="text-muted font-semibold">-</span></div><div><span class="text-muted">Forecast: </span><span class="font-semibold text-text">-</span></div><div><span class="text-muted">Previous: </span><span class="font-semibold text-text">-</span></div></div></div></div>
+<div class="flex gap-2 shrink-0"><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Added to Watchlist" data-toast-msg="Event has been added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="You will be notified before this event"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i></button></div>
+</div></div>
+<div class="ec-event ec-open bg-bg border border-border rounded-xl p-4 sm:p-5 cursor-pointer hover:border-accent/40 transition" data-id="4" data-time="10:00" data-ccy="USD" data-flag="🇺🇸" data-impact="medium" data-event="ISM Manufacturing PMI" data-actual="-" data-forecast="48.2" data-previous="46.5" data-cat="Manufacturing" data-src="Institute for Supply Management" data-pairs="EUR/USD,GBP/USD,USD/JPY" data-desc="The ISM Manufacturing PMI measures the level of a diffusion index based on surveyed purchasing managers.">
+<div class="flex items-start justify-between gap-4">
+<div class="flex items-start gap-4 min-w-0">
+<div class="w-12 h-12 rounded-xl bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center shrink-0"><span class="text-2xl">🇺🇸</span></div>
+<div class="min-w-0"><div class="flex items-center gap-2 mb-1 flex-wrap"><h4 class="font-semibold text-text">ISM Manufacturing PMI</h4><span class="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-500 text-xs font-semibold capitalize">medium</span><span class="px-2 py-0.5 rounded-md bg-indigo-500/15 text-indigo-400 text-xs font-semibold animate-pulse">Live</span></div>
+<p class="text-sm text-muted mb-2">USD • Manufacturing • 10:00</p>
+<div class="flex flex-wrap gap-x-6 gap-y-1 text-sm"><div><span class="text-muted">Actual: </span><span class="text-muted font-semibold">-</span></div><div><span class="text-muted">Forecast: </span><span class="font-semibold text-text">48.2</span></div><div><span class="text-muted">Previous: </span><span class="font-semibold text-text">46.5</span></div></div></div></div>
+<div class="flex gap-2 shrink-0"><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Added to Watchlist" data-toast-msg="Event has been added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="You will be notified before this event"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i></button></div>
+</div></div>
+<div class="ec-event ec-open bg-bg border border-border rounded-xl p-4 sm:p-5 cursor-pointer hover:border-accent/40 transition" data-id="5" data-time="11:30" data-ccy="GBP" data-flag="🇬🇧" data-impact="high" data-event="BoE Interest Rate Decision" data-actual="-" data-forecast="4.75%" data-previous="4.75%" data-cat="Central Bank" data-src="Bank of England" data-pairs="GBP/USD,EUR/GBP,GBP/JPY" data-desc="The Bank of England announces its interest rate decision, a key indicator for monetary policy.">
+<div class="flex items-start justify-between gap-4">
+<div class="flex items-start gap-4 min-w-0">
+<div class="w-12 h-12 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center shrink-0"><span class="text-2xl">🇬🇧</span></div>
+<div class="min-w-0"><div class="flex items-center gap-2 mb-1 flex-wrap"><h4 class="font-semibold text-text">BoE Interest Rate Decision</h4><span class="px-2 py-0.5 rounded-md bg-red-500/15 text-red-500 text-xs font-semibold capitalize">high</span></div>
+<p class="text-sm text-muted mb-2">GBP • Central Bank • 11:30</p>
+<div class="flex flex-wrap gap-x-6 gap-y-1 text-sm"><div><span class="text-muted">Actual: </span><span class="text-muted font-semibold">-</span></div><div><span class="text-muted">Forecast: </span><span class="font-semibold text-text">4.75%</span></div><div><span class="text-muted">Previous: </span><span class="font-semibold text-text">4.75%</span></div></div></div></div>
+<div class="flex gap-2 shrink-0"><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Added to Watchlist" data-toast-msg="Event has been added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="You will be notified before this event"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i></button></div>
+</div></div>
+<div class="ec-event ec-open bg-bg border border-border rounded-xl p-4 sm:p-5 cursor-pointer hover:border-accent/40 transition" data-id="6" data-time="13:30" data-ccy="CAD" data-flag="🇨🇦" data-impact="medium" data-event="Trade Balance" data-actual="-" data-forecast="-2.1B" data-previous="-1.3B" data-cat="Trade" data-src="Statistics Canada" data-pairs="USD/CAD,CAD/JPY,AUD/CAD" data-desc="Trade Balance measures the difference in value between imported and exported goods.">
+<div class="flex items-start justify-between gap-4">
+<div class="flex items-start gap-4 min-w-0">
+<div class="w-12 h-12 rounded-xl bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center shrink-0"><span class="text-2xl">🇨🇦</span></div>
+<div class="min-w-0"><div class="flex items-center gap-2 mb-1 flex-wrap"><h4 class="font-semibold text-text">Trade Balance</h4><span class="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-500 text-xs font-semibold capitalize">medium</span></div>
+<p class="text-sm text-muted mb-2">CAD • Trade • 13:30</p>
+<div class="flex flex-wrap gap-x-6 gap-y-1 text-sm"><div><span class="text-muted">Actual: </span><span class="text-muted font-semibold">-</span></div><div><span class="text-muted">Forecast: </span><span class="font-semibold text-text">-2.1B</span></div><div><span class="text-muted">Previous: </span><span class="font-semibold text-text">-1.3B</span></div></div></div></div>
+<div class="flex gap-2 shrink-0"><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Added to Watchlist" data-toast-msg="Event has been added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="You will be notified before this event"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i></button></div>
+</div></div>
+<div class="ec-event ec-open bg-bg border border-border rounded-xl p-4 sm:p-5 cursor-pointer hover:border-accent/40 transition" data-id="7" data-time="14:00" data-ccy="USD" data-flag="🇺🇸" data-impact="medium" data-event="Factory Orders m/m" data-actual="-" data-forecast="-0.3%" data-previous="0.2%" data-cat="Manufacturing" data-src="Census Bureau" data-pairs="EUR/USD,GBP/USD,USD/JPY" data-desc="Factory Orders measures the change in the total value of new purchase orders placed with manufacturers.">
+<div class="flex items-start justify-between gap-4">
+<div class="flex items-start gap-4 min-w-0">
+<div class="w-12 h-12 rounded-xl bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center shrink-0"><span class="text-2xl">🇺🇸</span></div>
+<div class="min-w-0"><div class="flex items-center gap-2 mb-1 flex-wrap"><h4 class="font-semibold text-text">Factory Orders m/m</h4><span class="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-500 text-xs font-semibold capitalize">medium</span></div>
+<p class="text-sm text-muted mb-2">USD • Manufacturing • 14:00</p>
+<div class="flex flex-wrap gap-x-6 gap-y-1 text-sm"><div><span class="text-muted">Actual: </span><span class="text-muted font-semibold">-</span></div><div><span class="text-muted">Forecast: </span><span class="font-semibold text-text">-0.3%</span></div><div><span class="text-muted">Previous: </span><span class="font-semibold text-text">0.2%</span></div></div></div></div>
+<div class="flex gap-2 shrink-0"><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Added to Watchlist" data-toast-msg="Event has been added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="You will be notified before this event"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i></button></div>
+</div></div>
+<div class="ec-event ec-open bg-bg border border-border rounded-xl p-4 sm:p-5 cursor-pointer hover:border-accent/40 transition" data-id="8" data-time="15:00" data-ccy="AUD" data-flag="🇦🇺" data-impact="low" data-event="RBA Meeting Minutes" data-actual="-" data-forecast="-" data-previous="-" data-cat="Central Bank" data-src="Reserve Bank of Australia" data-pairs="AUD/USD,AUD/JPY,AUD/CAD" data-desc="The Reserve Bank of Australia releases the minutes of its monetary policy meeting.">
+<div class="flex items-start justify-between gap-4">
+<div class="flex items-start gap-4 min-w-0">
+<div class="w-12 h-12 rounded-xl bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center shrink-0"><span class="text-2xl">🇦🇺</span></div>
+<div class="min-w-0"><div class="flex items-center gap-2 mb-1 flex-wrap"><h4 class="font-semibold text-text">RBA Meeting Minutes</h4><span class="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-500 text-xs font-semibold capitalize">low</span></div>
+<p class="text-sm text-muted mb-2">AUD • Central Bank • 15:00</p>
+<div class="flex flex-wrap gap-x-6 gap-y-1 text-sm"><div><span class="text-muted">Actual: </span><span class="text-muted font-semibold">-</span></div><div><span class="text-muted">Forecast: </span><span class="font-semibold text-text">-</span></div><div><span class="text-muted">Previous: </span><span class="font-semibold text-text">-</span></div></div></div></div>
+<div class="flex gap-2 shrink-0"><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Added to Watchlist" data-toast-msg="Event has been added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="You will be notified before this event"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i></button></div>
+</div></div>
+<div class="ec-event ec-open bg-bg border border-border rounded-xl p-4 sm:p-5 cursor-pointer hover:border-accent/40 transition" data-id="9" data-time="19:00" data-ccy="JPY" data-flag="🇯🇵" data-impact="high" data-event="BoJ Policy Rate" data-actual="-" data-forecast="-0.10%" data-previous="-0.10%" data-cat="Central Bank" data-src="Bank of Japan" data-pairs="USD/JPY,EUR/JPY,GBP/JPY" data-desc="The Bank of Japan announces its policy rate decision.">
+<div class="flex items-start justify-between gap-4">
+<div class="flex items-start gap-4 min-w-0">
+<div class="w-12 h-12 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center shrink-0"><span class="text-2xl">🇯🇵</span></div>
+<div class="min-w-0"><div class="flex items-center gap-2 mb-1 flex-wrap"><h4 class="font-semibold text-text">BoJ Policy Rate</h4><span class="px-2 py-0.5 rounded-md bg-red-500/15 text-red-500 text-xs font-semibold capitalize">high</span></div>
+<p class="text-sm text-muted mb-2">JPY • Central Bank • 19:00</p>
+<div class="flex flex-wrap gap-x-6 gap-y-1 text-sm"><div><span class="text-muted">Actual: </span><span class="text-muted font-semibold">-</span></div><div><span class="text-muted">Forecast: </span><span class="font-semibold text-text">-0.10%</span></div><div><span class="text-muted">Previous: </span><span class="font-semibold text-text">-0.10%</span></div></div></div></div>
+<div class="flex gap-2 shrink-0"><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Added to Watchlist" data-toast-msg="Event has been added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="You will be notified before this event"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i></button></div>
+</div></div>
+<div class="ec-event ec-open bg-bg border border-border rounded-xl p-4 sm:p-5 cursor-pointer hover:border-accent/40 transition" data-id="10" data-time="21:30" data-ccy="CHF" data-flag="🇨🇭" data-impact="low" data-event="CPI m/m" data-actual="-" data-forecast="0.1%" data-previous="0.0%" data-cat="Inflation" data-src="Federal Statistical Office" data-pairs="USD/CHF,EUR/CHF,CHF/JPY" data-desc="Consumer Price Index measures the change in the price of goods and services.">
+<div class="flex items-start justify-between gap-4">
+<div class="flex items-start gap-4 min-w-0">
+<div class="w-12 h-12 rounded-xl bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center shrink-0"><span class="text-2xl">🇨🇭</span></div>
+<div class="min-w-0"><div class="flex items-center gap-2 mb-1 flex-wrap"><h4 class="font-semibold text-text">CPI m/m</h4><span class="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-500 text-xs font-semibold capitalize">low</span></div>
+<p class="text-sm text-muted mb-2">CHF • Inflation • 21:30</p>
+<div class="flex flex-wrap gap-x-6 gap-y-1 text-sm"><div><span class="text-muted">Actual: </span><span class="text-muted font-semibold">-</span></div><div><span class="text-muted">Forecast: </span><span class="font-semibold text-text">0.1%</span></div><div><span class="text-muted">Previous: </span><span class="font-semibold text-text">0.0%</span></div></div></div></div>
+<div class="flex gap-2 shrink-0"><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Added to Watchlist" data-toast-msg="Event has been added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="You will be notified before this event"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i></button></div>
+</div></div>
+<div class="ec-event ec-open bg-bg border border-border rounded-xl p-4 sm:p-5 cursor-pointer hover:border-accent/40 transition" data-id="11" data-time="23:00" data-ccy="NZD" data-flag="🇳🇿" data-impact="medium" data-event="Business NZ PMI" data-actual="-" data-forecast="47.5" data-previous="46.8" data-cat="Manufacturing" data-src="BusinessNZ" data-pairs="NZD/USD,NZD/JPY,AUD/NZD" data-desc="The Business NZ PMI measures the level of a diffusion index based on surveyed purchasing managers.">
+<div class="flex items-start justify-between gap-4">
+<div class="flex items-start gap-4 min-w-0">
+<div class="w-12 h-12 rounded-xl bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center shrink-0"><span class="text-2xl">🇳🇿</span></div>
+<div class="min-w-0"><div class="flex items-center gap-2 mb-1 flex-wrap"><h4 class="font-semibold text-text">Business NZ PMI</h4><span class="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-500 text-xs font-semibold capitalize">medium</span></div>
+<p class="text-sm text-muted mb-2">NZD • Manufacturing • 23:00</p>
+<div class="flex flex-wrap gap-x-6 gap-y-1 text-sm"><div><span class="text-muted">Actual: </span><span class="text-muted font-semibold">-</span></div><div><span class="text-muted">Forecast: </span><span class="font-semibold text-text">47.5</span></div><div><span class="text-muted">Previous: </span><span class="font-semibold text-text">46.8</span></div></div></div></div>
+<div class="flex gap-2 shrink-0"><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Added to Watchlist" data-toast-msg="Event has been added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="You will be notified before this event"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i></button></div>
+</div></div>
+<div class="ec-event ec-open bg-bg border border-border rounded-xl p-4 sm:p-5 cursor-pointer hover:border-accent/40 transition" data-id="12" data-time="02:00" data-ccy="EUR" data-flag="🇪🇺" data-impact="low" data-event="German Industrial Production m/m" data-actual="0.5%" data-forecast="0.3%" data-previous="-0.3%" data-cat="Manufacturing" data-src="German Federal Statistical Office" data-pairs="EUR/USD,EUR/GBP,EUR/JPY" data-desc="Industrial Production measures the change in the total value of output produced by manufacturers.">
+<div class="flex items-start justify-between gap-4">
+<div class="flex items-start gap-4 min-w-0">
+<div class="w-12 h-12 rounded-xl bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center shrink-0"><span class="text-2xl">🇪🇺</span></div>
+<div class="min-w-0"><div class="flex items-center gap-2 mb-1 flex-wrap"><h4 class="font-semibold text-text">German Industrial Production m/m</h4><span class="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-500 text-xs font-semibold capitalize">low</span></div>
+<p class="text-sm text-muted mb-2">EUR • Manufacturing • 02:00</p>
+<div class="flex flex-wrap gap-x-6 gap-y-1 text-sm"><div><span class="text-muted">Actual: </span><span class="text-emerald-500 font-semibold">0.5%</span></div><div><span class="text-muted">Forecast: </span><span class="font-semibold text-text">0.3%</span></div><div><span class="text-muted">Previous: </span><span class="font-semibold text-text">-0.3%</span></div></div></div></div>
+<div class="flex gap-2 shrink-0"><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Added to Watchlist" data-toast-msg="Event has been added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="You will be notified before this event"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i></button></div>
+</div></div>
+<div class="ec-event ec-open bg-bg border border-border rounded-xl p-4 sm:p-5 cursor-pointer hover:border-accent/40 transition" data-id="13" data-time="04:30" data-ccy="GBP" data-flag="🇬🇧" data-impact="medium" data-event="Construction PMI" data-actual="52.6" data-forecast="51.8" data-previous="51.4" data-cat="Manufacturing" data-src="Markit" data-pairs="GBP/USD,EUR/GBP,GBP/JPY" data-desc="Construction PMI measures the level of a diffusion index based on surveyed purchasing managers.">
+<div class="flex items-start justify-between gap-4">
+<div class="flex items-start gap-4 min-w-0">
+<div class="w-12 h-12 rounded-xl bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center shrink-0"><span class="text-2xl">🇬🇧</span></div>
+<div class="min-w-0"><div class="flex items-center gap-2 mb-1 flex-wrap"><h4 class="font-semibold text-text">Construction PMI</h4><span class="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-500 text-xs font-semibold capitalize">medium</span></div>
+<p class="text-sm text-muted mb-2">GBP • Manufacturing • 04:30</p>
+<div class="flex flex-wrap gap-x-6 gap-y-1 text-sm"><div><span class="text-muted">Actual: </span><span class="text-emerald-500 font-semibold">52.6</span></div><div><span class="text-muted">Forecast: </span><span class="font-semibold text-text">51.8</span></div><div><span class="text-muted">Previous: </span><span class="font-semibold text-text">51.4</span></div></div></div></div>
+<div class="flex gap-2 shrink-0"><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Added to Watchlist" data-toast-msg="Event has been added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button><button class="ec-iconbtn w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="You will be notified before this event"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i></button></div>
+</div></div>
+</div>
+          </div>
+
+          <!-- Tab: Timeline -->
+          <div class="tab-content" id="ec-timeline">
+            <div class="max-w-3xl space-y-5 border-l-2 border-border ml-2 pl-6">
+<div class="ec-event ec-open relative cursor-pointer" data-id="1" data-time="08:30" data-ccy="USD" data-flag="🇺🇸" data-impact="high" data-event="Non-Farm Payrolls" data-actual="256K" data-forecast="180K" data-previous="212K" data-cat="Employment" data-src="Bureau of Labor Statistics" data-pairs="EUR/USD,GBP/USD,USD/JPY" data-desc="The Non-Farm Payrolls report measures the change in the number of people employed during the previous month, excluding the farming industry.">
+<span class="absolute -left-[31px] top-1.5 w-3 h-3 rounded-full bg-red-500 ring-4 ring-panel"></span>
+<div class="flex items-start justify-between gap-4"><div class="min-w-0"><div class="flex items-center gap-2 mb-1 flex-wrap"><span class="text-sm font-semibold text-indigo-400">08:30</span><span class="text-lg shrink-0">🇺🇸</span><span class="font-medium text-text">USD</span></div>
+<h4 class="font-semibold text-text mb-1">Non-Farm Payrolls</h4><p class="text-sm text-muted">The Non-Farm Payrolls report measures the change in the number of people employed during the previou...</p>
+<div class="flex gap-4 mt-2 text-sm"><span class="text-muted">Forecast: <span class="text-text font-medium">180K</span></span><span class="text-muted">Previous: <span class="text-text font-medium">212K</span></span></div></div>
+<span class="px-2 py-0.5 rounded-md bg-red-500/15 text-red-500 text-xs font-semibold capitalize shrink-0">high</span></div></div>
+<div class="ec-event ec-open relative cursor-pointer" data-id="2" data-time="08:30" data-ccy="USD" data-flag="🇺🇸" data-impact="high" data-event="Unemployment Rate" data-actual="4.1%" data-forecast="4.2%" data-previous="4.2%" data-cat="Employment" data-src="Bureau of Labor Statistics" data-pairs="EUR/USD,GBP/USD,USD/JPY" data-desc="The Unemployment Rate measures the percentage of the total work force that is unemployed and actively seeking employment.">
+<span class="absolute -left-[31px] top-1.5 w-3 h-3 rounded-full bg-red-500 ring-4 ring-panel"></span>
+<div class="flex items-start justify-between gap-4"><div class="min-w-0"><div class="flex items-center gap-2 mb-1 flex-wrap"><span class="text-sm font-semibold text-indigo-400">08:30</span><span class="text-lg shrink-0">🇺🇸</span><span class="font-medium text-text">USD</span></div>
+<h4 class="font-semibold text-text mb-1">Unemployment Rate</h4><p class="text-sm text-muted">The Unemployment Rate measures the percentage of the total work force that is unemployed and activel...</p>
+<div class="flex gap-4 mt-2 text-sm"><span class="text-muted">Forecast: <span class="text-text font-medium">4.2%</span></span><span class="text-muted">Previous: <span class="text-text font-medium">4.2%</span></span></div></div>
+<span class="px-2 py-0.5 rounded-md bg-red-500/15 text-red-500 text-xs font-semibold capitalize shrink-0">high</span></div></div>
+<div class="ec-event ec-open relative cursor-pointer" data-id="3" data-time="10:00" data-ccy="EUR" data-flag="🇪🇺" data-impact="medium" data-event="ECB President Lagarde Speaks" data-actual="-" data-forecast="-" data-previous="-" data-cat="Central Bank" data-src="European Central Bank" data-pairs="EUR/USD,EUR/GBP,EUR/JPY" data-desc="European Central Bank President Christine Lagarde is scheduled to speak about monetary policy.">
+<span class="absolute -left-[31px] top-1.5 w-3 h-3 rounded-full bg-amber-500 ring-4 ring-panel"></span>
+<div class="flex items-start justify-between gap-4"><div class="min-w-0"><div class="flex items-center gap-2 mb-1 flex-wrap"><span class="text-sm font-semibold text-indigo-400">10:00</span><span class="text-lg shrink-0">🇪🇺</span><span class="font-medium text-text">EUR</span></div>
+<h4 class="font-semibold text-text mb-1">ECB President Lagarde Speaks</h4><p class="text-sm text-muted">European Central Bank President Christine Lagarde is scheduled to speak about monetary policy....</p>
+<div class="flex gap-4 mt-2 text-sm"><span class="text-muted">Forecast: <span class="text-text font-medium">-</span></span><span class="text-muted">Previous: <span class="text-text font-medium">-</span></span></div></div>
+<span class="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-500 text-xs font-semibold capitalize shrink-0">medium</span></div></div>
+<div class="ec-event ec-open relative cursor-pointer" data-id="4" data-time="10:00" data-ccy="USD" data-flag="🇺🇸" data-impact="medium" data-event="ISM Manufacturing PMI" data-actual="-" data-forecast="48.2" data-previous="46.5" data-cat="Manufacturing" data-src="Institute for Supply Management" data-pairs="EUR/USD,GBP/USD,USD/JPY" data-desc="The ISM Manufacturing PMI measures the level of a diffusion index based on surveyed purchasing managers.">
+<span class="absolute -left-[31px] top-1.5 w-3 h-3 rounded-full bg-amber-500 ring-4 ring-panel"></span>
+<div class="flex items-start justify-between gap-4"><div class="min-w-0"><div class="flex items-center gap-2 mb-1 flex-wrap"><span class="text-sm font-semibold text-indigo-400">10:00</span><span class="text-lg shrink-0">🇺🇸</span><span class="font-medium text-text">USD</span></div>
+<h4 class="font-semibold text-text mb-1">ISM Manufacturing PMI</h4><p class="text-sm text-muted">The ISM Manufacturing PMI measures the level of a diffusion index based on surveyed purchasing manag...</p>
+<div class="flex gap-4 mt-2 text-sm"><span class="text-muted">Forecast: <span class="text-text font-medium">48.2</span></span><span class="text-muted">Previous: <span class="text-text font-medium">46.5</span></span></div></div>
+<span class="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-500 text-xs font-semibold capitalize shrink-0">medium</span></div></div>
+<div class="ec-event ec-open relative cursor-pointer" data-id="5" data-time="11:30" data-ccy="GBP" data-flag="🇬🇧" data-impact="high" data-event="BoE Interest Rate Decision" data-actual="-" data-forecast="4.75%" data-previous="4.75%" data-cat="Central Bank" data-src="Bank of England" data-pairs="GBP/USD,EUR/GBP,GBP/JPY" data-desc="The Bank of England announces its interest rate decision, a key indicator for monetary policy.">
+<span class="absolute -left-[31px] top-1.5 w-3 h-3 rounded-full bg-red-500 ring-4 ring-panel"></span>
+<div class="flex items-start justify-between gap-4"><div class="min-w-0"><div class="flex items-center gap-2 mb-1 flex-wrap"><span class="text-sm font-semibold text-indigo-400">11:30</span><span class="text-lg shrink-0">🇬🇧</span><span class="font-medium text-text">GBP</span></div>
+<h4 class="font-semibold text-text mb-1">BoE Interest Rate Decision</h4><p class="text-sm text-muted">The Bank of England announces its interest rate decision, a key indicator for monetary policy....</p>
+<div class="flex gap-4 mt-2 text-sm"><span class="text-muted">Forecast: <span class="text-text font-medium">4.75%</span></span><span class="text-muted">Previous: <span class="text-text font-medium">4.75%</span></span></div></div>
+<span class="px-2 py-0.5 rounded-md bg-red-500/15 text-red-500 text-xs font-semibold capitalize shrink-0">high</span></div></div>
+<div class="ec-event ec-open relative cursor-pointer" data-id="6" data-time="13:30" data-ccy="CAD" data-flag="🇨🇦" data-impact="medium" data-event="Trade Balance" data-actual="-" data-forecast="-2.1B" data-previous="-1.3B" data-cat="Trade" data-src="Statistics Canada" data-pairs="USD/CAD,CAD/JPY,AUD/CAD" data-desc="Trade Balance measures the difference in value between imported and exported goods.">
+<span class="absolute -left-[31px] top-1.5 w-3 h-3 rounded-full bg-amber-500 ring-4 ring-panel"></span>
+<div class="flex items-start justify-between gap-4"><div class="min-w-0"><div class="flex items-center gap-2 mb-1 flex-wrap"><span class="text-sm font-semibold text-indigo-400">13:30</span><span class="text-lg shrink-0">🇨🇦</span><span class="font-medium text-text">CAD</span></div>
+<h4 class="font-semibold text-text mb-1">Trade Balance</h4><p class="text-sm text-muted">Trade Balance measures the difference in value between imported and exported goods....</p>
+<div class="flex gap-4 mt-2 text-sm"><span class="text-muted">Forecast: <span class="text-text font-medium">-2.1B</span></span><span class="text-muted">Previous: <span class="text-text font-medium">-1.3B</span></span></div></div>
+<span class="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-500 text-xs font-semibold capitalize shrink-0">medium</span></div></div>
+<div class="ec-event ec-open relative cursor-pointer" data-id="7" data-time="14:00" data-ccy="USD" data-flag="🇺🇸" data-impact="medium" data-event="Factory Orders m/m" data-actual="-" data-forecast="-0.3%" data-previous="0.2%" data-cat="Manufacturing" data-src="Census Bureau" data-pairs="EUR/USD,GBP/USD,USD/JPY" data-desc="Factory Orders measures the change in the total value of new purchase orders placed with manufacturers.">
+<span class="absolute -left-[31px] top-1.5 w-3 h-3 rounded-full bg-amber-500 ring-4 ring-panel"></span>
+<div class="flex items-start justify-between gap-4"><div class="min-w-0"><div class="flex items-center gap-2 mb-1 flex-wrap"><span class="text-sm font-semibold text-indigo-400">14:00</span><span class="text-lg shrink-0">🇺🇸</span><span class="font-medium text-text">USD</span></div>
+<h4 class="font-semibold text-text mb-1">Factory Orders m/m</h4><p class="text-sm text-muted">Factory Orders measures the change in the total value of new purchase orders placed with manufacture...</p>
+<div class="flex gap-4 mt-2 text-sm"><span class="text-muted">Forecast: <span class="text-text font-medium">-0.3%</span></span><span class="text-muted">Previous: <span class="text-text font-medium">0.2%</span></span></div></div>
+<span class="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-500 text-xs font-semibold capitalize shrink-0">medium</span></div></div>
+<div class="ec-event ec-open relative cursor-pointer" data-id="8" data-time="15:00" data-ccy="AUD" data-flag="🇦🇺" data-impact="low" data-event="RBA Meeting Minutes" data-actual="-" data-forecast="-" data-previous="-" data-cat="Central Bank" data-src="Reserve Bank of Australia" data-pairs="AUD/USD,AUD/JPY,AUD/CAD" data-desc="The Reserve Bank of Australia releases the minutes of its monetary policy meeting.">
+<span class="absolute -left-[31px] top-1.5 w-3 h-3 rounded-full bg-emerald-500 ring-4 ring-panel"></span>
+<div class="flex items-start justify-between gap-4"><div class="min-w-0"><div class="flex items-center gap-2 mb-1 flex-wrap"><span class="text-sm font-semibold text-indigo-400">15:00</span><span class="text-lg shrink-0">🇦🇺</span><span class="font-medium text-text">AUD</span></div>
+<h4 class="font-semibold text-text mb-1">RBA Meeting Minutes</h4><p class="text-sm text-muted">The Reserve Bank of Australia releases the minutes of its monetary policy meeting....</p>
+<div class="flex gap-4 mt-2 text-sm"><span class="text-muted">Forecast: <span class="text-text font-medium">-</span></span><span class="text-muted">Previous: <span class="text-text font-medium">-</span></span></div></div>
+<span class="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-500 text-xs font-semibold capitalize shrink-0">low</span></div></div>
+<div class="ec-event ec-open relative cursor-pointer" data-id="9" data-time="19:00" data-ccy="JPY" data-flag="🇯🇵" data-impact="high" data-event="BoJ Policy Rate" data-actual="-" data-forecast="-0.10%" data-previous="-0.10%" data-cat="Central Bank" data-src="Bank of Japan" data-pairs="USD/JPY,EUR/JPY,GBP/JPY" data-desc="The Bank of Japan announces its policy rate decision.">
+<span class="absolute -left-[31px] top-1.5 w-3 h-3 rounded-full bg-red-500 ring-4 ring-panel"></span>
+<div class="flex items-start justify-between gap-4"><div class="min-w-0"><div class="flex items-center gap-2 mb-1 flex-wrap"><span class="text-sm font-semibold text-indigo-400">19:00</span><span class="text-lg shrink-0">🇯🇵</span><span class="font-medium text-text">JPY</span></div>
+<h4 class="font-semibold text-text mb-1">BoJ Policy Rate</h4><p class="text-sm text-muted">The Bank of Japan announces its policy rate decision....</p>
+<div class="flex gap-4 mt-2 text-sm"><span class="text-muted">Forecast: <span class="text-text font-medium">-0.10%</span></span><span class="text-muted">Previous: <span class="text-text font-medium">-0.10%</span></span></div></div>
+<span class="px-2 py-0.5 rounded-md bg-red-500/15 text-red-500 text-xs font-semibold capitalize shrink-0">high</span></div></div>
+<div class="ec-event ec-open relative cursor-pointer" data-id="10" data-time="21:30" data-ccy="CHF" data-flag="🇨🇭" data-impact="low" data-event="CPI m/m" data-actual="-" data-forecast="0.1%" data-previous="0.0%" data-cat="Inflation" data-src="Federal Statistical Office" data-pairs="USD/CHF,EUR/CHF,CHF/JPY" data-desc="Consumer Price Index measures the change in the price of goods and services.">
+<span class="absolute -left-[31px] top-1.5 w-3 h-3 rounded-full bg-emerald-500 ring-4 ring-panel"></span>
+<div class="flex items-start justify-between gap-4"><div class="min-w-0"><div class="flex items-center gap-2 mb-1 flex-wrap"><span class="text-sm font-semibold text-indigo-400">21:30</span><span class="text-lg shrink-0">🇨🇭</span><span class="font-medium text-text">CHF</span></div>
+<h4 class="font-semibold text-text mb-1">CPI m/m</h4><p class="text-sm text-muted">Consumer Price Index measures the change in the price of goods and services....</p>
+<div class="flex gap-4 mt-2 text-sm"><span class="text-muted">Forecast: <span class="text-text font-medium">0.1%</span></span><span class="text-muted">Previous: <span class="text-text font-medium">0.0%</span></span></div></div>
+<span class="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-500 text-xs font-semibold capitalize shrink-0">low</span></div></div>
+<div class="ec-event ec-open relative cursor-pointer" data-id="11" data-time="23:00" data-ccy="NZD" data-flag="🇳🇿" data-impact="medium" data-event="Business NZ PMI" data-actual="-" data-forecast="47.5" data-previous="46.8" data-cat="Manufacturing" data-src="BusinessNZ" data-pairs="NZD/USD,NZD/JPY,AUD/NZD" data-desc="The Business NZ PMI measures the level of a diffusion index based on surveyed purchasing managers.">
+<span class="absolute -left-[31px] top-1.5 w-3 h-3 rounded-full bg-amber-500 ring-4 ring-panel"></span>
+<div class="flex items-start justify-between gap-4"><div class="min-w-0"><div class="flex items-center gap-2 mb-1 flex-wrap"><span class="text-sm font-semibold text-indigo-400">23:00</span><span class="text-lg shrink-0">🇳🇿</span><span class="font-medium text-text">NZD</span></div>
+<h4 class="font-semibold text-text mb-1">Business NZ PMI</h4><p class="text-sm text-muted">The Business NZ PMI measures the level of a diffusion index based on surveyed purchasing managers....</p>
+<div class="flex gap-4 mt-2 text-sm"><span class="text-muted">Forecast: <span class="text-text font-medium">47.5</span></span><span class="text-muted">Previous: <span class="text-text font-medium">46.8</span></span></div></div>
+<span class="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-500 text-xs font-semibold capitalize shrink-0">medium</span></div></div>
+<div class="ec-event ec-open relative cursor-pointer" data-id="12" data-time="02:00" data-ccy="EUR" data-flag="🇪🇺" data-impact="low" data-event="German Industrial Production m/m" data-actual="0.5%" data-forecast="0.3%" data-previous="-0.3%" data-cat="Manufacturing" data-src="German Federal Statistical Office" data-pairs="EUR/USD,EUR/GBP,EUR/JPY" data-desc="Industrial Production measures the change in the total value of output produced by manufacturers.">
+<span class="absolute -left-[31px] top-1.5 w-3 h-3 rounded-full bg-emerald-500 ring-4 ring-panel"></span>
+<div class="flex items-start justify-between gap-4"><div class="min-w-0"><div class="flex items-center gap-2 mb-1 flex-wrap"><span class="text-sm font-semibold text-indigo-400">02:00</span><span class="text-lg shrink-0">🇪🇺</span><span class="font-medium text-text">EUR</span></div>
+<h4 class="font-semibold text-text mb-1">German Industrial Production m/m</h4><p class="text-sm text-muted">Industrial Production measures the change in the total value of output produced by manufacturers....</p>
+<div class="flex gap-4 mt-2 text-sm"><span class="text-muted">Forecast: <span class="text-text font-medium">0.3%</span></span><span class="text-muted">Previous: <span class="text-text font-medium">-0.3%</span></span></div></div>
+<span class="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-500 text-xs font-semibold capitalize shrink-0">low</span></div></div>
+<div class="ec-event ec-open relative cursor-pointer" data-id="13" data-time="04:30" data-ccy="GBP" data-flag="🇬🇧" data-impact="medium" data-event="Construction PMI" data-actual="52.6" data-forecast="51.8" data-previous="51.4" data-cat="Manufacturing" data-src="Markit" data-pairs="GBP/USD,EUR/GBP,GBP/JPY" data-desc="Construction PMI measures the level of a diffusion index based on surveyed purchasing managers.">
+<span class="absolute -left-[31px] top-1.5 w-3 h-3 rounded-full bg-amber-500 ring-4 ring-panel"></span>
+<div class="flex items-start justify-between gap-4"><div class="min-w-0"><div class="flex items-center gap-2 mb-1 flex-wrap"><span class="text-sm font-semibold text-indigo-400">04:30</span><span class="text-lg shrink-0">🇬🇧</span><span class="font-medium text-text">GBP</span></div>
+<h4 class="font-semibold text-text mb-1">Construction PMI</h4><p class="text-sm text-muted">Construction PMI measures the level of a diffusion index based on surveyed purchasing managers....</p>
+<div class="flex gap-4 mt-2 text-sm"><span class="text-muted">Forecast: <span class="text-text font-medium">51.8</span></span><span class="text-muted">Previous: <span class="text-text font-medium">51.4</span></span></div></div>
+<span class="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-500 text-xs font-semibold capitalize shrink-0">medium</span></div></div>
+</div>
+          </div>
+
+          <!-- Tab: Analytics -->
+          <div class="tab-content" id="ec-analytics">
+            <div class="grid grid-cols-1 @3xl/content:grid-cols-2 gap-6">
+              <div class="bg-bg border border-border rounded-xl p-5"><h3 class="font-semibold text-text mb-4">Events by Currency</h3><div class="relative h-64"><canvas id="ecCurrencyChart"></canvas></div></div>
+              <div class="bg-bg border border-border rounded-xl p-5"><h3 class="font-semibold text-text mb-4">Impact Distribution</h3><div class="relative h-64"><canvas id="ecImpactChart"></canvas></div></div>
+              <div class="bg-bg border border-border rounded-xl p-5 @xl/content:col-span-2 self-stretch flex flex-col"><h3 class="font-semibold text-text mb-4">Weekly Event Trends</h3><div class="relative flex-1 min-h-64"><canvas id="ecTrendsChart"></canvas></div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Mini calendar + upcoming -->
+        <div class="grid grid-cols-1 @3xl/content:grid-cols-3 gap-6">
+          <div class="bg-panel border border-border rounded-2xl p-5">
+            <div class="flex items-center justify-between gap-2 mb-4">
+              <h3 class="font-semibold text-text">June 2026</h3>
+              <div class="flex gap-2">
+                <button class="w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition"><i data-lucide="chevron-left" class="w-4 h-4 shrink-0"></i></button>
+                <button class="w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition"><i data-lucide="chevron-right" class="w-4 h-4 shrink-0"></i></button>
+              </div>
+            </div>
+            <div class="grid grid-cols-7 gap-1 text-center">
+              <div class="text-[11px] font-semibold text-muted py-1">Sun</div>
+              <div class="text-[11px] font-semibold text-muted py-1">Mon</div>
+              <div class="text-[11px] font-semibold text-muted py-1">Tue</div>
+              <div class="text-[11px] font-semibold text-muted py-1">Wed</div>
+              <div class="text-[11px] font-semibold text-muted py-1">Thu</div>
+              <div class="text-[11px] font-semibold text-muted py-1">Fri</div>
+              <div class="text-[11px] font-semibold text-muted py-1">Sat</div>
+              
+<div class="aspect-square"></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>1</span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>2</span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative bg-accent text-white font-semibold"><span>3</span><span class="flex gap-0.5 mt-0.5"><span class="w-1 h-1 rounded-full bg-red-500"></span></span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>4</span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>5</span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>6</span><span class="flex gap-0.5 mt-0.5"><span class="w-1 h-1 rounded-full bg-red-500"></span><span class="w-1 h-1 rounded-full bg-amber-500"></span></span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>7</span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>8</span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>9</span><span class="flex gap-0.5 mt-0.5"><span class="w-1 h-1 rounded-full bg-red-500"></span></span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>10</span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>11</span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>12</span><span class="flex gap-0.5 mt-0.5"><span class="w-1 h-1 rounded-full bg-red-500"></span><span class="w-1 h-1 rounded-full bg-amber-500"></span></span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>13</span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>14</span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>15</span><span class="flex gap-0.5 mt-0.5"><span class="w-1 h-1 rounded-full bg-red-500"></span></span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>16</span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>17</span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>18</span><span class="flex gap-0.5 mt-0.5"><span class="w-1 h-1 rounded-full bg-red-500"></span><span class="w-1 h-1 rounded-full bg-amber-500"></span></span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>19</span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>20</span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>21</span><span class="flex gap-0.5 mt-0.5"><span class="w-1 h-1 rounded-full bg-red-500"></span></span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>22</span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>23</span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>24</span><span class="flex gap-0.5 mt-0.5"><span class="w-1 h-1 rounded-full bg-red-500"></span><span class="w-1 h-1 rounded-full bg-amber-500"></span></span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>25</span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>26</span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>27</span><span class="flex gap-0.5 mt-0.5"><span class="w-1 h-1 rounded-full bg-red-500"></span></span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>28</span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>29</span></div>
+<div class="aspect-square rounded-lg flex flex-col items-center justify-center text-sm cursor-pointer transition relative text-text hover:bg-bg"><span>30</span><span class="flex gap-0.5 mt-0.5"><span class="w-1 h-1 rounded-full bg-red-500"></span><span class="w-1 h-1 rounded-full bg-amber-500"></span></span></div>
+
+            </div>
+          </div>
+
+          <div class="bg-panel border border-border rounded-2xl p-5 @3xl/content:col-span-2">
+            <div class="flex items-center justify-between gap-2 mb-4">
+              <h3 class="font-semibold text-text">Upcoming High Impact Events</h3>
+              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-red-500/15 text-red-500 text-xs font-semibold shrink-0"><i data-lucide="triangle-alert" class="w-3 h-3 shrink-0"></i>Critical</span>
+            </div>
+            <div class="space-y-3">
+<div class="ec-event ec-open flex items-center justify-between gap-4 p-4 bg-bg border border-border rounded-xl cursor-pointer hover:border-accent/40 transition" data-id="1" data-time="08:30" data-ccy="USD" data-flag="🇺🇸" data-impact="high" data-event="Non-Farm Payrolls" data-actual="256K" data-forecast="180K" data-previous="212K" data-cat="Employment" data-src="Bureau of Labor Statistics" data-pairs="EUR/USD,GBP/USD,USD/JPY" data-desc="The Non-Farm Payrolls report measures the change in the number of people employed during the previous month, excluding the farming industry.">
+<div class="flex items-center gap-4 min-w-0"><div class="w-10 h-10 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center shrink-0"><span class="text-xl">🇺🇸</span></div><div class="min-w-0"><h4 class="font-semibold text-text truncate">Non-Farm Payrolls</h4><p class="text-sm text-muted">USD • 08:30</p></div></div>
+<div class="text-right shrink-0"><p class="text-sm text-muted">Forecast</p><p class="font-semibold text-text">180K</p></div></div>
+<div class="ec-event ec-open flex items-center justify-between gap-4 p-4 bg-bg border border-border rounded-xl cursor-pointer hover:border-accent/40 transition" data-id="2" data-time="08:30" data-ccy="USD" data-flag="🇺🇸" data-impact="high" data-event="Unemployment Rate" data-actual="4.1%" data-forecast="4.2%" data-previous="4.2%" data-cat="Employment" data-src="Bureau of Labor Statistics" data-pairs="EUR/USD,GBP/USD,USD/JPY" data-desc="The Unemployment Rate measures the percentage of the total work force that is unemployed and actively seeking employment.">
+<div class="flex items-center gap-4 min-w-0"><div class="w-10 h-10 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center shrink-0"><span class="text-xl">🇺🇸</span></div><div class="min-w-0"><h4 class="font-semibold text-text truncate">Unemployment Rate</h4><p class="text-sm text-muted">USD • 08:30</p></div></div>
+<div class="text-right shrink-0"><p class="text-sm text-muted">Forecast</p><p class="font-semibold text-text">4.2%</p></div></div>
+<div class="ec-event ec-open flex items-center justify-between gap-4 p-4 bg-bg border border-border rounded-xl cursor-pointer hover:border-accent/40 transition" data-id="5" data-time="11:30" data-ccy="GBP" data-flag="🇬🇧" data-impact="high" data-event="BoE Interest Rate Decision" data-actual="-" data-forecast="4.75%" data-previous="4.75%" data-cat="Central Bank" data-src="Bank of England" data-pairs="GBP/USD,EUR/GBP,GBP/JPY" data-desc="The Bank of England announces its interest rate decision, a key indicator for monetary policy.">
+<div class="flex items-center gap-4 min-w-0"><div class="w-10 h-10 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center shrink-0"><span class="text-xl">🇬🇧</span></div><div class="min-w-0"><h4 class="font-semibold text-text truncate">BoE Interest Rate Decision</h4><p class="text-sm text-muted">GBP • 11:30</p></div></div>
+<div class="text-right shrink-0"><p class="text-sm text-muted">Forecast</p><p class="font-semibold text-text">4.75%</p></div></div>
+<div class="ec-event ec-open flex items-center justify-between gap-4 p-4 bg-bg border border-border rounded-xl cursor-pointer hover:border-accent/40 transition" data-id="9" data-time="19:00" data-ccy="JPY" data-flag="🇯🇵" data-impact="high" data-event="BoJ Policy Rate" data-actual="-" data-forecast="-0.10%" data-previous="-0.10%" data-cat="Central Bank" data-src="Bank of Japan" data-pairs="USD/JPY,EUR/JPY,GBP/JPY" data-desc="The Bank of Japan announces its policy rate decision.">
+<div class="flex items-center gap-4 min-w-0"><div class="w-10 h-10 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center shrink-0"><span class="text-xl">🇯🇵</span></div><div class="min-w-0"><h4 class="font-semibold text-text truncate">BoJ Policy Rate</h4><p class="text-sm text-muted">JPY • 19:00</p></div></div>
+<div class="text-right shrink-0"><p class="text-sm text-muted">Forecast</p><p class="font-semibold text-text">-0.10%</p></div></div>
+</div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Drawer overlay -->
+    <div class="drawer-overlay" id="ecOverlay"></div>
+
+    <!-- Filter drawer -->
+    <aside class="drawer" id="ecFilterDrawer">
+      <div class="p-6 border-b border-border flex items-center justify-between sticky top-0 bg-panel z-10">
+        <h2 class="text-xl font-bold text-text">Advanced Filters</h2>
+        <button class="ec-drawer-close w-9 h-9 rounded-lg flex items-center justify-center text-muted hover:bg-bg transition"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+      </div>
+      <div class="p-6 space-y-6">
+        <div>
+          <label class="block text-sm font-medium text-text mb-2">Date Range</label>
+          <div class="grid grid-cols-1 @xs:grid-cols-2 gap-3">
+            <div><label class="block text-xs text-muted mb-1">From</label><input type="date" class="w-full px-3 py-2.5 rounded-lg bg-bg border border-border text-text text-sm focus:outline-none focus:border-accent" /></div>
+            <div><label class="block text-xs text-muted mb-1">To</label><input type="date" class="w-full px-3 py-2.5 rounded-lg bg-bg border border-border text-text text-sm focus:outline-none focus:border-accent" /></div>
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-text mb-2">Impact Level</label>
+          <div class="space-y-2">
+            <label class="flex items-center gap-3 p-3 bg-bg rounded-xl cursor-pointer"><input type="checkbox" class="custom-checkbox shrink-0" checked /><span class="flex items-center gap-2"><span class="w-3 h-3 rounded-full bg-red-500 shrink-0"></span>High Impact</span></label>
+            <label class="flex items-center gap-3 p-3 bg-bg rounded-xl cursor-pointer"><input type="checkbox" class="custom-checkbox shrink-0" checked /><span class="flex items-center gap-2"><span class="w-3 h-3 rounded-full bg-amber-500 shrink-0"></span>Medium Impact</span></label>
+            <label class="flex items-center gap-3 p-3 bg-bg rounded-xl cursor-pointer"><input type="checkbox" class="custom-checkbox shrink-0" checked /><span class="flex items-center gap-2"><span class="w-3 h-3 rounded-full bg-emerald-500 shrink-0"></span>Low Impact</span></label>
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-text mb-2">Event Categories</label>
+          <div class="space-y-2">
+            <label class="flex items-center gap-3 p-3 bg-bg rounded-xl cursor-pointer"><input type="checkbox" class="custom-checkbox shrink-0" checked /><span class="text-sm text-text">Central Bank Decisions</span></label>
+            <label class="flex items-center gap-3 p-3 bg-bg rounded-xl cursor-pointer"><input type="checkbox" class="custom-checkbox shrink-0" checked /><span class="text-sm text-text">Employment Data</span></label>
+            <label class="flex items-center gap-3 p-3 bg-bg rounded-xl cursor-pointer"><input type="checkbox" class="custom-checkbox shrink-0" checked /><span class="text-sm text-text">Inflation Reports</span></label>
+            <label class="flex items-center gap-3 p-3 bg-bg rounded-xl cursor-pointer"><input type="checkbox" class="custom-checkbox shrink-0" checked /><span class="text-sm text-text">GDP &amp; Growth</span></label>
+            <label class="flex items-center gap-3 p-3 bg-bg rounded-xl cursor-pointer"><input type="checkbox" class="custom-checkbox shrink-0" checked /><span class="text-sm text-text">Trade &amp; Manufacturing</span></label>
+          </div>
+        </div>
+        <div class="flex gap-3 pt-2">
+          <button class="ec-toast-btn flex-1 inline-flex items-center justify-center px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition" data-toast-title="Filters Reset" data-toast-msg="All filters have been reset">Reset</button>
+          <button class="ec-toast-btn flex-1 inline-flex items-center justify-center px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-indigo-500 text-white text-sm font-semibold" data-close data-toast-title="Filters Applied" data-toast-msg="Your filter settings have been applied">Apply Filters</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Event detail drawer -->
+    <aside class="drawer" id="ecDetailDrawer">
+      <div class="p-6 border-b border-border flex items-center justify-between sticky top-0 bg-panel z-10">
+        <h2 class="text-xl font-bold text-text" id="ecDetailTitle">Event Details</h2>
+        <button class="ec-drawer-close w-9 h-9 rounded-lg flex items-center justify-center text-muted hover:bg-bg transition"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+      </div>
+      <div class="p-6 space-y-6">
+        <div class="flex items-center gap-4">
+          <div class="w-16 h-16 rounded-2xl bg-bg border border-border flex items-center justify-center shrink-0"><span class="text-3xl" id="ecDetailFlag">🇺🇸</span></div>
+          <div class="min-w-0"><h3 class="text-xl font-bold text-text" id="ecDetailCcy">USD</h3><p class="text-muted" id="ecDetailCat">Employment</p></div>
+        </div>
+        <div class="flex items-center gap-3 flex-wrap">
+          <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold bg-red-500/15 text-red-500" id="ecDetailImpact"><i data-lucide="triangle-alert" class="w-3 h-3 shrink-0"></i><span id="ecDetailImpactText">High Impact</span></span>
+          <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-indigo-500/15 text-indigo-400 text-xs font-semibold"><i data-lucide="clock" class="w-3 h-3 shrink-0"></i><span id="ecDetailTime">08:30</span></span>
+        </div>
+        <div class="grid grid-cols-3 gap-4">
+          <div class="p-4 bg-bg border border-border rounded-xl text-center"><p class="text-sm text-muted mb-1">Actual</p><p class="text-xl font-bold text-text" id="ecDetailActual">256K</p></div>
+          <div class="p-4 bg-bg border border-border rounded-xl text-center"><p class="text-sm text-muted mb-1">Forecast</p><p class="text-xl font-bold text-text" id="ecDetailForecast">180K</p></div>
+          <div class="p-4 bg-bg border border-border rounded-xl text-center"><p class="text-sm text-muted mb-1">Previous</p><p class="text-xl font-bold text-text" id="ecDetailPrevious">212K</p></div>
+        </div>
+        <div><h4 class="font-semibold text-text mb-2">Description</h4><p class="text-muted" id="ecDetailDesc">The Non-Farm Payrolls report measures the change in the number of people employed during the previous month, excluding the farming industry.</p></div>
+        <div class="flex items-center gap-2 p-4 bg-bg border border-border rounded-xl"><i data-lucide="info" class="w-5 h-5 text-muted shrink-0"></i><span class="text-sm text-muted">Source: <span id="ecDetailSource">Bureau of Labor Statistics</span></span></div>
+        <div>
+          <h4 class="font-semibold text-text mb-3">Historical Data</h4>
+          <div class="h-48 bg-bg border border-border rounded-xl p-3"><canvas id="ecHistoryChart"></canvas></div>
+        </div>
+        <div>
+          <h4 class="font-semibold text-text mb-3">Affected Currency Pairs</h4>
+          <div class="flex flex-wrap gap-2" id="ecDetailPairs">
+            <span class="px-3 py-2 bg-bg border border-border rounded-lg text-sm font-medium text-text">EUR/USD</span>
+            <span class="px-3 py-2 bg-bg border border-border rounded-lg text-sm font-medium text-text">GBP/USD</span>
+            <span class="px-3 py-2 bg-bg border border-border rounded-lg text-sm font-medium text-text">USD/JPY</span>
+          </div>
+        </div>
+        <div class="p-4 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white">
+          <div class="flex items-center gap-2 mb-2"><i data-lucide="brain" class="w-5 h-5 shrink-0"></i><span class="font-semibold">AI Analysis</span></div>
+          <p class="text-sm opacity-90" id="ecDetailAi">Based on historical data and current market conditions, this event may cause increased volatility in USD pairs. Consider adjusting position sizes and stop-loss levels accordingly.</p>
+        </div>
+        <div class="flex gap-3">
+          <button class="ec-toast-btn flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition" data-toast-title="Added to Watchlist" data-toast-msg="Event has been added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i>Add to Watchlist</button>
+          <button class="ec-toast-btn flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-indigo-500 text-white text-sm font-semibold" data-toast-title="Alert Set" data-toast-msg="You will be notified before this event"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i>Set Alert</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Toast -->
+    <div class="toast" id="ecToast">
+      <div class="w-10 h-10 rounded-full bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-5 h-5 text-white shrink-0"></i></div>
+      <div class="min-w-0"><p class="font-semibold text-text" id="ecToastTitle">Success</p><p class="text-sm text-muted" id="ecToastMessage">Action completed successfully</p></div>
+      <button id="ecToastClose" class="ml-2 w-8 h-8 rounded-lg flex items-center justify-center text-muted hover:bg-bg transition shrink-0"><i data-lucide="x" class="w-4 h-4 shrink-0"></i></button>
+    </div>
+  <script defer src="js/index.js"></script></body>
+</html>

@@ -1,0 +1,988 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <script>
+      if (localStorage.getItem("theme") === "light") document.documentElement.classList.remove("dark");
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Webhook Automations - SignalAIX | AI Forex & Crypto Trading Signals</title>
+    <link rel="icon" type="image/png" href="assets/images/favicon.png" />
+    <link rel="apple-touch-icon" href="assets/images/favicon.png" />
+  </head>
+  <body id="webhook-automations">
+    <div id="loader"><div class="spinner"></div><div class="loader-text">Loading SignalAIX...</div></div>
+    <include-sidebar />
+    <main class="main-content" id="mainContent">
+      <include-top-header />
+      <div class="inner-content max-sm:px-3 max-lg:px-4 max-lg:py-6 lg:p-6">
+        <!-- Page Header -->
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-6">
+          <div>
+            <div class="flex items-center gap-3 mb-2">
+              <h1 class="text-2xl md:text-3xl font-bold text-text">Webhook Automations</h1>
+              <div class="flex items-center gap-2 px-3 py-1 bg-emerald-500/15 text-emerald-500 rounded-full text-sm font-semibold">
+                <span class="live-dot"></span>
+                12 Active
+              </div>
+            </div>
+            <p class="text-muted">Create and manage webhooks for automated signal delivery</p>
+          </div>
+          <div class="flex flex-wrap items-center gap-3">
+            <button
+              id="whFilterBtn"
+              class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"
+            >
+              <i data-lucide="sliders-horizontal" class="w-4 h-4 shrink-0"></i>
+              <span>Filters</span>
+            </button>
+            <div class="relative">
+              <button
+                id="whExportBtn"
+                class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"
+              >
+                <i data-lucide="download" class="w-4 h-4 shrink-0"></i>
+                <span>Export</span>
+                <i data-lucide="chevron-down" class="w-4 h-4 shrink-0"></i>
+              </button>
+              <div
+                id="whExportMenu"
+                class="hidden absolute right-0 mt-2 w-48 bg-panel border border-border rounded-xl shadow-xl z-50 overflow-hidden"
+              >
+                <button class="wh-export-item flex items-center gap-2.5 w-full px-4 py-3 text-sm text-text hover:bg-accent/10 transition-colors" data-format="csv">
+                  <i data-lucide="file-text" class="w-4 h-4 shrink-0"></i>
+                  <span>Export as CSV</span>
+                </button>
+                <button class="wh-export-item flex items-center gap-2.5 w-full px-4 py-3 text-sm text-text hover:bg-accent/10 transition-colors" data-format="json">
+                  <i data-lucide="file-code" class="w-4 h-4 shrink-0"></i>
+                  <span>Export as JSON</span>
+                </button>
+                <button class="wh-export-item flex items-center gap-2.5 w-full px-4 py-3 text-sm text-text hover:bg-accent/10 transition-colors" data-format="pdf">
+                  <i data-lucide="file" class="w-4 h-4 shrink-0"></i>
+                  <span>Export as PDF</span>
+                </button>
+              </div>
+            </div>
+            <button
+              id="whNewBtn"
+              class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"
+            >
+              <i data-lucide="plus" class="w-4 h-4 shrink-0"></i>
+              <span>New Webhook</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Stat Cards -->
+        <div class="grid grid-cols-1 xs:grid-cols-2 @4xl/content:grid-cols-4 gap-4 mb-6">
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="webhook" class="w-5 h-5 text-emerald-500 shrink-0"></i>
+              </div>
+              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500"><i data-lucide="circle-check" class="w-3 h-3 shrink-0"></i>Active</span>
+            </div>
+            <p class="text-2xl font-bold text-text">12</p>
+            <p class="text-xs text-muted mt-1">Total Webhooks</p>
+          </div>
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-sky-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="send" class="w-5 h-5 text-sky-500 shrink-0"></i>
+              </div>
+              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i>+18%</span>
+            </div>
+            <p class="text-2xl font-bold text-text">3,842</p>
+            <p class="text-xs text-muted mt-1">Requests Today</p>
+          </div>
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="circle-check" class="w-5 h-5 text-emerald-500 shrink-0"></i>
+              </div>
+              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">Excellent</span>
+            </div>
+            <p class="text-2xl font-bold text-text">99.7%</p>
+            <p class="text-xs text-muted mt-1">Success Rate</p>
+          </div>
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-violet-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="zap" class="w-5 h-5 text-violet-400 shrink-0"></i>
+              </div>
+              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-sky-500/15 text-sky-500">Fast</span>
+            </div>
+            <p class="text-2xl font-bold text-text">124ms</p>
+            <p class="text-xs text-muted mt-1">Avg Response Time</p>
+          </div>
+        </div>
+
+        <!-- Main card: tabs + content -->
+        <div class="rounded-2xl bg-panel border border-border p-4 sm:p-5 mb-6">
+          <!-- Tabs -->
+          <div class="flex gap-1 p-1 bg-bg border border-border rounded-2xl overflow-x-auto hide-scrollbar mb-5">
+            <button class="wh-tab tab-button active inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="endpoints">
+              <i data-lucide="link" class="w-4 h-4 shrink-0"></i><span>Endpoints</span>
+            </button>
+            <button class="wh-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="incoming">
+              <i data-lucide="arrow-down-to-line" class="w-4 h-4 shrink-0"></i><span>Incoming</span>
+            </button>
+            <button class="wh-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="outgoing">
+              <i data-lucide="arrow-up-from-line" class="w-4 h-4 shrink-0"></i><span>Outgoing</span>
+            </button>
+            <button class="wh-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="logs">
+              <i data-lucide="scroll-text" class="w-4 h-4 shrink-0"></i><span>Logs</span>
+            </button>
+            <button class="wh-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="templates">
+              <i data-lucide="file-code" class="w-4 h-4 shrink-0"></i><span>Templates</span>
+            </button>
+          </div>
+
+          <!-- ============ Pane: Endpoints ============ -->
+          <div class="wh-pane tab-content active" data-pane="endpoints">
+            <!-- Filter bar -->
+            <div class="flex flex-col lg:flex-row lg:items-center gap-4 mb-6">
+              <div class="relative flex-1 lg:max-w-md">
+                <i data-lucide="search" class="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted shrink-0"></i>
+                <input type="text" id="whEndpointSearch" placeholder="Search endpoints..." class="w-full pl-10 pr-3 py-2.5 bg-bg border border-border rounded-xl text-text text-sm focus:outline-none focus:border-accent transition-colors" />
+              </div>
+              <div class="flex flex-wrap items-center gap-2">
+                <button class="wh-chip active px-4 py-2 rounded-full border border-accent bg-accent/15 text-accent text-sm font-medium transition-colors" data-filter="all">All</button>
+                <button class="wh-chip px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-filter="active">Active</button>
+                <button class="wh-chip px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-filter="paused">Paused</button>
+                <button class="wh-chip px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-filter="error">Error</button>
+              </div>
+            </div>
+
+            <!-- No results -->
+            <div id="whNoResults" class="hidden text-center py-12">
+              <div class="w-14 h-14 rounded-2xl bg-bg border border-border flex items-center justify-center mx-auto mb-4">
+                <i data-lucide="search-x" class="w-6 h-6 text-muted shrink-0"></i>
+              </div>
+              <p class="text-text font-semibold mb-1">No webhooks found</p>
+              <p class="text-sm text-muted">Try adjusting your search or filters</p>
+            </div>
+
+            <!-- Webhook card grid -->
+            <div id="whGrid" class="grid grid-cols-1 @xl/content:grid-cols-2 @4xl/content:grid-cols-3 gap-4">
+              <!-- Card 1 -->
+              <div class="wh-card rounded-2xl bg-bg border border-border p-4 sm:p-5 hover:border-accent/40 transition-colors" data-id="1" data-status="active" data-name="Trading Signal Receiver" data-dir="Incoming" data-method="POST" data-url="https://api.signalaix.com/webhook/recv/8f4a2c9e7b">
+                <div class="flex items-start justify-between gap-3 mb-4">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="w-11 h-11 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0">
+                      <i data-lucide="trending-up" class="w-5 h-5 text-emerald-500 shrink-0"></i>
+                    </div>
+                    <div class="min-w-0">
+                      <h4 class="font-semibold text-text truncate">Trading Signal Receiver</h4>
+                      <p class="text-xs text-muted truncate">Incoming • Created 15 days ago</p>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-2 shrink-0">
+                    <span class="wh-card-dot w-2 h-2 rounded-full bg-emerald-500"></span>
+                    <div class="wh-card-toggle js-toggle-switch toggle-switch active" role="switch" aria-checked="true" tabindex="0"></div>
+                  </div>
+                </div>
+                <div class="flex items-center gap-2 mb-4 p-2.5 rounded-xl bg-border/30 border border-border">
+                  <span class="px-2 py-0.5 rounded-md text-[11px] font-bold font-mono bg-sky-500/15 text-sky-500 shrink-0">POST</span>
+                  <span class="flex-1 min-w-0 truncate font-mono text-xs text-text">https://api.signalaix.com/webhook/recv/8f4a2c...</span>
+                  <button class="wh-copy-url w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0" title="Copy URL">
+                    <i data-lucide="copy" class="w-4 h-4 shrink-0"></i>
+                  </button>
+                </div>
+                <div class="grid grid-cols-3 gap-2 mb-4">
+                  <div class="rounded-xl bg-panel border border-border p-3 text-center"><p class="text-base font-bold text-text">1,247</p><p class="text-[11px] text-muted">Requests</p></div>
+                  <div class="rounded-xl bg-panel border border-border p-3 text-center"><p class="text-base font-bold text-emerald-500">99.8%</p><p class="text-[11px] text-muted">Success</p></div>
+                  <div class="rounded-xl bg-panel border border-border p-3 text-center"><p class="text-base font-bold text-text">89ms</p><p class="text-[11px] text-muted">Latency</p></div>
+                </div>
+                <div class="flex items-center gap-2">
+                  <button class="wh-test-btn flex-1 justify-center inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="play" class="w-4 h-4 shrink-0"></i>Test</button>
+                  <button class="wh-config-btn flex-1 justify-center inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="settings" class="w-4 h-4 shrink-0"></i>Configure</button>
+                  <button class="wh-logs-btn w-9 h-9 shrink-0 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors" title="View logs"><i data-lucide="scroll-text" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+
+              <!-- Card 2 -->
+              <div class="wh-card rounded-2xl bg-bg border border-border p-4 sm:p-5 hover:border-accent/40 transition-colors" data-id="2" data-status="active" data-name="MT4 Bridge Sender" data-dir="Outgoing" data-method="POST" data-url="https://mt4bridge.trading/api/v2/signals">
+                <div class="flex items-start justify-between gap-3 mb-4">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="w-11 h-11 rounded-xl bg-sky-500/15 flex items-center justify-center shrink-0">
+                      <i data-lucide="send" class="w-5 h-5 text-sky-500 shrink-0"></i>
+                    </div>
+                    <div class="min-w-0">
+                      <h4 class="font-semibold text-text truncate">MT4 Bridge Sender</h4>
+                      <p class="text-xs text-muted truncate">Outgoing • Created 8 days ago</p>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-2 shrink-0">
+                    <span class="wh-card-dot w-2 h-2 rounded-full bg-emerald-500"></span>
+                    <div class="wh-card-toggle js-toggle-switch toggle-switch active" role="switch" aria-checked="true" tabindex="0"></div>
+                  </div>
+                </div>
+                <div class="flex items-center gap-2 mb-4 p-2.5 rounded-xl bg-border/30 border border-border">
+                  <span class="px-2 py-0.5 rounded-md text-[11px] font-bold font-mono bg-sky-500/15 text-sky-500 shrink-0">POST</span>
+                  <span class="flex-1 min-w-0 truncate font-mono text-xs text-text">https://mt4bridge.trading/api/v2/signals</span>
+                  <button class="wh-copy-url w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0" title="Copy URL">
+                    <i data-lucide="copy" class="w-4 h-4 shrink-0"></i>
+                  </button>
+                </div>
+                <div class="grid grid-cols-3 gap-2 mb-4">
+                  <div class="rounded-xl bg-panel border border-border p-3 text-center"><p class="text-base font-bold text-text">892</p><p class="text-[11px] text-muted">Requests</p></div>
+                  <div class="rounded-xl bg-panel border border-border p-3 text-center"><p class="text-base font-bold text-emerald-500">99.5%</p><p class="text-[11px] text-muted">Success</p></div>
+                  <div class="rounded-xl bg-panel border border-border p-3 text-center"><p class="text-base font-bold text-text">156ms</p><p class="text-[11px] text-muted">Latency</p></div>
+                </div>
+                <div class="flex items-center gap-2">
+                  <button class="wh-test-btn flex-1 justify-center inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="play" class="w-4 h-4 shrink-0"></i>Test</button>
+                  <button class="wh-config-btn flex-1 justify-center inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="settings" class="w-4 h-4 shrink-0"></i>Configure</button>
+                  <button class="wh-logs-btn w-9 h-9 shrink-0 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors" title="View logs"><i data-lucide="scroll-text" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+
+              <!-- Card 3 -->
+              <div class="wh-card rounded-2xl bg-bg border border-border p-4 sm:p-5 hover:border-accent/40 transition-colors" data-id="3" data-status="active" data-name="Alert Notification" data-dir="Outgoing" data-method="POST" data-url="https://hooks.slack.com/services/T0XXXXXXX/B0XXXXXXX/abcd">
+                <div class="flex items-start justify-between gap-3 mb-4">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="w-11 h-11 rounded-xl bg-violet-500/15 flex items-center justify-center shrink-0">
+                      <i data-lucide="bell" class="w-5 h-5 text-violet-400 shrink-0"></i>
+                    </div>
+                    <div class="min-w-0">
+                      <h4 class="font-semibold text-text truncate">Alert Notification</h4>
+                      <p class="text-xs text-muted truncate">Outgoing • Created 22 days ago</p>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-2 shrink-0">
+                    <span class="wh-card-dot w-2 h-2 rounded-full bg-emerald-500"></span>
+                    <div class="wh-card-toggle js-toggle-switch toggle-switch active" role="switch" aria-checked="true" tabindex="0"></div>
+                  </div>
+                </div>
+                <div class="flex items-center gap-2 mb-4 p-2.5 rounded-xl bg-border/30 border border-border">
+                  <span class="px-2 py-0.5 rounded-md text-[11px] font-bold font-mono bg-sky-500/15 text-sky-500 shrink-0">POST</span>
+                  <span class="flex-1 min-w-0 truncate font-mono text-xs text-text">https://hooks.slack.com/services/T0...</span>
+                  <button class="wh-copy-url w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0" title="Copy URL">
+                    <i data-lucide="copy" class="w-4 h-4 shrink-0"></i>
+                  </button>
+                </div>
+                <div class="grid grid-cols-3 gap-2 mb-4">
+                  <div class="rounded-xl bg-panel border border-border p-3 text-center"><p class="text-base font-bold text-text">2,156</p><p class="text-[11px] text-muted">Requests</p></div>
+                  <div class="rounded-xl bg-panel border border-border p-3 text-center"><p class="text-base font-bold text-emerald-500">100%</p><p class="text-[11px] text-muted">Success</p></div>
+                  <div class="rounded-xl bg-panel border border-border p-3 text-center"><p class="text-base font-bold text-text">67ms</p><p class="text-[11px] text-muted">Latency</p></div>
+                </div>
+                <div class="flex items-center gap-2">
+                  <button class="wh-test-btn flex-1 justify-center inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="play" class="w-4 h-4 shrink-0"></i>Test</button>
+                  <button class="wh-config-btn flex-1 justify-center inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="settings" class="w-4 h-4 shrink-0"></i>Configure</button>
+                  <button class="wh-logs-btn w-9 h-9 shrink-0 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors" title="View logs"><i data-lucide="scroll-text" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+
+              <!-- Card 4 — error state -->
+              <div class="wh-card rounded-2xl bg-bg border border-red-500/30 p-4 sm:p-5 transition-colors" data-id="4" data-status="error" data-name="Database Sync" data-dir="Outgoing" data-method="PUT" data-url="https://db.trading-platform.io/sync">
+                <div class="flex items-start justify-between gap-3 mb-4">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="w-11 h-11 rounded-xl bg-red-500/15 flex items-center justify-center shrink-0">
+                      <i data-lucide="database" class="w-5 h-5 text-red-500 shrink-0"></i>
+                    </div>
+                    <div class="min-w-0">
+                      <h4 class="font-semibold text-text truncate">Database Sync</h4>
+                      <p class="text-xs text-muted truncate">Outgoing • Created 30 days ago</p>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-2 shrink-0">
+                    <span class="wh-card-dot w-2 h-2 rounded-full bg-red-500"></span>
+                    <div class="wh-card-toggle js-toggle-switch toggle-switch" role="switch" aria-checked="false" tabindex="0"></div>
+                  </div>
+                </div>
+                <div class="flex items-center gap-2 mb-4 p-2.5 rounded-xl bg-border/30 border border-border">
+                  <span class="px-2 py-0.5 rounded-md text-[11px] font-bold font-mono bg-amber-500/15 text-amber-500 shrink-0">PUT</span>
+                  <span class="flex-1 min-w-0 truncate font-mono text-xs text-text">https://db.trading-platform.io/sync</span>
+                  <button class="wh-copy-url w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0" title="Copy URL">
+                    <i data-lucide="copy" class="w-4 h-4 shrink-0"></i>
+                  </button>
+                </div>
+                <div class="flex items-center gap-2 mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-500 text-sm">
+                  <i data-lucide="circle-alert" class="w-4 h-4 shrink-0"></i>
+                  <span class="min-w-0">Connection timeout - Last error 2 hours ago</span>
+                </div>
+                <div class="grid grid-cols-3 gap-2 mb-4">
+                  <div class="rounded-xl bg-panel border border-border p-3 text-center"><p class="text-base font-bold text-text">456</p><p class="text-[11px] text-muted">Requests</p></div>
+                  <div class="rounded-xl bg-panel border border-border p-3 text-center"><p class="text-base font-bold text-red-500">87.2%</p><p class="text-[11px] text-muted">Success</p></div>
+                  <div class="rounded-xl bg-panel border border-border p-3 text-center"><p class="text-base font-bold text-amber-500">892ms</p><p class="text-[11px] text-muted">Latency</p></div>
+                </div>
+                <div class="flex items-center gap-2">
+                  <button class="wh-retry-btn flex-1 justify-center inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-red-500/15 border border-red-500/30 text-red-500 text-sm font-semibold hover:bg-red-500/25 transition-colors whitespace-nowrap"><i data-lucide="refresh-cw" class="w-4 h-4 shrink-0"></i>Retry</button>
+                  <button class="wh-config-btn flex-1 justify-center inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="settings" class="w-4 h-4 shrink-0"></i>Configure</button>
+                  <button class="wh-logs-btn w-9 h-9 shrink-0 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors" title="View logs"><i data-lucide="scroll-text" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+
+              <!-- Card 5 -->
+              <div class="wh-card rounded-2xl bg-bg border border-border p-4 sm:p-5 hover:border-accent/40 transition-colors" data-id="5" data-status="paused" data-name="Analytics Tracker" data-dir="Outgoing" data-method="POST" data-url="https://analytics.signalaix.com/track">
+                <div class="flex items-start justify-between gap-3 mb-4">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="w-11 h-11 rounded-xl bg-amber-500/15 flex items-center justify-center shrink-0">
+                      <i data-lucide="chart-bar" class="w-5 h-5 text-amber-500 shrink-0"></i>
+                    </div>
+                    <div class="min-w-0">
+                      <h4 class="font-semibold text-text truncate">Analytics Tracker</h4>
+                      <p class="text-xs text-muted truncate">Outgoing • Created 5 days ago</p>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-2 shrink-0">
+                    <span class="wh-card-dot w-2 h-2 rounded-full bg-amber-500"></span>
+                    <div class="wh-card-toggle js-toggle-switch toggle-switch" role="switch" aria-checked="false" tabindex="0"></div>
+                  </div>
+                </div>
+                <div class="flex items-center gap-2 mb-4 p-2.5 rounded-xl bg-border/30 border border-border">
+                  <span class="px-2 py-0.5 rounded-md text-[11px] font-bold font-mono bg-sky-500/15 text-sky-500 shrink-0">POST</span>
+                  <span class="flex-1 min-w-0 truncate font-mono text-xs text-text">https://analytics.signalaix.com/track</span>
+                  <button class="wh-copy-url w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0" title="Copy URL">
+                    <i data-lucide="copy" class="w-4 h-4 shrink-0"></i>
+                  </button>
+                </div>
+                <div class="grid grid-cols-3 gap-2 mb-4">
+                  <div class="rounded-xl bg-panel border border-border p-3 text-center"><p class="text-base font-bold text-text">5,892</p><p class="text-[11px] text-muted">Requests</p></div>
+                  <div class="rounded-xl bg-panel border border-border p-3 text-center"><p class="text-base font-bold text-emerald-500">99.9%</p><p class="text-[11px] text-muted">Success</p></div>
+                  <div class="rounded-xl bg-panel border border-border p-3 text-center"><p class="text-base font-bold text-text">42ms</p><p class="text-[11px] text-muted">Latency</p></div>
+                </div>
+                <div class="flex items-center gap-2">
+                  <button class="wh-test-btn flex-1 justify-center inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="play" class="w-4 h-4 shrink-0"></i>Test</button>
+                  <button class="wh-config-btn flex-1 justify-center inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="settings" class="w-4 h-4 shrink-0"></i>Configure</button>
+                  <button class="wh-logs-btn w-9 h-9 shrink-0 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors" title="View logs"><i data-lucide="scroll-text" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+
+              <!-- Add new card -->
+              <button id="whAddCard" type="button" class="rounded-2xl border border-dashed border-border bg-bg flex flex-col items-center justify-center min-h-[280px] p-5 cursor-pointer hover:border-accent transition-colors text-center">
+                <div class="w-14 h-14 rounded-full bg-accent/10 flex items-center justify-center mb-4">
+                  <i data-lucide="plus" class="w-7 h-7 text-accent shrink-0"></i>
+                </div>
+                <h4 class="font-semibold text-text mb-1">Create New Webhook</h4>
+                <p class="text-sm text-muted">Set up a new incoming or outgoing webhook endpoint</p>
+              </button>
+            </div>
+          </div>
+
+          <!-- ============ Pane: Incoming ============ -->
+          <div class="wh-pane tab-content" data-pane="incoming">
+            <div class="mb-6">
+              <h3 class="text-lg font-semibold text-text mb-1">Your Webhook URL</h3>
+              <p class="text-sm text-muted mb-4">Use this URL to receive signals from external services</p>
+              <div class="p-4 rounded-2xl bg-bg border border-border">
+                <div class="flex items-center gap-2 mb-3 p-2.5 rounded-xl bg-border/30 border border-border">
+                  <span class="px-2 py-0.5 rounded-md text-[11px] font-bold font-mono bg-sky-500/15 text-sky-500 shrink-0">POST</span>
+                  <span id="whMainUrl" class="flex-1 min-w-0 overflow-x-auto whitespace-nowrap font-mono text-xs text-text hide-scrollbar">https://api.signalaix.com/webhook/recv/usr_8f4a2c9e7b</span>
+                  <button id="whCopyMainUrl" class="w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0" title="Copy URL">
+                    <i data-lucide="copy" class="w-4 h-4 shrink-0"></i>
+                  </button>
+                </div>
+                <div class="flex items-center gap-2 text-sm text-muted">
+                  <i data-lucide="shield-check" class="w-4 h-4 text-emerald-500 shrink-0"></i>
+                  <span>HTTPS secured • Authentication required</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="mb-6">
+              <div class="flex items-center justify-between mb-3 gap-2">
+                <h3 class="text-lg font-semibold text-text">Expected Payload Format</h3>
+                <button class="wh-copy-code inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-panel border border-border text-muted hover:text-accent text-xs font-semibold transition-colors whitespace-nowrap">
+                  <i data-lucide="copy" class="w-3.5 h-3.5 shrink-0"></i><span class="wh-copy-code-label">Copy</span>
+                </button>
+              </div>
+              <div class="rounded-2xl bg-bg border border-border p-4 overflow-x-auto">
+<pre class="wh-code font-mono text-xs leading-relaxed text-text whitespace-pre">{
+  "signal_type": "BUY",
+  "pair": "EUR/USD",
+  "entry_price": 1.0856,
+  "stop_loss": 1.0820,
+  "take_profit": [1.0890, 1.0920, 1.0950],
+  "timeframe": "H1",
+  "confidence": 85,
+  "timestamp": "2024-12-30T14:30:00Z"
+}</pre>
+              </div>
+            </div>
+
+            <div>
+              <div class="flex items-center justify-between mb-3 gap-2">
+                <h3 class="text-lg font-semibold text-text">Authentication Headers</h3>
+                <button class="wh-copy-code inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-panel border border-border text-muted hover:text-accent text-xs font-semibold transition-colors whitespace-nowrap">
+                  <i data-lucide="copy" class="w-3.5 h-3.5 shrink-0"></i><span class="wh-copy-code-label">Copy</span>
+                </button>
+              </div>
+              <div class="rounded-2xl bg-bg border border-border p-4 overflow-x-auto">
+<pre class="wh-code font-mono text-xs leading-relaxed text-text whitespace-pre">X-API-Key: your_api_key_here
+Content-Type: application/json</pre>
+              </div>
+            </div>
+          </div>
+
+          <!-- ============ Pane: Outgoing ============ -->
+          <div class="wh-pane tab-content" data-pane="outgoing">
+            <div class="mb-6">
+              <h3 class="text-lg font-semibold text-text mb-1">Outgoing Webhook Configuration</h3>
+              <p class="text-sm text-muted">Configure where SignalAIX sends your signals automatically</p>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="w-full border-collapse min-w-[820px] whitespace-nowrap">
+                <thead>
+                  <tr class="text-left text-xs font-semibold uppercase tracking-wide text-muted border-b border-border">
+                    <th class="py-3 px-4 sm:sticky sm:left-0 sm:bg-panel">Name</th>
+                    <th class="py-3 px-4">Endpoint</th>
+                    <th class="py-3 px-4">Method</th>
+                    <th class="py-3 px-4">Triggers</th>
+                    <th class="py-3 px-4">Last Sent</th>
+                    <th class="py-3 px-4">Status</th>
+                    <th class="py-3 px-4 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody class="text-sm">
+                  <tr class="border-b border-border hover:bg-accent/5 transition-colors">
+                    <td class="py-3 px-4 sm:sticky sm:left-0 sm:bg-panel">
+                      <div class="flex items-center gap-3">
+                        <div class="w-8 h-8 rounded-lg bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="trending-up" class="w-4 h-4 text-emerald-500 shrink-0"></i></div>
+                        <span class="font-medium text-text">MT4 Bridge</span>
+                      </div>
+                    </td>
+                    <td class="py-3 px-4"><code class="font-mono text-xs text-muted">https://mt4bridge.trading/api/...</code></td>
+                    <td class="py-3 px-4"><span class="px-2 py-0.5 rounded-md text-[11px] font-bold font-mono bg-sky-500/15 text-sky-500">POST</span></td>
+                    <td class="py-3 px-4">
+                      <div class="flex flex-wrap gap-1">
+                        <span class="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-emerald-500/15 text-emerald-500">BUY</span>
+                        <span class="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-red-500/15 text-red-500">SELL</span>
+                      </div>
+                    </td>
+                    <td class="py-3 px-4 text-muted">2 min ago</td>
+                    <td class="py-3 px-4">
+                      <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>Active</span>
+                    </td>
+                    <td class="py-3 px-4">
+                      <div class="flex items-center justify-end gap-1">
+                        <button class="wh-row-edit w-8 h-8 flex items-center justify-center rounded-lg bg-bg border border-border text-muted hover:text-accent transition-colors" data-name="MT4 Bridge"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i></button>
+                        <button class="wh-row-delete w-8 h-8 flex items-center justify-center rounded-lg bg-bg border border-border text-muted hover:text-red-500 transition-colors" data-name="MT4 Bridge"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr class="border-b border-border hover:bg-accent/5 transition-colors">
+                    <td class="py-3 px-4 sm:sticky sm:left-0 sm:bg-panel">
+                      <div class="flex items-center gap-3">
+                        <div class="w-8 h-8 rounded-lg bg-violet-500/15 flex items-center justify-center shrink-0"><i data-lucide="message-circle" class="w-4 h-4 text-violet-400 shrink-0"></i></div>
+                        <span class="font-medium text-text">Discord Bot</span>
+                      </div>
+                    </td>
+                    <td class="py-3 px-4"><code class="font-mono text-xs text-muted">https://discord.com/api/webhook...</code></td>
+                    <td class="py-3 px-4"><span class="px-2 py-0.5 rounded-md text-[11px] font-bold font-mono bg-sky-500/15 text-sky-500">POST</span></td>
+                    <td class="py-3 px-4"><div class="flex flex-wrap gap-1"><span class="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-sky-500/15 text-sky-500">ALL</span></div></td>
+                    <td class="py-3 px-4 text-muted">15 min ago</td>
+                    <td class="py-3 px-4">
+                      <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>Active</span>
+                    </td>
+                    <td class="py-3 px-4">
+                      <div class="flex items-center justify-end gap-1">
+                        <button class="wh-row-edit w-8 h-8 flex items-center justify-center rounded-lg bg-bg border border-border text-muted hover:text-accent transition-colors" data-name="Discord Bot"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i></button>
+                        <button class="wh-row-delete w-8 h-8 flex items-center justify-center rounded-lg bg-bg border border-border text-muted hover:text-red-500 transition-colors" data-name="Discord Bot"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr class="border-b border-border hover:bg-accent/5 transition-colors">
+                    <td class="py-3 px-4 sm:sticky sm:left-0 sm:bg-panel">
+                      <div class="flex items-center gap-3">
+                        <div class="w-8 h-8 rounded-lg bg-amber-500/15 flex items-center justify-center shrink-0"><i data-lucide="database" class="w-4 h-4 text-amber-500 shrink-0"></i></div>
+                        <span class="font-medium text-text">Trade Logger</span>
+                      </div>
+                    </td>
+                    <td class="py-3 px-4"><code class="font-mono text-xs text-muted">https://logs.myservice.com/trad...</code></td>
+                    <td class="py-3 px-4"><span class="px-2 py-0.5 rounded-md text-[11px] font-bold font-mono bg-amber-500/15 text-amber-500">PUT</span></td>
+                    <td class="py-3 px-4"><div class="flex flex-wrap gap-1"><span class="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-amber-500/15 text-amber-500">CLOSE</span></div></td>
+                    <td class="py-3 px-4 text-muted">1 hour ago</td>
+                    <td class="py-3 px-4">
+                      <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-500"><span class="w-2 h-2 rounded-full bg-amber-500"></span>Paused</span>
+                    </td>
+                    <td class="py-3 px-4">
+                      <div class="flex items-center justify-end gap-1">
+                        <button class="wh-row-edit w-8 h-8 flex items-center justify-center rounded-lg bg-bg border border-border text-muted hover:text-accent transition-colors" data-name="Trade Logger"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i></button>
+                        <button class="wh-row-delete w-8 h-8 flex items-center justify-center rounded-lg bg-bg border border-border text-muted hover:text-red-500 transition-colors" data-name="Trade Logger"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- ============ Pane: Logs ============ -->
+          <div class="wh-pane tab-content" data-pane="logs">
+            <div class="flex flex-col lg:flex-row lg:items-center gap-4 mb-6">
+              <div class="relative flex-1 lg:max-w-md">
+                <i data-lucide="search" class="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted shrink-0"></i>
+                <input type="text" id="whLogsSearch" placeholder="Search logs..." class="w-full pl-10 pr-3 py-2.5 bg-bg border border-border rounded-xl text-text text-sm focus:outline-none focus:border-accent transition-colors" />
+              </div>
+              <div class="flex flex-wrap items-center gap-2">
+                <button class="wh-log-chip active px-4 py-2 rounded-full border border-accent bg-accent/15 text-accent text-sm font-medium transition-colors" data-log="all">All</button>
+                <button class="wh-log-chip px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-log="2xx">2xx</button>
+                <button class="wh-log-chip px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-log="4xx">4xx</button>
+                <button class="wh-log-chip px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-log="5xx">5xx</button>
+                <select id="whLogRange" class="px-3 py-2 bg-bg border border-border rounded-xl text-text text-sm focus:outline-none focus:border-accent transition-colors">
+                  <option>Last 24 hours</option>
+                  <option>Last 7 days</option>
+                  <option>Last 30 days</option>
+                  <option>All time</option>
+                </select>
+              </div>
+            </div>
+
+            <div id="whLogsList" class="space-y-3">
+              <!-- Log 1 -->
+              <div class="wh-log flex items-start gap-3 p-4 rounded-2xl bg-bg border border-border" data-class="2xx" data-name="Trading Signal Receiver" data-method="POST" data-code="200" data-message="EUR/USD BUY signal received and processed successfully" data-duration="89ms" data-size="1.2 KB" data-time="2 min ago">
+                <div class="w-10 h-10 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-5 h-5 text-emerald-500 shrink-0"></i></div>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-start justify-between gap-3 mb-2">
+                    <div class="flex items-center flex-wrap gap-2 min-w-0">
+                      <span class="px-2 py-0.5 rounded-md text-[11px] font-bold font-mono bg-sky-500/15 text-sky-500 shrink-0">POST</span>
+                      <code class="font-mono text-xs text-text truncate">Trading Signal Receiver</code>
+                      <span class="font-mono text-xs font-semibold text-emerald-500 shrink-0">200</span>
+                    </div>
+                    <span class="text-xs text-muted whitespace-nowrap shrink-0">2 min ago</span>
+                  </div>
+                  <p class="text-sm text-muted mb-2">EUR/USD BUY signal received and processed successfully</p>
+                  <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
+                    <span>Duration: 89ms</span><span>Size: 1.2 KB</span>
+                    <button class="wh-log-view text-accent hover:underline font-semibold">View Details</button>
+                  </div>
+                </div>
+              </div>
+              <!-- Log 2 -->
+              <div class="wh-log flex items-start gap-3 p-4 rounded-2xl bg-bg border border-border" data-class="2xx" data-name="MT4 Bridge Sender" data-method="POST" data-code="201" data-message="Signal forwarded to MT4 bridge successfully" data-duration="156ms" data-size="842 B" data-time="5 min ago">
+                <div class="w-10 h-10 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-5 h-5 text-emerald-500 shrink-0"></i></div>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-start justify-between gap-3 mb-2">
+                    <div class="flex items-center flex-wrap gap-2 min-w-0">
+                      <span class="px-2 py-0.5 rounded-md text-[11px] font-bold font-mono bg-sky-500/15 text-sky-500 shrink-0">POST</span>
+                      <code class="font-mono text-xs text-text truncate">MT4 Bridge Sender</code>
+                      <span class="font-mono text-xs font-semibold text-emerald-500 shrink-0">201</span>
+                    </div>
+                    <span class="text-xs text-muted whitespace-nowrap shrink-0">5 min ago</span>
+                  </div>
+                  <p class="text-sm text-muted mb-2">Signal forwarded to MT4 bridge successfully</p>
+                  <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
+                    <span>Duration: 156ms</span><span>Size: 842 B</span>
+                    <button class="wh-log-view text-accent hover:underline font-semibold">View Details</button>
+                  </div>
+                </div>
+              </div>
+              <!-- Log 3 — error 5xx -->
+              <div class="wh-log flex items-start gap-3 p-4 rounded-2xl bg-bg border border-red-500/30" data-class="5xx" data-name="Database Sync" data-method="PUT" data-code="504" data-message="Gateway timeout - Server did not respond in time" data-duration="30,000ms" data-size="0 B" data-time="2 hours ago">
+                <div class="w-10 h-10 rounded-xl bg-red-500/15 flex items-center justify-center shrink-0"><i data-lucide="x" class="w-5 h-5 text-red-500 shrink-0"></i></div>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-start justify-between gap-3 mb-2">
+                    <div class="flex items-center flex-wrap gap-2 min-w-0">
+                      <span class="px-2 py-0.5 rounded-md text-[11px] font-bold font-mono bg-amber-500/15 text-amber-500 shrink-0">PUT</span>
+                      <code class="font-mono text-xs text-text truncate">Database Sync</code>
+                      <span class="font-mono text-xs font-semibold text-red-500 shrink-0">504</span>
+                    </div>
+                    <span class="text-xs text-muted whitespace-nowrap shrink-0">2 hours ago</span>
+                  </div>
+                  <p class="text-sm text-red-500 mb-2">Gateway timeout - Server did not respond in time</p>
+                  <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
+                    <span>Duration: 30,000ms</span><span>Size: 0 B</span>
+                    <button class="wh-log-view text-accent hover:underline font-semibold">View Details</button>
+                    <button class="wh-log-retry text-red-500 hover:underline font-semibold">Retry</button>
+                  </div>
+                </div>
+              </div>
+              <!-- Log 4 — warning 4xx -->
+              <div class="wh-log flex items-start gap-3 p-4 rounded-2xl bg-bg border border-amber-500/30" data-class="4xx" data-name="Alert Notification" data-method="POST" data-code="429" data-message="Rate limited - Too many requests, retried after 60s" data-duration="234ms" data-size="128 B" data-time="4 hours ago">
+                <div class="w-10 h-10 rounded-xl bg-amber-500/15 flex items-center justify-center shrink-0"><i data-lucide="triangle-alert" class="w-5 h-5 text-amber-500 shrink-0"></i></div>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-start justify-between gap-3 mb-2">
+                    <div class="flex items-center flex-wrap gap-2 min-w-0">
+                      <span class="px-2 py-0.5 rounded-md text-[11px] font-bold font-mono bg-sky-500/15 text-sky-500 shrink-0">POST</span>
+                      <code class="font-mono text-xs text-text truncate">Alert Notification</code>
+                      <span class="font-mono text-xs font-semibold text-amber-500 shrink-0">429</span>
+                    </div>
+                    <span class="text-xs text-muted whitespace-nowrap shrink-0">4 hours ago</span>
+                  </div>
+                  <p class="text-sm text-amber-500 mb-2">Rate limited - Too many requests, retried after 60s</p>
+                  <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
+                    <span>Duration: 234ms</span><span>Size: 128 B</span>
+                    <button class="wh-log-view text-accent hover:underline font-semibold">View Details</button>
+                  </div>
+                </div>
+              </div>
+              <!-- Log 5 -->
+              <div class="wh-log flex items-start gap-3 p-4 rounded-2xl bg-bg border border-border" data-class="2xx" data-name="Analytics Tracker" data-method="POST" data-code="200" data-message="Trade analytics event logged successfully" data-duration="42ms" data-size="2.1 KB" data-time="5 hours ago">
+                <div class="w-10 h-10 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-5 h-5 text-emerald-500 shrink-0"></i></div>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-start justify-between gap-3 mb-2">
+                    <div class="flex items-center flex-wrap gap-2 min-w-0">
+                      <span class="px-2 py-0.5 rounded-md text-[11px] font-bold font-mono bg-sky-500/15 text-sky-500 shrink-0">POST</span>
+                      <code class="font-mono text-xs text-text truncate">Analytics Tracker</code>
+                      <span class="font-mono text-xs font-semibold text-emerald-500 shrink-0">200</span>
+                    </div>
+                    <span class="text-xs text-muted whitespace-nowrap shrink-0">5 hours ago</span>
+                  </div>
+                  <p class="text-sm text-muted mb-2">Trade analytics event logged successfully</p>
+                  <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
+                    <span>Duration: 42ms</span><span>Size: 2.1 KB</span>
+                    <button class="wh-log-view text-accent hover:underline font-semibold">View Details</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div id="whLogsNoResults" class="hidden text-center py-12">
+              <p class="text-text font-semibold mb-1">No logs found</p>
+              <p class="text-sm text-muted">Try a different filter or search term</p>
+            </div>
+
+            <div class="text-center mt-6">
+              <button id="whLoadMore" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap">
+                <i data-lucide="refresh-cw" class="w-4 h-4 shrink-0"></i>Load More Logs
+              </button>
+            </div>
+          </div>
+
+          <!-- ============ Pane: Templates ============ -->
+          <div class="wh-pane tab-content" data-pane="templates">
+            <div class="mb-6">
+              <h3 class="text-lg font-semibold text-text mb-1">Payload Templates</h3>
+              <p class="text-sm text-muted">Pre-built templates for common integrations</p>
+            </div>
+            <div class="grid grid-cols-1 @xl/content:grid-cols-2 @4xl/content:grid-cols-3 gap-4">
+              <div class="rounded-2xl bg-bg border border-border p-4 sm:p-5 hover:border-accent/40 transition-colors">
+                <div class="flex items-center gap-3 mb-4">
+                  <div class="w-10 h-10 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="chart-bar" class="w-5 h-5 text-emerald-500 shrink-0"></i></div>
+                  <div class="min-w-0"><h4 class="font-semibold text-text truncate">TradingView Alert</h4><p class="text-xs text-muted truncate">Standard TV format</p></div>
+                </div>
+                <p class="text-sm text-muted mb-4">Compatible with TradingView webhook alerts for automated signal reception.</p>
+                <div class="flex items-center gap-2">
+                  <button class="wh-use-template flex-1 justify-center inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap" data-template="TradingView"><i data-lucide="copy" class="w-4 h-4 shrink-0"></i>Use Template</button>
+                  <button class="wh-preview-template w-9 h-9 shrink-0 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors" data-template="TradingView" title="Preview"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+              <div class="rounded-2xl bg-bg border border-border p-4 sm:p-5 hover:border-accent/40 transition-colors">
+                <div class="flex items-center gap-3 mb-4">
+                  <div class="w-10 h-10 rounded-xl bg-sky-500/15 flex items-center justify-center shrink-0"><i data-lucide="cpu" class="w-5 h-5 text-sky-500 shrink-0"></i></div>
+                  <div class="min-w-0"><h4 class="font-semibold text-text truncate">MetaTrader 4/5</h4><p class="text-xs text-muted truncate">MT4/MT5 EA format</p></div>
+                </div>
+                <p class="text-sm text-muted mb-4">Perfect for Expert Advisors and automated trading on MetaTrader platforms.</p>
+                <div class="flex items-center gap-2">
+                  <button class="wh-use-template flex-1 justify-center inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap" data-template="MetaTrader"><i data-lucide="copy" class="w-4 h-4 shrink-0"></i>Use Template</button>
+                  <button class="wh-preview-template w-9 h-9 shrink-0 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors" data-template="MetaTrader" title="Preview"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+              <div class="rounded-2xl bg-bg border border-border p-4 sm:p-5 hover:border-accent/40 transition-colors">
+                <div class="flex items-center gap-3 mb-4">
+                  <div class="w-10 h-10 rounded-xl bg-violet-500/15 flex items-center justify-center shrink-0"><i data-lucide="message-circle" class="w-5 h-5 text-violet-400 shrink-0"></i></div>
+                  <div class="min-w-0"><h4 class="font-semibold text-text truncate">Discord Webhook</h4><p class="text-xs text-muted truncate">Rich embed format</p></div>
+                </div>
+                <p class="text-sm text-muted mb-4">Discord-formatted payload with rich embeds for signal channels.</p>
+                <div class="flex items-center gap-2">
+                  <button class="wh-use-template flex-1 justify-center inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap" data-template="Discord"><i data-lucide="copy" class="w-4 h-4 shrink-0"></i>Use Template</button>
+                  <button class="wh-preview-template w-9 h-9 shrink-0 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors" data-template="Discord" title="Preview"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+              <div class="rounded-2xl bg-bg border border-border p-4 sm:p-5 hover:border-accent/40 transition-colors">
+                <div class="flex items-center gap-3 mb-4">
+                  <div class="w-10 h-10 rounded-xl bg-sky-500/15 flex items-center justify-center shrink-0"><i data-lucide="send" class="w-5 h-5 text-sky-500 shrink-0"></i></div>
+                  <div class="min-w-0"><h4 class="font-semibold text-text truncate">Telegram Bot</h4><p class="text-xs text-muted truncate">Bot API format</p></div>
+                </div>
+                <p class="text-sm text-muted mb-4">Telegram Bot API compatible format for channel notifications.</p>
+                <div class="flex items-center gap-2">
+                  <button class="wh-use-template flex-1 justify-center inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap" data-template="Telegram"><i data-lucide="copy" class="w-4 h-4 shrink-0"></i>Use Template</button>
+                  <button class="wh-preview-template w-9 h-9 shrink-0 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors" data-template="Telegram" title="Preview"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+              <div class="rounded-2xl bg-bg border border-border p-4 sm:p-5 hover:border-accent/40 transition-colors">
+                <div class="flex items-center gap-3 mb-4">
+                  <div class="w-10 h-10 rounded-xl bg-amber-500/15 flex items-center justify-center shrink-0"><i data-lucide="zap" class="w-5 h-5 text-amber-500 shrink-0"></i></div>
+                  <div class="min-w-0"><h4 class="font-semibold text-text truncate">Zapier</h4><p class="text-xs text-muted truncate">Zapier webhook</p></div>
+                </div>
+                <p class="text-sm text-muted mb-4">Connect with 5000+ apps through Zapier automation platform.</p>
+                <div class="flex items-center gap-2">
+                  <button class="wh-use-template flex-1 justify-center inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap" data-template="Zapier"><i data-lucide="copy" class="w-4 h-4 shrink-0"></i>Use Template</button>
+                  <button class="wh-preview-template w-9 h-9 shrink-0 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors" data-template="Zapier" title="Preview"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+              <button id="whCustomTemplate" type="button" class="rounded-2xl border border-dashed border-border bg-bg flex flex-col items-center justify-center min-h-[180px] p-5 cursor-pointer hover:border-accent transition-colors text-center">
+                <div class="w-12 h-12 rounded-full bg-accent/10 flex items-center justify-center mb-3"><i data-lucide="plus" class="w-6 h-6 text-accent shrink-0"></i></div>
+                <h4 class="font-semibold text-text mb-1">Custom Template</h4>
+                <p class="text-sm text-muted">Create your own payload format</p>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Drawer overlay -->
+    <div class="drawer-overlay" id="whDrawerOverlay"></div>
+
+    <!-- Create / Edit Webhook Drawer (edit reuses this form) -->
+    <div class="drawer" id="whFormDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <div class="min-w-0">
+            <h2 class="text-xl font-bold text-text" id="whFormTitle">Create New Webhook</h2>
+            <p class="text-sm text-muted">Configure your webhook endpoint</p>
+          </div>
+          <button class="wh-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0">
+            <i data-lucide="x" class="w-5 h-5 shrink-0"></i>
+          </button>
+        </div>
+
+        <div class="space-y-5">
+          <!-- Name -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Webhook Name *</label>
+            <input id="whFormName" type="text" placeholder="e.g., Trading Signal Receiver" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" />
+          </div>
+
+          <!-- Type -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Webhook Type *</label>
+            <div class="grid grid-cols-1 @xs:grid-cols-2 gap-2" id="whTypeGrid">
+              <button class="wh-type-btn active flex items-center gap-3 p-3 rounded-xl border border-accent bg-accent/15 text-left transition-colors" data-type="incoming">
+                <div class="w-10 h-10 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="arrow-down-to-line" class="w-5 h-5 text-emerald-500 shrink-0"></i></div>
+                <div class="min-w-0"><p class="font-medium text-text">Incoming</p><p class="text-xs text-muted">Receive data</p></div>
+              </button>
+              <button class="wh-type-btn flex items-center gap-3 p-3 rounded-xl border border-border text-left hover:border-accent/40 transition-colors" data-type="outgoing">
+                <div class="w-10 h-10 rounded-xl bg-sky-500/15 flex items-center justify-center shrink-0"><i data-lucide="arrow-up-from-line" class="w-5 h-5 text-sky-500 shrink-0"></i></div>
+                <div class="min-w-0"><p class="font-medium text-text">Outgoing</p><p class="text-xs text-muted">Send data</p></div>
+              </button>
+            </div>
+          </div>
+
+          <!-- Endpoint URL -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Endpoint URL *</label>
+            <input type="url" placeholder="https://your-endpoint.com/webhook" class="w-full p-3 bg-transparent border border-border rounded-xl text-text font-mono text-sm focus:outline-none focus:border-accent transition-colors" />
+          </div>
+
+          <!-- HTTP Method -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">HTTP Method</label>
+            <select class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors">
+              <option>POST</option><option>PUT</option><option>PATCH</option><option>GET</option>
+            </select>
+          </div>
+
+          <!-- Authentication -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Authentication</label>
+            <select id="whAuthType" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors">
+              <option value="none">None</option>
+              <option value="api_key">API Key</option>
+              <option value="bearer">Bearer Token</option>
+              <option value="basic">Basic Auth</option>
+            </select>
+          </div>
+          <div id="whApiKeyField" class="hidden">
+            <label class="block text-sm font-semibold text-text mb-2">API Key</label>
+            <input type="password" placeholder="Enter your API key" class="w-full p-3 bg-transparent border border-border rounded-xl text-text font-mono text-sm focus:outline-none focus:border-accent transition-colors" />
+          </div>
+          <div id="whBearerField" class="hidden">
+            <label class="block text-sm font-semibold text-text mb-2">Bearer Token</label>
+            <input type="password" placeholder="Enter your bearer token" class="w-full p-3 bg-transparent border border-border rounded-xl text-text font-mono text-sm focus:outline-none focus:border-accent transition-colors" />
+          </div>
+          <div id="whBasicFields" class="hidden space-y-3">
+            <div>
+              <label class="block text-sm font-semibold text-text mb-2">Username</label>
+              <input type="text" placeholder="Username" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" />
+            </div>
+            <div>
+              <label class="block text-sm font-semibold text-text mb-2">Password</label>
+              <input type="password" placeholder="Password" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" />
+            </div>
+          </div>
+
+          <!-- Trigger events -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-3">Trigger on Events</label>
+            <div class="flex flex-wrap gap-2" id="whEventGroup">
+              <button class="wh-event-btn active inline-flex items-center gap-1.5 px-3 py-2 rounded-full border border-accent bg-accent/15 text-accent text-sm font-medium transition-colors" data-event="buy"><i data-lucide="trending-up" class="w-4 h-4 shrink-0"></i>BUY</button>
+              <button class="wh-event-btn active inline-flex items-center gap-1.5 px-3 py-2 rounded-full border border-accent bg-accent/15 text-accent text-sm font-medium transition-colors" data-event="sell"><i data-lucide="trending-down" class="w-4 h-4 shrink-0"></i>SELL</button>
+              <button class="wh-event-btn inline-flex items-center gap-1.5 px-3 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-event="close"><i data-lucide="circle-x" class="w-4 h-4 shrink-0"></i>CLOSE</button>
+              <button class="wh-event-btn inline-flex items-center gap-1.5 px-3 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-event="modify"><i data-lucide="square-pen" class="w-4 h-4 shrink-0"></i>MODIFY</button>
+              <button class="wh-event-btn inline-flex items-center gap-1.5 px-3 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-event="alert"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i>ALERT</button>
+            </div>
+          </div>
+
+          <!-- Payload template -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Payload Template</label>
+            <select class="w-full p-3 bg-transparent border border-border rounded-xl text-text mb-2 focus:outline-none focus:border-accent transition-colors">
+              <option>Default SignalAIX Format</option>
+              <option>TradingView Format</option>
+              <option>MetaTrader Format</option>
+              <option>Discord Embed Format</option>
+              <option>Custom Format</option>
+            </select>
+            <textarea rows="4" placeholder='{"signal_type": "{{type}}", "pair": "{{pair}}", ...}' class="w-full p-3 bg-transparent border border-border rounded-xl text-text font-mono text-sm resize-none focus:outline-none focus:border-accent transition-colors"></textarea>
+          </div>
+
+          <!-- Retry settings -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-3">Retry Settings</label>
+            <div class="grid grid-cols-1 @xs:grid-cols-2 gap-3">
+              <div>
+                <label class="text-xs text-muted">Max Retries</label>
+                <select class="w-full mt-1 p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors">
+                  <option>No retry</option><option>1 retry</option><option selected>3 retries</option><option>5 retries</option>
+                </select>
+              </div>
+              <div>
+                <label class="text-xs text-muted">Retry Delay</label>
+                <select class="w-full mt-1 p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors">
+                  <option>5 seconds</option><option selected>30 seconds</option><option>1 minute</option><option>5 minutes</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <!-- Activate toggle -->
+          <label class="flex items-center justify-between p-4 rounded-xl bg-bg border border-border cursor-pointer">
+            <div class="min-w-0">
+              <p class="font-medium text-text">Activate immediately</p>
+              <p class="text-sm text-muted">Start processing requests after saving</p>
+            </div>
+            <div class="js-toggle-switch toggle-switch active shrink-0" role="switch" aria-checked="true" tabindex="0"></div>
+          </label>
+        </div>
+
+        <div class="flex flex-wrap gap-3 mt-8">
+          <button class="wh-close-drawer flex-1 justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors">Cancel</button>
+          <button id="whFormTest" class="justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="play" class="w-4 h-4 shrink-0"></i>Test</button>
+          <button id="whFormSubmit" class="flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap">
+            <i data-lucide="save" class="w-4 h-4 shrink-0"></i><span id="whFormSubmitLabel">Save Webhook</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Log Detail Drawer -->
+    <div class="drawer" id="whLogDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6 gap-3">
+          <div class="flex items-center gap-3 min-w-0">
+            <div class="w-12 h-12 rounded-xl bg-accent/15 flex items-center justify-center shrink-0"><i data-lucide="scroll-text" class="w-6 h-6 text-accent shrink-0"></i></div>
+            <div class="min-w-0">
+              <h2 class="text-xl font-bold text-text truncate" id="whLogName">Trading Signal Receiver</h2>
+              <p class="text-sm text-muted truncate" id="whLogTime">2 min ago</p>
+            </div>
+          </div>
+          <button class="wh-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0">
+            <i data-lucide="x" class="w-5 h-5 shrink-0"></i>
+          </button>
+        </div>
+
+        <div class="space-y-5">
+          <div class="grid grid-cols-1 @xs:grid-cols-2 gap-3">
+            <div class="p-4 rounded-xl bg-bg border border-border text-center">
+              <p class="text-xs text-muted mb-1">Method</p>
+              <p class="text-lg font-bold font-mono text-text" id="whLogMethod">POST</p>
+            </div>
+            <div class="p-4 rounded-xl bg-bg border border-border text-center">
+              <p class="text-xs text-muted mb-1">Status Code</p>
+              <p class="text-lg font-bold font-mono" id="whLogCode">200</p>
+            </div>
+            <div class="p-4 rounded-xl bg-bg border border-border text-center">
+              <p class="text-xs text-muted mb-1">Duration</p>
+              <p class="text-lg font-bold text-text" id="whLogDuration">89ms</p>
+            </div>
+            <div class="p-4 rounded-xl bg-bg border border-border text-center">
+              <p class="text-xs text-muted mb-1">Payload Size</p>
+              <p class="text-lg font-bold text-text" id="whLogSize">1.2 KB</p>
+            </div>
+          </div>
+
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <h4 class="font-semibold text-text mb-2">Message</h4>
+            <p class="text-sm text-muted" id="whLogMessage">EUR/USD BUY signal received and processed successfully</p>
+          </div>
+
+          <div>
+            <h4 class="font-semibold text-text mb-2">Response Body</h4>
+            <div class="rounded-2xl bg-bg border border-border p-4 overflow-x-auto">
+<pre class="font-mono text-xs leading-relaxed text-text whitespace-pre">{
+  "status": "ok",
+  "received": true,
+  "processed_at": "2024-12-30T14:30:01Z"
+}</pre>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex gap-3 mt-8">
+          <button class="wh-close-drawer flex-1 justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors">Close</button>
+          <button id="whLogRetryBtn" class="flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"><i data-lucide="refresh-cw" class="w-4 h-4 shrink-0"></i>Retry Request</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Filter Drawer -->
+    <div class="drawer" id="whFilterDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <h2 class="text-xl font-bold text-text">Advanced Filters</h2>
+          <button class="wh-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0">
+            <i data-lucide="x" class="w-5 h-5 shrink-0"></i>
+          </button>
+        </div>
+
+        <div class="space-y-6">
+          <div>
+            <label class="block text-sm font-semibold text-text mb-3">Status</label>
+            <div class="space-y-2">
+              <label class="flex items-center gap-3 cursor-pointer"><input type="checkbox" class="custom-checkbox" checked /><span class="text-sm text-text">Active</span></label>
+              <label class="flex items-center gap-3 cursor-pointer"><input type="checkbox" class="custom-checkbox" checked /><span class="text-sm text-text">Paused</span></label>
+              <label class="flex items-center gap-3 cursor-pointer"><input type="checkbox" class="custom-checkbox" checked /><span class="text-sm text-text">Error</span></label>
+            </div>
+          </div>
+          <div>
+            <label class="block text-sm font-semibold text-text mb-3">Webhook Type</label>
+            <div class="space-y-2">
+              <label class="flex items-center gap-3 cursor-pointer"><input type="checkbox" class="custom-checkbox" checked /><span class="text-sm text-text">Incoming</span></label>
+              <label class="flex items-center gap-3 cursor-pointer"><input type="checkbox" class="custom-checkbox" checked /><span class="text-sm text-text">Outgoing</span></label>
+            </div>
+          </div>
+          <div>
+            <label class="block text-sm font-semibold text-text mb-3">HTTP Method</label>
+            <div class="space-y-2">
+              <label class="flex items-center gap-3 cursor-pointer"><input type="checkbox" class="custom-checkbox" checked /><span class="text-sm text-text">POST</span></label>
+              <label class="flex items-center gap-3 cursor-pointer"><input type="checkbox" class="custom-checkbox" checked /><span class="text-sm text-text">PUT</span></label>
+              <label class="flex items-center gap-3 cursor-pointer"><input type="checkbox" class="custom-checkbox" checked /><span class="text-sm text-text">GET</span></label>
+            </div>
+          </div>
+          <div>
+            <label class="block text-sm font-semibold text-text mb-3">Success Rate</label>
+            <div class="grid grid-cols-1 @xs:grid-cols-2 gap-3">
+              <div><label class="text-xs text-muted">Min %</label><input type="number" placeholder="0" min="0" max="100" class="w-full mt-1 p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+              <div><label class="text-xs text-muted">Max %</label><input type="number" placeholder="100" min="0" max="100" class="w-full mt-1 p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex gap-3 mt-8">
+          <button class="wh-reset-filters flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="rotate-ccw" class="w-4 h-4 shrink-0"></i>Reset</button>
+          <button class="wh-apply-filters flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"><i data-lucide="check" class="w-4 h-4 shrink-0"></i>Apply Filters</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="whToast">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0">
+        <i data-lucide="check" class="w-5 h-5 text-white shrink-0"></i>
+      </div>
+      <div class="min-w-0">
+        <p class="font-semibold text-text" id="whToastTitle">Success</p>
+        <p class="text-sm text-muted" id="whToastMessage">Action completed</p>
+      </div>
+      <button class="wh-toast-close ml-auto w-9 h-9 shrink-0 flex items-center justify-center rounded-lg text-muted hover:text-text transition-colors">
+        <i data-lucide="x" class="w-4 h-4 shrink-0"></i>
+      </button>
+    </div>
+
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
+  </body>
+</html>

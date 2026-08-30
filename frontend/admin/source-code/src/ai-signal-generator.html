@@ -1,0 +1,776 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <script>
+      if (localStorage.getItem("theme") === "light") document.documentElement.classList.remove("dark");
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>AI Signal Generator - SignalAIX | AI Forex & Crypto Trading Signals</title>
+    <link rel="icon" type="image/png" href="assets/images/favicon.png" />
+    <link rel="apple-touch-icon" href="assets/images/favicon.png" />
+  </head>
+  <body id="ai-signal-generator">
+    <div id="loader">
+      <div class="spinner"></div>
+      <div class="loader-text">Loading SignalAIX...</div>
+    </div>
+
+    <include-sidebar />
+
+    <main class="main-content" id="mainContent">
+      <include-top-header />
+
+      <div class="inner-content max-sm:px-3 max-lg:px-4 max-lg:py-6 lg:p-6">
+        <!-- Page Header -->
+        <div class="mb-6">
+          <h1 class="text-2xl md:text-3xl font-bold text-text mb-2">AI Signal Generator</h1>
+          <p class="text-muted">Generate high-probability trading signals with the SignalAIX neural engine.</p>
+        </div>
+
+        <!-- AI Status Banner -->
+        <div class="mb-6 p-4 rounded-2xl bg-gradient-to-r from-indigo-500/10 via-violet-500/10 to-emerald-500/10 border border-accent/20">
+          <div class="flex items-center justify-between flex-wrap gap-4">
+            <div class="flex items-center gap-4">
+              <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-accent to-cyan-500 flex items-center justify-center shrink-0"><i data-lucide="brain-circuit" class="w-6 h-6 text-white shrink-0"></i></div>
+              <div>
+                <div class="flex items-center gap-2 flex-wrap">
+                  <h3 class="font-bold text-text">AI Engine Active</h3>
+                  <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/10 text-emerald-500 border border-emerald-500/30"
+                    ><span class="live-dot !bg-emerald-500"></span>Online</span
+                  >
+                </div>
+                <p class="text-sm text-muted">Neural network analyzing 500+ indicators across markets</p>
+              </div>
+            </div>
+            <div class="flex items-center gap-6">
+              <div class="text-right">
+                <p class="text-sm text-muted">Signals Today</p>
+                <p class="text-2xl font-bold text-accent">247</p>
+              </div>
+              <div class="text-right">
+                <p class="text-sm text-muted">Accuracy</p>
+                <p class="text-2xl font-bold text-emerald-500">87.4%</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tabs + actions -->
+        <div class="mb-6 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div class="flex items-center gap-1 overflow-x-auto hide-scrollbar p-1 rounded-xl bg-bg border border-border w-fit max-w-full">
+            <button class="asg-tab active whitespace-nowrap inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-muted hover:text-text transition" data-tab="generator">
+              <i data-lucide="wand-sparkles" class="w-4 h-4 shrink-0"></i>Generator
+            </button>
+            <button class="asg-tab whitespace-nowrap inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-muted hover:text-text transition" data-tab="active">
+              <i data-lucide="radio" class="w-4 h-4 shrink-0"></i>Active
+            </button>
+            <button class="asg-tab whitespace-nowrap inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-muted hover:text-text transition" data-tab="history">
+              <i data-lucide="history" class="w-4 h-4 shrink-0"></i>History
+            </button>
+            <button class="asg-tab whitespace-nowrap inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-muted hover:text-text transition" data-tab="analytics">
+              <i data-lucide="chart-no-axes-column" class="w-4 h-4 shrink-0"></i>Analytics
+            </button>
+          </div>
+          <div class="flex items-center gap-3 flex-wrap">
+            <div class="dropdown">
+              <button id="asgExportBtn" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-sm font-semibold text-text hover:border-accent/40 transition">
+                <i data-lucide="download" class="w-4 h-4 shrink-0"></i><span>Export</span><i data-lucide="chevron-down" class="w-4 h-4 shrink-0"></i>
+              </button>
+              <div class="dropdown-menu w-44 mt-2 p-2 rounded-2xl bg-panel border border-border shadow-2xl right-0">
+                <div class="asg-export flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-text hover:bg-accent/10 cursor-pointer transition" data-format="csv">
+                  <i data-lucide="file-text" class="w-4 h-4 shrink-0"></i>Export as CSV
+                </div>
+                <div class="asg-export flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-text hover:bg-accent/10 cursor-pointer transition" data-format="pdf">
+                  <i data-lucide="file" class="w-4 h-4 shrink-0"></i>Export as PDF
+                </div>
+                <div class="asg-export flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-text hover:bg-accent/10 cursor-pointer transition" data-format="json">
+                  <i data-lucide="file-code" class="w-4 h-4 shrink-0"></i>Export as JSON
+                </div>
+              </div>
+            </div>
+            <button id="asgFilterBtn" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-sm font-semibold text-text hover:border-accent/40 transition">
+              <i data-lucide="funnel" class="w-4 h-4 shrink-0"></i><span>Filter</span>
+            </button>
+            <button
+              class="asg-open-drawer inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold shadow-lg shadow-accent/30 hover:-translate-y-0.5 transition whitespace-nowrap"
+              data-drawer="generate"
+            >
+              <i data-lucide="sparkles" class="w-4 h-4 shrink-0"></i><span>Generate New Signal</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- ===== Tab: Generator ===== -->
+        <div id="asg-tab-generator" class="asg-pane">
+          <div class="grid grid-cols-1 @4xl/content:grid-cols-3 gap-6">
+            <div class="@4xl/content:col-span-2 space-y-6">
+              <!-- Market & Asset -->
+              <div class="rounded-2xl bg-panel border border-border p-6">
+                <h3 class="text-lg font-bold text-text mb-4 flex items-center gap-2"><i data-lucide="globe" class="w-5 h-5 text-accent shrink-0"></i>Select Market & Asset</h3>
+                <div class="flex flex-wrap gap-3 mb-6">
+                  <button class="asg-market active inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium border border-border text-muted transition" data-market="forex">
+                    <i data-lucide="dollar-sign" class="w-4 h-4 shrink-0"></i>Forex
+                  </button>
+                  <button class="asg-market inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium border border-border text-muted transition" data-market="crypto">
+                    <i data-lucide="bitcoin" class="w-4 h-4 shrink-0"></i>Crypto
+                  </button>
+                  <button class="asg-market inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium border border-border text-muted transition" data-market="commodities">
+                    <i data-lucide="gem" class="w-4 h-4 shrink-0"></i>Commodities
+                  </button>
+                  <button class="asg-market inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium border border-border text-muted transition" data-market="indices">
+                    <i data-lucide="chart-column" class="w-4 h-4 shrink-0"></i>Indices
+                  </button>
+                </div>
+                <div class="grid grid-cols-2 sm:grid-cols-3 @4xl/content:grid-cols-4 gap-3" id="asgAssetGrid">
+                  <div class="asg-asset p-4 rounded-xl border border-accent cursor-pointer transition bg-accent/5" data-asset="EUR/USD" data-selected="true">
+                    <div class="flex items-center justify-between mb-2"><span class="font-bold text-text">EUR/USD</span><input type="checkbox" class="custom-checkbox asg-asset-cb" checked /></div>
+                    <p class="text-lg font-semibold text-text font-mono">1.0854</p>
+                    <p class="text-xs text-emerald-500 flex items-center gap-1"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i>+0.15%</p>
+                  </div>
+                  <div class="asg-asset p-4 rounded-xl border border-border cursor-pointer transition" data-asset="GBP/USD">
+                    <div class="flex items-center justify-between mb-2">
+                      <span class="font-bold text-text">GBP/USD</span><input type="checkbox" class="custom-checkbox asg-asset-cb" />
+                    </div>
+                    <p class="text-lg font-semibold text-text font-mono">1.2687</p>
+                    <p class="text-xs text-red-500 flex items-center gap-1"><i data-lucide="trending-down" class="w-3 h-3 shrink-0"></i>-0.08%</p>
+                  </div>
+                  <div class="asg-asset p-4 rounded-xl border border-border cursor-pointer transition" data-asset="USD/JPY">
+                    <div class="flex items-center justify-between mb-2">
+                      <span class="font-bold text-text">USD/JPY</span><input type="checkbox" class="custom-checkbox asg-asset-cb" />
+                    </div>
+                    <p class="text-lg font-semibold text-text font-mono">149.52</p>
+                    <p class="text-xs text-emerald-500 flex items-center gap-1"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i>+0.32%</p>
+                  </div>
+                  <div class="asg-asset p-4 rounded-xl border border-border cursor-pointer transition" data-asset="AUD/USD">
+                    <div class="flex items-center justify-between mb-2">
+                      <span class="font-bold text-text">AUD/USD</span><input type="checkbox" class="custom-checkbox asg-asset-cb" />
+                    </div>
+                    <p class="text-lg font-semibold text-text font-mono">0.6543</p>
+                    <p class="text-xs text-emerald-500 flex items-center gap-1"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i>+0.21%</p>
+                  </div>
+                  <div class="asg-asset p-4 rounded-xl border border-border cursor-pointer transition" data-asset="USD/CAD">
+                    <div class="flex items-center justify-between mb-2">
+                      <span class="font-bold text-text">USD/CAD</span><input type="checkbox" class="custom-checkbox asg-asset-cb" />
+                    </div>
+                    <p class="text-lg font-semibold text-text font-mono">1.3567</p>
+                    <p class="text-xs text-red-500 flex items-center gap-1"><i data-lucide="trending-down" class="w-3 h-3 shrink-0"></i>-0.12%</p>
+                  </div>
+                  <div class="asg-asset p-4 rounded-xl border border-border cursor-pointer transition" data-asset="USD/CHF">
+                    <div class="flex items-center justify-between mb-2">
+                      <span class="font-bold text-text">USD/CHF</span><input type="checkbox" class="custom-checkbox asg-asset-cb" />
+                    </div>
+                    <p class="text-lg font-semibold text-text font-mono">0.8876</p>
+                    <p class="text-xs text-emerald-500 flex items-center gap-1"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i>+0.05%</p>
+                  </div>
+                  <div class="asg-asset p-4 rounded-xl border border-border cursor-pointer transition" data-asset="NZD/USD">
+                    <div class="flex items-center justify-between mb-2">
+                      <span class="font-bold text-text">NZD/USD</span><input type="checkbox" class="custom-checkbox asg-asset-cb" />
+                    </div>
+                    <p class="text-lg font-semibold text-text font-mono">0.6098</p>
+                    <p class="text-xs text-red-500 flex items-center gap-1"><i data-lucide="trending-down" class="w-3 h-3 shrink-0"></i>-0.18%</p>
+                  </div>
+                  <div class="asg-asset p-4 rounded-xl border border-border cursor-pointer transition" data-asset="EUR/GBP">
+                    <div class="flex items-center justify-between mb-2">
+                      <span class="font-bold text-text">EUR/GBP</span><input type="checkbox" class="custom-checkbox asg-asset-cb" />
+                    </div>
+                    <p class="text-lg font-semibold text-text font-mono">0.8556</p>
+                    <p class="text-xs text-emerald-500 flex items-center gap-1"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i>+0.09%</p>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Timeframe & Strategy -->
+              <div class="rounded-2xl bg-panel border border-border p-6">
+                <h3 class="text-lg font-bold text-text mb-4 flex items-center gap-2"><i data-lucide="clock" class="w-5 h-5 text-cyan-500 shrink-0"></i>Timeframe & Strategy</h3>
+                <div class="grid grid-cols-1 @3xl/content:grid-cols-2 gap-6">
+                  <div>
+                    <label class="block text-sm font-semibold text-text mb-3">Select Timeframe</label>
+                    <div class="flex flex-wrap gap-2" id="asgTimeframes">
+                      <button class="asg-tf px-3 py-1.5 rounded-lg text-xs font-medium border border-border text-muted transition" data-tf="1m">1M</button>
+                      <button class="asg-tf px-3 py-1.5 rounded-lg text-xs font-medium border border-border text-muted transition" data-tf="5m">5M</button>
+                      <button class="asg-tf px-3 py-1.5 rounded-lg text-xs font-medium border border-border text-muted transition" data-tf="15m">15M</button>
+                      <button class="asg-tf active px-3 py-1.5 rounded-lg text-xs font-medium border border-border text-muted transition" data-tf="1h">1H</button>
+                      <button class="asg-tf px-3 py-1.5 rounded-lg text-xs font-medium border border-border text-muted transition" data-tf="4h">4H</button>
+                      <button class="asg-tf px-3 py-1.5 rounded-lg text-xs font-medium border border-border text-muted transition" data-tf="1d">1D</button>
+                      <button class="asg-tf px-3 py-1.5 rounded-lg text-xs font-medium border border-border text-muted transition" data-tf="1w">1W</button>
+                    </div>
+                  </div>
+                  <div>
+                    <label class="block text-sm font-semibold text-text mb-3">AI Strategy</label>
+                    <select class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition">
+                      <option value="auto">🤖 Auto-Detect Best Strategy</option>
+                      <option value="trend">📈 Trend Following</option>
+                      <option value="scalping">⚡ Scalping</option>
+                      <option value="swing">🔄 Swing Trading</option>
+                      <option value="breakout">💥 Breakout</option>
+                      <option value="reversal">↩️ Reversal</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="mt-6 pt-6 border-t border-border">
+                  <h4 class="text-sm font-semibold text-text mb-4">Risk Parameters</h4>
+                  <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <div>
+                      <label class="block text-xs text-muted mb-2">Risk Level</label
+                      ><select class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition">
+                        <option value="conservative">🛡️ Conservative</option>
+                        <option value="moderate" selected>⚖️ Moderate</option>
+                        <option value="aggressive">🔥 Aggressive</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label class="block text-xs text-muted mb-2">Take Profit (pips)</label
+                      ><input type="number" value="50" class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition" />
+                    </div>
+                    <div>
+                      <label class="block text-xs text-muted mb-2">Stop Loss (pips)</label
+                      ><input type="number" value="25" class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- AI Indicators -->
+              <div class="rounded-2xl bg-panel border border-border p-6">
+                <div class="flex items-center justify-between mb-4">
+                  <h3 class="text-lg font-bold text-text flex items-center gap-2"><i data-lucide="sliders-horizontal" class="w-5 h-5 text-violet-500 shrink-0"></i>AI Indicators</h3>
+                  <button id="asgSelectAll" class="text-sm text-accent font-medium hover:underline">Select All</button>
+                </div>
+                <div class="grid grid-cols-2 sm:grid-cols-3 @4xl/content:grid-cols-4 gap-3">
+                  <label class="flex items-center gap-3 p-3 rounded-xl border border-border hover:border-accent/30 cursor-pointer transition"
+                    ><input type="checkbox" class="asg-indicator custom-checkbox" checked /><span class="text-sm font-medium text-text">RSI</span></label
+                  >
+                  <label class="flex items-center gap-3 p-3 rounded-xl border border-border hover:border-accent/30 cursor-pointer transition"
+                    ><input type="checkbox" class="asg-indicator custom-checkbox" checked /><span class="text-sm font-medium text-text">MACD</span></label
+                  >
+                  <label class="flex items-center gap-3 p-3 rounded-xl border border-border hover:border-accent/30 cursor-pointer transition"
+                    ><input type="checkbox" class="asg-indicator custom-checkbox" checked /><span class="text-sm font-medium text-text">Bollinger</span></label
+                  >
+                  <label class="flex items-center gap-3 p-3 rounded-xl border border-border hover:border-accent/30 cursor-pointer transition"
+                    ><input type="checkbox" class="asg-indicator custom-checkbox" checked /><span class="text-sm font-medium text-text">EMA</span></label
+                  >
+                  <label class="flex items-center gap-3 p-3 rounded-xl border border-border hover:border-accent/30 cursor-pointer transition"
+                    ><input type="checkbox" class="asg-indicator custom-checkbox" /><span class="text-sm font-medium text-text">Stochastic</span></label
+                  >
+                  <label class="flex items-center gap-3 p-3 rounded-xl border border-border hover:border-accent/30 cursor-pointer transition"
+                    ><input type="checkbox" class="asg-indicator custom-checkbox" /><span class="text-sm font-medium text-text">ATR</span></label
+                  >
+                  <label class="flex items-center gap-3 p-3 rounded-xl border border-border hover:border-accent/30 cursor-pointer transition"
+                    ><input type="checkbox" class="asg-indicator custom-checkbox" /><span class="text-sm font-medium text-text">Fibonacci</span></label
+                  >
+                  <label class="flex items-center gap-3 p-3 rounded-xl border border-border hover:border-accent/30 cursor-pointer transition"
+                    ><input type="checkbox" class="asg-indicator custom-checkbox" /><span class="text-sm font-medium text-text">Ichimoku</span></label
+                  >
+                </div>
+              </div>
+
+              <!-- Generate -->
+              <div class="flex items-center justify-between flex-wrap gap-4">
+                <div class="flex items-center gap-4 flex-wrap">
+                  <div class="flex items-center gap-2">
+                    <span class="text-sm text-muted">Selected Assets:</span><span class="px-2.5 py-0.5 rounded-lg text-xs font-bold bg-violet-500/15 text-violet-500" id="asgSelectedCount">1</span>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="text-sm text-muted">Active Indicators:</span><span class="px-2.5 py-0.5 rounded-lg text-xs font-bold bg-sky-500/15 text-sky-500" id="asgIndicatorCount">4</span>
+                  </div>
+                </div>
+                <button
+                  id="asgGenerateBtn"
+                  class="inline-flex items-center gap-2 px-8 py-3 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-white text-base font-semibold shadow-lg shadow-emerald-500/30 hover:-translate-y-0.5 transition disabled:opacity-60"
+                >
+                  <i data-lucide="sparkles" class="w-5 h-5 shrink-0"></i><span id="asgGenerateLabel">Generate AI Signals</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Right sidebar -->
+            <div class="space-y-6">
+              <div class="rounded-2xl border border-accent/30 bg-gradient-to-br from-accent/10 via-panel to-panel p-6">
+                <div class="flex items-center gap-3 mb-4">
+                  <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-accent to-cyan-500 flex items-center justify-center"><i data-lucide="sparkles" class="w-5 h-5 text-white shrink-0"></i></div>
+                  <div>
+                    <h4 class="font-bold text-text">AI Analysis Preview</h4>
+                    <p class="text-xs text-muted">Real-time market insights</p>
+                  </div>
+                </div>
+                <div class="space-y-4">
+                  <div class="flex items-center justify-between">
+                    <span class="text-sm text-muted">Market Trend</span><span class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">Bullish</span>
+                  </div>
+                  <div class="flex items-center justify-between">
+                    <span class="text-sm text-muted">Volatility</span><span class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-500">Moderate</span>
+                  </div>
+                  <div class="flex items-center justify-between">
+                    <span class="text-sm text-muted">Signal Strength</span>
+                    <div class="flex items-end gap-1">
+                      <span class="w-1.5 rounded-sm bg-emerald-500" style="height: 8px"></span><span class="w-1.5 rounded-sm bg-emerald-500" style="height: 12px"></span
+                      ><span class="w-1.5 rounded-sm bg-emerald-500" style="height: 16px"></span><span class="w-1.5 rounded-sm bg-emerald-500" style="height: 20px"></span
+                      ><span class="w-1.5 rounded-sm bg-border" style="height: 24px"></span>
+                    </div>
+                  </div>
+                  <div>
+                    <div class="flex items-center justify-between mb-2"><span class="text-sm text-muted">Confidence</span><span class="text-sm font-bold text-emerald-500">87%</span></div>
+                    <div class="h-2 w-full rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-emerald-500" style="width: 87%"></div></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="rounded-2xl bg-panel border border-border p-6">
+                <div class="flex items-center justify-between mb-4">
+                  <h4 class="font-bold text-text">Recent Signals</h4>
+                  <button class="text-sm text-accent font-medium hover:underline">View All</button>
+                </div>
+                <div class="space-y-3">
+                  <div class="asg-open-drawer cursor-pointer rounded-xl border border-border p-4 hover:border-accent/40 transition" data-drawer="signal-detail">
+                    <div class="flex items-center justify-between mb-2">
+                      <div class="flex items-center gap-2">
+                        <span class="font-bold text-text">EUR/USD</span><span class="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-500/15 text-emerald-500">BUY</span>
+                      </div>
+                      <span class="text-xs text-muted">2m ago</span>
+                    </div>
+                    <div class="flex items-center justify-between">
+                      <div>
+                        <p class="text-xs text-muted">Entry: 1.0854</p>
+                        <p class="text-xs text-emerald-500">TP: 1.0904</p>
+                      </div>
+                      <div class="text-right">
+                        <p class="text-sm font-semibold text-text">+50 pips</p>
+                        <p class="text-xs text-muted">89% conf.</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="asg-open-drawer cursor-pointer rounded-xl border border-border p-4 hover:border-accent/40 transition" data-drawer="signal-detail">
+                    <div class="flex items-center justify-between mb-2">
+                      <div class="flex items-center gap-2">
+                        <span class="font-bold text-text">GBP/USD</span><span class="px-2 py-0.5 rounded-md text-[10px] font-bold bg-red-500/15 text-red-500">SELL</span>
+                      </div>
+                      <span class="text-xs text-muted">15m ago</span>
+                    </div>
+                    <div class="flex items-center justify-between">
+                      <div>
+                        <p class="text-xs text-muted">Entry: 1.2687</p>
+                        <p class="text-xs text-red-500">TP: 1.2637</p>
+                      </div>
+                      <div class="text-right">
+                        <p class="text-sm font-semibold text-text">+50 pips</p>
+                        <p class="text-xs text-muted">85% conf.</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="asg-open-drawer cursor-pointer rounded-xl border border-border p-4 hover:border-accent/40 transition" data-drawer="signal-detail">
+                    <div class="flex items-center justify-between mb-2">
+                      <div class="flex items-center gap-2">
+                        <span class="font-bold text-text">USD/JPY</span><span class="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/15 text-amber-500">HOLD</span>
+                      </div>
+                      <span class="text-xs text-muted">32m ago</span>
+                    </div>
+                    <div class="flex items-center justify-between">
+                      <div>
+                        <p class="text-xs text-muted">Current: 149.52</p>
+                        <p class="text-xs text-amber-500">Awaiting</p>
+                      </div>
+                      <div class="text-right">
+                        <p class="text-sm font-semibold text-text">Neutral</p>
+                        <p class="text-xs text-muted">62% conf.</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="rounded-2xl bg-panel border border-border p-6">
+                <h4 class="font-bold text-text mb-4">Today's Performance</h4>
+                <div class="grid grid-cols-2 gap-4">
+                  <div class="p-4 rounded-xl bg-emerald-500/10">
+                    <p class="text-xs text-muted mb-1">Win Rate</p>
+                    <p class="text-2xl font-bold text-emerald-500">87.4%</p>
+                  </div>
+                  <div class="p-4 rounded-xl bg-accent/10">
+                    <p class="text-xs text-muted mb-1">Total Pips</p>
+                    <p class="text-2xl font-bold text-accent">+1,247</p>
+                  </div>
+                  <div class="p-4 rounded-xl bg-cyan-500/10">
+                    <p class="text-xs text-muted mb-1">Signals</p>
+                    <p class="text-2xl font-bold text-cyan-500">47</p>
+                  </div>
+                  <div class="p-4 rounded-xl bg-red-500/10">
+                    <p class="text-xs text-muted mb-1">Avg Risk</p>
+                    <p class="text-2xl font-bold text-red-500">1.5%</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== Tab: Active Signals ===== -->
+        <div id="asg-tab-active" class="asg-pane hidden">
+          <div class="rounded-2xl bg-panel border border-border overflow-hidden">
+            <div class="p-5 border-b border-border flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+              <div class="flex items-center gap-3 flex-wrap">
+                <div class="relative">
+                  <i data-lucide="search" class="w-4 h-4 text-muted absolute left-3 top-1/2 -translate-y-1/2 shrink-0"></i
+                  ><input
+                    type="text"
+                    placeholder="Search signals..."
+                    class="w-full sm:w-64 pl-10 pr-4 py-2.5 rounded-xl bg-bg border border-border text-sm text-text placeholder:text-muted focus:outline-none focus:border-accent transition"
+                    id="asgTableSearch"
+                  />
+                </div>
+                <select class="px-4 py-2.5 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition" id="asgTypeFilter">
+                  <option value="all">All Types</option>
+                  <option value="buy">Buy Only</option>
+                  <option value="sell">Sell Only</option>
+                </select>
+              </div>
+              <div class="flex items-center gap-2 text-sm text-muted">Showing of <strong class="text-text">127</strong> signals</div>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="w-full whitespace-nowrap min-w-[900px] text-sm">
+                <thead>
+                  <tr class="text-left text-xs font-bold uppercase tracking-wide text-muted border-b border-border">
+                    <th class="px-5 py-4">Asset</th>
+                    <th class="px-5 py-4">Type</th>
+                    <th class="px-5 py-4">Entry</th>
+                    <th class="px-5 py-4">TP</th>
+                    <th class="px-5 py-4">SL</th>
+                    <th class="px-5 py-4">Confidence</th>
+                    <th class="px-5 py-4">Status</th>
+                    <th class="px-5 py-4">P/L</th>
+                    <th class="px-5 py-4">Time</th>
+                  </tr>
+                </thead>
+                <tbody id="asgSignalsBody">
+                  <tr class="asg-open-drawer border-b border-border/60 hover:bg-border/20 transition cursor-pointer" data-drawer="signal-detail" data-type="buy">
+                    <td class="px-5 py-4">
+                      <div class="flex items-center gap-3">
+                        <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center"><span class="text-white font-bold text-xs">EU</span></div>
+                        <div>
+                          <p class="font-bold text-text">EUR/USD</p>
+                          <p class="text-xs text-muted">Forex</p>
+                        </div>
+                      </div>
+                    </td>
+                    <td class="px-5 py-4"><span class="px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-500/15 text-emerald-500">BUY</span></td>
+                    <td class="px-5 py-4 font-mono font-semibold text-text">1.0854</td>
+                    <td class="px-5 py-4 font-mono text-emerald-500">1.0904</td>
+                    <td class="px-5 py-4 font-mono text-red-500">1.0829</td>
+                    <td class="px-5 py-4">
+                      <div class="flex items-center gap-2">
+                        <div class="w-16 h-2 rounded-full bg-border overflow-hidden"><div class="h-full bg-emerald-500 rounded-full" style="width: 89%"></div></div>
+                        <span class="text-sm font-medium text-text">89%</span>
+                      </div>
+                    </td>
+                    <td class="px-5 py-4"><span class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-sky-500/15 text-sky-500">Active</span></td>
+                    <td class="px-5 py-4 font-bold text-emerald-500">+32 pips</td>
+                    <td class="px-5 py-4 text-muted">2m ago</td>
+                  </tr>
+                  <tr class="asg-open-drawer border-b border-border/60 hover:bg-border/20 transition cursor-pointer" data-drawer="signal-detail" data-type="sell">
+                    <td class="px-5 py-4">
+                      <div class="flex items-center gap-3">
+                        <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-orange-500 to-amber-600 flex items-center justify-center"><i data-lucide="bitcoin" class="w-5 h-5 text-white shrink-0"></i></div>
+                        <div>
+                          <p class="font-bold text-text">BTC/USD</p>
+                          <p class="text-xs text-muted">Crypto</p>
+                        </div>
+                      </div>
+                    </td>
+                    <td class="px-5 py-4"><span class="px-2.5 py-1 rounded-lg text-xs font-bold bg-red-500/15 text-red-500">SELL</span></td>
+                    <td class="px-5 py-4 font-mono font-semibold text-text">43,250</td>
+                    <td class="px-5 py-4 font-mono text-emerald-500">42,500</td>
+                    <td class="px-5 py-4 font-mono text-red-500">43,600</td>
+                    <td class="px-5 py-4">
+                      <div class="flex items-center gap-2">
+                        <div class="w-16 h-2 rounded-full bg-border overflow-hidden"><div class="h-full bg-emerald-500 rounded-full" style="width: 85%"></div></div>
+                        <span class="text-sm font-medium text-text">85%</span>
+                      </div>
+                    </td>
+                    <td class="px-5 py-4"><span class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-sky-500/15 text-sky-500">Active</span></td>
+                    <td class="px-5 py-4 font-bold text-emerald-500">+$420</td>
+                    <td class="px-5 py-4 text-muted">15m ago</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== Tab: History ===== -->
+        <div id="asg-tab-history" class="asg-pane hidden">
+          <div class="grid grid-cols-1 sm:grid-cols-2 @4xl/content:grid-cols-4 gap-4 sm:gap-6 mb-6">
+            <div class="rounded-2xl bg-panel border border-border p-6">
+              <div class="flex items-center justify-between mb-4">
+                <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-500 flex items-center justify-center"><i data-lucide="circle-check" class="w-6 h-6 text-white shrink-0"></i></div>
+                <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/10 text-emerald-500 border border-emerald-500/30">+12.5%</span>
+              </div>
+              <p class="text-sm text-muted mb-1">Total Winning Signals</p>
+              <p class="text-3xl font-bold text-text">1,847</p>
+            </div>
+            <div class="rounded-2xl bg-panel border border-border p-6">
+              <div class="flex items-center justify-between mb-4">
+                <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-red-500 to-rose-600 flex items-center justify-center"><i data-lucide="circle-x" class="w-6 h-6 text-white shrink-0"></i></div>
+                <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-500/10 text-red-500 border border-red-500/30">-3.2%</span>
+              </div>
+              <p class="text-sm text-muted mb-1">Total Losing Signals</p>
+              <p class="text-3xl font-bold text-text">267</p>
+            </div>
+            <div class="rounded-2xl bg-panel border border-border p-6">
+              <div class="flex items-center justify-between mb-4">
+                <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-accent to-cyan-500 flex items-center justify-center"><i data-lucide="percent" class="w-6 h-6 text-white shrink-0"></i></div>
+                <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-violet-500/10 text-violet-500 border border-violet-500/30">Excellent</span>
+              </div>
+              <p class="text-sm text-muted mb-1">Overall Win Rate</p>
+              <p class="text-3xl font-bold text-text">87.4%</p>
+            </div>
+            <div class="rounded-2xl bg-panel border border-border p-6">
+              <div class="flex items-center justify-between mb-4">
+                <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-sky-500 to-indigo-500 flex items-center justify-center"><i data-lucide="trending-up" class="w-6 h-6 text-white shrink-0"></i></div>
+                <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-sky-500/10 text-sky-500 border border-sky-500/30">This Month</span>
+              </div>
+              <p class="text-sm text-muted mb-1">Total Profit</p>
+              <p class="text-3xl font-bold text-emerald-500">+$24,580</p>
+            </div>
+          </div>
+          <div class="rounded-2xl bg-panel border border-border p-6">
+            <div class="flex items-center justify-between mb-6 flex-wrap gap-3">
+              <h3 class="text-lg font-bold text-text">Signal Performance History</h3>
+              <div class="flex items-center gap-2">
+                <button class="asg-period px-3 py-1.5 rounded-lg text-xs font-medium border border-border text-muted transition" data-period="7d">7D</button>
+                <button class="asg-period active px-3 py-1.5 rounded-lg text-xs font-medium border border-border text-muted transition" data-period="30d">30D</button>
+                <button class="asg-period px-3 py-1.5 rounded-lg text-xs font-medium border border-border text-muted transition" data-period="90d">90D</button>
+                <button class="asg-period px-3 py-1.5 rounded-lg text-xs font-medium border border-border text-muted transition" data-period="1y">1Y</button>
+              </div>
+            </div>
+            <div class="h-80"><canvas id="asgPerformanceChart"></canvas></div>
+          </div>
+        </div>
+
+        <!-- ===== Tab: Analytics ===== -->
+        <div id="asg-tab-analytics" class="asg-pane hidden">
+          <div class="grid grid-cols-1 @3xl/content:grid-cols-2 gap-6">
+            <div class="rounded-2xl bg-panel border border-border p-6">
+              <h3 class="text-lg font-bold text-text mb-6">Win Rate by Asset</h3>
+              <div class="h-72"><canvas id="asgWinRateChart"></canvas></div>
+            </div>
+            <div class="rounded-2xl bg-panel border border-border p-6">
+              <h3 class="text-lg font-bold text-text mb-6">Signal Distribution</h3>
+              <div class="h-72"><canvas id="asgDistributionChart"></canvas></div>
+            </div>
+            <div class="rounded-2xl bg-panel border border-border p-6">
+              <h3 class="text-lg font-bold text-text mb-6">Performance by Strategy</h3>
+              <div class="space-y-4">
+                <div>
+                  <div class="flex items-center justify-between mb-2">
+                    <span class="text-sm font-medium text-text">Trend Following</span><span class="text-sm font-bold text-emerald-500">92%</span>
+                  </div>
+                  <div class="h-2 w-full rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-emerald-500" style="width: 92%"></div></div>
+                </div>
+                <div>
+                  <div class="flex items-center justify-between mb-2"><span class="text-sm font-medium text-text">Breakout</span><span class="text-sm font-bold text-emerald-500">88%</span></div>
+                  <div class="h-2 w-full rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-sky-500" style="width: 88%"></div></div>
+                </div>
+                <div>
+                  <div class="flex items-center justify-between mb-2"><span class="text-sm font-medium text-text">Scalping</span><span class="text-sm font-bold text-emerald-500">85%</span></div>
+                  <div class="h-2 w-full rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-accent" style="width: 85%"></div></div>
+                </div>
+                <div>
+                  <div class="flex items-center justify-between mb-2"><span class="text-sm font-medium text-text">Swing Trading</span><span class="text-sm font-bold text-emerald-500">82%</span></div>
+                  <div class="h-2 w-full rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-amber-500" style="width: 82%"></div></div>
+                </div>
+              </div>
+            </div>
+            <div class="rounded-2xl bg-panel border border-border p-6">
+              <h3 class="text-lg font-bold text-text mb-6">Top Performing Pairs</h3>
+              <div class="space-y-4">
+                <div class="flex items-center justify-between p-4 rounded-xl bg-gradient-to-r from-emerald-500/10 to-transparent border border-emerald-500/20">
+                  <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center"><span class="text-white font-bold text-xs">EU</span></div>
+                    <div>
+                      <p class="font-bold text-text">EUR/USD</p>
+                      <p class="text-xs text-muted">247 signals</p>
+                    </div>
+                  </div>
+                  <div class="text-right">
+                    <p class="font-bold text-emerald-500">94.2%</p>
+                    <p class="text-xs text-muted">Win Rate</p>
+                  </div>
+                </div>
+                <div class="flex items-center justify-between p-4 rounded-xl bg-gradient-to-r from-emerald-500/10 to-transparent border border-emerald-500/20">
+                  <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-orange-500 to-amber-600 flex items-center justify-center"><i data-lucide="bitcoin" class="w-5 h-5 text-white shrink-0"></i></div>
+                    <div>
+                      <p class="font-bold text-text">BTC/USD</p>
+                      <p class="text-xs text-muted">189 signals</p>
+                    </div>
+                  </div>
+                  <div class="text-right">
+                    <p class="font-bold text-emerald-500">91.5%</p>
+                    <p class="text-xs text-muted">Win Rate</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Drawer overlay -->
+    <div class="drawer-overlay" id="asgDrawerOverlay"></div>
+
+    <!-- Signal / Generate drawer (static panels toggled by type) -->
+    <div class="drawer flex flex-col" id="asgSignalDrawer">
+      <div class="p-4 sm:p-6 border-b border-border flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <div id="asgDrawerIcon" class="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shrink-0">
+            <span class="text-white font-bold">EU</span>
+          </div>
+          <div>
+            <h3 class="font-bold text-lg text-text" id="asgDrawerTitle">EUR/USD Signal</h3>
+            <p class="text-sm text-muted" id="asgDrawerSub">AI Generated • 2 minutes ago</p>
+          </div>
+        </div>
+        <button class="asg-close-drawer w-10 h-10 flex items-center justify-center rounded-xl border border-border text-muted hover:bg-accent/10 transition" aria-label="Close">
+          <i data-lucide="x" class="w-5 h-5 shrink-0"></i>
+        </button>
+      </div>
+      <div class="p-4 sm:p-6 flex-1 overflow-y-auto">
+        <!-- signal-detail panel -->
+        <div class="asg-panel" data-panel="signal-detail">
+          <div class="space-y-6">
+            <div class="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20">
+              <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+                <span class="px-4 py-2 rounded-lg text-sm font-bold bg-emerald-500/20 text-emerald-500">BUY SIGNAL</span><span class="text-sm text-muted">89% Confidence</span>
+              </div>
+              <div class="grid grid-cols-3 gap-3 sm:gap-4 text-center">
+                <div>
+                  <p class="text-xs text-muted mb-1">Entry</p>
+                  <p class="font-bold text-text font-mono">1.0854</p>
+                </div>
+                <div>
+                  <p class="text-xs text-muted mb-1">Take Profit</p>
+                  <p class="font-bold text-emerald-500 font-mono">1.0904</p>
+                </div>
+                <div>
+                  <p class="text-xs text-muted mb-1">Stop Loss</p>
+                  <p class="font-bold text-red-500 font-mono">1.0829</p>
+                </div>
+              </div>
+            </div>
+            <div>
+              <h4 class="font-bold text-text mb-3 flex items-center gap-2"><i data-lucide="brain-circuit" class="w-5 h-5 text-accent shrink-0"></i>AI Analysis</h4>
+              <div class="space-y-3">
+                <div class="p-3 rounded-xl bg-panel border border-border">
+                  <div class="flex items-center gap-2 mb-2">
+                    <div class="w-6 h-6 rounded-full bg-emerald-500/20 flex items-center justify-center"><i data-lucide="check" class="w-3 h-3 text-emerald-500 shrink-0"></i></div>
+                    <span class="font-medium text-text">RSI Oversold</span>
+                  </div>
+                  <p class="text-sm text-muted">RSI at 28.5 indicates oversold condition.</p>
+                </div>
+                <div class="p-3 rounded-xl bg-panel border border-border">
+                  <div class="flex items-center gap-2 mb-2">
+                    <div class="w-6 h-6 rounded-full bg-emerald-500/20 flex items-center justify-center"><i data-lucide="check" class="w-3 h-3 text-emerald-500 shrink-0"></i></div>
+                    <span class="font-medium text-text">MACD Bullish Crossover</span>
+                  </div>
+                  <p class="text-sm text-muted">MACD crossed above the signal line.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- generate panel -->
+        <div class="asg-panel hidden" data-panel="generate">
+          <div class="space-y-6">
+            <div>
+              <label class="block text-sm font-semibold text-text mb-3">Select Asset</label
+              ><select class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition">
+                <option>EUR/USD</option>
+                <option>GBP/USD</option>
+                <option>BTC/USD</option>
+              </select>
+            </div>
+            <div class="rounded-2xl border border-accent/30 bg-gradient-to-br from-accent/10 via-panel to-panel p-4">
+              <div class="flex items-center gap-2">
+                <span class="inline-flex gap-1"
+                  ><span class="w-2 h-2 rounded-full bg-accent animate-pulse"></span><span class="w-2 h-2 rounded-full bg-accent animate-pulse" style="animation-delay: 0.15s"></span
+                  ><span class="w-2 h-2 rounded-full bg-accent animate-pulse" style="animation-delay: 0.3s"></span></span
+                ><span class="text-sm text-muted">AI analyzing market...</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="p-4 sm:p-6 border-t border-border flex items-center gap-3">
+        <button
+          class="flex-1 justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition whitespace-nowrap"
+        >
+          <i data-lucide="check" class="w-4 h-4 shrink-0"></i>Apply Signal
+        </button>
+        <button
+          class="flex-1 justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-panel border border-border text-sm font-semibold text-text hover:border-accent/40 transition whitespace-nowrap"
+        >
+          <i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i>Save
+        </button>
+      </div>
+    </div>
+
+    <!-- Filter drawer -->
+    <div class="drawer flex flex-col" id="asgFilterDrawer">
+      <div class="p-4 sm:p-6 border-b border-border flex items-center justify-between">
+        <h3 class="font-bold text-lg text-text">Filter Signals</h3>
+        <button class="asg-close-drawer w-10 h-10 flex items-center justify-center rounded-xl border border-border text-muted hover:bg-accent/10 transition" aria-label="Close">
+          <i data-lucide="x" class="w-5 h-5 shrink-0"></i>
+        </button>
+      </div>
+      <div class="p-4 sm:p-6 flex-1 overflow-y-auto space-y-6">
+        <div>
+          <label class="block text-sm font-semibold text-text mb-3">Market Type</label>
+          <div class="flex flex-wrap gap-2">
+            <label class="flex items-center gap-2 p-3 rounded-xl border border-border cursor-pointer"
+              ><input type="checkbox" class="custom-checkbox" checked /><span class="text-sm text-text">Forex</span></label
+            ><label class="flex items-center gap-2 p-3 rounded-xl border border-border cursor-pointer"
+              ><input type="checkbox" class="custom-checkbox" checked /><span class="text-sm text-text">Crypto</span></label
+            >
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-text mb-3">Confidence Level</label>
+          <div class="space-y-3">
+            <div class="flex items-center justify-between">
+              <span class="text-sm text-muted">Minimum Confidence</span><span class="text-sm font-bold text-accent" id="asgConfidenceValue">70%</span>
+            </div>
+            <input type="range" min="50" max="100" value="70" class="w-full" id="asgConfidenceSlider" />
+          </div>
+        </div>
+      </div>
+      <div class="p-4 sm:p-6 border-t border-border flex items-center gap-3">
+        <button
+          id="asgResetFilters"
+          class="flex-1 justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-panel border border-border text-sm font-semibold text-text hover:border-accent/40 transition whitespace-nowrap"
+        >
+          <i data-lucide="rotate-ccw" class="w-4 h-4 shrink-0"></i>Reset
+        </button>
+        <button
+          id="asgApplyFilters"
+          class="flex-1 justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition whitespace-nowrap"
+        >
+          <i data-lucide="funnel" class="w-4 h-4 shrink-0"></i>Apply
+        </button>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="asgToast">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-5 h-5 text-white shrink-0"></i></div>
+      <div>
+        <p class="font-semibold text-text" id="asgToastTitle">Signal Generated!</p>
+        <p class="text-sm text-muted" id="asgToastMessage">Your AI signal has been created</p>
+      </div>
+      <button id="asgToastClose" class="p-2 ml-auto rounded-lg text-muted hover:bg-border/50 transition" aria-label="Dismiss"><i data-lucide="x" class="w-4 h-4 shrink-0"></i></button>
+    </div>
+
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
+  </body>
+</html>

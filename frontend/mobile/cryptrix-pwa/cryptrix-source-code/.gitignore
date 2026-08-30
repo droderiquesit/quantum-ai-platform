@@ -1,0 +1,7 @@
+dist
+node_modules
+*.lock
+*.DS_Store
+.vercel
+
+.vercel

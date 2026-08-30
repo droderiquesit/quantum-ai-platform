@@ -1,0 +1,636 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <script>
+      if (localStorage.getItem("theme") === "light") document.documentElement.classList.remove("dark");
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Help Center - SignalAIX | AI Forex & Crypto Trading Signals</title>
+    <link rel="icon" type="image/png" href="assets/images/favicon.png" />
+    <link rel="apple-touch-icon" href="assets/images/favicon.png" />
+  </head>
+  <body id="help-center">
+    <div id="loader">
+      <div class="spinner"></div>
+      <div class="loader-text">Loading SignalAIX...</div>
+    </div>
+
+    <include-sidebar />
+
+    <main class="main-content" id="mainContent">
+      <include-top-header />
+
+      <div class="inner-content max-sm:px-3 max-lg:px-4 max-lg:py-6 lg:p-6 space-y-6">
+        <!-- Page header -->
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div>
+            <div class="flex items-center gap-2 flex-wrap">
+              <h1 class="text-2xl md:text-3xl font-bold text-text">Help Center</h1>
+              <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-violet-500/10 text-violet-400 text-[11px] font-semibold shrink-0"><i data-lucide="sparkles" class="w-3 h-3 shrink-0"></i>AI Support</span>
+            </div>
+            <p class="text-sm text-muted mt-1">Find answers, tutorials, and support</p>
+          </div>
+          <div class="flex items-center gap-3 flex-wrap">
+            <div class="dropdown">
+              <button class="js-dropdown-toggle inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition whitespace-nowrap"><i data-lucide="funnel" class="w-4 h-4 shrink-0"></i>Filter<i data-lucide="chevron-down" class="w-4 h-4 shrink-0"></i></button>
+              <div class="dropdown-menu w-56 mt-2 rounded-xl bg-panel border border-border shadow-2xl overflow-hidden p-1.5">
+                <button class="hc-filter flex w-full items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition" data-filter="all"><i data-lucide="layers" class="w-4 h-4 shrink-0"></i>All Categories</button>
+                <button class="hc-filter flex w-full items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition" data-filter="signals"><i data-lucide="radio" class="w-4 h-4 shrink-0"></i>Signals</button>
+                <button class="hc-filter flex w-full items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition" data-filter="trading"><i data-lucide="trending-up" class="w-4 h-4 shrink-0"></i>Trading</button>
+                <button class="hc-filter flex w-full items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition" data-filter="account"><i data-lucide="user" class="w-4 h-4 shrink-0"></i>Account</button>
+                <button class="hc-filter flex w-full items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition" data-filter="api"><i data-lucide="code" class="w-4 h-4 shrink-0"></i>API &amp; Webhooks</button>
+              </div>
+            </div>
+            <button id="hcExport" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition whitespace-nowrap"><i data-lucide="download" class="w-4 h-4 shrink-0"></i>Export</button>
+            <button id="hcNewTicket" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition whitespace-nowrap"><i data-lucide="plus" class="w-4 h-4 shrink-0"></i>New Ticket</button>
+          </div>
+        </div>
+
+        <!-- Search hero (brand gradient) -->
+        <div class="@container relative rounded-2xl bg-gradient-to-br from-emerald-600 via-teal-700 to-emerald-800 p-6 sm:p-10 overflow-hidden shadow-lg shadow-emerald-900/30">
+          <div class="pointer-events-none absolute -top-20 -right-16 w-64 h-64 rounded-full bg-emerald-400/20 blur-3xl"></div>
+          <div class="pointer-events-none absolute -bottom-24 -left-10 w-72 h-72 rounded-full bg-emerald-950/30 blur-3xl"></div>
+          <div class="pointer-events-none absolute inset-0 opacity-[0.06]" style="background-image: radial-gradient(#ffffff 1px, transparent 1px); background-size: 16px 16px"></div>
+
+          <div class="relative z-10 max-w-2xl mx-auto text-center">
+            <div class="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white/15 ring-1 ring-white/25 mb-5">
+              <i data-lucide="sparkles" class="w-4 h-4 text-white shrink-0"></i>
+              <span class="text-sm font-medium text-white">AI-Powered Support</span>
+            </div>
+            <h2 class="text-2xl sm:text-3xl @lg:text-4xl font-bold text-white mb-3">How can we help you?</h2>
+            <p class="text-white/80 mb-7">Search our knowledge base or browse categories below</p>
+            <div class="relative max-w-xl mx-auto">
+              <i data-lucide="search" class="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-muted shrink-0"></i>
+              <input type="text" placeholder="Search for articles, tutorials, guides..." class="w-full bg-panel border border-border rounded-2xl py-4 pl-12 pr-28 sm:pr-32 text-text text-base focus:outline-none focus:border-accent focus:ring-4 focus:ring-accent/10" id="hcHeroSearch" />
+              <button id="hcHeroSearchBtn" class="absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold whitespace-nowrap"><i data-lucide="search" class="w-4 h-4 shrink-0"></i><span class="hidden xs:inline">Search</span></button>
+            </div>
+            <div class="flex flex-wrap items-center justify-center gap-2 mt-6">
+              <span class="text-sm text-white/80">Popular:</span>
+              <button class="hc-topic inline-flex items-center px-3 py-1.5 rounded-full bg-white/10 ring-1 ring-white/20 text-white text-xs font-medium hover:bg-white/20 transition" data-topic="API Setup">API Setup</button>
+              <button class="hc-topic inline-flex items-center px-3 py-1.5 rounded-full bg-white/10 ring-1 ring-white/20 text-white text-xs font-medium hover:bg-white/20 transition" data-topic="Signal Alerts">Signal Alerts</button>
+              <button class="hc-topic inline-flex items-center px-3 py-1.5 rounded-full bg-white/10 ring-1 ring-white/20 text-white text-xs font-medium hover:bg-white/20 transition" data-topic="Billing">Billing</button>
+              <button class="hc-topic inline-flex items-center px-3 py-1.5 rounded-full bg-white/10 ring-1 ring-white/20 text-white text-xs font-medium hover:bg-white/20 transition" data-topic="Webhooks">Webhooks</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Quick stats -->
+        <div class="grid grid-cols-1 xs:grid-cols-2 @4xl/content:grid-cols-4 gap-4">
+          <div class="bg-panel border border-border rounded-2xl p-5">
+            <div class="flex items-center gap-4">
+              <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0"><i data-lucide="book-open" class="w-5 h-5 text-white shrink-0"></i></div>
+              <div class="min-w-0"><p class="text-2xl font-bold text-text">248</p><p class="text-sm text-muted">Articles</p></div>
+            </div>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-5">
+            <div class="flex items-center gap-4">
+              <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-sky-500 to-blue-600 flex items-center justify-center shrink-0"><i data-lucide="circle-play" class="w-5 h-5 text-white shrink-0"></i></div>
+              <div class="min-w-0"><p class="text-2xl font-bold text-text">56</p><p class="text-sm text-muted">Video Tutorials</p></div>
+            </div>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-5">
+            <div class="flex items-center gap-4">
+              <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center shrink-0"><i data-lucide="message-circle" class="w-5 h-5 text-white shrink-0"></i></div>
+              <div class="min-w-0"><p class="text-2xl font-bold text-text">24/7</p><p class="text-sm text-muted">Live Support</p></div>
+            </div>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-5">
+            <div class="flex items-center gap-4">
+              <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center shrink-0"><i data-lucide="zap" class="w-5 h-5 text-white shrink-0"></i></div>
+              <div class="min-w-0"><p class="text-2xl font-bold text-text">&lt;2h</p><p class="text-sm text-muted">Avg Response</p></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="flex gap-1 p-1 rounded-xl bg-bg border border-border w-full overflow-x-auto hide-scrollbar">
+          <button class="hc-tab tab-button active shrink-0 inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-muted whitespace-nowrap transition" data-tab="knowledge"><i data-lucide="book" class="w-4 h-4 shrink-0"></i>Knowledge Base</button>
+          <button class="hc-tab tab-button shrink-0 inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-muted whitespace-nowrap transition" data-tab="faq"><i data-lucide="circle-question-mark" class="w-4 h-4 shrink-0"></i>FAQ</button>
+          <button class="hc-tab tab-button shrink-0 inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-muted whitespace-nowrap transition" data-tab="tutorials"><i data-lucide="play" class="w-4 h-4 shrink-0"></i>Tutorials</button>
+          <button class="hc-tab tab-button shrink-0 inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-muted whitespace-nowrap transition" data-tab="tickets"><i data-lucide="ticket" class="w-4 h-4 shrink-0"></i>My Tickets</button>
+          <button class="hc-tab tab-button shrink-0 inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-muted whitespace-nowrap transition" data-tab="contact"><i data-lucide="headphones" class="w-4 h-4 shrink-0"></i>Contact Us</button>
+        </div>
+
+        <!-- ===== Knowledge Base tab ===== -->
+        <div class="hc-pane space-y-6" id="hc-knowledge">
+          <!-- Categories -->
+          <div class="grid grid-cols-1 @xl/content:grid-cols-2 @4xl/content:grid-cols-3 gap-5">
+            <button class="hc-category group text-left bg-panel border border-border rounded-2xl p-6 hover:border-accent/40 hover:-translate-y-1 transition" data-category="getting-started">
+              <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center mb-4"><i data-lucide="rocket" class="w-6 h-6 text-white shrink-0"></i></div>
+              <h3 class="font-bold text-text mb-2">Getting Started</h3>
+              <p class="text-sm text-muted mb-4">Learn the basics of SignalAIX and set up your account</p>
+              <div class="flex items-center justify-between"><span class="text-xs text-muted">24 articles</span><i data-lucide="arrow-right" class="w-4 h-4 text-accent shrink-0"></i></div>
+            </button>
+            <button class="hc-category group text-left bg-panel border border-border rounded-2xl p-6 hover:border-accent/40 hover:-translate-y-1 transition" data-category="signals">
+              <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-sky-500 to-blue-600 flex items-center justify-center mb-4"><i data-lucide="radio" class="w-6 h-6 text-white shrink-0"></i></div>
+              <h3 class="font-bold text-text mb-2">Signals &amp; Alerts</h3>
+              <p class="text-sm text-muted mb-4">Understanding signals, setting up alerts, and notifications</p>
+              <div class="flex items-center justify-between"><span class="text-xs text-muted">38 articles</span><i data-lucide="arrow-right" class="w-4 h-4 text-accent shrink-0"></i></div>
+            </button>
+            <button class="hc-category group text-left bg-panel border border-border rounded-2xl p-6 hover:border-accent/40 hover:-translate-y-1 transition" data-category="ai-features">
+              <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center mb-4"><i data-lucide="brain" class="w-6 h-6 text-white shrink-0"></i></div>
+              <h3 class="font-bold text-text mb-2">AI Features</h3>
+              <p class="text-sm text-muted mb-4">Explore AI predictions, analysis tools, and smart features</p>
+              <div class="flex items-center justify-between"><span class="text-xs text-muted">32 articles</span><i data-lucide="arrow-right" class="w-4 h-4 text-accent shrink-0"></i></div>
+            </button>
+            <button class="hc-category group text-left bg-panel border border-border rounded-2xl p-6 hover:border-accent/40 hover:-translate-y-1 transition" data-category="trading-tools">
+              <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center mb-4"><i data-lucide="chart-line" class="w-6 h-6 text-white shrink-0"></i></div>
+              <h3 class="font-bold text-text mb-2">Trading Tools</h3>
+              <p class="text-sm text-muted mb-4">Heatmaps, scanners, pattern detection, and analytics</p>
+              <div class="flex items-center justify-between"><span class="text-xs text-muted">45 articles</span><i data-lucide="arrow-right" class="w-4 h-4 text-accent shrink-0"></i></div>
+            </button>
+            <button class="hc-category group text-left bg-panel border border-border rounded-2xl p-6 hover:border-accent/40 hover:-translate-y-1 transition" data-category="automation">
+              <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center mb-4"><i data-lucide="bot" class="w-6 h-6 text-white shrink-0"></i></div>
+              <h3 class="font-bold text-text mb-2">Automation &amp; Bots</h3>
+              <p class="text-sm text-muted mb-4">Bot center, webhooks, API integrations, and automation</p>
+              <div class="flex items-center justify-between"><span class="text-xs text-muted">28 articles</span><i data-lucide="arrow-right" class="w-4 h-4 text-accent shrink-0"></i></div>
+            </button>
+            <button class="hc-category group text-left bg-panel border border-border rounded-2xl p-6 hover:border-accent/40 hover:-translate-y-1 transition" data-category="billing">
+              <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-rose-500 to-red-600 flex items-center justify-center mb-4"><i data-lucide="credit-card" class="w-6 h-6 text-white shrink-0"></i></div>
+              <h3 class="font-bold text-text mb-2">Billing &amp; Plans</h3>
+              <p class="text-sm text-muted mb-4">Subscription plans, payments, invoices, and upgrades</p>
+              <div class="flex items-center justify-between"><span class="text-xs text-muted">16 articles</span><i data-lucide="arrow-right" class="w-4 h-4 text-accent shrink-0"></i></div>
+            </button>
+          </div>
+
+          <!-- Popular articles -->
+          <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+            <div class="flex flex-col xs:flex-row xs:items-center xs:justify-between gap-2 mb-6">
+              <h3 class="font-bold text-text text-lg">Popular Articles</h3>
+              <button class="hc-toast-btn inline-flex items-center gap-1.5 text-sm font-semibold text-accent hover:underline whitespace-nowrap" data-toast-title="Loading" data-toast-msg="Opening all articles...">View All<i data-lucide="arrow-right" class="w-4 h-4 shrink-0"></i></button>
+            </div>
+            <div class="grid grid-cols-1 @2xl/content:grid-cols-2 gap-4">
+              <button class="hc-article group text-left bg-bg border border-border rounded-xl p-5 hover:border-accent/40 transition" data-article="setup-first-signal">
+                <div class="flex items-start gap-4">
+                  <div class="w-10 h-10 rounded-lg bg-accent/10 flex items-center justify-center shrink-0"><i data-lucide="zap" class="w-5 h-5 text-accent shrink-0"></i></div>
+                  <div class="flex-1 min-w-0">
+                    <h4 class="font-semibold text-text mb-1 line-clamp-2">How to Set Up Your First Signal Alert</h4>
+                    <p class="text-sm text-muted line-clamp-2">Learn how to configure and receive your first trading signal with customized alerts.</p>
+                    <div class="flex items-center gap-3 mt-3 flex-wrap"><span class="px-2 py-0.5 rounded-md bg-accent/15 text-accent text-[11px] font-semibold">Getting Started</span><span class="text-xs text-muted">5 min read</span></div>
+                  </div>
+                </div>
+              </button>
+              <button class="hc-article group text-left bg-bg border border-border rounded-xl p-5 hover:border-accent/40 transition" data-article="webhook-integration">
+                <div class="flex items-start gap-4">
+                  <div class="w-10 h-10 rounded-lg bg-sky-500/10 flex items-center justify-center shrink-0"><i data-lucide="webhook" class="w-5 h-5 text-sky-500 shrink-0"></i></div>
+                  <div class="flex-1 min-w-0">
+                    <h4 class="font-semibold text-text mb-1 line-clamp-2">Complete Webhook Integration Guide</h4>
+                    <p class="text-sm text-muted line-clamp-2">Step-by-step guide to integrate webhooks with your trading platform.</p>
+                    <div class="flex items-center gap-3 mt-3 flex-wrap"><span class="px-2 py-0.5 rounded-md bg-sky-500/15 text-sky-500 text-[11px] font-semibold">Automation</span><span class="text-xs text-muted">12 min read</span></div>
+                  </div>
+                </div>
+              </button>
+              <button class="hc-article group text-left bg-bg border border-border rounded-xl p-5 hover:border-accent/40 transition" data-article="ai-predictions">
+                <div class="flex items-start gap-4">
+                  <div class="w-10 h-10 rounded-lg bg-violet-500/10 flex items-center justify-center shrink-0"><i data-lucide="brain" class="w-5 h-5 text-violet-400 shrink-0"></i></div>
+                  <div class="flex-1 min-w-0">
+                    <h4 class="font-semibold text-text mb-1 line-clamp-2">Understanding AI Market Predictions</h4>
+                    <p class="text-sm text-muted line-clamp-2">How our AI models analyze market data and generate accurate predictions.</p>
+                    <div class="flex items-center gap-3 mt-3 flex-wrap"><span class="px-2 py-0.5 rounded-md bg-violet-500/15 text-violet-400 text-[11px] font-semibold">AI Features</span><span class="text-xs text-muted">8 min read</span></div>
+                  </div>
+                </div>
+              </button>
+              <button class="hc-article group text-left bg-bg border border-border rounded-xl p-5 hover:border-accent/40 transition" data-article="api-authentication">
+                <div class="flex items-start gap-4">
+                  <div class="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center shrink-0"><i data-lucide="key" class="w-5 h-5 text-emerald-500 shrink-0"></i></div>
+                  <div class="flex-1 min-w-0">
+                    <h4 class="font-semibold text-text mb-1 line-clamp-2">API Authentication &amp; Security</h4>
+                    <p class="text-sm text-muted line-clamp-2">Best practices for securing your API keys and authentication tokens.</p>
+                    <div class="flex items-center gap-3 mt-3 flex-wrap"><span class="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-500 text-[11px] font-semibold">Security</span><span class="text-xs text-muted">6 min read</span></div>
+                  </div>
+                </div>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== FAQ tab ===== -->
+        <div class="hc-pane hidden space-y-6" id="hc-faq">
+          <div class="flex flex-wrap gap-2">
+            <button class="hc-faq-chip active inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="all">All</button>
+            <button class="hc-faq-chip inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="signals">Signals</button>
+            <button class="hc-faq-chip inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="trading">Trading</button>
+            <button class="hc-faq-chip inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="account">Account</button>
+            <button class="hc-faq-chip inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="billing">Billing</button>
+            <button class="hc-faq-chip inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="api">API</button>
+          </div>
+
+          <div class="space-y-4" id="hcFaqList">
+            <div class="hc-faq bg-panel border border-border rounded-2xl overflow-hidden transition" data-category="signals">
+              <button class="hc-faq-q w-full flex items-center justify-between gap-4 p-5 text-left">
+                <div class="flex items-center gap-4 min-w-0"><div class="w-10 h-10 rounded-lg bg-sky-500/10 flex items-center justify-center shrink-0"><i data-lucide="radio" class="w-5 h-5 text-sky-500 shrink-0"></i></div><span class="font-semibold text-text">How do I receive trading signals?</span></div>
+                <i data-lucide="chevron-down" class="hc-faq-icon w-5 h-5 text-muted shrink-0 transition-transform"></i>
+              </button>
+              <div class="hc-faq-a hidden px-5 pb-5"><p class="text-muted leading-relaxed">Trading signals are delivered through multiple channels: in-app notifications, email alerts, Telegram bot, and webhook integrations. You can configure your preferred delivery methods in Notification Settings. Each signal includes entry price, take profit levels, stop loss, and AI confidence score.</p></div>
+            </div>
+            <div class="hc-faq bg-panel border border-border rounded-2xl overflow-hidden transition" data-category="signals">
+              <button class="hc-faq-q w-full flex items-center justify-between gap-4 p-5 text-left">
+                <div class="flex items-center gap-4 min-w-0"><div class="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center shrink-0"><i data-lucide="circle-check" class="w-5 h-5 text-emerald-500 shrink-0"></i></div><span class="font-semibold text-text">What is the signal accuracy rate?</span></div>
+                <i data-lucide="chevron-down" class="hc-faq-icon w-5 h-5 text-muted shrink-0 transition-transform"></i>
+              </button>
+              <div class="hc-faq-a hidden px-5 pb-5"><p class="text-muted leading-relaxed">Our AI-powered signals maintain an average accuracy rate of 78-85% depending on market conditions. Performance varies by asset class - Forex signals typically show 80%+ accuracy while Crypto signals average around 75%. You can view detailed performance analytics in the Performance Analytics section.</p></div>
+            </div>
+            <div class="hc-faq bg-panel border border-border rounded-2xl overflow-hidden transition" data-category="trading">
+              <button class="hc-faq-q w-full flex items-center justify-between gap-4 p-5 text-left">
+                <div class="flex items-center gap-4 min-w-0"><div class="w-10 h-10 rounded-lg bg-sky-500/10 flex items-center justify-center shrink-0"><i data-lucide="link" class="w-5 h-5 text-sky-500 shrink-0"></i></div><span class="font-semibold text-text">Can I connect my broker account?</span></div>
+                <i data-lucide="chevron-down" class="hc-faq-icon w-5 h-5 text-muted shrink-0 transition-transform"></i>
+              </button>
+              <div class="hc-faq-a hidden px-5 pb-5"><p class="text-muted leading-relaxed">Yes! SignalAIX supports integration with major brokers and exchanges including Binance, Coinbase Pro, MetaTrader 4/5, Interactive Brokers, and more. Navigate to Connected Exchanges in your account settings to link your trading accounts securely using API keys.</p></div>
+            </div>
+            <div class="hc-faq bg-panel border border-border rounded-2xl overflow-hidden transition" data-category="account">
+              <button class="hc-faq-q w-full flex items-center justify-between gap-4 p-5 text-left">
+                <div class="flex items-center gap-4 min-w-0"><div class="w-10 h-10 rounded-lg bg-amber-500/10 flex items-center justify-center shrink-0"><i data-lucide="shield" class="w-5 h-5 text-amber-500 shrink-0"></i></div><span class="font-semibold text-text">How do I enable two-factor authentication?</span></div>
+                <i data-lucide="chevron-down" class="hc-faq-icon w-5 h-5 text-muted shrink-0 transition-transform"></i>
+              </button>
+              <div class="hc-faq-a hidden px-5 pb-5"><p class="text-muted leading-relaxed">Go to Profile &amp; Security settings and click on "Enable 2FA". You can choose between authenticator app (Google Authenticator, Authy) or SMS verification. We strongly recommend using an authenticator app for enhanced security. Make sure to save your backup codes in a secure location.</p></div>
+            </div>
+            <div class="hc-faq bg-panel border border-border rounded-2xl overflow-hidden transition" data-category="billing">
+              <button class="hc-faq-q w-full flex items-center justify-between gap-4 p-5 text-left">
+                <div class="flex items-center gap-4 min-w-0"><div class="w-10 h-10 rounded-lg bg-rose-500/10 flex items-center justify-center shrink-0"><i data-lucide="credit-card" class="w-5 h-5 text-rose-500 shrink-0"></i></div><span class="font-semibold text-text">What payment methods do you accept?</span></div>
+                <i data-lucide="chevron-down" class="hc-faq-icon w-5 h-5 text-muted shrink-0 transition-transform"></i>
+              </button>
+              <div class="hc-faq-a hidden px-5 pb-5"><p class="text-muted leading-relaxed">We accept all major credit/debit cards (Visa, Mastercard, Amex), PayPal, cryptocurrency payments (BTC, ETH, USDT), and bank transfers for enterprise plans. All payments are processed securely through Stripe and are PCI-DSS compliant.</p></div>
+            </div>
+            <div class="hc-faq bg-panel border border-border rounded-2xl overflow-hidden transition" data-category="api">
+              <button class="hc-faq-q w-full flex items-center justify-between gap-4 p-5 text-left">
+                <div class="flex items-center gap-4 min-w-0"><div class="w-10 h-10 rounded-lg bg-violet-500/10 flex items-center justify-center shrink-0"><i data-lucide="code" class="w-5 h-5 text-violet-400 shrink-0"></i></div><span class="font-semibold text-text">How do I get my API keys?</span></div>
+                <i data-lucide="chevron-down" class="hc-faq-icon w-5 h-5 text-muted shrink-0 transition-transform"></i>
+              </button>
+              <div class="hc-faq-a hidden px-5 pb-5"><p class="text-muted leading-relaxed">Navigate to API Integrations in the Automation section. Click "Generate New API Key" and provide a name for your key. You'll receive both a public key and a secret key. The secret key is only shown once, so make sure to copy and store it securely. API access requires a Pro or Enterprise subscription.</p></div>
+            </div>
+            <div class="hc-faq bg-panel border border-border rounded-2xl overflow-hidden transition" data-category="api">
+              <button class="hc-faq-q w-full flex items-center justify-between gap-4 p-5 text-left">
+                <div class="flex items-center gap-4 min-w-0"><div class="w-10 h-10 rounded-lg bg-blue-500/10 flex items-center justify-center shrink-0"><i data-lucide="webhook" class="w-5 h-5 text-blue-500 shrink-0"></i></div><span class="font-semibold text-text">What events can trigger webhooks?</span></div>
+                <i data-lucide="chevron-down" class="hc-faq-icon w-5 h-5 text-muted shrink-0 transition-transform"></i>
+              </button>
+              <div class="hc-faq-a hidden px-5 pb-5"><p class="text-muted leading-relaxed">Webhooks can be triggered by: new signal generation, signal updates (TP/SL hit), portfolio changes, alert triggers, price threshold breaches, and custom AI prediction events. Each webhook includes a JSON payload with all relevant data and can be secured with HMAC signatures.</p></div>
+            </div>
+            <div class="hc-faq bg-panel border border-border rounded-2xl overflow-hidden transition" data-category="billing">
+              <button class="hc-faq-q w-full flex items-center justify-between gap-4 p-5 text-left">
+                <div class="flex items-center gap-4 min-w-0"><div class="w-10 h-10 rounded-lg bg-orange-500/10 flex items-center justify-center shrink-0"><i data-lucide="refresh-cw" class="w-5 h-5 text-orange-500 shrink-0"></i></div><span class="font-semibold text-text">Can I cancel my subscription anytime?</span></div>
+                <i data-lucide="chevron-down" class="hc-faq-icon w-5 h-5 text-muted shrink-0 transition-transform"></i>
+              </button>
+              <div class="hc-faq-a hidden px-5 pb-5"><p class="text-muted leading-relaxed">Yes, you can cancel your subscription at any time from Subscription &amp; Billing settings. Your access will continue until the end of your current billing period. No refunds are provided for partial months, but you won't be charged for future periods after cancellation.</p></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== Tutorials tab ===== -->
+        <div class="hc-pane hidden space-y-6" id="hc-tutorials">
+          <div class="flex flex-wrap gap-2">
+            <button class="hc-vid-chip active inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="all">All Tutorials</button>
+            <button class="hc-vid-chip inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="beginner">Beginner</button>
+            <button class="hc-vid-chip inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="intermediate">Intermediate</button>
+            <button class="hc-vid-chip inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="advanced">Advanced</button>
+          </div>
+
+          <div class="grid grid-cols-1 @xl/content:grid-cols-2 @4xl/content:grid-cols-3 gap-5" id="hcVideoGrid">
+            <button class="hc-video group text-left bg-panel border border-border rounded-2xl overflow-hidden hover:border-accent/40 transition" data-level="beginner" data-video="intro">
+              <div class="relative aspect-video bg-gradient-to-br from-accent/15 to-teal-500/15 flex items-center justify-center">
+                <div class="w-14 h-14 rounded-full bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center text-white group-hover:scale-110 transition"><i data-lucide="play" class="w-6 h-6 shrink-0"></i></div>
+                <span class="absolute bottom-3 right-3 bg-black/70 text-white text-xs px-2 py-1 rounded">8:24</span>
+              </div>
+              <div class="p-5">
+                <div class="flex items-center gap-2 mb-2 flex-wrap"><span class="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-500 text-[11px] font-semibold">Beginner</span><span class="px-2 py-0.5 rounded-md bg-accent/15 text-accent text-[11px] font-semibold">New</span></div>
+                <h4 class="font-semibold text-text mb-2">Introduction to SignalAIX</h4>
+                <p class="text-sm text-muted mb-3">Complete overview of the platform and its features</p>
+                <div class="flex items-center gap-4 text-xs text-muted"><span class="flex items-center gap-1"><i data-lucide="eye" class="w-3 h-3 shrink-0"></i>12.5k views</span><span class="flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3 shrink-0"></i>2 days ago</span></div>
+              </div>
+            </button>
+            <button class="hc-video group text-left bg-panel border border-border rounded-2xl overflow-hidden hover:border-accent/40 transition" data-level="beginner" data-video="signals-setup">
+              <div class="relative aspect-video bg-gradient-to-br from-accent/15 to-teal-500/15 flex items-center justify-center">
+                <div class="w-14 h-14 rounded-full bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center text-white group-hover:scale-110 transition"><i data-lucide="play" class="w-6 h-6 shrink-0"></i></div>
+                <span class="absolute bottom-3 right-3 bg-black/70 text-white text-xs px-2 py-1 rounded">15:32</span>
+              </div>
+              <div class="p-5">
+                <div class="flex items-center gap-2 mb-2 flex-wrap"><span class="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-500 text-[11px] font-semibold">Beginner</span></div>
+                <h4 class="font-semibold text-text mb-2">Setting Up Signal Alerts</h4>
+                <p class="text-sm text-muted mb-3">Configure alerts for Forex and Crypto signals</p>
+                <div class="flex items-center gap-4 text-xs text-muted"><span class="flex items-center gap-1"><i data-lucide="eye" class="w-3 h-3 shrink-0"></i>8.2k views</span><span class="flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3 shrink-0"></i>1 week ago</span></div>
+              </div>
+            </button>
+            <button class="hc-video group text-left bg-panel border border-border rounded-2xl overflow-hidden hover:border-accent/40 transition" data-level="intermediate" data-video="ai-tools">
+              <div class="relative aspect-video bg-gradient-to-br from-accent/15 to-teal-500/15 flex items-center justify-center">
+                <div class="w-14 h-14 rounded-full bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center text-white group-hover:scale-110 transition"><i data-lucide="play" class="w-6 h-6 shrink-0"></i></div>
+                <span class="absolute bottom-3 right-3 bg-black/70 text-white text-xs px-2 py-1 rounded">22:18</span>
+              </div>
+              <div class="p-5">
+                <div class="flex items-center gap-2 mb-2 flex-wrap"><span class="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-500 text-[11px] font-semibold">Intermediate</span></div>
+                <h4 class="font-semibold text-text mb-2">Mastering AI Trading Tools</h4>
+                <p class="text-sm text-muted mb-3">Deep dive into AI predictions and analysis</p>
+                <div class="flex items-center gap-4 text-xs text-muted"><span class="flex items-center gap-1"><i data-lucide="eye" class="w-3 h-3 shrink-0"></i>6.8k views</span><span class="flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3 shrink-0"></i>2 weeks ago</span></div>
+              </div>
+            </button>
+            <button class="hc-video group text-left bg-panel border border-border rounded-2xl overflow-hidden hover:border-accent/40 transition" data-level="intermediate" data-video="webhook-setup">
+              <div class="relative aspect-video bg-gradient-to-br from-accent/15 to-teal-500/15 flex items-center justify-center">
+                <div class="w-14 h-14 rounded-full bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center text-white group-hover:scale-110 transition"><i data-lucide="play" class="w-6 h-6 shrink-0"></i></div>
+                <span class="absolute bottom-3 right-3 bg-black/70 text-white text-xs px-2 py-1 rounded">18:45</span>
+              </div>
+              <div class="p-5">
+                <div class="flex items-center gap-2 mb-2 flex-wrap"><span class="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-500 text-[11px] font-semibold">Intermediate</span></div>
+                <h4 class="font-semibold text-text mb-2">Webhook Integration Tutorial</h4>
+                <p class="text-sm text-muted mb-3">Connect webhooks to external platforms</p>
+                <div class="flex items-center gap-4 text-xs text-muted"><span class="flex items-center gap-1"><i data-lucide="eye" class="w-3 h-3 shrink-0"></i>4.5k views</span><span class="flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3 shrink-0"></i>3 weeks ago</span></div>
+              </div>
+            </button>
+            <button class="hc-video group text-left bg-panel border border-border rounded-2xl overflow-hidden hover:border-accent/40 transition" data-level="advanced" data-video="api-integration">
+              <div class="relative aspect-video bg-gradient-to-br from-accent/15 to-teal-500/15 flex items-center justify-center">
+                <div class="w-14 h-14 rounded-full bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center text-white group-hover:scale-110 transition"><i data-lucide="play" class="w-6 h-6 shrink-0"></i></div>
+                <span class="absolute bottom-3 right-3 bg-black/70 text-white text-xs px-2 py-1 rounded">28:12</span>
+              </div>
+              <div class="p-5">
+                <div class="flex items-center gap-2 mb-2 flex-wrap"><span class="px-2 py-0.5 rounded-md bg-red-500/15 text-red-500 text-[11px] font-semibold">Advanced</span></div>
+                <h4 class="font-semibold text-text mb-2">API Integration Masterclass</h4>
+                <p class="text-sm text-muted mb-3">Build custom integrations with our API</p>
+                <div class="flex items-center gap-4 text-xs text-muted"><span class="flex items-center gap-1"><i data-lucide="eye" class="w-3 h-3 shrink-0"></i>3.2k views</span><span class="flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3 shrink-0"></i>1 month ago</span></div>
+              </div>
+            </button>
+            <button class="hc-video group text-left bg-panel border border-border rounded-2xl overflow-hidden hover:border-accent/40 transition" data-level="advanced" data-video="bot-trading">
+              <div class="relative aspect-video bg-gradient-to-br from-accent/15 to-teal-500/15 flex items-center justify-center">
+                <div class="w-14 h-14 rounded-full bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center text-white group-hover:scale-110 transition"><i data-lucide="play" class="w-6 h-6 shrink-0"></i></div>
+                <span class="absolute bottom-3 right-3 bg-black/70 text-white text-xs px-2 py-1 rounded">35:40</span>
+              </div>
+              <div class="p-5">
+                <div class="flex items-center gap-2 mb-2 flex-wrap"><span class="px-2 py-0.5 rounded-md bg-red-500/15 text-red-500 text-[11px] font-semibold">Advanced</span></div>
+                <h4 class="font-semibold text-text mb-2">Automated Bot Trading</h4>
+                <p class="text-sm text-muted mb-3">Set up fully automated trading strategies</p>
+                <div class="flex items-center gap-4 text-xs text-muted"><span class="flex items-center gap-1"><i data-lucide="eye" class="w-3 h-3 shrink-0"></i>5.1k views</span><span class="flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3 shrink-0"></i>1 month ago</span></div>
+              </div>
+            </button>
+          </div>
+        </div>
+
+        <!-- ===== My Tickets tab ===== -->
+        <div class="hc-pane hidden space-y-6" id="hc-tickets">
+          <div class="flex flex-col sm:flex-row gap-4 sm:items-center sm:justify-between">
+            <div class="flex flex-wrap gap-2">
+              <button class="hc-ticket-chip active inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="all">All Tickets</button>
+              <button class="hc-ticket-chip inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="open">Open</button>
+              <button class="hc-ticket-chip inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="pending">Pending</button>
+              <button class="hc-ticket-chip inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="closed">Closed</button>
+            </div>
+            <div class="relative w-full sm:w-64">
+              <i data-lucide="search" class="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-muted shrink-0"></i>
+              <input type="text" placeholder="Search tickets..." class="w-full bg-panel border border-border rounded-xl py-2.5 pl-11 pr-4 text-text text-sm focus:outline-none focus:border-accent" id="hcTicketSearch" />
+            </div>
+          </div>
+
+          <div class="space-y-4" id="hcTicketsList">
+            <button class="hc-ticket group w-full text-left flex items-center gap-3 sm:gap-4 p-4 sm:p-5 bg-panel border border-border rounded-2xl hover:border-accent/40 transition" data-status="open" data-ticket="TKT-2847" data-subject="API rate limit exceeded issue" data-priority="Medium" data-category="API">
+              <div class="w-12 h-12 rounded-xl bg-emerald-500/10 flex items-center justify-center shrink-0"><i data-lucide="message-circle" class="w-6 h-6 text-emerald-500 shrink-0"></i></div>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-start gap-2 mb-1 flex-wrap"><h4 class="font-semibold text-text line-clamp-2">API rate limit exceeded issue</h4><span class="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-500 text-[11px] font-semibold shrink-0">Open</span></div>
+                <p class="text-sm text-muted line-clamp-1 mb-2">Getting 429 errors when making API calls during high volume trading periods...</p>
+                <div class="flex items-center gap-4 text-xs text-muted flex-wrap"><span class="flex items-center gap-1"><i data-lucide="hash" class="w-3 h-3 shrink-0"></i>TKT-2847</span><span class="flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3 shrink-0"></i>2 hours ago</span><span class="flex items-center gap-1"><i data-lucide="message-square" class="w-3 h-3 shrink-0"></i>3 replies</span></div>
+              </div>
+              <i data-lucide="chevron-right" class="w-5 h-5 text-muted shrink-0"></i>
+            </button>
+            <button class="hc-ticket group w-full text-left flex items-center gap-3 sm:gap-4 p-4 sm:p-5 bg-panel border border-border rounded-2xl hover:border-accent/40 transition" data-status="pending" data-ticket="TKT-2834" data-subject="Webhook not triggering for BTC signals" data-priority="High" data-category="API">
+              <div class="w-12 h-12 rounded-xl bg-amber-500/10 flex items-center justify-center shrink-0"><i data-lucide="clock" class="w-6 h-6 text-amber-500 shrink-0"></i></div>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-start gap-2 mb-1 flex-wrap"><h4 class="font-semibold text-text line-clamp-2">Webhook not triggering for BTC signals</h4><span class="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-500 text-[11px] font-semibold shrink-0">Pending</span></div>
+                <p class="text-sm text-muted line-clamp-1 mb-2">Configured webhook for BTC/USD signals but not receiving any callbacks...</p>
+                <div class="flex items-center gap-4 text-xs text-muted flex-wrap"><span class="flex items-center gap-1"><i data-lucide="hash" class="w-3 h-3 shrink-0"></i>TKT-2834</span><span class="flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3 shrink-0"></i>1 day ago</span><span class="flex items-center gap-1"><i data-lucide="message-square" class="w-3 h-3 shrink-0"></i>5 replies</span></div>
+              </div>
+              <i data-lucide="chevron-right" class="w-5 h-5 text-muted shrink-0"></i>
+            </button>
+            <button class="hc-ticket group w-full text-left flex items-center gap-3 sm:gap-4 p-4 sm:p-5 bg-panel border border-border rounded-2xl hover:border-accent/40 transition" data-status="closed" data-ticket="TKT-2801" data-subject="Subscription upgrade question" data-priority="Low" data-category="Billing">
+              <div class="w-12 h-12 rounded-xl bg-slate-500/10 flex items-center justify-center shrink-0"><i data-lucide="circle-check" class="w-6 h-6 text-slate-400 shrink-0"></i></div>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-start gap-2 mb-1 flex-wrap"><h4 class="font-semibold text-text line-clamp-2">Subscription upgrade question</h4><span class="px-2 py-0.5 rounded-md bg-slate-500/15 text-slate-400 text-[11px] font-semibold shrink-0">Closed</span></div>
+                <p class="text-sm text-muted line-clamp-1 mb-2">Question about upgrading from Pro to Enterprise plan mid-billing cycle...</p>
+                <div class="flex items-center gap-4 text-xs text-muted flex-wrap"><span class="flex items-center gap-1"><i data-lucide="hash" class="w-3 h-3 shrink-0"></i>TKT-2801</span><span class="flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3 shrink-0"></i>3 days ago</span><span class="flex items-center gap-1"><i data-lucide="message-square" class="w-3 h-3 shrink-0"></i>7 replies</span></div>
+              </div>
+              <i data-lucide="chevron-right" class="w-5 h-5 text-muted shrink-0"></i>
+            </button>
+            <button class="hc-ticket group w-full text-left flex items-center gap-3 sm:gap-4 p-4 sm:p-5 bg-panel border border-border rounded-2xl hover:border-accent/40 transition" data-status="closed" data-ticket="TKT-2756" data-subject="Mobile app notification delay" data-priority="Medium" data-category="Account">
+              <div class="w-12 h-12 rounded-xl bg-slate-500/10 flex items-center justify-center shrink-0"><i data-lucide="circle-check" class="w-6 h-6 text-slate-400 shrink-0"></i></div>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-start gap-2 mb-1 flex-wrap"><h4 class="font-semibold text-text line-clamp-2">Mobile app notification delay</h4><span class="px-2 py-0.5 rounded-md bg-slate-500/15 text-slate-400 text-[11px] font-semibold shrink-0">Closed</span></div>
+                <p class="text-sm text-muted line-clamp-1 mb-2">Push notifications arriving 5-10 minutes late on iOS app...</p>
+                <div class="flex items-center gap-4 text-xs text-muted flex-wrap"><span class="flex items-center gap-1"><i data-lucide="hash" class="w-3 h-3 shrink-0"></i>TKT-2756</span><span class="flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3 shrink-0"></i>1 week ago</span><span class="flex items-center gap-1"><i data-lucide="message-square" class="w-3 h-3 shrink-0"></i>4 replies</span></div>
+              </div>
+              <i data-lucide="chevron-right" class="w-5 h-5 text-muted shrink-0"></i>
+            </button>
+          </div>
+        </div>
+
+        <!-- ===== Contact Us tab ===== -->
+        <div class="hc-pane hidden space-y-6" id="hc-contact">
+          <div class="grid grid-cols-1 @xl/content:grid-cols-2 @4xl/content:grid-cols-3 gap-6">
+            <button id="hcLiveChat" class="group text-center bg-panel border border-border rounded-2xl p-7 hover:border-accent/40 hover:-translate-y-1 transition">
+              <div class="w-16 h-16 rounded-2xl bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center mx-auto mb-5"><i data-lucide="message-circle" class="w-8 h-8 text-white shrink-0"></i></div>
+              <h3 class="font-bold text-text text-lg mb-2">Live Chat</h3>
+              <p class="text-sm text-muted mb-4">Chat with our support team in real-time</p>
+              <div class="flex items-center justify-center gap-2"><span class="live-dot !bg-emerald-500"></span><span class="text-sm text-emerald-500 font-medium">Online now</span></div>
+            </button>
+            <button id="hcEmailSupport" class="group text-center bg-panel border border-border rounded-2xl p-7 hover:border-accent/40 hover:-translate-y-1 transition">
+              <div class="w-16 h-16 rounded-2xl bg-gradient-to-br from-sky-500 to-blue-600 flex items-center justify-center mx-auto mb-5"><i data-lucide="mail" class="w-8 h-8 text-white shrink-0"></i></div>
+              <h3 class="font-bold text-text text-lg mb-2">Email Support</h3>
+              <p class="text-sm text-muted mb-4">Get help via email within 24 hours</p>
+              <span class="text-sm text-sky-500 font-medium break-all">support@signalaix.com</span>
+            </button>
+            <button class="hc-toast-btn group text-center bg-panel border border-border rounded-2xl p-7 hover:border-accent/40 hover:-translate-y-1 transition" data-toast-title="Community" data-toast-msg="Opening Discord community...">
+              <div class="w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center mx-auto mb-5"><i data-lucide="users" class="w-8 h-8 text-white shrink-0"></i></div>
+              <h3 class="font-bold text-text text-lg mb-2">Community</h3>
+              <p class="text-sm text-muted mb-4">Join our Discord community</p>
+              <span class="text-sm text-violet-400 font-medium">5,200+ members</span>
+            </button>
+          </div>
+
+          <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+            <h3 class="font-bold text-text text-lg mb-6">Additional Resources</h3>
+            <div class="grid grid-cols-1 @2xl/content:grid-cols-2 gap-4">
+              <a href="#" class="flex items-center gap-4 p-4 rounded-xl border border-border hover:border-accent/40 hover:bg-accent/5 transition">
+                <div class="w-12 h-12 rounded-xl bg-accent/10 flex items-center justify-center shrink-0"><i data-lucide="book-open" class="w-6 h-6 text-accent shrink-0"></i></div>
+                <div class="min-w-0"><h4 class="font-semibold text-text">API Documentation</h4><p class="text-sm text-muted">Complete API reference and guides</p></div>
+                <i data-lucide="external-link" class="w-5 h-5 text-muted ml-auto shrink-0"></i>
+              </a>
+              <a href="#" class="flex items-center gap-4 p-4 rounded-xl border border-border hover:border-accent/40 hover:bg-accent/5 transition">
+                <div class="w-12 h-12 rounded-xl bg-sky-500/10 flex items-center justify-center shrink-0"><i data-lucide="git-branch" class="w-6 h-6 text-sky-500 shrink-0"></i></div>
+                <div class="min-w-0"><h4 class="font-semibold text-text">Changelog</h4><p class="text-sm text-muted">Latest updates and new features</p></div>
+                <i data-lucide="external-link" class="w-5 h-5 text-muted ml-auto shrink-0"></i>
+              </a>
+              <a href="#" class="flex items-center gap-4 p-4 rounded-xl border border-border hover:border-accent/40 hover:bg-accent/5 transition">
+                <div class="w-12 h-12 rounded-xl bg-emerald-500/10 flex items-center justify-center shrink-0"><i data-lucide="shield-check" class="w-6 h-6 text-emerald-500 shrink-0"></i></div>
+                <div class="min-w-0"><h4 class="font-semibold text-text">Status Page</h4><p class="text-sm text-muted">System status and uptime</p></div>
+                <i data-lucide="external-link" class="w-5 h-5 text-muted ml-auto shrink-0"></i>
+              </a>
+              <a href="#" class="flex items-center gap-4 p-4 rounded-xl border border-border hover:border-accent/40 hover:bg-accent/5 transition">
+                <div class="w-12 h-12 rounded-xl bg-amber-500/10 flex items-center justify-center shrink-0"><i data-lucide="lightbulb" class="w-6 h-6 text-amber-500 shrink-0"></i></div>
+                <div class="min-w-0"><h4 class="font-semibold text-text">Feature Requests</h4><p class="text-sm text-muted">Vote and suggest new features</p></div>
+                <i data-lucide="external-link" class="w-5 h-5 text-muted ml-auto shrink-0"></i>
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- ===== Drawers ===== -->
+    <div class="drawer-overlay" id="hcDrawerOverlay"></div>
+
+    <!-- New ticket drawer -->
+    <aside class="drawer" id="hcNewTicketDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between pb-4 mb-4 border-b border-border">
+          <div><h2 class="text-xl font-bold text-text">Create New Ticket</h2><p class="text-sm text-muted">Submit a support request</p></div>
+          <button class="hc-drawer-close w-9 h-9 rounded-lg flex items-center justify-center text-muted hover:bg-bg transition shrink-0"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+        </div>
+        <div class="space-y-5">
+          <div>
+            <label class="block text-sm font-medium text-text mb-2">Category *</label>
+            <select class="appearance-none w-full px-4 py-2.5 rounded-lg bg-bg border border-border text-text text-sm cursor-pointer focus:outline-none focus:border-accent">
+              <option value="">Select a category</option><option value="signals">Signals &amp; Alerts</option><option value="trading">Trading Tools</option><option value="account">Account Issues</option><option value="billing">Billing &amp; Payments</option><option value="api">API &amp; Webhooks</option><option value="other">Other</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-text mb-2">Priority</label>
+            <div class="flex gap-4 flex-wrap">
+              <label class="flex items-center gap-2 cursor-pointer"><input type="radio" name="hcPriority" value="low" class="w-4 h-4 accent-accent shrink-0" /><span class="text-sm text-muted">Low</span></label>
+              <label class="flex items-center gap-2 cursor-pointer"><input type="radio" name="hcPriority" value="medium" checked class="w-4 h-4 accent-accent shrink-0" /><span class="text-sm text-muted">Medium</span></label>
+              <label class="flex items-center gap-2 cursor-pointer"><input type="radio" name="hcPriority" value="high" class="w-4 h-4 accent-accent shrink-0" /><span class="text-sm text-muted">High</span></label>
+            </div>
+          </div>
+          <div><label class="block text-sm font-medium text-text mb-2">Subject *</label><input type="text" placeholder="Brief description of your issue" class="w-full px-4 py-2.5 rounded-lg bg-bg border border-border text-text text-sm focus:outline-none focus:border-accent" /></div>
+          <div><label class="block text-sm font-medium text-text mb-2">Description *</label><textarea class="w-full px-4 py-2.5 rounded-lg bg-bg border border-border text-text text-sm resize-none h-40 focus:outline-none focus:border-accent" placeholder="Please describe your issue in detail..."></textarea></div>
+          <div>
+            <label class="block text-sm font-medium text-text mb-2">Attachments</label>
+            <div class="border-2 border-dashed border-border rounded-xl p-8 text-center hover:border-accent/50 transition cursor-pointer">
+              <i data-lucide="cloud-upload" class="w-10 h-10 text-muted mx-auto mb-3 shrink-0"></i>
+              <p class="text-sm text-muted">Drag &amp; drop files here or click to browse</p>
+              <p class="text-xs text-muted mt-1">Max 10MB per file (PNG, JPG, PDF)</p>
+            </div>
+          </div>
+          <div class="grid grid-cols-1 @xs:grid-cols-2 gap-3 pt-2">
+            <button class="hc-drawer-close inline-flex items-center justify-center px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition">Cancel</button>
+            <button class="hc-submit-ticket inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold"><i data-lucide="send" class="w-4 h-4 shrink-0"></i>Submit Ticket</button>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- View ticket drawer -->
+    <aside class="drawer" id="hcViewTicketDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between pb-4 mb-4 border-b border-border">
+          <div class="min-w-0">
+            <div class="flex items-center gap-3 mb-1"><h2 class="text-xl font-bold text-text" id="hcVtId">TKT-2847</h2><span class="px-2 py-0.5 rounded-md text-[11px] font-semibold shrink-0" id="hcVtStatusBadge">Open</span></div>
+            <p class="text-sm text-muted truncate" id="hcVtSubject">API rate limit exceeded issue</p>
+          </div>
+          <button class="hc-drawer-close w-9 h-9 rounded-lg flex items-center justify-center text-muted hover:bg-bg transition shrink-0"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+        </div>
+        <div class="grid grid-cols-3 gap-3 mb-6">
+          <div class="text-center p-4 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Status</p><p class="font-semibold" id="hcVtStatus">Open</p></div>
+          <div class="text-center p-4 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Priority</p><p class="font-semibold" id="hcVtPriority">Medium</p></div>
+          <div class="text-center p-4 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Category</p><p class="font-semibold text-text" id="hcVtCategory">API</p></div>
+        </div>
+        <h3 class="font-semibold text-text mb-4">Conversation</h3>
+        <div class="space-y-4">
+          <div class="flex gap-4">
+            <div class="w-10 h-10 rounded-full bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center shrink-0"><span class="text-white font-bold text-sm">JD</span></div>
+            <div class="flex-1 min-w-0"><div class="flex items-center gap-2 mb-2 flex-wrap"><span class="font-semibold text-text">You</span><span class="text-xs text-muted">2 hours ago</span></div><div class="bg-bg rounded-xl p-4"><p class="text-sm text-text">I'm getting 429 errors when making API calls during high volume trading periods. This is affecting my automated trading bot. Can you help increase my rate limit?</p></div></div>
+          </div>
+          <div class="flex gap-4">
+            <div class="w-10 h-10 rounded-full bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center shrink-0"><i data-lucide="headphones" class="w-5 h-5 text-white shrink-0"></i></div>
+            <div class="flex-1 min-w-0"><div class="flex items-center gap-2 mb-2 flex-wrap"><span class="font-semibold text-text">Support Team</span><span class="text-xs text-muted">1 hour ago</span></div><div class="bg-accent/10 rounded-xl p-4"><p class="text-sm text-text">Hi John, thanks for reaching out. I can see your current plan allows 100 requests per minute. For high-frequency trading, I recommend upgrading to our Enterprise plan which offers 1000 req/min. Would you like me to help you with the upgrade process?</p></div></div>
+          </div>
+          <div class="flex gap-4">
+            <div class="w-10 h-10 rounded-full bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center shrink-0"><span class="text-white font-bold text-sm">JD</span></div>
+            <div class="flex-1 min-w-0"><div class="flex items-center gap-2 mb-2 flex-wrap"><span class="font-semibold text-text">You</span><span class="text-xs text-muted">45 min ago</span></div><div class="bg-bg rounded-xl p-4"><p class="text-sm text-text">Yes, that would be great! What's the price difference and how quickly can the upgrade take effect?</p></div></div>
+          </div>
+        </div>
+        <div class="border-t border-border pt-6 mt-6">
+          <label class="block text-sm font-medium text-text mb-2">Reply</label>
+          <textarea class="w-full px-4 py-2.5 rounded-lg bg-bg border border-border text-text text-sm resize-none h-24 mb-4 focus:outline-none focus:border-accent" placeholder="Type your message..."></textarea>
+          <div class="flex items-center justify-between gap-2 flex-wrap">
+            <button class="hc-toast-btn inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold text-muted hover:text-accent transition" data-toast-title="Attachment" data-toast-msg="Select a file to attach"><i data-lucide="paperclip" class="w-4 h-4 shrink-0"></i>Attach File</button>
+            <button class="hc-send-reply inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold"><i data-lucide="send" class="w-4 h-4 shrink-0"></i>Send Reply</button>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Live chat drawer -->
+    <aside class="drawer" id="hcLiveChatDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between pb-4 mb-4 border-b border-border">
+          <div class="flex items-center gap-4 min-w-0">
+            <div class="w-12 h-12 rounded-full bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center relative shrink-0"><i data-lucide="headphones" class="w-6 h-6 text-white shrink-0"></i><span class="absolute -bottom-0.5 -right-0.5 w-4 h-4 bg-emerald-500 rounded-full border-2 border-panel"></span></div>
+            <div class="min-w-0"><h2 class="text-lg font-bold text-text">Live Chat Support</h2><p class="text-sm text-emerald-500">Online - Typically replies in 2 min</p></div>
+          </div>
+          <button class="hc-drawer-close w-9 h-9 rounded-lg flex items-center justify-center text-muted hover:bg-bg transition shrink-0"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+        </div>
+        <div class="space-y-4 mb-6">
+          <div class="flex gap-3">
+            <div class="w-8 h-8 rounded-full bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center shrink-0"><i data-lucide="bot" class="w-4 h-4 text-white shrink-0"></i></div>
+            <div class="bg-bg rounded-2xl rounded-tl-md p-4 max-w-[80%]"><p class="text-sm text-text">Hello! Welcome to SignalAIX support. How can I help you today?</p><span class="text-xs text-muted mt-2 block">Just now</span></div>
+          </div>
+          <div class="text-center"><span class="text-xs text-muted bg-bg px-3 py-1 rounded-full">Chat started</span></div>
+        </div>
+        <div class="border-t border-border pt-4">
+          <div class="flex gap-3">
+            <input type="text" placeholder="Type your message..." class="flex-1 px-4 py-2.5 rounded-xl bg-bg border border-border text-text text-sm focus:outline-none focus:border-accent" id="hcChatInput" />
+            <button class="hc-send-chat inline-flex items-center justify-center px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white shrink-0"><i data-lucide="send" class="w-4 h-4 shrink-0"></i></button>
+          </div>
+          <div class="flex items-center gap-4 mt-3">
+            <button class="hc-toast-btn inline-flex items-center gap-1.5 text-xs font-semibold text-muted hover:text-accent transition" data-toast-title="Attachment" data-toast-msg="Select a file to attach"><i data-lucide="paperclip" class="w-3 h-3 shrink-0"></i>Attach</button>
+            <button class="hc-toast-btn inline-flex items-center gap-1.5 text-xs font-semibold text-muted hover:text-accent transition" data-toast-title="Emoji" data-toast-msg="Emoji picker would open here"><i data-lucide="smile" class="w-3 h-3 shrink-0"></i>Emoji</button>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Email support drawer -->
+    <aside class="drawer" id="hcEmailDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between pb-4 mb-4 border-b border-border">
+          <div><h2 class="text-xl font-bold text-text">Email Support</h2><p class="text-sm text-muted">Send us a detailed message</p></div>
+          <button class="hc-drawer-close w-9 h-9 rounded-lg flex items-center justify-center text-muted hover:bg-bg transition shrink-0"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+        </div>
+        <div class="space-y-5">
+          <div class="p-4 bg-sky-500/10 rounded-xl"><div class="flex items-center gap-3"><i data-lucide="info" class="w-5 h-5 text-sky-500 shrink-0"></i><p class="text-sm text-text">Typically we respond within 24 hours. For urgent issues, please use Live Chat.</p></div></div>
+          <div><label class="block text-sm font-medium text-text mb-2">Your Email *</label><input type="email" value="john.doe@example.com" readonly class="w-full px-4 py-2.5 rounded-lg bg-bg border border-border text-text text-sm focus:outline-none focus:border-accent" /></div>
+          <div><label class="block text-sm font-medium text-text mb-2">Subject *</label><input type="text" placeholder="What can we help you with?" class="w-full px-4 py-2.5 rounded-lg bg-bg border border-border text-text text-sm focus:outline-none focus:border-accent" /></div>
+          <div><label class="block text-sm font-medium text-text mb-2">Message *</label><textarea class="w-full px-4 py-2.5 rounded-lg bg-bg border border-border text-text text-sm resize-none h-48 focus:outline-none focus:border-accent" placeholder="Describe your issue or question in detail..."></textarea></div>
+          <div>
+            <label class="block text-sm font-medium text-text mb-2">Attachments</label>
+            <div class="border-2 border-dashed border-border rounded-xl p-6 text-center hover:border-accent/50 transition cursor-pointer"><i data-lucide="cloud-upload" class="w-8 h-8 text-muted mx-auto mb-2 shrink-0"></i><p class="text-sm text-muted">Drop files here or click to upload</p></div>
+          </div>
+          <button class="hc-send-email w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold"><i data-lucide="mail" class="w-4 h-4 shrink-0"></i>Send Email</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Video Player Drawer -->
+    <aside class="drawer" id="hcVideoDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between pb-4 mb-4 border-b border-border">
+          <div class="min-w-0"><h2 class="text-xl font-bold text-text truncate" id="hcVideoTitle">Tutorial</h2><p class="text-sm text-muted truncate" id="hcVideoMeta">Video tutorial</p></div>
+          <button class="hc-drawer-close w-9 h-9 rounded-lg flex items-center justify-center text-muted hover:bg-bg transition shrink-0"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+        </div>
+        <div class="space-y-4">
+          <div class="aspect-video w-full rounded-xl overflow-hidden bg-black">
+            <video id="hcVideoFrame" class="w-full h-full" controls playsinline preload="metadata"></video>
+          </div>
+          <p class="text-sm text-text leading-relaxed" id="hcVideoDesc">Complete overview of the platform and its features.</p>
+          <div class="flex items-center gap-4 text-xs text-muted flex-wrap">
+            <span class="flex items-center gap-1"><i data-lucide="eye" class="w-3.5 h-3.5 shrink-0"></i><span id="hcVideoViews">12.5k views</span></span>
+            <span class="flex items-center gap-1"><i data-lucide="clock" class="w-3.5 h-3.5 shrink-0"></i><span id="hcVideoDuration">8:24</span></span>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Toast -->
+    <div class="toast" id="hcToast">
+      <div class="w-10 h-10 rounded-full bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-5 h-5 text-white shrink-0"></i></div>
+      <div class="min-w-0"><p class="font-semibold text-text" id="hcToastTitle">Success</p><p class="text-sm text-muted" id="hcToastMessage">Action completed successfully</p></div>
+      <button id="hcToastClose" class="ml-2 w-8 h-8 rounded-lg flex items-center justify-center text-muted hover:bg-bg transition shrink-0"><i data-lucide="x" class="w-4 h-4 shrink-0"></i></button>
+    </div>
+
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
+  </body>
+</html>

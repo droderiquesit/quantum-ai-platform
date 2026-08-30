@@ -1,0 +1,1147 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <script>
+      if (localStorage.getItem("theme") === "light") document.documentElement.classList.remove("dark");
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Crypto Pairs - SignalAIX | AI Forex & Crypto Trading Signals</title>
+    <link rel="icon" type="image/png" href="assets/images/favicon.png" />
+    <link rel="apple-touch-icon" href="assets/images/favicon.png" />
+  </head>
+  <body id="crypto-pairs">
+    <div id="loader"><div class="spinner"></div><div class="loader-text">Loading SignalAIX...</div></div>
+    <include-sidebar />
+    <main class="main-content" id="mainContent">
+      <include-top-header />
+      <div class="inner-content max-sm:px-3 max-lg:px-4 max-lg:py-6 lg:p-6">
+        <!-- Page Header -->
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-6">
+          <div>
+            <h1 class="text-2xl md:text-3xl font-bold text-text flex items-center gap-3">
+              <span class="w-10 h-10 rounded-xl bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0">
+                <i data-lucide="coins" class="w-5 h-5 text-white shrink-0"></i>
+              </span>
+              Crypto Pairs Watchlist
+            </h1>
+            <p class="text-muted mt-1">Track and analyze cryptocurrency pairs in real-time</p>
+          </div>
+          <div class="flex flex-wrap items-center gap-3">
+            <button
+              id="cpAddPairBtn"
+              class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"
+            >
+              <i data-lucide="plus" class="w-4 h-4 shrink-0"></i>
+              <span>Add Pair</span>
+            </button>
+            <button
+              id="cpSetAlertBtn"
+              class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"
+            >
+              <i data-lucide="bell-plus" class="w-4 h-4 shrink-0"></i>
+              <span>Set Alert</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Stats Row -->
+        <div class="grid grid-cols-1 xs:grid-cols-2 @4xl/content:grid-cols-4 gap-4 mb-6">
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-indigo-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="list-checks" class="w-5 h-5 text-indigo-500 shrink-0"></i>
+              </div>
+              <span class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">+6 week</span>
+            </div>
+            <p class="text-2xl font-bold text-text">48</p>
+            <p class="text-xs text-muted mt-1">Total Watchlist</p>
+          </div>
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-violet-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="radio" class="w-5 h-5 text-violet-400 shrink-0"></i>
+              </div>
+              <span class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-violet-500/15 text-violet-400">AI</span>
+            </div>
+            <p class="text-2xl font-bold text-text">23</p>
+            <p class="text-xs text-muted mt-1">Active Signals (12 buy / 11 sell)</p>
+          </div>
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="landmark" class="w-5 h-5 text-emerald-500 shrink-0"></i>
+              </div>
+              <span class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">+2.8% 24h</span>
+            </div>
+            <p class="text-2xl font-bold text-text">$2.34T</p>
+            <p class="text-xs text-muted mt-1">Total Market Cap</p>
+          </div>
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-amber-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="chart-bar" class="w-5 h-5 text-amber-500 shrink-0"></i>
+              </div>
+              <span class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-500/15 text-red-500">-5.4%</span>
+            </div>
+            <p class="text-2xl font-bold text-text">$89.2B</p>
+            <p class="text-xs text-muted mt-1">24h Volume</p>
+          </div>
+        </div>
+
+        <!-- Tabs + view toggle / filter -->
+        <div class="rounded-2xl bg-panel border border-border p-4 mb-6">
+          <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+            <!-- Tabs -->
+            <div class="flex gap-1 p-1 bg-bg border border-border rounded-2xl overflow-x-auto hide-scrollbar w-full">
+              <button class="cp-tab tab-button active inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="all">
+                <i data-lucide="layers" class="w-4 h-4 shrink-0"></i>
+                <span>All Pairs</span>
+              </button>
+              <button class="cp-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="btc">
+                <i data-lucide="bitcoin" class="w-4 h-4 shrink-0"></i>
+                <span>BTC Markets</span>
+              </button>
+              <button class="cp-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="eth">
+                <i data-lucide="gem" class="w-4 h-4 shrink-0"></i>
+                <span>ETH Markets</span>
+              </button>
+              <button class="cp-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="defi">
+                <i data-lucide="blocks" class="w-4 h-4 shrink-0"></i>
+                <span>DeFi</span>
+              </button>
+              <button class="cp-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="favorites">
+                <i data-lucide="star" class="w-4 h-4 shrink-0"></i>
+                <span>Favorites</span>
+              </button>
+            </div>
+
+            <!-- View toggle + filter button -->
+            <div class="flex items-center gap-3">
+              <div class="flex items-center border border-border rounded-xl overflow-hidden shrink-0">
+                <button class="cp-view-toggle active p-2.5 text-muted transition-colors" data-view="grid" title="Grid view">
+                  <i data-lucide="layout-grid" class="w-4 h-4 shrink-0"></i>
+                </button>
+                <button class="cp-view-toggle p-2.5 text-muted transition-colors" data-view="table" title="Table view">
+                  <i data-lucide="table" class="w-4 h-4 shrink-0"></i>
+                </button>
+              </div>
+              <button
+                id="cpFilterToggle"
+                class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap shrink-0"
+              >
+                <i data-lucide="sliders-horizontal" class="w-4 h-4 shrink-0"></i>
+                <span>Filters</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Filter Panel (collapsible) -->
+          <div class="hidden mt-4 pt-4 border-t border-border" id="cpFilterPanel">
+            <div class="flex flex-col lg:flex-row lg:items-center gap-4">
+              <div class="flex flex-wrap items-center gap-2 cp-filter-group" data-group="signal">
+                <span class="text-sm font-medium text-muted mr-1">Signal:</span>
+                <button class="cp-filter-opt active px-4 py-2 rounded-full border border-accent bg-accent/15 text-accent text-sm font-medium transition-colors" data-value="all">All</button>
+                <button class="cp-filter-opt inline-flex items-center gap-1.5 px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-value="buy">
+                  <i data-lucide="trending-up" class="w-3.5 h-3.5 shrink-0"></i>Buy
+                </button>
+                <button class="cp-filter-opt inline-flex items-center gap-1.5 px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-value="hold">
+                  <i data-lucide="minus" class="w-3.5 h-3.5 shrink-0"></i>Hold
+                </button>
+                <button class="cp-filter-opt inline-flex items-center gap-1.5 px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-value="sell">
+                  <i data-lucide="trending-down" class="w-3.5 h-3.5 shrink-0"></i>Sell
+                </button>
+              </div>
+              <div class="flex flex-wrap items-center gap-2 cp-filter-group" data-group="cap">
+                <span class="text-sm font-medium text-muted mr-1">Market Cap:</span>
+                <button class="cp-filter-opt active px-4 py-2 rounded-full border border-accent bg-accent/15 text-accent text-sm font-medium transition-colors" data-value="all">All</button>
+                <button class="cp-filter-opt px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-value="large">Large</button>
+                <button class="cp-filter-opt px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-value="mid">Mid</button>
+                <button class="cp-filter-opt px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-value="small">Small</button>
+              </div>
+              <div class="lg:ml-auto">
+                <select id="cpSort" class="w-full lg:w-auto text-sm bg-panel border border-border rounded-xl px-3 py-2.5 text-text focus:outline-none focus:border-accent transition-colors">
+                  <option value="rank">Sort: Rank</option>
+                  <option value="price">Sort: Price</option>
+                  <option value="change">Sort: 24h Change</option>
+                  <option value="strength">Sort: Signal Strength</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Action Bar -->
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
+          <div class="flex flex-col xs:flex-row items-stretch xs:items-center gap-3">
+            <div class="relative flex-1 xs:flex-none">
+              <i data-lucide="search" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted shrink-0"></i>
+              <input
+                type="text"
+                id="cpSearch"
+                placeholder="Search pairs..."
+                class="w-full xs:w-64 pl-10 pr-4 py-2.5 bg-panel border border-border rounded-xl text-text text-sm placeholder:text-muted focus:outline-none focus:border-accent transition-colors"
+              />
+            </div>
+            <select id="cpExchange" class="text-sm bg-panel border border-border rounded-xl px-3 py-2.5 text-text focus:outline-none focus:border-accent transition-colors shrink-0">
+              <option value="all">All Exchanges</option>
+              <option value="binance">Binance</option>
+              <option value="coinbase">Coinbase</option>
+              <option value="kraken">Kraken</option>
+              <option value="kucoin">KuCoin</option>
+              <option value="okx">OKX</option>
+            </select>
+          </div>
+          <div class="flex items-center gap-2">
+            <div class="relative">
+              <button id="cpExportBtn" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap">
+                <i data-lucide="download" class="w-4 h-4 shrink-0"></i>
+                <span>Export</span>
+                <i data-lucide="chevron-down" class="w-4 h-4 shrink-0"></i>
+              </button>
+              <div id="cpExportMenu" class="hidden absolute right-0 mt-2 w-48 bg-panel border border-border rounded-xl shadow-xl z-50 overflow-hidden">
+                <button class="cp-export-item flex items-center gap-2.5 w-full px-4 py-3 text-sm text-text hover:bg-accent/10 transition-colors" data-format="csv">
+                  <i data-lucide="file-text" class="w-4 h-4 shrink-0"></i><span>Export as CSV</span>
+                </button>
+                <button class="cp-export-item flex items-center gap-2.5 w-full px-4 py-3 text-sm text-text hover:bg-accent/10 transition-colors" data-format="excel">
+                  <i data-lucide="file-spreadsheet" class="w-4 h-4 shrink-0"></i><span>Export as Excel</span>
+                </button>
+                <button class="cp-export-item flex items-center gap-2.5 w-full px-4 py-3 text-sm text-text hover:bg-accent/10 transition-colors" data-format="pdf">
+                  <i data-lucide="file" class="w-4 h-4 shrink-0"></i><span>Export as PDF</span>
+                </button>
+              </div>
+            </div>
+            <button id="cpRefreshBtn" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap">
+              <i data-lucide="refresh-cw" class="w-4 h-4 shrink-0"></i>
+              <span class="hidden sm:inline">Refresh</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- No Results -->
+        <div class="hidden rounded-2xl bg-panel border border-border p-12 text-center mb-6" id="cpNoResults">
+          <div class="w-14 h-14 rounded-2xl bg-border/40 flex items-center justify-center mx-auto mb-4">
+            <i data-lucide="search-x" class="w-7 h-7 text-muted shrink-0"></i>
+          </div>
+          <h3 class="font-semibold text-text mb-1">No pairs found</h3>
+          <p class="text-sm text-muted">Try adjusting your filters or search term.</p>
+        </div>
+
+        <!-- Grid View -->
+        <div class="grid grid-cols-1 @xl/content:grid-cols-2 @4xl/content:grid-cols-3 gap-4" id="cpGridView">
+          <!-- BTC/USDT -->
+          <div class="cp-card rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors p-4" data-pair="BTCUSDT" data-type="btc" data-signal="buy" data-cap="large" data-change="2.45" data-price="67432.50" data-strength="85">
+            <div class="flex items-start justify-between mb-4 gap-3">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-10 h-10 rounded-xl flex items-center justify-center text-xs font-bold text-white shrink-0" style="background:#F7931A">BT</div>
+                <div class="min-w-0">
+                  <h3 class="font-bold text-text">BTC/USDT</h3>
+                  <p class="text-xs text-muted truncate">Bitcoin</p>
+                </div>
+              </div>
+              <button class="cp-star active w-9 h-9 rounded-lg border border-amber-500 bg-amber-500/15 text-amber-500 flex items-center justify-center transition-colors shrink-0">
+                <i data-lucide="star" class="w-4 h-4 fill-current shrink-0"></i>
+              </button>
+            </div>
+            <div class="flex items-end justify-between mb-4 gap-3">
+              <div class="min-w-0">
+                <p class="text-2xl font-bold text-text">$67,432.50</p>
+                <div class="flex items-center gap-2 mt-1 flex-wrap">
+                  <span class="inline-flex items-center justify-center w-6 h-6 rounded-md bg-emerald-500/15 text-emerald-500 shrink-0"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i></span>
+                  <span class="text-sm font-semibold text-emerald-500">+2.45%</span>
+                </div>
+              </div>
+              <div class="w-28 h-12 shrink-0"><canvas id="cpChart-BTCUSDT"></canvas></div>
+            </div>
+            <div class="grid grid-cols-3 gap-3 pt-4 border-t border-border">
+              <div><p class="text-xs text-muted">Vol</p><p class="text-sm font-semibold text-text">$28.5B</p></div>
+              <div><p class="text-xs text-muted">High</p><p class="text-sm font-semibold text-emerald-500">$68,500</p></div>
+              <div><p class="text-xs text-muted">Low</p><p class="text-sm font-semibold text-red-500">$65,800</p></div>
+            </div>
+            <div class="mt-4 pt-4 border-t border-border">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-xs text-muted">Signal Strength</span>
+                <span class="text-xs font-semibold text-text">85%</span>
+              </div>
+              <div class="h-2 rounded-full bg-border overflow-hidden mb-3"><div class="h-full rounded-full bg-emerald-500" style="width:85%"></div></div>
+              <div class="flex items-center justify-between gap-3">
+                <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0">Buy</span>
+                <button class="cp-details-btn inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-panel border border-border text-text text-xs font-semibold hover:border-accent/40 transition-colors whitespace-nowrap" data-pair="BTCUSDT">
+                  <i data-lucide="expand" class="w-3.5 h-3.5 shrink-0"></i>Details
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- ETH/USDT -->
+          <div class="cp-card rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors p-4" data-pair="ETHUSDT" data-type="eth" data-signal="hold" data-cap="large" data-change="-1.23" data-price="3542.80" data-strength="62">
+            <div class="flex items-start justify-between mb-4 gap-3">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-10 h-10 rounded-xl flex items-center justify-center text-xs font-bold text-white shrink-0" style="background:#627EEA">ET</div>
+                <div class="min-w-0">
+                  <h3 class="font-bold text-text">ETH/USDT</h3>
+                  <p class="text-xs text-muted truncate">Ethereum</p>
+                </div>
+              </div>
+              <button class="cp-star active w-9 h-9 rounded-lg border border-amber-500 bg-amber-500/15 text-amber-500 flex items-center justify-center transition-colors shrink-0">
+                <i data-lucide="star" class="w-4 h-4 fill-current shrink-0"></i>
+              </button>
+            </div>
+            <div class="flex items-end justify-between mb-4 gap-3">
+              <div class="min-w-0">
+                <p class="text-2xl font-bold text-text">$3,542.80</p>
+                <div class="flex items-center gap-2 mt-1 flex-wrap">
+                  <span class="inline-flex items-center justify-center w-6 h-6 rounded-md bg-red-500/15 text-red-500 shrink-0"><i data-lucide="trending-down" class="w-3 h-3 shrink-0"></i></span>
+                  <span class="text-sm font-semibold text-red-500">-1.23%</span>
+                </div>
+              </div>
+              <div class="w-28 h-12 shrink-0"><canvas id="cpChart-ETHUSDT"></canvas></div>
+            </div>
+            <div class="grid grid-cols-3 gap-3 pt-4 border-t border-border">
+              <div><p class="text-xs text-muted">Vol</p><p class="text-sm font-semibold text-text">$15.2B</p></div>
+              <div><p class="text-xs text-muted">High</p><p class="text-sm font-semibold text-emerald-500">$3,620</p></div>
+              <div><p class="text-xs text-muted">Low</p><p class="text-sm font-semibold text-red-500">$3,480</p></div>
+            </div>
+            <div class="mt-4 pt-4 border-t border-border">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-xs text-muted">Signal Strength</span>
+                <span class="text-xs font-semibold text-text">62%</span>
+              </div>
+              <div class="h-2 rounded-full bg-border overflow-hidden mb-3"><div class="h-full rounded-full bg-amber-500" style="width:62%"></div></div>
+              <div class="flex items-center justify-between gap-3">
+                <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-500 shrink-0">Hold</span>
+                <button class="cp-details-btn inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-panel border border-border text-text text-xs font-semibold hover:border-accent/40 transition-colors whitespace-nowrap" data-pair="ETHUSDT">
+                  <i data-lucide="expand" class="w-3.5 h-3.5 shrink-0"></i>Details
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- SOL/USDT -->
+          <div class="cp-card rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors p-4" data-pair="SOLUSDT" data-type="defi" data-signal="buy" data-cap="large" data-change="5.82" data-price="148.35" data-strength="92">
+            <div class="flex items-start justify-between mb-4 gap-3">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-10 h-10 rounded-xl flex items-center justify-center text-xs font-bold text-white shrink-0" style="background:#9945FF">SO</div>
+                <div class="min-w-0">
+                  <h3 class="font-bold text-text">SOL/USDT</h3>
+                  <p class="text-xs text-muted truncate">Solana</p>
+                </div>
+              </div>
+              <button class="cp-star w-9 h-9 rounded-lg border border-border bg-panel text-muted flex items-center justify-center hover:text-amber-500 hover:border-amber-500/50 transition-colors shrink-0">
+                <i data-lucide="star" class="w-4 h-4 shrink-0"></i>
+              </button>
+            </div>
+            <div class="flex items-end justify-between mb-4 gap-3">
+              <div class="min-w-0">
+                <p class="text-2xl font-bold text-text">$148.35</p>
+                <div class="flex items-center gap-2 mt-1 flex-wrap">
+                  <span class="inline-flex items-center justify-center w-6 h-6 rounded-md bg-emerald-500/15 text-emerald-500 shrink-0"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i></span>
+                  <span class="text-sm font-semibold text-emerald-500">+5.82%</span>
+                </div>
+              </div>
+              <div class="w-28 h-12 shrink-0"><canvas id="cpChart-SOLUSDT"></canvas></div>
+            </div>
+            <div class="grid grid-cols-3 gap-3 pt-4 border-t border-border">
+              <div><p class="text-xs text-muted">Vol</p><p class="text-sm font-semibold text-text">$4.8B</p></div>
+              <div><p class="text-xs text-muted">High</p><p class="text-sm font-semibold text-emerald-500">$152</p></div>
+              <div><p class="text-xs text-muted">Low</p><p class="text-sm font-semibold text-red-500">$138</p></div>
+            </div>
+            <div class="mt-4 pt-4 border-t border-border">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-xs text-muted">Signal Strength</span>
+                <span class="text-xs font-semibold text-text">92%</span>
+              </div>
+              <div class="h-2 rounded-full bg-border overflow-hidden mb-3"><div class="h-full rounded-full bg-emerald-500" style="width:92%"></div></div>
+              <div class="flex items-center justify-between gap-3">
+                <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0">Strong Buy</span>
+                <button class="cp-details-btn inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-panel border border-border text-text text-xs font-semibold hover:border-accent/40 transition-colors whitespace-nowrap" data-pair="SOLUSDT">
+                  <i data-lucide="expand" class="w-3.5 h-3.5 shrink-0"></i>Details
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- BNB/USDT -->
+          <div class="cp-card rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors p-4" data-pair="BNBUSDT" data-type="btc" data-signal="buy" data-cap="large" data-change="3.67" data-price="584.20" data-strength="78">
+            <div class="flex items-start justify-between mb-4 gap-3">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-10 h-10 rounded-xl flex items-center justify-center text-xs font-bold text-white shrink-0" style="background:#F0B90B">BN</div>
+                <div class="min-w-0">
+                  <h3 class="font-bold text-text">BNB/USDT</h3>
+                  <p class="text-xs text-muted truncate">BNB</p>
+                </div>
+              </div>
+              <button class="cp-star w-9 h-9 rounded-lg border border-border bg-panel text-muted flex items-center justify-center hover:text-amber-500 hover:border-amber-500/50 transition-colors shrink-0">
+                <i data-lucide="star" class="w-4 h-4 shrink-0"></i>
+              </button>
+            </div>
+            <div class="flex items-end justify-between mb-4 gap-3">
+              <div class="min-w-0">
+                <p class="text-2xl font-bold text-text">$584.20</p>
+                <div class="flex items-center gap-2 mt-1 flex-wrap">
+                  <span class="inline-flex items-center justify-center w-6 h-6 rounded-md bg-emerald-500/15 text-emerald-500 shrink-0"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i></span>
+                  <span class="text-sm font-semibold text-emerald-500">+3.67%</span>
+                </div>
+              </div>
+              <div class="w-28 h-12 shrink-0"><canvas id="cpChart-BNBUSDT"></canvas></div>
+            </div>
+            <div class="grid grid-cols-3 gap-3 pt-4 border-t border-border">
+              <div><p class="text-xs text-muted">Vol</p><p class="text-sm font-semibold text-text">$2.1B</p></div>
+              <div><p class="text-xs text-muted">High</p><p class="text-sm font-semibold text-emerald-500">$595</p></div>
+              <div><p class="text-xs text-muted">Low</p><p class="text-sm font-semibold text-red-500">$562</p></div>
+            </div>
+            <div class="mt-4 pt-4 border-t border-border">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-xs text-muted">Signal Strength</span>
+                <span class="text-xs font-semibold text-text">78%</span>
+              </div>
+              <div class="h-2 rounded-full bg-border overflow-hidden mb-3"><div class="h-full rounded-full bg-emerald-500" style="width:78%"></div></div>
+              <div class="flex items-center justify-between gap-3">
+                <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0">Buy</span>
+                <button class="cp-details-btn inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-panel border border-border text-text text-xs font-semibold hover:border-accent/40 transition-colors whitespace-nowrap" data-pair="BNBUSDT">
+                  <i data-lucide="expand" class="w-3.5 h-3.5 shrink-0"></i>Details
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- XRP/USDT -->
+          <div class="cp-card rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors p-4" data-pair="XRPUSDT" data-type="eth" data-signal="hold" data-cap="mid" data-change="-0.45" data-price="0.5234" data-strength="55">
+            <div class="flex items-start justify-between mb-4 gap-3">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-10 h-10 rounded-xl flex items-center justify-center text-xs font-bold text-white shrink-0" style="background:#23292F">XR</div>
+                <div class="min-w-0">
+                  <h3 class="font-bold text-text">XRP/USDT</h3>
+                  <p class="text-xs text-muted truncate">Ripple</p>
+                </div>
+              </div>
+              <button class="cp-star w-9 h-9 rounded-lg border border-border bg-panel text-muted flex items-center justify-center hover:text-amber-500 hover:border-amber-500/50 transition-colors shrink-0">
+                <i data-lucide="star" class="w-4 h-4 shrink-0"></i>
+              </button>
+            </div>
+            <div class="flex items-end justify-between mb-4 gap-3">
+              <div class="min-w-0">
+                <p class="text-2xl font-bold text-text">$0.5234</p>
+                <div class="flex items-center gap-2 mt-1 flex-wrap">
+                  <span class="inline-flex items-center justify-center w-6 h-6 rounded-md bg-red-500/15 text-red-500 shrink-0"><i data-lucide="trending-down" class="w-3 h-3 shrink-0"></i></span>
+                  <span class="text-sm font-semibold text-red-500">-0.45%</span>
+                </div>
+              </div>
+              <div class="w-28 h-12 shrink-0"><canvas id="cpChart-XRPUSDT"></canvas></div>
+            </div>
+            <div class="grid grid-cols-3 gap-3 pt-4 border-t border-border">
+              <div><p class="text-xs text-muted">Vol</p><p class="text-sm font-semibold text-text">$1.8B</p></div>
+              <div><p class="text-xs text-muted">High</p><p class="text-sm font-semibold text-emerald-500">$0.535</p></div>
+              <div><p class="text-xs text-muted">Low</p><p class="text-sm font-semibold text-red-500">$0.518</p></div>
+            </div>
+            <div class="mt-4 pt-4 border-t border-border">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-xs text-muted">Signal Strength</span>
+                <span class="text-xs font-semibold text-text">55%</span>
+              </div>
+              <div class="h-2 rounded-full bg-border overflow-hidden mb-3"><div class="h-full rounded-full bg-amber-500" style="width:55%"></div></div>
+              <div class="flex items-center justify-between gap-3">
+                <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-500 shrink-0">Hold</span>
+                <button class="cp-details-btn inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-panel border border-border text-text text-xs font-semibold hover:border-accent/40 transition-colors whitespace-nowrap" data-pair="XRPUSDT">
+                  <i data-lucide="expand" class="w-3.5 h-3.5 shrink-0"></i>Details
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- AVAX/USDT -->
+          <div class="cp-card rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors p-4" data-pair="AVAXUSDT" data-type="defi" data-signal="buy" data-cap="mid" data-change="4.21" data-price="35.42" data-strength="76">
+            <div class="flex items-start justify-between mb-4 gap-3">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-10 h-10 rounded-xl flex items-center justify-center text-xs font-bold text-white shrink-0" style="background:#E84142">AV</div>
+                <div class="min-w-0">
+                  <h3 class="font-bold text-text">AVAX/USDT</h3>
+                  <p class="text-xs text-muted truncate">Avalanche</p>
+                </div>
+              </div>
+              <button class="cp-star w-9 h-9 rounded-lg border border-border bg-panel text-muted flex items-center justify-center hover:text-amber-500 hover:border-amber-500/50 transition-colors shrink-0">
+                <i data-lucide="star" class="w-4 h-4 shrink-0"></i>
+              </button>
+            </div>
+            <div class="flex items-end justify-between mb-4 gap-3">
+              <div class="min-w-0">
+                <p class="text-2xl font-bold text-text">$35.42</p>
+                <div class="flex items-center gap-2 mt-1 flex-wrap">
+                  <span class="inline-flex items-center justify-center w-6 h-6 rounded-md bg-emerald-500/15 text-emerald-500 shrink-0"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i></span>
+                  <span class="text-sm font-semibold text-emerald-500">+4.21%</span>
+                </div>
+              </div>
+              <div class="w-28 h-12 shrink-0"><canvas id="cpChart-AVAXUSDT"></canvas></div>
+            </div>
+            <div class="grid grid-cols-3 gap-3 pt-4 border-t border-border">
+              <div><p class="text-xs text-muted">Vol</p><p class="text-sm font-semibold text-text">$1.2B</p></div>
+              <div><p class="text-xs text-muted">High</p><p class="text-sm font-semibold text-emerald-500">$36.80</p></div>
+              <div><p class="text-xs text-muted">Low</p><p class="text-sm font-semibold text-red-500">$33.90</p></div>
+            </div>
+            <div class="mt-4 pt-4 border-t border-border">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-xs text-muted">Signal Strength</span>
+                <span class="text-xs font-semibold text-text">76%</span>
+              </div>
+              <div class="h-2 rounded-full bg-border overflow-hidden mb-3"><div class="h-full rounded-full bg-emerald-500" style="width:76%"></div></div>
+              <div class="flex items-center justify-between gap-3">
+                <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0">Buy</span>
+                <button class="cp-details-btn inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-panel border border-border text-text text-xs font-semibold hover:border-accent/40 transition-colors whitespace-nowrap" data-pair="AVAXUSDT">
+                  <i data-lucide="expand" class="w-3.5 h-3.5 shrink-0"></i>Details
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- DOGE/USDT -->
+          <div class="cp-card rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors p-4" data-pair="DOGEUSDT" data-type="btc" data-signal="sell" data-cap="mid" data-change="-2.34" data-price="0.1245" data-strength="35">
+            <div class="flex items-start justify-between mb-4 gap-3">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-10 h-10 rounded-xl flex items-center justify-center text-xs font-bold text-white shrink-0" style="background:#C2A633">DO</div>
+                <div class="min-w-0">
+                  <h3 class="font-bold text-text">DOGE/USDT</h3>
+                  <p class="text-xs text-muted truncate">Dogecoin</p>
+                </div>
+              </div>
+              <button class="cp-star w-9 h-9 rounded-lg border border-border bg-panel text-muted flex items-center justify-center hover:text-amber-500 hover:border-amber-500/50 transition-colors shrink-0">
+                <i data-lucide="star" class="w-4 h-4 shrink-0"></i>
+              </button>
+            </div>
+            <div class="flex items-end justify-between mb-4 gap-3">
+              <div class="min-w-0">
+                <p class="text-2xl font-bold text-text">$0.1245</p>
+                <div class="flex items-center gap-2 mt-1 flex-wrap">
+                  <span class="inline-flex items-center justify-center w-6 h-6 rounded-md bg-red-500/15 text-red-500 shrink-0"><i data-lucide="trending-down" class="w-3 h-3 shrink-0"></i></span>
+                  <span class="text-sm font-semibold text-red-500">-2.34%</span>
+                </div>
+              </div>
+              <div class="w-28 h-12 shrink-0"><canvas id="cpChart-DOGEUSDT"></canvas></div>
+            </div>
+            <div class="grid grid-cols-3 gap-3 pt-4 border-t border-border">
+              <div><p class="text-xs text-muted">Vol</p><p class="text-sm font-semibold text-text">$1.5B</p></div>
+              <div><p class="text-xs text-muted">High</p><p class="text-sm font-semibold text-emerald-500">$0.129</p></div>
+              <div><p class="text-xs text-muted">Low</p><p class="text-sm font-semibold text-red-500">$0.121</p></div>
+            </div>
+            <div class="mt-4 pt-4 border-t border-border">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-xs text-muted">Signal Strength</span>
+                <span class="text-xs font-semibold text-text">35%</span>
+              </div>
+              <div class="h-2 rounded-full bg-border overflow-hidden mb-3"><div class="h-full rounded-full bg-red-500" style="width:35%"></div></div>
+              <div class="flex items-center justify-between gap-3">
+                <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-500/15 text-red-500 shrink-0">Sell</span>
+                <button class="cp-details-btn inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-panel border border-border text-text text-xs font-semibold hover:border-accent/40 transition-colors whitespace-nowrap" data-pair="DOGEUSDT">
+                  <i data-lucide="expand" class="w-3.5 h-3.5 shrink-0"></i>Details
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- LINK/USDT -->
+          <div class="cp-card rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors p-4" data-pair="LINKUSDT" data-type="defi" data-signal="buy" data-cap="mid" data-change="3.45" data-price="14.52" data-strength="74">
+            <div class="flex items-start justify-between mb-4 gap-3">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-10 h-10 rounded-xl flex items-center justify-center text-xs font-bold text-white shrink-0" style="background:#2A5ADA">LI</div>
+                <div class="min-w-0">
+                  <h3 class="font-bold text-text">LINK/USDT</h3>
+                  <p class="text-xs text-muted truncate">Chainlink</p>
+                </div>
+              </div>
+              <button class="cp-star w-9 h-9 rounded-lg border border-border bg-panel text-muted flex items-center justify-center hover:text-amber-500 hover:border-amber-500/50 transition-colors shrink-0">
+                <i data-lucide="star" class="w-4 h-4 shrink-0"></i>
+              </button>
+            </div>
+            <div class="flex items-end justify-between mb-4 gap-3">
+              <div class="min-w-0">
+                <p class="text-2xl font-bold text-text">$14.52</p>
+                <div class="flex items-center gap-2 mt-1 flex-wrap">
+                  <span class="inline-flex items-center justify-center w-6 h-6 rounded-md bg-emerald-500/15 text-emerald-500 shrink-0"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i></span>
+                  <span class="text-sm font-semibold text-emerald-500">+3.45%</span>
+                </div>
+              </div>
+              <div class="w-28 h-12 shrink-0"><canvas id="cpChart-LINKUSDT"></canvas></div>
+            </div>
+            <div class="grid grid-cols-3 gap-3 pt-4 border-t border-border">
+              <div><p class="text-xs text-muted">Vol</p><p class="text-sm font-semibold text-text">$892M</p></div>
+              <div><p class="text-xs text-muted">High</p><p class="text-sm font-semibold text-emerald-500">$15.10</p></div>
+              <div><p class="text-xs text-muted">Low</p><p class="text-sm font-semibold text-red-500">$13.95</p></div>
+            </div>
+            <div class="mt-4 pt-4 border-t border-border">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-xs text-muted">Signal Strength</span>
+                <span class="text-xs font-semibold text-text">74%</span>
+              </div>
+              <div class="h-2 rounded-full bg-border overflow-hidden mb-3"><div class="h-full rounded-full bg-emerald-500" style="width:74%"></div></div>
+              <div class="flex items-center justify-between gap-3">
+                <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0">Buy</span>
+                <button class="cp-details-btn inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-panel border border-border text-text text-xs font-semibold hover:border-accent/40 transition-colors whitespace-nowrap" data-pair="LINKUSDT">
+                  <i data-lucide="expand" class="w-3.5 h-3.5 shrink-0"></i>Details
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- INJ/USDT -->
+          <div class="cp-card rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors p-4" data-pair="INJUSDT" data-type="defi" data-signal="buy" data-cap="small" data-change="7.89" data-price="24.56" data-strength="91">
+            <div class="flex items-start justify-between mb-4 gap-3">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-10 h-10 rounded-xl flex items-center justify-center text-xs font-bold text-white shrink-0" style="background:#00A3A3">IN</div>
+                <div class="min-w-0">
+                  <h3 class="font-bold text-text">INJ/USDT</h3>
+                  <p class="text-xs text-muted truncate">Injective</p>
+                </div>
+              </div>
+              <button class="cp-star active w-9 h-9 rounded-lg border border-amber-500 bg-amber-500/15 text-amber-500 flex items-center justify-center transition-colors shrink-0">
+                <i data-lucide="star" class="w-4 h-4 fill-current shrink-0"></i>
+              </button>
+            </div>
+            <div class="flex items-end justify-between mb-4 gap-3">
+              <div class="min-w-0">
+                <p class="text-2xl font-bold text-text">$24.56</p>
+                <div class="flex items-center gap-2 mt-1 flex-wrap">
+                  <span class="inline-flex items-center justify-center w-6 h-6 rounded-md bg-emerald-500/15 text-emerald-500 shrink-0"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i></span>
+                  <span class="text-sm font-semibold text-emerald-500">+7.89%</span>
+                </div>
+              </div>
+              <div class="w-28 h-12 shrink-0"><canvas id="cpChart-INJUSDT"></canvas></div>
+            </div>
+            <div class="grid grid-cols-3 gap-3 pt-4 border-t border-border">
+              <div><p class="text-xs text-muted">Vol</p><p class="text-sm font-semibold text-text">$678M</p></div>
+              <div><p class="text-xs text-muted">High</p><p class="text-sm font-semibold text-emerald-500">$25.80</p></div>
+              <div><p class="text-xs text-muted">Low</p><p class="text-sm font-semibold text-red-500">$22.50</p></div>
+            </div>
+            <div class="mt-4 pt-4 border-t border-border">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-xs text-muted">Signal Strength</span>
+                <span class="text-xs font-semibold text-text">91%</span>
+              </div>
+              <div class="h-2 rounded-full bg-border overflow-hidden mb-3"><div class="h-full rounded-full bg-emerald-500" style="width:91%"></div></div>
+              <div class="flex items-center justify-between gap-3">
+                <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0">Strong Buy</span>
+                <button class="cp-details-btn inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-panel border border-border text-text text-xs font-semibold hover:border-accent/40 transition-colors whitespace-nowrap" data-pair="INJUSDT">
+                  <i data-lucide="expand" class="w-3.5 h-3.5 shrink-0"></i>Details
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Table View -->
+        <div class="hidden rounded-2xl bg-panel border border-border overflow-hidden" id="cpTableView">
+          <div class="overflow-x-auto">
+            <table class="w-full border-collapse min-w-[1040px] whitespace-nowrap" id="cpTable">
+              <thead>
+                <tr class="text-left">
+                  <th class="sm:sticky sm:left-0 sm:bg-panel px-4 py-3.5 border-b border-border z-10 w-12">
+                    <div class="custom-checkbox" id="cpSelectAll" role="checkbox" aria-checked="false" tabindex="0"></div>
+                  </th>
+                  <th class="px-4 py-3.5 text-xs font-semibold text-muted uppercase tracking-wide border-b border-border">#</th>
+                  <th class="px-4 py-3.5 text-xs font-semibold text-muted uppercase tracking-wide border-b border-border">Pair</th>
+                  <th class="px-4 py-3.5 text-xs font-semibold text-muted uppercase tracking-wide border-b border-border">Price</th>
+                  <th class="px-4 py-3.5 text-xs font-semibold text-muted uppercase tracking-wide border-b border-border">24h Change</th>
+                  <th class="px-4 py-3.5 text-xs font-semibold text-muted uppercase tracking-wide border-b border-border">24h High / Low</th>
+                  <th class="px-4 py-3.5 text-xs font-semibold text-muted uppercase tracking-wide border-b border-border">Volume</th>
+                  <th class="px-4 py-3.5 text-xs font-semibold text-muted uppercase tracking-wide border-b border-border">7D Chart</th>
+                  <th class="px-4 py-3.5 text-xs font-semibold text-muted uppercase tracking-wide border-b border-border">AI Signal</th>
+                  <th class="px-4 py-3.5 text-xs font-semibold text-muted uppercase tracking-wide border-b border-border text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="cpTableBody">
+                <tr class="cp-row hover:bg-accent/5 transition-colors" data-pair="BTCUSDT" data-type="btc" data-signal="buy" data-cap="large" data-change="2.45" data-price="67432.50" data-strength="85">
+                  <td class="sm:sticky sm:left-0 sm:bg-panel px-4 py-4 border-b border-border"><div class="cp-row-check custom-checkbox" role="checkbox" aria-checked="false" tabindex="0"></div></td>
+                  <td class="px-4 py-4 border-b border-border text-muted font-medium">1</td>
+                  <td class="px-4 py-4 border-b border-border">
+                    <div class="flex items-center gap-3">
+                      <div class="w-8 h-8 rounded-lg flex items-center justify-center text-[10px] font-bold text-white shrink-0" style="background:#F7931A">BT</div>
+                      <div><p class="font-semibold text-text">BTC/USDT</p><p class="text-xs text-muted">Bitcoin</p></div>
+                    </div>
+                  </td>
+                  <td class="px-4 py-4 border-b border-border font-mono font-semibold text-text">$67,432.50</td>
+                  <td class="px-4 py-4 border-b border-border"><span class="text-emerald-500 font-medium">+2.45%</span></td>
+                  <td class="px-4 py-4 border-b border-border"><span class="text-emerald-500">$68,500</span> / <span class="text-red-500">$65,800</span></td>
+                  <td class="px-4 py-4 border-b border-border text-text">$28.5B</td>
+                  <td class="px-4 py-4 border-b border-border"><div class="w-20 h-8"><canvas id="cpTableChart-BTCUSDT"></canvas></div></td>
+                  <td class="px-4 py-4 border-b border-border"><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">Buy</span></td>
+                  <td class="px-4 py-4 border-b border-border">
+                    <div class="flex items-center justify-end gap-2">
+                      <button class="cp-details-btn w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-pair="BTCUSDT" title="View Details"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+                      <button class="cp-star active w-9 h-9 flex items-center justify-center rounded-lg border border-amber-500 bg-amber-500/15 text-amber-500 transition-colors" title="Favorite"><i data-lucide="star" class="w-4 h-4 fill-current shrink-0"></i></button>
+                      <button class="cp-row-alert w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-pair="BTCUSDT" title="Set Alert"><i data-lucide="bell-plus" class="w-4 h-4 shrink-0"></i></button>
+                    </div>
+                  </td>
+                </tr>
+                <tr class="cp-row hover:bg-accent/5 transition-colors" data-pair="ETHUSDT" data-type="eth" data-signal="hold" data-cap="large" data-change="-1.23" data-price="3542.80" data-strength="62">
+                  <td class="sm:sticky sm:left-0 sm:bg-panel px-4 py-4 border-b border-border"><div class="cp-row-check custom-checkbox" role="checkbox" aria-checked="false" tabindex="0"></div></td>
+                  <td class="px-4 py-4 border-b border-border text-muted font-medium">2</td>
+                  <td class="px-4 py-4 border-b border-border">
+                    <div class="flex items-center gap-3">
+                      <div class="w-8 h-8 rounded-lg flex items-center justify-center text-[10px] font-bold text-white shrink-0" style="background:#627EEA">ET</div>
+                      <div><p class="font-semibold text-text">ETH/USDT</p><p class="text-xs text-muted">Ethereum</p></div>
+                    </div>
+                  </td>
+                  <td class="px-4 py-4 border-b border-border font-mono font-semibold text-text">$3,542.80</td>
+                  <td class="px-4 py-4 border-b border-border"><span class="text-red-500 font-medium">-1.23%</span></td>
+                  <td class="px-4 py-4 border-b border-border"><span class="text-emerald-500">$3,620</span> / <span class="text-red-500">$3,480</span></td>
+                  <td class="px-4 py-4 border-b border-border text-text">$15.2B</td>
+                  <td class="px-4 py-4 border-b border-border"><div class="w-20 h-8"><canvas id="cpTableChart-ETHUSDT"></canvas></div></td>
+                  <td class="px-4 py-4 border-b border-border"><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-500">Hold</span></td>
+                  <td class="px-4 py-4 border-b border-border">
+                    <div class="flex items-center justify-end gap-2">
+                      <button class="cp-details-btn w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-pair="ETHUSDT" title="View Details"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+                      <button class="cp-star active w-9 h-9 flex items-center justify-center rounded-lg border border-amber-500 bg-amber-500/15 text-amber-500 transition-colors" title="Favorite"><i data-lucide="star" class="w-4 h-4 fill-current shrink-0"></i></button>
+                      <button class="cp-row-alert w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-pair="ETHUSDT" title="Set Alert"><i data-lucide="bell-plus" class="w-4 h-4 shrink-0"></i></button>
+                    </div>
+                  </td>
+                </tr>
+                <tr class="cp-row hover:bg-accent/5 transition-colors" data-pair="SOLUSDT" data-type="defi" data-signal="buy" data-cap="large" data-change="5.82" data-price="148.35" data-strength="92">
+                  <td class="sm:sticky sm:left-0 sm:bg-panel px-4 py-4 border-b border-border"><div class="cp-row-check custom-checkbox" role="checkbox" aria-checked="false" tabindex="0"></div></td>
+                  <td class="px-4 py-4 border-b border-border text-muted font-medium">3</td>
+                  <td class="px-4 py-4 border-b border-border">
+                    <div class="flex items-center gap-3">
+                      <div class="w-8 h-8 rounded-lg flex items-center justify-center text-[10px] font-bold text-white shrink-0" style="background:#9945FF">SO</div>
+                      <div><p class="font-semibold text-text">SOL/USDT</p><p class="text-xs text-muted">Solana</p></div>
+                    </div>
+                  </td>
+                  <td class="px-4 py-4 border-b border-border font-mono font-semibold text-text">$148.35</td>
+                  <td class="px-4 py-4 border-b border-border"><span class="text-emerald-500 font-medium">+5.82%</span></td>
+                  <td class="px-4 py-4 border-b border-border"><span class="text-emerald-500">$152</span> / <span class="text-red-500">$138</span></td>
+                  <td class="px-4 py-4 border-b border-border text-text">$4.8B</td>
+                  <td class="px-4 py-4 border-b border-border"><div class="w-20 h-8"><canvas id="cpTableChart-SOLUSDT"></canvas></div></td>
+                  <td class="px-4 py-4 border-b border-border"><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">Strong Buy</span></td>
+                  <td class="px-4 py-4 border-b border-border">
+                    <div class="flex items-center justify-end gap-2">
+                      <button class="cp-details-btn w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-pair="SOLUSDT" title="View Details"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+                      <button class="cp-star w-9 h-9 flex items-center justify-center rounded-lg border border-border bg-panel text-muted hover:text-amber-500 hover:border-amber-500/50 transition-colors" title="Favorite"><i data-lucide="star" class="w-4 h-4 shrink-0"></i></button>
+                      <button class="cp-row-alert w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-pair="SOLUSDT" title="Set Alert"><i data-lucide="bell-plus" class="w-4 h-4 shrink-0"></i></button>
+                    </div>
+                  </td>
+                </tr>
+                <tr class="cp-row hover:bg-accent/5 transition-colors" data-pair="BNBUSDT" data-type="btc" data-signal="buy" data-cap="large" data-change="3.67" data-price="584.20" data-strength="78">
+                  <td class="sm:sticky sm:left-0 sm:bg-panel px-4 py-4 border-b border-border"><div class="cp-row-check custom-checkbox" role="checkbox" aria-checked="false" tabindex="0"></div></td>
+                  <td class="px-4 py-4 border-b border-border text-muted font-medium">4</td>
+                  <td class="px-4 py-4 border-b border-border">
+                    <div class="flex items-center gap-3">
+                      <div class="w-8 h-8 rounded-lg flex items-center justify-center text-[10px] font-bold text-white shrink-0" style="background:#F0B90B">BN</div>
+                      <div><p class="font-semibold text-text">BNB/USDT</p><p class="text-xs text-muted">BNB</p></div>
+                    </div>
+                  </td>
+                  <td class="px-4 py-4 border-b border-border font-mono font-semibold text-text">$584.20</td>
+                  <td class="px-4 py-4 border-b border-border"><span class="text-emerald-500 font-medium">+3.67%</span></td>
+                  <td class="px-4 py-4 border-b border-border"><span class="text-emerald-500">$595</span> / <span class="text-red-500">$562</span></td>
+                  <td class="px-4 py-4 border-b border-border text-text">$2.1B</td>
+                  <td class="px-4 py-4 border-b border-border"><div class="w-20 h-8"><canvas id="cpTableChart-BNBUSDT"></canvas></div></td>
+                  <td class="px-4 py-4 border-b border-border"><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">Buy</span></td>
+                  <td class="px-4 py-4 border-b border-border">
+                    <div class="flex items-center justify-end gap-2">
+                      <button class="cp-details-btn w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-pair="BNBUSDT" title="View Details"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+                      <button class="cp-star w-9 h-9 flex items-center justify-center rounded-lg border border-border bg-panel text-muted hover:text-amber-500 hover:border-amber-500/50 transition-colors" title="Favorite"><i data-lucide="star" class="w-4 h-4 shrink-0"></i></button>
+                      <button class="cp-row-alert w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-pair="BNBUSDT" title="Set Alert"><i data-lucide="bell-plus" class="w-4 h-4 shrink-0"></i></button>
+                    </div>
+                  </td>
+                </tr>
+                <tr class="cp-row hover:bg-accent/5 transition-colors" data-pair="XRPUSDT" data-type="eth" data-signal="hold" data-cap="mid" data-change="-0.45" data-price="0.5234" data-strength="55">
+                  <td class="sm:sticky sm:left-0 sm:bg-panel px-4 py-4 border-b border-border"><div class="cp-row-check custom-checkbox" role="checkbox" aria-checked="false" tabindex="0"></div></td>
+                  <td class="px-4 py-4 border-b border-border text-muted font-medium">5</td>
+                  <td class="px-4 py-4 border-b border-border">
+                    <div class="flex items-center gap-3">
+                      <div class="w-8 h-8 rounded-lg flex items-center justify-center text-[10px] font-bold text-white shrink-0" style="background:#23292F">XR</div>
+                      <div><p class="font-semibold text-text">XRP/USDT</p><p class="text-xs text-muted">Ripple</p></div>
+                    </div>
+                  </td>
+                  <td class="px-4 py-4 border-b border-border font-mono font-semibold text-text">$0.5234</td>
+                  <td class="px-4 py-4 border-b border-border"><span class="text-red-500 font-medium">-0.45%</span></td>
+                  <td class="px-4 py-4 border-b border-border"><span class="text-emerald-500">$0.535</span> / <span class="text-red-500">$0.518</span></td>
+                  <td class="px-4 py-4 border-b border-border text-text">$1.8B</td>
+                  <td class="px-4 py-4 border-b border-border"><div class="w-20 h-8"><canvas id="cpTableChart-XRPUSDT"></canvas></div></td>
+                  <td class="px-4 py-4 border-b border-border"><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-500">Hold</span></td>
+                  <td class="px-4 py-4 border-b border-border">
+                    <div class="flex items-center justify-end gap-2">
+                      <button class="cp-details-btn w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-pair="XRPUSDT" title="View Details"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+                      <button class="cp-star w-9 h-9 flex items-center justify-center rounded-lg border border-border bg-panel text-muted hover:text-amber-500 hover:border-amber-500/50 transition-colors" title="Favorite"><i data-lucide="star" class="w-4 h-4 shrink-0"></i></button>
+                      <button class="cp-row-alert w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-pair="XRPUSDT" title="Set Alert"><i data-lucide="bell-plus" class="w-4 h-4 shrink-0"></i></button>
+                    </div>
+                  </td>
+                </tr>
+                <tr class="cp-row hover:bg-accent/5 transition-colors" data-pair="AVAXUSDT" data-type="defi" data-signal="buy" data-cap="mid" data-change="4.21" data-price="35.42" data-strength="76">
+                  <td class="sm:sticky sm:left-0 sm:bg-panel px-4 py-4 border-b border-border"><div class="cp-row-check custom-checkbox" role="checkbox" aria-checked="false" tabindex="0"></div></td>
+                  <td class="px-4 py-4 border-b border-border text-muted font-medium">6</td>
+                  <td class="px-4 py-4 border-b border-border">
+                    <div class="flex items-center gap-3">
+                      <div class="w-8 h-8 rounded-lg flex items-center justify-center text-[10px] font-bold text-white shrink-0" style="background:#E84142">AV</div>
+                      <div><p class="font-semibold text-text">AVAX/USDT</p><p class="text-xs text-muted">Avalanche</p></div>
+                    </div>
+                  </td>
+                  <td class="px-4 py-4 border-b border-border font-mono font-semibold text-text">$35.42</td>
+                  <td class="px-4 py-4 border-b border-border"><span class="text-emerald-500 font-medium">+4.21%</span></td>
+                  <td class="px-4 py-4 border-b border-border"><span class="text-emerald-500">$36.80</span> / <span class="text-red-500">$33.90</span></td>
+                  <td class="px-4 py-4 border-b border-border text-text">$1.2B</td>
+                  <td class="px-4 py-4 border-b border-border"><div class="w-20 h-8"><canvas id="cpTableChart-AVAXUSDT"></canvas></div></td>
+                  <td class="px-4 py-4 border-b border-border"><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">Buy</span></td>
+                  <td class="px-4 py-4 border-b border-border">
+                    <div class="flex items-center justify-end gap-2">
+                      <button class="cp-details-btn w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-pair="AVAXUSDT" title="View Details"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+                      <button class="cp-star w-9 h-9 flex items-center justify-center rounded-lg border border-border bg-panel text-muted hover:text-amber-500 hover:border-amber-500/50 transition-colors" title="Favorite"><i data-lucide="star" class="w-4 h-4 shrink-0"></i></button>
+                      <button class="cp-row-alert w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-pair="AVAXUSDT" title="Set Alert"><i data-lucide="bell-plus" class="w-4 h-4 shrink-0"></i></button>
+                    </div>
+                  </td>
+                </tr>
+                <tr class="cp-row hover:bg-accent/5 transition-colors" data-pair="DOGEUSDT" data-type="btc" data-signal="sell" data-cap="mid" data-change="-2.34" data-price="0.1245" data-strength="35">
+                  <td class="sm:sticky sm:left-0 sm:bg-panel px-4 py-4 border-b border-border"><div class="cp-row-check custom-checkbox" role="checkbox" aria-checked="false" tabindex="0"></div></td>
+                  <td class="px-4 py-4 border-b border-border text-muted font-medium">7</td>
+                  <td class="px-4 py-4 border-b border-border">
+                    <div class="flex items-center gap-3">
+                      <div class="w-8 h-8 rounded-lg flex items-center justify-center text-[10px] font-bold text-white shrink-0" style="background:#C2A633">DO</div>
+                      <div><p class="font-semibold text-text">DOGE/USDT</p><p class="text-xs text-muted">Dogecoin</p></div>
+                    </div>
+                  </td>
+                  <td class="px-4 py-4 border-b border-border font-mono font-semibold text-text">$0.1245</td>
+                  <td class="px-4 py-4 border-b border-border"><span class="text-red-500 font-medium">-2.34%</span></td>
+                  <td class="px-4 py-4 border-b border-border"><span class="text-emerald-500">$0.129</span> / <span class="text-red-500">$0.121</span></td>
+                  <td class="px-4 py-4 border-b border-border text-text">$1.5B</td>
+                  <td class="px-4 py-4 border-b border-border"><div class="w-20 h-8"><canvas id="cpTableChart-DOGEUSDT"></canvas></div></td>
+                  <td class="px-4 py-4 border-b border-border"><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-500/15 text-red-500">Sell</span></td>
+                  <td class="px-4 py-4 border-b border-border">
+                    <div class="flex items-center justify-end gap-2">
+                      <button class="cp-details-btn w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-pair="DOGEUSDT" title="View Details"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+                      <button class="cp-star w-9 h-9 flex items-center justify-center rounded-lg border border-border bg-panel text-muted hover:text-amber-500 hover:border-amber-500/50 transition-colors" title="Favorite"><i data-lucide="star" class="w-4 h-4 shrink-0"></i></button>
+                      <button class="cp-row-alert w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-pair="DOGEUSDT" title="Set Alert"><i data-lucide="bell-plus" class="w-4 h-4 shrink-0"></i></button>
+                    </div>
+                  </td>
+                </tr>
+                <tr class="cp-row hover:bg-accent/5 transition-colors" data-pair="LINKUSDT" data-type="defi" data-signal="buy" data-cap="mid" data-change="3.45" data-price="14.52" data-strength="74">
+                  <td class="sm:sticky sm:left-0 sm:bg-panel px-4 py-4 border-b border-border"><div class="cp-row-check custom-checkbox" role="checkbox" aria-checked="false" tabindex="0"></div></td>
+                  <td class="px-4 py-4 border-b border-border text-muted font-medium">8</td>
+                  <td class="px-4 py-4 border-b border-border">
+                    <div class="flex items-center gap-3">
+                      <div class="w-8 h-8 rounded-lg flex items-center justify-center text-[10px] font-bold text-white shrink-0" style="background:#2A5ADA">LI</div>
+                      <div><p class="font-semibold text-text">LINK/USDT</p><p class="text-xs text-muted">Chainlink</p></div>
+                    </div>
+                  </td>
+                  <td class="px-4 py-4 border-b border-border font-mono font-semibold text-text">$14.52</td>
+                  <td class="px-4 py-4 border-b border-border"><span class="text-emerald-500 font-medium">+3.45%</span></td>
+                  <td class="px-4 py-4 border-b border-border"><span class="text-emerald-500">$15.10</span> / <span class="text-red-500">$13.95</span></td>
+                  <td class="px-4 py-4 border-b border-border text-text">$892M</td>
+                  <td class="px-4 py-4 border-b border-border"><div class="w-20 h-8"><canvas id="cpTableChart-LINKUSDT"></canvas></div></td>
+                  <td class="px-4 py-4 border-b border-border"><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">Buy</span></td>
+                  <td class="px-4 py-4 border-b border-border">
+                    <div class="flex items-center justify-end gap-2">
+                      <button class="cp-details-btn w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-pair="LINKUSDT" title="View Details"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+                      <button class="cp-star w-9 h-9 flex items-center justify-center rounded-lg border border-border bg-panel text-muted hover:text-amber-500 hover:border-amber-500/50 transition-colors" title="Favorite"><i data-lucide="star" class="w-4 h-4 shrink-0"></i></button>
+                      <button class="cp-row-alert w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-pair="LINKUSDT" title="Set Alert"><i data-lucide="bell-plus" class="w-4 h-4 shrink-0"></i></button>
+                    </div>
+                  </td>
+                </tr>
+                <tr class="cp-row hover:bg-accent/5 transition-colors" data-pair="INJUSDT" data-type="defi" data-signal="buy" data-cap="small" data-change="7.89" data-price="24.56" data-strength="91">
+                  <td class="sm:sticky sm:left-0 sm:bg-panel px-4 py-4 border-b border-border"><div class="cp-row-check custom-checkbox" role="checkbox" aria-checked="false" tabindex="0"></div></td>
+                  <td class="px-4 py-4 border-b border-border text-muted font-medium">9</td>
+                  <td class="px-4 py-4 border-b border-border">
+                    <div class="flex items-center gap-3">
+                      <div class="w-8 h-8 rounded-lg flex items-center justify-center text-[10px] font-bold text-white shrink-0" style="background:#00A3A3">IN</div>
+                      <div><p class="font-semibold text-text">INJ/USDT</p><p class="text-xs text-muted">Injective</p></div>
+                    </div>
+                  </td>
+                  <td class="px-4 py-4 border-b border-border font-mono font-semibold text-text">$24.56</td>
+                  <td class="px-4 py-4 border-b border-border"><span class="text-emerald-500 font-medium">+7.89%</span></td>
+                  <td class="px-4 py-4 border-b border-border"><span class="text-emerald-500">$25.80</span> / <span class="text-red-500">$22.50</span></td>
+                  <td class="px-4 py-4 border-b border-border text-text">$678M</td>
+                  <td class="px-4 py-4 border-b border-border"><div class="w-20 h-8"><canvas id="cpTableChart-INJUSDT"></canvas></div></td>
+                  <td class="px-4 py-4 border-b border-border"><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">Strong Buy</span></td>
+                  <td class="px-4 py-4 border-b border-border">
+                    <div class="flex items-center justify-end gap-2">
+                      <button class="cp-details-btn w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-pair="INJUSDT" title="View Details"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+                      <button class="cp-star active w-9 h-9 flex items-center justify-center rounded-lg border border-amber-500 bg-amber-500/15 text-amber-500 transition-colors" title="Favorite"><i data-lucide="star" class="w-4 h-4 fill-current shrink-0"></i></button>
+                      <button class="cp-row-alert w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-pair="INJUSDT" title="Set Alert"><i data-lucide="bell-plus" class="w-4 h-4 shrink-0"></i></button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Pagination -->
+        <div class="flex flex-col sm:flex-row items-center justify-between gap-4 mt-6">
+          <p class="text-sm text-muted">Showing <span class="font-semibold text-text">1-9</span> of <span class="font-semibold text-text">48</span> pairs</p>
+          <div class="flex items-center gap-2">
+            <button class="w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted disabled:opacity-40" disabled><i data-lucide="chevron-left" class="w-4 h-4 shrink-0"></i></button>
+            <button class="w-9 h-9 rounded-lg bg-gradient-to-r from-accent to-teal-500 text-white font-semibold text-sm">1</button>
+            <button class="w-9 h-9 rounded-lg border border-border text-muted hover:border-accent/40 hover:text-text font-semibold text-sm transition-colors">2</button>
+            <button class="w-9 h-9 rounded-lg border border-border text-muted hover:border-accent/40 hover:text-text font-semibold text-sm transition-colors">3</button>
+            <button class="w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:border-accent/40 hover:text-text transition-colors"><i data-lucide="chevron-right" class="w-4 h-4 shrink-0"></i></button>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- ===================== Page-scoped Drawers / Overlay / Toast ===================== -->
+    <div class="drawer-overlay" id="cpDrawerOverlay"></div>
+
+    <!-- Pair Details Drawer -->
+    <div class="drawer" id="cpDetailsDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <div class="flex items-center gap-3 min-w-0">
+            <div class="w-12 h-12 rounded-xl flex items-center justify-center text-sm font-bold text-white shrink-0" id="cpDetailIcon" style="background:#F7931A">BT</div>
+            <div class="min-w-0">
+              <h2 class="text-xl font-bold text-text" id="cpDetailName">BTC/USDT</h2>
+              <p class="text-sm text-muted truncate" id="cpDetailFullName">Bitcoin</p>
+            </div>
+          </div>
+          <button class="cp-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0">
+            <i data-lucide="x" class="w-5 h-5 shrink-0"></i>
+          </button>
+        </div>
+
+        <div class="space-y-6">
+          <!-- Price Section -->
+          <div class="p-5 rounded-2xl bg-gradient-to-br from-emerald-500/15 to-teal-500/10 border border-emerald-500/20" id="cpDetailPriceBox">
+            <div class="flex items-end justify-between gap-3">
+              <div class="min-w-0">
+                <p class="text-sm text-muted mb-1">Current Price</p>
+                <p class="text-3xl sm:text-4xl font-bold text-text" id="cpDetailPrice">$67,432.50</p>
+                <div class="flex items-center gap-2 mt-2">
+                  <span class="inline-flex items-center justify-center w-6 h-6 rounded-md bg-emerald-500/15 text-emerald-500 shrink-0" id="cpDetailTrendIconWrap"><i data-lucide="trending-up" class="w-3 h-3 shrink-0" id="cpDetailTrendIcon"></i></span>
+                  <span class="text-lg font-semibold text-emerald-500" id="cpDetailChange">+2.45%</span>
+                </div>
+              </div>
+              <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0" id="cpDetailSignal">Buy</span>
+            </div>
+          </div>
+
+          <!-- Chart -->
+          <div class="rounded-2xl bg-panel border border-border p-4">
+            <div class="flex items-center justify-between mb-4 gap-3">
+              <h3 class="font-semibold text-text">Price Chart</h3>
+              <div class="flex gap-1" id="cpChartRange">
+                <button class="cp-range-btn active px-3 py-1 text-xs rounded-lg bg-accent/15 text-accent font-medium transition-colors" data-range="1H">1H</button>
+                <button class="cp-range-btn px-3 py-1 text-xs rounded-lg text-muted hover:bg-border/40 transition-colors" data-range="1D">1D</button>
+                <button class="cp-range-btn px-3 py-1 text-xs rounded-lg text-muted hover:bg-border/40 transition-colors" data-range="1W">1W</button>
+                <button class="cp-range-btn px-3 py-1 text-xs rounded-lg text-muted hover:bg-border/40 transition-colors" data-range="1M">1M</button>
+              </div>
+            </div>
+            <div class="h-48"><canvas id="cpDetailChart"></canvas></div>
+          </div>
+
+          <!-- Stats Grid -->
+          <div class="grid grid-cols-1 @xs:grid-cols-2 gap-3 sm:gap-4">
+            <div class="p-4 rounded-xl bg-border/30"><p class="text-xs text-muted mb-1">24h High</p><p class="text-lg font-bold text-emerald-500" id="cpDetailHigh">$68,500</p></div>
+            <div class="p-4 rounded-xl bg-border/30"><p class="text-xs text-muted mb-1">24h Low</p><p class="text-lg font-bold text-red-500" id="cpDetailLow">$65,800</p></div>
+            <div class="p-4 rounded-xl bg-border/30"><p class="text-xs text-muted mb-1">24h Volume</p><p class="text-lg font-bold text-text" id="cpDetailVolume">$28.5B</p></div>
+            <div class="p-4 rounded-xl bg-border/30"><p class="text-xs text-muted mb-1">Market Cap</p><p class="text-lg font-bold text-text" id="cpDetailMcap">$1.32T</p></div>
+          </div>
+
+          <!-- AI Signal Analysis -->
+          <div class="rounded-2xl bg-panel border border-border p-4">
+            <div class="flex items-center justify-between mb-4 gap-3">
+              <div class="flex items-center gap-2 min-w-0">
+                <div class="w-8 h-8 rounded-lg bg-violet-500/15 flex items-center justify-center shrink-0"><i data-lucide="brain" class="w-4 h-4 text-violet-400 shrink-0"></i></div>
+                <h3 class="font-semibold text-text">AI Signal Analysis</h3>
+              </div>
+              <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0" id="cpDetailSignal2">Buy</span>
+            </div>
+            <div class="mb-4">
+              <div class="flex items-center justify-between text-sm mb-2">
+                <span class="text-muted">Signal Strength</span>
+                <span class="font-semibold text-text" id="cpDetailStrengthVal">85%</span>
+              </div>
+              <div class="h-2.5 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-emerald-500" id="cpDetailStrengthBar" style="width:85%"></div></div>
+            </div>
+            <div class="grid grid-cols-1 @xs:grid-cols-3 gap-3 text-center">
+              <div class="p-3 rounded-xl bg-border/30"><p class="text-xs text-muted mb-1">RSI</p><p class="font-bold text-text">54.2</p></div>
+              <div class="p-3 rounded-xl bg-border/30"><p class="text-xs text-muted mb-1">MACD</p><p class="font-bold text-emerald-500">Bullish</p></div>
+              <div class="p-3 rounded-xl bg-border/30"><p class="text-xs text-muted mb-1">MA</p><p class="font-bold text-text">Above</p></div>
+            </div>
+          </div>
+
+          <!-- Action Buttons -->
+          <div class="grid grid-cols-1 @xs:grid-cols-2 gap-3">
+            <button class="cp-detail-trade inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap">
+              <i data-lucide="arrow-right-left" class="w-4 h-4 shrink-0"></i>Trade Now
+            </button>
+            <button class="cp-detail-alert inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap">
+              <i data-lucide="bell-plus" class="w-4 h-4 shrink-0"></i>Set Alert
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add Pair Drawer -->
+    <div class="drawer" id="cpAddDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <div class="min-w-0">
+            <h2 class="text-xl font-bold text-text">Add New Pair</h2>
+            <p class="text-sm text-muted">Add a crypto pair to your watchlist</p>
+          </div>
+          <button class="cp-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0">
+            <i data-lucide="x" class="w-5 h-5 shrink-0"></i>
+          </button>
+        </div>
+
+        <div class="space-y-5">
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Search Cryptocurrency</label>
+            <div class="relative">
+              <i data-lucide="search" class="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-muted shrink-0"></i>
+              <input type="text" placeholder="Search by name or symbol..." class="w-full pl-11 pr-4 py-3 bg-transparent border border-border rounded-xl text-text text-sm placeholder:text-muted focus:outline-none focus:border-accent transition-colors" />
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Exchange</label>
+            <select class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors">
+              <option>Binance</option>
+              <option>Coinbase</option>
+              <option>Kraken</option>
+              <option>KuCoin</option>
+              <option>OKX</option>
+            </select>
+          </div>
+
+          <div class="space-y-2">
+            <p class="text-sm font-semibold text-muted">Popular Pairs</p>
+            <div class="space-y-2 max-h-80 overflow-y-auto pr-1">
+              <div class="flex items-center justify-between gap-3 p-4 rounded-xl border border-border hover:border-accent/40 transition-colors">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="w-10 h-10 rounded-lg flex items-center justify-center text-xs font-bold text-white shrink-0" style="background:#0033AD">AD</div>
+                  <div class="min-w-0"><p class="font-semibold text-text">ADA/USDT</p><p class="text-xs text-muted">Cardano</p></div>
+                </div>
+                <button class="cp-add-avail inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-panel border border-border text-text text-xs font-semibold hover:border-accent/40 transition-colors whitespace-nowrap shrink-0" data-pair="ADA/USDT"><i data-lucide="plus" class="w-3.5 h-3.5 shrink-0"></i>Add</button>
+              </div>
+              <div class="flex items-center justify-between gap-3 p-4 rounded-xl border border-border hover:border-accent/40 transition-colors">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="w-10 h-10 rounded-lg flex items-center justify-center text-xs font-bold text-white shrink-0" style="background:#E6007A">DO</div>
+                  <div class="min-w-0"><p class="font-semibold text-text">DOT/USDT</p><p class="text-xs text-muted">Polkadot</p></div>
+                </div>
+                <button class="cp-add-avail inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-panel border border-border text-text text-xs font-semibold hover:border-accent/40 transition-colors whitespace-nowrap shrink-0" data-pair="DOT/USDT"><i data-lucide="plus" class="w-3.5 h-3.5 shrink-0"></i>Add</button>
+              </div>
+              <div class="flex items-center justify-between gap-3 p-4 rounded-xl border border-border hover:border-accent/40 transition-colors">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="w-10 h-10 rounded-lg flex items-center justify-center text-xs font-bold text-white shrink-0" style="background:#8247E5">MA</div>
+                  <div class="min-w-0"><p class="font-semibold text-text">MATIC/USDT</p><p class="text-xs text-muted">Polygon</p></div>
+                </div>
+                <button class="cp-add-avail inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-panel border border-border text-text text-xs font-semibold hover:border-accent/40 transition-colors whitespace-nowrap shrink-0" data-pair="MATIC/USDT"><i data-lucide="plus" class="w-3.5 h-3.5 shrink-0"></i>Add</button>
+              </div>
+              <div class="flex items-center justify-between gap-3 p-4 rounded-xl border border-border hover:border-accent/40 transition-colors">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="w-10 h-10 rounded-lg flex items-center justify-center text-xs font-bold text-white shrink-0" style="background:#FF007A">UN</div>
+                  <div class="min-w-0"><p class="font-semibold text-text">UNI/USDT</p><p class="text-xs text-muted">Uniswap</p></div>
+                </div>
+                <button class="cp-add-avail inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-panel border border-border text-text text-xs font-semibold hover:border-accent/40 transition-colors whitespace-nowrap shrink-0" data-pair="UNI/USDT"><i data-lucide="plus" class="w-3.5 h-3.5 shrink-0"></i>Add</button>
+              </div>
+              <div class="flex items-center justify-between gap-3 p-4 rounded-xl border border-border hover:border-accent/40 transition-colors">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="w-10 h-10 rounded-lg flex items-center justify-center text-xs font-bold text-white shrink-0" style="background:#1D2951">FE</div>
+                  <div class="min-w-0"><p class="font-semibold text-text">FET/USDT</p><p class="text-xs text-muted">Fetch.ai</p></div>
+                </div>
+                <button class="cp-add-avail inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-panel border border-border text-text text-xs font-semibold hover:border-accent/40 transition-colors whitespace-nowrap shrink-0" data-pair="FET/USDT"><i data-lucide="plus" class="w-3.5 h-3.5 shrink-0"></i>Add</button>
+              </div>
+              <div class="flex items-center justify-between gap-3 p-4 rounded-xl border border-border hover:border-accent/40 transition-colors">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="w-10 h-10 rounded-lg flex items-center justify-center text-xs font-bold text-white shrink-0" style="background:#28A0F0">AR</div>
+                  <div class="min-w-0"><p class="font-semibold text-text">ARB/USDT</p><p class="text-xs text-muted">Arbitrum</p></div>
+                </div>
+                <button class="cp-add-avail inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-panel border border-border text-text text-xs font-semibold hover:border-accent/40 transition-colors whitespace-nowrap shrink-0" data-pair="ARB/USDT"><i data-lucide="plus" class="w-3.5 h-3.5 shrink-0"></i>Add</button>
+              </div>
+            </div>
+          </div>
+
+          <button class="cp-add-confirm inline-flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap">
+            <i data-lucide="plus" class="w-4 h-4 shrink-0"></i>Add to Watchlist
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- New Alert Drawer -->
+    <div class="drawer" id="cpAlertDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <div class="min-w-0">
+            <h2 class="text-xl font-bold text-text">Set Price Alert</h2>
+            <p class="text-sm text-muted">Get notified when conditions are met</p>
+          </div>
+          <button class="cp-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0">
+            <i data-lucide="x" class="w-5 h-5 shrink-0"></i>
+          </button>
+        </div>
+
+        <div class="space-y-5">
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Select Pair</label>
+            <select id="cpAlertPair" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors">
+              <option>BTC/USDT</option><option>ETH/USDT</option><option>SOL/USDT</option><option>BNB/USDT</option><option>XRP/USDT</option><option>AVAX/USDT</option><option>DOGE/USDT</option><option>LINK/USDT</option><option>INJ/USDT</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Alert Type</label>
+            <select class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors">
+              <option>Price Above</option>
+              <option>Price Below</option>
+              <option>Price Change %</option>
+              <option>Volume Spike</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Target Price (USD)</label>
+            <input type="number" step="0.0001" placeholder="67000" class="w-full p-3 bg-transparent border border-border rounded-xl text-text font-mono focus:outline-none focus:border-accent transition-colors" />
+          </div>
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Alert Frequency</label>
+            <select class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors">
+              <option>Once</option>
+              <option>Every time</option>
+              <option>Daily summary</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Notification Channels</label>
+            <div class="space-y-2">
+              <label class="flex items-center gap-3 p-3 rounded-lg border border-border cursor-pointer hover:border-accent/40 transition-colors">
+                <input type="checkbox" class="custom-checkbox" checked />
+                <i data-lucide="bell" class="w-4 h-4 text-muted shrink-0"></i>
+                <span class="text-sm text-text">Push Notification</span>
+              </label>
+              <label class="flex items-center gap-3 p-3 rounded-lg border border-border cursor-pointer hover:border-accent/40 transition-colors">
+                <input type="checkbox" class="custom-checkbox" checked />
+                <i data-lucide="mail" class="w-4 h-4 text-muted shrink-0"></i>
+                <span class="text-sm text-text">Email</span>
+              </label>
+              <label class="flex items-center gap-3 p-3 rounded-lg border border-border cursor-pointer hover:border-accent/40 transition-colors">
+                <input type="checkbox" class="custom-checkbox" />
+                <i data-lucide="smartphone" class="w-4 h-4 text-muted shrink-0"></i>
+                <span class="text-sm text-text">SMS</span>
+              </label>
+              <label class="flex items-center gap-3 p-3 rounded-lg border border-border cursor-pointer hover:border-accent/40 transition-colors">
+                <input type="checkbox" class="custom-checkbox" />
+                <i data-lucide="send" class="w-4 h-4 text-muted shrink-0"></i>
+                <span class="text-sm text-text">Telegram</span>
+              </label>
+            </div>
+          </div>
+          <button class="cp-create-alert inline-flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap">
+            <i data-lucide="bell-plus" class="w-4 h-4 shrink-0"></i>Create Alert
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="cpToast">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0">
+        <i data-lucide="check" class="w-5 h-5 text-white shrink-0"></i>
+      </div>
+      <div class="min-w-0">
+        <p class="font-semibold text-text" id="cpToastTitle">Success</p>
+        <p class="text-sm text-muted" id="cpToastMessage">Action completed successfully</p>
+      </div>
+      <button class="cp-toast-close ml-auto w-9 h-9 shrink-0 flex items-center justify-center rounded-lg text-muted hover:text-text transition-colors">
+        <i data-lucide="x" class="w-4 h-4 shrink-0"></i>
+      </button>
+    </div>
+
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
+  </body>
+</html>

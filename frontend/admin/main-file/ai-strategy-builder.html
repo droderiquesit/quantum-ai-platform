@@ -1,0 +1,760 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <script>
+      if (localStorage.getItem("theme") === "light") document.documentElement.classList.remove("dark");
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>AI Strategy Builder - SignalAIX | AI Forex & Crypto Trading Signals</title>
+    <link rel="icon" type="image/png" href="assets/images/favicon.png" />
+    <link rel="apple-touch-icon" href="assets/images/favicon.png" />
+  <link href="css/index.css" rel="stylesheet"></head>
+  <body id="ai-strategy-builder">
+    <div id="loader">
+      <div class="spinner"></div>
+      <div class="loader-text">Loading SignalAIX...</div>
+    </div>
+
+    <div id="sidebarOverlay" class="fixed inset-0 bg-black/50 z-40 hidden lg:hidden transition-opacity duration-300 opacity-0" aria-hidden="true"></div>
+<aside class="sidebar" id="sidebar">
+  <!-- ======================================
+       Start Logo Section
+       ====================================== -->
+  <div class="logo-section flex items-center gap-3 p-5 border-b border-border shrink-0">
+    <img src="assets/images/logo.png" alt="SignalAIX" class="w-10 h-10 rounded-xl object-contain shrink-0" />
+    <div class="logo-text flex-1 min-w-0">
+      <p class="text-lg font-bold text-text leading-tight">SignalAIX</p>
+      <p class="text-xs text-muted truncate">AI Forex & Crypto Signals</p>
+    </div>
+    <button class="lg:hidden! flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:bg-border/60 hover:text-text transition js-mobile-menu-toggle" aria-label="Close sidebar">
+      <i data-lucide="x" class="w-5 h-5"></i>
+    </button>
+  </div>
+
+  <!-- ======================================
+       Start Navigation
+       ====================================== -->
+  <nav class="py-4 flex-1">
+    <!-- MAIN -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Main</div>
+
+    <a href="./index.html" class="nav-item active flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Dashboard">
+      <i data-lucide="layout-dashboard" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Dashboard</span>
+    </a>
+
+    <a href="./live-signals.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Live Signals">
+      <i data-lucide="radio" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Live Signals</span>
+      <span class="live-dot ml-auto nav-text"></span>
+    </a>
+
+    <a href="./ai-signal-generator.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Signal Generator">
+      <i data-lucide="sparkles" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Signal Generator</span>
+    </a>
+
+    <a href="./market-overview.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Market Overview">
+      <i data-lucide="globe" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Market Overview</span>
+    </a>
+
+    <!-- AI INTELLIGENCE -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">AI Intelligence</div>
+
+    <a href="./ai-market-summary.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Market Summary">
+      <i data-lucide="brain-circuit" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Market Summary</span>
+    </a>
+
+    <a href="./ai-prediction-models.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Prediction Models">
+      <i data-lucide="line-chart" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Prediction Models</span>
+    </a>
+
+    <a href="./ai-risk-analyzer.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Risk Analyzer">
+      <i data-lucide="shield-alert" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Risk Analyzer</span>
+    </a>
+
+    <a href="./ai-trade-journal.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Trade Journal">
+      <i data-lucide="notebook-pen" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Trade Journal</span>
+    </a>
+
+    <a href="./ai-strategy-builder.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Strategy Builder">
+      <i data-lucide="blocks" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Strategy Builder</span>
+    </a>
+
+    <!-- TRADING TOOLS -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Trading Tools</div>
+
+    <a href="./forex-heatmap.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Forex Heatmap">
+      <i data-lucide="grid-3x3" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Forex Heatmap</span>
+    </a>
+
+    <a href="./crypto-heatmap.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Crypto Heatmap">
+      <i data-lucide="layout-grid" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Crypto Heatmap</span>
+    </a>
+
+    <a href="./trend-scanner.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Trend Scanner">
+      <i data-lucide="scan-line" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Trend Scanner</span>
+    </a>
+
+    <a href="./pattern-detection.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Pattern Detection">
+      <i data-lucide="waypoints" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Pattern Detection</span>
+    </a>
+
+    <a href="./volatility-index.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Volatility Index">
+      <i data-lucide="activity" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Volatility Index</span>
+    </a>
+
+    <a href="./economic-calendar.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Economic Calendar">
+      <i data-lucide="calendar-clock" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Economic Calendar</span>
+    </a>
+
+    <a href="./news-sentiment.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="News & Sentiment">
+      <i data-lucide="newspaper" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">News & Sentiment</span>
+    </a>
+
+    <a href="./correlation-matrix.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Correlation Matrix">
+      <i data-lucide="table-2" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Correlation Matrix</span>
+    </a>
+
+    <!-- MARKET ANALYTICS -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Market Analytics</div>
+
+    <a href="./forex-analytics.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Forex Analytics">
+      <i data-lucide="candlestick-chart" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Forex Analytics</span>
+    </a>
+
+    <a href="./crypto-analytics.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Crypto Analytics">
+      <i data-lucide="bitcoin" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Crypto Analytics</span>
+    </a>
+
+    <a href="./top-gainers-losers.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Top Gainers & Losers">
+      <i data-lucide="arrow-up-down" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Top Gainers & Losers</span>
+    </a>
+
+    <a href="./market-sentiment.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Market Sentiment">
+      <i data-lucide="gauge" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Market Sentiment</span>
+    </a>
+
+    <a href="./liquidity-zones.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Liquidity Zones">
+      <i data-lucide="droplets" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Liquidity Zones</span>
+    </a>
+
+    <a href="./price-action-monitor.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Price Action Monitor">
+      <i data-lucide="move-up-right" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Price Action Monitor</span>
+    </a>
+
+    <!-- PORTFOLIO -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Portfolio</div>
+
+    <a href="./my-portfolio.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="My Portfolio">
+      <i data-lucide="pie-chart" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">My Portfolio</span>
+    </a>
+
+    <a href="./open-positions.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Open Positions">
+      <i data-lucide="layers" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Open Positions</span>
+    </a>
+
+    <a href="./trade-history.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Trade History">
+      <i data-lucide="history" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Trade History</span>
+    </a>
+
+    <a href="./performance-analytics.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Performance Analytics">
+      <i data-lucide="bar-chart-3" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Performance Analytics</span>
+    </a>
+
+    <a href="./risk-metrics.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Risk Metrics">
+      <i data-lucide="shield-check" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Risk Metrics</span>
+    </a>
+
+    <a href="./pl-overview.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="P/L Overview">
+      <i data-lucide="wallet" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">P/L Overview</span>
+    </a>
+
+    <!-- WATCHLISTS -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Watchlists</div>
+
+    <a href="./forex-pairs.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Forex Pairs">
+      <i data-lucide="dollar-sign" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Forex Pairs</span>
+    </a>
+
+    <a href="./crypto-pairs.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Crypto Pairs">
+      <i data-lucide="coins" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Crypto Pairs</span>
+    </a>
+
+    <a href="./custom-alerts.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Custom Alerts">
+      <i data-lucide="bell-ring" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Custom Alerts</span>
+    </a>
+
+    <a href="./saved-signals.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Saved Signals">
+      <i data-lucide="bookmark" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Saved Signals</span>
+    </a>
+
+    <!-- AUTOMATION -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Automation</div>
+
+    <a href="./bot-center.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Bot Center">
+      <i data-lucide="bot" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Bot Center</span>
+    </a>
+
+    <a href="./auto-signal-forwarder.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Auto-Signal Forwarder">
+      <i data-lucide="forward" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Auto-Signal Forwarder</span>
+    </a>
+
+    <a href="./webhook-automations.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Webhook Automations">
+      <i data-lucide="webhook" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Webhook Automations</span>
+    </a>
+
+    <a href="./api-integrations.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="API Integrations">
+      <i data-lucide="plug" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">API Integrations</span>
+    </a>
+
+    <!-- ACCOUNT -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Account</div>
+
+    <a href="./profile-security.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Profile & Security">
+      <i data-lucide="user-cog" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Profile & Security</span>
+    </a>
+
+    <a href="./notification-settings.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Notification Settings">
+      <i data-lucide="bell" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Notification Settings</span>
+      <span class="ml-auto bg-red-500 text-white text-xs px-2 py-0.5 rounded-full nav-text">5</span>
+    </a>
+
+    <a href="./connected-exchanges.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Connected Exchanges">
+      <i data-lucide="link-2" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Connected Exchanges</span>
+    </a>
+
+    <a href="./subscription-billing.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Subscription & Billing">
+      <i data-lucide="crown" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Subscription & Billing</span>
+      <span class="ml-auto text-[10px] font-bold px-2 py-0.5 rounded-md bg-accent text-white nav-text">PRO</span>
+    </a>
+
+    <a href="./help-center.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Help Center">
+      <i data-lucide="help-circle" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Help Center</span>
+    </a>
+  </nav>
+
+  <!-- ======================================
+       Start User Section
+       ====================================== -->
+  <div class="user-section mt-auto p-4 border-t border-border shrink-0">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-full flex items-center justify-center shrink-0 bg-gradient-to-br from-emerald-500 to-teal-500">
+        <span class="text-white font-semibold text-sm">AK</span>
+      </div>
+      <div class="user-info flex-1 min-w-0">
+        <p class="font-semibold text-sm text-text truncate">Alex Kim</p>
+        <p class="text-xs text-muted truncate">alex@signalaix.io</p>
+      </div>
+    </div>
+  </div>
+</aside>
+
+
+    <main class="main-content" id="mainContent">
+      <header class="sticky top-0 z-50 glass @container">
+  <div class="flex items-center justify-between px-2 sm:px-6 py-2 sm:py-4">
+    <div class="flex items-center gap-2 sm:gap-4">
+      <!-- Mobile Menu Button -->
+      <button class="lg:hidden flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 transition js-mobile-menu-toggle" id="mobileMenuBtn" aria-label="Toggle Mobile Menu">
+        <i data-lucide="menu" class="w-5 h-5"></i>
+      </button>
+
+      <!-- Sidebar Toggle (Desktop) -->
+      <button class="hidden lg:flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 transition js-sidebar-toggle" aria-label="Toggle Sidebar">
+        <i data-lucide="panel-left" class="w-5 h-5"></i>
+      </button>
+
+      <!-- Search -->
+      <div class="relative hidden md:block">
+        <i data-lucide="search" class="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-muted"></i>
+        <input type="text" id="globalSearch" placeholder="Search signals, pairs, markets... (⌘K)" class="w-80 pl-10 pr-4 py-2.5 rounded-xl bg-bg border border-border text-sm text-text placeholder:text-muted focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 transition" />
+      </div>
+    </div>
+
+    <div class="flex items-center gap-2 sm:gap-3">
+      <!-- Live Status -->
+      <div class="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-500/10 text-emerald-500 text-[11px] font-semibold">
+        <span class="live-dot !bg-emerald-500"></span>
+        LIVE
+      </div>
+
+      <!-- Quick Generate Signal -->
+      <button class="flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 hover:border-accent/30 transition js-open-drawer" data-drawer-type="quickTrade" aria-label="Generate Signal">
+        <i data-lucide="zap" class="w-5 h-5"></i>
+      </button>
+
+      <!-- Notifications -->
+      <div class="dropdown">
+        <button class="relative flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 transition js-dropdown-toggle" aria-label="Toggle Notifications">
+          <i data-lucide="bell" class="w-5 h-5"></i>
+          <span class="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-xs rounded-full flex items-center justify-center">5</span>
+        </button>
+        <div class="dropdown-menu w-75 min-[400px]:w-80 mt-2 rounded-2xl bg-panel border border-border shadow-2xl overflow-hidden max-[420px]:-left-[153px]! max-[450px]:-left-[183px]! max-[430px]:right-0!">
+          <div class="p-4 border-b border-border flex items-center justify-between">
+            <h2 class="text-base font-semibold text-text">Notifications</h2>
+            <span class="text-xs font-medium text-accent">5 new</span>
+          </div>
+          <div class="max-h-72 overflow-y-auto">
+            <div class="flex items-start gap-3 p-4 hover:bg-border/30 transition cursor-pointer">
+              <div class="w-9 h-9 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="trending-up" class="w-4 h-4 text-emerald-500"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-medium text-text truncate">New BUY signal: EUR/USD</p>
+                <p class="text-xs text-muted">AI confidence 92% · 2 min ago</p>
+              </div>
+            </div>
+            <div class="flex items-start gap-3 p-4 hover:bg-border/30 transition cursor-pointer">
+              <div class="w-9 h-9 rounded-full bg-amber-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="alert-triangle" class="w-4 h-4 text-amber-500"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-medium text-text truncate">High volatility on BTC/USDT</p>
+                <p class="text-xs text-muted">15 min ago</p>
+              </div>
+            </div>
+            <div class="flex items-start gap-3 p-4 hover:bg-border/30 transition cursor-pointer">
+              <div class="w-9 h-9 rounded-full bg-sky-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="sparkles" class="w-4 h-4 text-sky-500"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-medium text-text truncate">AI model retrained — accuracy +3%</p>
+                <p class="text-xs text-muted">1 hour ago</p>
+              </div>
+            </div>
+          </div>
+          <div class="p-3 border-t border-border">
+            <button class="w-full text-center text-sm font-medium text-accent hover:underline">View all notifications</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Theme Toggle -->
+      <button
+        class="flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 transition"
+        id="themeToggle"
+        aria-label="Toggle Theme"
+        onclick="
+          document.documentElement.classList.toggle('dark');
+          localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+        "
+      >
+        <i data-lucide="moon" class="w-5 h-5 dark:hidden"></i>
+        <i data-lucide="sun" class="w-5 h-5 hidden dark:block"></i>
+      </button>
+
+      <!-- Profile Dropdown -->
+      <div class="dropdown">
+        <button class="flex items-center gap-2 p-1 rounded-xl hover:bg-border/50 transition js-dropdown-toggle">
+          <span class="w-9 h-9 rounded-full bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center">
+            <span class="text-white font-semibold text-sm">AK</span>
+          </span>
+          <i data-lucide="chevron-down" class="w-4 h-4 text-muted hidden sm:block"></i>
+        </button>
+        <div class="dropdown-menu w-56 mt-2 rounded-2xl bg-panel border border-border shadow-2xl overflow-hidden p-2">
+          <div class="p-3 mb-1 border-b border-border">
+            <p class="font-semibold text-text">Alex Kim</p>
+            <p class="text-xs text-muted">Pro Trader</p>
+          </div>
+          <a href="./index.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-text hover:bg-accent/10 transition">
+            <i data-lucide="user" class="w-4 h-4"></i>
+            <span>My Profile</span>
+          </a>
+          <a href="./index.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-text hover:bg-accent/10 transition">
+            <i data-lucide="settings" class="w-4 h-4"></i>
+            <span>Settings</span>
+          </a>
+          <a href="./index.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-text hover:bg-accent/10 transition">
+            <i data-lucide="help-circle" class="w-4 h-4"></i>
+            <span>Help & Support</span>
+          </a>
+          <div class="mt-1 pt-1 border-t border-border">
+            <a href="./index.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-red-500 hover:bg-red-500/10 transition">
+              <i data-lucide="log-out" class="w-4 h-4"></i>
+              <span>Logout</span>
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+
+      <div class="inner-content max-sm:px-3 max-lg:px-4 max-lg:py-6 lg:p-6 space-y-6">
+        <!-- Page header -->
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div class="flex items-center gap-3 min-w-0">
+            <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center shrink-0"><i data-lucide="blocks" class="w-5 h-5 text-white shrink-0"></i></div>
+            <div class="min-w-0">
+              <h1 class="text-2xl font-bold text-text">AI Strategy Builder</h1>
+              <p class="text-sm text-muted">Design, backtest, and deploy AI-powered trading strategies</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-3 flex-wrap">
+            <button class="asb-toast-btn inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition" data-toast-title="Import" data-toast-msg="Choose a strategy file to import"><i data-lucide="upload" class="w-4 h-4 shrink-0"></i>Import</button>
+            <button class="asb-toast-btn inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition" data-toast-title="Exported" data-toast-msg="Strategy exported successfully"><i data-lucide="download" class="w-4 h-4 shrink-0"></i>Export</button>
+            <button class="asb-open-drawer inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition" data-drawer="create"><i data-lucide="plus" class="w-4 h-4 shrink-0"></i>New Strategy</button>
+          </div>
+        </div>
+
+        <!-- Stat cards -->
+        <div class="grid grid-cols-1 @xl/content:grid-cols-2 @4xl/content:grid-cols-4 gap-4">
+          <div class="bg-panel border border-border rounded-2xl p-5 hover:border-accent/40 transition">
+            <div class="flex items-start justify-between mb-4"><div class="w-11 h-11 rounded-2xl bg-gradient-to-br from-accent to-emerald-500 flex items-center justify-center shrink-0"><i data-lucide="zap" class="w-5 h-5 text-white shrink-0"></i></div><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500">Active</span></div>
+            <p class="text-2xl font-bold text-text mb-1">12</p><p class="text-sm text-muted">Active Strategies</p><p class="text-xs text-emerald-500 mt-2 inline-flex items-center gap-1"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i>+3 this week</p>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-5 hover:border-accent/40 transition">
+            <div class="flex items-start justify-between mb-4"><div class="w-11 h-11 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center shrink-0"><i data-lucide="target" class="w-5 h-5 text-white shrink-0"></i></div><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-indigo-500/15 text-indigo-400">Avg</span></div>
+            <p class="text-2xl font-bold text-text mb-1">73.4%</p><p class="text-sm text-muted">Win Rate (30d)</p><p class="text-xs text-emerald-500 mt-2">+5.2% vs last month</p>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-5 hover:border-accent/40 transition">
+            <div class="flex items-start justify-between mb-4"><div class="w-11 h-11 rounded-2xl bg-gradient-to-br from-sky-500 to-blue-600 flex items-center justify-center shrink-0"><i data-lucide="radio" class="w-5 h-5 text-white shrink-0"></i></div><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-sky-500/15 text-sky-500">Today</span></div>
+            <p class="text-2xl font-bold text-text mb-1">847</p><p class="text-sm text-muted">Signals Generated</p><p class="text-xs text-muted mt-2 inline-flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3 shrink-0"></i>Last: 2 mins ago</p>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-5 hover:border-accent/40 transition">
+            <div class="flex items-start justify-between mb-4"><div class="w-11 h-11 rounded-2xl bg-gradient-to-br from-amber-500 to-emerald-500 flex items-center justify-center shrink-0"><i data-lucide="trending-up" class="w-5 h-5 text-white shrink-0"></i></div><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500">+</span></div>
+            <p class="text-2xl font-bold text-emerald-500 mb-1">+$24,856</p><p class="text-sm text-muted">Total P/L (30d)</p><p class="text-xs text-emerald-500 mt-2 inline-flex items-center gap-1"><i data-lucide="percent" class="w-3 h-3 shrink-0"></i>+18.4% ROI</p>
+          </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="flex gap-1 p-1 bg-panel border border-border rounded-2xl overflow-x-auto hide-scrollbar self-start max-w-full">
+          <button class="tab-button asb-tab active whitespace-nowrap px-4 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text transition" data-tab="builder">Visual Builder</button>
+          <button class="tab-button asb-tab whitespace-nowrap px-4 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text transition" data-tab="templates">Templates</button>
+          <button class="tab-button asb-tab whitespace-nowrap px-4 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text transition" data-tab="strategies">My Strategies</button>
+          <button class="tab-button asb-tab whitespace-nowrap px-4 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text transition" data-tab="backtest">Backtest Lab</button>
+        </div>
+
+        <!-- ===== Visual Builder ===== -->
+        <div class="tab-content asb-pane active" id="asb-tab-builder">
+          <div class="grid grid-cols-1 @4xl/content:grid-cols-3 gap-6">
+            <div class="@4xl/content:col-span-2 space-y-6">
+              <!-- Strategy params -->
+              <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+                <div class="flex items-start justify-between gap-3 mb-5 flex-col xs:flex-row xs:items-center">
+                  <div class="flex items-center gap-3 min-w-0"><div class="w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center shrink-0"><i data-lucide="brain" class="w-6 h-6 text-white shrink-0"></i></div><div class="min-w-0"><h3 class="font-bold text-text">AI Momentum Breakout</h3><p class="text-xs text-muted">Multi-timeframe momentum strategy</p></div></div>
+                  <span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0">Optimized</span>
+                </div>
+                <div class="grid grid-cols-1 xs:grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+                  <div class="text-center p-3 rounded-xl bg-bg border border-border"><p class="text-lg font-bold text-text">1,247</p><p class="text-[10px] text-muted">Trades</p></div>
+                  <div class="text-center p-3 rounded-xl bg-bg border border-border"><p class="text-lg font-bold text-emerald-500">76.8%</p><p class="text-[10px] text-muted">Win Rate</p></div>
+                  <div class="text-center p-3 rounded-xl bg-bg border border-border"><p class="text-lg font-bold text-text">2.34</p><p class="text-[10px] text-muted">Profit Factor</p></div>
+                  <div class="text-center p-3 rounded-xl bg-bg border border-border"><p class="text-lg font-bold text-red-500">-8.2%</p><p class="text-[10px] text-muted">Max DD</p></div>
+                </div>
+                <div class="flex items-center gap-2 mb-4"><i data-lucide="sliders-horizontal" class="w-4 h-4 text-accent shrink-0"></i><h4 class="font-semibold text-text">Strategy Parameters</h4></div>
+                <div class="grid grid-cols-1 @xl/content:grid-cols-2 gap-4">
+                  <div><label class="block text-sm font-medium text-text mb-2">Market Type</label><select class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option>Forex</option><option>Crypto</option><option>Both</option></select></div>
+                  <div><label class="block text-sm font-medium text-text mb-2">Timeframe</label><select class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option>1m</option><option>5m</option><option selected>15m</option><option>1h</option><option>4h</option><option>1d</option></select></div>
+                  <div><label class="block text-sm font-medium text-text mb-2">Risk per Trade <span class="text-accent" id="asbRiskVal">2.0%</span></label><input type="range" id="asbRisk" min="0.5" max="5" step="0.1" value="2" class="w-full" /></div>
+                  <div><label class="block text-sm font-medium text-text mb-2">AI Confidence <span class="text-accent" id="asbConfVal">75%</span></label><input type="range" id="asbConf" min="50" max="95" step="5" value="75" class="w-full" /></div>
+                </div>
+              </div>
+
+              <!-- Indicators + rules -->
+              <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+                <div class="flex items-center justify-between mb-4 gap-3"><div class="flex items-center gap-2"><i data-lucide="activity" class="w-4 h-4 text-sky-500 shrink-0"></i><h4 class="font-semibold text-text">Technical Indicators</h4></div><button class="asb-open-drawer text-sm text-accent hover:underline" data-drawer="indicators">Add More</button></div>
+                <div class="flex flex-wrap gap-2 mb-6">
+                  <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-accent/10 border border-accent/30 text-accent"><i data-lucide="activity" class="w-3.5 h-3.5 shrink-0"></i>RSI (14)</span>
+                  <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-accent/10 border border-accent/30 text-accent"><i data-lucide="git-branch" class="w-3.5 h-3.5 shrink-0"></i>MACD (12,26,9)</span>
+                  <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-accent/10 border border-accent/30 text-accent"><i data-lucide="trending-up" class="w-3.5 h-3.5 shrink-0"></i>EMA (20, 50)</span>
+                  <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-accent/10 border border-accent/30 text-accent"><i data-lucide="maximize-2" class="w-3.5 h-3.5 shrink-0"></i>Bollinger (20,2)</span>
+                  <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-bg border border-border text-muted"><i data-lucide="chart-column" class="w-3.5 h-3.5 shrink-0"></i>ATR (14)</span>
+                </div>
+                <div class="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4 mb-4">
+                  <div class="flex items-center gap-2 mb-3"><i data-lucide="log-in" class="w-4 h-4 text-emerald-500 shrink-0"></i><h5 class="font-semibold text-text">Entry Rules</h5></div>
+                  <div class="space-y-3">
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2"><select class="px-3 py-2.5 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option>RSI (14)</option></select><select class="px-3 py-2.5 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option>crosses above</option><option>crosses below</option><option>is greater than</option></select><input type="text" value="30" class="px-3 py-2.5 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition" /></div>
+                    <div class="flex items-center gap-2"><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-indigo-500/15 text-indigo-400">AND</span></div>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2"><select class="px-3 py-2.5 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option>MACD</option></select><select class="px-3 py-2.5 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option>crosses above</option><option>is</option></select><select class="px-3 py-2.5 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option>Signal Line</option><option>Zero Line</option></select></div>
+                    <button class="asb-toast-btn w-full inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl border border-dashed border-border text-muted text-sm hover:border-accent/40 hover:text-accent transition" data-toast-title="Condition Added" data-toast-msg="A new entry condition was added"><i data-lucide="plus" class="w-4 h-4 shrink-0"></i>Add Entry Condition</button>
+                  </div>
+                </div>
+                <div class="rounded-xl border border-red-500/20 bg-red-500/5 p-4">
+                  <div class="flex items-center gap-2 mb-3"><i data-lucide="log-out" class="w-4 h-4 text-red-500 shrink-0"></i><h5 class="font-semibold text-text">Exit Rules</h5></div>
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div class="flex items-center gap-2"><div class="toggle-switch active js-toggle-switch" role="switch" tabindex="0" aria-label="Take Profit"></div><span class="text-sm text-text">Take Profit</span><select class="ml-auto px-2.5 py-2 rounded-lg bg-bg border border-border text-xs text-text"><option>R:R Ratio</option><option>% Profit</option><option>Pips</option></select></div>
+                    <div class="flex items-center gap-2"><div class="toggle-switch active js-toggle-switch" role="switch" tabindex="0" aria-label="Stop Loss"></div><span class="text-sm text-text">Stop Loss</span><select class="ml-auto px-2.5 py-2 rounded-lg bg-bg border border-border text-xs text-text"><option>ATR Multiple</option><option>% Loss</option><option>Pips</option></select></div>
+                    <div class="flex items-center gap-2"><div class="toggle-switch js-toggle-switch" role="switch" tabindex="0" aria-label="Trailing Stop"></div><span class="text-sm text-muted">Trailing Stop</span></div>
+                    <div class="flex items-center gap-2"><div class="toggle-switch js-toggle-switch" role="switch" tabindex="0" aria-label="Time-Based Exit"></div><span class="text-sm text-muted">Time-Based Exit</span></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="flex items-center justify-between gap-3 flex-wrap">
+                <div class="flex items-center gap-3">
+                  <button class="asb-toast-btn inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition" data-toast-title="Draft Saved" data-toast-msg="Your strategy draft was saved"><i data-lucide="save" class="w-4 h-4 shrink-0"></i>Save Draft</button>
+                  <button class="asb-toast-btn inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-muted text-sm font-semibold hover:text-text transition" data-toast-title="Reset" data-toast-msg="Builder reset to defaults"><i data-lucide="rotate-ccw" class="w-4 h-4 shrink-0"></i>Reset</button>
+                </div>
+                <div class="flex items-center gap-3">
+                  <button class="asb-open-drawer inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition" data-drawer="backtest"><i data-lucide="flask-conical" class="w-4 h-4 shrink-0"></i>Run Backtest</button>
+                  <button class="asb-toast-btn inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition" data-toast-title="Strategy Activated" data-toast-msg="Strategy is now live and generating signals"><i data-lucide="play" class="w-4 h-4 shrink-0"></i>Activate Strategy</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Right column -->
+            <div class="space-y-6">
+              <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+                <div class="flex items-center gap-2 mb-4"><i data-lucide="sparkles" class="w-4 h-4 text-violet-400 shrink-0"></i><h3 class="font-semibold text-text">AI Analysis</h3></div>
+                <div class="flex justify-center mb-6">
+                  <div class="relative w-32 h-32">
+                    <svg class="w-full h-full -rotate-90" viewBox="0 0 120 120"><circle cx="60" cy="60" r="52" fill="none" stroke="var(--color-border)" stroke-width="10"></circle><circle cx="60" cy="60" r="52" fill="none" stroke="url(#asbGrad)" stroke-width="10" stroke-dasharray="327" stroke-dashoffset="65" stroke-linecap="round"></circle><defs><linearGradient id="asbGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#6366f1"/><stop offset="50%" stop-color="#06b6d4"/><stop offset="100%" stop-color="#10b981"/></linearGradient></defs></svg>
+                    <div class="absolute inset-0 flex flex-col items-center justify-center"><span class="text-3xl font-bold text-text">82</span><span class="text-xs text-muted">AI Score</span></div>
+                  </div>
+                </div>
+                <div class="space-y-3">
+                  <div class="flex items-center justify-between gap-3"><span class="text-sm text-muted">Risk Management</span><div class="flex items-center gap-2"><div class="w-20 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-emerald-500 rounded-full" style="width:92%"></div></div><span class="text-sm font-medium text-emerald-500">92%</span></div></div>
+                  <div class="flex items-center justify-between gap-3"><span class="text-sm text-muted">Signal Quality</span><div class="flex items-center gap-2"><div class="w-20 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-sky-500 rounded-full" style="width:85%"></div></div><span class="text-sm font-medium text-sky-500">85%</span></div></div>
+                  <div class="flex items-center justify-between gap-3"><span class="text-sm text-muted">Market Fit</span><div class="flex items-center gap-2"><div class="w-20 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-violet-500 rounded-full" style="width:78%"></div></div><span class="text-sm font-medium text-violet-400">78%</span></div></div>
+                  <div class="flex items-center justify-between gap-3"><span class="text-sm text-muted">Complexity</span><div class="flex items-center gap-2"><div class="w-20 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-amber-500 rounded-full" style="width:68%"></div></div><span class="text-sm font-medium text-amber-500">68%</span></div></div>
+                </div>
+                <div class="mt-5 space-y-2">
+                  <div class="flex items-start gap-2 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-sm text-text"><i data-lucide="circle-check" class="w-4 h-4 text-emerald-500 shrink-0 mt-0.5"></i> Good risk-reward ratio (2.5:1)</div>
+                  <div class="flex items-start gap-2 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-sm text-text"><i data-lucide="zap" class="w-4 h-4 text-amber-500 shrink-0 mt-0.5"></i> Consider adding volume confirmation</div>
+                  <div class="flex items-start gap-2 p-3 rounded-xl bg-sky-500/10 border border-sky-500/20 text-sm text-text"><i data-lucide="lightbulb" class="w-4 h-4 text-sky-500 shrink-0 mt-0.5"></i> Enable trailing stop for trending markets</div>
+                </div>
+              </div>
+
+              <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+                <div class="flex items-center justify-between mb-4 gap-3"><h3 class="font-semibold text-text">Performance Preview</h3><select class="px-3 py-2 pr-8 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option>1m</option><option selected>3m</option><option>6m</option><option>1y</option></select></div>
+                <div class="h-48"><canvas id="asbPerformanceChart"></canvas></div>
+              </div>
+
+              <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+                <h3 class="font-semibold text-text mb-4">Quick Actions</h3>
+                <div class="grid grid-cols-2 gap-3">
+                  <button class="asb-toast-btn p-4 rounded-xl bg-bg border border-border hover:border-accent/40 transition text-center" data-toast-title="AI Optimizing" data-toast-msg="Running parameter optimization…"><i data-lucide="wand-sparkles" class="w-5 h-5 mx-auto text-violet-400 shrink-0"></i><p class="text-sm font-medium text-text mt-2">AI Optimize</p></button>
+                  <button class="asb-toast-btn p-4 rounded-xl bg-bg border border-border hover:border-accent/40 transition text-center" data-toast-title="Cloned" data-toast-msg="Strategy duplicated"><i data-lucide="copy" class="w-5 h-5 mx-auto text-sky-500 shrink-0"></i><p class="text-sm font-medium text-text mt-2">Clone</p></button>
+                  <button class="asb-toast-btn p-4 rounded-xl bg-bg border border-border hover:border-accent/40 transition text-center" data-toast-title="Share Link Copied" data-toast-msg="Strategy link copied to clipboard"><i data-lucide="share-2" class="w-5 h-5 mx-auto text-emerald-500 shrink-0"></i><p class="text-sm font-medium text-text mt-2">Share</p></button>
+                  <button class="asb-open-drawer p-4 rounded-xl bg-bg border border-border hover:border-accent/40 transition text-center" data-drawer="code"><i data-lucide="code" class="w-5 h-5 mx-auto text-amber-500 shrink-0"></i><p class="text-sm font-medium text-text mt-2">View Code</p></button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== Templates ===== -->
+        <div class="tab-content asb-pane" id="asb-tab-templates">
+          <div class="flex items-center gap-3 flex-wrap mb-6">
+            <div class="relative flex-1 min-w-[180px]"><i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted shrink-0"></i><input type="text" id="asbTemplateSearch" placeholder="Search templates..." class="w-full pl-10 pr-3 py-2.5 rounded-xl bg-bg border border-border text-sm text-text placeholder:text-muted focus:outline-none focus:border-accent transition" /></div>
+            <select class="px-4 py-2.5 pr-8 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option>All Categories</option><option>Trend Following</option><option>Scalping</option><option>Swing Trading</option><option>Breakout</option></select>
+            <select class="px-4 py-2.5 pr-8 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option>Most Popular</option><option>Highest Rated</option><option>Most Recent</option></select>
+          </div>
+          <div class="grid grid-cols-1 @xl/content:grid-cols-2 @3xl/content:grid-cols-3 gap-4">
+            <div class="asb-template bg-panel border border-border rounded-2xl p-5 hover:border-accent/40 transition" data-name="trend master pro">
+              <div class="flex items-start justify-between mb-3"><div class="w-11 h-11 rounded-xl bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center shrink-0"><i data-lucide="trending-up" class="w-5 h-5 text-white shrink-0"></i></div><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500">Premium</span></div>
+              <h3 class="font-bold text-text">Trend Master Pro</h3><p class="text-xs text-muted mb-1">by SignalAIX Team</p><p class="text-sm text-muted mb-4">Multi-timeframe trend following strategy with adaptive risk.</p>
+              <div class="grid grid-cols-3 gap-2 mb-4 text-center"><div><p class="font-bold text-emerald-500">78.5%</p><p class="text-[10px] text-muted">Win Rate</p></div><div><p class="font-bold text-text">2.8</p><p class="text-[10px] text-muted">Profit Factor</p></div><div><p class="font-bold text-text">4.9★</p><p class="text-[10px] text-muted">Rating</p></div></div>
+              <div class="flex flex-wrap gap-2 mb-4"><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-sky-500/15 text-sky-500">Forex</span><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-indigo-500/15 text-indigo-400">H1-D1</span></div>
+              <div class="flex gap-2"><button class="asb-toast-btn flex-1 justify-center inline-flex items-center px-3 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition" data-toast-title="Preview" data-toast-msg="Loading template preview…">Preview</button><button class="asb-toast-btn flex-1 justify-center inline-flex items-center px-3 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition" data-toast-title="Template Applied" data-toast-msg="Trend Master Pro loaded into builder">Use Template</button></div>
+            </div>
+            <div class="asb-template bg-panel border border-border rounded-2xl p-5 hover:border-accent/40 transition" data-name="scalper elite">
+              <div class="flex items-start justify-between mb-3"><div class="w-11 h-11 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center shrink-0"><i data-lucide="zap" class="w-5 h-5 text-white shrink-0"></i></div><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-red-500/15 text-red-500">Hot</span></div>
+              <h3 class="font-bold text-text">Scalper Elite</h3><p class="text-xs text-muted mb-1">by CryptoAlpha</p><p class="text-sm text-muted mb-4">High-frequency scalping with tight risk control.</p>
+              <div class="grid grid-cols-3 gap-2 mb-4 text-center"><div><p class="font-bold text-emerald-500">82.3%</p><p class="text-[10px] text-muted">Win Rate</p></div><div><p class="font-bold text-text">1.9</p><p class="text-[10px] text-muted">Profit Factor</p></div><div><p class="font-bold text-text">4.7★</p><p class="text-[10px] text-muted">Rating</p></div></div>
+              <div class="flex flex-wrap gap-2 mb-4"><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/15 text-amber-500">Crypto</span><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-indigo-500/15 text-indigo-400">M1-M15</span></div>
+              <div class="flex gap-2"><button class="asb-toast-btn flex-1 justify-center inline-flex items-center px-3 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition" data-toast-title="Preview" data-toast-msg="Loading template preview…">Preview</button><button class="asb-toast-btn flex-1 justify-center inline-flex items-center px-3 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition" data-toast-title="Template Applied" data-toast-msg="Scalper Elite loaded into builder">Use Template</button></div>
+            </div>
+            <div class="asb-template bg-panel border border-border rounded-2xl p-5 hover:border-accent/40 transition" data-name="breakout hunter">
+              <div class="flex items-start justify-between mb-3"><div class="w-11 h-11 rounded-xl bg-gradient-to-br from-sky-500 to-blue-600 flex items-center justify-center shrink-0"><i data-lucide="layers" class="w-5 h-5 text-white shrink-0"></i></div><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-sky-500/15 text-sky-500">Free</span></div>
+              <h3 class="font-bold text-text">Breakout Hunter</h3><p class="text-xs text-muted mb-1">by ForexPro</p><p class="text-sm text-muted mb-4">Volatility breakout strategy with confirmation filters.</p>
+              <div class="grid grid-cols-3 gap-2 mb-4 text-center"><div><p class="font-bold text-emerald-500">65.8%</p><p class="text-[10px] text-muted">Win Rate</p></div><div><p class="font-bold text-text">3.2</p><p class="text-[10px] text-muted">Profit Factor</p></div><div><p class="font-bold text-text">4.5★</p><p class="text-[10px] text-muted">Rating</p></div></div>
+              <div class="flex flex-wrap gap-2 mb-4"><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-sky-500/15 text-sky-500">Forex</span><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/15 text-amber-500">Crypto</span></div>
+              <div class="flex gap-2"><button class="asb-toast-btn flex-1 justify-center inline-flex items-center px-3 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition" data-toast-title="Preview" data-toast-msg="Loading template preview…">Preview</button><button class="asb-toast-btn flex-1 justify-center inline-flex items-center px-3 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition" data-toast-title="Template Applied" data-toast-msg="Breakout Hunter loaded into builder">Use Template</button></div>
+            </div>
+          </div>
+          <p class="asb-template-empty hidden text-center text-sm text-muted py-8">No templates match your search.</p>
+        </div>
+
+        <!-- ===== My Strategies ===== -->
+        <div class="tab-content asb-pane" id="asb-tab-strategies">
+          <div class="flex items-center gap-2 flex-wrap mb-6">
+            <button class="asb-sfilter active px-4 py-2 rounded-full text-sm font-medium border border-border text-muted transition" data-status="all">All (12)</button>
+            <button class="asb-sfilter px-4 py-2 rounded-full text-sm font-medium border border-border text-muted transition" data-status="active">Active (5)</button>
+            <button class="asb-sfilter px-4 py-2 rounded-full text-sm font-medium border border-border text-muted transition" data-status="draft">Drafts (4)</button>
+            <button class="asb-sfilter px-4 py-2 rounded-full text-sm font-medium border border-border text-muted transition" data-status="paused">Paused (3)</button>
+            <div class="relative ml-auto"><i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted shrink-0"></i><input type="text" id="asbStrategySearch" placeholder="Search..." class="pl-10 pr-3 py-2.5 w-44 rounded-xl bg-bg border border-border text-sm text-text placeholder:text-muted focus:outline-none focus:border-accent transition" /></div>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+            <div class="overflow-x-auto">
+              <table class="w-full border-collapse min-w-[760px] whitespace-nowrap">
+                <thead><tr class="text-left text-xs font-semibold uppercase tracking-wide text-muted border-b border-border"><th class="py-3 pr-4">Strategy</th><th class="py-3 pr-4">Status</th><th class="py-3 pr-4">Win Rate</th><th class="py-3 pr-4">Signals</th><th class="py-3 pr-4">P/L</th><th class="py-3">Actions</th></tr></thead>
+                <tbody id="asbStrategiesBody">
+                  <tr class="asb-strategy border-b border-border hover:bg-accent/5 transition" data-status="active" data-name="ai momentum breakout">
+                    <td class="py-3 pr-4"><div class="flex items-center gap-3"><div class="w-9 h-9 rounded-lg bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center shrink-0"><i data-lucide="trending-up" class="w-4 h-4 text-white shrink-0"></i></div><div><p class="font-medium text-text">AI Momentum Breakout</p><p class="text-xs text-muted">Forex • H1</p></div></div></td>
+                    <td class="py-3 pr-4"><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500">Active</span></td>
+                    <td class="py-3 pr-4 text-emerald-500 font-medium">76.8%</td><td class="py-3 pr-4 text-text">1,247</td><td class="py-3 pr-4 text-emerald-500 font-medium">+$8,456</td>
+                    <td class="py-3"><div class="flex items-center gap-2"><button class="asb-open-drawer flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition" data-drawer="settings"><i data-lucide="square-pen" class="w-4 h-4 shrink-0"></i></button><button class="asb-toast-btn flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition" data-toast-title="Paused" data-toast-msg="Strategy paused"><i data-lucide="pause" class="w-4 h-4 shrink-0"></i></button><button class="asb-toast-btn flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-red-500 hover:bg-red-500/10 transition" data-toast-title="Deleted" data-toast-msg="Strategy removed"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button></div></td>
+                  </tr>
+                  <tr class="asb-strategy border-b border-border hover:bg-accent/5 transition" data-status="active" data-name="scalper pro">
+                    <td class="py-3 pr-4"><div class="flex items-center gap-3"><div class="w-9 h-9 rounded-lg bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center shrink-0"><i data-lucide="zap" class="w-4 h-4 text-white shrink-0"></i></div><div><p class="font-medium text-text">Scalper Pro</p><p class="text-xs text-muted">Crypto • M5</p></div></div></td>
+                    <td class="py-3 pr-4"><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500">Active</span></td>
+                    <td class="py-3 pr-4 text-emerald-500 font-medium">82.1%</td><td class="py-3 pr-4 text-text">3,892</td><td class="py-3 pr-4 text-emerald-500 font-medium">+$12,234</td>
+                    <td class="py-3"><div class="flex items-center gap-2"><button class="asb-open-drawer flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition" data-drawer="settings"><i data-lucide="square-pen" class="w-4 h-4 shrink-0"></i></button><button class="asb-toast-btn flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition" data-toast-title="Paused" data-toast-msg="Strategy paused"><i data-lucide="pause" class="w-4 h-4 shrink-0"></i></button><button class="asb-toast-btn flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-red-500 hover:bg-red-500/10 transition" data-toast-title="Deleted" data-toast-msg="Strategy removed"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button></div></td>
+                  </tr>
+                  <tr class="asb-strategy border-b border-border hover:bg-accent/5 transition" data-status="draft" data-name="support resistance bot">
+                    <td class="py-3 pr-4"><div class="flex items-center gap-3"><div class="w-9 h-9 rounded-lg bg-gradient-to-br from-sky-500 to-blue-600 flex items-center justify-center shrink-0"><i data-lucide="layers" class="w-4 h-4 text-white shrink-0"></i></div><div><p class="font-medium text-text">Support Resistance Bot</p><p class="text-xs text-muted">Forex • H4</p></div></div></td>
+                    <td class="py-3 pr-4"><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/15 text-amber-500">Draft</span></td>
+                    <td class="py-3 pr-4 text-muted">--</td><td class="py-3 pr-4 text-muted">--</td><td class="py-3 pr-4 text-muted">--</td>
+                    <td class="py-3"><div class="flex items-center gap-2"><button class="asb-open-drawer flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition" data-drawer="settings"><i data-lucide="square-pen" class="w-4 h-4 shrink-0"></i></button><button class="asb-toast-btn flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-emerald-500 hover:bg-emerald-500/10 transition" data-toast-title="Activated" data-toast-msg="Strategy is now live"><i data-lucide="play" class="w-4 h-4 shrink-0"></i></button><button class="asb-toast-btn flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-red-500 hover:bg-red-500/10 transition" data-toast-title="Deleted" data-toast-msg="Strategy removed"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button></div></td>
+                  </tr>
+                </tbody>
+              </table>
+              <p class="asb-strategy-empty hidden text-center text-sm text-muted py-8">No strategies match this filter.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== Backtest Lab ===== -->
+        <div class="tab-content asb-pane" id="asb-tab-backtest">
+          <div class="grid grid-cols-1 @3xl/content:grid-cols-3 gap-6">
+            <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+              <div class="flex items-center gap-2 mb-4"><i data-lucide="flask-conical" class="w-4 h-4 text-violet-400 shrink-0"></i><h3 class="font-semibold text-text">Backtest Configuration</h3></div>
+              <div class="space-y-4">
+                <div><label class="block text-sm font-medium text-text mb-2">Select Strategy</label><select class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option>AI Momentum Breakout</option><option>Scalper Pro</option><option>Support Resistance Bot</option></select></div>
+                <div><label class="block text-sm font-medium text-text mb-2">Trading Pair</label><select class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option>EUR/USD</option><option>GBP/USD</option><option>BTC/USDT</option><option>ETH/USDT</option></select></div>
+                <div class="grid grid-cols-2 gap-3"><div><label class="block text-sm font-medium text-text mb-2">From</label><input type="date" value="2024-01-01" class="w-full px-3 py-3 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition" /></div><div><label class="block text-sm font-medium text-text mb-2">To</label><input type="date" value="2024-12-27" class="w-full px-3 py-3 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition" /></div></div>
+                <div><label class="block text-sm font-medium text-text mb-2">Initial Capital</label><input type="text" value="$10,000" class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition" /></div>
+                <div class="flex items-center justify-between p-3 rounded-xl border border-border"><span class="text-sm text-text">Include Spread</span><div class="toggle-switch active js-toggle-switch" role="switch" tabindex="0" aria-label="Include Spread"></div></div>
+                <button class="asb-toast-btn w-full justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition" data-toast-title="Backtest Running" data-toast-msg="Simulating strategy over selected range…"><i data-lucide="play" class="w-4 h-4 shrink-0"></i>Run Backtest</button>
+              </div>
+            </div>
+            <div class="@3xl/content:col-span-2 self-stretch flex flex-col gap-6">
+              <div class="grid grid-cols-1 xs:grid-cols-2 sm:grid-cols-4 gap-4">
+                <div class="bg-panel border border-border rounded-2xl p-4 text-center"><p class="text-xl font-bold text-emerald-500">+$4,856</p><p class="text-xs text-muted">Net Profit</p><p class="text-[10px] text-emerald-500 mt-1">+48.56%</p></div>
+                <div class="bg-panel border border-border rounded-2xl p-4 text-center"><p class="text-xl font-bold text-text">847</p><p class="text-xs text-muted">Total Trades</p><p class="text-[10px] text-muted mt-1">~2.8/day</p></div>
+                <div class="bg-panel border border-border rounded-2xl p-4 text-center"><p class="text-xl font-bold text-text">73.4%</p><p class="text-xs text-muted">Win Rate</p><p class="text-[10px] text-muted mt-1">622 wins</p></div>
+                <div class="bg-panel border border-border rounded-2xl p-4 text-center"><p class="text-xl font-bold text-red-500">-8.2%</p><p class="text-xs text-muted">Max Drawdown</p><p class="text-[10px] text-muted mt-1">-$820</p></div>
+              </div>
+              <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6 flex flex-col flex-1">
+                <h3 class="font-semibold text-text mb-4">Equity Curve</h3>
+                <div class="flex-1 min-h-64"><canvas id="asbEquityChart"></canvas></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Drawer -->
+    <div class="drawer-overlay" id="asbDrawerOverlay"></div>
+    <div class="drawer" id="asbDrawer">
+      <div class="p-4 sm:p-6 border-b border-border flex items-center justify-between sticky top-0 bg-panel z-10">
+        <h2 class="text-xl font-bold text-text" id="asbDrawerTitle">Details</h2>
+        <button class="asb-drawer-close flex w-10 h-10 items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition" aria-label="Close drawer"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+      </div>
+      <div class="p-4 sm:p-6">
+        <!-- Create -->
+        <div class="asb-panel space-y-6" data-panel="create" hidden>
+          <div><label class="block text-sm font-medium text-text mb-2">Strategy Name</label><input type="text" placeholder="e.g. My Momentum Strategy" class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text placeholder:text-muted focus:outline-none focus:border-accent transition" /></div>
+          <div><label class="block text-sm font-medium text-text mb-2">Description</label><textarea class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text placeholder:text-muted focus:outline-none focus:border-accent transition h-24 resize-none" placeholder="Describe your strategy…"></textarea></div>
+          <div><label class="block text-sm font-medium text-text mb-2">Market Type</label><select class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option>Forex</option><option>Crypto</option><option>Both</option></select></div>
+          <div class="flex gap-3 pt-4"><button class="asb-drawer-close flex-1 justify-center inline-flex items-center px-4 py-3 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition">Cancel</button><button class="asb-toast-btn flex-1 justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition" data-toast-title="Strategy Created" data-toast-msg="New strategy added to the builder" data-close><i data-lucide="plus" class="w-4 h-4 shrink-0"></i>Create</button></div>
+        </div>
+        <!-- Indicators -->
+        <div class="asb-panel space-y-4" data-panel="indicators" hidden>
+          <div class="relative"><i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted shrink-0"></i><input type="text" placeholder="Search indicators…" class="w-full pl-10 pr-3 py-2.5 rounded-xl bg-bg border border-border text-sm text-text placeholder:text-muted focus:outline-none focus:border-accent transition" /></div>
+          <p class="text-xs font-semibold text-muted uppercase tracking-wide">Trend</p>
+          <div class="space-y-2">
+            <div class="flex items-center justify-between p-3 rounded-xl border border-border"><span class="text-sm text-text">SMA</span><button class="asb-toast-btn px-3 py-1.5 rounded-lg bg-accent/10 text-accent text-xs font-semibold" data-toast-title="Added" data-toast-msg="SMA added to strategy">Add</button></div>
+            <div class="flex items-center justify-between p-3 rounded-xl border border-border"><span class="text-sm text-text">Ichimoku Cloud</span><button class="asb-toast-btn px-3 py-1.5 rounded-lg bg-accent/10 text-accent text-xs font-semibold" data-toast-title="Added" data-toast-msg="Ichimoku added to strategy">Add</button></div>
+          </div>
+          <p class="text-xs font-semibold text-muted uppercase tracking-wide">Momentum</p>
+          <div class="space-y-2">
+            <div class="flex items-center justify-between p-3 rounded-xl border border-border"><span class="text-sm text-text">Stochastic</span><button class="asb-toast-btn px-3 py-1.5 rounded-lg bg-accent/10 text-accent text-xs font-semibold" data-toast-title="Added" data-toast-msg="Stochastic added to strategy">Add</button></div>
+            <div class="flex items-center justify-between p-3 rounded-xl border border-border"><span class="text-sm text-text">CCI</span><button class="asb-toast-btn px-3 py-1.5 rounded-lg bg-accent/10 text-accent text-xs font-semibold" data-toast-title="Added" data-toast-msg="CCI added to strategy">Add</button></div>
+          </div>
+          <button class="asb-drawer-close w-full justify-center inline-flex items-center px-4 py-3 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition mt-2">Done</button>
+        </div>
+        <!-- Code -->
+        <div class="asb-panel space-y-4" data-panel="code" hidden>
+          <div class="rounded-xl bg-bg border border-border p-4 overflow-x-auto"><pre class="text-xs font-mono text-text leading-relaxed whitespace-pre">strategy("AI Momentum Breakout")
+
+// Indicators
+rsi = ta.rsi(close, 14)
+[macd, sig, _] = ta.macd(close, 12, 26, 9)
+ema20 = ta.ema(close, 20)
+ema50 = ta.ema(close, 50)
+
+// Entry
+longCond = rsi &gt; 30 and macd &gt; sig
+if longCond
+    strategy.entry("Long", long)
+
+// Exit
+strategy.exit("TP/SL", "Long",
+     profit = atr * 2.5,
+     loss   = atr * 1.0)</pre></div>
+          <div class="flex gap-3"><button class="asb-toast-btn flex-1 justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition" data-toast-title="Copied" data-toast-msg="Strategy code copied to clipboard"><i data-lucide="copy" class="w-4 h-4 shrink-0"></i>Copy</button><button class="asb-toast-btn flex-1 justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition" data-toast-title="Downloaded" data-toast-msg="Code file downloaded"><i data-lucide="download" class="w-4 h-4 shrink-0"></i>Download</button></div>
+        </div>
+        <!-- Backtest (quick) -->
+        <div class="asb-panel space-y-6" data-panel="backtest" hidden>
+          <div><label class="block text-sm font-medium text-text mb-2">Trading Pair</label><select class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option>EUR/USD</option><option>GBP/USD</option><option>BTC/USDT</option><option>ETH/USDT</option></select></div>
+          <div><label class="block text-sm font-medium text-text mb-2">Period</label><select class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option>Last 30 Days</option><option>6 Months</option><option>1 Year</option></select></div>
+          <button class="asb-toast-btn w-full justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition" data-toast-title="Backtest Running" data-toast-msg="Crunching historical data…" data-close><i data-lucide="flask-conical" class="w-4 h-4 shrink-0"></i>Run Backtest</button>
+        </div>
+        <!-- Settings -->
+        <div class="asb-panel space-y-6" data-panel="settings" hidden>
+          <div><label class="block text-sm font-medium text-text mb-2">Strategy Name</label><input type="text" value="AI Momentum Breakout" class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition" /></div>
+          <div><label class="block text-sm font-medium text-text mb-2">Description</label><textarea class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition h-24 resize-none">Multi-timeframe momentum strategy with adaptive risk.</textarea></div>
+          <div class="flex gap-3 pt-4"><button class="asb-toast-btn flex-1 justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-red-500 text-white text-sm font-semibold hover:bg-red-600 transition" data-toast-title="Deleted" data-toast-msg="Strategy removed" data-close><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i>Delete</button><button class="asb-toast-btn flex-1 justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition" data-toast-title="Saved" data-toast-msg="Strategy settings updated" data-close><i data-lucide="save" class="w-4 h-4 shrink-0"></i>Save</button></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="asbToast">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-5 h-5 text-white shrink-0"></i></div>
+      <div>
+        <p class="font-semibold text-text" id="asbToastTitle">Success</p>
+        <p class="text-sm text-muted" id="asbToastMessage">Action completed</p>
+      </div>
+      <button id="asbToastClose" class="p-2 ml-auto rounded-lg text-muted hover:bg-border/50 transition" aria-label="Dismiss"><i data-lucide="x" class="w-4 h-4 shrink-0"></i></button>
+    </div>
+
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
+  <script defer src="js/index.js"></script></body>
+</html>

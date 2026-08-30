@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="description" content="SignalAIX Documentation" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SignalAIX &mdash; Documentation</title>
+    <link rel="icon" type="image/png" href="img/favicon.png" />
+    <link rel="apple-touch-icon" href="img/favicon.png" />
+    <link rel="stylesheet" href="css/prettify.css" />
+    <link rel="stylesheet" href="css/style.css" />
+  </head>
+
+  <body>
+    <div class="wrapper">
+      <nav class="nav">
+        <div class="logo-area">
+          <img src="img/logo.png" alt="SignalAIX" class="logo-img" />
+          <h3 class="fw-bold">SignalAIX</h3>
+        </div>
+        <ul class="docs-nav">
+          <li><strong>Getting Started</strong></li>
+          <li><a href="#welcome" class="active">Welcome</a></li>
+          <li><a href="#features">Features</a></li>
+          <li><a href="#folder">Folder Arrange</a></li>
+          <li><a href="#pages-list">Pages List</a></li>
+          <li class="separator"></li>
+          <li><strong>Installation</strong></li>
+          <li><a href="#upload">Installation</a></li>
+          <li><a href="#fonts">Fonts</a></li>
+          <li><a href="#css">CSS File</a></li>
+          <li><a href="#js">JS File</a></li>
+          <li class="separator"></li>
+          <li><strong>Development</strong></li>
+          <li><a href="#new-page">Add New Page</a></li>
+          <li><a href="#modify-code">Modify Code</a></li>
+          <li><a href="#add-partial">Add Partial</a></li>
+          <li class="separator"></li>
+          <li><strong>Customization</strong></li>
+          <li><a href="#logotype">Change Logo</a></li>
+          <li><a href="#tab">Colors & Theme</a></li>
+        </ul>
+      </nav>
+
+      <div class="main-body">
+        <header>
+          <div class="container">
+            <h2 class="lone-header">Documentation</h2>
+          </div>
+        </header>
+
+        <section>
+          <div class="container">
+            <div class="docs-content">
+              <!-- Hero -->
+              <div class="doc-hero">
+                <span class="eyebrow">Documentation</span>
+                <h1><span>SignalAIX</span><br />AI Forex &amp; Crypto Trading Signals</h1>
+                <p>
+                  A premium, modern admin dashboard template for an AI-powered Forex &amp; Crypto
+                  trading-signals / market-prediction platform — ~40 ready-made pages, light/dark theme,
+                  real charts, and fully responsive down to 320px.
+                </p>
+                <div class="meta-row">
+                  <span class="pill"><b>~40</b> pages</span>
+                  <span class="pill"><b>8</b> menu sections</span>
+                  <span class="pill"><b>Tailwind</b> CSS v4</span>
+                  <span class="pill"><b>Webpack</b> 5</span>
+                  <span class="pill"><b>Vanilla</b> JS</span>
+                  <span class="pill"><b>Light / Dark</b></span>
+                </div>
+              </div>
+
+              <h2>Getting Started</h2>
+            
+
+              <p>
+                SignalAIX is built with a focus on high-performance visuals, real-time data representation,
+                and intuitive navigation. It ships ~40 ready-made pages across 8 menu sections, a light/dark
+                theme, and is fully responsive down to 320px. This documentation will guide you through the
+                setup, customization, and deployment of your platform.
+              </p>
+              <p>
+                If you have any questions, feel free to contact us at
+                <a href="https://themeforest.net/user/uiaxis"><b>UIAXIS</b></a>.
+              </p>
+              <h3 id="features">Features</h3>
+              <div class="feature-grid">
+                <div
+                  style="
+                    display: grid;
+                    grid-template-columns: 1fr 1fr;
+                    gap: 20px;
+                  "
+                >
+                  <div class="feature-item">
+                    <ul>
+                      <li>
+                        <strong>Modern Stack:</strong> HTML5, Webpack 5, Tailwind CSS
+                        v4 (CSS-first, no <code>tailwind.config.js</code>).
+                      </li>
+                      <li>
+                        <strong>No framework:</strong> plain HTML enhanced with small,
+                        dependency-free <strong>vanilla JS</strong> modules — no jQuery, Alpine, or React.
+                      </li>
+                      <li>
+                        <strong>Responsive:</strong> built &amp; tested down to <strong>320px</strong> —
+                        no horizontal scroll on any page.
+                      </li>
+                      <li>
+                        <strong>Dark Mode:</strong> emerald-accent light/dark theme, preference saved to
+                        <code>localStorage</code>.
+                      </li>
+                    </ul>
+                  </div>
+                  <div class="feature-item">
+                    <ul>
+                      <li>
+                        <strong>Real Charts:</strong> Chart.js line, bar, doughnut, radar, gauges &amp;
+                        sparklines (not images) that re-color on theme toggle.
+                      </li>
+                      <li>
+                        <strong>AI Intelligence:</strong> Market Summary, Prediction Models, Risk Analyzer,
+                        Trade Journal, Strategy Builder.
+                      </li>
+                      <li>
+                        <strong>Tools &amp; Analytics:</strong> heatmaps, trend/pattern scanners, economic
+                        calendar, portfolio &amp; P/L tracking, watchlists.
+                      </li>
+                      <li>
+                        <strong>Rich UI:</strong> slide-in drawers, toasts, tabs, multi-filter + search,
+                        sortable tables, toggles, range sliders.
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+
+              <h3 id="folder">Folder Arrange</h3>
+              <p>
+                Unzip the archive and open the folder "signalaix-html". This
+                folder contains all the source files.
+              </p>
+              <ol>
+                <li>
+                  <b>src/*.html</b> — the ~40 individual dashboard pages (one file per page).
+                </li>
+                <li>
+                  <b>src/partials</b> — reusable layout inlined at build time:
+                  <code>sidebar.html</code> &amp; <code>top-header.html</code>.
+                </li>
+                <li>
+                  <b>src/css</b> — CSS files: <code>common.css</code> (Tailwind import + theme tokens) &amp;
+                  <code>loader.css</code> (page loader).
+                </li>
+                <li>
+                  <b>src/js</b> — JavaScript: the <code>index.js</code> entry point, shared modules
+                  (<code>common.js</code>, <code>sidebar.js</code>, <code>header.js</code>), plus one
+                  controller per interactive page.
+                </li>
+                <li>
+                  <b>src/assets/images</b> — images and favicon (<code>logo.png</code>,
+                  <code>favicon.png</code>, plus <code>crypto-icons/</code> and <code>avatars/</code>).
+                  Fonts are loaded from Google Fonts, so there is no local fonts folder.
+                </li>
+                <li>
+                  <b>dist</b> — the final production build, generated by <code>npm run build</code>
+                  (do not edit).
+                </li>
+                <li>
+                  <b>node_modules</b> — project dependencies, generated by <code>npm install</code>.
+                </li>
+                <li><b>webpack.config.js</b> — Webpack config (auto-discovers pages, inlines partials).</li>
+                <li><b>watch-new-files.js</b> — dev helper that restarts the server when pages/partials change.</li>
+                <li><b>postcss.config.mjs</b> — PostCSS config (Tailwind v4).</li>
+                <li><b>package.json</b> — project metadata, dependencies, and scripts.</li>
+                <li><b>readme.md</b> — quick-start guide bundled with the source.</li>
+              </ol>
+
+              <h3 id="pages-list">Full Page List</h3>
+              <p>
+                SignalAIX includes ~40 premium HTML pages, organized into the 8 sidebar sections below.
+              </p>
+
+              <div class="page-list-card">
+                <h4>1. Main</h4>
+                <ul>
+                  <li><strong>index.html (Dashboard):</strong> the main hub — KPI cards, performance chart, signal cards, watchlist, recent trades.</li>
+                  <li><strong>live-signals.html:</strong> real-time buy/sell signal feed with filters, details, and export drawers.</li>
+                  <li><strong>ai-signal-generator.html:</strong> configure and generate AI trading signals (market/asset/timeframe/strategy).</li>
+                  <li><strong>market-overview.html:</strong> multi-market prices, top movers, economic events, and live signals.</li>
+                </ul>
+
+                <h4>2. AI Intelligence</h4>
+                <ul>
+                  <li><strong>ai-market-summary.html:</strong> AI market digest with a price ticker, sentiment, and multi-tab charts.</li>
+                  <li><strong>ai-prediction-models.html:</strong> model cards, accuracy meters, and prediction history.</li>
+                  <li><strong>ai-risk-analyzer.html:</strong> portfolio risk gauge, exposure heatmap, correlation &amp; stress tests.</li>
+                  <li><strong>ai-trade-journal.html:</strong> trade log with AI insights, analytics charts, and an activity heatmap.</li>
+                  <li><strong>ai-strategy-builder.html:</strong> visual strategy builder with indicators, rules, and a backtest lab.</li>
+                </ul>
+
+                <h4>3. Trading Tools</h4>
+                <ul>
+                  <li><strong>forex-heatmap.html</strong> &amp; <strong>crypto-heatmap.html:</strong> color-coded strength/performance heatmaps.</li>
+                  <li><strong>trend-scanner.html:</strong> trend strength scanner across pairs and timeframes.</li>
+                  <li><strong>pattern-detection.html:</strong> AI candlestick / chart-pattern detection.</li>
+                  <li><strong>volatility-index.html:</strong> VIX-style gauge, fear &amp; greed, and a volatility heatmap.</li>
+                  <li><strong>economic-calendar.html:</strong> filterable economic-events calendar (table / list / timeline).</li>
+                  <li><strong>news-sentiment.html:</strong> news feed with AI sentiment scoring.</li>
+                  <li><strong>correlation-matrix.html:</strong> asset correlation matrix with detail drawer.</li>
+                </ul>
+
+                <h4>4. Market Analytics</h4>
+                <ul>
+                  <li><strong>forex-analytics.html</strong> &amp; <strong>crypto-analytics.html:</strong> deep analytics dashboards.</li>
+                  <li><strong>top-gainers-losers.html:</strong> ranked movers tables.</li>
+                  <li><strong>market-sentiment.html:</strong> per-asset sentiment + Fear &amp; Greed meter.</li>
+                  <li><strong>liquidity-zones.html:</strong> liquidity zone analysis.</li>
+                  <li><strong>price-action-monitor.html:</strong> live price-action table with pattern/signal detection.</li>
+                </ul>
+
+                <h4>5. Portfolio</h4>
+                <ul>
+                  <li><strong>my-portfolio.html:</strong> holdings, allocation, performance, and AI insights.</li>
+                  <li><strong>open-positions.html:</strong> positions table/cards with modify &amp; close drawers.</li>
+                  <li><strong>trade-history.html:</strong> historical trades with P/L charts and filters.</li>
+                  <li><strong>performance-analytics.html:</strong> performance score, returns, risk, strategies &amp; assets.</li>
+                  <li><strong>risk-metrics.html:</strong> risk score, exposure, volatility, correlations &amp; alerts.</li>
+                  <li><strong>pl-overview.html:</strong> profit/loss overview with a daily P/L calendar.</li>
+                </ul>
+
+                <h4>6. Watchlists</h4>
+                <ul>
+                  <li><strong>forex-pairs.html</strong> &amp; <strong>crypto-pairs.html:</strong> watchlists with grid/table views and per-pair detail.</li>
+                  <li><strong>custom-alerts.html:</strong> create and manage price/signal alerts.</li>
+                  <li><strong>saved-signals.html:</strong> bookmarked signals with filters and detail drawer.</li>
+                </ul>
+
+                <h4>7. Automation</h4>
+                <ul>
+                  <li><strong>bot-center.html:</strong> trading-bot management (start/stop/pause, config drawer).</li>
+                  <li><strong>auto-signal-forwarder.html:</strong> forward signals to Telegram/Discord/Email/Webhook.</li>
+                  <li><strong>webhook-automations.html:</strong> webhook endpoints, delivery logs, and templates.</li>
+                  <li><strong>api-integrations.html:</strong> API keys (show/hide/copy) and third-party integrations.</li>
+                </ul>
+
+                <h4>8. Account</h4>
+                <ul>
+                  <li><strong>profile-security.html:</strong> profile, password, 2FA, sessions, API keys, privacy, activity log.</li>
+                  <li><strong>notification-settings.html:</strong> channels, preferences, alert types, schedule &amp; sounds.</li>
+                  <li><strong>connected-exchanges.html:</strong> connect/manage exchange accounts and balances.</li>
+                  <li><strong>subscription-billing.html:</strong> plans, payment methods, invoices, and usage.</li>
+                  <li><strong>help-center.html:</strong> support hub with search, FAQ, video tutorials &amp; tickets.</li>
+                </ul>
+              </div>
+              <hr />
+              <h3 id="upload">Installation</h3>
+              <p>To set up the project locally, follow these steps:</p>
+              <ol>
+                <li>
+                  Ensure you have <strong>Node.js</strong> installed (v18+ / LTS recommended).
+                </li>
+                <li>
+                  Open your terminal in the <strong>signalaix-html</strong>
+                  directory.
+                </li>
+                <li>
+                  Run the following command to install all necessary
+                  dependencies:
+                  <pre class="prettyprint">npm install</pre>
+                </li>
+              </ol>
+
+              <h4 id="dev-server">Start Dev Server</h4>
+              <p>To start the development environment with hot-reloading:</p>
+              <pre class="prettyprint">npm start</pre>
+              <p>
+                Once started, the project will be available at:
+                <a href="http://localhost:5001" target="_blank"
+                  >http://localhost:5001</a
+                >
+              </p>
+              <div class="note-box">
+                <p style="margin-bottom: 0">
+                  <strong>Adding / removing pages:</strong> use <code>npm run dev</code> instead of
+                  <code>npm start</code> when you add or delete an <code>.html</code> page or edit a partial —
+                  it watches for those changes and restarts the server so the new page is detected.
+                </p>
+              </div>
+
+              <h4 id="build">Build Project</h4>
+              <p>To generate an optimized, minified production build:</p>
+              <pre class="prettyprint">npm run build</pre>
+              <p>
+                The compiled files will be generated in the
+                <strong>dist/</strong> folder, ready for deployment.
+              </p>
+              <h4>FTP Upload</h4>
+              <ul>
+                <li>Open your FTP manager and connect to your hosting.</li>
+                <li>Browse to the required directory (normally where index.html lives).</li>
+                <li>Upload the files inside the <b>dist</b> folder.</li>
+              </ul>
+              <br />
+
+              <h4 id="fonts">02. Fonts</h4>
+              <p>
+                SignalAIX uses <strong>Google Fonts</strong> for a modern and
+                clean typography. The fonts are imported in
+                <code>src/css/common.css</code>.
+              </p>
+              <pre class="prettyprint">
+/* Google Fonts Import */
+@import url("https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap");</pre
+              >
+              <div class="note-box">
+                <ul style="margin: 0; padding-left: 20px">
+                  <li>
+                    <strong>Inter:</strong> Used for body text, UI elements, and
+                    general content.
+                  </li>
+                  <li>
+                    <strong>Rajdhani:</strong> Used for headings, specialized
+                    trading data, and accent text.
+                  </li>
+                </ul>
+              </div>
+
+              <h4 id="css">03. Source File (CSS)</h4>
+              <p>
+                All theme tokens and the minimal behavior CSS live in
+                <code>src/css/common.css</code> (the page loader is in
+                <code>src/css/loader.css</code>). <strong>There are no per-page CSS files</strong> — every
+                component is styled with Tailwind utility classes directly in the HTML. Webpack bundles the
+                CSS into the final build.
+              </p>
+
+              <h4 id="js">04. Source File (JS)</h4>
+              <p>
+                The single entry point is <code>src/js/index.js</code>, which imports the global CSS, the
+                shared scripts (<code>common.js</code>, <code>header.js</code>, <code>sidebar.js</code>), and
+                one self-contained controller per interactive page (e.g. <code>live-signals.js</code>). Webpack
+                bundles everything and injects the bundle into each page automatically.
+              </p>
+
+              <h2 id="development">Development Guide</h2>
+              <h3 id="new-page">Add New Page</h3>
+              <p>
+                SignalAIX uses a scalable multi-page architecture with automatic page discovery. Adding a new
+                page is as simple as creating a new HTML file.
+              </p>
+              <ol>
+                 <li>Navigate to the <code>src/</code> directory.</li>
+                 <li>Create a new <code>.html</code> file (e.g., <code>new-feature.html</code>) — copy an existing page and keep the <code>&lt;include-sidebar /&gt;</code> + <code>&lt;include-top-header /&gt;</code> tags and the two CDN <code>&lt;script&gt;</code> tags at the bottom.</li>
+                 <li>Run <code>npm run dev</code>. Webpack will automatically detect the file and generate a corresponding page in the <code>dist/</code> folder.</li>
+              </ol>
+              <div class="note-box">
+                <p style="margin-bottom: 0;">
+                  <strong>Pro Tip:</strong> You can organize pages into subdirectories within <code>src/</code>. Webpack mirrors the same directory structure in the <code>dist/</code> output. If the page needs its own JS, add <code>src/js/&lt;page&gt;.js</code> and import it in <code>src/js/index.js</code>.
+                </p>
+              </div>
+
+              <h3 id="modify-code">Modify Code (JS/CSS)</h3>
+              <p>
+                To change behavior or styling, edit the source files in the <code>src/</code> directory.
+              </p>
+              <ul>
+                <li><strong>Logic (JS):</strong> page-specific logic lives in <code>src/js/&lt;page&gt;.js</code>; the entry point is <code>src/js/index.js</code> and app-wide systems (theme, drawers, toasts) are in <code>src/js/common.js</code>.</li>
+                <li><strong>Styling (CSS/HTML):</strong> component styling is Tailwind utility classes written directly in the page's HTML. Theme tokens are in <code>src/css/common.css</code>.</li>
+              </ul>
+              <div class="note-box">
+                <p style="margin-bottom: 0;">
+                  <strong>Build Step:</strong> keep <code>npm start</code> (or <code>npm run dev</code>) running while editing so Webpack re-bundles your changes in real time.
+                </p>
+              </div>
+
+              <h3 id="add-partial">Add Partial</h3>
+              <p>
+                Partials are reusable HTML snippets (sidebar, top header) inlined at build time by the
+                <code>html-webpack-simple-include-plugin</code>.
+              </p>
+              <p><strong>To add a new partial:</strong></p>
+              <ol>
+                 <li>Create an HTML file in <code>src/partials/</code> (e.g., <code>my-nav.html</code>).</li>
+                 <li>Open <code>webpack.config.js</code> and add your partial to the <code>partialFiles</code> array:
+                    <pre class="prettyprint">
+const partialFiles = ["sidebar", "top-header", "my-nav"].map((partial) => {
+  return {
+    tag: `&lt;include-${partial} /&gt;`,
+    content: fs.readFileSync(path.resolve(__dirname, `src/partials/${partial}.html`)),
+  };
+});</pre>
+                 </li>
+                 <li>Include it in any page using the custom tag: <code>&lt;include-my-nav /&gt;</code>.</li>
+              </ol>
+
+              <h2 id="customization">Customization Guide</h2>
+              <h3 id="logotype">Change Logo</h3>
+              <p>
+                The brand logo lives in the shared sidebar partial. To rebrand, replace
+                <code>src/assets/images/logo.png</code> with your own image (the sidebar references it as
+                <code>assets/images/logo.png</code> alongside the "SignalAIX" text in
+                <code>src/partials/sidebar.html</code>). You can keep the same filename to swap the logo with
+                no markup change, or edit the <code>&lt;img&gt;</code> in the sidebar partial to point at a
+                different file.
+              </p>
+              <div class="note-box">
+                <p style="margin-bottom: 0;">
+                  <strong>Note:</strong> because the logo is in the shared partials, editing it once updates
+                  every page after a rebuild.
+                </p>
+              </div>
+
+              <h3 id="tab">Customize Colors & Theme</h3>
+              <p>
+                The template uses <strong>Tailwind CSS v4</strong> with CSS variables for theming. The theme
+                tokens are in <code>src/css/common.css</code>, inside the <code>@theme { … }</code> block
+                (light mode) and the <code>.dark { … }</code> override (dark mode). The primary accent is
+                emerald <code>#10b981</code>.
+              </p>
+
+              <div class="img-container">
+                <img
+                  src="./img/placeholders/theme.svg"
+                  alt="SignalAIX theme tokens (light/dark)"
+                />
+              </div>
+              <p class="img-caption">Theme tokens in <code>src/css/common.css</code> — <code>@theme</code> (light) &amp; <code>.dark</code> overrides.</p>
+
+              <p>
+                Update the HEX values in the <code>@theme</code> or <code>.dark</code> blocks to change the
+                entire platform's color scheme instantly — the UI uses Tailwind classes
+                (<code>bg-accent</code>, <code>text-text</code>, <code>border-border</code>,
+                <code>bg-panel</code>) that map to these tokens and flip automatically between light and dark.
+              </p>
+
+              <h3>Support</h3>
+              <p>
+                If you have any questions, feel free to contact us at
+                <a href="https://themeforest.net/user/uiaxis"><b>UIAXIS</b></a
+                >.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <footer>
+          <div class="container">
+            <p>
+              &copy; Copyright
+              <a href="https://themeforest.net/user/uiaxis">UIAXIS</a>,
+              <span id="date"></span>. All Rights Reserved.
+            </p>
+          </div>
+        </footer>
+      </div>
+    </div>
+    <script src="./js/jquery.min.js"></script>
+    <script src="./js/prettify/prettify.js"></script>
+    <script src="./js/layout.js"></script>
+  </body>
+</html>

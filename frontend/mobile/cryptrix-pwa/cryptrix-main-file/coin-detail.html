@@ -1,0 +1,550 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>Cryptrix — AI Crypto Investing & Trading App</title>
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="apple-touch-icon" href="/assets/images/logo.png" />
+    <meta name="theme-color" content="#00D4AA" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="shortcut icon" href="./assets/images/favicon.ico" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+    <!-- Theme Script (Placed early to prevent FOUC) -->
+    <script>
+      (function () {
+        const saved = localStorage.getItem("theme") || "dark";
+        if (saved === "dark") document.documentElement.classList.add("dark");
+        else document.documentElement.classList.remove("dark");
+      })();
+    </script>
+  <link href="assets/css/index.css" rel="stylesheet"></head>
+  <body class="font-sans overflow-x-hidden">
+    <div class="min-h-screen flex justify-center">
+      <div
+        class="relative w-full max-w-[430px] min-h-screen overflow-x-hidden shadow-[0_0_80px_rgba(0,212,170,0.08)]"
+        id="app"
+      >
+        <div id="coin-content" class="pb-24">
+          <div class="px-5 py-4 flex items-center gap-3">
+            <a
+              href="javascript:history.back()"
+              class="w-10 h-10 rounded-xl bg-surface-2 border border-white/[0.08] flex items-center justify-center flex-shrink-0"
+            >
+              <svg
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M19 12H5M12 19l-7-7 7-7" />
+              </svg>
+            </a>
+            <div
+              id="coin-header-icon"
+              class="w-9 h-9 rounded-xl flex items-center justify-center text-[10px] font-black flex-shrink-0 animate-pulse"
+              style="background: #f7931a22; color: #f7931a"
+            >
+              BTC
+            </div>
+            <div>
+              <div id="coin-header-name" class="text-base font-bold text-white">
+                Bitcoin
+              </div>
+              <div id="coin-header-sub" class="text-xs text-white/40">
+                BTC · Rank #1
+              </div>
+            </div>
+            <div class="ml-auto flex gap-2">
+              <button
+                id="wl-btn"
+                class="w-9 h-9 rounded-xl bg-surface-2 border border-white/[0.08] flex items-center justify-center transition-transform active:scale-95"
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <polygon
+                    points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"
+                  />
+                </svg>
+              </button>
+              <a
+                href="price-alerts.html"
+                class="w-9 h-9 rounded-xl bg-surface-2 border border-white/[0.08] flex items-center justify-center transition-transform active:scale-95"
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                </svg>
+              </a>
+            </div>
+          </div>
+          <div class="px-5 pb-4">
+            <div
+              id="coin-price"
+              class="text-4xl font-black tracking-tight mb-2 text-white"
+            >
+              $43,900.24
+            </div>
+            <div class="flex items-center gap-3 flex-wrap">
+              <span
+                id="coin-badge"
+                class="bg-success/15 text-success text-xs font-bold px-2 py-0.5 rounded-full"
+              >
+                ▲ 2.34% (24h)
+              </span>
+              <span id="coin-hl" class="text-[13px] text-white/40">
+                H: $44,250 · L: $42,800
+              </span>
+            </div>
+          </div>
+          <!-- Chart -->
+          <div class="px-5 mb-5">
+            <div class="flex gap-1 mb-3">
+              <button
+                class="period-btn px-2.5 py-1.5 text-xs font-semibold rounded-lg text-white/40 transition-colors"
+              >
+                1H
+              </button>
+              <button
+                class="period-btn px-2.5 py-1.5 text-xs font-semibold rounded-lg text-white/40 transition-colors"
+              >
+                4H
+              </button>
+              <button
+                class="period-btn px-2.5 py-1.5 text-xs font-semibold rounded-lg text-white/40 transition-colors"
+              >
+                1D
+              </button>
+              <button
+                class="period-btn px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-primary text-bg-dark transition-colors"
+              >
+                7D
+              </button>
+              <button
+                class="period-btn px-2.5 py-1.5 text-xs font-semibold rounded-lg text-white/40 transition-colors"
+              >
+                30D
+              </button>
+              <button
+                class="period-btn px-2.5 py-1.5 text-xs font-semibold rounded-lg text-white/40 transition-colors"
+              >
+                1Y
+              </button>
+            </div>
+            <div class="h-[200px]">
+              <canvas id="coin-chart"></canvas>
+            </div>
+          </div>
+          <!-- Stats -->
+          <div class="px-5 grid grid-cols-2 gap-3 mb-5">
+            <div class="bg-surface border border-white/[0.08] rounded-card p-3">
+              <div class="text-[11px] text-white/40 mb-1">Market Cap</div>
+              <div id="coin-mcap" class="text-[14px] font-bold text-white">
+                $861.2B
+              </div>
+            </div>
+            <div class="bg-surface border border-white/[0.08] rounded-card p-3">
+              <div class="text-[11px] text-white/40 mb-1">24h Volume</div>
+              <div id="coin-vol" class="text-[14px] font-bold text-white">
+                $28.4B
+              </div>
+            </div>
+            <div class="bg-surface border border-white/[0.08] rounded-card p-3">
+              <div class="text-[11px] text-white/40 mb-1">All Time High</div>
+              <div id="coin-ath" class="text-[14px] font-bold text-white">
+                $69,000
+              </div>
+            </div>
+            <div class="bg-surface border border-white/[0.08] rounded-card p-3">
+              <div class="text-[11px] text-white/40 mb-1">Circulating</div>
+              <div id="coin-supply" class="text-[14px] font-bold text-white">
+                19.6M
+              </div>
+            </div>
+          </div>
+          <!-- About -->
+          <div class="px-5 mb-5">
+            <div class="bg-surface border border-white/[0.08] rounded-card p-4">
+              <div class="text-[15px] font-bold mb-2 text-white">About</div>
+              <p id="coin-desc" class="text-sm text-white/60 leading-relaxed">
+                Bitcoin is a decentralized digital currency, without a central
+                bank or single administrator.
+              </p>
+            </div>
+          </div>
+          <!-- AI Signal -->
+          <div class="px-5 mb-5">
+            <div
+              class="bg-gradient-to-br from-primary/10 to-secondary/[0.08] border border-primary/20 rounded-card p-4"
+            >
+              <div class="flex items-center gap-2 mb-2">
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#00D4AA"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <rect x="2" y="2" width="20" height="8" rx="2" />
+                  <rect x="2" y="14" width="20" height="8" rx="2" />
+                  <line x1="6" y1="6" x2="6.01" y2="6" />
+                  <line x1="6" y1="18" x2="6.01" y2="18" />
+                </svg>
+                <span class="text-[13px] font-bold text-primary">
+                  AI SIGNAL
+                </span>
+                <span
+                  class="ml-auto bg-primary/15 text-primary text-xs font-bold px-2 py-0.5 rounded-full"
+                >
+                  87% confidence
+                </span>
+              </div>
+              <div class="text-xs text-white/50">
+                Strong buy signal detected. Target: +15% · Stop loss: -8%
+              </div>
+            </div>
+          </div>
+          <!-- Quick links -->
+          <div class="px-5 mb-5 grid grid-cols-3 gap-2">
+            <a
+              href="price-chart-full.html"
+              class="bg-surface-2 border border-white/[0.08] rounded-btn h-14 flex flex-col items-center justify-center gap-1 text-[11px] font-semibold text-white/70 hover:text-white hover:bg-surface/5 transition-colors"
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+              </svg>
+              Full Chart
+            </a>
+            <a
+              href="coin-stats.html"
+              class="bg-surface-2 border border-white/[0.08] rounded-btn h-14 flex flex-col items-center justify-center gap-1 text-[11px] font-semibold text-white/70 hover:text-white hover:bg-surface/5 transition-colors"
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <line x1="18" y1="20" x2="18" y2="10" />
+                <line x1="12" y1="20" x2="12" y2="4" />
+                <line x1="6" y1="20" x2="6" y2="14" />
+              </svg>
+              Statistics
+            </a>
+            <a
+              href="asset-news.html"
+              class="bg-surface-2 border border-white/[0.08] rounded-btn h-14 flex flex-col items-center justify-center gap-1 text-[11px] font-semibold text-white/70 hover:text-white hover:bg-surface/5 transition-colors"
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path
+                  d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
+                />
+              </svg>
+              News
+            </a>
+          </div>
+          <!-- Trade buttons -->
+          <div class="px-5 grid grid-cols-2 gap-3 mb-4">
+            <a
+              href="buy-crypto.html"
+              class="bg-primary text-bg-dark font-bold rounded-btn h-12 flex items-center justify-center gap-2 shadow-primary transition-transform active:scale-95"
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <polyline points="23 6 13.5 15.5 8.5 10.5 1 18" />
+                <polyline points="17 6 23 6 23 12" />
+              </svg>
+              Buy
+            </a>
+            <a
+              href="sell-crypto.html"
+              class="bg-error/15 text-error border border-error/20 rounded-btn h-12 flex items-center justify-center gap-2 font-bold transition-transform active:scale-95 hover:bg-error/25"
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <polyline points="23 18 13.5 8.5 8.5 13.5 1 6" />
+                <polyline points="17 18 23 18 23 12" />
+              </svg>
+              Sell
+            </a>
+          </div>
+        </div>
+        <nav
+  class="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] bg-surface border-t border-white/[0.08] flex items-center justify-around h-[72px] z-50"
+>
+  <a
+    href="home.html"
+    id="nav-home"
+    class="flex flex-col items-center gap-1 text-white/40 hover:text-primary transition-colors"
+  >
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+      <polyline points="9 22 9 12 15 12 15 22" />
+    </svg>
+    <span class="text-[10px] font-semibold">Home</span>
+  </a>
+  <a
+    href="market-overview.html"
+    id="nav-market"
+    class="flex flex-col items-center gap-1 text-white/40 hover:text-primary transition-colors"
+  >
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <polyline points="22 7 13.5 15.5 8.5 10.5 1 18" />
+      <polyline points="16 7 22 7 22 13" />
+    </svg>
+    <span class="text-[10px] font-semibold">Markets</span>
+  </a>
+  <a
+    href="trade.html"
+    id="nav-trade"
+    class="flex flex-col items-center gap-1 text-white/40 hover:text-primary transition-colors"
+  >
+    <div
+      class="w-12 h-12 rounded-lg bg-primary flex flex-col items-center justify-center shadow-primary"
+    >
+      <svg
+        width="22"
+        height="22"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="#000000"
+        stroke-width="2.2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <polyline points="17 1 21 5 17 9" />
+        <path d="M3 11V9a4 4 0 0 1 4-4h14" />
+        <polyline points="7 23 3 19 7 15" />
+        <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+      </svg>
+      <span class="text-[10px] text-black font-semibold">Trade</span>
+    </div>
+  </a>
+  <a
+    href="portfolio-overview.html"
+    id="nav-portfolio"
+    class="flex flex-col items-center gap-1 text-white/40 hover:text-primary transition-colors"
+  >
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <rect x="2" y="7" width="20" height="14" rx="2" ry="2" />
+      <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16" />
+    </svg>
+    <span class="text-[10px] font-semibold">Portfolio</span>
+  </a>
+  <a
+    href="profile.html"
+    id="nav-profile"
+    class="flex flex-col items-center gap-1 text-white/40 hover:text-primary transition-colors"
+  >
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+      <circle cx="12" cy="7" r="4" />
+    </svg>
+    <span class="text-[10px] font-semibold">Profile</span>
+  </a>
+</nav>
+
+      </div>
+    </div>
+
+    <script src="./assets/js/data.js"></script>
+    <script src="./assets/js/charts.js"></script>
+    <script src="./assets/js/components.js"></script>
+    <script src="./assets/js/app.js"></script>
+    <script>
+      document.addEventListener("DOMContentLoaded", () => {
+        const d = window.AppData;
+        if (!d) return;
+        const params = new URLSearchParams(window.location.search);
+        const id = params.get("id") || "btc";
+        const coin = d.getCoinById(id) || d.coins[0];
+
+        if (coin) {
+          const pos = coin.change24h >= 0;
+
+          const hIcon = document.getElementById("coin-header-icon");
+          if (hIcon) {
+            hIcon.textContent = coin.symbol.substring(0, 3);
+            hIcon.style.background = coin.color + "22";
+            hIcon.style.color = coin.color;
+            hIcon.classList.remove("animate-pulse");
+          }
+
+          const hName = document.getElementById("coin-header-name");
+          if (hName) hName.textContent = coin.name;
+
+          const hSub = document.getElementById("coin-header-sub");
+          if (hSub) hSub.textContent = coin.symbol + " · Rank #" + coin.rank;
+
+          const hPrice = document.getElementById("coin-price");
+          if (hPrice) hPrice.textContent = d.formatPrice(coin.price);
+
+          const badge = document.getElementById("coin-badge");
+          if (badge) {
+            badge.className = `${pos ? "bg-success/15 text-success" : "bg-error/15 text-error"} text-xs font-bold px-2 py-0.5 rounded-full`;
+            badge.textContent =
+              (pos ? "▲ " : "▼ ") +
+              Math.abs(coin.change24h).toFixed(2) +
+              "% (24h)";
+          }
+
+          const coinHl = document.getElementById("coin-hl");
+          if (coinHl)
+            coinHl.textContent =
+              "H: " +
+              d.formatPrice(coin.high24h) +
+              " · L: " +
+              d.formatPrice(coin.low24h);
+
+          const coinMcap = document.getElementById("coin-mcap");
+          if (coinMcap) coinMcap.textContent = d.formatLargeNum(coin.marketCap);
+
+          const coinVol = document.getElementById("coin-vol");
+          if (coinVol) coinVol.textContent = d.formatLargeNum(coin.volume24h);
+
+          const coinAth = document.getElementById("coin-ath");
+          if (coinAth) coinAth.textContent = d.formatPrice(coin.ath);
+
+          const coinSupply = document.getElementById("coin-supply");
+          if (coinSupply)
+            coinSupply.textContent = d.formatLargeNum(coin.supply);
+
+          const coinDesc = document.getElementById("coin-desc");
+          if (coinDesc) coinDesc.textContent = coin.description;
+
+          setTimeout(() => {
+            if (window.Charts && document.getElementById("coin-chart")) {
+              Charts.coinLine("coin-chart", coin.history30d, coin.color, pos);
+            }
+          }, 100);
+        }
+
+        // Period buttons active state toggle
+        document.querySelectorAll(".period-btn").forEach((btn) => {
+          btn.addEventListener("click", function () {
+            this.parentElement.querySelectorAll(".period-btn").forEach((b) => {
+              b.className =
+                "period-btn px-2.5 py-1.5 text-xs font-semibold rounded-lg text-white/40 transition-colors";
+            });
+            this.className =
+              "period-btn px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-primary text-bg-dark transition-colors";
+          });
+        });
+
+        // Watchlist button
+        const wlBtn = document.getElementById("wl-btn");
+        if (wlBtn) {
+          wlBtn.addEventListener("click", () => {
+            showToast("Added to watchlist", "success");
+          });
+        }
+      });
+    </script>
+  <script defer src="index.js"></script></body>
+</html>

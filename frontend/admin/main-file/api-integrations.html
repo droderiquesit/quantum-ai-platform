@@ -1,0 +1,1233 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <script>
+      if (localStorage.getItem("theme") === "light") document.documentElement.classList.remove("dark");
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>API Integrations - SignalAIX | AI Forex & Crypto Trading Signals</title>
+    <link rel="icon" type="image/png" href="assets/images/favicon.png" />
+    <link rel="apple-touch-icon" href="assets/images/favicon.png" />
+  <link href="css/index.css" rel="stylesheet"></head>
+  <body id="api-integrations">
+    <div id="loader"><div class="spinner"></div><div class="loader-text">Loading SignalAIX...</div></div>
+    <div id="sidebarOverlay" class="fixed inset-0 bg-black/50 z-40 hidden lg:hidden transition-opacity duration-300 opacity-0" aria-hidden="true"></div>
+<aside class="sidebar" id="sidebar">
+  <!-- ======================================
+       Start Logo Section
+       ====================================== -->
+  <div class="logo-section flex items-center gap-3 p-5 border-b border-border shrink-0">
+    <img src="assets/images/logo.png" alt="SignalAIX" class="w-10 h-10 rounded-xl object-contain shrink-0" />
+    <div class="logo-text flex-1 min-w-0">
+      <p class="text-lg font-bold text-text leading-tight">SignalAIX</p>
+      <p class="text-xs text-muted truncate">AI Forex & Crypto Signals</p>
+    </div>
+    <button class="lg:hidden! flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:bg-border/60 hover:text-text transition js-mobile-menu-toggle" aria-label="Close sidebar">
+      <i data-lucide="x" class="w-5 h-5"></i>
+    </button>
+  </div>
+
+  <!-- ======================================
+       Start Navigation
+       ====================================== -->
+  <nav class="py-4 flex-1">
+    <!-- MAIN -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Main</div>
+
+    <a href="./index.html" class="nav-item active flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Dashboard">
+      <i data-lucide="layout-dashboard" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Dashboard</span>
+    </a>
+
+    <a href="./live-signals.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Live Signals">
+      <i data-lucide="radio" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Live Signals</span>
+      <span class="live-dot ml-auto nav-text"></span>
+    </a>
+
+    <a href="./ai-signal-generator.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Signal Generator">
+      <i data-lucide="sparkles" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Signal Generator</span>
+    </a>
+
+    <a href="./market-overview.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Market Overview">
+      <i data-lucide="globe" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Market Overview</span>
+    </a>
+
+    <!-- AI INTELLIGENCE -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">AI Intelligence</div>
+
+    <a href="./ai-market-summary.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Market Summary">
+      <i data-lucide="brain-circuit" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Market Summary</span>
+    </a>
+
+    <a href="./ai-prediction-models.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Prediction Models">
+      <i data-lucide="line-chart" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Prediction Models</span>
+    </a>
+
+    <a href="./ai-risk-analyzer.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Risk Analyzer">
+      <i data-lucide="shield-alert" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Risk Analyzer</span>
+    </a>
+
+    <a href="./ai-trade-journal.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Trade Journal">
+      <i data-lucide="notebook-pen" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Trade Journal</span>
+    </a>
+
+    <a href="./ai-strategy-builder.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Strategy Builder">
+      <i data-lucide="blocks" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Strategy Builder</span>
+    </a>
+
+    <!-- TRADING TOOLS -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Trading Tools</div>
+
+    <a href="./forex-heatmap.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Forex Heatmap">
+      <i data-lucide="grid-3x3" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Forex Heatmap</span>
+    </a>
+
+    <a href="./crypto-heatmap.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Crypto Heatmap">
+      <i data-lucide="layout-grid" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Crypto Heatmap</span>
+    </a>
+
+    <a href="./trend-scanner.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Trend Scanner">
+      <i data-lucide="scan-line" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Trend Scanner</span>
+    </a>
+
+    <a href="./pattern-detection.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Pattern Detection">
+      <i data-lucide="waypoints" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Pattern Detection</span>
+    </a>
+
+    <a href="./volatility-index.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Volatility Index">
+      <i data-lucide="activity" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Volatility Index</span>
+    </a>
+
+    <a href="./economic-calendar.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Economic Calendar">
+      <i data-lucide="calendar-clock" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Economic Calendar</span>
+    </a>
+
+    <a href="./news-sentiment.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="News & Sentiment">
+      <i data-lucide="newspaper" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">News & Sentiment</span>
+    </a>
+
+    <a href="./correlation-matrix.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Correlation Matrix">
+      <i data-lucide="table-2" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Correlation Matrix</span>
+    </a>
+
+    <!-- MARKET ANALYTICS -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Market Analytics</div>
+
+    <a href="./forex-analytics.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Forex Analytics">
+      <i data-lucide="candlestick-chart" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Forex Analytics</span>
+    </a>
+
+    <a href="./crypto-analytics.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Crypto Analytics">
+      <i data-lucide="bitcoin" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Crypto Analytics</span>
+    </a>
+
+    <a href="./top-gainers-losers.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Top Gainers & Losers">
+      <i data-lucide="arrow-up-down" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Top Gainers & Losers</span>
+    </a>
+
+    <a href="./market-sentiment.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Market Sentiment">
+      <i data-lucide="gauge" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Market Sentiment</span>
+    </a>
+
+    <a href="./liquidity-zones.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Liquidity Zones">
+      <i data-lucide="droplets" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Liquidity Zones</span>
+    </a>
+
+    <a href="./price-action-monitor.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Price Action Monitor">
+      <i data-lucide="move-up-right" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Price Action Monitor</span>
+    </a>
+
+    <!-- PORTFOLIO -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Portfolio</div>
+
+    <a href="./my-portfolio.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="My Portfolio">
+      <i data-lucide="pie-chart" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">My Portfolio</span>
+    </a>
+
+    <a href="./open-positions.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Open Positions">
+      <i data-lucide="layers" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Open Positions</span>
+    </a>
+
+    <a href="./trade-history.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Trade History">
+      <i data-lucide="history" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Trade History</span>
+    </a>
+
+    <a href="./performance-analytics.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Performance Analytics">
+      <i data-lucide="bar-chart-3" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Performance Analytics</span>
+    </a>
+
+    <a href="./risk-metrics.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Risk Metrics">
+      <i data-lucide="shield-check" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Risk Metrics</span>
+    </a>
+
+    <a href="./pl-overview.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="P/L Overview">
+      <i data-lucide="wallet" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">P/L Overview</span>
+    </a>
+
+    <!-- WATCHLISTS -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Watchlists</div>
+
+    <a href="./forex-pairs.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Forex Pairs">
+      <i data-lucide="dollar-sign" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Forex Pairs</span>
+    </a>
+
+    <a href="./crypto-pairs.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Crypto Pairs">
+      <i data-lucide="coins" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Crypto Pairs</span>
+    </a>
+
+    <a href="./custom-alerts.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Custom Alerts">
+      <i data-lucide="bell-ring" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Custom Alerts</span>
+    </a>
+
+    <a href="./saved-signals.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Saved Signals">
+      <i data-lucide="bookmark" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Saved Signals</span>
+    </a>
+
+    <!-- AUTOMATION -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Automation</div>
+
+    <a href="./bot-center.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Bot Center">
+      <i data-lucide="bot" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Bot Center</span>
+    </a>
+
+    <a href="./auto-signal-forwarder.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Auto-Signal Forwarder">
+      <i data-lucide="forward" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Auto-Signal Forwarder</span>
+    </a>
+
+    <a href="./webhook-automations.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Webhook Automations">
+      <i data-lucide="webhook" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Webhook Automations</span>
+    </a>
+
+    <a href="./api-integrations.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="API Integrations">
+      <i data-lucide="plug" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">API Integrations</span>
+    </a>
+
+    <!-- ACCOUNT -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Account</div>
+
+    <a href="./profile-security.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Profile & Security">
+      <i data-lucide="user-cog" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Profile & Security</span>
+    </a>
+
+    <a href="./notification-settings.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Notification Settings">
+      <i data-lucide="bell" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Notification Settings</span>
+      <span class="ml-auto bg-red-500 text-white text-xs px-2 py-0.5 rounded-full nav-text">5</span>
+    </a>
+
+    <a href="./connected-exchanges.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Connected Exchanges">
+      <i data-lucide="link-2" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Connected Exchanges</span>
+    </a>
+
+    <a href="./subscription-billing.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Subscription & Billing">
+      <i data-lucide="crown" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Subscription & Billing</span>
+      <span class="ml-auto text-[10px] font-bold px-2 py-0.5 rounded-md bg-accent text-white nav-text">PRO</span>
+    </a>
+
+    <a href="./help-center.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Help Center">
+      <i data-lucide="help-circle" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Help Center</span>
+    </a>
+  </nav>
+
+  <!-- ======================================
+       Start User Section
+       ====================================== -->
+  <div class="user-section mt-auto p-4 border-t border-border shrink-0">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-full flex items-center justify-center shrink-0 bg-gradient-to-br from-emerald-500 to-teal-500">
+        <span class="text-white font-semibold text-sm">AK</span>
+      </div>
+      <div class="user-info flex-1 min-w-0">
+        <p class="font-semibold text-sm text-text truncate">Alex Kim</p>
+        <p class="text-xs text-muted truncate">alex@signalaix.io</p>
+      </div>
+    </div>
+  </div>
+</aside>
+
+    <main class="main-content" id="mainContent">
+      <header class="sticky top-0 z-50 glass @container">
+  <div class="flex items-center justify-between px-2 sm:px-6 py-2 sm:py-4">
+    <div class="flex items-center gap-2 sm:gap-4">
+      <!-- Mobile Menu Button -->
+      <button class="lg:hidden flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 transition js-mobile-menu-toggle" id="mobileMenuBtn" aria-label="Toggle Mobile Menu">
+        <i data-lucide="menu" class="w-5 h-5"></i>
+      </button>
+
+      <!-- Sidebar Toggle (Desktop) -->
+      <button class="hidden lg:flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 transition js-sidebar-toggle" aria-label="Toggle Sidebar">
+        <i data-lucide="panel-left" class="w-5 h-5"></i>
+      </button>
+
+      <!-- Search -->
+      <div class="relative hidden md:block">
+        <i data-lucide="search" class="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-muted"></i>
+        <input type="text" id="globalSearch" placeholder="Search signals, pairs, markets... (⌘K)" class="w-80 pl-10 pr-4 py-2.5 rounded-xl bg-bg border border-border text-sm text-text placeholder:text-muted focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 transition" />
+      </div>
+    </div>
+
+    <div class="flex items-center gap-2 sm:gap-3">
+      <!-- Live Status -->
+      <div class="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-500/10 text-emerald-500 text-[11px] font-semibold">
+        <span class="live-dot !bg-emerald-500"></span>
+        LIVE
+      </div>
+
+      <!-- Quick Generate Signal -->
+      <button class="flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 hover:border-accent/30 transition js-open-drawer" data-drawer-type="quickTrade" aria-label="Generate Signal">
+        <i data-lucide="zap" class="w-5 h-5"></i>
+      </button>
+
+      <!-- Notifications -->
+      <div class="dropdown">
+        <button class="relative flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 transition js-dropdown-toggle" aria-label="Toggle Notifications">
+          <i data-lucide="bell" class="w-5 h-5"></i>
+          <span class="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-xs rounded-full flex items-center justify-center">5</span>
+        </button>
+        <div class="dropdown-menu w-75 min-[400px]:w-80 mt-2 rounded-2xl bg-panel border border-border shadow-2xl overflow-hidden max-[420px]:-left-[153px]! max-[450px]:-left-[183px]! max-[430px]:right-0!">
+          <div class="p-4 border-b border-border flex items-center justify-between">
+            <h2 class="text-base font-semibold text-text">Notifications</h2>
+            <span class="text-xs font-medium text-accent">5 new</span>
+          </div>
+          <div class="max-h-72 overflow-y-auto">
+            <div class="flex items-start gap-3 p-4 hover:bg-border/30 transition cursor-pointer">
+              <div class="w-9 h-9 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="trending-up" class="w-4 h-4 text-emerald-500"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-medium text-text truncate">New BUY signal: EUR/USD</p>
+                <p class="text-xs text-muted">AI confidence 92% · 2 min ago</p>
+              </div>
+            </div>
+            <div class="flex items-start gap-3 p-4 hover:bg-border/30 transition cursor-pointer">
+              <div class="w-9 h-9 rounded-full bg-amber-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="alert-triangle" class="w-4 h-4 text-amber-500"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-medium text-text truncate">High volatility on BTC/USDT</p>
+                <p class="text-xs text-muted">15 min ago</p>
+              </div>
+            </div>
+            <div class="flex items-start gap-3 p-4 hover:bg-border/30 transition cursor-pointer">
+              <div class="w-9 h-9 rounded-full bg-sky-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="sparkles" class="w-4 h-4 text-sky-500"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-medium text-text truncate">AI model retrained — accuracy +3%</p>
+                <p class="text-xs text-muted">1 hour ago</p>
+              </div>
+            </div>
+          </div>
+          <div class="p-3 border-t border-border">
+            <button class="w-full text-center text-sm font-medium text-accent hover:underline">View all notifications</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Theme Toggle -->
+      <button
+        class="flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 transition"
+        id="themeToggle"
+        aria-label="Toggle Theme"
+        onclick="
+          document.documentElement.classList.toggle('dark');
+          localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+        "
+      >
+        <i data-lucide="moon" class="w-5 h-5 dark:hidden"></i>
+        <i data-lucide="sun" class="w-5 h-5 hidden dark:block"></i>
+      </button>
+
+      <!-- Profile Dropdown -->
+      <div class="dropdown">
+        <button class="flex items-center gap-2 p-1 rounded-xl hover:bg-border/50 transition js-dropdown-toggle">
+          <span class="w-9 h-9 rounded-full bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center">
+            <span class="text-white font-semibold text-sm">AK</span>
+          </span>
+          <i data-lucide="chevron-down" class="w-4 h-4 text-muted hidden sm:block"></i>
+        </button>
+        <div class="dropdown-menu w-56 mt-2 rounded-2xl bg-panel border border-border shadow-2xl overflow-hidden p-2">
+          <div class="p-3 mb-1 border-b border-border">
+            <p class="font-semibold text-text">Alex Kim</p>
+            <p class="text-xs text-muted">Pro Trader</p>
+          </div>
+          <a href="./index.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-text hover:bg-accent/10 transition">
+            <i data-lucide="user" class="w-4 h-4"></i>
+            <span>My Profile</span>
+          </a>
+          <a href="./index.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-text hover:bg-accent/10 transition">
+            <i data-lucide="settings" class="w-4 h-4"></i>
+            <span>Settings</span>
+          </a>
+          <a href="./index.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-text hover:bg-accent/10 transition">
+            <i data-lucide="help-circle" class="w-4 h-4"></i>
+            <span>Help & Support</span>
+          </a>
+          <div class="mt-1 pt-1 border-t border-border">
+            <a href="./index.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-red-500 hover:bg-red-500/10 transition">
+              <i data-lucide="log-out" class="w-4 h-4"></i>
+              <span>Logout</span>
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+      <div class="inner-content max-sm:px-3 max-lg:px-4 max-lg:py-6 lg:p-6">
+        <!-- Page Header -->
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-6">
+          <div>
+            <div class="flex items-center gap-3 mb-2">
+              <h1 class="text-2xl md:text-3xl font-bold text-text">API Integrations</h1>
+              <div class="flex items-center gap-2 px-3 py-1 bg-emerald-500/15 text-emerald-500 rounded-full text-sm font-semibold">
+                <span class="live-dot"></span>
+                14 Connected
+              </div>
+            </div>
+            <p class="text-muted">Connect and manage your API keys &amp; third-party integrations</p>
+          </div>
+          <div class="flex flex-wrap items-center gap-3">
+            <div class="relative">
+              <button
+                id="apiExportBtn"
+                class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"
+              >
+                <i data-lucide="download" class="w-4 h-4 shrink-0"></i>
+                <span>Export</span>
+                <i data-lucide="chevron-down" class="w-4 h-4 shrink-0"></i>
+              </button>
+              <div
+                id="apiExportMenu"
+                class="hidden absolute right-0 mt-2 w-48 bg-panel border border-border rounded-xl shadow-xl z-50 overflow-hidden"
+              >
+                <button class="api-export-item flex items-center gap-2.5 w-full px-4 py-3 text-sm text-text hover:bg-accent/10 transition-colors" data-format="csv">
+                  <i data-lucide="file-text" class="w-4 h-4 shrink-0"></i>
+                  <span>Export as CSV</span>
+                </button>
+                <button class="api-export-item flex items-center gap-2.5 w-full px-4 py-3 text-sm text-text hover:bg-accent/10 transition-colors" data-format="json">
+                  <i data-lucide="file-code" class="w-4 h-4 shrink-0"></i>
+                  <span>Export as JSON</span>
+                </button>
+              </div>
+            </div>
+            <button
+              id="apiNewKeyBtn"
+              class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"
+            >
+              <i data-lucide="plus" class="w-4 h-4 shrink-0"></i>
+              <span>Generate API Key</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Stat Cards -->
+        <div class="grid grid-cols-1 xs:grid-cols-2 @4xl/content:grid-cols-4 gap-4 mb-6">
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="key" class="w-5 h-5 text-emerald-500 shrink-0"></i>
+              </div>
+              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500"><i data-lucide="circle-check" class="w-3 h-3 shrink-0"></i>Active</span>
+            </div>
+            <p class="text-2xl font-bold text-text">8</p>
+            <p class="text-xs text-muted mt-1">Active API Keys</p>
+          </div>
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-sky-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="activity" class="w-5 h-5 text-sky-500 shrink-0"></i>
+              </div>
+              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-sky-500/15 text-sky-500"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i>+18%</span>
+            </div>
+            <p class="text-2xl font-bold text-text">12,847</p>
+            <p class="text-xs text-muted mt-1">API Requests Today</p>
+          </div>
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-violet-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="puzzle" class="w-5 h-5 text-violet-400 shrink-0"></i>
+              </div>
+              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-violet-500/15 text-violet-400"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i>+3</span>
+            </div>
+            <p class="text-2xl font-bold text-text">14</p>
+            <p class="text-xs text-muted mt-1">Connected Services</p>
+          </div>
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-teal-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="shield-check" class="w-5 h-5 text-teal-500 shrink-0"></i>
+              </div>
+              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500"><i data-lucide="circle-check" class="w-3 h-3 shrink-0"></i>Healthy</span>
+            </div>
+            <p class="text-2xl font-bold text-text">99.98%</p>
+            <p class="text-xs text-muted mt-1">API Uptime (30d)</p>
+          </div>
+        </div>
+
+        <!-- Main Content Card -->
+        <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6 mb-6">
+          <!-- Tabs -->
+          <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-6">
+            <div class="flex gap-1 p-1 bg-bg border border-border rounded-2xl overflow-x-auto hide-scrollbar w-full">
+              <button class="api-tab tab-button active inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="keys">
+                <i data-lucide="key" class="w-4 h-4 shrink-0"></i><span>API Keys</span>
+              </button>
+              <button class="api-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="integrations">
+                <i data-lucide="puzzle" class="w-4 h-4 shrink-0"></i><span>Integrations</span>
+              </button>
+              <button class="api-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="documentation">
+                <i data-lucide="book-open" class="w-4 h-4 shrink-0"></i><span>Documentation</span>
+              </button>
+              <button class="api-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="usage">
+                <i data-lucide="chart-bar" class="w-4 h-4 shrink-0"></i><span>Usage &amp; Limits</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- ============ TAB: API Keys ============ -->
+          <div class="api-pane tab-content active" data-pane="keys">
+            <!-- Filter bar -->
+            <div class="flex flex-col lg:flex-row lg:items-center gap-4 mb-6">
+              <div class="relative flex-1 lg:max-w-md">
+                <i data-lucide="search" class="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-muted shrink-0"></i>
+                <input type="text" id="apiKeysSearch" placeholder="Search API keys..." class="w-full pl-11 pr-4 py-2.5 bg-bg border border-border rounded-xl text-text text-sm focus:outline-none focus:border-accent transition-colors" />
+              </div>
+              <div class="flex flex-wrap items-center gap-2">
+                <button class="api-key-filter active px-4 py-2 rounded-full border border-accent bg-accent/15 text-accent text-sm font-medium transition-colors" data-filter="all">All Keys</button>
+                <button class="api-key-filter px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-filter="active">Active</button>
+                <button class="api-key-filter px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-filter="expired">Expired</button>
+                <button class="api-key-filter px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-filter="revoked">Revoked</button>
+              </div>
+            </div>
+
+            <!-- Keys table -->
+            <div class="overflow-x-auto">
+              <table class="w-full border-collapse min-w-[1040px] whitespace-nowrap text-sm">
+                <thead>
+                  <tr class="text-left text-xs uppercase tracking-wide text-muted border-b border-border">
+                    <th class="py-3 px-3 w-10 sm:sticky sm:left-0 sm:bg-panel"><input type="checkbox" class="custom-checkbox" id="apiSelectAll" /></th>
+                    <th class="py-3 px-3 sm:sticky sm:left-10 sm:bg-panel">Key Name</th>
+                    <th class="py-3 px-3">API Key</th>
+                    <th class="py-3 px-3">Permissions</th>
+                    <th class="py-3 px-3">Requests</th>
+                    <th class="py-3 px-3">Status</th>
+                    <th class="py-3 px-3">Created</th>
+                    <th class="py-3 px-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="apiKeysBody">
+                  <!-- Row 1 -->
+                  <tr class="api-key-row border-b border-border hover:bg-bg/60 transition-colors" data-status="active" data-name="Production API Main trading bot">
+                    <td class="py-4 px-3 sm:sticky sm:left-0 sm:bg-panel"><input type="checkbox" class="custom-checkbox api-row-check" /></td>
+                    <td class="py-4 px-3 sm:sticky sm:left-10 sm:bg-panel">
+                      <div class="flex items-center gap-3">
+                        <div class="w-10 h-10 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="key" class="w-5 h-5 text-emerald-500 shrink-0"></i></div>
+                        <div class="min-w-0"><p class="font-semibold text-text">Production API</p><p class="text-xs text-muted">Main trading bot</p></div>
+                      </div>
+                    </td>
+                    <td class="py-4 px-3">
+                      <div class="flex items-center gap-1.5 max-w-[220px]">
+                        <span class="api-key-value flex-1 min-w-0 truncate font-mono text-xs px-2.5 py-1.5 rounded-lg bg-bg border border-border text-text" data-mask="sk_live_8x7K...4f2D" data-full="sk_live_8x7K9y2L4m5N6p8Q4f2D">sk_live_8x7K...4f2D</span>
+                        <button class="api-key-eye w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Show"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+                        <button class="api-key-copy w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Copy"><i data-lucide="copy" class="w-4 h-4 shrink-0"></i></button>
+                      </div>
+                    </td>
+                    <td class="py-4 px-3">
+                      <div class="flex flex-wrap gap-1">
+                        <span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-sky-500/15 text-sky-500">Read</span>
+                        <span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-violet-500/15 text-violet-400">Write</span>
+                        <span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-amber-500/15 text-amber-500">Trade</span>
+                      </div>
+                    </td>
+                    <td class="py-4 px-3"><p class="font-semibold text-text">48,293</p><p class="text-xs text-muted">Last 30d</p></td>
+                    <td class="py-4 px-3"><span class="api-status-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500"><span class="api-status-dot w-2 h-2 rounded-full bg-emerald-500"></span><span class="api-status-label">Active</span></span></td>
+                    <td class="py-4 px-3"><p class="text-text">Dec 15, 2024</p><p class="text-xs text-muted">Never expires</p></td>
+                    <td class="py-4 px-3">
+                      <div class="flex items-center justify-end gap-1.5">
+                        <button class="api-key-edit w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Edit"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i></button>
+                        <button class="api-key-regen w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Regenerate"><i data-lucide="refresh-cw" class="w-4 h-4 shrink-0"></i></button>
+                        <button class="api-key-revoke w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-border text-muted hover:text-red-500 hover:border-red-500/40 transition-colors" title="Revoke"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                      </div>
+                    </td>
+                  </tr>
+                  <!-- Row 2 -->
+                  <tr class="api-key-row border-b border-border hover:bg-bg/60 transition-colors" data-status="active" data-name="Development Key Testing environment">
+                    <td class="py-4 px-3 sm:sticky sm:left-0 sm:bg-panel"><input type="checkbox" class="custom-checkbox api-row-check" /></td>
+                    <td class="py-4 px-3 sm:sticky sm:left-10 sm:bg-panel">
+                      <div class="flex items-center gap-3">
+                        <div class="w-10 h-10 rounded-xl bg-sky-500/15 flex items-center justify-center shrink-0"><i data-lucide="code" class="w-5 h-5 text-sky-500 shrink-0"></i></div>
+                        <div class="min-w-0"><p class="font-semibold text-text">Development Key</p><p class="text-xs text-muted">Testing environment</p></div>
+                      </div>
+                    </td>
+                    <td class="py-4 px-3">
+                      <div class="flex items-center gap-1.5 max-w-[220px]">
+                        <span class="api-key-value flex-1 min-w-0 truncate font-mono text-xs px-2.5 py-1.5 rounded-lg bg-bg border border-border text-text" data-mask="sk_test_9y8L...3e1C" data-full="sk_test_9y8L7w6V5u4T3e1C">sk_test_9y8L...3e1C</span>
+                        <button class="api-key-eye w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Show"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+                        <button class="api-key-copy w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Copy"><i data-lucide="copy" class="w-4 h-4 shrink-0"></i></button>
+                      </div>
+                    </td>
+                    <td class="py-4 px-3">
+                      <div class="flex flex-wrap gap-1">
+                        <span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-sky-500/15 text-sky-500">Read</span>
+                      </div>
+                    </td>
+                    <td class="py-4 px-3"><p class="font-semibold text-text">2,847</p><p class="text-xs text-muted">Last 30d</p></td>
+                    <td class="py-4 px-3"><span class="api-status-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500"><span class="api-status-dot w-2 h-2 rounded-full bg-emerald-500"></span><span class="api-status-label">Active</span></span></td>
+                    <td class="py-4 px-3"><p class="text-text">Dec 20, 2024</p><p class="text-xs text-muted">Expires Jan 20</p></td>
+                    <td class="py-4 px-3">
+                      <div class="flex items-center justify-end gap-1.5">
+                        <button class="api-key-edit w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Edit"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i></button>
+                        <button class="api-key-regen w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Regenerate"><i data-lucide="refresh-cw" class="w-4 h-4 shrink-0"></i></button>
+                        <button class="api-key-revoke w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-border text-muted hover:text-red-500 hover:border-red-500/40 transition-colors" title="Revoke"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                      </div>
+                    </td>
+                  </tr>
+                  <!-- Row 3 -->
+                  <tr class="api-key-row border-b border-border hover:bg-bg/60 transition-colors" data-status="active" data-name="Webhook Handler Signal forwarding">
+                    <td class="py-4 px-3 sm:sticky sm:left-0 sm:bg-panel"><input type="checkbox" class="custom-checkbox api-row-check" /></td>
+                    <td class="py-4 px-3 sm:sticky sm:left-10 sm:bg-panel">
+                      <div class="flex items-center gap-3">
+                        <div class="w-10 h-10 rounded-xl bg-amber-500/15 flex items-center justify-center shrink-0"><i data-lucide="webhook" class="w-5 h-5 text-amber-500 shrink-0"></i></div>
+                        <div class="min-w-0"><p class="font-semibold text-text">Webhook Handler</p><p class="text-xs text-muted">Signal forwarding</p></div>
+                      </div>
+                    </td>
+                    <td class="py-4 px-3">
+                      <div class="flex items-center gap-1.5 max-w-[220px]">
+                        <span class="api-key-value flex-1 min-w-0 truncate font-mono text-xs px-2.5 py-1.5 rounded-lg bg-bg border border-border text-text" data-mask="wh_live_2z5M...7g3B" data-full="wh_live_2z5M3n4O6p8Q7g3B">wh_live_2z5M...7g3B</span>
+                        <button class="api-key-eye w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Show"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+                        <button class="api-key-copy w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Copy"><i data-lucide="copy" class="w-4 h-4 shrink-0"></i></button>
+                      </div>
+                    </td>
+                    <td class="py-4 px-3">
+                      <div class="flex flex-wrap gap-1">
+                        <span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-sky-500/15 text-sky-500">Read</span>
+                        <span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-violet-500/15 text-violet-400">Write</span>
+                      </div>
+                    </td>
+                    <td class="py-4 px-3"><p class="font-semibold text-text">15,623</p><p class="text-xs text-muted">Last 30d</p></td>
+                    <td class="py-4 px-3"><span class="api-status-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500"><span class="api-status-dot w-2 h-2 rounded-full bg-emerald-500"></span><span class="api-status-label">Active</span></span></td>
+                    <td class="py-4 px-3"><p class="text-text">Nov 10, 2024</p><p class="text-xs text-muted">Never expires</p></td>
+                    <td class="py-4 px-3">
+                      <div class="flex items-center justify-end gap-1.5">
+                        <button class="api-key-edit w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Edit"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i></button>
+                        <button class="api-key-regen w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Regenerate"><i data-lucide="refresh-cw" class="w-4 h-4 shrink-0"></i></button>
+                        <button class="api-key-revoke w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-border text-muted hover:text-red-500 hover:border-red-500/40 transition-colors" title="Revoke"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                      </div>
+                    </td>
+                  </tr>
+                  <!-- Row 4 - Expired -->
+                  <tr class="api-key-row border-b border-border hover:bg-bg/60 transition-colors opacity-60" data-status="expired" data-name="Old Integration Legacy system">
+                    <td class="py-4 px-3 sm:sticky sm:left-0 sm:bg-panel"><input type="checkbox" class="custom-checkbox api-row-check" /></td>
+                    <td class="py-4 px-3 sm:sticky sm:left-10 sm:bg-panel">
+                      <div class="flex items-center gap-3">
+                        <div class="w-10 h-10 rounded-xl bg-slate-500/15 flex items-center justify-center shrink-0"><i data-lucide="key" class="w-5 h-5 text-slate-400 shrink-0"></i></div>
+                        <div class="min-w-0"><p class="font-semibold text-text">Old Integration</p><p class="text-xs text-muted">Legacy system</p></div>
+                      </div>
+                    </td>
+                    <td class="py-4 px-3">
+                      <div class="flex items-center gap-1.5 max-w-[220px]">
+                        <span class="api-key-value flex-1 min-w-0 truncate font-mono text-xs px-2.5 py-1.5 rounded-lg bg-bg border border-border text-muted" data-mask="sk_live_1a2B...****" data-full="sk_live_1a2B...****">sk_live_1a2B...****</span>
+                      </div>
+                    </td>
+                    <td class="py-4 px-3">
+                      <div class="flex flex-wrap gap-1">
+                        <span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-sky-500/15 text-sky-500">Read</span>
+                      </div>
+                    </td>
+                    <td class="py-4 px-3"><p class="font-semibold text-text">0</p><p class="text-xs text-muted">Last 30d</p></td>
+                    <td class="py-4 px-3"><span class="api-status-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-500/15 text-red-500"><span class="api-status-dot w-2 h-2 rounded-full bg-red-500"></span><span class="api-status-label">Expired</span></span></td>
+                    <td class="py-4 px-3"><p class="text-text">Oct 5, 2024</p><p class="text-xs text-red-500">Expired Dec 5</p></td>
+                    <td class="py-4 px-3">
+                      <div class="flex items-center justify-end gap-1.5">
+                        <button class="api-key-renew w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Renew"><i data-lucide="rotate-cw" class="w-4 h-4 shrink-0"></i></button>
+                        <button class="api-key-delete w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-border text-muted hover:text-red-500 hover:border-red-500/40 transition-colors" title="Delete"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- No results -->
+            <div id="apiKeysNoResults" class="hidden py-12 text-center text-muted">
+              <i data-lucide="search-x" class="w-10 h-10 mx-auto mb-3 shrink-0"></i>
+              <p>No API keys match your filters.</p>
+            </div>
+
+            <!-- Pagination -->
+            <div class="flex flex-col sm:flex-row items-center justify-between gap-4 mt-6">
+              <p class="text-sm text-muted">Showing 4 of 8 API keys</p>
+              <div class="flex items-center gap-2">
+                <button class="w-10 h-10 flex items-center justify-center rounded-lg bg-bg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors"><i data-lucide="chevron-left" class="w-4 h-4 shrink-0"></i></button>
+                <button class="api-page-btn active w-10 h-10 flex items-center justify-center rounded-lg bg-accent text-white text-sm font-semibold transition-colors">1</button>
+                <button class="api-page-btn w-10 h-10 flex items-center justify-center rounded-lg bg-bg border border-border text-muted hover:text-accent hover:border-accent/40 text-sm font-semibold transition-colors">2</button>
+                <button class="w-10 h-10 flex items-center justify-center rounded-lg bg-bg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors"><i data-lucide="chevron-right" class="w-4 h-4 shrink-0"></i></button>
+              </div>
+            </div>
+          </div>
+
+          <!-- ============ TAB: Integrations ============ -->
+          <div class="api-pane tab-content" data-pane="integrations">
+            <div class="flex flex-wrap items-center gap-2 mb-6">
+              <button class="api-int-filter active px-4 py-2 rounded-full border border-accent bg-accent/15 text-accent text-sm font-medium transition-colors" data-filter="all">All</button>
+              <button class="api-int-filter px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-filter="connected">Connected</button>
+              <button class="api-int-filter px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-filter="available">Available</button>
+              <button class="api-int-filter px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-filter="exchanges">Exchanges</button>
+              <button class="api-int-filter px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-filter="messaging">Messaging</button>
+            </div>
+
+            <div class="grid grid-cols-1 @xl/content:grid-cols-2 @4xl/content:grid-cols-3 gap-4" id="apiIntGrid">
+              <!-- Binance -->
+              <div class="api-int-card rounded-2xl bg-bg border border-emerald-500/30 p-5" data-state="connected" data-category="exchanges" data-name="binance">
+                <div class="flex items-start justify-between gap-3 mb-4">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="w-12 h-12 rounded-xl bg-[#F3BA2F]/15 flex items-center justify-center shrink-0">
+                      <span class="text-[#F3BA2F] font-bold text-lg">B</span>
+                    </div>
+                    <div class="min-w-0"><h4 class="font-semibold text-text truncate">Binance</h4><p class="text-xs text-muted">Crypto Exchange</p></div>
+                  </div>
+                  <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>Connected</span>
+                </div>
+                <p class="text-sm text-muted mb-4">Trade crypto pairs, get real-time prices, and execute orders directly from SignalAIX.</p>
+                <div class="flex items-center gap-3 mb-4">
+                  <div class="flex-1 min-w-0">
+                    <p class="text-xs text-muted mb-1">API Calls Today</p>
+                    <div class="h-2 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-emerald-500" style="width: 45%"></div></div>
+                  </div>
+                  <span class="text-sm font-medium text-text shrink-0">4.5K/10K</span>
+                </div>
+                <div class="flex items-center gap-2">
+                  <button class="api-int-manage flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="settings" class="w-4 h-4 shrink-0"></i>Manage</button>
+                  <button class="api-int-disconnect w-10 h-10 shrink-0 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-red-500 hover:border-red-500/40 transition-colors" title="Disconnect"><i data-lucide="unplug" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+              <!-- MetaTrader 4 -->
+              <div class="api-int-card rounded-2xl bg-bg border border-emerald-500/30 p-5" data-state="connected" data-category="exchanges" data-name="mt4">
+                <div class="flex items-start justify-between gap-3 mb-4">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="w-12 h-12 rounded-xl bg-[#2962FF]/15 flex items-center justify-center shrink-0"><span class="text-[#2962FF] font-bold">MT4</span></div>
+                    <div class="min-w-0"><h4 class="font-semibold text-text truncate">MetaTrader 4</h4><p class="text-xs text-muted">Forex Trading</p></div>
+                  </div>
+                  <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>Connected</span>
+                </div>
+                <p class="text-sm text-muted mb-4">Connect your MT4 account to execute forex signals automatically.</p>
+                <div class="flex items-center gap-3 mb-4">
+                  <div class="flex-1 min-w-0">
+                    <p class="text-xs text-muted mb-1">Trades Executed</p>
+                    <div class="h-2 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-amber-500" style="width: 72%"></div></div>
+                  </div>
+                  <span class="text-sm font-medium text-text shrink-0">72/100</span>
+                </div>
+                <div class="flex items-center gap-2">
+                  <button class="api-int-manage flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="settings" class="w-4 h-4 shrink-0"></i>Manage</button>
+                  <button class="api-int-disconnect w-10 h-10 shrink-0 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-red-500 hover:border-red-500/40 transition-colors" title="Disconnect"><i data-lucide="unplug" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+              <!-- Telegram Bot -->
+              <div class="api-int-card rounded-2xl bg-bg border border-emerald-500/30 p-5" data-state="connected" data-category="messaging" data-name="telegram">
+                <div class="flex items-start justify-between gap-3 mb-4">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="w-12 h-12 rounded-xl bg-[#0088CC]/15 flex items-center justify-center shrink-0"><i data-lucide="send" class="w-6 h-6 text-[#0088CC] shrink-0"></i></div>
+                    <div class="min-w-0"><h4 class="font-semibold text-text truncate">Telegram Bot</h4><p class="text-xs text-muted">Messaging</p></div>
+                  </div>
+                  <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>Connected</span>
+                </div>
+                <p class="text-sm text-muted mb-4">Send signals and alerts directly to your Telegram channels.</p>
+                <div class="flex items-center gap-3 mb-4">
+                  <div class="flex-1 min-w-0">
+                    <p class="text-xs text-muted mb-1">Messages Sent</p>
+                    <div class="h-2 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-emerald-500" style="width: 28%"></div></div>
+                  </div>
+                  <span class="text-sm font-medium text-text shrink-0">2.8K/10K</span>
+                </div>
+                <div class="flex items-center gap-2">
+                  <button class="api-int-manage flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="settings" class="w-4 h-4 shrink-0"></i>Manage</button>
+                  <button class="api-int-disconnect w-10 h-10 shrink-0 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-red-500 hover:border-red-500/40 transition-colors" title="Disconnect"><i data-lucide="unplug" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+              <!-- Discord -->
+              <div class="api-int-card rounded-2xl bg-bg border border-emerald-500/30 p-5" data-state="connected" data-category="messaging" data-name="discord">
+                <div class="flex items-start justify-between gap-3 mb-4">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="w-12 h-12 rounded-xl bg-[#5865F2]/15 flex items-center justify-center shrink-0"><i data-lucide="message-circle" class="w-6 h-6 text-[#5865F2] shrink-0"></i></div>
+                    <div class="min-w-0"><h4 class="font-semibold text-text truncate">Discord</h4><p class="text-xs text-muted">Messaging</p></div>
+                  </div>
+                  <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>Connected</span>
+                </div>
+                <p class="text-sm text-muted mb-4">Broadcast signals to your Discord community servers.</p>
+                <div class="flex items-center gap-3 mb-4">
+                  <div class="flex-1 min-w-0">
+                    <p class="text-xs text-muted mb-1">Webhooks Active</p>
+                    <div class="h-2 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-amber-500" style="width: 60%"></div></div>
+                  </div>
+                  <span class="text-sm font-medium text-text shrink-0">6/10</span>
+                </div>
+                <div class="flex items-center gap-2">
+                  <button class="api-int-manage flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="settings" class="w-4 h-4 shrink-0"></i>Manage</button>
+                  <button class="api-int-disconnect w-10 h-10 shrink-0 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-red-500 hover:border-red-500/40 transition-colors" title="Disconnect"><i data-lucide="unplug" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+              <!-- Coinbase (available) -->
+              <div class="api-int-card rounded-2xl bg-bg border border-border p-5 hover:border-accent/40 transition-colors" data-state="available" data-category="exchanges" data-name="coinbase">
+                <div class="flex items-start justify-between gap-3 mb-4">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="w-12 h-12 rounded-xl bg-[#0052FF]/15 flex items-center justify-center shrink-0"><span class="text-[#0052FF] font-bold">CB</span></div>
+                    <div class="min-w-0"><h4 class="font-semibold text-text truncate">Coinbase</h4><p class="text-xs text-muted">Crypto Exchange</p></div>
+                  </div>
+                  <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-sky-500/15 text-sky-500 shrink-0">Available</span>
+                </div>
+                <p class="text-sm text-muted mb-4">Connect Coinbase for seamless crypto trading and portfolio sync.</p>
+                <button class="api-int-connect w-full justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"><i data-lucide="plug" class="w-4 h-4 shrink-0"></i>Connect</button>
+              </div>
+              <!-- MetaTrader 5 (available) -->
+              <div class="api-int-card rounded-2xl bg-bg border border-border p-5 hover:border-accent/40 transition-colors" data-state="available" data-category="exchanges" data-name="mt5">
+                <div class="flex items-start justify-between gap-3 mb-4">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="w-12 h-12 rounded-xl bg-[#00A650]/15 flex items-center justify-center shrink-0"><span class="text-[#00A650] font-bold">MT5</span></div>
+                    <div class="min-w-0"><h4 class="font-semibold text-text truncate">MetaTrader 5</h4><p class="text-xs text-muted">Multi-Asset Trading</p></div>
+                  </div>
+                  <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-sky-500/15 text-sky-500 shrink-0">Available</span>
+                </div>
+                <p class="text-sm text-muted mb-4">Advanced multi-asset trading with stocks, forex, and futures.</p>
+                <button class="api-int-connect w-full justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"><i data-lucide="plug" class="w-4 h-4 shrink-0"></i>Connect</button>
+              </div>
+              <!-- Kraken (available) -->
+              <div class="api-int-card rounded-2xl bg-bg border border-border p-5 hover:border-accent/40 transition-colors" data-state="available" data-category="exchanges" data-name="kraken">
+                <div class="flex items-start justify-between gap-3 mb-4">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="w-12 h-12 rounded-xl bg-[#5741D9]/15 flex items-center justify-center shrink-0"><span class="text-[#5741D9] font-bold text-lg">K</span></div>
+                    <div class="min-w-0"><h4 class="font-semibold text-text truncate">Kraken</h4><p class="text-xs text-muted">Crypto Exchange</p></div>
+                  </div>
+                  <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-sky-500/15 text-sky-500 shrink-0">Available</span>
+                </div>
+                <p class="text-sm text-muted mb-4">Professional-grade crypto trading with advanced features.</p>
+                <button class="api-int-connect w-full justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"><i data-lucide="plug" class="w-4 h-4 shrink-0"></i>Connect</button>
+              </div>
+              <!-- Slack (available) -->
+              <div class="api-int-card rounded-2xl bg-bg border border-border p-5 hover:border-accent/40 transition-colors" data-state="available" data-category="messaging" data-name="slack">
+                <div class="flex items-start justify-between gap-3 mb-4">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="w-12 h-12 rounded-xl bg-[#611f69]/15 flex items-center justify-center shrink-0"><i data-lucide="hash" class="w-6 h-6 text-[#611f69] shrink-0"></i></div>
+                    <div class="min-w-0"><h4 class="font-semibold text-text truncate">Slack</h4><p class="text-xs text-muted">Messaging</p></div>
+                  </div>
+                  <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-sky-500/15 text-sky-500 shrink-0">Available</span>
+                </div>
+                <p class="text-sm text-muted mb-4">Get trading alerts and signals in your Slack workspace.</p>
+                <button class="api-int-connect w-full justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"><i data-lucide="plug" class="w-4 h-4 shrink-0"></i>Connect</button>
+              </div>
+              <!-- Custom Webhook -->
+              <button class="api-int-custom rounded-2xl bg-bg border border-dashed border-border p-5 flex flex-col items-center justify-center text-center min-h-[260px] hover:border-violet-500/60 transition-colors" data-state="available" data-category="messaging" data-name="custom webhook">
+                <div class="w-14 h-14 rounded-full bg-violet-500/10 flex items-center justify-center mb-4 shrink-0"><i data-lucide="webhook" class="w-7 h-7 text-violet-400 shrink-0"></i></div>
+                <h4 class="font-semibold text-text mb-1">Custom Webhook</h4>
+                <p class="text-sm text-muted">Connect any service via custom webhook URL</p>
+              </button>
+            </div>
+          </div>
+
+          <!-- ============ TAB: Documentation ============ -->
+          <div class="api-pane tab-content" data-pane="documentation">
+            <div class="grid grid-cols-1 @3xl/content:grid-cols-3 gap-6">
+              <!-- Endpoints -->
+              <div class="@3xl/content:col-span-2 space-y-4">
+                <h3 class="font-semibold text-text text-lg">API Endpoints</h3>
+                <div class="rounded-2xl bg-bg border border-border p-5">
+                  <div class="flex items-center gap-3 mb-3"><span class="font-mono text-xs font-bold px-2.5 py-1 rounded-md bg-emerald-500/15 text-emerald-500">GET</span><code class="text-sm font-mono text-text truncate">/api/v1/signals</code></div>
+                  <p class="text-sm text-muted mb-3">Retrieve all trading signals with optional filters.</p>
+                  <div class="flex flex-wrap items-center gap-2"><span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-sky-500/15 text-sky-500">Read</span><span class="text-xs text-muted">Rate: 100/min</span></div>
+                </div>
+                <div class="rounded-2xl bg-bg border border-border p-5">
+                  <div class="flex items-center gap-3 mb-3"><span class="font-mono text-xs font-bold px-2.5 py-1 rounded-md bg-emerald-500/15 text-emerald-500">GET</span><code class="text-sm font-mono text-text truncate">/api/v1/signals/{id}</code></div>
+                  <p class="text-sm text-muted mb-3">Get detailed information about a specific signal.</p>
+                  <div class="flex flex-wrap items-center gap-2"><span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-sky-500/15 text-sky-500">Read</span><span class="text-xs text-muted">Rate: 200/min</span></div>
+                </div>
+                <div class="rounded-2xl bg-bg border border-border p-5">
+                  <div class="flex items-center gap-3 mb-3"><span class="font-mono text-xs font-bold px-2.5 py-1 rounded-md bg-sky-500/15 text-sky-500">POST</span><code class="text-sm font-mono text-text truncate">/api/v1/signals</code></div>
+                  <p class="text-sm text-muted mb-3">Create a new trading signal.</p>
+                  <div class="flex flex-wrap items-center gap-2"><span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-violet-500/15 text-violet-400">Write</span><span class="text-xs text-muted">Rate: 50/min</span></div>
+                </div>
+                <div class="rounded-2xl bg-bg border border-border p-5">
+                  <div class="flex items-center gap-3 mb-3"><span class="font-mono text-xs font-bold px-2.5 py-1 rounded-md bg-emerald-500/15 text-emerald-500">GET</span><code class="text-sm font-mono text-text truncate">/api/v1/market/{pair}</code></div>
+                  <p class="text-sm text-muted mb-3">Get real-time market data for a trading pair.</p>
+                  <div class="flex flex-wrap items-center gap-2"><span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-sky-500/15 text-sky-500">Read</span><span class="text-xs text-muted">Rate: 300/min</span></div>
+                </div>
+                <div class="rounded-2xl bg-bg border border-border p-5">
+                  <div class="flex items-center gap-3 mb-3"><span class="font-mono text-xs font-bold px-2.5 py-1 rounded-md bg-amber-500/15 text-amber-500">POST</span><code class="text-sm font-mono text-text truncate">/api/v1/trades/execute</code></div>
+                  <p class="text-sm text-muted mb-3">Execute a trade based on signal parameters.</p>
+                  <div class="flex flex-wrap items-center gap-2"><span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-amber-500/15 text-amber-500">Trade</span><span class="text-xs text-muted">Rate: 30/min</span></div>
+                </div>
+                <div class="rounded-2xl bg-bg border border-border p-5">
+                  <div class="flex items-center gap-3 mb-3"><span class="font-mono text-xs font-bold px-2.5 py-1 rounded-md bg-amber-500/15 text-amber-500">PUT</span><code class="text-sm font-mono text-text truncate">/api/v1/signals/{id}</code></div>
+                  <p class="text-sm text-muted mb-3">Update an existing signal's parameters.</p>
+                  <div class="flex flex-wrap items-center gap-2"><span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-violet-500/15 text-violet-400">Write</span><span class="text-xs text-muted">Rate: 50/min</span></div>
+                </div>
+                <div class="rounded-2xl bg-bg border border-border p-5">
+                  <div class="flex items-center gap-3 mb-3"><span class="font-mono text-xs font-bold px-2.5 py-1 rounded-md bg-red-500/15 text-red-500">DELETE</span><code class="text-sm font-mono text-text truncate">/api/v1/signals/{id}</code></div>
+                  <p class="text-sm text-muted mb-3">Delete a signal from the system.</p>
+                  <div class="flex flex-wrap items-center gap-2"><span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-violet-500/15 text-violet-400">Write</span><span class="text-xs text-muted">Rate: 50/min</span></div>
+                </div>
+              </div>
+
+              <!-- Quick start -->
+              <div class="space-y-6">
+                <div class="rounded-2xl bg-bg border border-border p-5">
+                  <h4 class="font-semibold text-text mb-4">Quick Start</h4>
+                  <div class="space-y-3">
+                    <div class="flex items-start gap-3"><div class="w-6 h-6 rounded-full bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center text-white text-xs font-bold shrink-0">1</div><p class="text-sm text-muted">Generate your API key from the Keys tab</p></div>
+                    <div class="flex items-start gap-3"><div class="w-6 h-6 rounded-full bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center text-white text-xs font-bold shrink-0">2</div><p class="text-sm text-muted">Include your key in the Authorization header</p></div>
+                    <div class="flex items-start gap-3"><div class="w-6 h-6 rounded-full bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center text-white text-xs font-bold shrink-0">3</div><p class="text-sm text-muted">Make requests to our REST API endpoints</p></div>
+                  </div>
+                </div>
+
+                <div class="rounded-2xl bg-bg border border-border overflow-hidden">
+                  <div class="flex items-center justify-between px-4 py-3 border-b border-border">
+                    <span class="text-sm font-medium text-text">Example Request</span>
+                    <button id="apiCopyCodeBtn" class="w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Copy"><i data-lucide="copy" class="w-4 h-4 shrink-0"></i></button>
+                  </div>
+                  <pre class="p-4 overflow-x-auto text-xs font-mono text-text leading-relaxed"><code id="apiCodeSnippet"><span class="text-muted"># Get latest signals</span>
+curl -X GET \
+  <span class="text-emerald-500">"https://api.signalaix.com/v1/signals"</span> \
+  -H <span class="text-emerald-500">"Authorization: Bearer YOUR_API_KEY"</span> \
+  -H <span class="text-emerald-500">"Content-Type: application/json"</span></code></pre>
+                </div>
+
+                <div class="rounded-2xl bg-bg border border-border overflow-hidden">
+                  <div class="flex items-center justify-between px-4 py-3 border-b border-border"><span class="text-sm font-medium text-text">Response</span></div>
+                  <pre class="p-4 overflow-x-auto text-xs font-mono text-text leading-relaxed"><code>{
+  <span class="text-violet-400">"status"</span>: <span class="text-emerald-500">"success"</span>,
+  <span class="text-violet-400">"data"</span>: [
+    {
+      <span class="text-violet-400">"id"</span>: <span class="text-emerald-500">"sig_8x7K4f2D"</span>,
+      <span class="text-violet-400">"pair"</span>: <span class="text-emerald-500">"EUR/USD"</span>,
+      <span class="text-violet-400">"direction"</span>: <span class="text-emerald-500">"BUY"</span>,
+      <span class="text-violet-400">"entry"</span>: <span class="text-amber-500">1.0875</span>,
+      <span class="text-violet-400">"confidence"</span>: <span class="text-amber-500">87</span>
+    }
+  ]
+}</code></pre>
+                </div>
+
+                <div class="rounded-2xl bg-bg border border-border p-5">
+                  <h4 class="font-semibold text-text mb-3">Base URL</h4>
+                  <code class="block text-sm font-mono text-accent truncate">https://api.signalaix.com/v1</code>
+                </div>
+
+                <a href="./index.html" class="w-full justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="book-open" class="w-4 h-4 shrink-0"></i>View Full Documentation</a>
+              </div>
+            </div>
+          </div>
+
+          <!-- ============ TAB: Usage & Limits ============ -->
+          <div class="api-pane tab-content" data-pane="usage">
+            <div class="grid grid-cols-1 xs:grid-cols-2 @4xl/content:grid-cols-4 gap-4 mb-6">
+              <div class="rounded-2xl bg-bg border border-border p-5 text-center"><p class="text-2xl font-bold text-text mb-1">12,847</p><p class="text-xs text-muted">Requests Today</p></div>
+              <div class="rounded-2xl bg-bg border border-border p-5 text-center"><p class="text-2xl font-bold text-text mb-1">348,592</p><p class="text-xs text-muted">Requests This Month</p></div>
+              <div class="rounded-2xl bg-bg border border-border p-5 text-center"><p class="text-2xl font-bold text-text mb-1">42ms</p><p class="text-xs text-muted">Avg Response Time</p></div>
+              <div class="rounded-2xl bg-bg border border-border p-5 text-center"><p class="text-2xl font-bold text-text mb-1">0.02%</p><p class="text-xs text-muted">Error Rate</p></div>
+            </div>
+
+            <div class="grid grid-cols-1 @3xl/content:grid-cols-2 gap-6">
+              <!-- Usage chart -->
+              <div class="rounded-2xl bg-bg border border-border p-5 sm:p-6">
+                <div class="flex flex-col xs:flex-row xs:items-center xs:justify-between gap-3 mb-4">
+                  <h4 class="font-semibold text-text">API Usage (Last 7 Days)</h4>
+                  <select class="shrink-0 py-2 px-3 text-sm bg-panel border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors">
+                    <option>Last 7 days</option><option>Last 30 days</option><option>Last 90 days</option>
+                  </select>
+                </div>
+                <div class="h-64"><canvas id="apiUsageChart"></canvas></div>
+              </div>
+
+              <!-- Rate limits -->
+              <div class="rounded-2xl bg-bg border border-border p-5 sm:p-6">
+                <h4 class="font-semibold text-text mb-4">Rate Limits</h4>
+                <div class="space-y-4">
+                  <div>
+                    <div class="flex items-center justify-between mb-2"><span class="text-sm text-text">Signals API</span><span class="text-sm text-muted">45/100 per minute</span></div>
+                    <div class="h-2.5 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-emerald-500" style="width: 45%"></div></div>
+                  </div>
+                  <div>
+                    <div class="flex items-center justify-between mb-2"><span class="text-sm text-text">Market Data API</span><span class="text-sm text-muted">180/300 per minute</span></div>
+                    <div class="h-2.5 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-amber-500" style="width: 60%"></div></div>
+                  </div>
+                  <div>
+                    <div class="flex items-center justify-between mb-2"><span class="text-sm text-text">Trade Execution API</span><span class="text-sm text-muted">12/30 per minute</span></div>
+                    <div class="h-2.5 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-emerald-500" style="width: 40%"></div></div>
+                  </div>
+                  <div>
+                    <div class="flex items-center justify-between mb-2"><span class="text-sm text-text">Webhook Calls</span><span class="text-sm text-muted">890/1000 per hour</span></div>
+                    <div class="h-2.5 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-red-500" style="width: 89%"></div></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Plan details -->
+            <div class="mt-6 rounded-2xl bg-bg border border-border p-5 sm:p-6">
+              <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+                <div>
+                  <h4 class="font-semibold text-text text-lg">Current Plan: <span class="bg-gradient-to-r from-accent to-teal-500 bg-clip-text text-transparent">Pro Trader</span></h4>
+                  <p class="text-sm text-muted">Your API limits reset on January 1, 2025</p>
+                </div>
+                <button id="apiUpgradeBtn" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"><i data-lucide="zap" class="w-4 h-4 shrink-0"></i>Upgrade Plan</button>
+              </div>
+              <div class="grid grid-cols-1 xs:grid-cols-2 @4xl/content:grid-cols-3 gap-4">
+                <div class="rounded-xl bg-panel border border-border p-4">
+                  <div class="flex items-center gap-3 mb-3"><div class="w-10 h-10 rounded-lg bg-sky-500/15 flex items-center justify-center shrink-0"><i data-lucide="zap" class="w-5 h-5 text-sky-500 shrink-0"></i></div><div><p class="font-semibold text-text">500K</p><p class="text-xs text-muted">Monthly Requests</p></div></div>
+                  <div class="h-2 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-amber-500" style="width: 70%"></div></div>
+                  <p class="text-xs text-muted mt-2">348,592 / 500,000 used</p>
+                </div>
+                <div class="rounded-xl bg-panel border border-border p-4">
+                  <div class="flex items-center gap-3 mb-3"><div class="w-10 h-10 rounded-lg bg-violet-500/15 flex items-center justify-center shrink-0"><i data-lucide="key" class="w-5 h-5 text-violet-400 shrink-0"></i></div><div><p class="font-semibold text-text">10</p><p class="text-xs text-muted">API Keys</p></div></div>
+                  <div class="h-2 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-amber-500" style="width: 80%"></div></div>
+                  <p class="text-xs text-muted mt-2">8 / 10 keys created</p>
+                </div>
+                <div class="rounded-xl bg-panel border border-border p-4">
+                  <div class="flex items-center gap-3 mb-3"><div class="w-10 h-10 rounded-lg bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="webhook" class="w-5 h-5 text-emerald-500 shrink-0"></i></div><div><p class="font-semibold text-text">Unlimited</p><p class="text-xs text-muted">Webhooks</p></div></div>
+                  <div class="h-2 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-emerald-500" style="width: 100%"></div></div>
+                  <p class="text-xs text-muted mt-2">No limit on webhooks</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- ============ Drawers / Overlay / Toast (page-scoped) ============ -->
+    <div class="drawer-overlay" id="apiDrawerOverlay"></div>
+
+    <!-- Generate / Edit API Key Drawer (edit reuses this form) -->
+    <div class="drawer" id="apiKeyDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <div class="min-w-0">
+            <h2 class="text-xl font-bold text-text" id="apiKeyDrawerTitle">Generate New API Key</h2>
+            <p class="text-sm text-muted" id="apiKeyDrawerSub">Create a new API key for your integrations</p>
+          </div>
+          <button class="api-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0">
+            <i data-lucide="x" class="w-5 h-5 shrink-0"></i>
+          </button>
+        </div>
+
+        <div class="space-y-5">
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Key Name *</label>
+            <input id="apiKeyName" type="text" placeholder="e.g., Production API, Trading Bot" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" />
+          </div>
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Description</label>
+            <textarea class="w-full h-20 resize-none p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" placeholder="What will this key be used for?"></textarea>
+          </div>
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Key Type *</label>
+            <select class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors">
+              <option value="">Select type</option><option value="live">Live (Production)</option><option value="test">Test (Sandbox)</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-semibold text-text mb-3">Permissions *</label>
+            <div class="space-y-3">
+              <label class="flex items-center gap-3 p-4 bg-bg rounded-xl border border-border cursor-pointer hover:border-accent/40 transition-colors">
+                <input type="checkbox" class="custom-checkbox" checked />
+                <div class="flex-1 min-w-0"><p class="font-medium text-text">Read Access</p><p class="text-xs text-muted">View signals, market data, and analytics</p></div>
+                <span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-sky-500/15 text-sky-500 shrink-0">Read</span>
+              </label>
+              <label class="flex items-center gap-3 p-4 bg-bg rounded-xl border border-border cursor-pointer hover:border-accent/40 transition-colors">
+                <input type="checkbox" class="custom-checkbox" />
+                <div class="flex-1 min-w-0"><p class="font-medium text-text">Write Access</p><p class="text-xs text-muted">Create, update, and delete signals</p></div>
+                <span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-violet-500/15 text-violet-400 shrink-0">Write</span>
+              </label>
+              <label class="flex items-center gap-3 p-4 bg-bg rounded-xl border border-border cursor-pointer hover:border-accent/40 transition-colors">
+                <input type="checkbox" class="custom-checkbox" />
+                <div class="flex-1 min-w-0"><p class="font-medium text-text">Trade Access</p><p class="text-xs text-muted">Execute trades and manage positions</p></div>
+                <span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-amber-500/15 text-amber-500 shrink-0">Trade</span>
+              </label>
+              <label class="flex items-center gap-3 p-4 bg-bg rounded-xl border border-border cursor-pointer hover:border-accent/40 transition-colors">
+                <input type="checkbox" class="custom-checkbox" />
+                <div class="flex-1 min-w-0"><p class="font-medium text-text">Admin Access</p><p class="text-xs text-muted">Full access including account settings</p></div>
+                <span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-red-500/15 text-red-500 shrink-0">Admin</span>
+              </label>
+            </div>
+          </div>
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">IP Whitelist (Optional)</label>
+            <input type="text" placeholder="e.g., 192.168.1.1, 10.0.0.0/24" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" />
+            <p class="text-xs text-muted mt-1">Comma-separated IPs or CIDR ranges. Leave empty for no restrictions.</p>
+          </div>
+          <div class="grid grid-cols-1 @xs:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm font-semibold text-text mb-2">Expiration</label>
+              <select class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors">
+                <option value="never">Never expires</option><option value="30">30 days</option><option value="90">90 days</option><option value="180">6 months</option><option value="365">1 year</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm font-semibold text-text mb-2">Rate Limit</label>
+              <select class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors">
+                <option value="default">Default (Plan Limits)</option><option value="low">Low (50% of limit)</option><option value="custom">Custom</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex gap-3 mt-8">
+          <button class="api-close-drawer flex-1 justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors">Cancel</button>
+          <button id="apiKeySubmit" class="flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap">
+            <i data-lucide="key" class="w-4 h-4 shrink-0"></i><span id="apiKeySubmitLabel">Generate Key</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Generated Key Result Drawer -->
+    <div class="drawer" id="apiGeneratedDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <h2 class="text-xl font-bold text-text">API Key Generated</h2>
+          <button class="api-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0">
+            <i data-lucide="x" class="w-5 h-5 shrink-0"></i>
+          </button>
+        </div>
+
+        <div class="text-center mb-6">
+          <div class="w-16 h-16 rounded-full bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center mx-auto mb-4 shrink-0"><i data-lucide="check" class="w-8 h-8 text-white shrink-0"></i></div>
+          <h3 class="text-lg font-bold text-text mb-1">Your key is ready!</h3>
+          <p class="text-sm text-muted">Make sure to copy your key now. You won't be able to see it again.</p>
+        </div>
+
+        <div class="rounded-2xl bg-bg border border-border p-4 mb-5">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-sm text-muted">Your API Key</span>
+            <button id="apiGenCopyBtn" class="inline-flex items-center gap-1.5 text-sm font-semibold text-accent hover:opacity-80 transition-opacity"><i data-lucide="copy" class="w-4 h-4 shrink-0"></i>Copy</button>
+          </div>
+          <code id="apiGeneratedValue" class="block text-xs font-mono text-text break-all">sk_live_YOUR_STRIPE_API_KEY_HERE</code>
+        </div>
+
+        <div class="rounded-2xl bg-amber-500/10 border border-amber-500/20 p-4 mb-6">
+          <div class="flex items-start gap-3">
+            <i data-lucide="triangle-alert" class="w-5 h-5 text-amber-500 shrink-0 mt-0.5"></i>
+            <div><p class="font-medium text-text text-sm">Important</p><p class="text-xs text-muted">This key will only be shown once. Store it securely and never share it publicly.</p></div>
+          </div>
+        </div>
+
+        <button id="apiGenDone" class="w-full justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap">I've Saved My Key</button>
+      </div>
+    </div>
+
+    <!-- Connect / Manage Integration Drawer -->
+    <div class="drawer" id="apiIntDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6 gap-3">
+          <div class="flex items-center gap-3 min-w-0">
+            <div class="w-12 h-12 rounded-xl bg-accent/15 flex items-center justify-center shrink-0"><i data-lucide="plug" class="w-6 h-6 text-accent shrink-0"></i></div>
+            <div class="min-w-0">
+              <h2 class="text-xl font-bold text-text truncate" id="apiIntTitle">Connect Integration</h2>
+              <p class="text-sm text-muted truncate" id="apiIntSub">Authorize and configure this service</p>
+            </div>
+          </div>
+          <button class="api-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0">
+            <i data-lucide="x" class="w-5 h-5 shrink-0"></i>
+          </button>
+        </div>
+
+        <div class="space-y-5">
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2" id="apiIntKeyLabel">API Key</label>
+            <input id="apiIntApiKey" type="text" placeholder="Enter API key" class="w-full p-3 bg-transparent border border-border rounded-xl text-text font-mono text-sm focus:outline-none focus:border-accent transition-colors" />
+          </div>
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">API Secret</label>
+            <div class="flex items-center gap-1.5">
+              <input id="apiIntSecret" type="password" placeholder="Enter API secret" class="flex-1 min-w-0 p-3 bg-transparent border border-border rounded-xl text-text font-mono text-sm focus:outline-none focus:border-accent transition-colors" />
+              <button id="apiIntSecretEye" class="w-10 h-10 shrink-0 flex items-center justify-center rounded-xl border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Show"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+            </div>
+          </div>
+          <div>
+            <label class="block text-sm font-semibold text-text mb-3">Permissions</label>
+            <div class="space-y-3">
+              <label class="flex items-center justify-between p-3 border border-border rounded-xl cursor-pointer">
+                <div class="flex items-center gap-3"><i data-lucide="eye" class="w-5 h-5 text-muted shrink-0"></i><span class="text-text">Read market data</span></div>
+                <div class="js-toggle-switch toggle-switch active" role="switch" aria-checked="true" tabindex="0"></div>
+              </label>
+              <label class="flex items-center justify-between p-3 border border-border rounded-xl cursor-pointer">
+                <div class="flex items-center gap-3"><i data-lucide="zap" class="w-5 h-5 text-muted shrink-0"></i><span class="text-text">Execute trades</span></div>
+                <div class="js-toggle-switch toggle-switch" role="switch" aria-checked="false" tabindex="0"></div>
+              </label>
+              <label class="flex items-center justify-between p-3 border border-border rounded-xl cursor-pointer">
+                <div class="flex items-center gap-3"><i data-lucide="send" class="w-5 h-5 text-muted shrink-0"></i><span class="text-text">Send notifications</span></div>
+                <div class="js-toggle-switch toggle-switch active" role="switch" aria-checked="true" tabindex="0"></div>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex gap-3 mt-8">
+          <button class="api-close-drawer flex-1 justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors">Cancel</button>
+          <button id="apiIntSubmit" class="flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap">
+            <i data-lucide="plug" class="w-4 h-4 shrink-0"></i><span id="apiIntSubmitLabel">Connect</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="apiToast">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0">
+        <i data-lucide="check" class="w-5 h-5 text-white shrink-0"></i>
+      </div>
+      <div class="min-w-0">
+        <p class="font-semibold text-text" id="apiToastTitle">Success</p>
+        <p class="text-sm text-muted" id="apiToastMessage">Action completed</p>
+      </div>
+      <button class="api-toast-close ml-auto w-9 h-9 shrink-0 flex items-center justify-center rounded-lg text-muted hover:text-text transition-colors">
+        <i data-lucide="x" class="w-4 h-4 shrink-0"></i>
+      </button>
+    </div>
+
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
+  <script defer src="js/index.js"></script></body>
+</html>

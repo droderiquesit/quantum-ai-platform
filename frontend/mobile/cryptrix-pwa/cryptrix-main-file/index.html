@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cryptrix — AI Crypto Investing & Trading App</title>
+    <meta http-equiv="refresh" content="0;url=splash.html" />
+    <link rel="shortcut icon" href="./assets/images/favicon.ico" />
+
+    <!-- Theme Script (Placed early to prevent FOUC) -->
+    <script>
+      (function () {
+        const saved = localStorage.getItem("theme") || "dark";
+        if (saved === "dark") document.documentElement.classList.add("dark");
+        else document.documentElement.classList.remove("dark");
+      })();
+    </script>
+  <link href="assets/css/index.css" rel="stylesheet"></head>
+  <body>
+    <p>Redirecting to <a href="splash.html">Cryptrix</a>...</p>
+    <script src="./assets/js/components.js"></script>
+    <script src="./assets/js/app.js"></script>
+  <script defer src="index.js"></script></body>
+</html>

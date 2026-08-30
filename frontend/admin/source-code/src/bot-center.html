@@ -1,0 +1,818 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <script>
+      if (localStorage.getItem("theme") === "light") document.documentElement.classList.remove("dark");
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Bot Center - SignalAIX | AI Forex & Crypto Trading Signals</title>
+    <link rel="icon" type="image/png" href="assets/images/favicon.png" />
+    <link rel="apple-touch-icon" href="assets/images/favicon.png" />
+  </head>
+  <body id="bot-center">
+    <div id="loader"><div class="spinner"></div><div class="loader-text">Loading SignalAIX...</div></div>
+    <include-sidebar />
+    <main class="main-content" id="mainContent">
+      <include-top-header />
+      <div class="inner-content max-sm:px-3 max-lg:px-4 max-lg:py-6 lg:p-6">
+        <!-- Page Header -->
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-6">
+          <div>
+            <div class="flex items-center gap-3 mb-2">
+              <h1 class="text-2xl md:text-3xl font-bold text-text">Bot Center</h1>
+              <div class="flex items-center gap-2 px-3 py-1 bg-emerald-500/15 text-emerald-500 rounded-full text-sm font-semibold">
+                <span class="live-dot"></span>
+                Live
+              </div>
+            </div>
+            <p class="text-muted">Manage your automated trading bots</p>
+          </div>
+          <div class="flex flex-wrap items-center gap-3">
+            <div class="relative">
+              <button
+                id="bcExportBtn"
+                class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"
+              >
+                <i data-lucide="download" class="w-4 h-4 shrink-0"></i>
+                <span>Export</span>
+                <i data-lucide="chevron-down" class="w-4 h-4 shrink-0"></i>
+              </button>
+              <div
+                id="bcExportMenu"
+                class="hidden absolute right-0 mt-2 w-48 bg-panel border border-border rounded-xl shadow-xl z-50 overflow-hidden"
+              >
+                <button class="bc-export-item flex items-center gap-2.5 w-full px-4 py-3 text-sm text-text hover:bg-accent/10 transition-colors" data-format="csv">
+                  <i data-lucide="file-text" class="w-4 h-4 shrink-0"></i>
+                  <span>Export as CSV</span>
+                </button>
+                <button class="bc-export-item flex items-center gap-2.5 w-full px-4 py-3 text-sm text-text hover:bg-accent/10 transition-colors" data-format="pdf">
+                  <i data-lucide="file" class="w-4 h-4 shrink-0"></i>
+                  <span>Export as PDF</span>
+                </button>
+                <button class="bc-export-item flex items-center gap-2.5 w-full px-4 py-3 text-sm text-text hover:bg-accent/10 transition-colors" data-format="json">
+                  <i data-lucide="file-code" class="w-4 h-4 shrink-0"></i>
+                  <span>Export as JSON</span>
+                </button>
+              </div>
+            </div>
+            <button
+              id="bcCreateBtn"
+              class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"
+            >
+              <i data-lucide="plus" class="w-4 h-4 shrink-0"></i>
+              <span>Create Bot</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Stats Overview -->
+        <div class="grid grid-cols-1 xs:grid-cols-2 @4xl/content:grid-cols-4 gap-4 mb-6">
+          <!-- Total Bots -->
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-gradient-to-br from-violet-500 to-indigo-500 flex items-center justify-center shrink-0">
+                <i data-lucide="bot" class="w-5 h-5 text-white shrink-0"></i>
+              </div>
+              <span class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-violet-500/15 text-violet-400">+2 New</span>
+            </div>
+            <p class="text-2xl font-bold text-text">12</p>
+            <p class="text-xs text-muted mt-1">Total Bots</p>
+            <div class="flex flex-wrap items-center gap-x-2 gap-y-1 mt-3 text-xs font-medium">
+              <span class="text-emerald-500">8 Active</span>
+              <span class="text-muted">&bull;</span>
+              <span class="text-amber-500">2 Paused</span>
+              <span class="text-muted">&bull;</span>
+              <span class="text-red-500">2 Stopped</span>
+            </div>
+          </div>
+
+          <!-- Total Profit -->
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="trending-up" class="w-5 h-5 text-emerald-500 shrink-0"></i>
+              </div>
+              <span class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">+18.4%</span>
+            </div>
+            <p class="text-2xl font-bold text-emerald-500">+$4,829.50</p>
+            <p class="text-xs text-muted mt-1">Total Profit (24h)</p>
+            <div class="flex items-center gap-2 mt-3 text-xs">
+              <i data-lucide="arrow-up-right" class="w-4 h-4 text-emerald-500 shrink-0"></i>
+              <span class="text-muted">Best: Scalper Pro (+$1,240)</span>
+            </div>
+          </div>
+
+          <!-- Win Rate -->
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-indigo-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="target" class="w-5 h-5 text-indigo-500 shrink-0"></i>
+              </div>
+              <span class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-sky-500/15 text-sky-500">Excellent</span>
+            </div>
+            <p class="text-2xl font-bold text-text">78.5%</p>
+            <p class="text-xs text-muted mt-1">Avg. Win Rate</p>
+            <div class="h-2.5 rounded-full bg-border overflow-hidden mt-3">
+              <div class="h-full rounded-full bg-emerald-500" style="width: 78.5%"></div>
+            </div>
+          </div>
+
+          <!-- Active Trades -->
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-amber-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="zap" class="w-5 h-5 text-amber-500 shrink-0"></i>
+              </div>
+              <div class="flex items-center gap-1.5 shrink-0">
+                <span class="live-dot"></span>
+                <span class="text-xs font-semibold text-emerald-500">LIVE</span>
+              </div>
+            </div>
+            <p class="text-2xl font-bold text-text">24</p>
+            <p class="text-xs text-muted mt-1">Active Trades</p>
+            <div class="flex items-center gap-2 mt-3 text-xs">
+              <span class="text-muted">Total Volume:</span>
+              <span class="font-semibold text-text">$128,450</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tabs + actions -->
+        <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-4">
+          <!-- Status Tabs -->
+          <div class="flex gap-1 p-1 bg-panel border border-border rounded-2xl overflow-x-auto hide-scrollbar w-full">
+            <button class="bc-tab tab-button active inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="all">
+              <i data-lucide="grid-3x3" class="w-4 h-4 shrink-0"></i>
+              <span>All Bots</span>
+              <span class="px-2 py-0.5 rounded-full text-[10px] bg-accent/15 text-accent">12</span>
+            </button>
+            <button class="bc-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="running">
+              <i data-lucide="play" class="w-4 h-4 shrink-0"></i>
+              <span>Running</span>
+              <span class="px-2 py-0.5 rounded-full text-[10px] bg-emerald-500/15 text-emerald-500">8</span>
+            </button>
+            <button class="bc-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="paused">
+              <i data-lucide="pause" class="w-4 h-4 shrink-0"></i>
+              <span>Paused</span>
+              <span class="px-2 py-0.5 rounded-full text-[10px] bg-amber-500/15 text-amber-500">2</span>
+            </button>
+            <button class="bc-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="stopped">
+              <i data-lucide="square" class="w-4 h-4 shrink-0"></i>
+              <span>Stopped</span>
+              <span class="px-2 py-0.5 rounded-full text-[10px] bg-red-500/15 text-red-500">2</span>
+            </button>
+          </div>
+
+          <!-- Strategy filter chips -->
+          <div class="flex flex-wrap items-center gap-2" id="bcChips">
+            <span class="text-sm text-muted shrink-0">Strategy:</span>
+            <button class="bc-chip active inline-flex items-center px-4 py-2 rounded-full border border-accent bg-accent/15 text-accent text-sm font-medium transition-colors" data-filter="all">All</button>
+            <button class="bc-chip inline-flex items-center px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-filter="scalping">Scalping</button>
+            <button class="bc-chip inline-flex items-center px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-filter="grid">Grid</button>
+            <button class="bc-chip inline-flex items-center px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-filter="dca">DCA</button>
+            <button class="bc-chip inline-flex items-center px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-filter="martingale">Martingale</button>
+          </div>
+        </div>
+
+        <!-- Search Bar -->
+        <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 mb-6">
+          <div class="relative flex-1">
+            <i data-lucide="search" class="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-muted"></i>
+            <input
+              type="text"
+              id="bcSearch"
+              placeholder="Search bots by name..."
+              class="w-full pl-11 pr-4 py-2.5 bg-panel border border-border rounded-xl text-text text-sm placeholder:text-muted focus:outline-none focus:border-accent transition-colors"
+            />
+          </div>
+        </div>
+
+        <!-- No Results -->
+        <div id="bcNoResults" class="hidden rounded-2xl bg-panel border border-border p-10 text-center mb-6">
+          <div class="w-14 h-14 rounded-2xl bg-border/40 flex items-center justify-center mx-auto mb-4">
+            <i data-lucide="bot" class="w-7 h-7 text-muted shrink-0"></i>
+          </div>
+          <p class="font-semibold text-text mb-1">No bots found</p>
+          <p class="text-sm text-muted">Try adjusting your filters or search terms.</p>
+        </div>
+
+        <!-- Bots Grid -->
+        <div class="grid grid-cols-1 @xl/content:grid-cols-2 @4xl/content:grid-cols-3 gap-4 lg:gap-6 mb-6" id="bcGrid">
+          <!-- Bot 1 - Running -->
+          <div class="bc-bot rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors p-5 sm:p-6" data-id="1" data-status="running" data-strategy="scalping">
+            <div class="flex items-start justify-between mb-4 gap-3">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shrink-0">
+                  <i data-lucide="zap" class="w-6 h-6 text-white shrink-0"></i>
+                </div>
+                <div class="min-w-0">
+                  <h3 class="font-bold text-text truncate">Scalper Pro v2</h3>
+                  <p class="text-xs text-muted">EUR/USD &bull; Scalping</p>
+                </div>
+              </div>
+              <div class="flex items-center gap-2 shrink-0">
+                <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0 bc-status-dot"></span>
+                <span class="text-xs font-medium text-emerald-500 bc-status-label">Running</span>
+              </div>
+            </div>
+            <div class="grid grid-cols-3 gap-2 sm:gap-4 mb-4">
+              <div><p class="text-xs text-muted mb-1">Today's P/L</p><p class="text-base sm:text-lg font-bold text-emerald-500">+$1,240</p></div>
+              <div><p class="text-xs text-muted mb-1">Win Rate</p><p class="text-base sm:text-lg font-bold text-text">84.2%</p></div>
+              <div><p class="text-xs text-muted mb-1">Trades</p><p class="text-base sm:text-lg font-bold text-text">47</p></div>
+            </div>
+            <div class="mb-4">
+              <div class="flex items-center justify-between text-sm mb-2"><span class="text-muted">Performance</span><span class="text-emerald-500 font-medium">84.2%</span></div>
+              <div class="h-2.5 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-emerald-500" style="width: 84.2%"></div></div>
+            </div>
+            <div class="flex items-center justify-between gap-2 pt-4 border-t border-border">
+              <div class="flex items-center gap-2 bc-controls">
+                <button class="bc-pause-btn w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-id="1" title="Pause"><i data-lucide="pause" class="w-4 h-4 shrink-0"></i></button>
+                <button class="bc-stop-btn w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-red-500 hover:border-red-500/40 transition-colors" data-id="1" title="Stop"><i data-lucide="square" class="w-4 h-4 shrink-0"></i></button>
+                <button class="bc-edit-btn w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-id="1" title="Settings"><i data-lucide="settings" class="w-4 h-4 shrink-0"></i></button>
+              </div>
+              <button class="bc-details-btn px-3 py-2 rounded-lg bg-panel border border-border text-text text-xs font-semibold hover:border-accent/40 transition-colors whitespace-nowrap" data-id="1">View Details</button>
+            </div>
+          </div>
+
+          <!-- Bot 2 - Running -->
+          <div class="bc-bot rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors p-5 sm:p-6" data-id="2" data-status="running" data-strategy="grid">
+            <div class="flex items-start justify-between mb-4 gap-3">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500 to-blue-600 flex items-center justify-center shrink-0">
+                  <i data-lucide="grid-3x3" class="w-6 h-6 text-white shrink-0"></i>
+                </div>
+                <div class="min-w-0">
+                  <h3 class="font-bold text-text truncate">Grid Master BTC</h3>
+                  <p class="text-xs text-muted">BTC/USDT &bull; Grid</p>
+                </div>
+              </div>
+              <div class="flex items-center gap-2 shrink-0">
+                <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0 bc-status-dot"></span>
+                <span class="text-xs font-medium text-emerald-500 bc-status-label">Running</span>
+              </div>
+            </div>
+            <div class="grid grid-cols-3 gap-2 sm:gap-4 mb-4">
+              <div><p class="text-xs text-muted mb-1">Today's P/L</p><p class="text-base sm:text-lg font-bold text-emerald-500">+$892</p></div>
+              <div><p class="text-xs text-muted mb-1">Win Rate</p><p class="text-base sm:text-lg font-bold text-text">76.8%</p></div>
+              <div><p class="text-xs text-muted mb-1">Trades</p><p class="text-base sm:text-lg font-bold text-text">128</p></div>
+            </div>
+            <div class="mb-4">
+              <div class="flex items-center justify-between text-sm mb-2"><span class="text-muted">Performance</span><span class="text-emerald-500 font-medium">76.8%</span></div>
+              <div class="h-2.5 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-emerald-500" style="width: 76.8%"></div></div>
+            </div>
+            <div class="flex items-center justify-between gap-2 pt-4 border-t border-border">
+              <div class="flex items-center gap-2 bc-controls">
+                <button class="bc-pause-btn w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-id="2" title="Pause"><i data-lucide="pause" class="w-4 h-4 shrink-0"></i></button>
+                <button class="bc-stop-btn w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-red-500 hover:border-red-500/40 transition-colors" data-id="2" title="Stop"><i data-lucide="square" class="w-4 h-4 shrink-0"></i></button>
+                <button class="bc-edit-btn w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-id="2" title="Settings"><i data-lucide="settings" class="w-4 h-4 shrink-0"></i></button>
+              </div>
+              <button class="bc-details-btn px-3 py-2 rounded-lg bg-panel border border-border text-text text-xs font-semibold hover:border-accent/40 transition-colors whitespace-nowrap" data-id="2">View Details</button>
+            </div>
+          </div>
+
+          <!-- Bot 3 - Running -->
+          <div class="bc-bot rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors p-5 sm:p-6" data-id="3" data-status="running" data-strategy="dca">
+            <div class="flex items-start justify-between mb-4 gap-3">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center shrink-0">
+                  <i data-lucide="layers" class="w-6 h-6 text-white shrink-0"></i>
+                </div>
+                <div class="min-w-0">
+                  <h3 class="font-bold text-text truncate">DCA Accumulator</h3>
+                  <p class="text-xs text-muted">ETH/USDT &bull; DCA</p>
+                </div>
+              </div>
+              <div class="flex items-center gap-2 shrink-0">
+                <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0 bc-status-dot"></span>
+                <span class="text-xs font-medium text-emerald-500 bc-status-label">Running</span>
+              </div>
+            </div>
+            <div class="grid grid-cols-3 gap-2 sm:gap-4 mb-4">
+              <div><p class="text-xs text-muted mb-1">Today's P/L</p><p class="text-base sm:text-lg font-bold text-emerald-500">+$567</p></div>
+              <div><p class="text-xs text-muted mb-1">Win Rate</p><p class="text-base sm:text-lg font-bold text-text">91.3%</p></div>
+              <div><p class="text-xs text-muted mb-1">Trades</p><p class="text-base sm:text-lg font-bold text-text">23</p></div>
+            </div>
+            <div class="mb-4">
+              <div class="flex items-center justify-between text-sm mb-2"><span class="text-muted">Performance</span><span class="text-emerald-500 font-medium">91.3%</span></div>
+              <div class="h-2.5 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-emerald-500" style="width: 91.3%"></div></div>
+            </div>
+            <div class="flex items-center justify-between gap-2 pt-4 border-t border-border">
+              <div class="flex items-center gap-2 bc-controls">
+                <button class="bc-pause-btn w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-id="3" title="Pause"><i data-lucide="pause" class="w-4 h-4 shrink-0"></i></button>
+                <button class="bc-stop-btn w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-red-500 hover:border-red-500/40 transition-colors" data-id="3" title="Stop"><i data-lucide="square" class="w-4 h-4 shrink-0"></i></button>
+                <button class="bc-edit-btn w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-id="3" title="Settings"><i data-lucide="settings" class="w-4 h-4 shrink-0"></i></button>
+              </div>
+              <button class="bc-details-btn px-3 py-2 rounded-lg bg-panel border border-border text-text text-xs font-semibold hover:border-accent/40 transition-colors whitespace-nowrap" data-id="3">View Details</button>
+            </div>
+          </div>
+
+          <!-- Bot 4 - Paused -->
+          <div class="bc-bot rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors p-5 sm:p-6" data-id="4" data-status="paused" data-strategy="martingale">
+            <div class="flex items-start justify-between mb-4 gap-3">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center shrink-0">
+                  <i data-lucide="repeat" class="w-6 h-6 text-white shrink-0"></i>
+                </div>
+                <div class="min-w-0">
+                  <h3 class="font-bold text-text truncate">Martingale X</h3>
+                  <p class="text-xs text-muted">GBP/USD &bull; Martingale</p>
+                </div>
+              </div>
+              <div class="flex items-center gap-2 shrink-0">
+                <span class="w-2.5 h-2.5 rounded-full bg-amber-500 shrink-0 bc-status-dot"></span>
+                <span class="text-xs font-medium text-amber-500 bc-status-label">Paused</span>
+              </div>
+            </div>
+            <div class="grid grid-cols-3 gap-2 sm:gap-4 mb-4">
+              <div><p class="text-xs text-muted mb-1">Today's P/L</p><p class="text-base sm:text-lg font-bold text-amber-500">$0</p></div>
+              <div><p class="text-xs text-muted mb-1">Win Rate</p><p class="text-base sm:text-lg font-bold text-text">68.5%</p></div>
+              <div><p class="text-xs text-muted mb-1">Trades</p><p class="text-base sm:text-lg font-bold text-text">0</p></div>
+            </div>
+            <div class="mb-4">
+              <div class="flex items-center justify-between text-sm mb-2"><span class="text-muted">Performance</span><span class="text-amber-500 font-medium">68.5%</span></div>
+              <div class="h-2.5 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-amber-500" style="width: 68.5%"></div></div>
+            </div>
+            <div class="flex items-center justify-between gap-2 pt-4 border-t border-border">
+              <div class="flex items-center gap-2 bc-controls">
+                <button class="bc-start-btn w-9 h-9 flex items-center justify-center rounded-lg bg-emerald-500/10 border border-emerald-500/40 text-emerald-500 hover:bg-emerald-500/20 transition-colors" data-id="4" title="Resume"><i data-lucide="play" class="w-4 h-4 shrink-0"></i></button>
+                <button class="bc-stop-btn w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-red-500 hover:border-red-500/40 transition-colors" data-id="4" title="Stop"><i data-lucide="square" class="w-4 h-4 shrink-0"></i></button>
+                <button class="bc-edit-btn w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-id="4" title="Settings"><i data-lucide="settings" class="w-4 h-4 shrink-0"></i></button>
+              </div>
+              <button class="bc-details-btn px-3 py-2 rounded-lg bg-panel border border-border text-text text-xs font-semibold hover:border-accent/40 transition-colors whitespace-nowrap" data-id="4">View Details</button>
+            </div>
+          </div>
+
+          <!-- Bot 5 - Stopped -->
+          <div class="bc-bot rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors p-5 sm:p-6" data-id="5" data-status="stopped" data-strategy="scalping">
+            <div class="flex items-start justify-between mb-4 gap-3">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-red-500 to-rose-600 flex items-center justify-center shrink-0 opacity-60">
+                  <i data-lucide="zap" class="w-6 h-6 text-white shrink-0"></i>
+                </div>
+                <div class="min-w-0">
+                  <h3 class="font-bold text-text truncate opacity-70">High Risk Scalper</h3>
+                  <p class="text-xs text-muted">XAU/USD &bull; Scalping</p>
+                </div>
+              </div>
+              <div class="flex items-center gap-2 shrink-0">
+                <span class="w-2.5 h-2.5 rounded-full bg-red-500 shrink-0 bc-status-dot"></span>
+                <span class="text-xs font-medium text-red-500 bc-status-label">Stopped</span>
+              </div>
+            </div>
+            <div class="grid grid-cols-3 gap-2 sm:gap-4 mb-4">
+              <div><p class="text-xs text-muted mb-1">Last P/L</p><p class="text-base sm:text-lg font-bold text-red-500">-$340</p></div>
+              <div><p class="text-xs text-muted mb-1">Win Rate</p><p class="text-base sm:text-lg font-bold text-text">42.1%</p></div>
+              <div><p class="text-xs text-muted mb-1">Trades</p><p class="text-base sm:text-lg font-bold text-text">89</p></div>
+            </div>
+            <div class="mb-4">
+              <div class="flex items-center justify-between text-sm mb-2"><span class="text-muted">Performance</span><span class="text-red-500 font-medium">42.1%</span></div>
+              <div class="h-2.5 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-red-500" style="width: 42.1%"></div></div>
+            </div>
+            <div class="flex items-center justify-between gap-2 pt-4 border-t border-border">
+              <div class="flex items-center gap-2 bc-controls">
+                <button class="bc-start-btn w-9 h-9 flex items-center justify-center rounded-lg bg-emerald-500/10 border border-emerald-500/40 text-emerald-500 hover:bg-emerald-500/20 transition-colors" data-id="5" title="Start"><i data-lucide="play" class="w-4 h-4 shrink-0"></i></button>
+                <button class="bc-edit-btn w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-id="5" title="Settings"><i data-lucide="settings" class="w-4 h-4 shrink-0"></i></button>
+                <button class="bc-delete-btn w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-red-500 hover:border-red-500/40 transition-colors" data-id="5" title="Delete"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+              </div>
+              <button class="bc-details-btn px-3 py-2 rounded-lg bg-panel border border-border text-text text-xs font-semibold hover:border-accent/40 transition-colors whitespace-nowrap" data-id="5">View Details</button>
+            </div>
+          </div>
+
+          <!-- Bot 6 - Running -->
+          <div class="bc-bot rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors p-5 sm:p-6" data-id="6" data-status="running" data-strategy="grid">
+            <div class="flex items-start justify-between mb-4 gap-3">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-teal-500 to-cyan-600 flex items-center justify-center shrink-0">
+                  <i data-lucide="bitcoin" class="w-6 h-6 text-white shrink-0"></i>
+                </div>
+                <div class="min-w-0">
+                  <h3 class="font-bold text-text truncate">Crypto Grid Bot</h3>
+                  <p class="text-xs text-muted">SOL/USDT &bull; Grid</p>
+                </div>
+              </div>
+              <div class="flex items-center gap-2 shrink-0">
+                <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0 bc-status-dot"></span>
+                <span class="text-xs font-medium text-emerald-500 bc-status-label">Running</span>
+              </div>
+            </div>
+            <div class="grid grid-cols-3 gap-2 sm:gap-4 mb-4">
+              <div><p class="text-xs text-muted mb-1">Today's P/L</p><p class="text-base sm:text-lg font-bold text-emerald-500">+$456</p></div>
+              <div><p class="text-xs text-muted mb-1">Win Rate</p><p class="text-base sm:text-lg font-bold text-text">72.4%</p></div>
+              <div><p class="text-xs text-muted mb-1">Trades</p><p class="text-base sm:text-lg font-bold text-text">67</p></div>
+            </div>
+            <div class="mb-4">
+              <div class="flex items-center justify-between text-sm mb-2"><span class="text-muted">Performance</span><span class="text-emerald-500 font-medium">72.4%</span></div>
+              <div class="h-2.5 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-emerald-500" style="width: 72.4%"></div></div>
+            </div>
+            <div class="flex items-center justify-between gap-2 pt-4 border-t border-border">
+              <div class="flex items-center gap-2 bc-controls">
+                <button class="bc-pause-btn w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-id="6" title="Pause"><i data-lucide="pause" class="w-4 h-4 shrink-0"></i></button>
+                <button class="bc-stop-btn w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-red-500 hover:border-red-500/40 transition-colors" data-id="6" title="Stop"><i data-lucide="square" class="w-4 h-4 shrink-0"></i></button>
+                <button class="bc-edit-btn w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-id="6" title="Settings"><i data-lucide="settings" class="w-4 h-4 shrink-0"></i></button>
+              </div>
+              <button class="bc-details-btn px-3 py-2 rounded-lg bg-panel border border-border text-text text-xs font-semibold hover:border-accent/40 transition-colors whitespace-nowrap" data-id="6">View Details</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Recent Bot Activity -->
+        <div class="rounded-2xl bg-panel border border-border overflow-hidden">
+          <div class="p-4 sm:p-6 border-b border-border flex items-center justify-between gap-3">
+            <div class="min-w-0">
+              <h3 class="text-lg font-bold text-text">Recent Bot Activity</h3>
+              <p class="text-sm text-muted">Latest trades and actions from your bots</p>
+            </div>
+            <button id="bcViewAllBtn" class="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap shrink-0">
+              <i data-lucide="history" class="w-4 h-4 shrink-0"></i>
+              <span class="hidden sm:inline">View All</span>
+            </button>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full border-collapse min-w-[860px] whitespace-nowrap">
+              <thead>
+                <tr class="text-left">
+                  <th class="sm:sticky sm:left-0 sm:bg-panel px-4 py-3.5 text-xs font-semibold text-muted uppercase tracking-wide border-b border-border z-10">Bot Name</th>
+                  <th class="px-4 py-3.5 text-xs font-semibold text-muted uppercase tracking-wide border-b border-border">Action</th>
+                  <th class="px-4 py-3.5 text-xs font-semibold text-muted uppercase tracking-wide border-b border-border">Pair</th>
+                  <th class="px-4 py-3.5 text-xs font-semibold text-muted uppercase tracking-wide border-b border-border">Type</th>
+                  <th class="px-4 py-3.5 text-xs font-semibold text-muted uppercase tracking-wide border-b border-border">Price</th>
+                  <th class="px-4 py-3.5 text-xs font-semibold text-muted uppercase tracking-wide border-b border-border">Amount</th>
+                  <th class="px-4 py-3.5 text-xs font-semibold text-muted uppercase tracking-wide border-b border-border">P/L</th>
+                  <th class="px-4 py-3.5 text-xs font-semibold text-muted uppercase tracking-wide border-b border-border">Time</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr class="hover:bg-accent/5 transition-colors">
+                  <td class="sm:sticky sm:left-0 sm:bg-panel px-4 py-4 border-b border-border">
+                    <div class="flex items-center gap-3">
+                      <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shrink-0"><i data-lucide="zap" class="w-4 h-4 text-white shrink-0"></i></div>
+                      <span class="font-medium text-text">Scalper Pro v2</span>
+                    </div>
+                  </td>
+                  <td class="px-4 py-4 border-b border-border"><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">Buy</span></td>
+                  <td class="px-4 py-4 border-b border-border font-medium text-text">EUR/USD</td>
+                  <td class="px-4 py-4 border-b border-border text-muted">Market</td>
+                  <td class="px-4 py-4 border-b border-border font-mono text-sm text-text">1.0842</td>
+                  <td class="px-4 py-4 border-b border-border font-mono text-sm text-text">0.5 Lot</td>
+                  <td class="px-4 py-4 border-b border-border font-semibold text-emerald-500">+$124.50</td>
+                  <td class="px-4 py-4 border-b border-border text-muted">2 min ago</td>
+                </tr>
+                <tr class="hover:bg-accent/5 transition-colors">
+                  <td class="sm:sticky sm:left-0 sm:bg-panel px-4 py-4 border-b border-border">
+                    <div class="flex items-center gap-3">
+                      <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-blue-600 flex items-center justify-center shrink-0"><i data-lucide="grid-3x3" class="w-4 h-4 text-white shrink-0"></i></div>
+                      <span class="font-medium text-text">Grid Master BTC</span>
+                    </div>
+                  </td>
+                  <td class="px-4 py-4 border-b border-border"><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-500/15 text-red-500">Sell</span></td>
+                  <td class="px-4 py-4 border-b border-border font-medium text-text">BTC/USDT</td>
+                  <td class="px-4 py-4 border-b border-border text-muted">Limit</td>
+                  <td class="px-4 py-4 border-b border-border font-mono text-sm text-text">67,245.00</td>
+                  <td class="px-4 py-4 border-b border-border font-mono text-sm text-text">0.025 BTC</td>
+                  <td class="px-4 py-4 border-b border-border font-semibold text-emerald-500">+$89.20</td>
+                  <td class="px-4 py-4 border-b border-border text-muted">5 min ago</td>
+                </tr>
+                <tr class="hover:bg-accent/5 transition-colors">
+                  <td class="sm:sticky sm:left-0 sm:bg-panel px-4 py-4 border-b border-border">
+                    <div class="flex items-center gap-3">
+                      <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center shrink-0"><i data-lucide="layers" class="w-4 h-4 text-white shrink-0"></i></div>
+                      <span class="font-medium text-text">DCA Accumulator</span>
+                    </div>
+                  </td>
+                  <td class="px-4 py-4 border-b border-border"><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">Buy</span></td>
+                  <td class="px-4 py-4 border-b border-border font-medium text-text">ETH/USDT</td>
+                  <td class="px-4 py-4 border-b border-border text-muted">Market</td>
+                  <td class="px-4 py-4 border-b border-border font-mono text-sm text-text">3,421.50</td>
+                  <td class="px-4 py-4 border-b border-border font-mono text-sm text-text">0.15 ETH</td>
+                  <td class="px-4 py-4 border-b border-border font-semibold text-emerald-500">+$56.80</td>
+                  <td class="px-4 py-4 border-b border-border text-muted">12 min ago</td>
+                </tr>
+                <tr class="hover:bg-accent/5 transition-colors">
+                  <td class="sm:sticky sm:left-0 sm:bg-panel px-4 py-4 border-b border-border">
+                    <div class="flex items-center gap-3">
+                      <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-teal-500 to-cyan-600 flex items-center justify-center shrink-0"><i data-lucide="bitcoin" class="w-4 h-4 text-white shrink-0"></i></div>
+                      <span class="font-medium text-text">Crypto Grid Bot</span>
+                    </div>
+                  </td>
+                  <td class="px-4 py-4 border-b border-border"><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">Buy</span></td>
+                  <td class="px-4 py-4 border-b border-border font-medium text-text">SOL/USDT</td>
+                  <td class="px-4 py-4 border-b border-border text-muted">Limit</td>
+                  <td class="px-4 py-4 border-b border-border font-mono text-sm text-text">142.85</td>
+                  <td class="px-4 py-4 border-b border-border font-mono text-sm text-text">5.2 SOL</td>
+                  <td class="px-4 py-4 border-b border-border font-semibold text-emerald-500">+$34.60</td>
+                  <td class="px-4 py-4 border-b border-border text-muted">18 min ago</td>
+                </tr>
+                <tr class="hover:bg-accent/5 transition-colors">
+                  <td class="sm:sticky sm:left-0 sm:bg-panel px-4 py-4 border-b border-border">
+                    <div class="flex items-center gap-3">
+                      <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shrink-0"><i data-lucide="zap" class="w-4 h-4 text-white shrink-0"></i></div>
+                      <span class="font-medium text-text">Scalper Pro v2</span>
+                    </div>
+                  </td>
+                  <td class="px-4 py-4 border-b border-border"><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-500/15 text-red-500">Sell</span></td>
+                  <td class="px-4 py-4 border-b border-border font-medium text-text">EUR/USD</td>
+                  <td class="px-4 py-4 border-b border-border text-muted">Market</td>
+                  <td class="px-4 py-4 border-b border-border font-mono text-sm text-text">1.0856</td>
+                  <td class="px-4 py-4 border-b border-border font-mono text-sm text-text">0.5 Lot</td>
+                  <td class="px-4 py-4 border-b border-border font-semibold text-red-500">-$28.40</td>
+                  <td class="px-4 py-4 border-b border-border text-muted">25 min ago</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- ===================== Page-scoped Drawers / Overlay / Toast ===================== -->
+    <div class="drawer-overlay" id="bcDrawerOverlay"></div>
+
+    <!-- Bot Details Drawer -->
+    <div class="drawer" id="bcDetailsDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <div class="min-w-0">
+            <h2 class="text-xl font-bold text-text">Bot Details</h2>
+            <p class="text-sm text-muted">Performance and statistics</p>
+          </div>
+          <button class="bc-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0">
+            <i data-lucide="x" class="w-5 h-5 shrink-0"></i>
+          </button>
+        </div>
+
+        <div class="space-y-6">
+          <!-- Bot Header -->
+          <div class="p-5 rounded-2xl bg-gradient-to-br from-accent/15 to-teal-500/5 border border-accent/20">
+            <div class="flex items-center justify-between gap-3">
+              <div class="flex items-center gap-4 min-w-0">
+                <div class="w-14 h-14 rounded-xl flex items-center justify-center shrink-0" id="bcDetailIconWrap">
+                  <i data-lucide="zap" class="w-7 h-7 text-white shrink-0" id="bcDetailIcon"></i>
+                </div>
+                <div class="min-w-0">
+                  <h3 class="font-bold text-text text-lg truncate" id="bcDetailName">Scalper Pro v2</h3>
+                  <p class="text-sm text-muted" id="bcDetailSub">EUR/USD &bull; Scalping Strategy</p>
+                </div>
+              </div>
+              <div class="flex items-center gap-2 shrink-0">
+                <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0" id="bcDetailStatusDot"></span>
+                <span class="text-sm font-semibold text-emerald-500" id="bcDetailStatusLabel">Running</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Performance Overview -->
+          <div class="grid grid-cols-1 @xs:grid-cols-2 gap-3 sm:gap-4">
+            <div class="p-4 bg-border/30 rounded-xl text-center">
+              <p class="text-xs text-muted mb-1">Total Profit</p>
+              <p class="text-2xl font-bold text-emerald-500" id="bcDetailProfit">+$12,458</p>
+              <p class="text-xs text-emerald-500" id="bcDetailRoi">+24.5% ROI</p>
+            </div>
+            <div class="p-4 bg-border/30 rounded-xl text-center">
+              <p class="text-xs text-muted mb-1">Win Rate</p>
+              <p class="text-2xl font-bold text-text" id="bcDetailWinRate">84.2%</p>
+              <p class="text-xs text-muted" id="bcDetailTradesRatio">422 / 501 trades</p>
+            </div>
+            <div class="p-4 bg-border/30 rounded-xl text-center">
+              <p class="text-xs text-muted mb-1">Avg. Trade Duration</p>
+              <p class="text-2xl font-bold text-text" id="bcDetailDuration">4.2m</p>
+              <p class="text-xs text-muted">Quick scalping</p>
+            </div>
+            <div class="p-4 bg-border/30 rounded-xl text-center">
+              <p class="text-xs text-muted mb-1">Max Drawdown</p>
+              <p class="text-2xl font-bold text-amber-500" id="bcDetailDrawdown">-8.4%</p>
+              <p class="text-xs text-muted">Within limits</p>
+            </div>
+          </div>
+
+          <!-- Performance Chart -->
+          <div class="space-y-3">
+            <h4 class="font-semibold text-text">Performance Chart</h4>
+            <div class="h-48 rounded-xl border border-border p-2">
+              <canvas id="bcDetailChart"></canvas>
+            </div>
+          </div>
+
+          <!-- Recent Trades -->
+          <div class="space-y-3">
+            <h4 class="font-semibold text-text">Recent Trades</h4>
+            <div class="space-y-2">
+              <div class="flex items-center justify-between p-3 bg-border/30 rounded-xl">
+                <div class="flex items-center gap-3 min-w-0">
+                  <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">Buy</span>
+                  <span class="font-medium text-text" id="bcDetailTradePair1">EUR/USD</span>
+                </div>
+                <div class="text-right shrink-0"><p class="text-emerald-500 font-semibold">+$124.50</p><p class="text-xs text-muted">2 min ago</p></div>
+              </div>
+              <div class="flex items-center justify-between p-3 bg-border/30 rounded-xl">
+                <div class="flex items-center gap-3 min-w-0">
+                  <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-500/15 text-red-500">Sell</span>
+                  <span class="font-medium text-text" id="bcDetailTradePair2">EUR/USD</span>
+                </div>
+                <div class="text-right shrink-0"><p class="text-emerald-500 font-semibold">+$89.20</p><p class="text-xs text-muted">8 min ago</p></div>
+              </div>
+              <div class="flex items-center justify-between p-3 bg-border/30 rounded-xl">
+                <div class="flex items-center gap-3 min-w-0">
+                  <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">Buy</span>
+                  <span class="font-medium text-text" id="bcDetailTradePair3">EUR/USD</span>
+                </div>
+                <div class="text-right shrink-0"><p class="text-red-500 font-semibold">-$28.40</p><p class="text-xs text-muted">15 min ago</p></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Actions -->
+          <div class="grid grid-cols-1 @xs:grid-cols-2 gap-3">
+            <button class="bc-detail-settings inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="settings" class="w-4 h-4 shrink-0"></i>Settings</button>
+            <button class="bc-detail-stop inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-red-500/15 text-red-500 text-sm font-semibold hover:bg-red-500/25 transition-colors whitespace-nowrap"><i data-lucide="square" class="w-4 h-4 shrink-0"></i>Stop Bot</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Create / Edit Bot Drawer -->
+    <div class="drawer" id="bcFormDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <div class="min-w-0">
+            <h2 class="text-xl font-bold text-text" id="bcFormTitle">Create New Bot</h2>
+            <p class="text-sm text-muted" id="bcFormSubtitle">Configure your automated trading bot</p>
+          </div>
+          <button class="bc-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0">
+            <i data-lucide="x" class="w-5 h-5 shrink-0"></i>
+          </button>
+        </div>
+
+        <!-- Edit-mode bot banner (hidden when creating) -->
+        <div class="hidden p-4 mb-5 rounded-xl bg-gradient-to-r from-accent/10 to-teal-500/10 border border-accent/20" id="bcFormBanner">
+          <div class="flex items-center gap-3 min-w-0">
+            <div class="w-12 h-12 rounded-xl flex items-center justify-center shrink-0" id="bcFormBannerIconWrap">
+              <i data-lucide="bot" class="w-6 h-6 text-white shrink-0" id="bcFormBannerIcon"></i>
+            </div>
+            <div class="min-w-0">
+              <h3 class="font-bold text-text truncate" id="bcFormBannerName">Scalper Pro v2</h3>
+              <p class="text-sm text-muted" id="bcFormBannerSub">EUR/USD &bull; Scalping Strategy</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="space-y-5">
+          <!-- Bot Name -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Bot Name</label>
+            <input type="text" id="bcFormName" placeholder="Enter bot name" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" />
+          </div>
+
+          <!-- Trading Pair -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Trading Pair</label>
+            <select id="bcFormPair" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors">
+              <option>EUR/USD</option><option>GBP/USD</option><option>BTC/USDT</option><option>ETH/USDT</option><option>SOL/USDT</option><option>XAU/USD</option>
+            </select>
+          </div>
+
+          <!-- Strategy Type -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Strategy Type</label>
+            <select id="bcFormStrategy" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors">
+              <option value="scalping">Scalping</option>
+              <option value="grid">Grid Trading</option>
+              <option value="dca">DCA (Dollar Cost Averaging)</option>
+              <option value="martingale">Martingale</option>
+            </select>
+          </div>
+
+          <!-- Investment + Drawdown -->
+          <div class="grid grid-cols-1 @xs:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm font-semibold text-text mb-2">Initial Investment</label>
+              <div class="relative">
+                <span class="absolute left-3 top-1/2 -translate-y-1/2 text-muted">$</span>
+                <input type="number" placeholder="1000" class="w-full p-3 pl-8 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" />
+              </div>
+            </div>
+            <div>
+              <label class="block text-sm font-semibold text-text mb-2">Max Drawdown</label>
+              <div class="relative">
+                <input type="number" placeholder="10" class="w-full p-3 pr-8 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" />
+                <span class="absolute right-3 top-1/2 -translate-y-1/2 text-muted">%</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Strategy-specific settings (static panels, shown by selected strategy) -->
+          <div>
+            <!-- Scalping -->
+            <div class="bc-strategy-panel p-4 bg-border/30 rounded-xl space-y-3" data-strategy="scalping">
+              <h4 class="font-semibold text-text">Scalping Settings</h4>
+              <div class="grid grid-cols-1 @xs:grid-cols-2 gap-4">
+                <div><label class="block text-xs text-muted mb-1">Pip Target</label><input type="number" placeholder="5" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+                <div><label class="block text-xs text-muted mb-1">Max Trades/Day</label><input type="number" placeholder="50" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+              </div>
+            </div>
+            <!-- Grid -->
+            <div class="bc-strategy-panel hidden p-4 bg-border/30 rounded-xl space-y-3" data-strategy="grid">
+              <h4 class="font-semibold text-text">Grid Settings</h4>
+              <div class="grid grid-cols-1 @xs:grid-cols-2 gap-4">
+                <div><label class="block text-xs text-muted mb-1">Grid Levels</label><input type="number" placeholder="10" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+                <div><label class="block text-xs text-muted mb-1">Grid Spacing (%)</label><input type="number" placeholder="1" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+              </div>
+            </div>
+            <!-- DCA -->
+            <div class="bc-strategy-panel hidden p-4 bg-border/30 rounded-xl space-y-3" data-strategy="dca">
+              <h4 class="font-semibold text-text">DCA Settings</h4>
+              <div class="grid grid-cols-1 @xs:grid-cols-2 gap-4">
+                <div><label class="block text-xs text-muted mb-1">Safety Orders</label><input type="number" placeholder="5" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+                <div><label class="block text-xs text-muted mb-1">Price Deviation (%)</label><input type="number" placeholder="2" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+              </div>
+            </div>
+            <!-- Martingale -->
+            <div class="bc-strategy-panel hidden p-4 bg-border/30 rounded-xl space-y-3" data-strategy="martingale">
+              <h4 class="font-semibold text-text">Martingale Settings</h4>
+              <div class="grid grid-cols-1 @xs:grid-cols-2 gap-4">
+                <div><label class="block text-xs text-muted mb-1">Multiplier</label><input type="number" placeholder="2" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+                <div><label class="block text-xs text-muted mb-1">Max Steps</label><input type="number" placeholder="5" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+              </div>
+              <div class="p-3 bg-red-500/10 rounded-lg border border-red-500/20">
+                <p class="text-xs text-red-500"><strong>Warning:</strong> Martingale strategy carries high risk. Use with caution.</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Risk Management -->
+          <div class="border-t border-border pt-5">
+            <h3 class="font-semibold text-text mb-3">Risk Management</h3>
+            <div class="space-y-3">
+              <div class="flex items-center justify-between gap-3 p-3 bg-border/30 rounded-xl">
+                <div class="min-w-0"><p class="font-medium text-text">Stop Loss</p><p class="text-xs text-muted">Automatically close losing trades</p></div>
+                <div class="js-toggle-switch toggle-switch active shrink-0" role="switch" aria-checked="true" tabindex="0"></div>
+              </div>
+              <div class="flex items-center justify-between gap-3 p-3 bg-border/30 rounded-xl">
+                <div class="min-w-0"><p class="font-medium text-text">Take Profit</p><p class="text-xs text-muted">Automatically close winning trades</p></div>
+                <div class="js-toggle-switch toggle-switch active shrink-0" role="switch" aria-checked="true" tabindex="0"></div>
+              </div>
+              <div class="flex items-center justify-between gap-3 p-3 bg-border/30 rounded-xl">
+                <div class="min-w-0"><p class="font-medium text-text">Trailing Stop</p><p class="text-xs text-muted">Move stop loss with profit</p></div>
+                <div class="js-toggle-switch toggle-switch shrink-0" role="switch" aria-checked="false" tabindex="0"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- SL / TP -->
+          <div class="grid grid-cols-1 @xs:grid-cols-2 gap-4">
+            <div><label class="block text-sm font-semibold text-text mb-2">Stop Loss (%)</label><input type="number" placeholder="2" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+            <div><label class="block text-sm font-semibold text-text mb-2">Take Profit (%)</label><input type="number" placeholder="5" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+          </div>
+
+          <!-- Advanced -->
+          <div class="border-t border-border pt-5">
+            <h3 class="font-semibold text-text mb-3">Advanced Settings</h3>
+            <div class="space-y-3">
+              <div class="flex items-center justify-between gap-3 p-3 bg-border/30 rounded-xl">
+                <div class="min-w-0"><p class="font-medium text-text">24/7 Trading</p><p class="text-xs text-muted">Trade around the clock</p></div>
+                <div class="js-toggle-switch toggle-switch active shrink-0" role="switch" aria-checked="true" tabindex="0"></div>
+              </div>
+              <div class="flex items-center justify-between gap-3 p-3 bg-border/30 rounded-xl">
+                <div class="min-w-0"><p class="font-medium text-text">Auto-restart on Error</p><p class="text-xs text-muted">Automatically restart if bot crashes</p></div>
+                <div class="js-toggle-switch toggle-switch active shrink-0" role="switch" aria-checked="true" tabindex="0"></div>
+              </div>
+              <div class="flex items-center justify-between gap-3 p-3 bg-border/30 rounded-xl">
+                <div class="min-w-0"><p class="font-medium text-text">Notifications</p><p class="text-xs text-muted">Receive trade notifications</p></div>
+                <div class="js-toggle-switch toggle-switch active shrink-0" role="switch" aria-checked="true" tabindex="0"></div>
+              </div>
+              <div class="flex items-center justify-between gap-3 p-3 bg-border/30 rounded-xl">
+                <div class="min-w-0"><p class="font-medium text-text">Paper Trading</p><p class="text-xs text-muted">Test without real money</p></div>
+                <div class="js-toggle-switch toggle-switch shrink-0" role="switch" aria-checked="false" tabindex="0"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex gap-3 mt-8">
+          <button class="bc-close-drawer flex-1 justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors">Cancel</button>
+          <button class="bc-form-submit flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap">
+            <i data-lucide="plus" class="w-4 h-4 shrink-0" id="bcFormSubmitIcon"></i>
+            <span id="bcFormSubmitLabel">Create Bot</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="bcToast">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0">
+        <i data-lucide="check" class="w-5 h-5 text-white shrink-0"></i>
+      </div>
+      <div class="min-w-0">
+        <p class="font-semibold text-text" id="bcToastTitle">Success</p>
+        <p class="text-sm text-muted" id="bcToastMessage">Action completed successfully</p>
+      </div>
+      <button class="bc-toast-close ml-auto w-9 h-9 shrink-0 flex items-center justify-center rounded-lg text-muted hover:text-text transition-colors">
+        <i data-lucide="x" class="w-4 h-4 shrink-0"></i>
+      </button>
+    </div>
+
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
+  </body>
+</html>

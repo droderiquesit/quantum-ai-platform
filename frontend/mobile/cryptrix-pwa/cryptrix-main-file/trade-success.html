@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>Cryptrix — AI Crypto Investing & Trading App</title>
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="apple-touch-icon" href="/assets/images/logo.png" />
+    <meta name="theme-color" content="#00D4AA" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="shortcut icon" href="./assets/images/favicon.ico" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"
+      rel="stylesheet"
+    />
+
+    <!-- Theme Script (Placed early to prevent FOUC) -->
+    <script>
+      (function () {
+        const saved = localStorage.getItem("theme") || "dark";
+        if (saved === "dark") document.documentElement.classList.add("dark");
+        else document.documentElement.classList.remove("dark");
+      })();
+    </script>
+  <link href="assets/css/index.css" rel="stylesheet"></head>
+  <body class="font-sans overflow-x-hidden">
+    <div class="min-h-screen flex justify-center">
+      <div
+        class="relative w-full max-w-[430px] min-h-screen overflow-x-hidden shadow-[0_0_80px_rgba(0,212,170,0.08)]"
+        id="app"
+      >
+        <div
+          class="min-h-screen flex flex-col items-center justify-center px-6 text-center"
+        >
+          <div class="relative mb-8">
+            <div
+              class="absolute inset-[-20px] rounded-full border-2 border-success/20 animate-pulse"
+            ></div>
+            <div
+              class="w-28 h-28 rounded-full bg-success/15 border-2 border-success/30 flex items-center justify-center"
+            >
+              <svg
+                width="52"
+                height="52"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="#00C896"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+            </div>
+          </div>
+          <div class="text-[28px] font-extrabold mb-2">Order Executed!</div>
+          <div
+            class="text-white/50 text-[15px] leading-relaxed mb-8 max-w-[280px]"
+          >
+            Your buy order for Bitcoin has been successfully executed at the
+            best available price.
+          </div>
+          <div
+            class="bg-surface border border-white/[0.08] rounded-card p-5 w-full max-w-[340px] mb-8 text-left"
+            dir="auto"
+          >
+            <div class="flex justify-between py-2.5 border-b border-white/5">
+              <span class="text-[13px] text-white/40">Status</span>
+              <span class="text-[13px] font-semibold text-success"
+                >✓ Completed</span
+              >
+            </div>
+            <div class="flex justify-between py-2.5 border-b border-white/5">
+              <span class="text-[13px] text-white/40">Asset</span>
+              <span class="text-[13px] font-semibold">Bitcoin (BTC)</span>
+            </div>
+            <div class="flex justify-between py-2.5 border-b border-white/5">
+              <span class="text-[13px] text-white/40">Amount Bought</span>
+              <span class="text-[13px] font-semibold">0.01139 BTC</span>
+            </div>
+            <div class="flex justify-between py-2.5 border-b border-white/5">
+              <span class="text-[13px] text-white/40">Price Paid</span>
+              <span class="text-[13px] font-semibold">$43,897.18</span>
+            </div>
+            <div class="flex justify-between py-2.5 border-b border-white/5">
+              <span class="text-[13px] text-white/40">Fee</span>
+              <span class="text-[13px] font-semibold">$0.50</span>
+            </div>
+            <div class="flex justify-between py-2.5">
+              <span class="text-[13px] text-white/40">Time</span>
+              <span class="text-[13px] font-semibold text-white/40"
+                >Just now</span
+              >
+            </div>
+          </div>
+          <div class="flex gap-3 w-full max-w-[340px]">
+            <a
+              href="portfolio-overview.html"
+              class="flex-1 bg-primary text-bg-dark font-bold rounded-btn h-12 flex items-center justify-center gap-2 shadow-primary"
+              >View Portfolio</a
+            >
+            <a
+              href="trade.html"
+              class="flex-1 bg-surface-2 border border-white/[0.08] rounded-btn h-12 flex items-center justify-center font-semibold text-sm"
+              >Trade More</a
+            >
+          </div>
+        </div>
+      </div>
+    </div>
+    <script src="./assets/js/data.js"></script>
+    <script src="./assets/js/components.js"></script>
+    <script src="./assets/js/app.js"></script>
+  <script defer src="index.js"></script></body>
+</html>

@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>Cryptrix — AI Crypto Investing & Trading App</title>
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="apple-touch-icon" href="/assets/images/logo.png" />
+    <meta name="theme-color" content="#00D4AA" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="shortcut icon" href="./assets/images/favicon.ico" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"
+      rel="stylesheet"
+    />
+
+    <!-- Theme Script (Placed early to prevent FOUC) -->
+    <script>
+      (function () {
+        const saved = localStorage.getItem("theme") || "dark";
+        if (saved === "dark") document.documentElement.classList.add("dark");
+        else document.documentElement.classList.remove("dark");
+      })();
+    </script>
+  </head>
+  <body class="font-sans overflow-x-hidden">
+    <div class="min-h-screen flex justify-center">
+      <div
+        class="relative w-full max-w-[430px] min-h-screen overflow-x-hidden shadow-[0_0_80px_rgba(0,212,170,0.08)]"
+        id="app"
+      >
+        <div
+          class="flex items-center justify-between px-5 py-3.5 sticky top-0 bg-bg-dark/95 backdrop-blur-sm border-b border-white/5 z-10"
+        >
+          <a
+            href="javascript:history.back()"
+            class="w-10 h-10 rounded-xl bg-surface-2 border border-white/[0.08] flex items-center justify-center flex-shrink-0"
+          >
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M19 12H5M12 19l-7-7 7-7" />
+            </svg>
+          </a>
+          <h1 class="text-[17px] font-bold">Confirm Order</h1>
+          <div class="w-10"></div>
+        </div>
+        <div class="px-5 pt-5 pb-24 animate-fade-up">
+          <div class="text-center mb-8">
+            <div
+              class="w-20 h-20 rounded-full bg-primary/15 border-2 border-primary/25 flex items-center justify-center mx-auto mb-4"
+            >
+              <svg
+                width="36"
+                height="36"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="#00D4AA"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <polyline points="23 6 13.5 15.5 8.5 10.5 1 18" />
+                <polyline points="17 6 23 6 23 12" />
+              </svg>
+            </div>
+            <div class="text-[22px] font-extrabold mb-1">Review Your Order</div>
+            <div class="text-white/50 text-sm">
+              Please review before confirming
+            </div>
+          </div>
+          <div
+            class="bg-surface border border-white/[0.08] rounded-card p-4 mb-5"
+          >
+            <div
+              class="flex items-center gap-3 pb-4 mb-4 border-b border-white/5"
+            >
+              <div
+                class="w-12 h-12 rounded-[14px] flex items-center justify-center text-sm font-black"
+                style="background: #f7931a22; color: #f7931a"
+              >
+                BTC
+              </div>
+              <div>
+                <div class="text-base font-extrabold">Bitcoin</div>
+                <div class="text-xs text-white/40">Market Buy Order</div>
+              </div>
+              <span
+                class="ml-auto bg-success/15 text-success text-xs font-bold px-2 py-0.5 rounded-full"
+                >BUY</span
+              >
+            </div>
+            <div class="flex justify-between py-2.5 border-b border-white/5">
+              <span class="text-[13px] text-white/40">Order Type</span>
+              <span class="text-[13px] font-semibold">Market Buy</span>
+            </div>
+            <div class="flex justify-between py-2.5 border-b border-white/5">
+              <span class="text-[13px] text-white/40">Amount</span>
+              <span class="text-[13px] font-semibold">$500.00 USDT</span>
+            </div>
+            <div class="flex justify-between py-2.5 border-b border-white/5">
+              <span class="text-[13px] text-white/40">You Get</span>
+              <span class="text-[13px] font-semibold">≈ 0.01139 BTC</span>
+            </div>
+            <div class="flex justify-between py-2.5 border-b border-white/5">
+              <span class="text-[13px] text-white/40">Price</span>
+              <span class="text-[13px] font-semibold">$43,900.24</span>
+            </div>
+            <div class="flex justify-between py-2.5 border-b border-white/5">
+              <span class="text-[13px] text-white/40">Fee (0.1%)</span>
+              <span class="text-[13px] font-semibold">$0.50</span>
+            </div>
+            <div class="flex justify-between py-2.5">
+              <span class="text-[13px] text-white/40">Total Deducted</span>
+              <span class="text-[13px] font-bold text-primary">$500.50</span>
+            </div>
+          </div>
+          <div
+            class="bg-warning/[0.08] border border-warning/20 rounded-xl p-4 mb-6"
+          >
+            <div class="text-xs text-white/50 leading-relaxed">
+              ⚠️ Market orders execute at current price which may vary slightly.
+              Your order will be filled immediately.
+            </div>
+          </div>
+          <a
+            href="trade-success.html"
+            class="bg-primary text-bg-dark font-bold rounded-btn h-12 flex items-center justify-center gap-2 transition-all active:scale-95 shadow-primary w-full mb-3"
+          >
+            Confirm Buy Order
+          </a>
+          <a
+            href="javascript:history.back()"
+            class="bg-surface-2 border border-white/[0.08] rounded-btn h-11 flex items-center justify-center font-semibold text-sm w-full"
+          >
+            Cancel
+          </a>
+        </div>
+        <include-bottom-nav />
+      </div>
+    </div>
+
+    <script src="./assets/js/data.js"></script>
+    <script src="./assets/js/components.js"></script>
+    <script src="./assets/js/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,598 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <script>
+      if (localStorage.getItem("theme") === "light") document.documentElement.classList.remove("dark");
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Subscription & Billing - SignalAIX | AI Forex & Crypto Trading Signals</title>
+    <link rel="icon" type="image/png" href="assets/images/favicon.png" />
+    <link rel="apple-touch-icon" href="assets/images/favicon.png" />
+  </head>
+  <body id="subscription-billing">
+    <div id="loader"><div class="spinner"></div><div class="loader-text">Loading SignalAIX...</div></div>
+    <include-sidebar />
+    <main class="main-content" id="mainContent">
+      <include-top-header />
+      <div class="inner-content max-sm:px-3 max-lg:px-4 max-lg:py-6 lg:p-6">
+        <!-- Page Header -->
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-6">
+          <div>
+            <h1 class="text-2xl md:text-3xl font-bold text-text mb-1">Subscription &amp; Billing</h1>
+            <p class="text-muted">Manage your plan, payment methods, and billing history</p>
+          </div>
+        </div>
+
+        <!-- Current Plan Hero -->
+        <div class="relative overflow-hidden rounded-2xl bg-panel border border-border p-5 sm:p-6 mb-6">
+          <div class="absolute top-0 right-0 w-96 h-96 bg-gradient-to-br from-accent/10 via-teal-500/10 to-indigo-500/10 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2 pointer-events-none"></div>
+          <div class="relative">
+            <div class="flex flex-col @3xl/content:flex-row @3xl/content:items-center justify-between gap-6">
+              <div class="flex items-start gap-4 min-w-0">
+                <div class="w-16 h-16 rounded-2xl bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0">
+                  <i data-lucide="crown" class="w-8 h-8 text-white shrink-0"></i>
+                </div>
+                <div class="min-w-0">
+                  <div class="flex flex-wrap items-center gap-3 mb-2">
+                    <h2 class="text-2xl font-bold text-text">Pro Trader Plan</h2>
+                    <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>Active</span>
+                  </div>
+                  <p class="text-muted mb-3">Your subscription renews on <span class="text-text font-semibold">January 15, 2025</span></p>
+                  <div class="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
+                    <div class="flex items-center gap-2"><i data-lucide="calendar" class="w-4 h-4 text-muted shrink-0"></i><span class="text-muted">Billing cycle: <span class="text-text font-medium">Monthly</span></span></div>
+                    <div class="flex items-center gap-2"><i data-lucide="clock" class="w-4 h-4 text-muted shrink-0"></i><span class="text-muted">18 days remaining</span></div>
+                  </div>
+                </div>
+              </div>
+              <div class="flex flex-col @xs:items-end gap-3 shrink-0">
+                <div class="@xs:text-right"><p class="text-sm text-muted">Current billing</p><p class="text-3xl font-bold bg-gradient-to-r from-accent to-teal-500 bg-clip-text text-transparent">$79<span class="text-lg text-muted font-normal">/mo</span></p></div>
+                <div class="flex flex-wrap gap-2">
+                  <button id="sbChangePlanBtn" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="refresh-cw" class="w-4 h-4 shrink-0"></i>Change Plan</button>
+                  <button id="sbCancelBtn" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-red-500/15 border border-red-500/30 text-red-500 text-sm font-semibold hover:bg-red-500/20 transition-colors whitespace-nowrap"><i data-lucide="x" class="w-4 h-4 shrink-0"></i>Cancel</button>
+                </div>
+              </div>
+            </div>
+            <div class="mt-6 pt-6 border-t border-border">
+              <div class="grid grid-cols-1 @xl/content:grid-cols-3 gap-6">
+                <div><div class="flex items-center justify-between mb-2"><span class="text-sm text-muted">AI Signals Used</span><span class="text-sm font-semibold text-text">847 / 1,000</span></div><div class="h-2 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-amber-500" style="width: 84.7%"></div></div></div>
+                <div><div class="flex items-center justify-between mb-2"><span class="text-sm text-muted">API Calls</span><span class="text-sm font-semibold text-text">12,450 / 50,000</span></div><div class="h-2 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-emerald-500" style="width: 24.9%"></div></div></div>
+                <div><div class="flex items-center justify-between mb-2"><span class="text-sm text-muted">Bot Automations</span><span class="text-sm font-semibold text-text">8 / 10</span></div><div class="h-2 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-amber-500" style="width: 80%"></div></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="flex gap-1 p-1 bg-bg border border-border rounded-2xl overflow-x-auto hide-scrollbar w-full mb-6">
+          <button class="sb-tab tab-button active inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="plans"><i data-lucide="package" class="w-4 h-4 shrink-0"></i><span>Plans &amp; Pricing</span></button>
+          <button class="sb-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="payment"><i data-lucide="credit-card" class="w-4 h-4 shrink-0"></i><span>Payment Methods</span></button>
+          <button class="sb-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="history"><i data-lucide="receipt" class="w-4 h-4 shrink-0"></i><span>Billing History</span></button>
+          <button class="sb-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="usage"><i data-lucide="chart-bar" class="w-4 h-4 shrink-0"></i><span>Usage Analytics</span></button>
+        </div>
+
+        <!-- ============ TAB: Plans & Pricing ============ -->
+        <div class="sb-pane tab-content active" data-pane="plans">
+          <!-- Billing toggle -->
+          <div class="flex flex-wrap items-center justify-center gap-4 mb-8">
+            <span class="text-sm font-medium text-muted" id="sbMonthlyLabel">Monthly</span>
+            <div class="js-toggle-switch toggle-switch active" id="sbBillingToggle" role="switch" aria-checked="true" tabindex="0"></div>
+            <span class="text-sm font-medium text-text flex items-center gap-2" id="sbYearlyLabel">Yearly<span class="px-2 py-1 text-xs font-bold text-white bg-gradient-to-r from-accent to-teal-500 rounded-full">Save 20%</span></span>
+          </div>
+
+          <!-- Pricing cards -->
+          <div class="grid grid-cols-1 xs:grid-cols-2 @4xl/content:grid-cols-4 gap-6">
+            <!-- Starter -->
+            <div class="rounded-2xl bg-panel border border-border p-5 sm:p-6">
+              <div class="mb-6"><div class="w-12 h-12 rounded-xl bg-slate-500/15 flex items-center justify-center mb-4 shrink-0"><i data-lucide="zap" class="w-6 h-6 text-slate-400 shrink-0"></i></div><h3 class="text-xl font-bold text-text mb-1">Starter</h3><p class="text-sm text-muted">Perfect for beginners</p></div>
+              <div class="mb-6"><div class="flex items-baseline gap-1"><span class="text-4xl font-bold text-text" id="sbStarterPrice">$23</span><span class="text-muted">/mo</span></div><p class="text-xs text-muted mt-1" id="sbStarterNote">Billed yearly at $279</p></div>
+              <ul class="space-y-3 mb-6">
+                <li class="flex items-center gap-3 text-sm"><div class="w-5 h-5 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-3 h-3 text-emerald-500 shrink-0"></i></div><span class="text-text">100 AI Signals/month</span></li>
+                <li class="flex items-center gap-3 text-sm"><div class="w-5 h-5 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-3 h-3 text-emerald-500 shrink-0"></i></div><span class="text-text">5 Watchlists</span></li>
+                <li class="flex items-center gap-3 text-sm"><div class="w-5 h-5 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-3 h-3 text-emerald-500 shrink-0"></i></div><span class="text-text">Basic Analytics</span></li>
+                <li class="flex items-center gap-3 text-sm"><div class="w-5 h-5 rounded-full bg-red-500/15 flex items-center justify-center shrink-0"><i data-lucide="x" class="w-3 h-3 text-red-500 shrink-0"></i></div><span class="text-muted">Bot Automations</span></li>
+                <li class="flex items-center gap-3 text-sm"><div class="w-5 h-5 rounded-full bg-red-500/15 flex items-center justify-center shrink-0"><i data-lucide="x" class="w-3 h-3 text-red-500 shrink-0"></i></div><span class="text-muted">API Access</span></li>
+              </ul>
+              <button class="sb-plan-action w-full justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors" data-plan="Starter">Downgrade</button>
+            </div>
+            <!-- Basic -->
+            <div class="rounded-2xl bg-panel border border-border p-5 sm:p-6">
+              <div class="mb-6"><div class="w-12 h-12 rounded-xl bg-sky-500/15 flex items-center justify-center mb-4 shrink-0"><i data-lucide="flame" class="w-6 h-6 text-sky-500 shrink-0"></i></div><h3 class="text-xl font-bold text-text mb-1">Basic</h3><p class="text-sm text-muted">For active traders</p></div>
+              <div class="mb-6"><div class="flex items-baseline gap-1"><span class="text-4xl font-bold text-text" id="sbBasicPrice">$39</span><span class="text-muted">/mo</span></div><p class="text-xs text-muted mt-1" id="sbBasicNote">Billed yearly at $470</p></div>
+              <ul class="space-y-3 mb-6">
+                <li class="flex items-center gap-3 text-sm"><div class="w-5 h-5 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-3 h-3 text-emerald-500 shrink-0"></i></div><span class="text-text">500 AI Signals/month</span></li>
+                <li class="flex items-center gap-3 text-sm"><div class="w-5 h-5 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-3 h-3 text-emerald-500 shrink-0"></i></div><span class="text-text">15 Watchlists</span></li>
+                <li class="flex items-center gap-3 text-sm"><div class="w-5 h-5 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-3 h-3 text-emerald-500 shrink-0"></i></div><span class="text-text">Advanced Analytics</span></li>
+                <li class="flex items-center gap-3 text-sm"><div class="w-5 h-5 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-3 h-3 text-emerald-500 shrink-0"></i></div><span class="text-text">3 Bot Automations</span></li>
+                <li class="flex items-center gap-3 text-sm"><div class="w-5 h-5 rounded-full bg-red-500/15 flex items-center justify-center shrink-0"><i data-lucide="x" class="w-3 h-3 text-red-500 shrink-0"></i></div><span class="text-muted">API Access</span></li>
+              </ul>
+              <button class="sb-plan-action w-full justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors" data-plan="Basic">Downgrade</button>
+            </div>
+            <!-- Pro Trader (current) -->
+            <div class="relative rounded-2xl bg-panel border-2 border-accent p-5 sm:p-6">
+              <div class="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1/2"><span class="px-4 py-1 text-xs font-bold text-white bg-gradient-to-r from-accent to-teal-500 rounded-full whitespace-nowrap">CURRENT PLAN</span></div>
+              <div class="mb-6 mt-2"><div class="w-12 h-12 rounded-xl bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center mb-4 shrink-0"><i data-lucide="crown" class="w-6 h-6 text-white shrink-0"></i></div><h3 class="text-xl font-bold text-text mb-1">Pro Trader</h3><p class="text-sm text-muted">For serious traders</p></div>
+              <div class="mb-6"><div class="flex items-baseline gap-1"><span class="text-4xl font-bold bg-gradient-to-r from-accent to-teal-500 bg-clip-text text-transparent" id="sbProPrice">$63</span><span class="text-muted">/mo</span></div><p class="text-xs text-muted mt-1" id="sbProNote">Billed yearly at $758</p></div>
+              <ul class="space-y-3 mb-6">
+                <li class="flex items-center gap-3 text-sm"><div class="w-5 h-5 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-3 h-3 text-emerald-500 shrink-0"></i></div><span class="text-text">1,000 AI Signals/month</span></li>
+                <li class="flex items-center gap-3 text-sm"><div class="w-5 h-5 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-3 h-3 text-emerald-500 shrink-0"></i></div><span class="text-text">Unlimited Watchlists</span></li>
+                <li class="flex items-center gap-3 text-sm"><div class="w-5 h-5 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-3 h-3 text-emerald-500 shrink-0"></i></div><span class="text-text">Premium Analytics</span></li>
+                <li class="flex items-center gap-3 text-sm"><div class="w-5 h-5 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-3 h-3 text-emerald-500 shrink-0"></i></div><span class="text-text">10 Bot Automations</span></li>
+                <li class="flex items-center gap-3 text-sm"><div class="w-5 h-5 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-3 h-3 text-emerald-500 shrink-0"></i></div><span class="text-text">50K API Calls/month</span></li>
+              </ul>
+              <button class="w-full justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold opacity-60 cursor-not-allowed" disabled>Current Plan</button>
+            </div>
+            <!-- Enterprise -->
+            <div class="relative overflow-hidden rounded-2xl bg-panel border border-border p-5 sm:p-6">
+              <div class="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-indigo-500 to-violet-500 opacity-10 rounded-full -translate-y-1/2 translate-x-1/2 pointer-events-none"></div>
+              <div class="relative">
+                <div class="mb-6"><div class="w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center mb-4 shrink-0"><i data-lucide="gem" class="w-6 h-6 text-white shrink-0"></i></div><h3 class="text-xl font-bold text-text mb-1">Enterprise</h3><p class="text-sm text-muted">For trading teams</p></div>
+                <div class="mb-6"><div class="flex items-baseline gap-1"><span class="text-4xl font-bold text-text" id="sbEnterprisePrice">$159</span><span class="text-muted">/mo</span></div><p class="text-xs text-muted mt-1" id="sbEnterpriseNote">Billed yearly at $1,910</p></div>
+                <ul class="space-y-3 mb-6">
+                  <li class="flex items-center gap-3 text-sm"><div class="w-5 h-5 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-3 h-3 text-emerald-500 shrink-0"></i></div><span class="text-text">Unlimited AI Signals</span></li>
+                  <li class="flex items-center gap-3 text-sm"><div class="w-5 h-5 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-3 h-3 text-emerald-500 shrink-0"></i></div><span class="text-text">Team Collaboration</span></li>
+                  <li class="flex items-center gap-3 text-sm"><div class="w-5 h-5 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-3 h-3 text-emerald-500 shrink-0"></i></div><span class="text-text">White-label Options</span></li>
+                  <li class="flex items-center gap-3 text-sm"><div class="w-5 h-5 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-3 h-3 text-emerald-500 shrink-0"></i></div><span class="text-text">Unlimited Automations</span></li>
+                  <li class="flex items-center gap-3 text-sm"><div class="w-5 h-5 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-3 h-3 text-emerald-500 shrink-0"></i></div><span class="text-text">Priority Support 24/7</span></li>
+                </ul>
+                <button id="sbUpgradeBtn" class="w-full justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"><i data-lucide="arrow-up" class="w-4 h-4 shrink-0"></i>Upgrade</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Full feature comparison -->
+          <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6 mt-8">
+            <div class="flex flex-col xs:flex-row xs:items-center xs:justify-between gap-3 mb-6">
+              <h3 class="text-lg font-bold text-text">Full Feature Comparison</h3>
+              <button id="sbFeatureToggle" class="shrink-0 inline-flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text hover:bg-accent/10 transition-colors whitespace-nowrap"><i data-lucide="chevron-down" class="w-4 h-4 shrink-0" id="sbFeatureIcon"></i><span id="sbFeatureText">Show All</span></button>
+            </div>
+            <div id="sbFeatureTable" class="hidden">
+              <div class="overflow-x-auto">
+                <table class="w-full border-collapse min-w-[640px] whitespace-nowrap">
+                  <thead>
+                    <tr class="border-b border-border">
+                      <th class="text-left py-4 px-4 font-semibold text-muted text-sm">Feature</th>
+                      <th class="text-center py-4 px-4 font-semibold text-muted text-sm">Starter</th>
+                      <th class="text-center py-4 px-4 font-semibold text-muted text-sm">Basic</th>
+                      <th class="text-center py-4 px-4 font-semibold text-muted text-sm bg-accent/5 rounded-t-xl">Pro Trader</th>
+                      <th class="text-center py-4 px-4 font-semibold text-muted text-sm">Enterprise</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-border">
+                    <tr><td class="py-4 px-4 text-sm text-text">AI Trading Signals</td><td class="py-4 px-4 text-sm text-center text-muted">100/mo</td><td class="py-4 px-4 text-sm text-center text-muted">500/mo</td><td class="py-4 px-4 text-sm text-center text-text font-medium bg-accent/5">1,000/mo</td><td class="py-4 px-4 text-sm text-center text-text font-medium">Unlimited</td></tr>
+                    <tr><td class="py-4 px-4 text-sm text-text">Watchlists</td><td class="py-4 px-4 text-sm text-center text-muted">5</td><td class="py-4 px-4 text-sm text-center text-muted">15</td><td class="py-4 px-4 text-sm text-center text-text font-medium bg-accent/5">Unlimited</td><td class="py-4 px-4 text-sm text-center text-text font-medium">Unlimited</td></tr>
+                    <tr><td class="py-4 px-4 text-sm text-text">Bot Automations</td><td class="py-4 px-4 text-sm text-center"><i data-lucide="x" class="w-4 h-4 text-red-500 mx-auto shrink-0"></i></td><td class="py-4 px-4 text-sm text-center text-muted">3</td><td class="py-4 px-4 text-sm text-center text-text font-medium bg-accent/5">10</td><td class="py-4 px-4 text-sm text-center text-text font-medium">Unlimited</td></tr>
+                    <tr><td class="py-4 px-4 text-sm text-text">API Access</td><td class="py-4 px-4 text-sm text-center"><i data-lucide="x" class="w-4 h-4 text-red-500 mx-auto shrink-0"></i></td><td class="py-4 px-4 text-sm text-center"><i data-lucide="x" class="w-4 h-4 text-red-500 mx-auto shrink-0"></i></td><td class="py-4 px-4 text-sm text-center text-text font-medium bg-accent/5">50K/mo</td><td class="py-4 px-4 text-sm text-center text-text font-medium">Unlimited</td></tr>
+                    <tr><td class="py-4 px-4 text-sm text-text">AI Risk Analyzer</td><td class="py-4 px-4 text-sm text-center"><i data-lucide="x" class="w-4 h-4 text-red-500 mx-auto shrink-0"></i></td><td class="py-4 px-4 text-sm text-center"><i data-lucide="check" class="w-4 h-4 text-emerald-500 mx-auto shrink-0"></i></td><td class="py-4 px-4 text-sm text-center bg-accent/5"><i data-lucide="check" class="w-4 h-4 text-emerald-500 mx-auto shrink-0"></i></td><td class="py-4 px-4 text-sm text-center"><i data-lucide="check" class="w-4 h-4 text-emerald-500 mx-auto shrink-0"></i></td></tr>
+                    <tr><td class="py-4 px-4 text-sm text-text">Priority Support</td><td class="py-4 px-4 text-sm text-center"><i data-lucide="x" class="w-4 h-4 text-red-500 mx-auto shrink-0"></i></td><td class="py-4 px-4 text-sm text-center"><i data-lucide="x" class="w-4 h-4 text-red-500 mx-auto shrink-0"></i></td><td class="py-4 px-4 text-sm text-center bg-accent/5"><i data-lucide="check" class="w-4 h-4 text-emerald-500 mx-auto shrink-0"></i></td><td class="py-4 px-4 text-sm text-center"><i data-lucide="check" class="w-4 h-4 text-emerald-500 mx-auto shrink-0"></i></td></tr>
+                    <tr><td class="py-4 px-4 text-sm text-text">Team Members</td><td class="py-4 px-4 text-sm text-center text-muted">1</td><td class="py-4 px-4 text-sm text-center text-muted">1</td><td class="py-4 px-4 text-sm text-center text-text font-medium bg-accent/5">3</td><td class="py-4 px-4 text-sm text-center text-text font-medium">Unlimited</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============ TAB: Payment Methods ============ -->
+        <div class="sb-pane tab-content" data-pane="payment">
+          <div class="grid grid-cols-1 @3xl/content:grid-cols-3 gap-6">
+            <div class="@3xl/content:col-span-2">
+              <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+                <div class="flex flex-col xs:flex-row xs:items-center xs:justify-between gap-3 mb-6">
+                  <h3 class="text-lg font-bold text-text">Payment Methods</h3>
+                  <button id="sbAddCardBtn" class="shrink-0 inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"><i data-lucide="plus" class="w-4 h-4 shrink-0"></i>Add New</button>
+                </div>
+                <div class="space-y-4" id="sbCardList">
+                  <!-- Visa (primary) -->
+                  <div class="sb-card relative p-4 border-2 border-accent/30 rounded-2xl bg-accent/5" data-card="Visa •••• 4521">
+                    <span class="sb-primary-badge absolute top-3 right-3 text-xs font-bold text-accent bg-accent/15 px-2 py-1 rounded-full">Primary</span>
+                    <div class="flex items-center gap-4">
+                      <div class="w-16 h-10 rounded-lg bg-gradient-to-br from-sky-500 to-indigo-500 flex items-center justify-center shrink-0"><i data-lucide="credit-card" class="w-6 h-6 text-white shrink-0"></i></div>
+                      <div class="flex-1 min-w-0"><p class="font-semibold text-text truncate">Visa •••• 4521</p><p class="text-sm text-muted">Expires 12/2026</p></div>
+                      <div class="flex gap-2 shrink-0">
+                        <button class="sb-card-edit w-9 h-9 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Edit"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i></button>
+                        <button class="sb-card-delete w-9 h-9 flex items-center justify-center rounded-lg border border-border text-muted hover:text-red-500 hover:border-red-500/40 transition-colors" title="Remove"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                      </div>
+                    </div>
+                  </div>
+                  <!-- Mastercard -->
+                  <div class="sb-card p-4 border border-border rounded-2xl hover:border-accent/40 transition-colors" data-card="Mastercard •••• 8832">
+                    <div class="flex items-center gap-4">
+                      <div class="w-16 h-10 rounded-lg bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center shrink-0"><i data-lucide="credit-card" class="w-6 h-6 text-white shrink-0"></i></div>
+                      <div class="flex-1 min-w-0"><p class="font-semibold text-text truncate">Mastercard •••• 8832</p><p class="text-sm text-muted">Expires 08/2025</p></div>
+                      <div class="flex flex-wrap gap-2 justify-end shrink-0">
+                        <button class="sb-card-primary inline-flex items-center px-3 py-2 rounded-lg text-sm font-semibold text-muted hover:text-text hover:bg-accent/10 transition-colors whitespace-nowrap">Set as Primary</button>
+                        <button class="sb-card-delete w-9 h-9 flex items-center justify-center rounded-lg border border-border text-muted hover:text-red-500 hover:border-red-500/40 transition-colors" title="Remove"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                      </div>
+                    </div>
+                  </div>
+                  <!-- PayPal -->
+                  <div class="sb-card p-4 border border-border rounded-2xl hover:border-accent/40 transition-colors" data-card="PayPal">
+                    <div class="flex items-center gap-4">
+                      <div class="w-16 h-10 rounded-lg bg-[#0070BA] flex items-center justify-center shrink-0"><span class="text-white font-bold text-sm">PP</span></div>
+                      <div class="flex-1 min-w-0"><p class="font-semibold text-text truncate">PayPal</p><p class="text-sm text-muted truncate">john.doe@email.com</p></div>
+                      <div class="flex flex-wrap gap-2 justify-end shrink-0">
+                        <button class="sb-card-primary inline-flex items-center px-3 py-2 rounded-lg text-sm font-semibold text-muted hover:text-text hover:bg-accent/10 transition-colors whitespace-nowrap">Set as Primary</button>
+                        <button class="sb-card-delete w-9 h-9 flex items-center justify-center rounded-lg border border-border text-muted hover:text-red-500 hover:border-red-500/40 transition-colors" title="Remove"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="space-y-6">
+              <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+                <div class="flex items-center justify-between mb-6">
+                  <h3 class="text-lg font-bold text-text">Billing Address</h3>
+                  <button id="sbEditBillingBtn" class="shrink-0 inline-flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text hover:bg-accent/10 transition-colors whitespace-nowrap"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i>Edit</button>
+                </div>
+                <div class="space-y-4">
+                  <div><p class="text-xs text-muted uppercase tracking-wider mb-1">Name</p><p class="font-medium text-text">John Doe</p></div>
+                  <div><p class="text-xs text-muted uppercase tracking-wider mb-1">Address</p><p class="font-medium text-text">123 Trading Street</p><p class="text-muted text-sm">New York, NY 10001</p><p class="text-muted text-sm">United States</p></div>
+                  <div><p class="text-xs text-muted uppercase tracking-wider mb-1">Tax ID</p><p class="font-medium text-text">US-123456789</p></div>
+                </div>
+              </div>
+              <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+                <div class="flex items-center justify-between gap-3">
+                  <div class="min-w-0"><h4 class="font-semibold text-text">Auto-Renew</h4><p class="text-sm text-muted">Automatically renew your subscription</p></div>
+                  <div class="js-toggle-switch toggle-switch active shrink-0" id="sbAutoRenew" role="switch" aria-checked="true" tabindex="0"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============ TAB: Billing History ============ -->
+        <div class="sb-pane tab-content" data-pane="history">
+          <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-6">
+            <div class="flex flex-wrap items-center gap-3">
+              <div class="relative">
+                <i data-lucide="search" class="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-muted shrink-0"></i>
+                <input type="text" placeholder="Search invoices..." class="w-full sm:w-64 pl-11 pr-4 py-2.5 bg-bg border border-border rounded-xl text-text text-sm focus:outline-none focus:border-accent transition-colors" id="sbHistorySearch" />
+              </div>
+              <select class="py-2.5 px-3 text-sm bg-bg border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" id="sbStatusFilter">
+                <option value="all">All Status</option><option value="paid">Paid</option><option value="pending">Pending</option><option value="failed">Failed</option><option value="refunded">Refunded</option>
+              </select>
+              <select class="py-2.5 px-3 text-sm bg-bg border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" id="sbDateFilter">
+                <option value="all">All Time</option><option value="30">Last 30 Days</option><option value="90">Last 90 Days</option><option value="365">Last Year</option>
+              </select>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <button class="sb-export inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap" data-format="csv"><i data-lucide="download" class="w-4 h-4 shrink-0"></i>Export CSV</button>
+              <button class="sb-export inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap" data-format="pdf"><i data-lucide="file-text" class="w-4 h-4 shrink-0"></i>Export PDF</button>
+            </div>
+          </div>
+          <div class="rounded-2xl bg-panel border border-border overflow-hidden">
+            <div class="overflow-x-auto">
+              <table class="w-full border-collapse min-w-[680px] whitespace-nowrap text-sm" id="sbHistoryTable">
+                <thead>
+                  <tr class="text-left text-xs uppercase tracking-wide text-muted border-b border-border">
+                    <th class="py-4 px-4 sm:sticky sm:left-0 sm:bg-panel">Invoice</th>
+                    <th class="py-4 px-4">Date</th>
+                    <th class="py-4 px-4">Description</th>
+                    <th class="py-4 px-4">Amount</th>
+                    <th class="py-4 px-4">Status</th>
+                    <th class="py-4 px-4 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr class="sb-invoice-row border-b border-border hover:bg-bg/60 transition-colors" data-status="paid" data-date="2024-12-15">
+                    <td class="py-4 px-4 font-medium text-text sm:sticky sm:left-0 sm:bg-panel">#INV-2024-1215</td>
+                    <td class="py-4 px-4 text-muted">Dec 15, 2024</td>
+                    <td class="py-4 px-4 text-text">Pro Trader Plan - Monthly</td>
+                    <td class="py-4 px-4 font-semibold text-text">$79.00</td>
+                    <td class="py-4 px-4"><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">Paid</span></td>
+                    <td class="py-4 px-4"><div class="flex items-center justify-end gap-1.5"><button class="sb-invoice-view w-8 h-8 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-id="INV-2024-1215" title="View"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button><button class="sb-invoice-download w-8 h-8 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-id="INV-2024-1215" title="Download"><i data-lucide="download" class="w-4 h-4 shrink-0"></i></button></div></td>
+                  </tr>
+                  <tr class="sb-invoice-row border-b border-border hover:bg-bg/60 transition-colors" data-status="paid" data-date="2024-11-15">
+                    <td class="py-4 px-4 font-medium text-text sm:sticky sm:left-0 sm:bg-panel">#INV-2024-1115</td>
+                    <td class="py-4 px-4 text-muted">Nov 15, 2024</td>
+                    <td class="py-4 px-4 text-text">Pro Trader Plan - Monthly</td>
+                    <td class="py-4 px-4 font-semibold text-text">$79.00</td>
+                    <td class="py-4 px-4"><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">Paid</span></td>
+                    <td class="py-4 px-4"><div class="flex items-center justify-end gap-1.5"><button class="sb-invoice-view w-8 h-8 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-id="INV-2024-1115" title="View"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button><button class="sb-invoice-download w-8 h-8 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-id="INV-2024-1115" title="Download"><i data-lucide="download" class="w-4 h-4 shrink-0"></i></button></div></td>
+                  </tr>
+                  <tr class="sb-invoice-row border-b border-border hover:bg-bg/60 transition-colors" data-status="paid" data-date="2024-10-15">
+                    <td class="py-4 px-4 font-medium text-text sm:sticky sm:left-0 sm:bg-panel">#INV-2024-1015</td>
+                    <td class="py-4 px-4 text-muted">Oct 15, 2024</td>
+                    <td class="py-4 px-4 text-text">Pro Trader Plan - Monthly</td>
+                    <td class="py-4 px-4 font-semibold text-text">$79.00</td>
+                    <td class="py-4 px-4"><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">Paid</span></td>
+                    <td class="py-4 px-4"><div class="flex items-center justify-end gap-1.5"><button class="sb-invoice-view w-8 h-8 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-id="INV-2024-1015" title="View"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button><button class="sb-invoice-download w-8 h-8 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-id="INV-2024-1015" title="Download"><i data-lucide="download" class="w-4 h-4 shrink-0"></i></button></div></td>
+                  </tr>
+                  <tr class="sb-invoice-row border-b border-border hover:bg-bg/60 transition-colors" data-status="refunded" data-date="2024-09-20">
+                    <td class="py-4 px-4 font-medium text-text sm:sticky sm:left-0 sm:bg-panel">#INV-2024-0920</td>
+                    <td class="py-4 px-4 text-muted">Sep 20, 2024</td>
+                    <td class="py-4 px-4 text-text">Add-on: Extra Bot Slots x5</td>
+                    <td class="py-4 px-4 font-semibold text-text">$49.00</td>
+                    <td class="py-4 px-4"><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-500">Refunded</span></td>
+                    <td class="py-4 px-4"><div class="flex items-center justify-end gap-1.5"><button class="sb-invoice-view w-8 h-8 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-id="INV-2024-0920" title="View"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button><button class="sb-invoice-download w-8 h-8 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-id="INV-2024-0920" title="Download"><i data-lucide="download" class="w-4 h-4 shrink-0"></i></button></div></td>
+                  </tr>
+                  <tr class="sb-invoice-row border-b border-border hover:bg-bg/60 transition-colors" data-status="paid" data-date="2024-09-15">
+                    <td class="py-4 px-4 font-medium text-text sm:sticky sm:left-0 sm:bg-panel">#INV-2024-0915</td>
+                    <td class="py-4 px-4 text-muted">Sep 15, 2024</td>
+                    <td class="py-4 px-4 text-text">Pro Trader Plan - Monthly</td>
+                    <td class="py-4 px-4 font-semibold text-text">$79.00</td>
+                    <td class="py-4 px-4"><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">Paid</span></td>
+                    <td class="py-4 px-4"><div class="flex items-center justify-end gap-1.5"><button class="sb-invoice-view w-8 h-8 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-id="INV-2024-0915" title="View"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button><button class="sb-invoice-download w-8 h-8 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-id="INV-2024-0915" title="Download"><i data-lucide="download" class="w-4 h-4 shrink-0"></i></button></div></td>
+                  </tr>
+                  <tr class="sb-invoice-row border-b border-border hover:bg-bg/60 transition-colors" data-status="failed" data-date="2024-07-15">
+                    <td class="py-4 px-4 font-medium text-text sm:sticky sm:left-0 sm:bg-panel">#INV-2024-0715</td>
+                    <td class="py-4 px-4 text-muted">Jul 15, 2024</td>
+                    <td class="py-4 px-4 text-text">Basic Plan - Monthly</td>
+                    <td class="py-4 px-4 font-semibold text-text">$49.00</td>
+                    <td class="py-4 px-4"><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-500/15 text-red-500">Failed</span></td>
+                    <td class="py-4 px-4"><div class="flex items-center justify-end gap-1.5"><button class="sb-invoice-retry inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold text-muted hover:text-text hover:bg-accent/10 transition-colors whitespace-nowrap" data-id="INV-2024-0715"><i data-lucide="refresh-cw" class="w-4 h-4 shrink-0"></i>Retry</button></div></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div id="sbHistoryNoResults" class="hidden py-12 text-center text-muted">
+            <i data-lucide="search-x" class="w-10 h-10 mx-auto mb-3 shrink-0"></i>
+            <p>No invoices match your filters.</p>
+          </div>
+          <div class="grid grid-cols-1 xs:grid-cols-2 @4xl/content:grid-cols-3 gap-6 mt-6">
+            <div class="rounded-2xl bg-panel border border-border p-5 sm:p-6"><div class="flex items-center gap-4"><div class="w-12 h-12 rounded-xl bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0"><i data-lucide="circle-check" class="w-6 h-6 text-white shrink-0"></i></div><div><p class="text-sm text-muted">Total Paid</p><p class="text-2xl font-bold text-text">$474.00</p></div></div></div>
+            <div class="rounded-2xl bg-panel border border-border p-5 sm:p-6"><div class="flex items-center gap-4"><div class="w-12 h-12 rounded-xl bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center shrink-0"><i data-lucide="undo" class="w-6 h-6 text-white shrink-0"></i></div><div><p class="text-sm text-muted">Total Refunded</p><p class="text-2xl font-bold text-text">$49.00</p></div></div></div>
+            <div class="rounded-2xl bg-panel border border-border p-5 sm:p-6"><div class="flex items-center gap-4"><div class="w-12 h-12 rounded-xl bg-gradient-to-br from-sky-500 to-indigo-500 flex items-center justify-center shrink-0"><i data-lucide="receipt" class="w-6 h-6 text-white shrink-0"></i></div><div><p class="text-sm text-muted">Total Invoices</p><p class="text-2xl font-bold text-text">6</p></div></div></div>
+          </div>
+        </div>
+
+        <!-- ============ TAB: Usage Analytics ============ -->
+        <div class="sb-pane tab-content" data-pane="usage">
+          <div class="grid grid-cols-1 xs:grid-cols-2 @4xl/content:grid-cols-4 gap-6 mb-6">
+            <div class="rounded-2xl bg-panel border border-border p-5"><div class="flex items-center justify-between mb-4"><div class="w-12 h-12 rounded-xl bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0"><i data-lucide="sparkles" class="w-6 h-6 text-white shrink-0"></i></div><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">+12%</span></div><p class="text-2xl font-bold text-text mb-1">847</p><p class="text-sm text-muted">AI Signals Used</p><div class="mt-3"><div class="h-2 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-amber-500" style="width: 84.7%"></div></div><p class="text-xs text-muted mt-1">847 of 1,000 used</p></div></div>
+            <div class="rounded-2xl bg-panel border border-border p-5"><div class="flex items-center justify-between mb-4"><div class="w-12 h-12 rounded-xl bg-gradient-to-br from-sky-500 to-indigo-500 flex items-center justify-center shrink-0"><i data-lucide="code" class="w-6 h-6 text-white shrink-0"></i></div><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-sky-500/15 text-sky-500">+5%</span></div><p class="text-2xl font-bold text-text mb-1">12,450</p><p class="text-sm text-muted">API Calls</p><div class="mt-3"><div class="h-2 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-emerald-500" style="width: 24.9%"></div></div><p class="text-xs text-muted mt-1">12,450 of 50,000 used</p></div></div>
+            <div class="rounded-2xl bg-panel border border-border p-5"><div class="flex items-center justify-between mb-4"><div class="w-12 h-12 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shrink-0"><i data-lucide="bot" class="w-6 h-6 text-white shrink-0"></i></div><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-500">80%</span></div><p class="text-2xl font-bold text-text mb-1">8</p><p class="text-sm text-muted">Active Bots</p><div class="mt-3"><div class="h-2 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-amber-500" style="width: 80%"></div></div><p class="text-xs text-muted mt-1">8 of 10 slots used</p></div></div>
+            <div class="rounded-2xl bg-panel border border-border p-5"><div class="flex items-center justify-between mb-4"><div class="w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center shrink-0"><i data-lucide="zap" class="w-6 h-6 text-white shrink-0"></i></div><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-violet-500/15 text-violet-400">Active</span></div><p class="text-2xl font-bold text-text mb-1">&#8734;</p><p class="text-sm text-muted">Watchlists</p><div class="mt-3"><p class="text-xs text-text font-medium">Unlimited</p><p class="text-xs text-muted">Currently using 24</p></div></div>
+          </div>
+          <div class="grid grid-cols-1 @3xl/content:grid-cols-2 gap-6">
+            <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+              <div class="flex flex-col xs:flex-row xs:items-center xs:justify-between gap-3 mb-6">
+                <h3 class="text-lg font-bold text-text">Signal Usage Over Time</h3>
+                <div class="flex gap-2 shrink-0">
+                  <button class="sb-period active px-3 py-1.5 rounded-full border border-accent bg-accent/15 text-accent text-xs font-medium transition-colors" data-period="7">7D</button>
+                  <button class="sb-period px-3 py-1.5 rounded-full border border-border bg-panel text-muted text-xs font-medium hover:text-text transition-colors" data-period="30">30D</button>
+                  <button class="sb-period px-3 py-1.5 rounded-full border border-border bg-panel text-muted text-xs font-medium hover:text-text transition-colors" data-period="90">90D</button>
+                </div>
+              </div>
+              <div class="h-64"><canvas id="sbSignalUsageChart"></canvas></div>
+            </div>
+            <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+              <div class="flex items-center justify-between mb-6">
+                <h3 class="text-lg font-bold text-text">API Calls Distribution</h3>
+                <button class="sb-export shrink-0 inline-flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text hover:bg-accent/10 transition-colors whitespace-nowrap" data-format="csv"><i data-lucide="download" class="w-4 h-4 shrink-0"></i>Export</button>
+              </div>
+              <div class="h-64"><canvas id="sbApiUsageChart"></canvas></div>
+            </div>
+          </div>
+          <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6 mt-6">
+            <h3 class="text-lg font-bold text-text mb-6">Detailed Usage Breakdown</h3>
+            <div class="overflow-x-auto">
+              <table class="w-full border-collapse min-w-[640px] whitespace-nowrap text-sm">
+                <thead>
+                  <tr class="text-left text-xs uppercase tracking-wide text-muted border-b border-border">
+                    <th class="py-4 px-4 sm:sticky sm:left-0 sm:bg-panel">Feature</th>
+                    <th class="py-4 px-4">Used</th>
+                    <th class="py-4 px-4">Limit</th>
+                    <th class="py-4 px-4">Usage</th>
+                    <th class="py-4 px-4">Status</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-border">
+                  <tr><td class="py-4 px-4 sm:sticky sm:left-0 sm:bg-panel"><div class="flex items-center gap-3"><div class="w-8 h-8 rounded-lg bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0"><i data-lucide="sparkles" class="w-4 h-4 text-white shrink-0"></i></div><span class="font-medium text-text">AI Signals</span></div></td><td class="py-4 px-4 text-text">847</td><td class="py-4 px-4 text-muted">1,000</td><td class="py-4 px-4"><div class="w-32 h-2 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-amber-500" style="width: 84.7%"></div></div></td><td class="py-4 px-4"><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-500">84.7%</span></td></tr>
+                  <tr><td class="py-4 px-4 sm:sticky sm:left-0 sm:bg-panel"><div class="flex items-center gap-3"><div class="w-8 h-8 rounded-lg bg-gradient-to-br from-sky-500 to-indigo-500 flex items-center justify-center shrink-0"><i data-lucide="code" class="w-4 h-4 text-white shrink-0"></i></div><span class="font-medium text-text">API Calls</span></div></td><td class="py-4 px-4 text-text">12,450</td><td class="py-4 px-4 text-muted">50,000</td><td class="py-4 px-4"><div class="w-32 h-2 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-emerald-500" style="width: 24.9%"></div></div></td><td class="py-4 px-4"><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">24.9%</span></td></tr>
+                  <tr><td class="py-4 px-4 sm:sticky sm:left-0 sm:bg-panel"><div class="flex items-center gap-3"><div class="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shrink-0"><i data-lucide="bot" class="w-4 h-4 text-white shrink-0"></i></div><span class="font-medium text-text">Bot Automations</span></div></td><td class="py-4 px-4 text-text">8</td><td class="py-4 px-4 text-muted">10</td><td class="py-4 px-4"><div class="w-32 h-2 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-amber-500" style="width: 80%"></div></div></td><td class="py-4 px-4"><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-500">80%</span></td></tr>
+                  <tr><td class="py-4 px-4 sm:sticky sm:left-0 sm:bg-panel"><div class="flex items-center gap-3"><div class="w-8 h-8 rounded-lg bg-gradient-to-br from-sky-500 to-cyan-500 flex items-center justify-center shrink-0"><i data-lucide="webhook" class="w-4 h-4 text-white shrink-0"></i></div><span class="font-medium text-text">Webhook Events</span></div></td><td class="py-4 px-4 text-text">3,245</td><td class="py-4 px-4 text-muted">10,000</td><td class="py-4 px-4"><div class="w-32 h-2 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-emerald-500" style="width: 32.45%"></div></div></td><td class="py-4 px-4"><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">32.5%</span></td></tr>
+                  <tr><td class="py-4 px-4 sm:sticky sm:left-0 sm:bg-panel"><div class="flex items-center gap-3"><div class="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center shrink-0"><i data-lucide="users" class="w-4 h-4 text-white shrink-0"></i></div><span class="font-medium text-text">Team Members</span></div></td><td class="py-4 px-4 text-text">2</td><td class="py-4 px-4 text-muted">3</td><td class="py-4 px-4"><div class="w-32 h-2 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-amber-500" style="width: 66.6%"></div></div></td><td class="py-4 px-4"><span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-500">66.6%</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- ============ Drawers / Overlay / Toast (page-scoped) ============ -->
+    <div class="drawer-overlay" id="sbDrawerOverlay"></div>
+
+    <!-- Add Payment Method Drawer -->
+    <div class="drawer" id="sbAddCardDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <h2 class="text-xl font-bold text-text">Add Payment Method</h2>
+          <button class="sb-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+        </div>
+        <div class="space-y-6">
+          <div class="grid grid-cols-1 @xs:grid-cols-2 gap-4">
+            <button class="p-4 border-2 border-accent rounded-xl bg-accent/5 text-center"><i data-lucide="credit-card" class="w-8 h-8 mx-auto mb-2 text-accent shrink-0"></i><p class="font-medium text-text">Credit Card</p></button>
+            <button class="p-4 border border-border rounded-xl hover:border-accent/40 text-center transition-colors"><div class="w-8 h-8 mx-auto mb-2 bg-[#0070BA] rounded flex items-center justify-center shrink-0"><span class="text-white font-bold text-xs">PP</span></div><p class="font-medium text-text">PayPal</p></button>
+          </div>
+          <div><label class="block text-sm font-semibold text-text mb-2">Card Number</label><input type="text" placeholder="1234 5678 9012 3456" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+          <div><label class="block text-sm font-semibold text-text mb-2">Cardholder Name</label><input type="text" placeholder="John Doe" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+          <div class="grid grid-cols-1 @xs:grid-cols-2 gap-4">
+            <div><label class="block text-sm font-semibold text-text mb-2">Expiry Date</label><input type="text" placeholder="MM/YY" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+            <div><label class="block text-sm font-semibold text-text mb-2">CVV</label><input type="text" placeholder="123" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+          </div>
+          <label class="flex items-center gap-3 cursor-pointer"><input type="checkbox" class="custom-checkbox" /><span class="text-sm text-text">Set as default payment method</span></label>
+          <div class="grid grid-cols-1 @xs:grid-cols-2 gap-3">
+            <button class="sb-close-drawer justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors">Cancel</button>
+            <button id="sbAddCardSubmit" class="justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity">Add Card</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Edit Card Drawer -->
+    <div class="drawer" id="sbEditCardDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <h2 class="text-xl font-bold text-text">Edit Card</h2>
+          <button class="sb-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+        </div>
+        <div class="space-y-6">
+          <div class="p-4 bg-gradient-to-br from-sky-500 to-indigo-500 rounded-xl text-white">
+            <div class="flex justify-between items-start mb-6"><div class="w-12 h-8 bg-amber-400 rounded shrink-0"></div><i data-lucide="wifi" class="w-6 h-6 rotate-90 shrink-0"></i></div>
+            <p class="text-xl font-mono tracking-wider mb-4 truncate">&bull;&bull;&bull;&bull; &bull;&bull;&bull;&bull; &bull;&bull;&bull;&bull; 4521</p>
+            <div class="flex justify-between gap-4"><div class="min-w-0"><p class="text-white/60 text-xs">Card Holder</p><p class="font-medium truncate">JOHN DOE</p></div><div class="shrink-0"><p class="text-white/60 text-xs">Expires</p><p class="font-medium">12/26</p></div></div>
+          </div>
+          <div><label class="block text-sm font-semibold text-text mb-2">Cardholder Name</label><input type="text" value="John Doe" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+          <div class="grid grid-cols-1 @xs:grid-cols-2 gap-4">
+            <div><label class="block text-sm font-semibold text-text mb-2">Expiry Date</label><input type="text" value="12/26" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+            <div><label class="block text-sm font-semibold text-text mb-2">CVV</label><input type="text" placeholder="&bull;&bull;&bull;" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+          </div>
+          <div class="grid grid-cols-1 @xs:grid-cols-2 gap-3">
+            <button class="sb-close-drawer justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors">Cancel</button>
+            <button id="sbEditCardSubmit" class="justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity">Update Card</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Edit Billing Address Drawer -->
+    <div class="drawer" id="sbEditBillingDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <h2 class="text-xl font-bold text-text">Edit Billing Address</h2>
+          <button class="sb-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+        </div>
+        <div class="space-y-6">
+          <div><label class="block text-sm font-semibold text-text mb-2">Full Name</label><input type="text" value="John Doe" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+          <div><label class="block text-sm font-semibold text-text mb-2">Company (Optional)</label><input type="text" placeholder="Company name" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+          <div><label class="block text-sm font-semibold text-text mb-2">Address Line 1</label><input type="text" value="123 Trading Street" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+          <div><label class="block text-sm font-semibold text-text mb-2">Address Line 2</label><input type="text" placeholder="Apt, Suite, etc." class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+          <div class="grid grid-cols-1 @xs:grid-cols-2 gap-4">
+            <div><label class="block text-sm font-semibold text-text mb-2">City</label><input type="text" value="New York" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+            <div><label class="block text-sm font-semibold text-text mb-2">State</label><input type="text" value="NY" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+          </div>
+          <div class="grid grid-cols-1 @xs:grid-cols-2 gap-4">
+            <div><label class="block text-sm font-semibold text-text mb-2">Zip Code</label><input type="text" value="10001" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+            <div><label class="block text-sm font-semibold text-text mb-2">Country</label><select class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors"><option selected>United States</option><option>Canada</option><option>United Kingdom</option></select></div>
+          </div>
+          <div><label class="block text-sm font-semibold text-text mb-2">Tax ID (Optional)</label><input type="text" value="US-123456789" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+          <div class="grid grid-cols-1 @xs:grid-cols-2 gap-3">
+            <button class="sb-close-drawer justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors">Cancel</button>
+            <button id="sbBillingSubmit" class="justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity">Save Changes</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Upgrade to Enterprise Drawer -->
+    <div class="drawer" id="sbUpgradeDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <h2 class="text-xl font-bold text-text">Upgrade to Enterprise</h2>
+          <button class="sb-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+        </div>
+        <div class="space-y-6">
+          <div class="relative overflow-hidden p-6 bg-gradient-to-br from-indigo-500 to-violet-500 rounded-2xl text-white">
+            <div class="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -translate-y-1/2 translate-x-1/2 pointer-events-none"></div>
+            <div class="relative">
+              <div class="flex items-center gap-3 mb-4"><i data-lucide="gem" class="w-8 h-8 shrink-0"></i><div><h3 class="text-xl font-bold">Enterprise Plan</h3><p class="text-white/80 text-sm">For trading teams</p></div></div>
+              <div class="flex items-baseline gap-1"><span class="text-4xl font-bold">$199</span><span class="text-white/80">/month</span></div>
+            </div>
+          </div>
+          <div class="space-y-3">
+            <p class="font-semibold text-text">What you'll get:</p>
+            <div class="space-y-2">
+              <div class="flex items-center gap-3"><div class="w-6 h-6 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-4 h-4 text-emerald-500 shrink-0"></i></div><span class="text-text">Unlimited AI Trading Signals</span></div>
+              <div class="flex items-center gap-3"><div class="w-6 h-6 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-4 h-4 text-emerald-500 shrink-0"></i></div><span class="text-text">Team Collaboration Tools</span></div>
+              <div class="flex items-center gap-3"><div class="w-6 h-6 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-4 h-4 text-emerald-500 shrink-0"></i></div><span class="text-text">White-label Options</span></div>
+              <div class="flex items-center gap-3"><div class="w-6 h-6 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-4 h-4 text-emerald-500 shrink-0"></i></div><span class="text-text">Unlimited Bot Automations</span></div>
+              <div class="flex items-center gap-3"><div class="w-6 h-6 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-4 h-4 text-emerald-500 shrink-0"></i></div><span class="text-text">Priority 24/7 Support</span></div>
+            </div>
+          </div>
+          <div class="p-4 bg-amber-500/10 border border-amber-500/30 rounded-xl">
+            <div class="flex items-start gap-3"><i data-lucide="info" class="w-5 h-5 text-amber-500 shrink-0 mt-0.5"></i><div><p class="font-medium text-text">Pro-rated billing</p><p class="text-sm text-muted">You'll be charged $120.00 today for the remaining 18 days of your billing cycle.</p></div></div>
+          </div>
+          <div class="grid grid-cols-1 @xs:grid-cols-2 gap-3">
+            <button class="sb-close-drawer justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors">Cancel</button>
+            <button id="sbUpgradeSubmit" class="justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"><i data-lucide="arrow-up" class="w-4 h-4 shrink-0"></i>Upgrade Now</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Change Plan Drawer -->
+    <div class="drawer" id="sbChangePlanDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <h2 class="text-xl font-bold text-text">Change Your Plan</h2>
+          <button class="sb-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+        </div>
+        <div class="space-y-4">
+          <p class="text-muted">Select a new plan to switch to. Changes will take effect at the end of your current billing cycle.</p>
+          <div class="space-y-3">
+            <label class="flex items-center justify-between p-4 border border-border rounded-xl cursor-pointer hover:border-accent/40 transition-colors">
+              <div class="flex items-center gap-3"><div class="w-10 h-10 rounded-lg bg-slate-500/15 flex items-center justify-center shrink-0"><i data-lucide="zap" class="w-5 h-5 text-slate-400 shrink-0"></i></div><div><p class="font-semibold text-text">Starter</p><p class="text-sm text-muted">$29/month</p></div></div>
+              <input type="radio" name="sbChangePlan" class="custom-radio accent-accent w-5 h-5 shrink-0" />
+            </label>
+            <label class="flex items-center justify-between p-4 border border-border rounded-xl cursor-pointer hover:border-accent/40 transition-colors">
+              <div class="flex items-center gap-3"><div class="w-10 h-10 rounded-lg bg-sky-500/15 flex items-center justify-center shrink-0"><i data-lucide="flame" class="w-5 h-5 text-sky-500 shrink-0"></i></div><div><p class="font-semibold text-text">Basic</p><p class="text-sm text-muted">$49/month</p></div></div>
+              <input type="radio" name="sbChangePlan" class="accent-accent w-5 h-5 shrink-0" />
+            </label>
+            <label class="flex items-center justify-between p-4 border-2 border-accent rounded-xl bg-accent/5 cursor-pointer">
+              <div class="flex items-center gap-3"><div class="w-10 h-10 rounded-lg bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0"><i data-lucide="crown" class="w-5 h-5 text-white shrink-0"></i></div><div><p class="font-semibold text-text">Pro Trader <span class="text-xs text-accent">(Current)</span></p><p class="text-sm text-muted">$79/month</p></div></div>
+              <input type="radio" name="sbChangePlan" class="accent-accent w-5 h-5 shrink-0" checked />
+            </label>
+            <label class="flex items-center justify-between p-4 border border-border rounded-xl cursor-pointer hover:border-accent/40 transition-colors">
+              <div class="flex items-center gap-3"><div class="w-10 h-10 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center shrink-0"><i data-lucide="gem" class="w-5 h-5 text-white shrink-0"></i></div><div><p class="font-semibold text-text">Enterprise</p><p class="text-sm text-muted">$199/month</p></div></div>
+              <input type="radio" name="sbChangePlan" class="accent-accent w-5 h-5 shrink-0" />
+            </label>
+          </div>
+          <div class="grid grid-cols-1 @xs:grid-cols-2 gap-3 pt-2">
+            <button class="sb-close-drawer justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors">Cancel</button>
+            <button id="sbChangePlanSubmit" class="justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity">Confirm Change</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Cancel Subscription Drawer -->
+    <div class="drawer" id="sbCancelDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <h2 class="text-xl font-bold text-text">Cancel Subscription</h2>
+          <button class="sb-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+        </div>
+        <div class="space-y-6">
+          <div class="p-4 bg-red-500/10 border border-red-500/30 rounded-xl">
+            <div class="flex items-start gap-3"><i data-lucide="triangle-alert" class="w-5 h-5 text-red-500 shrink-0 mt-0.5"></i><div><p class="font-medium text-text">Are you sure you want to cancel?</p><p class="text-sm text-muted mt-1">You'll lose access to all premium features at the end of your billing cycle on January 15, 2025.</p></div></div>
+          </div>
+          <div>
+            <p class="font-semibold text-text mb-3">What you'll lose:</p>
+            <div class="space-y-2">
+              <div class="flex items-center gap-3"><div class="w-6 h-6 rounded-full bg-red-500/15 flex items-center justify-center shrink-0"><i data-lucide="x" class="w-4 h-4 text-red-500 shrink-0"></i></div><span class="text-muted">1,000 AI Signals per month</span></div>
+              <div class="flex items-center gap-3"><div class="w-6 h-6 rounded-full bg-red-500/15 flex items-center justify-center shrink-0"><i data-lucide="x" class="w-4 h-4 text-red-500 shrink-0"></i></div><span class="text-muted">10 Bot Automations</span></div>
+              <div class="flex items-center gap-3"><div class="w-6 h-6 rounded-full bg-red-500/15 flex items-center justify-center shrink-0"><i data-lucide="x" class="w-4 h-4 text-red-500 shrink-0"></i></div><span class="text-muted">50K API Calls per month</span></div>
+              <div class="flex items-center gap-3"><div class="w-6 h-6 rounded-full bg-red-500/15 flex items-center justify-center shrink-0"><i data-lucide="x" class="w-4 h-4 text-red-500 shrink-0"></i></div><span class="text-muted">Priority Support</span></div>
+            </div>
+          </div>
+          <div><label class="block text-sm font-semibold text-text mb-2">Tell us why you're leaving (optional)</label><select class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors"><option>Select a reason</option><option>Too expensive</option><option>Not using it enough</option><option>Missing features</option><option>Found a better alternative</option><option>Other</option></select></div>
+          <div><label class="block text-sm font-semibold text-text mb-2">Additional feedback</label><textarea class="w-full h-24 resize-none p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" placeholder="Help us improve..."></textarea></div>
+          <div class="grid grid-cols-1 @xs:grid-cols-2 gap-3">
+            <button class="sb-close-drawer justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity">Keep My Plan</button>
+            <button id="sbCancelSubmit" class="justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-red-500/15 border border-red-500/30 text-red-500 text-sm font-semibold hover:bg-red-500/20 transition-colors">Cancel Subscription</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="sbToast">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0" id="sbToastIcon">
+        <i data-lucide="check" class="w-5 h-5 text-white shrink-0"></i>
+      </div>
+      <div class="min-w-0">
+        <p class="font-semibold text-text" id="sbToastTitle">Success</p>
+        <p class="text-sm text-muted" id="sbToastMessage">Action completed</p>
+      </div>
+      <button class="sb-toast-close ml-auto w-9 h-9 shrink-0 flex items-center justify-center rounded-lg text-muted hover:text-text transition-colors"><i data-lucide="x" class="w-4 h-4 shrink-0"></i></button>
+    </div>
+
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
+  </body>
+</html>

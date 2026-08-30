@@ -1,0 +1,1117 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <script>
+      if (localStorage.getItem("theme") === "light") document.documentElement.classList.remove("dark");
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Profile &amp; Security - SignalAIX | AI Forex &amp; Crypto Trading Signals</title>
+    <link rel="icon" type="image/png" href="assets/images/favicon.png" />
+    <link rel="apple-touch-icon" href="assets/images/favicon.png" />
+  </head>
+  <body id="profile-security">
+    <div id="loader"><div class="spinner"></div><div class="loader-text">Loading SignalAIX...</div></div>
+    <include-sidebar />
+    <main class="main-content" id="mainContent">
+      <include-top-header />
+      <div class="inner-content max-sm:px-3 max-lg:px-4 max-lg:py-6 lg:p-6">
+        <!-- Page Header -->
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-6">
+          <div>
+            <h1 class="text-2xl md:text-3xl font-bold text-text">Profile &amp; Security</h1>
+            <p class="text-muted mt-1">Manage your account, security settings and connected services</p>
+          </div>
+          <div class="flex flex-wrap items-center gap-3">
+            <button id="psEditProfileBtn" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap">
+              <i data-lucide="pencil" class="w-4 h-4 shrink-0"></i><span>Edit Profile</span>
+            </button>
+            <button id="psChangePwBtn" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap">
+              <i data-lucide="key" class="w-4 h-4 shrink-0"></i><span>Change Password</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Profile Header Card -->
+        <div class="@container rounded-2xl bg-panel border border-border p-4 sm:p-6 mb-6">
+          <div class="flex flex-col @2xl:flex-row gap-6 @2xl:items-center">
+            <!-- Avatar -->
+            <div class="relative w-28 h-28 shrink-0 mx-auto @2xl:mx-0">
+              <img src="assets/images/avatars/avatar-1.png" alt="Profile" class="w-28 h-28 rounded-full object-cover border-4 border-border" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" />
+              <div class="w-28 h-28 rounded-full bg-gradient-to-br from-accent to-teal-500 hidden items-center justify-center text-white text-3xl font-bold">SM</div>
+              <button id="psAvatarBtn" class="absolute bottom-1 right-1 w-9 h-9 rounded-full bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center border-[3px] border-panel hover:opacity-90 transition-opacity">
+                <i data-lucide="camera" class="w-4 h-4 text-white shrink-0"></i>
+              </button>
+            </div>
+
+            <!-- Info -->
+            <div class="flex-1 min-w-0 text-center @2xl:text-left">
+              <div class="flex flex-wrap items-center justify-center @2xl:justify-start gap-2 mb-2">
+                <h2 class="text-2xl font-bold text-text">Shahidul Mahmud</h2>
+                <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500">
+                  <i data-lucide="circle-check" class="w-3.5 h-3.5 shrink-0"></i>Verified
+                </span>
+                <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-violet-500/15 text-violet-400">Pro Trader</span>
+              </div>
+              <p class="text-muted">shahidul@pixelaxis.com &bull; Member since Jan 2023</p>
+            </div>
+
+            <!-- Security Score -->
+            <div class="flex flex-col items-center gap-3 p-5 bg-bg rounded-2xl shrink-0">
+              <div class="relative w-32 h-32">
+                <svg width="128" height="128" viewBox="0 0 128 128" class="-rotate-90">
+                  <circle cx="64" cy="64" r="56" fill="none" stroke="currentColor" stroke-width="10" class="text-border" />
+                  <circle cx="64" cy="64" r="56" fill="none" stroke="#10b981" stroke-width="10" stroke-linecap="round" stroke-dasharray="352" stroke-dashoffset="70" />
+                </svg>
+                <div class="absolute inset-0 flex flex-col items-center justify-center">
+                  <p class="text-3xl font-bold text-text">80%</p>
+                  <p class="text-xs text-muted">Security</p>
+                </div>
+              </div>
+              <button id="psImproveBtn" class="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap">
+                <i data-lucide="shield-check" class="w-4 h-4 shrink-0"></i><span>Improve Security</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="flex gap-1 p-1 bg-panel border border-border rounded-2xl overflow-x-auto hide-scrollbar mb-6">
+          <button class="ps-tab tab-button active inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="profile">
+            <i data-lucide="user" class="w-4 h-4 shrink-0"></i><span>Profile</span>
+          </button>
+          <button class="ps-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="security">
+            <i data-lucide="shield" class="w-4 h-4 shrink-0"></i><span>Security</span>
+          </button>
+          <button class="ps-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="sessions">
+            <i data-lucide="monitor-smartphone" class="w-4 h-4 shrink-0"></i><span>Sessions &amp; Devices</span>
+          </button>
+          <button class="ps-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="api">
+            <i data-lucide="key" class="w-4 h-4 shrink-0"></i><span>API Keys</span>
+          </button>
+          <button class="ps-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="privacy">
+            <i data-lucide="eye-off" class="w-4 h-4 shrink-0"></i><span>Privacy</span>
+          </button>
+          <button class="ps-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="activity">
+            <i data-lucide="activity" class="w-4 h-4 shrink-0"></i><span>Activity Log</span>
+          </button>
+        </div>
+
+        <!-- ============ TAB: Profile ============ -->
+        <div class="ps-pane tab-content active" data-pane="profile">
+          <div class="grid grid-cols-1 @3xl/content:grid-cols-2 gap-6">
+            <!-- Personal Information -->
+            <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+              <div class="flex items-center justify-between mb-6">
+                <h3 class="text-lg font-semibold text-text">Personal Information</h3>
+                <button class="ps-edit-toggle w-10 h-10 shrink-0 flex items-center justify-center rounded-xl bg-bg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-section="personal" title="Edit">
+                  <i data-lucide="pencil" class="w-4 h-4 shrink-0"></i>
+                </button>
+              </div>
+              <div class="space-y-5" data-form="personal">
+                <div class="grid grid-cols-1 @xs:grid-cols-2 gap-4">
+                  <div>
+                    <label class="block text-sm font-semibold text-text mb-2">First Name</label>
+                    <input type="text" value="Shahidul" disabled class="w-full p-3 bg-bg border border-border rounded-xl text-text text-sm focus:outline-none focus:border-accent transition-colors disabled:opacity-60" />
+                  </div>
+                  <div>
+                    <label class="block text-sm font-semibold text-text mb-2">Last Name</label>
+                    <input type="text" value="Mahmud" disabled class="w-full p-3 bg-bg border border-border rounded-xl text-text text-sm focus:outline-none focus:border-accent transition-colors disabled:opacity-60" />
+                  </div>
+                </div>
+                <div>
+                  <label class="block text-sm font-semibold text-text mb-2">Display Name</label>
+                  <input type="text" value="shahidul_trader" disabled class="w-full p-3 bg-bg border border-border rounded-xl text-text text-sm focus:outline-none focus:border-accent transition-colors disabled:opacity-60" />
+                  <p class="text-xs text-muted mt-1.5">This is how other traders will see you</p>
+                </div>
+                <div>
+                  <label class="block text-sm font-semibold text-text mb-2">Bio</label>
+                  <textarea disabled class="w-full h-24 resize-none p-3 bg-bg border border-border rounded-xl text-text text-sm focus:outline-none focus:border-accent transition-colors disabled:opacity-60">Professional forex and crypto trader with 5+ years of experience. Specializing in technical analysis and AI-powered trading strategies.</textarea>
+                </div>
+              </div>
+            </div>
+
+            <!-- Contact Information -->
+            <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+              <div class="flex items-center justify-between mb-6">
+                <h3 class="text-lg font-semibold text-text">Contact Information</h3>
+                <button class="ps-edit-toggle w-10 h-10 shrink-0 flex items-center justify-center rounded-xl bg-bg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-section="contact" title="Edit">
+                  <i data-lucide="pencil" class="w-4 h-4 shrink-0"></i>
+                </button>
+              </div>
+              <div class="space-y-5" data-form="contact">
+                <div>
+                  <label class="block text-sm font-semibold text-text mb-2">Email Address</label>
+                  <div class="flex items-center gap-3">
+                    <input type="email" value="shahidul@pixelaxis.com" disabled class="flex-1 min-w-0 p-3 bg-bg border border-border rounded-xl text-text text-sm focus:outline-none focus:border-accent transition-colors disabled:opacity-60" />
+                    <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0">
+                      <i data-lucide="check" class="w-3 h-3 shrink-0"></i>Verified
+                    </span>
+                  </div>
+                </div>
+                <div>
+                  <label class="block text-sm font-semibold text-text mb-2">Phone Number</label>
+                  <div class="flex items-center gap-3">
+                    <input type="tel" value="+880 1XXX-XXXXXX" disabled class="flex-1 min-w-0 p-3 bg-bg border border-border rounded-xl text-text text-sm focus:outline-none focus:border-accent transition-colors disabled:opacity-60" />
+                    <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/15 text-amber-500 shrink-0">
+                      <i data-lucide="circle-alert" class="w-3 h-3 shrink-0"></i>Unverified
+                    </span>
+                  </div>
+                  <p class="text-xs text-muted mt-1.5">Verify your phone for additional security</p>
+                </div>
+                <div>
+                  <label class="block text-sm font-semibold text-text mb-2">Country/Region</label>
+                  <select disabled class="w-full p-3 bg-bg border border-border rounded-xl text-text text-sm focus:outline-none focus:border-accent transition-colors disabled:opacity-60">
+                    <option selected>Bangladesh</option>
+                    <option>United States</option>
+                    <option>United Kingdom</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-sm font-semibold text-text mb-2">Timezone</label>
+                  <select disabled class="w-full p-3 bg-bg border border-border rounded-xl text-text text-sm focus:outline-none focus:border-accent transition-colors disabled:opacity-60">
+                    <option selected>Asia/Dhaka (GMT+6)</option>
+                    <option>America/New_York (GMT-5)</option>
+                    <option>Europe/London (GMT+0)</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <!-- Trading Preferences -->
+            <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+              <div class="flex items-center justify-between mb-6">
+                <h3 class="text-lg font-semibold text-text">Trading Preferences</h3>
+                <button class="ps-edit-toggle w-10 h-10 shrink-0 flex items-center justify-center rounded-xl bg-bg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" data-section="trading" title="Edit">
+                  <i data-lucide="pencil" class="w-4 h-4 shrink-0"></i>
+                </button>
+              </div>
+              <div class="space-y-5" data-form="trading">
+                <div>
+                  <label class="block text-sm font-semibold text-text mb-2">Default Currency</label>
+                  <select disabled class="w-full p-3 bg-bg border border-border rounded-xl text-text text-sm focus:outline-none focus:border-accent transition-colors disabled:opacity-60">
+                    <option selected>USD - US Dollar</option>
+                    <option>EUR - Euro</option>
+                    <option>GBP - British Pound</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-sm font-semibold text-text mb-2">Primary Markets</label>
+                  <div class="flex flex-wrap gap-2 mt-2">
+                    <button class="ps-chip active inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-accent bg-accent/15 text-accent text-sm font-medium transition-colors"><i data-lucide="dollar-sign" class="w-3.5 h-3.5 shrink-0"></i>Forex</button>
+                    <button class="ps-chip active inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-accent bg-accent/15 text-accent text-sm font-medium transition-colors"><i data-lucide="bitcoin" class="w-3.5 h-3.5 shrink-0"></i>Crypto</button>
+                    <button class="ps-chip inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-border bg-bg text-muted text-sm font-medium hover:text-text transition-colors"><i data-lucide="building" class="w-3.5 h-3.5 shrink-0"></i>Stocks</button>
+                    <button class="ps-chip inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-border bg-bg text-muted text-sm font-medium hover:text-text transition-colors"><i data-lucide="box" class="w-3.5 h-3.5 shrink-0"></i>Commodities</button>
+                  </div>
+                </div>
+                <div>
+                  <label class="block text-sm font-semibold text-text mb-2">Risk Tolerance</label>
+                  <div class="ps-risk-group flex flex-wrap gap-2 mt-2">
+                    <button class="ps-risk px-3 py-1.5 rounded-full border border-border bg-bg text-muted text-sm font-medium hover:text-text transition-colors">Conservative</button>
+                    <button class="ps-risk active px-3 py-1.5 rounded-full border border-accent bg-accent/15 text-accent text-sm font-medium transition-colors">Moderate</button>
+                    <button class="ps-risk px-3 py-1.5 rounded-full border border-border bg-bg text-muted text-sm font-medium hover:text-text transition-colors">Aggressive</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Social Connections -->
+            <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+              <h3 class="text-lg font-semibold text-text mb-6">Social Connections</h3>
+              <div class="space-y-4">
+                <div class="flex items-center justify-between gap-3 p-4 bg-bg rounded-xl">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="w-10 h-10 rounded-lg bg-sky-500/10 flex items-center justify-center shrink-0"><i data-lucide="twitter" class="w-5 h-5 text-sky-500 shrink-0"></i></div>
+                    <div class="min-w-0"><p class="font-medium text-text truncate">Twitter</p><p class="text-sm text-muted truncate">@shahidul_trader</p></div>
+                  </div>
+                  <button class="ps-social-toggle px-3 py-2 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-red-500/40 hover:text-red-500 transition-colors whitespace-nowrap shrink-0" data-connected="true" data-name="Twitter">Disconnect</button>
+                </div>
+                <div class="flex items-center justify-between gap-3 p-4 bg-bg rounded-xl">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="w-10 h-10 rounded-lg bg-indigo-500/10 flex items-center justify-center shrink-0"><i data-lucide="message-circle" class="w-5 h-5 text-indigo-400 shrink-0"></i></div>
+                    <div class="min-w-0"><p class="font-medium text-text truncate">Discord</p><p class="text-sm text-muted truncate">Not connected</p></div>
+                  </div>
+                  <button class="ps-social-toggle px-3 py-2 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap shrink-0" data-connected="false" data-name="Discord">Connect</button>
+                </div>
+                <div class="flex items-center justify-between gap-3 p-4 bg-bg rounded-xl">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="w-10 h-10 rounded-lg bg-sky-500/10 flex items-center justify-center shrink-0"><i data-lucide="send" class="w-5 h-5 text-sky-500 shrink-0"></i></div>
+                    <div class="min-w-0"><p class="font-medium text-text truncate">Telegram</p><p class="text-sm text-muted truncate">@shahidul_fx</p></div>
+                  </div>
+                  <button class="ps-social-toggle px-3 py-2 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-red-500/40 hover:text-red-500 transition-colors whitespace-nowrap shrink-0" data-connected="true" data-name="Telegram">Disconnect</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============ TAB: Security ============ -->
+        <div class="ps-pane tab-content" data-pane="security">
+          <div class="grid grid-cols-1 @3xl/content:grid-cols-3 gap-6">
+            <!-- Main column -->
+            <div class="@3xl/content:col-span-2 space-y-6">
+              <!-- Password -->
+              <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+                <div class="flex flex-col xs:flex-row xs:items-center xs:justify-between gap-3 mb-6">
+                  <div class="flex items-center gap-4 min-w-0">
+                    <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0"><i data-lucide="lock" class="w-6 h-6 text-white shrink-0"></i></div>
+                    <div class="min-w-0"><h3 class="text-lg font-semibold text-text">Password</h3><p class="text-sm text-muted">Last changed 30 days ago</p></div>
+                  </div>
+                  <button class="ps-changepw-trigger inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-bg border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap shrink-0">
+                    <i data-lucide="key" class="w-4 h-4 shrink-0"></i><span>Change Password</span>
+                  </button>
+                </div>
+                <div class="space-y-4">
+                  <div>
+                    <div class="flex items-center justify-between mb-2">
+                      <span class="text-sm text-muted">Password Strength</span>
+                      <span class="text-sm font-medium text-emerald-500">Strong</span>
+                    </div>
+                    <div class="h-2.5 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-emerald-500" style="width: 85%"></div></div>
+                  </div>
+                  <div class="flex items-start gap-3 p-4 rounded-xl bg-sky-500/10 border border-sky-500/20">
+                    <i data-lucide="info" class="w-5 h-5 text-sky-500 shrink-0 mt-0.5"></i>
+                    <p class="text-sm text-muted">We recommend changing your password every 90 days for optimal security.</p>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Two-Factor Authentication -->
+              <div class="@container rounded-2xl bg-panel border border-border p-4 sm:p-6">
+                <div class="flex flex-col xs:flex-row xs:items-center xs:justify-between gap-3 mb-6">
+                  <div class="flex items-center gap-4 min-w-0">
+                    <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0"><i data-lucide="smartphone" class="w-6 h-6 text-white shrink-0"></i></div>
+                    <div class="min-w-0">
+                      <h3 class="text-lg font-semibold text-text">Two-Factor Authentication</h3>
+                      <p class="text-sm shrink-0 text-emerald-500" id="ps2faStatus">Enabled &bull; Authenticator App</p>
+                    </div>
+                  </div>
+                  <div id="ps2faToggle" class="js-toggle-switch toggle-switch active shrink-0" role="switch" aria-checked="true" tabindex="0"></div>
+                </div>
+                <div class="grid grid-cols-1 @md:grid-cols-2 gap-4">
+                  <div class="p-4 bg-bg rounded-xl">
+                    <div class="flex items-center gap-3 mb-3">
+                      <i data-lucide="smartphone" class="w-5 h-5 text-accent shrink-0"></i>
+                      <span class="font-medium text-text">Authenticator App</span>
+                      <span class="ml-auto inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0">Active</span>
+                    </div>
+                    <p class="text-sm text-muted">Google Authenticator or similar</p>
+                  </div>
+                  <div class="p-4 bg-bg rounded-xl">
+                    <div class="flex items-center gap-3 mb-3">
+                      <i data-lucide="mail" class="w-5 h-5 text-muted shrink-0"></i>
+                      <span class="font-medium text-text">Email OTP</span>
+                      <span class="ml-auto inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-500/15 text-muted shrink-0">Backup</span>
+                    </div>
+                    <p class="text-sm text-muted">Receive codes via email</p>
+                  </div>
+                </div>
+                <div class="flex flex-wrap gap-3 mt-4">
+                  <button id="psBackupCodesBtn" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-bg border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap">
+                    <i data-lucide="download" class="w-4 h-4 shrink-0"></i><span>View Backup Codes</span>
+                  </button>
+                  <button id="psSetup2faBtn" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-bg border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap">
+                    <i data-lucide="settings" class="w-4 h-4 shrink-0"></i><span>Reconfigure 2FA</span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Login Alerts -->
+              <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+                <div class="flex items-center gap-4 mb-6">
+                  <div class="w-12 h-12 rounded-xl bg-amber-500/15 flex items-center justify-center shrink-0"><i data-lucide="bell-ring" class="w-6 h-6 text-amber-500 shrink-0"></i></div>
+                  <div class="min-w-0"><h3 class="text-lg font-semibold text-text">Login Alerts</h3><p class="text-sm text-muted">Get notified of suspicious activities</p></div>
+                </div>
+                <div class="space-y-4">
+                  <div class="flex items-center justify-between gap-3 p-4 bg-bg rounded-xl">
+                    <div class="min-w-0"><p class="font-medium text-text">Email notifications for new logins</p><p class="text-sm text-muted">Receive an email when a new device logs in</p></div>
+                    <div class="js-toggle-switch toggle-switch active shrink-0" role="switch" aria-checked="true" tabindex="0" data-label="Email login alerts"></div>
+                  </div>
+                  <div class="flex items-center justify-between gap-3 p-4 bg-bg rounded-xl">
+                    <div class="min-w-0"><p class="font-medium text-text">Push notifications for logins</p><p class="text-sm text-muted">Get instant push alerts on mobile</p></div>
+                    <div class="js-toggle-switch toggle-switch active shrink-0" role="switch" aria-checked="true" tabindex="0" data-label="Push login alerts"></div>
+                  </div>
+                  <div class="flex items-center justify-between gap-3 p-4 bg-bg rounded-xl">
+                    <div class="min-w-0"><p class="font-medium text-text">Suspicious activity alerts</p><p class="text-sm text-muted">AI-powered detection of unusual patterns</p></div>
+                    <div class="js-toggle-switch toggle-switch active shrink-0" role="switch" aria-checked="true" tabindex="0" data-label="Suspicious activity alerts"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Side column -->
+            <div class="space-y-6">
+              <!-- Security Checklist -->
+              <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+                <h3 class="text-lg font-semibold text-text mb-6">Security Checklist</h3>
+                <div class="space-y-4">
+                  <div class="flex items-start gap-3">
+                    <div class="w-6 h-6 rounded-full bg-emerald-500/20 flex items-center justify-center mt-0.5 shrink-0"><i data-lucide="check" class="w-3.5 h-3.5 text-emerald-500 shrink-0"></i></div>
+                    <div class="min-w-0"><p class="font-medium text-text">Strong password</p><p class="text-sm text-muted">Your password is secure</p></div>
+                  </div>
+                  <div class="flex items-start gap-3">
+                    <div class="w-6 h-6 rounded-full bg-emerald-500/20 flex items-center justify-center mt-0.5 shrink-0"><i data-lucide="check" class="w-3.5 h-3.5 text-emerald-500 shrink-0"></i></div>
+                    <div class="min-w-0"><p class="font-medium text-text">2FA enabled</p><p class="text-sm text-muted">Extra protection active</p></div>
+                  </div>
+                  <div class="flex items-start gap-3">
+                    <div class="w-6 h-6 rounded-full bg-emerald-500/20 flex items-center justify-center mt-0.5 shrink-0"><i data-lucide="check" class="w-3.5 h-3.5 text-emerald-500 shrink-0"></i></div>
+                    <div class="min-w-0"><p class="font-medium text-text">Email verified</p><p class="text-sm text-muted">Your email is confirmed</p></div>
+                  </div>
+                  <div class="flex items-start gap-3">
+                    <div class="w-6 h-6 rounded-full bg-amber-500/20 flex items-center justify-center mt-0.5 shrink-0"><i data-lucide="circle-alert" class="w-3.5 h-3.5 text-amber-500 shrink-0"></i></div>
+                    <div class="min-w-0"><p class="font-medium text-text">Phone not verified</p><p class="text-sm text-muted">Add for better security</p><button class="ps-verify-phone text-accent text-sm font-medium mt-1">Verify now &rarr;</button></div>
+                  </div>
+                  <div class="flex items-start gap-3">
+                    <div class="w-6 h-6 rounded-full bg-emerald-500/20 flex items-center justify-center mt-0.5 shrink-0"><i data-lucide="check" class="w-3.5 h-3.5 text-emerald-500 shrink-0"></i></div>
+                    <div class="min-w-0"><p class="font-medium text-text">Login alerts on</p><p class="text-sm text-muted">Notifications enabled</p></div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Recent Security Events -->
+              <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+                <h3 class="text-lg font-semibold text-text mb-6">Recent Security Events</h3>
+                <div class="space-y-4">
+                  <div class="flex items-start gap-3">
+                    <div class="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center shrink-0"><i data-lucide="log-in" class="w-4 h-4 text-emerald-500 shrink-0"></i></div>
+                    <div class="flex-1 min-w-0"><p class="text-sm font-medium text-text">Successful login</p><p class="text-xs text-muted">Chrome &bull; Dhaka, BD</p><p class="text-xs text-muted">2 hours ago</p></div>
+                  </div>
+                  <div class="flex items-start gap-3">
+                    <div class="w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center shrink-0"><i data-lucide="key" class="w-4 h-4 text-accent shrink-0"></i></div>
+                    <div class="flex-1 min-w-0"><p class="text-sm font-medium text-text">Password changed</p><p class="text-xs text-muted">30 days ago</p></div>
+                  </div>
+                  <div class="flex items-start gap-3">
+                    <div class="w-8 h-8 rounded-lg bg-violet-500/10 flex items-center justify-center shrink-0"><i data-lucide="smartphone" class="w-4 h-4 text-violet-400 shrink-0"></i></div>
+                    <div class="flex-1 min-w-0"><p class="text-sm font-medium text-text">2FA enabled</p><p class="text-xs text-muted">45 days ago</p></div>
+                  </div>
+                </div>
+                <button class="ps-view-events w-full mt-4 px-4 py-2.5 rounded-xl bg-bg border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors">View All Events</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============ TAB: Sessions & Devices ============ -->
+        <div class="ps-pane tab-content" data-pane="sessions">
+          <div class="space-y-6">
+            <!-- Filter Bar -->
+            <div class="flex flex-col xs:flex-row xs:items-center xs:justify-between gap-4">
+              <div class="flex flex-wrap gap-2">
+                <button class="ps-session-filter active px-4 py-2 rounded-full border border-accent bg-accent/15 text-accent text-sm font-medium transition-colors" data-filter="all">All Devices</button>
+                <button class="ps-session-filter px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-filter="active">Active</button>
+                <button class="ps-session-filter px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-filter="desktop">Desktop</button>
+                <button class="ps-session-filter px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-filter="mobile">Mobile</button>
+              </div>
+              <button id="psRevokeAllBtn" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-red-500/10 border border-red-500/30 text-red-500 text-sm font-semibold hover:bg-red-500/20 transition-colors whitespace-nowrap shrink-0">
+                <i data-lucide="circle-x" class="w-4 h-4 shrink-0"></i><span>Revoke All Sessions</span>
+              </button>
+            </div>
+
+            <!-- Current Session -->
+            <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+              <div class="flex items-center gap-2 mb-4">
+                <i data-lucide="shield-check" class="w-5 h-5 text-emerald-500 shrink-0"></i>
+                <h3 class="text-lg font-semibold text-text">Current Session</h3>
+              </div>
+              <div class="rounded-xl border border-accent bg-accent/5 p-4 sm:p-5">
+                <div class="flex flex-col xs:flex-row items-start gap-4">
+                  <div class="w-14 h-14 rounded-xl bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0"><i data-lucide="monitor" class="w-7 h-7 text-white shrink-0"></i></div>
+                  <div class="flex-1 min-w-0">
+                    <div class="flex flex-wrap items-center gap-3 mb-1">
+                      <h4 class="font-semibold text-text">Chrome on Windows</h4>
+                      <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>Active Now</span>
+                    </div>
+                    <p class="text-sm text-muted mb-3">Dhaka, Bangladesh &bull; IP: 103.xxx.xxx.xxx</p>
+                    <div class="flex flex-wrap gap-x-4 gap-y-1 text-sm">
+                      <span class="inline-flex items-center gap-1 text-muted"><i data-lucide="clock" class="w-4 h-4 shrink-0"></i>Started: Today at 10:30 AM</span>
+                      <span class="inline-flex items-center gap-1 text-muted"><i data-lucide="globe" class="w-4 h-4 shrink-0"></i>Windows 11 Pro</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Other Sessions -->
+            <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+              <div class="flex items-center justify-between gap-3 mb-4">
+                <h3 class="text-lg font-semibold text-text">Other Active Sessions</h3>
+                <span id="psSessionCount" class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-sky-500/15 text-sky-500 shrink-0">3 devices</span>
+              </div>
+              <div class="space-y-4" id="psSessionList">
+                <div class="ps-session rounded-xl border border-border p-4 sm:p-5" data-device="mobile" data-status="active">
+                  <div class="flex flex-col xs:flex-row items-start gap-4">
+                    <div class="w-12 h-12 rounded-xl bg-violet-500/10 flex items-center justify-center shrink-0"><i data-lucide="smartphone" class="w-6 h-6 text-violet-400 shrink-0"></i></div>
+                    <div class="flex-1 min-w-0">
+                      <div class="flex flex-wrap items-center gap-3 mb-1">
+                        <h4 class="font-semibold text-text">SignalAIX App on iPhone</h4>
+                        <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500">Active</span>
+                      </div>
+                      <p class="text-sm text-muted mb-2">Dhaka, Bangladesh</p>
+                      <p class="text-xs text-muted">Last active: 1 hour ago</p>
+                    </div>
+                    <button class="ps-revoke-session px-3 py-2 rounded-xl bg-bg border border-border text-text text-sm font-semibold hover:border-red-500/40 hover:text-red-500 transition-colors whitespace-nowrap shrink-0" data-name="SignalAIX App on iPhone">Revoke</button>
+                  </div>
+                </div>
+                <div class="ps-session rounded-xl border border-border p-4 sm:p-5" data-device="mobile" data-status="idle">
+                  <div class="flex flex-col xs:flex-row items-start gap-4">
+                    <div class="w-12 h-12 rounded-xl bg-sky-500/10 flex items-center justify-center shrink-0"><i data-lucide="tablet" class="w-6 h-6 text-sky-500 shrink-0"></i></div>
+                    <div class="flex-1 min-w-0">
+                      <div class="flex flex-wrap items-center gap-3 mb-1">
+                        <h4 class="font-semibold text-text">Safari on iPad</h4>
+                        <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/15 text-amber-500">Idle</span>
+                      </div>
+                      <p class="text-sm text-muted mb-2">Dhaka, Bangladesh</p>
+                      <p class="text-xs text-muted">Last active: 3 days ago</p>
+                    </div>
+                    <button class="ps-revoke-session px-3 py-2 rounded-xl bg-bg border border-border text-text text-sm font-semibold hover:border-red-500/40 hover:text-red-500 transition-colors whitespace-nowrap shrink-0" data-name="Safari on iPad">Revoke</button>
+                  </div>
+                </div>
+                <div class="ps-session rounded-xl border border-border p-4 sm:p-5" data-device="desktop" data-status="inactive">
+                  <div class="flex flex-col xs:flex-row items-start gap-4">
+                    <div class="w-12 h-12 rounded-xl bg-amber-500/10 flex items-center justify-center shrink-0"><i data-lucide="monitor" class="w-6 h-6 text-amber-500 shrink-0"></i></div>
+                    <div class="flex-1 min-w-0">
+                      <div class="flex flex-wrap items-center gap-3 mb-1">
+                        <h4 class="font-semibold text-text">Firefox on MacBook</h4>
+                        <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-500/15 text-muted">Inactive</span>
+                      </div>
+                      <p class="text-sm text-muted mb-2">Chattogram, Bangladesh</p>
+                      <p class="text-xs text-muted">Last active: 1 week ago</p>
+                    </div>
+                    <button class="ps-revoke-session px-3 py-2 rounded-xl bg-bg border border-border text-text text-sm font-semibold hover:border-red-500/40 hover:text-red-500 transition-colors whitespace-nowrap shrink-0" data-name="Firefox on MacBook">Revoke</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Login History -->
+            <div class="rounded-2xl bg-panel border border-border overflow-hidden">
+              <div class="p-4 sm:p-6 border-b border-border">
+                <div class="flex flex-col xs:flex-row xs:items-center xs:justify-between gap-3">
+                  <h3 class="text-lg font-semibold text-text">Login History</h3>
+                  <button id="psHistoryExportBtn" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-bg border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap shrink-0">
+                    <i data-lucide="download" class="w-4 h-4 shrink-0"></i><span>Export</span>
+                  </button>
+                </div>
+              </div>
+              <div class="overflow-x-auto">
+                <table class="w-full border-collapse min-w-[720px] whitespace-nowrap text-sm">
+                  <thead>
+                    <tr class="text-left text-xs uppercase tracking-wide text-muted border-b border-border">
+                      <th class="py-3 px-4 sm:sticky sm:left-0 sm:bg-panel">Date &amp; Time</th>
+                      <th class="py-3 px-4">Device</th>
+                      <th class="py-3 px-4">Location</th>
+                      <th class="py-3 px-4">IP Address</th>
+                      <th class="py-3 px-4">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr class="border-b border-border hover:bg-bg/60 transition-colors">
+                      <td class="py-4 px-4 sm:sticky sm:left-0 sm:bg-panel"><p class="font-medium text-text">Dec 31, 2025</p><p class="text-xs text-muted">10:30 AM</p></td>
+                      <td class="py-4 px-4 text-text">Chrome on Windows</td>
+                      <td class="py-4 px-4 text-muted">Dhaka, Bangladesh</td>
+                      <td class="py-4 px-4 font-mono text-muted">103.xxx.xxx.xxx</td>
+                      <td class="py-4 px-4"><span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500">Success</span></td>
+                    </tr>
+                    <tr class="border-b border-border hover:bg-bg/60 transition-colors">
+                      <td class="py-4 px-4 sm:sticky sm:left-0 sm:bg-panel"><p class="font-medium text-text">Dec 30, 2025</p><p class="text-xs text-muted">08:15 PM</p></td>
+                      <td class="py-4 px-4 text-text">SignalAIX App on iPhone</td>
+                      <td class="py-4 px-4 text-muted">Dhaka, Bangladesh</td>
+                      <td class="py-4 px-4 font-mono text-muted">103.xxx.xxx.xxx</td>
+                      <td class="py-4 px-4"><span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500">Success</span></td>
+                    </tr>
+                    <tr class="border-b border-border hover:bg-bg/60 transition-colors">
+                      <td class="py-4 px-4 sm:sticky sm:left-0 sm:bg-panel"><p class="font-medium text-text">Dec 28, 2025</p><p class="text-xs text-muted">02:45 PM</p></td>
+                      <td class="py-4 px-4 text-text">Safari on iPad</td>
+                      <td class="py-4 px-4 text-muted">Dhaka, Bangladesh</td>
+                      <td class="py-4 px-4 font-mono text-muted">103.xxx.xxx.xxx</td>
+                      <td class="py-4 px-4"><span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500">Success</span></td>
+                    </tr>
+                    <tr class="hover:bg-bg/60 transition-colors">
+                      <td class="py-4 px-4 sm:sticky sm:left-0 sm:bg-panel"><p class="font-medium text-text">Dec 25, 2025</p><p class="text-xs text-muted">11:20 AM</p></td>
+                      <td class="py-4 px-4 text-text">Unknown Device</td>
+                      <td class="py-4 px-4 text-muted">Singapore</td>
+                      <td class="py-4 px-4 font-mono text-muted">45.xxx.xxx.xxx</td>
+                      <td class="py-4 px-4"><span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-red-500/15 text-red-500">Blocked</span></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============ TAB: API Keys ============ -->
+        <div class="ps-pane tab-content" data-pane="api">
+          <div class="space-y-6">
+            <div class="flex items-start gap-3 p-4 rounded-xl bg-sky-500/10 border border-sky-500/20">
+              <i data-lucide="info" class="w-5 h-5 text-sky-500 shrink-0 mt-0.5"></i>
+              <div class="min-w-0">
+                <p class="font-medium text-text">API Keys for External Integrations</p>
+                <p class="text-sm text-muted mt-1">Use API keys to connect SignalAIX with trading bots, webhooks, and third-party applications. Keep your keys secure and never share them publicly.</p>
+              </div>
+            </div>
+
+            <div class="flex justify-end">
+              <button id="psCreateKeyBtn" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap">
+                <i data-lucide="plus" class="w-4 h-4 shrink-0"></i><span>Create New API Key</span>
+              </button>
+            </div>
+
+            <div class="space-y-4" id="psKeyList">
+              <!-- Key 1 -->
+              <div class="ps-key-card rounded-2xl bg-panel border border-border p-4 sm:p-5">
+                <div class="flex flex-col xs:flex-row xs:items-start xs:justify-between gap-3 mb-4">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0"><i data-lucide="key" class="w-5 h-5 text-white shrink-0"></i></div>
+                    <div class="min-w-0"><h4 class="font-semibold text-text truncate">Trading Bot - Production</h4><p class="text-sm text-muted">Created Dec 15, 2025</p></div>
+                  </div>
+                  <div class="flex items-center gap-2 shrink-0">
+                    <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500">Active</span>
+                    <button class="ps-key-copy w-9 h-9 shrink-0 flex items-center justify-center rounded-lg bg-bg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Copy"><i data-lucide="copy" class="w-4 h-4 shrink-0"></i></button>
+                    <button class="ps-key-delete w-9 h-9 shrink-0 flex items-center justify-center rounded-lg bg-bg border border-border text-muted hover:text-red-500 hover:border-red-500/40 transition-colors" title="Delete"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                  </div>
+                </div>
+                <div class="flex items-center gap-1.5 mb-4">
+                  <code class="ps-key-value flex-1 min-w-0 truncate font-mono text-xs sm:text-sm px-3 py-2.5 rounded-lg bg-accent/10 text-accent" data-mask="sk-live-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" data-full="sk-live-9f2K7y8Q4m5N6p8L4f2D1a3B5c7E9g2H">sk-live-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</code>
+                  <button class="ps-key-eye w-9 h-9 shrink-0 flex items-center justify-center rounded-lg bg-bg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Show"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+                <div class="flex flex-wrap gap-x-6 gap-y-3 text-sm">
+                  <div><p class="text-muted">Permissions</p><p class="text-text font-medium">Read, Write, Execute</p></div>
+                  <div><p class="text-muted">Last Used</p><p class="text-text font-medium">2 hours ago</p></div>
+                  <div><p class="text-muted">Requests Today</p><p class="text-text font-medium">1,234</p></div>
+                  <div><p class="text-muted">Expires</p><p class="text-text font-medium">Never</p></div>
+                </div>
+              </div>
+              <!-- Key 2 -->
+              <div class="ps-key-card rounded-2xl bg-panel border border-border p-4 sm:p-5">
+                <div class="flex flex-col xs:flex-row xs:items-start xs:justify-between gap-3 mb-4">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="w-10 h-10 rounded-lg bg-amber-500/10 flex items-center justify-center shrink-0"><i data-lucide="key" class="w-5 h-5 text-amber-500 shrink-0"></i></div>
+                    <div class="min-w-0"><h4 class="font-semibold text-text truncate">Webhook Integration</h4><p class="text-sm text-muted">Created Dec 10, 2025</p></div>
+                  </div>
+                  <div class="flex items-center gap-2 shrink-0">
+                    <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500">Active</span>
+                    <button class="ps-key-copy w-9 h-9 shrink-0 flex items-center justify-center rounded-lg bg-bg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Copy"><i data-lucide="copy" class="w-4 h-4 shrink-0"></i></button>
+                    <button class="ps-key-delete w-9 h-9 shrink-0 flex items-center justify-center rounded-lg bg-bg border border-border text-muted hover:text-red-500 hover:border-red-500/40 transition-colors" title="Delete"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                  </div>
+                </div>
+                <div class="flex items-center gap-1.5 mb-4">
+                  <code class="ps-key-value flex-1 min-w-0 truncate font-mono text-xs sm:text-sm px-3 py-2.5 rounded-lg bg-accent/10 text-accent" data-mask="sk-live-yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy" data-full="sk-live-3e1C5u4T6v9W2x4Y6z8A1b3C5d7E9f2G">sk-live-yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy</code>
+                  <button class="ps-key-eye w-9 h-9 shrink-0 flex items-center justify-center rounded-lg bg-bg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Show"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+                <div class="flex flex-wrap gap-x-6 gap-y-3 text-sm">
+                  <div><p class="text-muted">Permissions</p><p class="text-text font-medium">Read Only</p></div>
+                  <div><p class="text-muted">Last Used</p><p class="text-text font-medium">5 days ago</p></div>
+                  <div><p class="text-muted">Requests Today</p><p class="text-text font-medium">0</p></div>
+                  <div><p class="text-muted">Expires</p><p class="text-text font-medium">Jan 10, 2026</p></div>
+                </div>
+              </div>
+              <!-- Key 3 - Revoked -->
+              <div class="ps-key-card rounded-2xl bg-panel border border-border p-4 sm:p-5 opacity-60">
+                <div class="flex flex-col xs:flex-row xs:items-start xs:justify-between gap-3 mb-4">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="w-10 h-10 rounded-lg bg-red-500/10 flex items-center justify-center shrink-0"><i data-lucide="key" class="w-5 h-5 text-red-500 shrink-0"></i></div>
+                    <div class="min-w-0"><h4 class="font-semibold text-text truncate">Test Environment</h4><p class="text-sm text-muted">Created Nov 20, 2025</p></div>
+                  </div>
+                  <div class="flex items-center gap-2 shrink-0">
+                    <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-red-500/15 text-red-500">Revoked</span>
+                    <button class="ps-key-delete w-9 h-9 shrink-0 flex items-center justify-center rounded-lg bg-bg border border-border text-muted hover:text-red-500 hover:border-red-500/40 transition-colors" title="Delete"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                  </div>
+                </div>
+                <div class="mb-4">
+                  <code class="block truncate font-mono text-xs sm:text-sm px-3 py-2.5 rounded-lg bg-bg text-muted line-through">sk-test-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz</code>
+                </div>
+                <div class="flex flex-wrap gap-x-6 gap-y-3 text-sm">
+                  <div><p class="text-muted">Revoked On</p><p class="text-text font-medium">Dec 25, 2025</p></div>
+                  <div><p class="text-muted">Total Requests</p><p class="text-text font-medium">45,678</p></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============ TAB: Privacy ============ -->
+        <div class="ps-pane tab-content" data-pane="privacy">
+          <div class="grid grid-cols-1 @3xl/content:grid-cols-2 gap-6">
+            <!-- Profile Visibility -->
+            <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+              <h3 class="text-lg font-semibold text-text mb-6">Profile Visibility</h3>
+              <div class="space-y-5">
+                <div class="flex items-center justify-between gap-3">
+                  <div class="min-w-0"><p class="font-medium text-text">Public Profile</p><p class="text-sm text-muted">Allow others to view your profile</p></div>
+                  <div class="js-toggle-switch toggle-switch active shrink-0" role="switch" aria-checked="true" tabindex="0" data-label="Public profile"></div>
+                </div>
+                <div class="flex items-center justify-between gap-3">
+                  <div class="min-w-0"><p class="font-medium text-text">Show Trading Stats</p><p class="text-sm text-muted">Display your performance metrics</p></div>
+                  <div class="js-toggle-switch toggle-switch shrink-0" role="switch" aria-checked="false" tabindex="0" data-label="Show trading stats"></div>
+                </div>
+                <div class="flex items-center justify-between gap-3">
+                  <div class="min-w-0"><p class="font-medium text-text">Show Online Status</p><p class="text-sm text-muted">Let others see when you're online</p></div>
+                  <div class="js-toggle-switch toggle-switch active shrink-0" role="switch" aria-checked="true" tabindex="0" data-label="Show online status"></div>
+                </div>
+                <div class="flex items-center justify-between gap-3">
+                  <div class="min-w-0"><p class="font-medium text-text">Allow Direct Messages</p><p class="text-sm text-muted">Receive messages from other traders</p></div>
+                  <div class="js-toggle-switch toggle-switch active shrink-0" role="switch" aria-checked="true" tabindex="0" data-label="Allow direct messages"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Data & Analytics -->
+            <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+              <h3 class="text-lg font-semibold text-text mb-6">Data &amp; Analytics</h3>
+              <div class="space-y-5">
+                <div class="flex items-center justify-between gap-3">
+                  <div class="min-w-0"><p class="font-medium text-text">Usage Analytics</p><p class="text-sm text-muted">Help improve SignalAIX with anonymous data</p></div>
+                  <div class="js-toggle-switch toggle-switch active shrink-0" role="switch" aria-checked="true" tabindex="0" data-label="Usage analytics"></div>
+                </div>
+                <div class="flex items-center justify-between gap-3">
+                  <div class="min-w-0"><p class="font-medium text-text">Personalized Recommendations</p><p class="text-sm text-muted">Get AI-powered signal suggestions</p></div>
+                  <div class="js-toggle-switch toggle-switch active shrink-0" role="switch" aria-checked="true" tabindex="0" data-label="Personalized recommendations"></div>
+                </div>
+                <div class="flex items-center justify-between gap-3">
+                  <div class="min-w-0"><p class="font-medium text-text">Marketing Communications</p><p class="text-sm text-muted">Receive updates about new features</p></div>
+                  <div class="js-toggle-switch toggle-switch shrink-0" role="switch" aria-checked="false" tabindex="0" data-label="Marketing communications"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Your Data -->
+            <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+              <h3 class="text-lg font-semibold text-text mb-6">Your Data</h3>
+              <div class="space-y-4">
+                <div class="p-4 bg-bg rounded-xl">
+                  <div class="flex items-start gap-3">
+                    <i data-lucide="download" class="w-5 h-5 text-accent shrink-0 mt-0.5"></i>
+                    <div class="flex-1 min-w-0">
+                      <p class="font-medium text-text">Download Your Data</p>
+                      <p class="text-sm text-muted mb-3">Get a copy of all your data in JSON format</p>
+                      <button id="psDownloadDataBtn" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap">
+                        <i data-lucide="download" class="w-4 h-4 shrink-0"></i><span>Request Download</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div class="p-4 bg-bg rounded-xl">
+                  <div class="flex items-start gap-3">
+                    <i data-lucide="trash-2" class="w-5 h-5 text-red-500 shrink-0 mt-0.5"></i>
+                    <div class="flex-1 min-w-0">
+                      <p class="font-medium text-text">Delete Account</p>
+                      <p class="text-sm text-muted mb-3">Permanently delete your account and all data</p>
+                      <button id="psDeleteAccountBtn" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-red-500/10 border border-red-500/30 text-red-500 text-sm font-semibold hover:bg-red-500/20 transition-colors whitespace-nowrap">
+                        <i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i><span>Delete Account</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Blocked Users -->
+            <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+              <h3 class="text-lg font-semibold text-text mb-6">Blocked Users</h3>
+              <div class="space-y-3" id="psBlockedList">
+                <div class="ps-blocked flex items-center justify-between gap-3 p-3 bg-bg rounded-xl">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="w-10 h-10 rounded-full bg-red-500/10 flex items-center justify-center text-red-500 font-semibold shrink-0">SP</div>
+                    <div class="min-w-0"><p class="font-medium text-text truncate">spam_trader_123</p><p class="text-xs text-muted">Blocked Dec 20, 2025</p></div>
+                  </div>
+                  <button class="ps-unblock px-3 py-2 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap shrink-0" data-name="spam_trader_123">Unblock</button>
+                </div>
+                <div class="text-center py-6 text-muted">
+                  <i data-lucide="users" class="w-12 h-12 mx-auto mb-3 opacity-30 shrink-0"></i>
+                  <p>No other blocked users</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============ TAB: Activity Log ============ -->
+        <div class="ps-pane tab-content" data-pane="activity">
+          <div class="rounded-2xl bg-panel border border-border overflow-hidden">
+            <div class="p-4 sm:p-6 border-b border-border">
+              <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+                <div class="flex flex-wrap gap-2">
+                  <button class="ps-activity-filter active px-4 py-2 rounded-full border border-accent bg-accent/15 text-accent text-sm font-medium transition-colors" data-filter="all">All Activity</button>
+                  <button class="ps-activity-filter px-4 py-2 rounded-full border border-border bg-bg text-muted text-sm font-medium hover:text-text transition-colors" data-filter="login">Logins</button>
+                  <button class="ps-activity-filter px-4 py-2 rounded-full border border-border bg-bg text-muted text-sm font-medium hover:text-text transition-colors" data-filter="security">Security</button>
+                  <button class="ps-activity-filter px-4 py-2 rounded-full border border-border bg-bg text-muted text-sm font-medium hover:text-text transition-colors" data-filter="settings">Settings</button>
+                  <button class="ps-activity-filter px-4 py-2 rounded-full border border-border bg-bg text-muted text-sm font-medium hover:text-text transition-colors" data-filter="api">API</button>
+                </div>
+                <div class="flex flex-col xs:flex-row gap-2">
+                  <div class="relative flex-1">
+                    <i data-lucide="search" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted shrink-0"></i>
+                    <input type="text" id="psActivitySearch" placeholder="Search activity..." class="w-full xs:w-48 pl-10 pr-4 py-2.5 bg-bg border border-border rounded-xl text-text text-sm focus:outline-none focus:border-accent transition-colors" />
+                  </div>
+                  <button id="psActivityExportBtn" class="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-bg border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap shrink-0">
+                    <i data-lucide="download" class="w-4 h-4 shrink-0"></i><span>Export</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div class="divide-y divide-border" id="psActivityList">
+              <div class="ps-activity-row flex items-center gap-4 p-4 sm:px-6 hover:bg-bg/60 transition-colors" data-type="login" data-text="successful login chrome on windows dhaka bangladesh">
+                <div class="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center shrink-0"><i data-lucide="log-in" class="w-5 h-5 text-emerald-500 shrink-0"></i></div>
+                <div class="flex-1 min-w-0"><p class="font-medium text-text">Successful login</p><p class="text-sm text-muted truncate">Chrome on Windows &bull; Dhaka, Bangladesh</p></div>
+                <div class="text-right shrink-0"><p class="text-sm text-text">Today</p><p class="text-xs text-muted">10:30 AM</p></div>
+              </div>
+              <div class="ps-activity-row flex items-center gap-4 p-4 sm:px-6 hover:bg-bg/60 transition-colors" data-type="settings" data-text="profile updated changed display name and bio">
+                <div class="w-10 h-10 rounded-lg bg-accent/10 flex items-center justify-center shrink-0"><i data-lucide="settings" class="w-5 h-5 text-accent shrink-0"></i></div>
+                <div class="flex-1 min-w-0"><p class="font-medium text-text">Profile updated</p><p class="text-sm text-muted truncate">Changed display name and bio</p></div>
+                <div class="text-right shrink-0"><p class="text-sm text-text">Yesterday</p><p class="text-xs text-muted">04:15 PM</p></div>
+              </div>
+              <div class="ps-activity-row flex items-center gap-4 p-4 sm:px-6 hover:bg-bg/60 transition-colors" data-type="api" data-text="api key created new key trading bot production">
+                <div class="w-10 h-10 rounded-lg bg-violet-500/10 flex items-center justify-center shrink-0"><i data-lucide="key" class="w-5 h-5 text-violet-400 shrink-0"></i></div>
+                <div class="flex-1 min-w-0"><p class="font-medium text-text">API key created</p><p class="text-sm text-muted truncate">New key: Trading Bot - Production</p></div>
+                <div class="text-right shrink-0"><p class="text-sm text-text">Dec 15</p><p class="text-xs text-muted">02:30 PM</p></div>
+              </div>
+              <div class="ps-activity-row flex items-center gap-4 p-4 sm:px-6 hover:bg-bg/60 transition-colors" data-type="security" data-text="new device added iphone 15 pro signalaix app">
+                <div class="w-10 h-10 rounded-lg bg-amber-500/10 flex items-center justify-center shrink-0"><i data-lucide="smartphone" class="w-5 h-5 text-amber-500 shrink-0"></i></div>
+                <div class="flex-1 min-w-0"><p class="font-medium text-text">New device added</p><p class="text-sm text-muted truncate">iPhone 15 Pro &bull; SignalAIX App</p></div>
+                <div class="text-right shrink-0"><p class="text-sm text-text">Dec 10</p><p class="text-xs text-muted">11:45 AM</p></div>
+              </div>
+              <div class="ps-activity-row flex items-center gap-4 p-4 sm:px-6 hover:bg-bg/60 transition-colors" data-type="security" data-text="login attempt blocked suspicious login from singapore">
+                <div class="w-10 h-10 rounded-lg bg-red-500/10 flex items-center justify-center shrink-0"><i data-lucide="shield-off" class="w-5 h-5 text-red-500 shrink-0"></i></div>
+                <div class="flex-1 min-w-0"><p class="font-medium text-text">Login attempt blocked</p><p class="text-sm text-muted truncate">Suspicious login from Singapore</p></div>
+                <div class="text-right shrink-0"><p class="text-sm text-text">Dec 25</p><p class="text-xs text-muted">11:20 AM</p></div>
+              </div>
+              <div class="ps-activity-row flex items-center gap-4 p-4 sm:px-6 hover:bg-bg/60 transition-colors" data-type="security" data-text="password changed password updated successfully">
+                <div class="w-10 h-10 rounded-lg bg-sky-500/10 flex items-center justify-center shrink-0"><i data-lucide="key" class="w-5 h-5 text-sky-500 shrink-0"></i></div>
+                <div class="flex-1 min-w-0"><p class="font-medium text-text">Password changed</p><p class="text-sm text-muted truncate">Password updated successfully</p></div>
+                <div class="text-right shrink-0"><p class="text-sm text-text">Nov 30</p><p class="text-xs text-muted">09:00 AM</p></div>
+              </div>
+            </div>
+
+            <div id="psActivityNoResults" class="hidden py-12 text-center text-muted">
+              <i data-lucide="search-x" class="w-10 h-10 mx-auto mb-3 shrink-0"></i>
+              <p>No activity matches your filters.</p>
+            </div>
+
+            <div class="p-4 sm:p-6 border-t border-border">
+              <div class="flex flex-col xs:flex-row items-center justify-between gap-4">
+                <p class="text-sm text-muted">Showing 1-6 of 45 activities</p>
+                <div class="flex gap-2">
+                  <button disabled class="w-10 h-10 flex items-center justify-center rounded-lg bg-bg border border-border text-muted opacity-50 cursor-not-allowed"><i data-lucide="chevron-left" class="w-4 h-4 shrink-0"></i></button>
+                  <button class="w-10 h-10 flex items-center justify-center rounded-lg bg-bg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors"><i data-lucide="chevron-right" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- ============ Drawers / Overlay / Toast (page-scoped) ============ -->
+    <div class="drawer-overlay" id="psDrawerOverlay"></div>
+
+    <!-- Edit Profile Drawer -->
+    <div class="drawer" id="psEditDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <div class="min-w-0"><h2 class="text-xl font-bold text-text">Edit Profile</h2><p class="text-sm text-muted">Update your personal information</p></div>
+          <button class="ps-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+        </div>
+        <div class="space-y-5">
+          <div class="grid grid-cols-1 @xs:grid-cols-2 gap-4">
+            <div><label class="block text-sm font-semibold text-text mb-2">First Name</label><input type="text" value="Shahidul" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+            <div><label class="block text-sm font-semibold text-text mb-2">Last Name</label><input type="text" value="Mahmud" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+          </div>
+          <div><label class="block text-sm font-semibold text-text mb-2">Display Name</label><input type="text" value="shahidul_trader" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+          <div><label class="block text-sm font-semibold text-text mb-2">Email</label><input type="email" value="shahidul@pixelaxis.com" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+          <div><label class="block text-sm font-semibold text-text mb-2">Phone</label><input type="tel" value="+880 1XXX-XXXXXX" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+          <div><label class="block text-sm font-semibold text-text mb-2">Bio</label><textarea class="w-full h-28 resize-none p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors">Professional forex and crypto trader with 5+ years of experience. Specializing in technical analysis and AI-powered trading strategies.</textarea></div>
+        </div>
+        <div class="flex gap-3 mt-8">
+          <button class="ps-close-drawer flex-1 justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors">Cancel</button>
+          <button id="psEditSave" class="flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"><i data-lucide="save" class="w-4 h-4 shrink-0"></i>Save Changes</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Change Password Drawer -->
+    <div class="drawer" id="psPasswordDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <div class="min-w-0"><h2 class="text-xl font-bold text-text">Change Password</h2><p class="text-sm text-muted">Update your account password</p></div>
+          <button class="ps-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+        </div>
+        <div class="space-y-5">
+          <div class="flex items-start gap-3 p-4 rounded-xl bg-amber-500/10 border border-amber-500/20">
+            <i data-lucide="triangle-alert" class="w-5 h-5 text-amber-500 shrink-0 mt-0.5"></i>
+            <p class="text-sm text-muted">You'll be logged out of all other devices after changing your password.</p>
+          </div>
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Current Password</label>
+            <div class="flex items-center gap-1.5">
+              <input type="password" placeholder="Enter current password" class="ps-pw-input flex-1 min-w-0 p-3 bg-transparent border border-border rounded-xl text-text font-mono focus:outline-none focus:border-accent transition-colors" />
+              <button class="ps-pw-eye w-10 h-10 shrink-0 flex items-center justify-center rounded-xl border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Show"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+            </div>
+          </div>
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">New Password</label>
+            <div class="flex items-center gap-1.5">
+              <input type="password" id="psNewPw" placeholder="Enter new password" class="ps-pw-input flex-1 min-w-0 p-3 bg-transparent border border-border rounded-xl text-text font-mono focus:outline-none focus:border-accent transition-colors" />
+              <button class="ps-pw-eye w-10 h-10 shrink-0 flex items-center justify-center rounded-xl border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Show"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+            </div>
+            <div class="mt-2">
+              <div class="flex items-center justify-between mb-1.5">
+                <span class="text-xs text-muted">Password Strength</span>
+                <span class="text-xs font-medium text-muted" id="psStrengthLabel">&mdash;</span>
+              </div>
+              <div class="h-2 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-border transition-all" id="psStrengthBar" style="width: 0%"></div></div>
+            </div>
+            <p class="text-xs text-muted mt-1.5">Use at least 12 characters with a mix of letters, numbers, and symbols</p>
+          </div>
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Confirm New Password</label>
+            <div class="flex items-center gap-1.5">
+              <input type="password" placeholder="Confirm new password" class="ps-pw-input flex-1 min-w-0 p-3 bg-transparent border border-border rounded-xl text-text font-mono focus:outline-none focus:border-accent transition-colors" />
+              <button class="ps-pw-eye w-10 h-10 shrink-0 flex items-center justify-center rounded-xl border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Show"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+            </div>
+          </div>
+        </div>
+        <div class="flex gap-3 mt-8">
+          <button class="ps-close-drawer flex-1 justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors">Cancel</button>
+          <button id="psPasswordSave" class="flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"><i data-lucide="key" class="w-4 h-4 shrink-0"></i>Update Password</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Improve Security Drawer -->
+    <div class="drawer" id="psSecurityDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <div class="min-w-0"><h2 class="text-xl font-bold text-text">Improve Security</h2><p class="text-sm text-muted">Boost your account security score</p></div>
+          <button class="ps-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+        </div>
+        <div class="space-y-5">
+          <div class="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20">
+            <div class="flex items-center gap-3 mb-2"><i data-lucide="shield" class="w-5 h-5 text-amber-500 shrink-0"></i><p class="font-medium text-text">Your security score is 80%</p></div>
+            <p class="text-sm text-muted">Complete the following steps to improve your account security.</p>
+          </div>
+          <div class="space-y-4">
+            <div class="flex items-center justify-between gap-3 p-4 bg-bg rounded-xl">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-8 h-8 rounded-full bg-emerald-500/20 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-4 h-4 text-emerald-500 shrink-0"></i></div>
+                <div class="min-w-0"><p class="font-medium text-text">Strong Password</p><p class="text-xs text-muted">+20 points</p></div>
+              </div>
+              <span class="text-emerald-500 text-sm font-medium shrink-0">Complete</span>
+            </div>
+            <div class="flex items-center justify-between gap-3 p-4 bg-bg rounded-xl">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-8 h-8 rounded-full bg-emerald-500/20 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-4 h-4 text-emerald-500 shrink-0"></i></div>
+                <div class="min-w-0"><p class="font-medium text-text">Two-Factor Authentication</p><p class="text-xs text-muted">+30 points</p></div>
+              </div>
+              <span class="text-emerald-500 text-sm font-medium shrink-0">Complete</span>
+            </div>
+            <div class="flex items-center justify-between gap-3 p-4 bg-bg rounded-xl">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-8 h-8 rounded-full bg-amber-500/20 flex items-center justify-center shrink-0"><i data-lucide="circle-alert" class="w-4 h-4 text-amber-500 shrink-0"></i></div>
+                <div class="min-w-0"><p class="font-medium text-text">Verify Phone Number</p><p class="text-xs text-muted">+20 points</p></div>
+              </div>
+              <button class="ps-verify-phone px-3 py-2 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap shrink-0">Verify</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Change Avatar Drawer -->
+    <div class="drawer" id="psAvatarDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <div class="min-w-0"><h2 class="text-xl font-bold text-text">Change Profile Photo</h2><p class="text-sm text-muted">Upload a new avatar</p></div>
+          <button class="ps-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+        </div>
+        <div class="space-y-6">
+          <div class="text-center">
+            <div class="w-32 h-32 rounded-full mx-auto mb-3 overflow-hidden border-4 border-border bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center text-white text-4xl font-bold">SM</div>
+            <p class="text-sm text-muted">Current profile photo</p>
+          </div>
+          <div class="border-2 border-dashed border-border rounded-xl p-8 text-center hover:border-accent transition-colors cursor-pointer">
+            <i data-lucide="cloud-upload" class="w-12 h-12 mx-auto mb-4 text-muted shrink-0"></i>
+            <p class="font-medium text-text mb-1">Click to upload or drag and drop</p>
+            <p class="text-sm text-muted">PNG, JPG or GIF (max. 2MB)</p>
+          </div>
+          <div class="flex gap-3">
+            <button id="psAvatarUpload" class="flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"><i data-lucide="upload" class="w-4 h-4 shrink-0"></i>Upload Photo</button>
+            <button id="psAvatarRemove" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-red-500/10 border border-red-500/30 text-red-500 text-sm font-semibold hover:bg-red-500/20 transition-colors whitespace-nowrap"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i>Remove</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2FA Setup Drawer -->
+    <div class="drawer" id="ps2faDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <div class="min-w-0"><h2 class="text-xl font-bold text-text">Setup Two-Factor Authentication</h2><p class="text-sm text-muted">Secure your account with 2FA</p></div>
+          <button class="ps-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+        </div>
+        <div class="space-y-6">
+          <div class="flex items-start gap-3 p-4 rounded-xl bg-sky-500/10 border border-sky-500/20">
+            <i data-lucide="info" class="w-5 h-5 text-sky-500 shrink-0 mt-0.5"></i>
+            <p class="text-sm text-muted">Scan the QR code with your authenticator app (Google Authenticator, Authy, etc.)</p>
+          </div>
+          <div class="text-center">
+            <div class="inline-flex items-center justify-center w-40 h-40 rounded-2xl bg-white p-4">
+              <i data-lucide="qr-code" class="w-28 h-28 text-slate-900 shrink-0"></i>
+            </div>
+            <p class="text-sm text-muted mt-3">Can't scan? Enter this code manually:</p>
+            <p class="font-mono text-text font-medium mt-1 tracking-widest">XXXX XXXX XXXX XXXX</p>
+          </div>
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Enter 6-digit code from your app</label>
+            <input type="text" maxlength="6" inputmode="numeric" placeholder="000000" class="w-full p-3 bg-transparent border border-border rounded-xl text-text text-center text-2xl tracking-[0.5em] font-mono focus:outline-none focus:border-accent transition-colors" />
+          </div>
+          <button id="ps2faVerify" class="w-full justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"><i data-lucide="shield-check" class="w-4 h-4 shrink-0"></i>Verify &amp; Enable 2FA</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Create API Key Drawer -->
+    <div class="drawer" id="psKeyDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <div class="min-w-0"><h2 class="text-xl font-bold text-text">Create New API Key</h2><p class="text-sm text-muted">Generate a key for external integrations</p></div>
+          <button class="ps-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+        </div>
+        <div class="space-y-5">
+          <div><label class="block text-sm font-semibold text-text mb-2">Key Name</label><input type="text" placeholder="e.g., Trading Bot - Production" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+          <div>
+            <label class="block text-sm font-semibold text-text mb-3">Permissions</label>
+            <div class="space-y-3">
+              <label class="flex items-center gap-3 p-4 bg-bg rounded-xl border border-border cursor-pointer hover:border-accent/40 transition-colors">
+                <input type="checkbox" class="custom-checkbox" checked />
+                <div class="flex-1 min-w-0"><p class="font-medium text-text">Read</p><p class="text-sm text-muted">Access signals, market data, portfolio</p></div>
+              </label>
+              <label class="flex items-center gap-3 p-4 bg-bg rounded-xl border border-border cursor-pointer hover:border-accent/40 transition-colors">
+                <input type="checkbox" class="custom-checkbox" />
+                <div class="flex-1 min-w-0"><p class="font-medium text-text">Write</p><p class="text-sm text-muted">Create watchlists, save signals</p></div>
+              </label>
+              <label class="flex items-center gap-3 p-4 bg-bg rounded-xl border border-border cursor-pointer hover:border-accent/40 transition-colors">
+                <input type="checkbox" class="custom-checkbox" />
+                <div class="flex-1 min-w-0"><p class="font-medium text-text">Execute</p><p class="text-sm text-muted">Trigger automations, webhooks</p></div>
+              </label>
+            </div>
+          </div>
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Expiration</label>
+            <select class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors">
+              <option>Never</option><option>30 days</option><option>90 days</option><option>1 year</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">IP Whitelist (Optional)</label>
+            <textarea class="w-full h-20 resize-none p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" placeholder="Enter IP addresses, one per line"></textarea>
+            <p class="text-xs text-muted mt-1.5">Leave empty to allow access from any IP</p>
+          </div>
+        </div>
+        <div class="flex gap-3 mt-8">
+          <button class="ps-close-drawer flex-1 justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors">Cancel</button>
+          <button id="psKeyGenerate" class="flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"><i data-lucide="key" class="w-4 h-4 shrink-0"></i>Generate API Key</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Backup Codes Drawer -->
+    <div class="drawer" id="psBackupDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <div class="min-w-0"><h2 class="text-xl font-bold text-text">Backup Codes</h2><p class="text-sm text-muted">Recovery codes for your account</p></div>
+          <button class="ps-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+        </div>
+        <div class="space-y-6">
+          <div class="flex items-start gap-3 p-4 rounded-xl bg-amber-500/10 border border-amber-500/20">
+            <i data-lucide="triangle-alert" class="w-5 h-5 text-amber-500 shrink-0 mt-0.5"></i>
+            <p class="text-sm text-muted">Store these codes in a safe place. Each code can only be used once.</p>
+          </div>
+          <div class="grid grid-cols-2 gap-3" id="psBackupGrid">
+            <div class="font-mono text-sm text-center px-3 py-3 rounded-lg bg-bg border border-border text-text">A1B2-C3D4</div>
+            <div class="font-mono text-sm text-center px-3 py-3 rounded-lg bg-bg border border-border text-text">E5F6-G7H8</div>
+            <div class="font-mono text-sm text-center px-3 py-3 rounded-lg bg-bg border border-border text-text">J9K1-L2M3</div>
+            <div class="font-mono text-sm text-center px-3 py-3 rounded-lg bg-bg border border-border text-text">N4P5-Q6R7</div>
+            <div class="font-mono text-sm text-center px-3 py-3 rounded-lg bg-bg border border-border text-text">S8T9-U1V2</div>
+            <div class="font-mono text-sm text-center px-3 py-3 rounded-lg bg-bg border border-border text-text">W3X4-Y5Z6</div>
+            <div class="font-mono text-sm text-center px-3 py-3 rounded-lg bg-bg border border-border text-text">B7C8-D9E1</div>
+            <div class="font-mono text-sm text-center px-3 py-3 rounded-lg bg-bg border border-border text-text">F2G3-H4J5</div>
+          </div>
+          <div class="grid grid-cols-1 @xs:grid-cols-2 gap-3">
+            <button id="psBackupDownload" class="justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="download" class="w-4 h-4 shrink-0"></i>Download Codes</button>
+            <button id="psBackupCopy" class="justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="copy" class="w-4 h-4 shrink-0"></i>Copy All</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Revoke All Sessions Drawer -->
+    <div class="drawer" id="psRevokeDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <div class="min-w-0"><h2 class="text-xl font-bold text-text">Revoke All Sessions</h2><p class="text-sm text-muted">Sign out everywhere</p></div>
+          <button class="ps-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+        </div>
+        <div class="space-y-6">
+          <div class="flex items-start gap-3 p-4 rounded-xl bg-red-500/10 border border-red-500/20">
+            <i data-lucide="octagon-alert" class="w-5 h-5 text-red-500 shrink-0 mt-0.5"></i>
+            <div class="min-w-0"><p class="font-medium text-text">This will log you out from all devices</p><p class="text-sm text-muted mt-1">You'll need to log in again on each device.</p></div>
+          </div>
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Enter your password to confirm</label>
+            <input type="password" placeholder="Enter password" class="w-full p-3 bg-transparent border border-border rounded-xl text-text font-mono focus:outline-none focus:border-accent transition-colors" />
+          </div>
+          <div class="flex gap-3">
+            <button class="ps-close-drawer flex-1 justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors">Cancel</button>
+            <button id="psRevokeConfirm" class="flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-red-500 text-white text-sm font-semibold hover:bg-red-600 transition-colors whitespace-nowrap"><i data-lucide="circle-x" class="w-4 h-4 shrink-0"></i>Revoke All</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Delete Account Drawer -->
+    <div class="drawer" id="psDeleteDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <div class="min-w-0"><h2 class="text-xl font-bold text-text">Delete Account</h2><p class="text-sm text-muted">Permanently remove your account</p></div>
+          <button class="ps-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+        </div>
+        <div class="space-y-6">
+          <div class="flex items-start gap-3 p-4 rounded-xl bg-red-500/10 border border-red-500/20">
+            <i data-lucide="octagon-alert" class="w-5 h-5 text-red-500 shrink-0 mt-0.5"></i>
+            <div class="min-w-0"><p class="font-medium text-text">This action cannot be undone</p><p class="text-sm text-muted mt-1">All your data, signals, watchlists, and settings will be permanently deleted.</p></div>
+          </div>
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Type "DELETE" to confirm</label>
+            <input type="text" id="psDeleteConfirmInput" placeholder="DELETE" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" />
+          </div>
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Enter your password</label>
+            <input type="password" placeholder="Enter password" class="w-full p-3 bg-transparent border border-border rounded-xl text-text font-mono focus:outline-none focus:border-accent transition-colors" />
+          </div>
+          <div class="flex gap-3">
+            <button class="ps-close-drawer flex-1 justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors">Cancel</button>
+            <button id="psDeleteConfirm" class="flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-red-500 text-white text-sm font-semibold hover:bg-red-600 transition-colors whitespace-nowrap"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i>Delete Account</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="psToast">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0">
+        <i data-lucide="check" class="w-5 h-5 text-white shrink-0"></i>
+      </div>
+      <div class="min-w-0">
+        <p class="font-semibold text-text" id="psToastTitle">Success</p>
+        <p class="text-sm text-muted" id="psToastMessage">Action completed</p>
+      </div>
+      <button class="ps-toast-close ml-auto w-9 h-9 shrink-0 flex items-center justify-center rounded-lg text-muted hover:text-text transition-colors">
+        <i data-lucide="x" class="w-4 h-4 shrink-0"></i>
+      </button>
+    </div>
+
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
+  </body>
+</html>

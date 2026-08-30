@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>Cryptrix — AI Crypto Investing & Trading App</title>
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="shortcut icon" href="./assets/images/favicon.ico" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"
+      rel="stylesheet"
+    />
+
+    <!-- Theme Script (Placed early to prevent FOUC) -->
+    <script>
+      (function () {
+        const saved = localStorage.getItem("theme") || "dark";
+        if (saved === "dark") document.documentElement.classList.add("dark");
+        else document.documentElement.classList.remove("dark");
+      })();
+    </script>
+  </head>
+  <body class="font-sans overflow-x-hidden">
+    <div class="min-h-screen flex justify-center">
+      <div
+        class="relative w-full max-w-[430px] min-h-screen overflow-x-hidden shadow-[0_0_80px_rgba(0,212,170,0.08)]"
+        id="app"
+      >
+        <div class="min-h-screen bg-bg-dark flex flex-col">
+          <div
+            class="px-5 py-4 flex items-center gap-3 border-b border-white/5 flex-shrink-0"
+          >
+            <a
+              href="ai-advisor.html"
+              class="w-10 h-10 rounded-xl bg-surface-2 border border-white/[0.08] flex items-center justify-center flex-shrink-0"
+            >
+              <svg
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M19 12H5M12 19l-7-7 7-7" />
+              </svg>
+            </a>
+            <div
+              class="w-10 h-10 rounded-xl bg-secondary/20 flex items-center justify-center flex-shrink-0"
+            >
+              <svg
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="#7B61FF"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <rect x="2" y="2" width="20" height="8" rx="2" />
+                <rect x="2" y="14" width="20" height="8" rx="2" />
+                <line x1="6" y1="6" x2="6.01" y2="6" />
+                <line x1="6" y1="18" x2="6.01" y2="18" />
+              </svg>
+            </div>
+            <div>
+              <div class="text-base font-bold">AI Trading Assistant</div>
+              <div class="text-xs text-success">
+                ● Online · Analyzing market data
+              </div>
+            </div>
+          </div>
+          <div
+            id="chat-messages"
+            class="flex-1 overflow-y-auto px-5 py-5 flex flex-col gap-4"
+          >
+            <div class="flex flex-col max-w-[85%]">
+              <div class="flex items-end gap-2">
+                <div
+                  class="w-7 h-7 rounded-lg bg-secondary/20 flex items-center justify-center flex-shrink-0 mb-1"
+                >
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#7B61FF"
+                    stroke-width="2"
+                  >
+                    <rect x="2" y="2" width="20" height="8" rx="2" />
+                  </svg>
+                </div>
+                <div
+                  class="bg-surface-2 border border-white/[0.08] rounded-[18px] rounded-bl-sm px-4 py-3 text-sm leading-relaxed"
+                >
+                  Hello! I'm your AI trading assistant. How can I help you
+                  today? I can analyze market trends, provide portfolio
+                  recommendations, and assist with risk management strategies.
+                </div>
+              </div>
+              <div class="text-[10px] text-white/30 mt-1 ml-9">
+                Cryptrix · just now
+              </div>
+            </div>
+            <div class="flex flex-col items-end">
+              <div
+                class="bg-primary/15 border border-primary/20 rounded-[18px] rounded-br-sm px-4 py-3 text-sm leading-relaxed max-w-[85%]"
+              >
+                What's your outlook for Bitcoin this week?
+              </div>
+              <div class="text-[10px] text-white/30 mt-1">You · just now</div>
+            </div>
+            <div class="flex flex-col max-w-[85%]">
+              <div class="flex items-end gap-2">
+                <div
+                  class="w-7 h-7 rounded-lg bg-secondary/20 flex items-center justify-center flex-shrink-0 mb-1"
+                >
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#7B61FF"
+                    stroke-width="2"
+                  >
+                    <rect x="2" y="2" width="20" height="8" rx="2" />
+                  </svg>
+                </div>
+                <div
+                  class="bg-surface-2 border border-white/[0.08] rounded-[18px] rounded-bl-sm px-4 py-3 text-sm leading-relaxed whitespace-pre-line"
+                >
+                  Based on current on-chain metrics and technical analysis,
+                  Bitcoin shows strong bullish momentum. • RSI at 62 — healthy,
+                  not overbought • Whale accumulation up 15% this week •
+                  Resistance at $45,200; support at $42,800 74% probability of
+                  testing $45,000 within 7 days.
+                </div>
+              </div>
+              <div class="text-[10px] text-white/30 mt-1 ml-9">
+                Cryptrix · just now
+              </div>
+            </div>
+            <div
+              id="typing-indicator"
+              class="hidden flex items-end gap-2 max-w-[85%]"
+            >
+              <div
+                class="w-7 h-7 rounded-lg bg-secondary/20 flex items-center justify-center flex-shrink-0"
+              >
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#7B61FF"
+                  stroke-width="2"
+                >
+                  <rect x="2" y="2" width="20" height="8" rx="2" />
+                </svg>
+              </div>
+              <div
+                class="bg-surface-2 border border-white/[0.08] rounded-[18px] rounded-bl-sm px-5 py-4 flex gap-1.5"
+              >
+                <div
+                  class="w-1.5 h-1.5 rounded-full bg-surface/40 animate-pulse"
+                ></div>
+                <div
+                  class="w-1.5 h-1.5 rounded-full bg-surface/40 animate-pulse"
+                  style="animation-delay: 0.2s"
+                ></div>
+                <div
+                  class="w-1.5 h-1.5 rounded-full bg-surface/40 animate-pulse"
+                  style="animation-delay: 0.4s"
+                ></div>
+              </div>
+            </div>
+          </div>
+          <div class="px-5 py-2 overflow-x-auto flex-shrink-0">
+            <div class="flex gap-2 w-max">
+              <div
+                class="px-3 py-1.5 text-xs font-semibold rounded-pill cursor-pointer whitespace-nowrap border bg-surface-2 text-white/60 border-white/10"
+                onclick="sendQuick(this.textContent)"
+              >
+                Market outlook today?
+              </div>
+              <div
+                class="px-3 py-1.5 text-xs font-semibold rounded-pill cursor-pointer whitespace-nowrap border bg-surface-2 text-white/60 border-white/10"
+                onclick="sendQuick(this.textContent)"
+              >
+                Analyze my portfolio
+              </div>
+              <div
+                class="px-3 py-1.5 text-xs font-semibold rounded-pill cursor-pointer whitespace-nowrap border bg-surface-2 text-white/60 border-white/10"
+                onclick="sendQuick(this.textContent)"
+              >
+                Top assets to buy now?
+              </div>
+              <div
+                class="px-3 py-1.5 text-xs font-semibold rounded-pill cursor-pointer whitespace-nowrap border bg-surface-2 text-white/60 border-white/10"
+                onclick="sendQuick(this.textContent)"
+              >
+                Assess my portfolio risk
+              </div>
+            </div>
+          </div>
+          <div
+            class="px-5 py-3 pb-8 border-t border-white/5 flex gap-2.5 flex-shrink-0"
+          >
+            <input
+              type="text"
+              id="chat-input"
+              class="flex-1 min-w-0 bg-surface-2 border border-white/10 rounded-btn h-12 px-4 text-white placeholder-white/30 focus:outline-none focus:border-primary/50 text-sm"
+              placeholder="Ask your AI advisor anything..."
+              onkeydown="if (event.key === 'Enter') sendMsg();"
+            />
+            <button
+              onclick="sendMsg()"
+              class="w-12 h-12 rounded-[14px] bg-primary flex items-center justify-center flex-shrink-0"
+            >
+              <svg
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="#0A0B0F"
+                stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <line x1="22" y1="2" x2="11" y2="13" />
+                <polygon points="22 2 15 22 11 13 2 9 22 2" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="./assets/js/data.js"></script>
+    <script src="./assets/js/charts.js"></script>
+    <script src="./assets/js/components.js"></script>
+    <script src="./assets/js/app.js"></script>
+    <script>
+      function sendMsg() {
+        const inp = document.getElementById("chat-input");
+        if (!inp || !inp.value.trim()) return;
+        const msg = inp.value.trim();
+        inp.value = "";
+        const area = document.getElementById("chat-messages");
+        if (!area) return;
+        const typing = document.getElementById("typing-indicator");
+        const userDiv = document.createElement("div");
+        userDiv.className = "flex flex-col items-end";
+        userDiv.innerHTML =
+          '<div class="bg-primary/15 border border-primary/20 rounded-[18px] rounded-br-sm px-4 py-3 text-sm max-w-[85%]">' +
+          msg +
+          '</div><div class="text-[10px] text-white/30 mt-1">You · just now</div>';
+        area.insertBefore(userDiv, typing);
+        typing.classList.remove("hidden");
+        typing.classList.add("flex");
+        area.scrollTop = area.scrollHeight;
+        setTimeout(() => {
+          typing.classList.add("hidden");
+          typing.classList.remove("flex");
+          const aiDiv = document.createElement("div");
+          aiDiv.className = "flex flex-col max-w-[85%]";
+          aiDiv.innerHTML =
+            '<div class="flex items-end gap-2"><div class="w-7 h-7 rounded-lg bg-secondary/20 flex items-center justify-center flex-shrink-0 mb-1"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#7B61FF" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2"/></svg></div><div class="bg-surface-2 border border-white/[0.08] rounded-[18px] rounded-bl-sm px-4 py-3 text-sm leading-relaxed">Based on my analysis, there are several interesting opportunities in the current market. Would you like a detailed breakdown of a specific asset or trading strategy?</div></div>';
+          area.insertBefore(aiDiv, typing);
+          area.scrollTop = area.scrollHeight;
+        }, 1800);
+      }
+      function sendQuick(msg) {
+        document.getElementById("chat-input").value = msg;
+        sendMsg();
+      }
+      document.getElementById("chat-messages").scrollTop = 99999;
+    </script>
+  </body>
+</html>

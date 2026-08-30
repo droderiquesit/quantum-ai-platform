@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>Cryptrix — AI Crypto Investing & Trading App</title>
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="apple-touch-icon" href="/assets/images/logo.png" />
+    <meta name="theme-color" content="#00D4AA" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="shortcut icon" href="./assets/images/favicon.ico" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"
+      rel="stylesheet"
+    />
+
+    <!-- Theme Script (Placed early to prevent FOUC) -->
+    <script>
+      (function () {
+        const saved = localStorage.getItem("theme") || "dark";
+        if (saved === "dark") document.documentElement.classList.add("dark");
+        else document.documentElement.classList.remove("dark");
+      })();
+    </script>
+  </head>
+  <body class="font-sans overflow-x-hidden">
+    <div class="min-h-screen flex justify-center">
+      <div
+        class="relative w-full max-w-[430px] min-h-screen overflow-x-hidden shadow-[0_0_80px_rgba(0,212,170,0.08)]"
+        id="app"
+      >
+        <div
+          class="min-h-screen flex flex-col items-center justify-center px-6 text-center"
+        >
+          <div class="relative mb-8">
+            <div
+              class="absolute inset-[-20px] rounded-full border-2 border-success/20 animate-pulse"
+            ></div>
+            <div
+              class="w-28 h-28 rounded-full bg-success/15 border-2 border-success/30 flex items-center justify-center"
+            >
+              <svg
+                width="52"
+                height="52"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="#00C896"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+            </div>
+          </div>
+          <div class="text-[28px] font-extrabold mb-2">Payment Successful!</div>
+          <div
+            class="text-white/50 text-[15px] leading-relaxed mb-8 max-w-[280px]"
+          >
+            Welcome to Elite tier! Your account has been upgraded and all
+            features are now unlocked.
+          </div>
+          <div
+            class="bg-surface border border-white/[0.08] rounded-card p-5 w-full max-w-[340px] mb-8 text-left"
+          >
+            <div class="flex justify-between py-2.5 border-b border-white/5">
+              <span class="text-[13px] text-white/40">Plan</span>
+              <span class="text-[13px] font-bold text-primary">Elite</span>
+            </div>
+            <div class="flex justify-between py-2.5 border-b border-white/5">
+              <span class="text-[13px] text-white/40">Amount Paid</span>
+              <span class="text-[13px] font-semibold">$39.20</span>
+            </div>
+            <div class="flex justify-between py-2.5 border-b border-white/5">
+              <span class="text-[13px] text-white/40">Next Billing</span>
+              <span class="text-[13px] font-semibold">April 16, 2026</span>
+            </div>
+            <div class="flex justify-between py-2.5">
+              <span class="text-[13px] text-white/40">Status</span>
+              <span class="text-[13px] font-bold text-success">✓ Active</span>
+            </div>
+          </div>
+          <a
+            href="home.html"
+            class="bg-primary text-bg-dark font-bold rounded-btn h-12 flex items-center justify-center gap-2 shadow-primary w-full max-w-[340px]"
+          >
+            Explore Elite Features
+          </a>
+        </div>
+      </div>
+    </div>
+    <script src="./assets/js/data.js"></script>
+    <script src="./assets/js/components.js"></script>
+    <script src="./assets/js/app.js"></script>
+  </body>
+</html>

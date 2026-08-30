@@ -1,0 +1,1377 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <script>
+      if (localStorage.getItem("theme") === "light") document.documentElement.classList.remove("dark");
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Auto-Signal Forwarder - SignalAIX | AI Forex & Crypto Trading Signals</title>
+    <link rel="icon" type="image/png" href="assets/images/favicon.png" />
+    <link rel="apple-touch-icon" href="assets/images/favicon.png" />
+  <link href="css/index.css" rel="stylesheet"></head>
+  <body id="auto-signal-forwarder">
+    <div id="loader"><div class="spinner"></div><div class="loader-text">Loading SignalAIX...</div></div>
+    <div id="sidebarOverlay" class="fixed inset-0 bg-black/50 z-40 hidden lg:hidden transition-opacity duration-300 opacity-0" aria-hidden="true"></div>
+<aside class="sidebar" id="sidebar">
+  <!-- ======================================
+       Start Logo Section
+       ====================================== -->
+  <div class="logo-section flex items-center gap-3 p-5 border-b border-border shrink-0">
+    <img src="assets/images/logo.png" alt="SignalAIX" class="w-10 h-10 rounded-xl object-contain shrink-0" />
+    <div class="logo-text flex-1 min-w-0">
+      <p class="text-lg font-bold text-text leading-tight">SignalAIX</p>
+      <p class="text-xs text-muted truncate">AI Forex & Crypto Signals</p>
+    </div>
+    <button class="lg:hidden! flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:bg-border/60 hover:text-text transition js-mobile-menu-toggle" aria-label="Close sidebar">
+      <i data-lucide="x" class="w-5 h-5"></i>
+    </button>
+  </div>
+
+  <!-- ======================================
+       Start Navigation
+       ====================================== -->
+  <nav class="py-4 flex-1">
+    <!-- MAIN -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Main</div>
+
+    <a href="./index.html" class="nav-item active flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Dashboard">
+      <i data-lucide="layout-dashboard" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Dashboard</span>
+    </a>
+
+    <a href="./live-signals.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Live Signals">
+      <i data-lucide="radio" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Live Signals</span>
+      <span class="live-dot ml-auto nav-text"></span>
+    </a>
+
+    <a href="./ai-signal-generator.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Signal Generator">
+      <i data-lucide="sparkles" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Signal Generator</span>
+    </a>
+
+    <a href="./market-overview.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Market Overview">
+      <i data-lucide="globe" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Market Overview</span>
+    </a>
+
+    <!-- AI INTELLIGENCE -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">AI Intelligence</div>
+
+    <a href="./ai-market-summary.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Market Summary">
+      <i data-lucide="brain-circuit" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Market Summary</span>
+    </a>
+
+    <a href="./ai-prediction-models.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Prediction Models">
+      <i data-lucide="line-chart" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Prediction Models</span>
+    </a>
+
+    <a href="./ai-risk-analyzer.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Risk Analyzer">
+      <i data-lucide="shield-alert" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Risk Analyzer</span>
+    </a>
+
+    <a href="./ai-trade-journal.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Trade Journal">
+      <i data-lucide="notebook-pen" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Trade Journal</span>
+    </a>
+
+    <a href="./ai-strategy-builder.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Strategy Builder">
+      <i data-lucide="blocks" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Strategy Builder</span>
+    </a>
+
+    <!-- TRADING TOOLS -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Trading Tools</div>
+
+    <a href="./forex-heatmap.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Forex Heatmap">
+      <i data-lucide="grid-3x3" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Forex Heatmap</span>
+    </a>
+
+    <a href="./crypto-heatmap.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Crypto Heatmap">
+      <i data-lucide="layout-grid" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Crypto Heatmap</span>
+    </a>
+
+    <a href="./trend-scanner.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Trend Scanner">
+      <i data-lucide="scan-line" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Trend Scanner</span>
+    </a>
+
+    <a href="./pattern-detection.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Pattern Detection">
+      <i data-lucide="waypoints" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Pattern Detection</span>
+    </a>
+
+    <a href="./volatility-index.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Volatility Index">
+      <i data-lucide="activity" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Volatility Index</span>
+    </a>
+
+    <a href="./economic-calendar.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Economic Calendar">
+      <i data-lucide="calendar-clock" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Economic Calendar</span>
+    </a>
+
+    <a href="./news-sentiment.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="News & Sentiment">
+      <i data-lucide="newspaper" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">News & Sentiment</span>
+    </a>
+
+    <a href="./correlation-matrix.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Correlation Matrix">
+      <i data-lucide="table-2" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Correlation Matrix</span>
+    </a>
+
+    <!-- MARKET ANALYTICS -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Market Analytics</div>
+
+    <a href="./forex-analytics.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Forex Analytics">
+      <i data-lucide="candlestick-chart" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Forex Analytics</span>
+    </a>
+
+    <a href="./crypto-analytics.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Crypto Analytics">
+      <i data-lucide="bitcoin" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Crypto Analytics</span>
+    </a>
+
+    <a href="./top-gainers-losers.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Top Gainers & Losers">
+      <i data-lucide="arrow-up-down" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Top Gainers & Losers</span>
+    </a>
+
+    <a href="./market-sentiment.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Market Sentiment">
+      <i data-lucide="gauge" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Market Sentiment</span>
+    </a>
+
+    <a href="./liquidity-zones.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Liquidity Zones">
+      <i data-lucide="droplets" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Liquidity Zones</span>
+    </a>
+
+    <a href="./price-action-monitor.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Price Action Monitor">
+      <i data-lucide="move-up-right" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Price Action Monitor</span>
+    </a>
+
+    <!-- PORTFOLIO -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Portfolio</div>
+
+    <a href="./my-portfolio.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="My Portfolio">
+      <i data-lucide="pie-chart" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">My Portfolio</span>
+    </a>
+
+    <a href="./open-positions.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Open Positions">
+      <i data-lucide="layers" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Open Positions</span>
+    </a>
+
+    <a href="./trade-history.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Trade History">
+      <i data-lucide="history" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Trade History</span>
+    </a>
+
+    <a href="./performance-analytics.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Performance Analytics">
+      <i data-lucide="bar-chart-3" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Performance Analytics</span>
+    </a>
+
+    <a href="./risk-metrics.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Risk Metrics">
+      <i data-lucide="shield-check" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Risk Metrics</span>
+    </a>
+
+    <a href="./pl-overview.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="P/L Overview">
+      <i data-lucide="wallet" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">P/L Overview</span>
+    </a>
+
+    <!-- WATCHLISTS -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Watchlists</div>
+
+    <a href="./forex-pairs.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Forex Pairs">
+      <i data-lucide="dollar-sign" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Forex Pairs</span>
+    </a>
+
+    <a href="./crypto-pairs.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Crypto Pairs">
+      <i data-lucide="coins" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Crypto Pairs</span>
+    </a>
+
+    <a href="./custom-alerts.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Custom Alerts">
+      <i data-lucide="bell-ring" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Custom Alerts</span>
+    </a>
+
+    <a href="./saved-signals.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Saved Signals">
+      <i data-lucide="bookmark" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Saved Signals</span>
+    </a>
+
+    <!-- AUTOMATION -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Automation</div>
+
+    <a href="./bot-center.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Bot Center">
+      <i data-lucide="bot" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Bot Center</span>
+    </a>
+
+    <a href="./auto-signal-forwarder.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Auto-Signal Forwarder">
+      <i data-lucide="forward" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Auto-Signal Forwarder</span>
+    </a>
+
+    <a href="./webhook-automations.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Webhook Automations">
+      <i data-lucide="webhook" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Webhook Automations</span>
+    </a>
+
+    <a href="./api-integrations.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="API Integrations">
+      <i data-lucide="plug" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">API Integrations</span>
+    </a>
+
+    <!-- ACCOUNT -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Account</div>
+
+    <a href="./profile-security.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Profile & Security">
+      <i data-lucide="user-cog" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Profile & Security</span>
+    </a>
+
+    <a href="./notification-settings.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Notification Settings">
+      <i data-lucide="bell" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Notification Settings</span>
+      <span class="ml-auto bg-red-500 text-white text-xs px-2 py-0.5 rounded-full nav-text">5</span>
+    </a>
+
+    <a href="./connected-exchanges.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Connected Exchanges">
+      <i data-lucide="link-2" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Connected Exchanges</span>
+    </a>
+
+    <a href="./subscription-billing.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Subscription & Billing">
+      <i data-lucide="crown" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Subscription & Billing</span>
+      <span class="ml-auto text-[10px] font-bold px-2 py-0.5 rounded-md bg-accent text-white nav-text">PRO</span>
+    </a>
+
+    <a href="./help-center.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Help Center">
+      <i data-lucide="help-circle" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Help Center</span>
+    </a>
+  </nav>
+
+  <!-- ======================================
+       Start User Section
+       ====================================== -->
+  <div class="user-section mt-auto p-4 border-t border-border shrink-0">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-full flex items-center justify-center shrink-0 bg-gradient-to-br from-emerald-500 to-teal-500">
+        <span class="text-white font-semibold text-sm">AK</span>
+      </div>
+      <div class="user-info flex-1 min-w-0">
+        <p class="font-semibold text-sm text-text truncate">Alex Kim</p>
+        <p class="text-xs text-muted truncate">alex@signalaix.io</p>
+      </div>
+    </div>
+  </div>
+</aside>
+
+    <main class="main-content" id="mainContent">
+      <header class="sticky top-0 z-50 glass @container">
+  <div class="flex items-center justify-between px-2 sm:px-6 py-2 sm:py-4">
+    <div class="flex items-center gap-2 sm:gap-4">
+      <!-- Mobile Menu Button -->
+      <button class="lg:hidden flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 transition js-mobile-menu-toggle" id="mobileMenuBtn" aria-label="Toggle Mobile Menu">
+        <i data-lucide="menu" class="w-5 h-5"></i>
+      </button>
+
+      <!-- Sidebar Toggle (Desktop) -->
+      <button class="hidden lg:flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 transition js-sidebar-toggle" aria-label="Toggle Sidebar">
+        <i data-lucide="panel-left" class="w-5 h-5"></i>
+      </button>
+
+      <!-- Search -->
+      <div class="relative hidden md:block">
+        <i data-lucide="search" class="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-muted"></i>
+        <input type="text" id="globalSearch" placeholder="Search signals, pairs, markets... (⌘K)" class="w-80 pl-10 pr-4 py-2.5 rounded-xl bg-bg border border-border text-sm text-text placeholder:text-muted focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 transition" />
+      </div>
+    </div>
+
+    <div class="flex items-center gap-2 sm:gap-3">
+      <!-- Live Status -->
+      <div class="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-500/10 text-emerald-500 text-[11px] font-semibold">
+        <span class="live-dot !bg-emerald-500"></span>
+        LIVE
+      </div>
+
+      <!-- Quick Generate Signal -->
+      <button class="flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 hover:border-accent/30 transition js-open-drawer" data-drawer-type="quickTrade" aria-label="Generate Signal">
+        <i data-lucide="zap" class="w-5 h-5"></i>
+      </button>
+
+      <!-- Notifications -->
+      <div class="dropdown">
+        <button class="relative flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 transition js-dropdown-toggle" aria-label="Toggle Notifications">
+          <i data-lucide="bell" class="w-5 h-5"></i>
+          <span class="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-xs rounded-full flex items-center justify-center">5</span>
+        </button>
+        <div class="dropdown-menu w-75 min-[400px]:w-80 mt-2 rounded-2xl bg-panel border border-border shadow-2xl overflow-hidden max-[420px]:-left-[153px]! max-[450px]:-left-[183px]! max-[430px]:right-0!">
+          <div class="p-4 border-b border-border flex items-center justify-between">
+            <h2 class="text-base font-semibold text-text">Notifications</h2>
+            <span class="text-xs font-medium text-accent">5 new</span>
+          </div>
+          <div class="max-h-72 overflow-y-auto">
+            <div class="flex items-start gap-3 p-4 hover:bg-border/30 transition cursor-pointer">
+              <div class="w-9 h-9 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="trending-up" class="w-4 h-4 text-emerald-500"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-medium text-text truncate">New BUY signal: EUR/USD</p>
+                <p class="text-xs text-muted">AI confidence 92% · 2 min ago</p>
+              </div>
+            </div>
+            <div class="flex items-start gap-3 p-4 hover:bg-border/30 transition cursor-pointer">
+              <div class="w-9 h-9 rounded-full bg-amber-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="alert-triangle" class="w-4 h-4 text-amber-500"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-medium text-text truncate">High volatility on BTC/USDT</p>
+                <p class="text-xs text-muted">15 min ago</p>
+              </div>
+            </div>
+            <div class="flex items-start gap-3 p-4 hover:bg-border/30 transition cursor-pointer">
+              <div class="w-9 h-9 rounded-full bg-sky-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="sparkles" class="w-4 h-4 text-sky-500"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-medium text-text truncate">AI model retrained — accuracy +3%</p>
+                <p class="text-xs text-muted">1 hour ago</p>
+              </div>
+            </div>
+          </div>
+          <div class="p-3 border-t border-border">
+            <button class="w-full text-center text-sm font-medium text-accent hover:underline">View all notifications</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Theme Toggle -->
+      <button
+        class="flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 transition"
+        id="themeToggle"
+        aria-label="Toggle Theme"
+        onclick="
+          document.documentElement.classList.toggle('dark');
+          localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+        "
+      >
+        <i data-lucide="moon" class="w-5 h-5 dark:hidden"></i>
+        <i data-lucide="sun" class="w-5 h-5 hidden dark:block"></i>
+      </button>
+
+      <!-- Profile Dropdown -->
+      <div class="dropdown">
+        <button class="flex items-center gap-2 p-1 rounded-xl hover:bg-border/50 transition js-dropdown-toggle">
+          <span class="w-9 h-9 rounded-full bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center">
+            <span class="text-white font-semibold text-sm">AK</span>
+          </span>
+          <i data-lucide="chevron-down" class="w-4 h-4 text-muted hidden sm:block"></i>
+        </button>
+        <div class="dropdown-menu w-56 mt-2 rounded-2xl bg-panel border border-border shadow-2xl overflow-hidden p-2">
+          <div class="p-3 mb-1 border-b border-border">
+            <p class="font-semibold text-text">Alex Kim</p>
+            <p class="text-xs text-muted">Pro Trader</p>
+          </div>
+          <a href="./index.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-text hover:bg-accent/10 transition">
+            <i data-lucide="user" class="w-4 h-4"></i>
+            <span>My Profile</span>
+          </a>
+          <a href="./index.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-text hover:bg-accent/10 transition">
+            <i data-lucide="settings" class="w-4 h-4"></i>
+            <span>Settings</span>
+          </a>
+          <a href="./index.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-text hover:bg-accent/10 transition">
+            <i data-lucide="help-circle" class="w-4 h-4"></i>
+            <span>Help & Support</span>
+          </a>
+          <div class="mt-1 pt-1 border-t border-border">
+            <a href="./index.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-red-500 hover:bg-red-500/10 transition">
+              <i data-lucide="log-out" class="w-4 h-4"></i>
+              <span>Logout</span>
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+      <div class="inner-content max-sm:px-3 max-lg:px-4 max-lg:py-6 lg:p-6">
+        <!-- Page Header -->
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-6">
+          <div>
+            <div class="flex items-center gap-3 mb-2">
+              <h1 class="text-2xl md:text-3xl font-bold text-text">Auto-Signal Forwarder</h1>
+              <div class="flex items-center gap-2 px-3 py-1 bg-emerald-500/15 text-emerald-500 rounded-full text-sm font-semibold">
+                <span class="live-dot"></span>
+                24 Active
+              </div>
+            </div>
+            <p class="text-muted">Automate your signal distribution across multiple channels</p>
+          </div>
+          <div class="flex flex-wrap items-center gap-3">
+            <button
+              id="asfFilterBtn"
+              class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"
+            >
+              <i data-lucide="sliders-horizontal" class="w-4 h-4 shrink-0"></i>
+              <span>Filters</span>
+            </button>
+            <div class="relative">
+              <button
+                id="asfExportBtn"
+                class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"
+              >
+                <i data-lucide="download" class="w-4 h-4 shrink-0"></i>
+                <span>Export</span>
+                <i data-lucide="chevron-down" class="w-4 h-4 shrink-0"></i>
+              </button>
+              <div
+                id="asfExportMenu"
+                class="hidden absolute right-0 mt-2 w-48 bg-panel border border-border rounded-xl shadow-xl z-50 overflow-hidden"
+              >
+                <button class="asf-export-item flex items-center gap-2.5 w-full px-4 py-3 text-sm text-text hover:bg-accent/10 transition-colors" data-format="csv">
+                  <i data-lucide="file-text" class="w-4 h-4 shrink-0"></i>
+                  <span>Export as CSV</span>
+                </button>
+                <button class="asf-export-item flex items-center gap-2.5 w-full px-4 py-3 text-sm text-text hover:bg-accent/10 transition-colors" data-format="json">
+                  <i data-lucide="file-code" class="w-4 h-4 shrink-0"></i>
+                  <span>Export as JSON</span>
+                </button>
+                <button class="asf-export-item flex items-center gap-2.5 w-full px-4 py-3 text-sm text-text hover:bg-accent/10 transition-colors" data-format="pdf">
+                  <i data-lucide="file" class="w-4 h-4 shrink-0"></i>
+                  <span>Export as PDF</span>
+                </button>
+              </div>
+            </div>
+            <button
+              id="asfNewRuleBtn"
+              class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"
+            >
+              <i data-lucide="plus" class="w-4 h-4 shrink-0"></i>
+              <span>New Rule</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Stat Cards -->
+        <div class="grid grid-cols-1 xs:grid-cols-2 @4xl/content:grid-cols-4 gap-4 mb-6">
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="circle-check" class="w-5 h-5 text-emerald-500 shrink-0"></i>
+              </div>
+              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i>+12%</span>
+            </div>
+            <p class="text-2xl font-bold text-text">24</p>
+            <p class="text-xs text-muted mt-1">Active Forwarding Rules</p>
+          </div>
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-sky-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="send" class="w-5 h-5 text-sky-500 shrink-0"></i>
+              </div>
+              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-sky-500/15 text-sky-500"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i>+28%</span>
+            </div>
+            <p class="text-2xl font-bold text-text">1,847</p>
+            <p class="text-xs text-muted mt-1">Signals Forwarded Today</p>
+          </div>
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-violet-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="git-branch" class="w-5 h-5 text-violet-400 shrink-0"></i>
+              </div>
+              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-violet-500/15 text-violet-400">+5</span>
+            </div>
+            <p class="text-2xl font-bold text-text">18</p>
+            <p class="text-xs text-muted mt-1">Connected Channels</p>
+          </div>
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-teal-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="target" class="w-5 h-5 text-teal-500 shrink-0"></i>
+              </div>
+              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500"><i data-lucide="circle-check" class="w-3 h-3 shrink-0"></i>OK</span>
+            </div>
+            <p class="text-2xl font-bold text-text">99.8%</p>
+            <p class="text-xs text-muted mt-1">Delivery Success Rate</p>
+          </div>
+        </div>
+
+        <!-- Tabs + Actions -->
+        <div class="rounded-2xl bg-panel border border-border p-4 sm:p-5 mb-6">
+          <div class="flex gap-1 p-1 bg-bg border border-border rounded-2xl overflow-x-auto hide-scrollbar w-full">
+            <button class="asf-tab tab-button active inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="rules">
+              <i data-lucide="list" class="w-4 h-4 shrink-0"></i>Forwarding Rules
+            </button>
+            <button class="asf-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="channels">
+              <i data-lucide="radio-tower" class="w-4 h-4 shrink-0"></i>Channels
+            </button>
+            <button class="asf-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="logs">
+              <i data-lucide="scroll-text" class="w-4 h-4 shrink-0"></i>Activity Logs
+            </button>
+            <button class="asf-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="settings">
+              <i data-lucide="settings-2" class="w-4 h-4 shrink-0"></i>Settings
+            </button>
+          </div>
+        </div>
+
+        <!-- ============ TAB: RULES ============ -->
+        <div class="asf-pane tab-content active" data-pane="rules">
+          <!-- Search + Status chips -->
+          <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3 mb-5">
+            <div class="relative flex-1 lg:max-w-md">
+              <i data-lucide="search" class="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-muted"></i>
+              <input
+                type="text"
+                id="asfRulesSearch"
+                placeholder="Search rules by name or source..."
+                class="w-full pl-11 pr-4 py-2.5 bg-panel border border-border rounded-xl text-text text-sm placeholder:text-muted focus:outline-none focus:border-accent transition-colors"
+              />
+            </div>
+            <div class="flex flex-wrap items-center gap-2" id="asfChips">
+              <button class="asf-chip active inline-flex items-center gap-2 px-4 py-2 rounded-full border border-accent bg-accent/15 text-accent text-sm font-medium transition-colors" data-filter="all">
+                <i data-lucide="layers" class="w-3.5 h-3.5 shrink-0"></i>All Rules
+              </button>
+              <button class="asf-chip inline-flex items-center gap-2 px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-filter="active">
+                <i data-lucide="circle-check" class="w-3.5 h-3.5 shrink-0"></i>Active
+              </button>
+              <button class="asf-chip inline-flex items-center gap-2 px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-filter="paused">
+                <i data-lucide="circle-pause" class="w-3.5 h-3.5 shrink-0"></i>Paused
+              </button>
+              <button class="asf-chip inline-flex items-center gap-2 px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-filter="error">
+                <i data-lucide="circle-alert" class="w-3.5 h-3.5 shrink-0"></i>Error
+              </button>
+            </div>
+          </div>
+
+          <!-- No results -->
+          <div id="asfNoResults" class="hidden rounded-2xl bg-panel border border-border p-12 text-center mb-6">
+            <div class="w-14 h-14 rounded-2xl bg-border/40 flex items-center justify-center mx-auto mb-4">
+              <i data-lucide="forward" class="w-7 h-7 text-muted shrink-0"></i>
+            </div>
+            <p class="font-semibold text-text mb-1">No rules found</p>
+            <p class="text-sm text-muted">Try adjusting your filters or search.</p>
+          </div>
+
+          <!-- Rules Grid -->
+          <div class="grid grid-cols-1 @xl/content:grid-cols-2 @4xl/content:grid-cols-3 gap-5 mb-6" id="asfRulesGrid">
+            <!-- Rule 1 -->
+            <div class="asf-rule rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors" data-id="1" data-name="Forex Major Signals" data-source="AI Generator" data-pairs="EUR/USD, GBP/USD, USD/JPY" data-forwarded="2,458" data-today="+124 today" data-status="active" data-last="2 min ago">
+              <div class="p-5">
+                <div class="flex items-start justify-between mb-4 gap-3">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="asf-check custom-checkbox shrink-0" role="checkbox" aria-checked="false" tabindex="0"></div>
+                    <div class="w-10 h-10 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="trending-up" class="w-5 h-5 text-emerald-500 shrink-0"></i></div>
+                    <div class="min-w-0"><p class="font-semibold text-text truncate">Forex Major Signals</p><p class="text-xs text-muted truncate">EUR/USD, GBP/USD, USD/JPY</p></div>
+                  </div>
+                  <span class="asf-status-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>Active</span>
+                </div>
+                <div class="flex items-center gap-2 mb-4">
+                  <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-violet-500/15 text-violet-400">AI Generator</span>
+                  <div class="flex items-center gap-1.5 ml-auto">
+                    <span class="w-7 h-7 rounded-lg bg-[#0088CC]/15 flex items-center justify-center shrink-0" title="Telegram"><i data-lucide="send" class="w-3.5 h-3.5 text-[#0088CC] shrink-0"></i></span>
+                    <span class="w-7 h-7 rounded-lg bg-[#5865F2]/15 flex items-center justify-center shrink-0" title="Discord"><i data-lucide="message-circle" class="w-3.5 h-3.5 text-[#5865F2] shrink-0"></i></span>
+                    <span class="text-xs text-muted">+2</span>
+                  </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3 mb-4">
+                  <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Forwarded</p><p class="font-semibold text-text">2,458</p><p class="text-xs text-emerald-500">+124 today</p></div>
+                  <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Last Activity</p><p class="font-semibold text-text">2 min ago</p><p class="text-xs text-muted">Dec 30, 2024</p></div>
+                </div>
+                <div class="flex items-center justify-between pt-4 border-t border-border gap-3">
+                  <div class="js-toggle-switch toggle-switch active asf-toggle" role="switch" aria-checked="true" tabindex="0"></div>
+                  <div class="flex items-center gap-2 shrink-0">
+                    <button class="asf-edit-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Edit"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i></button>
+                    <button class="asf-delete-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-red-500 hover:border-red-500/40 transition-colors" title="Delete"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Rule 2 -->
+            <div class="asf-rule rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors" data-id="2" data-name="Crypto Alerts" data-source="Pattern Detection" data-pairs="BTC, ETH, SOL, XRP" data-forwarded="1,892" data-today="+89 today" data-status="active" data-last="15 min ago">
+              <div class="p-5">
+                <div class="flex items-start justify-between mb-4 gap-3">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="asf-check custom-checkbox shrink-0" role="checkbox" aria-checked="false" tabindex="0"></div>
+                    <div class="w-10 h-10 rounded-xl bg-amber-500/15 flex items-center justify-center shrink-0"><i data-lucide="bitcoin" class="w-5 h-5 text-amber-500 shrink-0"></i></div>
+                    <div class="min-w-0"><p class="font-semibold text-text truncate">Crypto Alerts</p><p class="text-xs text-muted truncate">BTC, ETH, SOL, XRP</p></div>
+                  </div>
+                  <span class="asf-status-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>Active</span>
+                </div>
+                <div class="flex items-center gap-2 mb-4">
+                  <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-sky-500/15 text-sky-500">Pattern Detection</span>
+                  <div class="flex items-center gap-1.5 ml-auto">
+                    <span class="w-7 h-7 rounded-lg bg-[#0088CC]/15 flex items-center justify-center shrink-0" title="Telegram"><i data-lucide="send" class="w-3.5 h-3.5 text-[#0088CC] shrink-0"></i></span>
+                    <span class="w-7 h-7 rounded-lg bg-amber-500/15 flex items-center justify-center shrink-0" title="Webhook"><i data-lucide="webhook" class="w-3.5 h-3.5 text-amber-500 shrink-0"></i></span>
+                  </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3 mb-4">
+                  <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Forwarded</p><p class="font-semibold text-text">1,892</p><p class="text-xs text-emerald-500">+89 today</p></div>
+                  <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Last Activity</p><p class="font-semibold text-text">15 min ago</p><p class="text-xs text-muted">Dec 30, 2024</p></div>
+                </div>
+                <div class="flex items-center justify-between pt-4 border-t border-border gap-3">
+                  <div class="js-toggle-switch toggle-switch active asf-toggle" role="switch" aria-checked="true" tabindex="0"></div>
+                  <div class="flex items-center gap-2 shrink-0">
+                    <button class="asf-edit-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Edit"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i></button>
+                    <button class="asf-delete-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-red-500 hover:border-red-500/40 transition-colors" title="Delete"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Rule 3 (paused) -->
+            <div class="asf-rule rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors" data-id="3" data-name="High Risk Alerts" data-source="Risk Analyzer" data-pairs="All pairs - Risk > 80%" data-forwarded="342" data-today="+12 today" data-status="paused" data-last="3 hours ago">
+              <div class="p-5">
+                <div class="flex items-start justify-between mb-4 gap-3">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="asf-check custom-checkbox shrink-0" role="checkbox" aria-checked="false" tabindex="0"></div>
+                    <div class="w-10 h-10 rounded-xl bg-red-500/15 flex items-center justify-center shrink-0"><i data-lucide="circle-alert" class="w-5 h-5 text-red-500 shrink-0"></i></div>
+                    <div class="min-w-0"><p class="font-semibold text-text truncate">High Risk Alerts</p><p class="text-xs text-muted truncate">All pairs - Risk &gt; 80%</p></div>
+                  </div>
+                  <span class="asf-status-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-500 shrink-0"><span class="w-2 h-2 rounded-full bg-amber-500"></span>Paused</span>
+                </div>
+                <div class="flex items-center gap-2 mb-4">
+                  <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-500/15 text-red-500">Risk Analyzer</span>
+                  <div class="flex items-center gap-1.5 ml-auto">
+                    <span class="w-7 h-7 rounded-lg bg-[#EF4444]/15 flex items-center justify-center shrink-0" title="Email"><i data-lucide="mail" class="w-3.5 h-3.5 text-[#EF4444] shrink-0"></i></span>
+                    <span class="w-7 h-7 rounded-lg bg-[#0088CC]/15 flex items-center justify-center shrink-0" title="Telegram"><i data-lucide="send" class="w-3.5 h-3.5 text-[#0088CC] shrink-0"></i></span>
+                  </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3 mb-4">
+                  <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Forwarded</p><p class="font-semibold text-text">342</p><p class="text-xs text-emerald-500">+12 today</p></div>
+                  <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Last Activity</p><p class="font-semibold text-text">3 hours ago</p><p class="text-xs text-muted">Dec 30, 2024</p></div>
+                </div>
+                <div class="flex items-center justify-between pt-4 border-t border-border gap-3">
+                  <div class="js-toggle-switch toggle-switch asf-toggle" role="switch" aria-checked="false" tabindex="0"></div>
+                  <div class="flex items-center gap-2 shrink-0">
+                    <button class="asf-edit-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Edit"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i></button>
+                    <button class="asf-delete-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-red-500 hover:border-red-500/40 transition-colors" title="Delete"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Rule 4 -->
+            <div class="asf-rule rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors" data-id="4" data-name="Scalping Signals" data-source="Trend Scanner" data-pairs="1-5 min timeframe" data-forwarded="5,621" data-today="+287 today" data-status="active" data-last="Just now">
+              <div class="p-5">
+                <div class="flex items-start justify-between mb-4 gap-3">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="asf-check custom-checkbox shrink-0" role="checkbox" aria-checked="false" tabindex="0"></div>
+                    <div class="w-10 h-10 rounded-xl bg-sky-500/15 flex items-center justify-center shrink-0"><i data-lucide="zap" class="w-5 h-5 text-sky-500 shrink-0"></i></div>
+                    <div class="min-w-0"><p class="font-semibold text-text truncate">Scalping Signals</p><p class="text-xs text-muted truncate">1-5 min timeframe</p></div>
+                  </div>
+                  <span class="asf-status-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>Active</span>
+                </div>
+                <div class="flex items-center gap-2 mb-4">
+                  <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-teal-500/15 text-teal-500">Trend Scanner</span>
+                  <div class="flex items-center gap-1.5 ml-auto">
+                    <span class="w-7 h-7 rounded-lg bg-[#5865F2]/15 flex items-center justify-center shrink-0" title="Discord"><i data-lucide="message-circle" class="w-3.5 h-3.5 text-[#5865F2] shrink-0"></i></span>
+                  </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3 mb-4">
+                  <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Forwarded</p><p class="font-semibold text-text">5,621</p><p class="text-xs text-emerald-500">+287 today</p></div>
+                  <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Last Activity</p><p class="font-semibold text-text">Just now</p><p class="text-xs text-muted">Dec 30, 2024</p></div>
+                </div>
+                <div class="flex items-center justify-between pt-4 border-t border-border gap-3">
+                  <div class="js-toggle-switch toggle-switch active asf-toggle" role="switch" aria-checked="true" tabindex="0"></div>
+                  <div class="flex items-center gap-2 shrink-0">
+                    <button class="asf-edit-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Edit"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i></button>
+                    <button class="asf-delete-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-red-500 hover:border-red-500/40 transition-colors" title="Delete"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Rule 5 (error) -->
+            <div class="asf-rule rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors" data-id="5" data-name="Economic Events" data-source="Calendar" data-pairs="High impact news" data-forwarded="892" data-today="+23 today" data-status="error" data-last="1 day ago">
+              <div class="p-5">
+                <div class="flex items-start justify-between mb-4 gap-3">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="asf-check custom-checkbox shrink-0" role="checkbox" aria-checked="false" tabindex="0"></div>
+                    <div class="w-10 h-10 rounded-xl bg-violet-500/15 flex items-center justify-center shrink-0"><i data-lucide="calendar" class="w-5 h-5 text-violet-400 shrink-0"></i></div>
+                    <div class="min-w-0"><p class="font-semibold text-text truncate">Economic Events</p><p class="text-xs text-muted truncate">High impact news</p></div>
+                  </div>
+                  <span class="asf-status-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-500/15 text-red-500 shrink-0"><span class="w-2 h-2 rounded-full bg-red-500"></span>Error</span>
+                </div>
+                <div class="flex items-center gap-2 mb-4">
+                  <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-500">Calendar</span>
+                  <div class="flex items-center gap-1.5 ml-auto">
+                    <span class="w-7 h-7 rounded-lg bg-[#0088CC]/15 flex items-center justify-center shrink-0" title="Telegram"><i data-lucide="send" class="w-3.5 h-3.5 text-[#0088CC] shrink-0"></i></span>
+                    <span class="w-7 h-7 rounded-lg bg-[#5865F2]/15 flex items-center justify-center shrink-0" title="Discord"><i data-lucide="message-circle" class="w-3.5 h-3.5 text-[#5865F2] shrink-0"></i></span>
+                    <span class="w-7 h-7 rounded-lg bg-[#EF4444]/15 flex items-center justify-center shrink-0" title="Email"><i data-lucide="mail" class="w-3.5 h-3.5 text-[#EF4444] shrink-0"></i></span>
+                  </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3 mb-4">
+                  <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Forwarded</p><p class="font-semibold text-text">892</p><p class="text-xs text-emerald-500">+23 today</p></div>
+                  <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Last Activity</p><p class="font-semibold text-text">1 day ago</p><p class="text-xs text-muted">Dec 29, 2024</p></div>
+                </div>
+                <div class="flex items-center justify-between pt-4 border-t border-border gap-3">
+                  <button class="asf-retry-btn inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-panel border border-border text-amber-500 hover:border-amber-500/40 text-xs font-semibold transition-colors whitespace-nowrap"><i data-lucide="refresh-cw" class="w-3.5 h-3.5 shrink-0"></i>Retry</button>
+                  <div class="flex items-center gap-2 shrink-0">
+                    <button class="asf-edit-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Edit"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i></button>
+                    <button class="asf-delete-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-red-500 hover:border-red-500/40 transition-colors" title="Delete"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Rule 6 -->
+            <div class="asf-rule rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors" data-id="6" data-name="News Sentiment Flow" data-source="News & Sentiment" data-pairs="All majors" data-forwarded="1,204" data-today="+41 today" data-status="active" data-last="42 min ago">
+              <div class="p-5">
+                <div class="flex items-start justify-between mb-4 gap-3">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="asf-check custom-checkbox shrink-0" role="checkbox" aria-checked="false" tabindex="0"></div>
+                    <div class="w-10 h-10 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="trending-up" class="w-5 h-5 text-emerald-500 shrink-0"></i></div>
+                    <div class="min-w-0"><p class="font-semibold text-text truncate">News Sentiment Flow</p><p class="text-xs text-muted truncate">All majors</p></div>
+                  </div>
+                  <span class="asf-status-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>Active</span>
+                </div>
+                <div class="flex items-center gap-2 mb-4">
+                  <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-violet-500/15 text-violet-400">News &amp; Sentiment</span>
+                  <div class="flex items-center gap-1.5 ml-auto">
+                    <span class="w-7 h-7 rounded-lg bg-amber-500/15 flex items-center justify-center shrink-0" title="Webhook"><i data-lucide="webhook" class="w-3.5 h-3.5 text-amber-500 shrink-0"></i></span>
+                    <span class="w-7 h-7 rounded-lg bg-[#4A154B]/15 flex items-center justify-center shrink-0" title="Slack"><i data-lucide="hash" class="w-3.5 h-3.5 text-violet-400 shrink-0"></i></span>
+                  </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3 mb-4">
+                  <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Forwarded</p><p class="font-semibold text-text">1,204</p><p class="text-xs text-emerald-500">+41 today</p></div>
+                  <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Last Activity</p><p class="font-semibold text-text">42 min ago</p><p class="text-xs text-muted">Dec 30, 2024</p></div>
+                </div>
+                <div class="flex items-center justify-between pt-4 border-t border-border gap-3">
+                  <div class="js-toggle-switch toggle-switch active asf-toggle" role="switch" aria-checked="true" tabindex="0"></div>
+                  <div class="flex items-center gap-2 shrink-0">
+                    <button class="asf-edit-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Edit"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i></button>
+                    <button class="asf-delete-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-red-500 hover:border-red-500/40 transition-colors" title="Delete"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Pagination -->
+          <div class="flex flex-col sm:flex-row items-center justify-between gap-4 mb-2">
+            <p class="text-sm text-muted">Showing <span class="font-semibold text-text">1-6</span> of <span class="font-semibold text-text">24</span> rules</p>
+            <div class="flex items-center gap-2">
+              <button class="w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted disabled:opacity-40" disabled><i data-lucide="chevron-left" class="w-4 h-4 shrink-0"></i></button>
+              <button class="w-9 h-9 rounded-lg bg-gradient-to-r from-accent to-teal-500 text-white font-semibold text-sm">1</button>
+              <button class="w-9 h-9 rounded-lg border border-border text-muted hover:border-accent/40 font-semibold text-sm transition-colors">2</button>
+              <button class="w-9 h-9 rounded-lg border border-border text-muted hover:border-accent/40 font-semibold text-sm transition-colors">3</button>
+              <button class="w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:border-accent/40 transition-colors"><i data-lucide="chevron-right" class="w-4 h-4 shrink-0"></i></button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============ TAB: CHANNELS ============ -->
+        <div class="asf-pane tab-content" data-pane="channels">
+          <div class="grid grid-cols-1 @xl/content:grid-cols-2 @4xl/content:grid-cols-3 gap-5">
+            <!-- Telegram -->
+            <div class="rounded-2xl bg-panel border border-border p-5">
+              <div class="flex items-start justify-between mb-4 gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="w-12 h-12 rounded-xl bg-[#0088CC]/15 flex items-center justify-center shrink-0"><i data-lucide="send" class="w-6 h-6 text-[#0088CC] shrink-0"></i></div>
+                  <div class="min-w-0"><h4 class="font-semibold text-text truncate">Telegram</h4><p class="text-xs text-muted truncate">4 channels connected</p></div>
+                </div>
+                <div class="js-toggle-switch toggle-switch active" role="switch" aria-checked="true" tabindex="0"></div>
+              </div>
+              <div class="space-y-3">
+                <div class="flex items-center justify-between p-3 bg-bg rounded-xl gap-3">
+                  <div class="flex items-center gap-2 min-w-0"><span class="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span><span class="text-sm text-text truncate">@SignalAIX_Pro</span></div>
+                  <span class="text-xs text-muted shrink-0">12.4K subs</span>
+                </div>
+                <div class="flex items-center justify-between p-3 bg-bg rounded-xl gap-3">
+                  <div class="flex items-center gap-2 min-w-0"><span class="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span><span class="text-sm text-text truncate">@CryptoAlerts</span></div>
+                  <span class="text-xs text-muted shrink-0">8.2K subs</span>
+                </div>
+                <div class="flex items-center justify-between p-3 bg-bg rounded-xl gap-3">
+                  <div class="flex items-center gap-2 min-w-0"><span class="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span><span class="text-sm text-text truncate">@ForexSignals_VIP</span></div>
+                  <span class="text-xs text-muted shrink-0">5.6K subs</span>
+                </div>
+              </div>
+              <button class="asf-channel-add w-full mt-4 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="plus" class="w-4 h-4 shrink-0"></i>Add Channel</button>
+            </div>
+
+            <!-- Discord -->
+            <div class="rounded-2xl bg-panel border border-border p-5">
+              <div class="flex items-start justify-between mb-4 gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="w-12 h-12 rounded-xl bg-[#5865F2]/15 flex items-center justify-center shrink-0"><i data-lucide="message-circle" class="w-6 h-6 text-[#5865F2] shrink-0"></i></div>
+                  <div class="min-w-0"><h4 class="font-semibold text-text truncate">Discord</h4><p class="text-xs text-muted truncate">3 servers connected</p></div>
+                </div>
+                <div class="js-toggle-switch toggle-switch active" role="switch" aria-checked="true" tabindex="0"></div>
+              </div>
+              <div class="space-y-3">
+                <div class="flex items-center justify-between p-3 bg-bg rounded-xl gap-3">
+                  <div class="flex items-center gap-2 min-w-0"><span class="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span><span class="text-sm text-text truncate">Trading Hub</span></div>
+                  <span class="text-xs text-muted shrink-0">24.1K members</span>
+                </div>
+                <div class="flex items-center justify-between p-3 bg-bg rounded-xl gap-3">
+                  <div class="flex items-center gap-2 min-w-0"><span class="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span><span class="text-sm text-text truncate">Crypto Traders</span></div>
+                  <span class="text-xs text-muted shrink-0">18.5K members</span>
+                </div>
+                <div class="flex items-center justify-between p-3 bg-bg rounded-xl gap-3">
+                  <div class="flex items-center gap-2 min-w-0"><span class="w-2 h-2 rounded-full bg-amber-500 shrink-0"></span><span class="text-sm text-text truncate">VIP Signals</span></div>
+                  <span class="text-xs text-muted shrink-0">2.8K members</span>
+                </div>
+              </div>
+              <button class="asf-channel-add w-full mt-4 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="plus" class="w-4 h-4 shrink-0"></i>Add Server</button>
+            </div>
+
+            <!-- Webhook -->
+            <div class="rounded-2xl bg-panel border border-border p-5">
+              <div class="flex items-start justify-between mb-4 gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="w-12 h-12 rounded-xl bg-amber-500/15 flex items-center justify-center shrink-0"><i data-lucide="webhook" class="w-6 h-6 text-amber-500 shrink-0"></i></div>
+                  <div class="min-w-0"><h4 class="font-semibold text-text truncate">Webhooks</h4><p class="text-xs text-muted truncate">5 endpoints active</p></div>
+                </div>
+                <div class="js-toggle-switch toggle-switch active" role="switch" aria-checked="true" tabindex="0"></div>
+              </div>
+              <div class="space-y-3">
+                <div class="flex items-center justify-between p-3 bg-bg rounded-xl gap-3">
+                  <div class="flex items-center gap-2 min-w-0"><span class="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span><span class="text-sm text-text truncate">api.trading...</span></div>
+                  <span class="text-xs text-emerald-500 shrink-0">99.9%</span>
+                </div>
+                <div class="flex items-center justify-between p-3 bg-bg rounded-xl gap-3">
+                  <div class="flex items-center gap-2 min-w-0"><span class="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span><span class="text-sm text-text truncate">signals.mysite...</span></div>
+                  <span class="text-xs text-emerald-500 shrink-0">99.7%</span>
+                </div>
+                <div class="flex items-center justify-between p-3 bg-bg rounded-xl gap-3">
+                  <div class="flex items-center gap-2 min-w-0"><span class="w-2 h-2 rounded-full bg-red-500 shrink-0"></span><span class="text-sm text-text truncate">mt4bridge.com...</span></div>
+                  <span class="text-xs text-red-500 shrink-0">Offline</span>
+                </div>
+              </div>
+              <button class="asf-channel-add w-full mt-4 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="plus" class="w-4 h-4 shrink-0"></i>Add Webhook</button>
+            </div>
+
+            <!-- Email -->
+            <div class="rounded-2xl bg-panel border border-border p-5">
+              <div class="flex items-start justify-between mb-4 gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="w-12 h-12 rounded-xl bg-[#EF4444]/15 flex items-center justify-center shrink-0"><i data-lucide="mail" class="w-6 h-6 text-[#EF4444] shrink-0"></i></div>
+                  <div class="min-w-0"><h4 class="font-semibold text-text truncate">Email</h4><p class="text-xs text-muted truncate">2 lists configured</p></div>
+                </div>
+                <div class="js-toggle-switch toggle-switch active" role="switch" aria-checked="true" tabindex="0"></div>
+              </div>
+              <div class="space-y-3">
+                <div class="flex items-center justify-between p-3 bg-bg rounded-xl gap-3">
+                  <div class="flex items-center gap-2 min-w-0"><span class="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span><span class="text-sm text-text truncate">Premium Subscribers</span></div>
+                  <span class="text-xs text-muted shrink-0">1.2K</span>
+                </div>
+                <div class="flex items-center justify-between p-3 bg-bg rounded-xl gap-3">
+                  <div class="flex items-center gap-2 min-w-0"><span class="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span><span class="text-sm text-text truncate">VIP Members</span></div>
+                  <span class="text-xs text-muted shrink-0">348</span>
+                </div>
+              </div>
+              <button class="asf-channel-add w-full mt-4 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="plus" class="w-4 h-4 shrink-0"></i>Add Email List</button>
+            </div>
+
+            <!-- Slack -->
+            <div class="rounded-2xl bg-panel border border-border p-5">
+              <div class="flex items-start justify-between mb-4 gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="w-12 h-12 rounded-xl bg-[#4A154B]/15 flex items-center justify-center shrink-0"><i data-lucide="hash" class="w-6 h-6 text-violet-400 shrink-0"></i></div>
+                  <div class="min-w-0"><h4 class="font-semibold text-text truncate">Slack</h4><p class="text-xs text-muted truncate">1 workspace</p></div>
+                </div>
+                <div class="js-toggle-switch toggle-switch" role="switch" aria-checked="false" tabindex="0"></div>
+              </div>
+              <div class="space-y-3">
+                <div class="flex items-center justify-between p-3 bg-bg rounded-xl gap-3">
+                  <div class="flex items-center gap-2 min-w-0"><span class="w-2 h-2 rounded-full bg-red-500 shrink-0"></span><span class="text-sm text-text truncate">#trading-signals</span></div>
+                  <span class="text-xs text-muted shrink-0">Disconnected</span>
+                </div>
+              </div>
+              <button class="asf-channel-add w-full mt-4 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="link" class="w-4 h-4 shrink-0"></i>Reconnect</button>
+            </div>
+
+            <!-- Add New Channel -->
+            <button class="asf-channel-add rounded-2xl bg-panel border border-dashed border-border flex flex-col items-center justify-center min-h-[260px] cursor-pointer hover:border-accent/60 transition-colors p-5 text-center">
+              <div class="w-16 h-16 rounded-full bg-accent/10 flex items-center justify-center mb-4 shrink-0"><i data-lucide="plus" class="w-8 h-8 text-accent shrink-0"></i></div>
+              <h4 class="font-semibold text-text mb-1">Add New Channel</h4>
+              <p class="text-sm text-muted">Connect more platforms to distribute your signals</p>
+            </button>
+          </div>
+        </div>
+
+        <!-- ============ TAB: LOGS ============ -->
+        <div class="asf-pane tab-content" data-pane="logs">
+          <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3 mb-5">
+            <div class="relative flex-1 lg:max-w-md">
+              <i data-lucide="search" class="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-muted"></i>
+              <input
+                type="text"
+                id="asfLogsSearch"
+                placeholder="Search logs..."
+                class="w-full pl-11 pr-4 py-2.5 bg-panel border border-border rounded-xl text-text text-sm placeholder:text-muted focus:outline-none focus:border-accent transition-colors"
+              />
+            </div>
+            <div class="flex flex-wrap items-center gap-2" id="asfLogChips">
+              <button class="asf-log-chip active inline-flex items-center gap-2 px-4 py-2 rounded-full border border-accent bg-accent/15 text-accent text-sm font-medium transition-colors" data-filter="all">All</button>
+              <button class="asf-log-chip inline-flex items-center gap-2 px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-filter="success">Success</button>
+              <button class="asf-log-chip inline-flex items-center gap-2 px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-filter="failed">Failed</button>
+              <button class="asf-log-chip inline-flex items-center gap-2 px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-filter="warning">Warning</button>
+              <select id="asfLogRange" class="text-sm bg-panel border border-border rounded-xl px-3 py-2.5 text-text focus:outline-none focus:border-accent transition-colors shrink-0">
+                <option>Last 24 hours</option>
+                <option>Last 7 days</option>
+                <option>Last 30 days</option>
+                <option>All time</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="asfLogsNoResults" class="hidden rounded-2xl bg-panel border border-border p-12 text-center mb-6">
+            <p class="font-semibold text-text mb-1">No logs found</p>
+            <p class="text-sm text-muted">Try adjusting your filters or search.</p>
+          </div>
+
+          <div class="space-y-3" id="asfLogsContainer">
+            <!-- Log 1 -->
+            <div class="asf-log rounded-2xl bg-panel border border-border p-4 sm:p-5" data-status="success" data-text="signal forwarded successfully eur/usd buy forex major signals">
+              <div class="flex items-start gap-3">
+                <div class="w-10 h-10 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-5 h-5 text-emerald-500 shrink-0"></i></div>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-start justify-between gap-3">
+                    <div class="min-w-0"><p class="font-semibold text-text">Signal forwarded successfully</p><p class="text-sm text-muted mt-1">EUR/USD BUY signal sent to 4 channels</p></div>
+                    <span class="text-xs text-muted whitespace-nowrap shrink-0">2 min ago</span>
+                  </div>
+                  <div class="flex flex-wrap items-center gap-2 mt-2">
+                    <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">Success</span>
+                    <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-violet-500/15 text-violet-400">Forex Major Signals</span>
+                    <div class="flex items-center gap-1.5">
+                      <span class="w-6 h-6 rounded-lg bg-[#0088CC]/15 flex items-center justify-center shrink-0"><i data-lucide="send" class="w-3 h-3 text-[#0088CC] shrink-0"></i></span>
+                      <span class="w-6 h-6 rounded-lg bg-[#5865F2]/15 flex items-center justify-center shrink-0"><i data-lucide="message-circle" class="w-3 h-3 text-[#5865F2] shrink-0"></i></span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Log 2 -->
+            <div class="asf-log rounded-2xl bg-panel border border-border p-4 sm:p-5" data-status="success" data-text="signal forwarded successfully btc/usd sell crypto alerts">
+              <div class="flex items-start gap-3">
+                <div class="w-10 h-10 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-5 h-5 text-emerald-500 shrink-0"></i></div>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-start justify-between gap-3">
+                    <div class="min-w-0"><p class="font-semibold text-text">Signal forwarded successfully</p><p class="text-sm text-muted mt-1">BTC/USD SELL signal sent to 2 channels</p></div>
+                    <span class="text-xs text-muted whitespace-nowrap shrink-0">15 min ago</span>
+                  </div>
+                  <div class="flex flex-wrap items-center gap-2 mt-2">
+                    <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">Success</span>
+                    <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-500">Crypto Alerts</span>
+                    <div class="flex items-center gap-1.5">
+                      <span class="w-6 h-6 rounded-lg bg-[#0088CC]/15 flex items-center justify-center shrink-0"><i data-lucide="send" class="w-3 h-3 text-[#0088CC] shrink-0"></i></span>
+                      <span class="w-6 h-6 rounded-lg bg-amber-500/15 flex items-center justify-center shrink-0"><i data-lucide="webhook" class="w-3 h-3 text-amber-500 shrink-0"></i></span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Log 3 (failed) -->
+            <div class="asf-log rounded-2xl bg-panel border border-border p-4 sm:p-5" data-status="failed" data-text="forwarding failed nfp alert email delivery timeout economic events">
+              <div class="flex items-start gap-3">
+                <div class="w-10 h-10 rounded-xl bg-red-500/15 flex items-center justify-center shrink-0"><i data-lucide="x" class="w-5 h-5 text-red-500 shrink-0"></i></div>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-start justify-between gap-3">
+                    <div class="min-w-0"><p class="font-semibold text-text">Forwarding failed</p><p class="text-sm text-muted mt-1">NFP Alert - Email delivery timeout</p></div>
+                    <span class="text-xs text-muted whitespace-nowrap shrink-0">1 hour ago</span>
+                  </div>
+                  <div class="flex flex-wrap items-center gap-2 mt-2">
+                    <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-500/15 text-red-500">Failed</span>
+                    <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-sky-500/15 text-sky-500">Economic Events</span>
+                    <div class="flex items-center gap-1.5">
+                      <span class="w-6 h-6 rounded-lg bg-[#EF4444]/15 flex items-center justify-center shrink-0"><i data-lucide="mail" class="w-3 h-3 text-[#EF4444] shrink-0"></i></span>
+                    </div>
+                    <button class="asf-log-retry text-xs text-accent hover:underline ml-auto whitespace-nowrap">Retry</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Log 4 -->
+            <div class="asf-log rounded-2xl bg-panel border border-border p-4 sm:p-5" data-status="success" data-text="signal forwarded successfully gbp/jpy sell scalping signals">
+              <div class="flex items-start gap-3">
+                <div class="w-10 h-10 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-5 h-5 text-emerald-500 shrink-0"></i></div>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-start justify-between gap-3">
+                    <div class="min-w-0"><p class="font-semibold text-text">Signal forwarded successfully</p><p class="text-sm text-muted mt-1">GBP/JPY SELL signal sent to 1 channel</p></div>
+                    <span class="text-xs text-muted whitespace-nowrap shrink-0">2 hours ago</span>
+                  </div>
+                  <div class="flex flex-wrap items-center gap-2 mt-2">
+                    <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">Success</span>
+                    <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-teal-500/15 text-teal-500">Scalping Signals</span>
+                    <div class="flex items-center gap-1.5">
+                      <span class="w-6 h-6 rounded-lg bg-[#5865F2]/15 flex items-center justify-center shrink-0"><i data-lucide="message-circle" class="w-3 h-3 text-[#5865F2] shrink-0"></i></span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Log 5 (warning) -->
+            <div class="asf-log rounded-2xl bg-panel border border-border p-4 sm:p-5" data-status="warning" data-text="partial delivery eth/usd discord webhook rate limited crypto alerts">
+              <div class="flex items-start gap-3">
+                <div class="w-10 h-10 rounded-xl bg-amber-500/15 flex items-center justify-center shrink-0"><i data-lucide="triangle-alert" class="w-5 h-5 text-amber-500 shrink-0"></i></div>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-start justify-between gap-3">
+                    <div class="min-w-0"><p class="font-semibold text-text">Partial delivery</p><p class="text-sm text-muted mt-1">ETH/USD signal - Discord webhook rate limited</p></div>
+                    <span class="text-xs text-muted whitespace-nowrap shrink-0">3 hours ago</span>
+                  </div>
+                  <div class="flex flex-wrap items-center gap-2 mt-2">
+                    <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-500">Warning</span>
+                    <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-500">Crypto Alerts</span>
+                    <div class="flex items-center gap-1.5">
+                      <span class="w-6 h-6 rounded-lg bg-[#0088CC]/15 flex items-center justify-center shrink-0"><i data-lucide="send" class="w-3 h-3 text-[#0088CC] shrink-0"></i></span>
+                      <span class="w-6 h-6 rounded-lg bg-[#5865F2]/15 flex items-center justify-center opacity-50 shrink-0"><i data-lucide="message-circle" class="w-3 h-3 text-[#5865F2] shrink-0"></i></span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="text-center mt-6">
+            <button id="asfLoadMore" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="refresh-cw" class="w-4 h-4 shrink-0"></i>Load More Logs</button>
+          </div>
+        </div>
+
+        <!-- ============ TAB: SETTINGS ============ -->
+        <div class="asf-pane tab-content" data-pane="settings">
+          <div class="max-w-3xl space-y-6">
+            <!-- General Settings -->
+            <div class="rounded-2xl bg-panel border border-border p-5 sm:p-6">
+              <h3 class="font-semibold text-text text-lg mb-4">General Settings</h3>
+              <div class="space-y-4">
+                <div class="flex items-center justify-between gap-4">
+                  <div class="min-w-0"><p class="font-medium text-text">Auto-forward new signals</p><p class="text-sm text-muted">Automatically forward signals when they are generated</p></div>
+                  <div class="js-toggle-switch toggle-switch active" role="switch" aria-checked="true" tabindex="0"></div>
+                </div>
+                <div class="border-t border-border"></div>
+                <div class="flex items-center justify-between gap-4">
+                  <div class="min-w-0"><p class="font-medium text-text">Include AI analysis</p><p class="text-sm text-muted">Add AI-generated analysis to forwarded signals</p></div>
+                  <div class="js-toggle-switch toggle-switch active" role="switch" aria-checked="true" tabindex="0"></div>
+                </div>
+                <div class="border-t border-border"></div>
+                <div class="flex items-center justify-between gap-4">
+                  <div class="min-w-0"><p class="font-medium text-text">Add entry/exit levels</p><p class="text-sm text-muted">Include TP/SL levels in signal messages</p></div>
+                  <div class="js-toggle-switch toggle-switch active" role="switch" aria-checked="true" tabindex="0"></div>
+                </div>
+                <div class="border-t border-border"></div>
+                <div class="flex items-center justify-between gap-4">
+                  <div class="min-w-0"><p class="font-medium text-text">Risk warnings</p><p class="text-sm text-muted">Include risk disclaimer in all signals</p></div>
+                  <div class="js-toggle-switch toggle-switch" role="switch" aria-checked="false" tabindex="0"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Delivery Settings -->
+            <div class="rounded-2xl bg-panel border border-border p-5 sm:p-6">
+              <h3 class="font-semibold text-text text-lg mb-4">Delivery Settings</h3>
+              <div class="space-y-4">
+                <div>
+                  <label class="block text-sm font-medium text-text mb-2">Retry attempts on failure</label>
+                  <select class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors">
+                    <option value="1">1 attempt</option>
+                    <option value="3" selected>3 attempts</option>
+                    <option value="5">5 attempts</option>
+                    <option value="10">10 attempts</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-text mb-2">Retry delay</label>
+                  <select class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors">
+                    <option value="30">30 seconds</option>
+                    <option value="60" selected>1 minute</option>
+                    <option value="300">5 minutes</option>
+                    <option value="900">15 minutes</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-text mb-2">Rate limit (signals per minute)</label>
+                  <input type="number" value="30" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" />
+                </div>
+              </div>
+            </div>
+
+            <!-- Message Template -->
+            <div class="rounded-2xl bg-panel border border-border p-5 sm:p-6">
+              <h3 class="font-semibold text-text text-lg mb-4">Message Template</h3>
+              <div class="space-y-4">
+                <div>
+                  <label class="block text-sm font-medium text-text mb-2">Signal message template</label>
+                  <textarea class="w-full p-3 h-40 resize-none bg-transparent border border-border rounded-xl text-text text-sm focus:outline-none focus:border-accent transition-colors" placeholder="Use variables: {pair}, {direction}, {entry}, {tp1}, {tp2}, {sl}, {analysis}, {confidence}">🔔 *{pair} Signal*
+
+📊 Direction: {direction}
+💰 Entry: {entry}
+🎯 TP1: {tp1}
+🎯 TP2: {tp2}
+🛡️ SL: {sl}
+
+📈 Confidence: {confidence}%
+
+{analysis}
+
+⚡ Powered by SignalAIX</textarea>
+                </div>
+                <div class="flex flex-wrap items-center gap-2">
+                  <button id="asfTplPreview" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i>Preview</button>
+                  <button id="asfTplReset" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-muted text-sm font-semibold hover:text-text transition-colors whitespace-nowrap"><i data-lucide="rotate-ccw" class="w-4 h-4 shrink-0"></i>Reset to Default</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Save -->
+            <div class="flex justify-end gap-3">
+              <button class="inline-flex items-center px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap">Cancel</button>
+              <button id="asfSaveSettings" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"><i data-lucide="save" class="w-4 h-4 shrink-0"></i>Save Settings</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Drawer overlay -->
+    <div class="drawer-overlay" id="asfDrawerOverlay"></div>
+
+    <!-- Create / Edit Rule Drawer (edit reuses this form) -->
+    <div class="drawer" id="asfFormDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <div class="min-w-0">
+            <h2 class="text-xl font-bold text-text" id="asfFormTitle">Create New Rule</h2>
+            <p class="text-sm text-muted">Configure your signal forwarding rule</p>
+          </div>
+          <button class="asf-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0">
+            <i data-lucide="x" class="w-5 h-5 shrink-0"></i>
+          </button>
+        </div>
+
+        <div class="space-y-5">
+          <!-- Rule Name -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Rule Name *</label>
+            <input id="asfFormName" type="text" placeholder="e.g., Forex Major Signals" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" />
+          </div>
+
+          <!-- Signal Source -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Signal Source *</label>
+            <select class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors">
+              <option value="">Select a source</option>
+              <option value="ai-generator">AI Signal Generator</option>
+              <option value="pattern-detection">Pattern Detection</option>
+              <option value="trend-scanner">Trend Scanner</option>
+              <option value="risk-analyzer">Risk Analyzer</option>
+              <option value="economic-calendar">Economic Calendar</option>
+              <option value="news-sentiment">News &amp; Sentiment</option>
+            </select>
+          </div>
+
+          <!-- Asset Filter -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Asset Filter</label>
+            <select class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors">
+              <option value="all">All Assets</option>
+              <option value="forex-major">Forex Majors</option>
+              <option value="forex-minor">Forex Minors</option>
+              <option value="forex-exotic">Forex Exotics</option>
+              <option value="crypto-major">Crypto Majors</option>
+              <option value="crypto-altcoins">Altcoins</option>
+            </select>
+          </div>
+
+          <!-- Specific Pairs -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Specific Pairs (Optional)</label>
+            <input type="text" placeholder="e.g., EUR/USD, GBP/USD, BTC/USD" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" />
+            <p class="text-xs text-muted mt-1">Comma separated. Leave empty for all pairs in selected filter.</p>
+          </div>
+
+          <!-- Signal Type -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Signal Type</label>
+            <div class="flex flex-wrap gap-2" id="asfTypeGroup">
+              <button class="asf-type-btn active px-4 py-2 rounded-full border border-accent bg-accent/15 text-accent text-sm font-medium transition-colors" data-value="buy">BUY</button>
+              <button class="asf-type-btn active px-4 py-2 rounded-full border border-accent bg-accent/15 text-accent text-sm font-medium transition-colors" data-value="sell">SELL</button>
+              <button class="asf-type-btn px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-value="close">CLOSE</button>
+              <button class="asf-type-btn px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-value="modify">MODIFY</button>
+            </div>
+          </div>
+
+          <!-- Minimum Confidence -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Minimum Confidence</label>
+            <div class="flex items-center gap-4">
+              <input type="range" id="asfConfidenceRange" min="0" max="100" value="70" class="flex-1 cursor-pointer" />
+              <span id="asfConfidenceValue" class="text-sm font-semibold text-text w-12 text-right">70%</span>
+            </div>
+          </div>
+
+          <!-- Destinations -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-3">Forward To *</label>
+            <div class="space-y-3">
+              <label class="flex items-center gap-3 p-3 border border-border rounded-xl cursor-pointer hover:border-accent/40 transition-colors">
+                <input type="checkbox" class="custom-checkbox shrink-0" />
+                <span class="w-9 h-9 rounded-lg bg-[#0088CC]/15 flex items-center justify-center shrink-0"><i data-lucide="send" class="w-4 h-4 text-[#0088CC] shrink-0"></i></span>
+                <div class="flex-1 min-w-0"><p class="font-medium text-text">Telegram</p><p class="text-xs text-muted">4 channels available</p></div>
+              </label>
+              <label class="flex items-center gap-3 p-3 border border-border rounded-xl cursor-pointer hover:border-accent/40 transition-colors">
+                <input type="checkbox" class="custom-checkbox shrink-0" />
+                <span class="w-9 h-9 rounded-lg bg-[#5865F2]/15 flex items-center justify-center shrink-0"><i data-lucide="message-circle" class="w-4 h-4 text-[#5865F2] shrink-0"></i></span>
+                <div class="flex-1 min-w-0"><p class="font-medium text-text">Discord</p><p class="text-xs text-muted">3 servers available</p></div>
+              </label>
+              <label class="flex items-center gap-3 p-3 border border-border rounded-xl cursor-pointer hover:border-accent/40 transition-colors">
+                <input type="checkbox" class="custom-checkbox shrink-0" />
+                <span class="w-9 h-9 rounded-lg bg-amber-500/15 flex items-center justify-center shrink-0"><i data-lucide="webhook" class="w-4 h-4 text-amber-500 shrink-0"></i></span>
+                <div class="flex-1 min-w-0"><p class="font-medium text-text">Webhook</p><p class="text-xs text-muted">5 endpoints available</p></div>
+              </label>
+              <label class="flex items-center gap-3 p-3 border border-border rounded-xl cursor-pointer hover:border-accent/40 transition-colors">
+                <input type="checkbox" class="custom-checkbox shrink-0" />
+                <span class="w-9 h-9 rounded-lg bg-[#EF4444]/15 flex items-center justify-center shrink-0"><i data-lucide="mail" class="w-4 h-4 text-[#EF4444] shrink-0"></i></span>
+                <div class="flex-1 min-w-0"><p class="font-medium text-text">Email</p><p class="text-xs text-muted">2 lists available</p></div>
+              </label>
+            </div>
+          </div>
+
+          <!-- Active Hours -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Active Hours (Optional)</label>
+            <div class="grid grid-cols-1 @xs:grid-cols-2 gap-3">
+              <div>
+                <label class="text-xs text-muted">From</label>
+                <input type="time" value="00:00" class="w-full mt-1 p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" />
+              </div>
+              <div>
+                <label class="text-xs text-muted">To</label>
+                <input type="time" value="23:59" class="w-full mt-1 p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" />
+              </div>
+            </div>
+            <p class="text-xs text-muted mt-1">Leave default for 24/7 operation</p>
+          </div>
+
+          <!-- Activate Toggle -->
+          <div class="flex items-center justify-between p-3 border border-border rounded-xl gap-4">
+            <div class="min-w-0"><p class="font-medium text-text">Activate rule immediately</p><p class="text-sm text-muted">Start forwarding signals after saving</p></div>
+            <div class="js-toggle-switch toggle-switch active" role="switch" aria-checked="true" tabindex="0"></div>
+          </div>
+        </div>
+
+        <div class="flex gap-3 mt-8">
+          <button class="asf-close-drawer flex-1 justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors">Cancel</button>
+          <button id="asfFormSubmit" class="flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap">
+            <i data-lucide="save" class="w-4 h-4 shrink-0"></i><span id="asfFormSubmitLabel">Save Rule</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Filter Drawer -->
+    <div class="drawer" id="asfFilterDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <h2 class="text-xl font-bold text-text">Advanced Filters</h2>
+          <button class="asf-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0">
+            <i data-lucide="x" class="w-5 h-5 shrink-0"></i>
+          </button>
+        </div>
+
+        <div class="space-y-6">
+          <!-- Status -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-3">Status</label>
+            <div class="flex flex-wrap gap-2 asf-filter-group" data-group="status">
+              <button class="asf-filter-opt active px-4 py-2 rounded-full border border-accent bg-accent/15 text-accent text-sm font-medium transition-colors" data-value="all">All</button>
+              <button class="asf-filter-opt px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-value="active">Active</button>
+              <button class="asf-filter-opt px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-value="paused">Paused</button>
+              <button class="asf-filter-opt px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-value="error">Error</button>
+            </div>
+          </div>
+
+          <!-- Signal Source -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-3">Signal Source</label>
+            <div class="flex flex-wrap gap-2 asf-filter-group" data-group="source">
+              <button class="asf-filter-opt active px-4 py-2 rounded-full border border-accent bg-accent/15 text-accent text-sm font-medium transition-colors" data-value="all">All</button>
+              <button class="asf-filter-opt px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-value="AI Generator">AI Generator</button>
+              <button class="asf-filter-opt px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-value="Pattern Detection">Pattern Detection</button>
+              <button class="asf-filter-opt px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-value="Trend Scanner">Trend Scanner</button>
+              <button class="asf-filter-opt px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-value="Risk Analyzer">Risk Analyzer</button>
+            </div>
+          </div>
+
+          <!-- Destination Channel -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-3">Destination Channel</label>
+            <div class="space-y-2">
+              <label class="flex items-center gap-3 cursor-pointer"><input type="checkbox" class="custom-checkbox shrink-0" checked /><span class="text-sm text-text">Telegram</span></label>
+              <label class="flex items-center gap-3 cursor-pointer"><input type="checkbox" class="custom-checkbox shrink-0" checked /><span class="text-sm text-text">Discord</span></label>
+              <label class="flex items-center gap-3 cursor-pointer"><input type="checkbox" class="custom-checkbox shrink-0" checked /><span class="text-sm text-text">Webhook</span></label>
+              <label class="flex items-center gap-3 cursor-pointer"><input type="checkbox" class="custom-checkbox shrink-0" checked /><span class="text-sm text-text">Email</span></label>
+            </div>
+          </div>
+
+          <!-- Date Range -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-3">Date Range</label>
+            <div class="grid grid-cols-1 @xs:grid-cols-2 gap-3">
+              <div><label class="text-xs text-muted">From</label><input type="date" class="w-full mt-1 p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+              <div><label class="text-xs text-muted">To</label><input type="date" class="w-full mt-1 p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+            </div>
+          </div>
+
+          <!-- Forwarded Count -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-3">Forwarded Count</label>
+            <div class="grid grid-cols-1 @xs:grid-cols-2 gap-3">
+              <div><label class="text-xs text-muted">Min</label><input type="number" placeholder="0" class="w-full mt-1 p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+              <div><label class="text-xs text-muted">Max</label><input type="number" placeholder="∞" class="w-full mt-1 p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors" /></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex gap-3 mt-8">
+          <button class="asf-reset-filters flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="rotate-ccw" class="w-4 h-4 shrink-0"></i>Reset</button>
+          <button class="asf-apply-filters flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"><i data-lucide="check" class="w-4 h-4 shrink-0"></i>Apply Filters</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="asfToast">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0">
+        <i data-lucide="check" class="w-5 h-5 text-white shrink-0"></i>
+      </div>
+      <div class="min-w-0">
+        <p class="font-semibold text-text" id="asfToastTitle">Success</p>
+        <p class="text-sm text-muted" id="asfToastMessage">Action completed</p>
+      </div>
+      <button class="asf-toast-close ml-auto w-9 h-9 shrink-0 flex items-center justify-center rounded-lg text-muted hover:text-text transition-colors">
+        <i data-lucide="x" class="w-4 h-4 shrink-0"></i>
+      </button>
+    </div>
+
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
+  <script defer src="js/index.js"></script></body>
+</html>

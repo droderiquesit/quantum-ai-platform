@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <script>
+      if (localStorage.getItem("theme") === "light") document.documentElement.classList.remove("dark");
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>News &amp; Sentiment - SignalAIX | AI Forex & Crypto Trading Signals</title>
+    <link rel="icon" type="image/png" href="assets/images/favicon.png" />
+    <link rel="apple-touch-icon" href="assets/images/favicon.png" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  </head>
+  <body id="news-sentiment">
+    <div id="loader">
+      <div class="spinner"></div>
+      <div class="loader-text">Loading SignalAIX...</div>
+    </div>
+
+    <include-sidebar />
+
+    <main class="main-content" id="mainContent">
+      <include-top-header />
+
+      <div class="inner-content max-sm:px-3 max-lg:px-4 max-lg:py-6 lg:p-6 space-y-6">
+        <!-- Page header -->
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div>
+            <div class="flex items-center gap-2 flex-wrap">
+              <h1 class="text-2xl md:text-3xl font-bold text-text">News &amp; Sentiment</h1>
+              <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-500 text-[11px] font-semibold shrink-0"><span class="live-dot !bg-emerald-500"></span>LIVE</span>
+            </div>
+            <p class="text-sm text-muted mt-1">AI-powered market news with real-time sentiment analysis</p>
+          </div>
+          <div class="flex items-center gap-3 flex-wrap">
+            <button id="nsFilters" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition"><i data-lucide="funnel" class="w-4 h-4 shrink-0"></i>Filters</button>
+            <div class="dropdown">
+              <button class="js-dropdown-toggle inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition"><i data-lucide="download" class="w-4 h-4 shrink-0"></i>Export</button>
+              <div class="dropdown-menu w-52 mt-2 rounded-xl bg-panel border border-border shadow-2xl overflow-hidden p-1.5">
+                <button class="ns-export flex w-full items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition" data-format="csv"><i data-lucide="file-text" class="w-4 h-4 shrink-0"></i>Export as CSV</button>
+                <button class="ns-export flex w-full items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition" data-format="json"><i data-lucide="file-code" class="w-4 h-4 shrink-0"></i>Export as JSON</button>
+                <button class="ns-export flex w-full items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition" data-format="pdf"><i data-lucide="file" class="w-4 h-4 shrink-0"></i>Export as PDF</button>
+              </div>
+            </div>
+            <button id="nsRefresh" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-indigo-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition"><i data-lucide="refresh-cw" class="w-4 h-4 shrink-0"></i>Refresh</button>
+          </div>
+        </div>
+
+        <!-- Stat cards -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 @4xl/content:grid-cols-4 gap-4">
+          <div class="bg-panel border border-border rounded-2xl p-5 hover:border-accent/40 transition">
+            <div class="flex items-center justify-between mb-4"><div class="w-12 h-12 rounded-xl bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center shrink-0"><i data-lucide="trending-up" class="w-6 h-6 text-white shrink-0"></i></div><span class="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-500 text-[11px] font-semibold shrink-0">Bullish</span></div>
+            <p class="text-sm text-muted mb-1">Market Sentiment</p><div class="flex items-end gap-2"><span class="text-2xl font-bold text-text">72%</span><span class="text-sm text-emerald-500 font-medium">+8%</span></div>
+            <div class="mt-3 h-1.5 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-gradient-to-r from-emerald-500 to-emerald-600" style="width:72%"></div></div>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-5 hover:border-accent/40 transition">
+            <div class="flex items-center justify-between mb-4"><div class="w-12 h-12 rounded-xl bg-gradient-to-br from-sky-500 to-blue-600 flex items-center justify-center shrink-0"><i data-lucide="newspaper" class="w-6 h-6 text-white shrink-0"></i></div><span class="px-2 py-0.5 rounded-md bg-sky-500/15 text-sky-500 text-[11px] font-semibold shrink-0">High</span></div>
+            <p class="text-sm text-muted mb-1">News Volume (24h)</p><div class="flex items-end gap-2"><span class="text-2xl font-bold text-text">2,847</span><span class="text-sm text-emerald-500 font-medium">+23%</span></div>
+            <div class="mt-3 h-1.5 rounded-full bg-border overflow-hidden"><div class="h-full w-3/4 rounded-full bg-sky-500"></div></div>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-5 hover:border-accent/40 transition">
+            <div class="flex items-center justify-between mb-4"><div class="w-12 h-12 rounded-xl bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center shrink-0"><i data-lucide="gauge" class="w-6 h-6 text-white shrink-0"></i></div><span class="px-2 py-0.5 rounded-md bg-slate-500/15 text-slate-400 text-[11px] font-semibold shrink-0">Neutral</span></div>
+            <p class="text-sm text-muted mb-1">Fear &amp; Greed Index</p><div class="flex items-end gap-2"><span class="text-2xl font-bold text-text">54</span><span class="text-sm text-muted font-medium">Greed</span></div>
+            <div class="mt-3 h-1.5 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-gradient-to-r from-amber-500 to-orange-500" style="width:54%"></div></div>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-5 hover:border-accent/40 transition">
+            <div class="flex items-center justify-between mb-4"><div class="w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center shrink-0"><i data-lucide="message-circle" class="w-6 h-6 text-white shrink-0"></i></div><span class="px-2 py-0.5 rounded-md bg-violet-500/15 text-violet-400 text-[11px] font-semibold shrink-0">Trending</span></div>
+            <p class="text-sm text-muted mb-1">Social Mentions</p><div class="flex items-end gap-2"><span class="text-2xl font-bold text-text">156K</span><span class="text-sm text-emerald-500 font-medium">+45%</span></div>
+            <div class="mt-3 h-1.5 rounded-full bg-border overflow-hidden"><div class="h-full w-4/5 rounded-full bg-violet-500"></div></div>
+          </div>
+        </div>
+
+        <!-- Tabs + actions -->
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div class="flex gap-1 p-1 rounded-xl bg-bg border border-border overflow-x-auto">
+            <button class="ns-tab active shrink-0 inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-muted whitespace-nowrap transition" data-tab="all-news"><i data-lucide="layers" class="w-4 h-4 shrink-0"></i>All News</button>
+            <button class="ns-tab shrink-0 inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-muted whitespace-nowrap transition" data-tab="forex-news"><i data-lucide="dollar-sign" class="w-4 h-4 shrink-0"></i>Forex</button>
+            <button class="ns-tab shrink-0 inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-muted whitespace-nowrap transition" data-tab="crypto-news"><i data-lucide="bitcoin" class="w-4 h-4 shrink-0"></i>Crypto</button>
+            <button class="ns-tab shrink-0 inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-muted whitespace-nowrap transition" data-tab="stocks-news"><i data-lucide="chart-column" class="w-4 h-4 shrink-0"></i>Stocks</button>
+            <button class="ns-tab shrink-0 inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-muted whitespace-nowrap transition" data-tab="commodities-news"><i data-lucide="gem" class="w-4 h-4 shrink-0"></i>Commodities</button>
+          </div>
+        </div>
+
+        <!-- Sentiment chips -->
+        <div class="flex flex-wrap gap-2">
+          <button class="ns-chip active inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="all">All Sentiment</button>
+          <button class="ns-chip inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="bullish"><span class="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span>Bullish</button>
+          <button class="ns-chip inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="bearish"><span class="w-2 h-2 rounded-full bg-red-500 shrink-0"></span>Bearish</button>
+          <button class="ns-chip inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="neutral"><span class="w-2 h-2 rounded-full bg-slate-400 shrink-0"></span>Neutral</button>
+          <span class="h-6 w-px bg-border mx-1 hidden sm:block"></span>
+          <button class="ns-chip inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="breaking"><i data-lucide="zap" class="w-3 h-3 shrink-0"></i>Breaking</button>
+          <button class="ns-chip inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="high-impact"><i data-lucide="triangle-alert" class="w-3 h-3 shrink-0"></i>High Impact</button>
+        </div>
+
+        <!-- Main grid -->
+        <div class="grid grid-cols-1 @4xl/content:grid-cols-3 gap-6">
+          <!-- News feed -->
+          <div class="@4xl/content:col-span-2 space-y-4">
+            <!-- All news tab -->
+            <div class="tab-content active space-y-4" id="all-news">
+              <!-- Breaking alert (rounded accent block, not a left-border stripe) -->
+              <div class="bg-red-500/5 border border-red-500/20 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
+                <div class="flex items-center justify-between gap-3 sm:contents">
+                  <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-red-500 text-white text-xs font-bold shrink-0 sm:order-1"><i data-lucide="zap" class="w-3 h-3 shrink-0"></i>BREAKING</span>
+                  <span class="text-xs text-muted shrink-0 sm:order-3">2 min ago</span>
+                </div>
+                <p class="text-sm font-medium text-text sm:flex-1 sm:min-w-0 sm:order-2">Fed announces emergency rate decision - Markets react sharply</p>
+              </div>
+              
+<div class="ns-card ns-open bg-panel border border-border rounded-2xl p-5 cursor-pointer hover:border-accent/40 transition" data-cat="forex" data-sentiment="bullish" data-highimpact="true" data-title="EUR/USD Surges on ECB Hawkish Signals, Testing Key Resistance" data-desc="The European Central Bank's latest policy statement indicates a more hawkish stance than expected, sending EUR/USD higher as traders price in additional rate hikes..." data-source="Reuters" data-score="87" data-scorecolor="emerald" data-catbadge="sky">
+<div class="flex gap-4">
+<div class="flex-1 min-w-0 space-y-3">
+<div class="flex items-center gap-2 flex-wrap"><span class="px-2 py-0.5 rounded-md bg-sky-500/15 text-sky-500 text-xs font-semibold">Forex</span><span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-500 text-xs font-semibold"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i>Bullish</span><span class="px-2 py-0.5 rounded-md bg-sky-500/15 text-sky-500 text-xs font-semibold">High Impact</span></div>
+<h3 class="font-semibold text-text text-lg leading-tight">EUR/USD Surges on ECB Hawkish Signals, Testing Key Resistance</h3>
+<p class="text-sm text-muted line-clamp-2">The European Central Bank's latest policy statement indicates a more hawkish stance than expected, sending EUR/USD higher as traders price in additional rate hikes...</p>
+<div class="flex items-center justify-between gap-2"><div class="flex items-center gap-3 min-w-0"><div class="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center text-white text-[10px] font-bold shrink-0">R</div><span class="text-sm text-muted truncate">Reuters</span><span class="text-xs text-muted shrink-0">• 15 min ago</span></div>
+<div class="flex items-center gap-2 shrink-0"><div class="flex items-center gap-1 text-sm"><i data-lucide="brain" class="w-4 h-4 text-violet-400 shrink-0"></i><span class="font-medium text-emerald-500">87%</span></div><button class="ns-bookmark w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button></div></div>
+</div>
+<div class="hidden sm:flex w-32 h-24 rounded-xl bg-gradient-to-br from-sky-500/20 to-violet-500/20 items-center justify-center shrink-0"><i data-lucide="trending-up" class="w-10 h-10 text-emerald-500 shrink-0"></i></div>
+</div></div>
+<div class="ns-card ns-open bg-panel border border-border rounded-2xl p-5 cursor-pointer hover:border-accent/40 transition" data-cat="crypto" data-sentiment="bearish" data-highimpact="false" data-title="Bitcoin Drops Below $60K as Regulatory Concerns Mount" data-desc="Bitcoin falls sharply as reports emerge of potential new cryptocurrency regulations in major Asian markets, sparking fears of tighter oversight..." data-source="CoinTelegraph" data-score="23" data-scorecolor="red" data-catbadge="orange">
+<div class="flex gap-4">
+<div class="flex-1 min-w-0 space-y-3">
+<div class="flex items-center gap-2 flex-wrap"><span class="px-2 py-0.5 rounded-md bg-orange-500/15 text-orange-500 text-xs font-semibold">Crypto</span><span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-red-500/15 text-red-500 text-xs font-semibold"><i data-lucide="trending-down" class="w-3 h-3 shrink-0"></i>Bearish</span></div>
+<h3 class="font-semibold text-text text-lg leading-tight">Bitcoin Drops Below $60K as Regulatory Concerns Mount</h3>
+<p class="text-sm text-muted line-clamp-2">Bitcoin falls sharply as reports emerge of potential new cryptocurrency regulations in major Asian markets, sparking fears of tighter oversight...</p>
+<div class="flex items-center justify-between gap-2"><div class="flex items-center gap-3 min-w-0"><div class="w-7 h-7 rounded-lg bg-orange-500 flex items-center justify-center text-white text-[10px] font-bold shrink-0">CT</div><span class="text-sm text-muted truncate">CoinTelegraph</span><span class="text-xs text-muted shrink-0">• 32 min ago</span></div>
+<div class="flex items-center gap-2 shrink-0"><div class="flex items-center gap-1 text-sm"><i data-lucide="brain" class="w-4 h-4 text-violet-400 shrink-0"></i><span class="font-medium text-red-500">23%</span></div><button class="ns-bookmark w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button></div></div>
+</div>
+<div class="hidden sm:flex w-32 h-24 rounded-xl bg-gradient-to-br from-orange-500/20 to-red-500/20 items-center justify-center shrink-0"><i data-lucide="trending-down" class="w-10 h-10 text-red-500 shrink-0"></i></div>
+</div></div>
+<div class="ns-card ns-open bg-panel border border-border rounded-2xl p-5 cursor-pointer hover:border-accent/40 transition" data-cat="stocks" data-sentiment="neutral" data-highimpact="false" data-title="S&amp;P 500 Holds Steady Ahead of Key Earnings Reports" data-desc="Major indices trade in a narrow range as investors await quarterly results from tech giants this week. Volatility expected to increase post-earnings..." data-source="Bloomberg" data-score="52" data-scorecolor="slate" data-catbadge="violet">
+<div class="flex gap-4">
+<div class="flex-1 min-w-0 space-y-3">
+<div class="flex items-center gap-2 flex-wrap"><span class="px-2 py-0.5 rounded-md bg-violet-500/15 text-violet-400 text-xs font-semibold">Stocks</span><span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-500/15 text-slate-400 text-xs font-semibold"><i data-lucide="minus" class="w-3 h-3 shrink-0"></i>Neutral</span></div>
+<h3 class="font-semibold text-text text-lg leading-tight">S&amp;P 500 Holds Steady Ahead of Key Earnings Reports</h3>
+<p class="text-sm text-muted line-clamp-2">Major indices trade in a narrow range as investors await quarterly results from tech giants this week. Volatility expected to increase post-earnings...</p>
+<div class="flex items-center justify-between gap-2"><div class="flex items-center gap-3 min-w-0"><div class="w-7 h-7 rounded-lg bg-emerald-600 flex items-center justify-center text-white text-[10px] font-bold shrink-0">BB</div><span class="text-sm text-muted truncate">Bloomberg</span><span class="text-xs text-muted shrink-0">• 1 hour ago</span></div>
+<div class="flex items-center gap-2 shrink-0"><div class="flex items-center gap-1 text-sm"><i data-lucide="brain" class="w-4 h-4 text-violet-400 shrink-0"></i><span class="font-medium text-slate-400">52%</span></div><button class="ns-bookmark w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button></div></div>
+</div>
+<div class="hidden sm:flex w-32 h-24 rounded-xl bg-gradient-to-br from-slate-500/20 to-slate-600/20 items-center justify-center shrink-0"><i data-lucide="minus" class="w-10 h-10 text-slate-400 shrink-0"></i></div>
+</div></div>
+<div class="ns-card ns-open bg-panel border border-border rounded-2xl p-5 cursor-pointer hover:border-accent/40 transition" data-cat="commodities" data-sentiment="bullish" data-highimpact="false" data-title="Gold Prices Hit 3-Month High on Safe Haven Demand" data-desc="Gold extends its rally as geopolitical tensions and economic uncertainty drive investors towards safe-haven assets. Analysts see potential for further gains..." data-source="Financial Times" data-score="79" data-scorecolor="emerald" data-catbadge="amber">
+<div class="flex gap-4">
+<div class="flex-1 min-w-0 space-y-3">
+<div class="flex items-center gap-2 flex-wrap"><span class="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-500 text-xs font-semibold">Commodities</span><span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-500 text-xs font-semibold"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i>Bullish</span></div>
+<h3 class="font-semibold text-text text-lg leading-tight">Gold Prices Hit 3-Month High on Safe Haven Demand</h3>
+<p class="text-sm text-muted line-clamp-2">Gold extends its rally as geopolitical tensions and economic uncertainty drive investors towards safe-haven assets. Analysts see potential for further gains...</p>
+<div class="flex items-center justify-between gap-2"><div class="flex items-center gap-3 min-w-0"><div class="w-7 h-7 rounded-lg bg-yellow-600 flex items-center justify-center text-white text-[10px] font-bold shrink-0">FT</div><span class="text-sm text-muted truncate">Financial Times</span><span class="text-xs text-muted shrink-0">• 2 hours ago</span></div>
+<div class="flex items-center gap-2 shrink-0"><div class="flex items-center gap-1 text-sm"><i data-lucide="brain" class="w-4 h-4 text-violet-400 shrink-0"></i><span class="font-medium text-emerald-500">79%</span></div><button class="ns-bookmark w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button></div></div>
+</div>
+<div class="hidden sm:flex w-32 h-24 rounded-xl bg-gradient-to-br from-yellow-500/20 to-orange-500/20 items-center justify-center shrink-0"><i data-lucide="gem" class="w-10 h-10 text-yellow-500 shrink-0"></i></div>
+</div></div>
+<div class="ns-card ns-open bg-panel border border-border rounded-2xl p-5 cursor-pointer hover:border-accent/40 transition" data-cat="forex" data-sentiment="bearish" data-highimpact="false" data-title="GBP/USD Slides as UK Economic Data Disappoints" data-desc="The British pound weakens against the dollar after disappointing retail sales and PMI data raise concerns about the UK economic recovery..." data-source="WSJ" data-score="31" data-scorecolor="red" data-catbadge="sky">
+<div class="flex gap-4">
+<div class="flex-1 min-w-0 space-y-3">
+<div class="flex items-center gap-2 flex-wrap"><span class="px-2 py-0.5 rounded-md bg-sky-500/15 text-sky-500 text-xs font-semibold">Forex</span><span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-red-500/15 text-red-500 text-xs font-semibold"><i data-lucide="trending-down" class="w-3 h-3 shrink-0"></i>Bearish</span></div>
+<h3 class="font-semibold text-text text-lg leading-tight">GBP/USD Slides as UK Economic Data Disappoints</h3>
+<p class="text-sm text-muted line-clamp-2">The British pound weakens against the dollar after disappointing retail sales and PMI data raise concerns about the UK economic recovery...</p>
+<div class="flex items-center justify-between gap-2"><div class="flex items-center gap-3 min-w-0"><div class="w-7 h-7 rounded-lg bg-red-600 flex items-center justify-center text-white text-[10px] font-bold shrink-0">WSJ</div><span class="text-sm text-muted truncate">WSJ</span><span class="text-xs text-muted shrink-0">• 3 hours ago</span></div>
+<div class="flex items-center gap-2 shrink-0"><div class="flex items-center gap-1 text-sm"><i data-lucide="brain" class="w-4 h-4 text-violet-400 shrink-0"></i><span class="font-medium text-red-500">31%</span></div><button class="ns-bookmark w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button></div></div>
+</div>
+<div class="hidden sm:flex w-32 h-24 rounded-xl bg-gradient-to-br from-red-500/20 to-pink-500/20 items-center justify-center shrink-0"><i data-lucide="pound-sterling" class="w-10 h-10 text-red-500 shrink-0"></i></div>
+</div></div>
+<div class="ns-card ns-open bg-panel border border-border rounded-2xl p-5 cursor-pointer hover:border-accent/40 transition" data-cat="crypto" data-sentiment="bullish" data-highimpact="true" data-title="Ethereum ETF Inflows Accelerate as Staking Demand Grows" data-desc="Spot Ethereum ETFs recorded their largest weekly inflows since launch, with institutions citing staking yield and network upgrades as key drivers..." data-source="CoinDesk" data-score="84" data-scorecolor="emerald" data-catbadge="violet">
+<div class="flex gap-4">
+<div class="flex-1 min-w-0 space-y-3">
+<div class="flex items-center gap-2 flex-wrap"><span class="px-2 py-0.5 rounded-md bg-violet-500/15 text-violet-400 text-xs font-semibold">Crypto</span><span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-500 text-xs font-semibold"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i>Bullish</span><span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-red-500/15 text-red-500 text-xs font-semibold"><i data-lucide="flame" class="w-3 h-3 shrink-0"></i>High Impact</span></div>
+<h3 class="font-semibold text-text text-lg leading-tight">Ethereum ETF Inflows Accelerate as Staking Demand Grows</h3>
+<p class="text-sm text-muted line-clamp-2">Spot Ethereum ETFs recorded their largest weekly inflows since launch, with institutions citing staking yield and network upgrades as key drivers...</p>
+<div class="flex items-center justify-between gap-2"><div class="flex items-center gap-3 min-w-0"><div class="w-7 h-7 rounded-lg bg-yellow-500 flex items-center justify-center text-white text-[10px] font-bold shrink-0">CD</div><span class="text-sm text-muted truncate">CoinDesk</span><span class="text-xs text-muted shrink-0">• 4 hours ago</span></div>
+<div class="flex items-center gap-2 shrink-0"><div class="flex items-center gap-1 text-sm"><i data-lucide="brain" class="w-4 h-4 text-violet-400 shrink-0"></i><span class="font-medium text-emerald-500">84%</span></div><button class="ns-bookmark w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button></div></div>
+</div>
+<div class="hidden sm:flex w-32 h-24 rounded-xl bg-gradient-to-br from-violet-500/20 to-indigo-500/20 items-center justify-center shrink-0"><i data-lucide="hexagon" class="w-10 h-10 text-violet-400 shrink-0"></i></div>
+</div></div>
+<div class="ns-card ns-open bg-panel border border-border rounded-2xl p-5 cursor-pointer hover:border-accent/40 transition" data-cat="stocks" data-sentiment="neutral" data-highimpact="false" data-title="Tech Stocks Mixed Ahead of Earnings Season" data-desc="Major indices trade flat as investors await quarterly results from megacap technology firms, with AI spending in focus across the sector..." data-source="Bloomberg" data-score="55" data-scorecolor="amber" data-catbadge="slate">
+<div class="flex gap-4">
+<div class="flex-1 min-w-0 space-y-3">
+<div class="flex items-center gap-2 flex-wrap"><span class="px-2 py-0.5 rounded-md bg-slate-500/15 text-slate-300 text-xs font-semibold">Stocks</span><span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-500/15 text-slate-400 text-xs font-semibold"><i data-lucide="minus" class="w-3 h-3 shrink-0"></i>Neutral</span></div>
+<h3 class="font-semibold text-text text-lg leading-tight">Tech Stocks Mixed Ahead of Earnings Season</h3>
+<p class="text-sm text-muted line-clamp-2">Major indices trade flat as investors await quarterly results from megacap technology firms, with AI spending in focus across the sector...</p>
+<div class="flex items-center justify-between gap-2"><div class="flex items-center gap-3 min-w-0"><div class="w-7 h-7 rounded-lg bg-emerald-600 flex items-center justify-center text-white text-[10px] font-bold shrink-0">BB</div><span class="text-sm text-muted truncate">Bloomberg</span><span class="text-xs text-muted shrink-0">• 5 hours ago</span></div>
+<div class="flex items-center gap-2 shrink-0"><div class="flex items-center gap-1 text-sm"><i data-lucide="brain" class="w-4 h-4 text-violet-400 shrink-0"></i><span class="font-medium text-amber-500">55%</span></div><button class="ns-bookmark w-8 h-8 rounded-lg border border-border text-muted flex items-center justify-center hover:border-accent/40 hover:text-accent transition"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button></div></div>
+</div>
+<div class="hidden sm:flex w-32 h-24 rounded-xl bg-gradient-to-br from-slate-500/20 to-slate-600/20 items-center justify-center shrink-0"><i data-lucide="chart-candlestick" class="w-10 h-10 text-slate-400 shrink-0"></i></div>
+</div></div>
+
+              <div class="text-center pt-4"><button class="ns-toast-btn inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition" data-toast-title="Loading" data-toast-msg="Fetching more news articles..."><i data-lucide="chevron-down" class="w-4 h-4 shrink-0"></i>Load More News</button></div>
+            </div>
+            <!-- Other tabs -->
+            <div class="tab-content" id="forex-news"><div class="bg-panel border border-border rounded-2xl p-8 text-center"><i data-lucide="dollar-sign" class="w-12 h-12 text-muted mx-auto mb-4 shrink-0"></i><p class="text-muted">Forex news will be displayed here</p></div></div>
+            <div class="tab-content" id="crypto-news"><div class="bg-panel border border-border rounded-2xl p-8 text-center"><i data-lucide="bitcoin" class="w-12 h-12 text-muted mx-auto mb-4 shrink-0"></i><p class="text-muted">Crypto news will be displayed here</p></div></div>
+            <div class="tab-content" id="stocks-news"><div class="bg-panel border border-border rounded-2xl p-8 text-center"><i data-lucide="chart-column" class="w-12 h-12 text-muted mx-auto mb-4 shrink-0"></i><p class="text-muted">Stocks news will be displayed here</p></div></div>
+            <div class="tab-content" id="commodities-news"><div class="bg-panel border border-border rounded-2xl p-8 text-center"><i data-lucide="gem" class="w-12 h-12 text-muted mx-auto mb-4 shrink-0"></i><p class="text-muted">Commodities news will be displayed here</p></div></div>
+          </div>
+
+          <!-- Right sidebar -->
+          <div class="space-y-6">
+            <!-- AI sentiment -->
+            <div class="bg-panel border border-border rounded-2xl p-5">
+              <div class="flex items-center gap-3 mb-5"><div class="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center shrink-0"><i data-lucide="brain" class="w-5 h-5 text-white shrink-0"></i></div><div class="min-w-0"><h3 class="font-semibold text-text">AI Sentiment Analysis</h3><p class="text-xs text-muted">Real-time market mood</p></div></div>
+              <div class="space-y-4">
+                <div class="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20">
+                  <div class="flex items-center justify-between mb-2"><span class="text-sm font-medium text-text">Overall Market</span><span class="text-lg font-bold text-emerald-500">Bullish</span></div>
+                  <div class="h-1.5 rounded-full bg-border overflow-hidden"><div class="h-full bg-emerald-500 rounded-full" style="width:72%"></div></div>
+                  <p class="text-xs text-muted mt-2">72% positive sentiment across 2,847 articles</p>
+                </div>
+                <div class="space-y-3">
+                  <div class="flex items-center justify-between gap-2 p-3 rounded-lg hover:bg-bg transition"><span class="px-2 py-0.5 rounded-md bg-sky-500/15 text-sky-500 text-xs font-semibold">EUR/USD</span><div class="flex items-center gap-2 shrink-0"><div class="w-16 h-1.5 rounded-full bg-border overflow-hidden"><div class="h-full w-4/5 rounded-full bg-emerald-500"></div></div><span class="text-sm font-medium text-emerald-500">81%</span></div></div>
+                  <div class="flex items-center justify-between gap-2 p-3 rounded-lg hover:bg-bg transition"><span class="px-2 py-0.5 rounded-md bg-orange-500/15 text-orange-500 text-xs font-semibold">BTC/USD</span><div class="flex items-center gap-2 shrink-0"><div class="w-16 h-1.5 rounded-full bg-border overflow-hidden"><div class="h-full w-1/3 rounded-full bg-red-500"></div></div><span class="text-sm font-medium text-red-500">34%</span></div></div>
+                  <div class="flex items-center justify-between gap-2 p-3 rounded-lg hover:bg-bg transition"><span class="px-2 py-0.5 rounded-md bg-sky-500/15 text-sky-500 text-xs font-semibold">GBP/USD</span><div class="flex items-center gap-2 shrink-0"><div class="w-16 h-1.5 rounded-full bg-border overflow-hidden"><div class="h-full w-2/5 rounded-full bg-red-500"></div></div><span class="text-sm font-medium text-red-500">38%</span></div></div>
+                  <div class="flex items-center justify-between gap-2 p-3 rounded-lg hover:bg-bg transition"><span class="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-500 text-xs font-semibold">XAU/USD</span><div class="flex items-center gap-2 shrink-0"><div class="w-16 h-1.5 rounded-full bg-border overflow-hidden"><div class="h-full w-3/4 rounded-full bg-emerald-500"></div></div><span class="text-sm font-medium text-emerald-500">76%</span></div></div>
+                  <div class="flex items-center justify-between gap-2 p-3 rounded-lg hover:bg-bg transition"><span class="px-2 py-0.5 rounded-md bg-orange-500/15 text-orange-500 text-xs font-semibold">ETH/USD</span><div class="flex items-center gap-2 shrink-0"><div class="w-16 h-1.5 rounded-full bg-border overflow-hidden"><div class="h-full w-1/2 rounded-full bg-slate-400"></div></div><span class="text-sm font-medium text-slate-400">49%</span></div></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Trending topics -->
+            <div class="bg-panel border border-border rounded-2xl p-5">
+              <div class="flex items-center justify-between gap-2 mb-4"><h3 class="font-semibold text-text">Trending Topics</h3><span class="text-xs text-muted shrink-0">Last 24h</span></div>
+              <div class="flex flex-wrap gap-2">
+                <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-bg border border-border text-sm text-text"><i data-lucide="trending-up" class="w-3 h-3 text-emerald-500 shrink-0"></i>#FedRates</span>
+                <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-bg border border-border text-sm text-text"><i data-lucide="trending-up" class="w-3 h-3 text-emerald-500 shrink-0"></i>#ECBPolicy</span>
+                <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-bg border border-border text-sm text-text"><i data-lucide="trending-down" class="w-3 h-3 text-red-500 shrink-0"></i>#BTCRegulation</span>
+                <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-bg border border-border text-sm text-text"><i data-lucide="trending-up" class="w-3 h-3 text-emerald-500 shrink-0"></i>#GoldRally</span>
+                <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-bg border border-border text-sm text-text"><i data-lucide="minus" class="w-3 h-3 text-slate-400 shrink-0"></i>#Earnings</span>
+                <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-bg border border-border text-sm text-text"><i data-lucide="trending-up" class="w-3 h-3 text-emerald-500 shrink-0"></i>#USDStrength</span>
+                <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-bg border border-border text-sm text-text"><i data-lucide="trending-down" class="w-3 h-3 text-red-500 shrink-0"></i>#OilPrices</span>
+                <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-bg border border-border text-sm text-text"><i data-lucide="trending-up" class="w-3 h-3 text-emerald-500 shrink-0"></i>#NFP</span>
+              </div>
+            </div>
+
+            <!-- Sentiment chart -->
+            <div class="bg-panel border border-border rounded-2xl p-5">
+              <div class="flex items-center justify-between gap-2 mb-4"><h3 class="font-semibold text-text">Sentiment Timeline</h3><select class="appearance-none px-3 py-1.5 rounded-lg bg-bg border border-border text-text text-sm cursor-pointer focus:outline-none focus:border-accent shrink-0"><option>Last 24h</option><option>Last 7d</option><option>Last 30d</option></select></div>
+              <div class="relative h-48"><canvas id="nsSentimentChart"></canvas></div>
+            </div>
+
+            <!-- Top sources -->
+            <div class="bg-panel border border-border rounded-2xl p-5">
+              <h3 class="font-semibold text-text mb-4">Top News Sources</h3>
+              <div class="space-y-3">
+                <div class="flex items-center justify-between gap-2 p-3 rounded-lg hover:bg-bg transition cursor-pointer"><div class="flex items-center gap-3 min-w-0"><div class="w-9 h-9 rounded-lg bg-blue-600 flex items-center justify-center text-white text-xs font-bold shrink-0">R</div><div class="min-w-0"><p class="text-sm font-medium text-text">Reuters</p><p class="text-xs text-muted">342 articles</p></div></div><span class="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-500 text-xs font-semibold shrink-0">Trusted</span></div>
+                <div class="flex items-center justify-between gap-2 p-3 rounded-lg hover:bg-bg transition cursor-pointer"><div class="flex items-center gap-3 min-w-0"><div class="w-9 h-9 rounded-lg bg-emerald-600 flex items-center justify-center text-white text-xs font-bold shrink-0">BB</div><div class="min-w-0"><p class="text-sm font-medium text-text">Bloomberg</p><p class="text-xs text-muted">289 articles</p></div></div><span class="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-500 text-xs font-semibold shrink-0">Trusted</span></div>
+                <div class="flex items-center justify-between gap-2 p-3 rounded-lg hover:bg-bg transition cursor-pointer"><div class="flex items-center gap-3 min-w-0"><div class="w-9 h-9 rounded-lg bg-orange-500 flex items-center justify-center text-white text-xs font-bold shrink-0">CT</div><div class="min-w-0"><p class="text-sm font-medium text-text">CoinTelegraph</p><p class="text-xs text-muted">198 articles</p></div></div><span class="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-500 text-xs font-semibold shrink-0">Verified</span></div>
+                <div class="flex items-center justify-between gap-2 p-3 rounded-lg hover:bg-bg transition cursor-pointer"><div class="flex items-center gap-3 min-w-0"><div class="w-9 h-9 rounded-lg bg-red-600 flex items-center justify-center text-white text-xs font-bold shrink-0">WSJ</div><div class="min-w-0"><p class="text-sm font-medium text-text">Wall Street Journal</p><p class="text-xs text-muted">156 articles</p></div></div><span class="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-500 text-xs font-semibold shrink-0">Trusted</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Drawer overlay -->
+    <div class="drawer-overlay" id="nsOverlay"></div>
+
+    <!-- News detail drawer -->
+    <aside class="drawer" id="nsNewsDrawer">
+      <div class="p-6 border-b border-border flex items-center justify-between sticky top-0 bg-panel z-10">
+        <h2 class="text-xl font-bold text-text">News Details</h2>
+        <button class="ns-drawer-close w-9 h-9 rounded-lg flex items-center justify-center text-muted hover:bg-bg transition"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+      </div>
+      <div class="p-6 space-y-6">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="px-2 py-0.5 rounded-md text-xs font-semibold" id="nsDetailCatBadge">Forex</span>
+          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold" id="nsDetailSentBadge"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i><span id="nsDetailSentText">Bullish</span></span>
+        </div>
+        <h2 class="text-2xl font-bold text-text leading-tight" id="nsDetailTitle">EUR/USD Surges on ECB Hawkish Signals, Testing Key Resistance</h2>
+        <div class="flex items-center gap-3 text-sm text-muted flex-wrap"><span id="nsDetailSource">Reuters</span><span>•</span><span>15 minutes ago</span><span>•</span><span>3 min read</span></div>
+        <div class="p-4 rounded-xl border" id="nsDetailScoreBox">
+          <div class="flex items-center justify-between gap-2"><div class="flex items-center gap-3 min-w-0"><i data-lucide="brain" class="w-5 h-5 text-violet-400 shrink-0"></i><span class="font-medium text-text">AI Sentiment Score</span></div><span class="text-2xl font-bold" id="nsDetailScore">87%</span></div>
+          <div class="mt-3 h-1.5 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full" id="nsDetailScoreBar" style="width:87%"></div></div>
+        </div>
+        <div class="space-y-4">
+          <p class="text-text leading-relaxed" id="nsDetailDesc">The European Central Bank's latest policy statement indicates a more hawkish stance than expected, sending EUR/USD higher as traders price in additional rate hikes.</p>
+          <p class="text-muted leading-relaxed">Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.</p>
+          <p class="text-muted leading-relaxed">Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.</p>
+        </div>
+        <div class="border-t border-border pt-6">
+          <h4 class="font-semibold text-text mb-4">Related Assets</h4>
+          <div class="flex flex-wrap gap-2"><span class="px-2.5 py-1 rounded-md bg-sky-500/15 text-sky-500 text-xs font-semibold">EUR/USD</span><span class="px-2.5 py-1 rounded-md bg-sky-500/15 text-sky-500 text-xs font-semibold">GBP/USD</span><span class="px-2.5 py-1 rounded-md bg-sky-500/15 text-sky-500 text-xs font-semibold">USD/JPY</span></div>
+        </div>
+        <div class="border-t border-border pt-6">
+          <h4 class="font-semibold text-text mb-4">AI Analysis Summary</h4>
+          <div class="space-y-3">
+            <div class="flex items-start gap-3"><div class="w-6 h-6 rounded-full bg-emerald-500/20 flex items-center justify-center shrink-0 mt-0.5"><i data-lucide="check" class="w-3 h-3 text-emerald-500 shrink-0"></i></div><p class="text-sm text-muted">Strong positive correlation with EUR/USD price movement</p></div>
+            <div class="flex items-start gap-3"><div class="w-6 h-6 rounded-full bg-sky-500/20 flex items-center justify-center shrink-0 mt-0.5"><i data-lucide="info" class="w-3 h-3 text-sky-500 shrink-0"></i></div><p class="text-sm text-muted">Market expects continuation of hawkish ECB policy</p></div>
+            <div class="flex items-start gap-3"><div class="w-6 h-6 rounded-full bg-amber-500/20 flex items-center justify-center shrink-0 mt-0.5"><i data-lucide="triangle-alert" class="w-3 h-3 text-amber-500 shrink-0"></i></div><p class="text-sm text-muted">Watch for upcoming US economic data releases</p></div>
+          </div>
+        </div>
+        <div class="flex gap-3">
+          <button class="ns-toast-btn flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-indigo-500 text-white text-sm font-semibold" data-toast-title="Signal Generated" data-toast-msg="AI signal created from this article"><i data-lucide="sparkles" class="w-4 h-4 shrink-0"></i>Generate Signal</button>
+          <button class="ns-toast-btn inline-flex items-center justify-center px-4 py-2.5 rounded-xl bg-panel border border-border text-text font-semibold hover:border-accent/40 transition" data-toast-title="Shared" data-toast-msg="Article link copied to clipboard"><i data-lucide="share-2" class="w-4 h-4 shrink-0"></i></button>
+          <button class="ns-toast-btn inline-flex items-center justify-center px-4 py-2.5 rounded-xl bg-panel border border-border text-text font-semibold hover:border-accent/40 transition" data-toast-title="Bookmarked" data-toast-msg="Article saved to your bookmarks"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i></button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Filter drawer -->
+    <aside class="drawer" id="nsFilterDrawer">
+      <div class="p-6 border-b border-border flex items-center justify-between sticky top-0 bg-panel z-10">
+        <h2 class="text-xl font-bold text-text">Filter News</h2>
+        <button class="ns-drawer-close w-9 h-9 rounded-lg flex items-center justify-center text-muted hover:bg-bg transition"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+      </div>
+      <div class="p-6 space-y-6">
+        <div>
+          <label class="block text-sm font-medium text-text mb-3">Date Range</label>
+          <div class="grid grid-cols-1 @xs:grid-cols-2 gap-3">
+            <div><label class="block text-xs text-muted mb-1">From</label><input type="date" class="w-full px-3 py-2.5 rounded-lg bg-bg border border-border text-text text-sm focus:outline-none focus:border-accent" /></div>
+            <div><label class="block text-xs text-muted mb-1">To</label><input type="date" class="w-full px-3 py-2.5 rounded-lg bg-bg border border-border text-text text-sm focus:outline-none focus:border-accent" /></div>
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-text mb-3">Market Type</label>
+          <div class="space-y-2">
+            <label class="flex items-center gap-3 p-3 rounded-lg hover:bg-bg cursor-pointer transition"><input type="checkbox" class="custom-checkbox shrink-0" checked /><span class="text-sm text-text">Forex</span></label>
+            <label class="flex items-center gap-3 p-3 rounded-lg hover:bg-bg cursor-pointer transition"><input type="checkbox" class="custom-checkbox shrink-0" checked /><span class="text-sm text-text">Crypto</span></label>
+            <label class="flex items-center gap-3 p-3 rounded-lg hover:bg-bg cursor-pointer transition"><input type="checkbox" class="custom-checkbox shrink-0" checked /><span class="text-sm text-text">Stocks</span></label>
+            <label class="flex items-center gap-3 p-3 rounded-lg hover:bg-bg cursor-pointer transition"><input type="checkbox" class="custom-checkbox shrink-0" checked /><span class="text-sm text-text">Commodities</span></label>
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-text mb-3">Sentiment</label>
+          <div class="space-y-2">
+            <label class="flex items-center gap-3 p-3 rounded-lg hover:bg-bg cursor-pointer transition"><input type="checkbox" class="custom-checkbox shrink-0" checked /><span class="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span><span class="text-sm text-text">Bullish</span></label>
+            <label class="flex items-center gap-3 p-3 rounded-lg hover:bg-bg cursor-pointer transition"><input type="checkbox" class="custom-checkbox shrink-0" checked /><span class="w-2 h-2 rounded-full bg-red-500 shrink-0"></span><span class="text-sm text-text">Bearish</span></label>
+            <label class="flex items-center gap-3 p-3 rounded-lg hover:bg-bg cursor-pointer transition"><input type="checkbox" class="custom-checkbox shrink-0" checked /><span class="w-2 h-2 rounded-full bg-slate-400 shrink-0"></span><span class="text-sm text-text">Neutral</span></label>
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-text mb-3">Impact Level</label>
+          <select class="appearance-none w-full px-4 py-2.5 rounded-lg bg-bg border border-border text-text text-sm cursor-pointer focus:outline-none focus:border-accent"><option>All Levels</option><option>High Impact Only</option><option>Medium Impact</option><option>Low Impact</option></select>
+        </div>
+        <div class="flex gap-3 pt-4 border-t border-border">
+          <button class="ns-toast-btn flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition" data-toast-title="Filters Reset" data-toast-msg="All filters have been cleared"><i data-lucide="rotate-ccw" class="w-4 h-4 shrink-0"></i>Reset</button>
+          <button class="ns-toast-btn flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-indigo-500 text-white text-sm font-semibold" data-close data-toast-title="Filters Applied" data-toast-msg="Your filter settings have been applied"><i data-lucide="check" class="w-4 h-4 shrink-0"></i>Apply Filters</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Toast -->
+    <div class="toast" id="nsToast">
+      <div class="w-10 h-10 rounded-full bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-5 h-5 text-white shrink-0"></i></div>
+      <div class="min-w-0"><p class="font-semibold text-text" id="nsToastTitle">Success</p><p class="text-sm text-muted" id="nsToastMessage">Action completed successfully</p></div>
+      <button id="nsToastClose" class="ml-2 w-8 h-8 rounded-lg flex items-center justify-center text-muted hover:bg-bg transition shrink-0"><i data-lucide="x" class="w-4 h-4 shrink-0"></i></button>
+    </div>
+  </body>
+</html>

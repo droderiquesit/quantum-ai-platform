@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="description" content="Cryptrix PWA Documentation" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cryptrix PWA &mdash; Documentation</title>
+    <link rel="shortcut icon" href="img/favicon.ico" type="image/x-icon" />
+    <link
+      href="https://fonts.googleapis.com/css?family=Raleway:700,300"
+      rel="stylesheet"
+      type="text/css"
+    />
+    <link rel="stylesheet" href="css/style.css" />
+    <link rel="stylesheet" href="css/prettify.css" />
+    <style>
+      .alert {
+        padding: 15px; 
+        margin-bottom: 20px;
+        border-radius: 4px;
+      }
+      .alert-info {
+        background: #eef9fe; 
+        border-left: 4px solid #3b82f6; 
+      }
+      .alert-warning {
+        background: #fff5eb; 
+        border-left: 4px solid #fb923c; 
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="wrapper">
+      <header>
+        <div class="container">
+          <h2 class="lone-header">Cryptrix PWA Documentation</h2>
+        </div>
+      </header>
+      <section>
+        <div class="container">
+          <ul class="docs-nav">
+            <li><strong>1. Introduction</strong></li>
+            <li><a href="#welcome" class="cc-active">Welcome</a></li>
+            <li><a href="#features" class="cc-active">Key Features</a></li>
+            <li class="separator"></li>
+            <li><strong>2. Folder Structure</strong></li>
+            <li><a href="#folder-structure" class="cc-active">Structure Guide</a></li>
+            <li class="separator"></li>
+            <li><strong>3. Usage Guide (Main File)</strong></li>
+            <li><a href="#usage-main" class="cc-active">For Non-Developers</a></li>
+            <li class="separator"></li>
+            <li><strong>4. Customization Guide</strong></li>
+            <li><a href="#customization" class="cc-active">Edit HTML, CSS &amp; Images</a></li>
+            <li class="separator"></li>
+            <li><strong>5. Developer Guide</strong></li>
+            <li><a href="#developer-guide" class="cc-active">Source Code Setup</a></li>
+            <li class="separator"></li>
+            <li><strong>6. Credits &amp; Support</strong></li>
+            <li><a href="#credits" class="cc-active">Credits</a></li>
+            <li><a href="#support" class="cc-active">Support</a></li>
+          </ul>
+          <div class="docs-content">
+            
+            <h2 id="welcome">1. Introduction</h2>
+            <p><strong>Template Name:</strong> Cryptrix PWA</p>
+            <p>
+              Cryptrix PWA is a premium, beautifully designed Progressive Web App (PWA) template 
+              tailored for clean, professional, and app-like mobile experiences. Our mission is to make using this 
+              template completely seamless for both beginners and professional developers.
+            </p>
+            <p>
+              This documentation exactly explains how to use the ready-to-go Main File or, optionally, 
+              compile the Source Code from scratch if you are a developer.
+            </p>
+
+            <h3 id="features">Key Features</h3>
+            <ul>
+              <li>Progressive Web App (PWA) ready</li>
+              <li>Stunning, modern, and clean UI design</li>
+              <li>Fully responsive layout built for all devices</li>
+              <li>Built with Tailwind CSS v4</li>
+              <li>Clean, beginner-friendly coding structure</li>
+              <li>W3C valid HTML code</li>
+              <li>Cross-browser compatibility</li>
+            </ul>
+            <hr />
+
+            <h2 id="folder-structure">2. Folder Structure (Very Clear)</h2>
+            <p>When you download and extract the ZIP file from the marketplace, you will see three main folders:</p>
+            <ul>
+              <li>
+                <strong>documentation/</strong>
+                <p>This folder contains the help file you are reading right now.</p>
+              </li>
+              <li>
+                <strong>cryptrix-Main File/</strong>
+                <p><em>(Ready-to-use version)</em> This folder contains the final HTML, CSS, and JS files. <strong>NO build tools are required for this folder.</strong> It is fully functional out of the box.</p>
+              </li>
+              <li>
+                <strong>cryptrix-Source Code/</strong>
+                <p><em>(For Developers)</em> This folder contains the raw development files (Webpack, package.json, Tailwind config). You only need this folder if you plan to compile custom source code using build tools.</p>
+              </li>
+            </ul>
+            <hr />
+
+            <h2 id="usage-main">3. Installation / Usage Guide (Crucial for Non-Developers)</h2>
+            <div class="alert alert-info">
+              <strong>👉 Note:</strong> NO npm install, NO node.js, and NO build tools are required to use the Main File!
+            </div>
+            <p>To use the template without any technical setup, follow these simple steps:</p>
+            <ol>
+              <li><strong>Download and extract</strong> the template zip file to your computer.</li>
+              <li>Open the <strong>cryptrix-Main File</strong> folder.</li>
+              <li>Double click the <strong>index.html</strong> file. It will successfully open in your browser.</li>
+              <li>Open the HTML files in your favorite text editor (e.g. VS Code, Notepad++, Sublime).</li>
+              <li>Edit the content (text, links, images) to match your website.</li>
+              <li>Upload the entire contents of the <strong>cryptrix-Main File</strong> folder to your web server/hosting via FTP.</li>
+            </ol>
+            <hr />
+
+            <h2 id="customization">4. Customization Guide</h2>
+            <h3>How to Edit Text</h3>
+            <p>
+              Open any <code>.html</code> file from the <strong>cryptrix-Main File</strong> folder using a text editor. 
+              Find the text you want to change (for example, a heading or paragraph) and simply type your new text. 
+              Save the file and refresh your browser.
+            </p>
+            <h3>How to Change Images</h3>
+            <p>
+              All template images are located inside the <code>assets/img/</code> (or similar) directory. 
+              To change an image, place your new image in that folder and update the <code>&lt;img src="..."&gt;</code> tag 
+              in your HTML file to match the new image's name.
+            </p>
+            <h3>Where CSS &amp; JS Files Are Located</h3>
+            <p>
+              The main styles are located in the <code>css</code> directory, and standard scripts are located in the <code>js</code> directory 
+              inside the <strong>cryptrix-Main File</strong>. You can safely open these layout files to append custom styles and scripts.
+            </p>
+            <hr />
+
+            <h2 id="developer-guide">5. Developer Guide (Optional Source Code)</h2>
+            <div class="alert alert-warning">
+              <strong>👉 Important:</strong> These steps are entirely optional. Use this section ONLY if you are an advanced developer looking to recompile properties using Webpack and Tailwind CSS.
+            </div>
+            <p>The <strong>cryptrix-Source Code</strong> folder contains package.json and Webpack configurations. Here is how to use it:</p>
+            <ol>
+              <li>Ensure that <a href="https://nodejs.org/" target="_blank">Node.js</a> is installed on your machine.</li>
+              <li>Open your Terminal / Command Prompt and navigate to the <code>cryptrix-Source Code</code> directory.</li>
+              <li>Run the following command to download all dependencies:
+                <pre class="prettyprint">npm install</pre>
+              </li>
+              <li>To launch the local dev server and watch for live changes, run:
+                <pre class="prettyprint">npm run dev</pre>
+              </li>
+              <li>To compile the final, minified production assets, run:
+                <pre class="prettyprint">npm run build</pre>
+              </li>
+            </ol>
+            <p><strong>Tools utilized:</strong> Webpack 5, Tailwind CSS v4, NPM.</p>
+            <hr />
+
+            <h2 id="credits">6. Credits</h2>
+            <p>We used the following open-source resources and assets in this template. A massive thank you to the authors:</p>
+            <ul>
+              <li><strong>Framework:</strong> Tailwind CSS</li>
+              <li><strong>Icons:</strong> Phosphor Icons</li>
+              <li><strong>Fonts:</strong> Google Fonts</li>
+              <li><strong>Images:</strong> Unsplash, Freepik (Images are used for demonstration purposes only)</li>
+            </ul>
+            <hr />
+
+            <h2 id="support">7. Support Section</h2>
+            <p>If you have any questions or require help configuring the template, please feel free to reach out to us!</p>
+            <p>
+              Contact us via our ThemeForest profile: 
+              <br/>
+              <a href="https://themeforest.net/user/pixelaxis" target="_blank"><strong>Pixelaxis on ThemeForest</strong></a>
+            </p>
+            
+
+          </div>
+        </div>
+      </section>
+      <footer style="margin-top: 50px; padding: 20px 0; border-top: 1px solid #eaeaea; text-align: center;">
+        <div class="container">
+          <p>
+            &copy; Copyright <a href="https://themeforest.net/user/pixelaxis">Pixelaxis</a>. All Rights Reserved.
+          </p>
+        </div>
+      </footer>
+    </div>
+    <script src="./js/jquery.min.js"></script>
+    <script src="./js/prettify/prettify.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/google/code-prettify@master/loader/run_prettify.js?skin=sunburst"></script>
+    <script src="./js/layout.js"></script>
+  </body>
+</html>

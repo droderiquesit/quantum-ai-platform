@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <script>
+      if (localStorage.getItem("theme") === "light") document.documentElement.classList.remove("dark");
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Forex Heatmap - SignalAIX | AI Forex & Crypto Trading Signals</title>
+    <link rel="icon" type="image/png" href="assets/images/favicon.png" />
+    <link rel="apple-touch-icon" href="assets/images/favicon.png" />
+  </head>
+  <body id="forex-heatmap">
+    <div id="loader">
+      <div class="spinner"></div>
+      <div class="loader-text">Loading SignalAIX...</div>
+    </div>
+
+    <include-sidebar />
+
+    <main class="main-content" id="mainContent">
+      <include-top-header />
+
+      <div class="inner-content max-sm:px-3 max-lg:px-4 max-lg:py-6 lg:p-6 space-y-6">
+        <!-- Page header -->
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div>
+            <div class="flex items-center gap-2 flex-wrap">
+              <h1 class="text-2xl md:text-3xl font-bold text-text">Forex Heatmap</h1>
+              <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-500 text-[11px] font-semibold"><span class="live-dot !bg-emerald-500"></span>LIVE</span>
+            </div>
+            <p class="text-sm text-muted mt-1">Real-time currency strength analysis</p>
+          </div>
+          <div class="flex items-center gap-3 flex-wrap">
+            <div class="dropdown">
+              <button class="js-dropdown-toggle inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition"><i data-lucide="download" class="w-4 h-4 shrink-0"></i>Export</button>
+              <div class="dropdown-menu w-52 mt-2 rounded-xl bg-panel border border-border shadow-2xl overflow-hidden p-1.5">
+                <button class="fh-export flex w-full items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition" data-format="csv"><i data-lucide="file-text" class="w-4 h-4 shrink-0"></i>Export as CSV</button>
+                <button class="fh-export flex w-full items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition" data-format="excel"><i data-lucide="file-spreadsheet" class="w-4 h-4 shrink-0"></i>Export as Excel</button>
+                <button class="fh-export flex w-full items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition" data-format="pdf"><i data-lucide="file" class="w-4 h-4 shrink-0"></i>Export as PDF</button>
+              </div>
+            </div>
+            <button id="fhRefresh" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition"><i data-lucide="refresh-cw" class="w-4 h-4 shrink-0" id="fhRefreshIcon"></i>Refresh</button>
+          </div>
+        </div>
+
+        <!-- Stat cards -->
+        <div class="grid grid-cols-1 xs:grid-cols-2 @4xl/content:grid-cols-4 gap-4">
+          <div class="bg-panel border border-border rounded-2xl p-4 hover:border-accent/40 transition">
+            <div class="flex items-center gap-2 mb-2"><div class="w-9 h-9 rounded-lg bg-emerald-500/10 flex items-center justify-center shrink-0"><i data-lucide="trending-up" class="w-5 h-5 text-emerald-500 shrink-0"></i></div><span class="text-xs text-muted">Strongest</span></div>
+            <p class="text-xl font-bold text-text">USD</p><p class="text-xs text-emerald-500 mt-1">+2.34% strength</p>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-4 hover:border-accent/40 transition">
+            <div class="flex items-center gap-2 mb-2"><div class="w-9 h-9 rounded-lg bg-red-500/10 flex items-center justify-center shrink-0"><i data-lucide="trending-down" class="w-5 h-5 text-red-500 shrink-0"></i></div><span class="text-xs text-muted">Weakest</span></div>
+            <p class="text-xl font-bold text-text">JPY</p><p class="text-xs text-red-500 mt-1">-1.87% strength</p>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-4 hover:border-accent/40 transition">
+            <div class="flex items-center gap-2 mb-2"><div class="w-9 h-9 rounded-lg bg-sky-500/10 flex items-center justify-center shrink-0"><i data-lucide="radio" class="w-5 h-5 text-sky-500 shrink-0"></i></div><span class="text-xs text-muted">Active Signals</span></div>
+            <p class="text-xl font-bold text-text">24</p><p class="text-xs text-sky-500 mt-1">+6 new today</p>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-4 hover:border-accent/40 transition">
+            <div class="flex items-center gap-2 mb-2"><div class="w-9 h-9 rounded-lg bg-amber-500/10 flex items-center justify-center shrink-0"><i data-lucide="activity" class="w-5 h-5 text-amber-500 shrink-0"></i></div><span class="text-xs text-muted">Volatility</span></div>
+            <p class="text-xl font-bold text-text">High</p><p class="text-xs text-amber-500 mt-1">Above average</p>
+          </div>
+        </div>
+
+        <!-- Tabs + filters -->
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div class="flex gap-1 p-1 bg-panel border border-border rounded-2xl overflow-x-auto hide-scrollbar self-start max-w-full">
+            <button class="tab-button fh-tab active whitespace-nowrap px-4 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text transition" data-tab="heatmap">Heatmap View</button>
+            <button class="tab-button fh-tab whitespace-nowrap px-4 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text transition" data-tab="strength">Currency Strength</button>
+            <button class="tab-button fh-tab whitespace-nowrap px-4 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text transition" data-tab="correlation">Correlation</button>
+            <button class="tab-button fh-tab whitespace-nowrap px-4 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text transition" data-tab="momentum">Momentum</button>
+          </div>
+          <div class="flex items-center gap-2 flex-wrap">
+            <button class="fh-tf active px-4 py-2 rounded-full text-xs font-medium border border-border text-muted transition" data-tf="1H">1H</button>
+            <button class="fh-tf px-4 py-2 rounded-full text-xs font-medium border border-border text-muted transition" data-tf="4H">4H</button>
+            <button class="fh-tf px-4 py-2 rounded-full text-xs font-medium border border-border text-muted transition" data-tf="1D">1D</button>
+            <button class="fh-tf px-4 py-2 rounded-full text-xs font-medium border border-border text-muted transition" data-tf="1W">1W</button>
+          </div>
+        </div>
+
+        <!-- ===== Heatmap View ===== -->
+        <div class="tab-content fh-pane active" id="fh-tab-heatmap">
+          <!-- Legend -->
+          <div class="flex items-center justify-between gap-3 mb-4 flex-wrap">
+            <div class="flex items-center gap-2 flex-wrap text-xs">
+              <span class="inline-flex px-2.5 py-1 rounded-lg font-semibold text-white bg-gradient-to-r from-emerald-500 to-emerald-600">Strong Buy</span>
+              <span class="inline-flex px-2.5 py-1 rounded-lg font-semibold bg-emerald-500/30 text-emerald-500">Buy</span>
+              <span class="inline-flex px-2.5 py-1 rounded-lg font-semibold bg-border text-muted">Neutral</span>
+              <span class="inline-flex px-2.5 py-1 rounded-lg font-semibold bg-red-500/30 text-red-500">Sell</span>
+              <span class="inline-flex px-2.5 py-1 rounded-lg font-semibold text-white bg-gradient-to-r from-red-500 to-red-600">Strong Sell</span>
+            </div>
+            <p class="text-xs text-muted">Last updated: <span class="text-text font-medium" id="fhLastUpdate">Just now</span></p>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+            <div class="overflow-x-auto">
+              <table class="w-full border-collapse min-w-[820px] whitespace-nowrap" id="fhHeatmapTable">
+                <thead>
+                  <tr class="text-xs font-semibold uppercase tracking-wide text-muted">
+                    <th class="py-2 px-2 text-left">Pair / TF</th>
+                    <th class="py-2 px-2">M15</th><th class="py-2 px-2">M30</th><th class="py-2 px-2">H1</th><th class="py-2 px-2">H4</th><th class="py-2 px-2">D1</th><th class="py-2 px-2">W1</th><th class="py-2 px-2">MN</th><th class="py-2 px-2">Overall</th>
+                  </tr>
+                </thead>
+                <tbody id="fhHeatmapBody">
+                <tr>
+                  <td class="py-2 px-2"><button class="fh-pair flex items-center gap-2 text-left w-full hover:text-accent transition" data-pair="EUR/USD" data-change="+0.45%"><span class="text-base">🇪🇺🇺🇸</span><span class="font-medium text-text">EUR/USD</span></button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="EUR/USD" data-change="+0.45%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="EUR/USD" data-change="+0.45%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition text-white bg-gradient-to-r from-emerald-500 to-emerald-600" data-pair="EUR/USD" data-change="+0.45%">S.Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="EUR/USD" data-change="+0.45%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-border text-muted" data-pair="EUR/USD" data-change="+0.45%">Neut</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="EUR/USD" data-change="+0.45%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition text-white bg-gradient-to-r from-emerald-500 to-emerald-600" data-pair="EUR/USD" data-change="+0.45%">S.Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="EUR/USD" data-change="+0.45%">Buy</button></td>
+                </tr>
+                <tr>
+                  <td class="py-2 px-2"><button class="fh-pair flex items-center gap-2 text-left w-full hover:text-accent transition" data-pair="GBP/USD" data-change="+0.32%"><span class="text-base">🇬🇧🇺🇸</span><span class="font-medium text-text">GBP/USD</span></button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="GBP/USD" data-change="+0.32%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-border text-muted" data-pair="GBP/USD" data-change="+0.32%">Neut</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="GBP/USD" data-change="+0.32%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="GBP/USD" data-change="+0.32%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="GBP/USD" data-change="+0.32%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-border text-muted" data-pair="GBP/USD" data-change="+0.32%">Neut</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="GBP/USD" data-change="+0.32%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="GBP/USD" data-change="+0.32%">Buy</button></td>
+                </tr>
+                <tr>
+                  <td class="py-2 px-2"><button class="fh-pair flex items-center gap-2 text-left w-full hover:text-accent transition" data-pair="USD/JPY" data-change="-0.67%"><span class="text-base">🇺🇸🇯🇵</span><span class="font-medium text-text">USD/JPY</span></button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-red-500/30 text-red-500" data-pair="USD/JPY" data-change="-0.67%">Sell</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-red-500/30 text-red-500" data-pair="USD/JPY" data-change="-0.67%">Sell</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition text-white bg-gradient-to-r from-red-500 to-red-600" data-pair="USD/JPY" data-change="-0.67%">S.Sell</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-red-500/30 text-red-500" data-pair="USD/JPY" data-change="-0.67%">Sell</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-border text-muted" data-pair="USD/JPY" data-change="-0.67%">Neut</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-red-500/30 text-red-500" data-pair="USD/JPY" data-change="-0.67%">Sell</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-red-500/30 text-red-500" data-pair="USD/JPY" data-change="-0.67%">Sell</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-red-500/30 text-red-500" data-pair="USD/JPY" data-change="-0.67%">Sell</button></td>
+                </tr>
+                <tr>
+                  <td class="py-2 px-2"><button class="fh-pair flex items-center gap-2 text-left w-full hover:text-accent transition" data-pair="USD/CHF" data-change="-0.22%"><span class="text-base">🇺🇸🇨🇭</span><span class="font-medium text-text">USD/CHF</span></button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-red-500/30 text-red-500" data-pair="USD/CHF" data-change="-0.22%">Sell</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-border text-muted" data-pair="USD/CHF" data-change="-0.22%">Neut</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-red-500/30 text-red-500" data-pair="USD/CHF" data-change="-0.22%">Sell</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-border text-muted" data-pair="USD/CHF" data-change="-0.22%">Neut</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-red-500/30 text-red-500" data-pair="USD/CHF" data-change="-0.22%">Sell</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-red-500/30 text-red-500" data-pair="USD/CHF" data-change="-0.22%">Sell</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-border text-muted" data-pair="USD/CHF" data-change="-0.22%">Neut</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-red-500/30 text-red-500" data-pair="USD/CHF" data-change="-0.22%">Sell</button></td>
+                </tr>
+                <tr>
+                  <td class="py-2 px-2"><button class="fh-pair flex items-center gap-2 text-left w-full hover:text-accent transition" data-pair="AUD/USD" data-change="+0.89%"><span class="text-base">🇦🇺🇺🇸</span><span class="font-medium text-text">AUD/USD</span></button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="AUD/USD" data-change="+0.89%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition text-white bg-gradient-to-r from-emerald-500 to-emerald-600" data-pair="AUD/USD" data-change="+0.89%">S.Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="AUD/USD" data-change="+0.89%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="AUD/USD" data-change="+0.89%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-border text-muted" data-pair="AUD/USD" data-change="+0.89%">Neut</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="AUD/USD" data-change="+0.89%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="AUD/USD" data-change="+0.89%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="AUD/USD" data-change="+0.89%">Buy</button></td>
+                </tr>
+                <tr>
+                  <td class="py-2 px-2"><button class="fh-pair flex items-center gap-2 text-left w-full hover:text-accent transition" data-pair="NZD/USD" data-change="+0.18%"><span class="text-base">🇳🇿🇺🇸</span><span class="font-medium text-text">NZD/USD</span></button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-border text-muted" data-pair="NZD/USD" data-change="+0.18%">Neut</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="NZD/USD" data-change="+0.18%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="NZD/USD" data-change="+0.18%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-border text-muted" data-pair="NZD/USD" data-change="+0.18%">Neut</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="NZD/USD" data-change="+0.18%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-border text-muted" data-pair="NZD/USD" data-change="+0.18%">Neut</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-border text-muted" data-pair="NZD/USD" data-change="+0.18%">Neut</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-border text-muted" data-pair="NZD/USD" data-change="+0.18%">Neut</button></td>
+                </tr>
+                <tr>
+                  <td class="py-2 px-2"><button class="fh-pair flex items-center gap-2 text-left w-full hover:text-accent transition" data-pair="USD/CAD" data-change="-0.56%"><span class="text-base">🇺🇸🇨🇦</span><span class="font-medium text-text">USD/CAD</span></button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-red-500/30 text-red-500" data-pair="USD/CAD" data-change="-0.56%">Sell</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-red-500/30 text-red-500" data-pair="USD/CAD" data-change="-0.56%">Sell</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-border text-muted" data-pair="USD/CAD" data-change="-0.56%">Neut</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-red-500/30 text-red-500" data-pair="USD/CAD" data-change="-0.56%">Sell</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-red-500/30 text-red-500" data-pair="USD/CAD" data-change="-0.56%">Sell</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-border text-muted" data-pair="USD/CAD" data-change="-0.56%">Neut</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-red-500/30 text-red-500" data-pair="USD/CAD" data-change="-0.56%">Sell</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-red-500/30 text-red-500" data-pair="USD/CAD" data-change="-0.56%">Sell</button></td>
+                </tr>
+                <tr>
+                  <td class="py-2 px-2"><button class="fh-pair flex items-center gap-2 text-left w-full hover:text-accent transition" data-pair="EUR/GBP" data-change="+0.08%"><span class="text-base">🇪🇺🇬🇧</span><span class="font-medium text-text">EUR/GBP</span></button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-border text-muted" data-pair="EUR/GBP" data-change="+0.08%">Neut</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-border text-muted" data-pair="EUR/GBP" data-change="+0.08%">Neut</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="EUR/GBP" data-change="+0.08%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-border text-muted" data-pair="EUR/GBP" data-change="+0.08%">Neut</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-red-500/30 text-red-500" data-pair="EUR/GBP" data-change="+0.08%">Sell</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-border text-muted" data-pair="EUR/GBP" data-change="+0.08%">Neut</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="EUR/GBP" data-change="+0.08%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-border text-muted" data-pair="EUR/GBP" data-change="+0.08%">Neut</button></td>
+                </tr>
+                <tr>
+                  <td class="py-2 px-2"><button class="fh-pair flex items-center gap-2 text-left w-full hover:text-accent transition" data-pair="EUR/JPY" data-change="+1.24%"><span class="text-base">🇪🇺🇯🇵</span><span class="font-medium text-text">EUR/JPY</span></button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition text-white bg-gradient-to-r from-emerald-500 to-emerald-600" data-pair="EUR/JPY" data-change="+1.24%">S.Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="EUR/JPY" data-change="+1.24%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition text-white bg-gradient-to-r from-emerald-500 to-emerald-600" data-pair="EUR/JPY" data-change="+1.24%">S.Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="EUR/JPY" data-change="+1.24%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="EUR/JPY" data-change="+1.24%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition text-white bg-gradient-to-r from-emerald-500 to-emerald-600" data-pair="EUR/JPY" data-change="+1.24%">S.Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="EUR/JPY" data-change="+1.24%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition text-white bg-gradient-to-r from-emerald-500 to-emerald-600" data-pair="EUR/JPY" data-change="+1.24%">S.Buy</button></td>
+                </tr>
+                <tr>
+                  <td class="py-2 px-2"><button class="fh-pair flex items-center gap-2 text-left w-full hover:text-accent transition" data-pair="GBP/JPY" data-change="+0.98%"><span class="text-base">🇬🇧🇯🇵</span><span class="font-medium text-text">GBP/JPY</span></button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="GBP/JPY" data-change="+0.98%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition text-white bg-gradient-to-r from-emerald-500 to-emerald-600" data-pair="GBP/JPY" data-change="+0.98%">S.Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="GBP/JPY" data-change="+0.98%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="GBP/JPY" data-change="+0.98%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition text-white bg-gradient-to-r from-emerald-500 to-emerald-600" data-pair="GBP/JPY" data-change="+0.98%">S.Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="GBP/JPY" data-change="+0.98%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="GBP/JPY" data-change="+0.98%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition text-white bg-gradient-to-r from-emerald-500 to-emerald-600" data-pair="GBP/JPY" data-change="+0.98%">S.Buy</button></td>
+                </tr>
+                <tr>
+                  <td class="py-2 px-2"><button class="fh-pair flex items-center gap-2 text-left w-full hover:text-accent transition" data-pair="AUD/JPY" data-change="+0.54%"><span class="text-base">🇦🇺🇯🇵</span><span class="font-medium text-text">AUD/JPY</span></button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="AUD/JPY" data-change="+0.54%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="AUD/JPY" data-change="+0.54%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-border text-muted" data-pair="AUD/JPY" data-change="+0.54%">Neut</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="AUD/JPY" data-change="+0.54%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-border text-muted" data-pair="AUD/JPY" data-change="+0.54%">Neut</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="AUD/JPY" data-change="+0.54%">Buy</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-border text-muted" data-pair="AUD/JPY" data-change="+0.54%">Neut</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-emerald-500/30 text-emerald-500" data-pair="AUD/JPY" data-change="+0.54%">Buy</button></td>
+                </tr>
+                <tr>
+                  <td class="py-2 px-2"><button class="fh-pair flex items-center gap-2 text-left w-full hover:text-accent transition" data-pair="CHF/JPY" data-change="-0.41%"><span class="text-base">🇨🇭🇯🇵</span><span class="font-medium text-text">CHF/JPY</span></button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-red-500/30 text-red-500" data-pair="CHF/JPY" data-change="-0.41%">Sell</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-border text-muted" data-pair="CHF/JPY" data-change="-0.41%">Neut</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-red-500/30 text-red-500" data-pair="CHF/JPY" data-change="-0.41%">Sell</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-red-500/30 text-red-500" data-pair="CHF/JPY" data-change="-0.41%">Sell</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-border text-muted" data-pair="CHF/JPY" data-change="-0.41%">Neut</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-red-500/30 text-red-500" data-pair="CHF/JPY" data-change="-0.41%">Sell</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-red-500/30 text-red-500" data-pair="CHF/JPY" data-change="-0.41%">Sell</button></td>
+                  <td class="py-1.5 px-1.5"><button class="fh-cell w-full px-2 py-2 rounded-lg text-xs font-semibold hover:scale-105 transition bg-red-500/30 text-red-500" data-pair="CHF/JPY" data-change="-0.41%">Sell</button></td>
+                </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== Currency Strength ===== -->
+        <div class="tab-content fh-pane" id="fh-tab-strength">
+          <div class="grid grid-cols-1 @3xl/content:grid-cols-2 gap-6">
+            <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+              <div class="flex items-center justify-between mb-4 gap-3 flex-wrap"><div><h3 class="font-semibold text-text">Currency Strength Index</h3><p class="text-xs text-muted">Relative strength over selected timeframe</p></div></div>
+              <div class="h-80"><canvas id="fhStrengthChart"></canvas></div>
+            </div>
+            <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+              <div class="flex items-center justify-between mb-4 gap-3"><div><h3 class="font-semibold text-text">Current Strength</h3><p class="text-xs text-muted">Live currency power ranking</p></div><span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-500 text-[11px] font-semibold"><span class="live-dot !bg-emerald-500"></span>LIVE</span></div>
+              <div class="space-y-4">
+                <div class="flex items-center gap-3"><span class="w-10 font-medium text-text">USD</span><div class="flex-1 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-emerald-500 rounded-full" style="width:82%"></div></div><span class="text-xs text-emerald-500 w-12 text-right">+2.34%</span><span class="font-bold text-text w-8 text-right">82</span></div>
+                <div class="flex items-center gap-3"><span class="w-10 font-medium text-text">EUR</span><div class="flex-1 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-emerald-500 rounded-full" style="width:68%"></div></div><span class="text-xs text-emerald-500 w-12 text-right">+1.12%</span><span class="font-bold text-text w-8 text-right">68</span></div>
+                <div class="flex items-center gap-3"><span class="w-10 font-medium text-text">GBP</span><div class="flex-1 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-accent rounded-full" style="width:61%"></div></div><span class="text-xs text-emerald-500 w-12 text-right">+0.78%</span><span class="font-bold text-text w-8 text-right">61</span></div>
+                <div class="flex items-center gap-3"><span class="w-10 font-medium text-text">AUD</span><div class="flex-1 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-amber-500 rounded-full" style="width:55%"></div></div><span class="text-xs text-emerald-500 w-12 text-right">+0.34%</span><span class="font-bold text-text w-8 text-right">55</span></div>
+                <div class="flex items-center gap-3"><span class="w-10 font-medium text-text">CAD</span><div class="flex-1 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-amber-500 rounded-full" style="width:48%"></div></div><span class="text-xs text-red-500 w-12 text-right">-0.21%</span><span class="font-bold text-text w-8 text-right">48</span></div>
+                <div class="flex items-center gap-3"><span class="w-10 font-medium text-text">NZD</span><div class="flex-1 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-amber-500 rounded-full" style="width:42%"></div></div><span class="text-xs text-red-500 w-12 text-right">-0.45%</span><span class="font-bold text-text w-8 text-right">42</span></div>
+                <div class="flex items-center gap-3"><span class="w-10 font-medium text-text">CHF</span><div class="flex-1 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-red-500 rounded-full" style="width:35%"></div></div><span class="text-xs text-red-500 w-12 text-right">-1.02%</span><span class="font-bold text-text w-8 text-right">35</span></div>
+                <div class="flex items-center gap-3"><span class="w-10 font-medium text-text">JPY</span><div class="flex-1 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-red-500 rounded-full" style="width:22%"></div></div><span class="text-xs text-red-500 w-12 text-right">-1.87%</span><span class="font-bold text-text w-8 text-right">22</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== Correlation ===== -->
+        <div class="tab-content fh-pane" id="fh-tab-correlation">
+          <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+            <div class="flex items-center justify-between mb-4 gap-3 flex-wrap"><div><h3 class="font-semibold text-text">Currency Correlation Matrix</h3><p class="text-xs text-muted">Inter-pair correlation analysis</p></div><select class="px-3 py-2 pr-8 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option>Last 30 Days</option><option>Last 7 Days</option><option>Last 24 Hours</option></select></div>
+            <div class="overflow-x-auto">
+              <table class="w-full border-collapse min-w-[640px] whitespace-nowrap text-center text-sm">
+                <thead><tr class="text-xs font-semibold text-muted"><th class="py-2 px-2"></th><th class="py-2 px-2">EUR/USD</th><th class="py-2 px-2">GBP/USD</th><th class="py-2 px-2">USD/JPY</th><th class="py-2 px-2">USD/CHF</th><th class="py-2 px-2">AUD/USD</th><th class="py-2 px-2">NZD/USD</th><th class="py-2 px-2">USD/CAD</th></tr></thead>
+                <tbody id="fhCorrelationBody">
+                <tr>
+                  <td class="py-2 px-2 text-left text-xs font-semibold text-muted">EUR/USD</td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-emerald-500/80 text-white">+1.00</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-emerald-500/80 text-white">+0.78</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-red-500/30 text-red-500">-0.45</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-red-500/80 text-white">-0.82</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-emerald-500/30 text-emerald-500">+0.65</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-emerald-500/30 text-emerald-500">+0.58</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-red-500/30 text-red-500">-0.55</div></td>
+                </tr>
+                <tr>
+                  <td class="py-2 px-2 text-left text-xs font-semibold text-muted">GBP/USD</td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-emerald-500/80 text-white">+0.78</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-emerald-500/80 text-white">+1.00</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-red-500/30 text-red-500">-0.38</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-red-500/30 text-red-500">-0.62</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-emerald-500/30 text-emerald-500">+0.55</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-emerald-500/30 text-emerald-500">+0.49</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-red-500/30 text-red-500">-0.48</div></td>
+                </tr>
+                <tr>
+                  <td class="py-2 px-2 text-left text-xs font-semibold text-muted">USD/JPY</td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-red-500/30 text-red-500">-0.45</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-red-500/30 text-red-500">-0.38</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-emerald-500/80 text-white">+1.00</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-emerald-500/30 text-emerald-500">+0.42</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-red-500/30 text-red-500">-0.35</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-red-500/30 text-red-500">-0.30</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-emerald-500/30 text-emerald-500">+0.40</div></td>
+                </tr>
+                <tr>
+                  <td class="py-2 px-2 text-left text-xs font-semibold text-muted">USD/CHF</td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-red-500/80 text-white">-0.82</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-red-500/30 text-red-500">-0.62</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-emerald-500/30 text-emerald-500">+0.42</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-emerald-500/80 text-white">+1.00</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-red-500/30 text-red-500">-0.58</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-red-500/30 text-red-500">-0.52</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-emerald-500/30 text-emerald-500">+0.50</div></td>
+                </tr>
+                <tr>
+                  <td class="py-2 px-2 text-left text-xs font-semibold text-muted">AUD/USD</td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-emerald-500/30 text-emerald-500">+0.65</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-emerald-500/30 text-emerald-500">+0.55</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-red-500/30 text-red-500">-0.35</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-red-500/30 text-red-500">-0.58</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-emerald-500/80 text-white">+1.00</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-emerald-500/80 text-white">+0.85</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-red-500/30 text-red-500">-0.62</div></td>
+                </tr>
+                <tr>
+                  <td class="py-2 px-2 text-left text-xs font-semibold text-muted">NZD/USD</td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-emerald-500/30 text-emerald-500">+0.58</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-emerald-500/30 text-emerald-500">+0.49</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-red-500/30 text-red-500">-0.30</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-red-500/30 text-red-500">-0.52</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-emerald-500/80 text-white">+0.85</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-emerald-500/80 text-white">+1.00</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-red-500/30 text-red-500">-0.55</div></td>
+                </tr>
+                <tr>
+                  <td class="py-2 px-2 text-left text-xs font-semibold text-muted">USD/CAD</td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-red-500/30 text-red-500">-0.55</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-red-500/30 text-red-500">-0.48</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-emerald-500/30 text-emerald-500">+0.40</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-emerald-500/30 text-emerald-500">+0.50</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-red-500/30 text-red-500">-0.62</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-red-500/30 text-red-500">-0.55</div></td>
+                  <td class="py-1.5 px-1.5"><div class="px-2 py-2 rounded-lg text-xs font-semibold bg-emerald-500/80 text-white">+1.00</div></td>
+                </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== Momentum ===== -->
+        <div class="tab-content fh-pane" id="fh-tab-momentum">
+          <div class="grid grid-cols-1 @3xl/content:grid-cols-3 gap-6">
+            <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+              <h3 class="font-semibold text-text mb-4">RSI Overview</h3>
+              <div class="grid grid-cols-2 gap-4">
+                <div class="text-center"><p class="text-sm font-medium text-text mb-2">EUR/USD</p><div class="relative w-20 h-20 mx-auto"><svg class="w-full h-full -rotate-90" viewBox="0 0 36 36"><circle cx="18" cy="18" r="15.9" fill="none" stroke="var(--color-border)" stroke-width="3"></circle><circle cx="18" cy="18" r="15.9" fill="none" stroke="#f59e0b" stroke-width="3" stroke-dasharray="58 100" stroke-linecap="round"></circle></svg><div class="absolute inset-0 flex items-center justify-center text-lg font-bold text-text">58</div></div><p class="text-xs text-amber-500 mt-1">Neutral</p></div>
+                <div class="text-center"><p class="text-sm font-medium text-text mb-2">GBP/USD</p><div class="relative w-20 h-20 mx-auto"><svg class="w-full h-full -rotate-90" viewBox="0 0 36 36"><circle cx="18" cy="18" r="15.9" fill="none" stroke="var(--color-border)" stroke-width="3"></circle><circle cx="18" cy="18" r="15.9" fill="none" stroke="#ef4444" stroke-width="3" stroke-dasharray="72 100" stroke-linecap="round"></circle></svg><div class="absolute inset-0 flex items-center justify-center text-lg font-bold text-text">72</div></div><p class="text-xs text-red-500 mt-1">Overbought</p></div>
+                <div class="text-center"><p class="text-sm font-medium text-text mb-2">USD/JPY</p><div class="relative w-20 h-20 mx-auto"><svg class="w-full h-full -rotate-90" viewBox="0 0 36 36"><circle cx="18" cy="18" r="15.9" fill="none" stroke="var(--color-border)" stroke-width="3"></circle><circle cx="18" cy="18" r="15.9" fill="none" stroke="#10b981" stroke-width="3" stroke-dasharray="28 100" stroke-linecap="round"></circle></svg><div class="absolute inset-0 flex items-center justify-center text-lg font-bold text-text">28</div></div><p class="text-xs text-emerald-500 mt-1">Oversold</p></div>
+                <div class="text-center"><p class="text-sm font-medium text-text mb-2">AUD/USD</p><div class="relative w-20 h-20 mx-auto"><svg class="w-full h-full -rotate-90" viewBox="0 0 36 36"><circle cx="18" cy="18" r="15.9" fill="none" stroke="var(--color-border)" stroke-width="3"></circle><circle cx="18" cy="18" r="15.9" fill="none" stroke="#10b981" stroke-width="3" stroke-dasharray="65 100" stroke-linecap="round"></circle></svg><div class="absolute inset-0 flex items-center justify-center text-lg font-bold text-text">65</div></div><p class="text-xs text-emerald-500 mt-1">Bullish</p></div>
+              </div>
+            </div>
+            <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+              <h3 class="font-semibold text-text mb-4">MACD Signals</h3>
+              <div class="space-y-3">
+                <div class="flex items-center justify-between p-3 rounded-xl border border-border gap-3"><span class="font-medium text-text">EUR/USD</span><div class="text-right"><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500">Bullish Cross</span><p class="text-xs text-muted mt-1">Strong</p></div></div>
+                <div class="flex items-center justify-between p-3 rounded-xl border border-border gap-3"><span class="font-medium text-text">GBP/USD</span><div class="text-right"><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500">Above Zero</span><p class="text-xs text-muted mt-1">Moderate</p></div></div>
+                <div class="flex items-center justify-between p-3 rounded-xl border border-border gap-3"><span class="font-medium text-text">USD/JPY</span><div class="text-right"><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-red-500/15 text-red-500">Bearish Cross</span><p class="text-xs text-muted mt-1">Strong</p></div></div>
+                <div class="flex items-center justify-between p-3 rounded-xl border border-border gap-3"><span class="font-medium text-text">AUD/USD</span><div class="text-right"><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500">Bullish Div.</span><p class="text-xs text-muted mt-1">Weak</p></div></div>
+                <div class="flex items-center justify-between p-3 rounded-xl border border-border gap-3"><span class="font-medium text-text">USD/CAD</span><div class="text-right"><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-red-500/15 text-red-500">Below Zero</span><p class="text-xs text-muted mt-1">Moderate</p></div></div>
+              </div>
+            </div>
+            <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+              <h3 class="font-semibold text-text mb-4">Momentum Flow</h3>
+              <div class="h-64"><canvas id="fhMomentumChart"></canvas></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Insights row -->
+        <div class="grid grid-cols-1 @3xl/content:grid-cols-3 gap-6">
+          <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+            <div class="flex items-center justify-between mb-4"><h3 class="font-semibold text-text">Top Movers</h3><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500">Live</span></div>
+            <div class="space-y-2">
+              <div class="flex items-center justify-between p-2.5 rounded-lg hover:bg-border/40 transition"><div class="flex items-center gap-2"><i data-lucide="trending-up" class="w-4 h-4 text-emerald-500 shrink-0"></i><span class="font-medium text-text">EUR/JPY</span></div><span class="text-emerald-500 font-semibold">+1.24%</span></div>
+              <div class="flex items-center justify-between p-2.5 rounded-lg hover:bg-border/40 transition"><div class="flex items-center gap-2"><i data-lucide="trending-up" class="w-4 h-4 text-emerald-500 shrink-0"></i><span class="font-medium text-text">GBP/JPY</span></div><span class="text-emerald-500 font-semibold">+0.98%</span></div>
+              <div class="flex items-center justify-between p-2.5 rounded-lg hover:bg-border/40 transition"><div class="flex items-center gap-2"><i data-lucide="trending-up" class="w-4 h-4 text-emerald-500 shrink-0"></i><span class="font-medium text-text">AUD/USD</span></div><span class="text-emerald-500 font-semibold">+0.89%</span></div>
+              <div class="flex items-center justify-between p-2.5 rounded-lg hover:bg-border/40 transition"><div class="flex items-center gap-2"><i data-lucide="trending-down" class="w-4 h-4 text-red-500 shrink-0"></i><span class="font-medium text-text">USD/JPY</span></div><span class="text-red-500 font-semibold">-0.67%</span></div>
+              <div class="flex items-center justify-between p-2.5 rounded-lg hover:bg-border/40 transition"><div class="flex items-center gap-2"><i data-lucide="trending-down" class="w-4 h-4 text-red-500 shrink-0"></i><span class="font-medium text-text">USD/CAD</span></div><span class="text-red-500 font-semibold">-0.56%</span></div>
+            </div>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+            <div class="flex items-center justify-between mb-4 gap-3"><h3 class="font-semibold text-text">AI Recommendations</h3><span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-indigo-500/15 text-indigo-400"><i data-lucide="sparkles" class="w-3 h-3 shrink-0"></i>AI Powered</span></div>
+            <div class="space-y-3">
+              <div class="p-3 rounded-xl border border-border"><div class="flex items-center justify-between mb-1 gap-2"><span class="font-medium text-text">EUR/USD</span><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500">Buy</span></div><p class="text-xs text-muted mb-2">Bullish divergence on H4</p><div class="flex items-center gap-2"><div class="flex-1 h-1.5 bg-border rounded-full overflow-hidden"><div class="h-full bg-emerald-500 rounded-full" style="width:87%"></div></div><span class="text-xs text-muted">87%</span></div></div>
+              <div class="p-3 rounded-xl border border-border"><div class="flex items-center justify-between mb-1 gap-2"><span class="font-medium text-text">AUD/USD</span><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500">Buy</span></div><p class="text-xs text-muted mb-2">Strong momentum breakout</p><div class="flex items-center gap-2"><div class="flex-1 h-1.5 bg-border rounded-full overflow-hidden"><div class="h-full bg-emerald-500 rounded-full" style="width:92%"></div></div><span class="text-xs text-muted">92%</span></div></div>
+              <div class="p-3 rounded-xl border border-border"><div class="flex items-center justify-between mb-1 gap-2"><span class="font-medium text-text">USD/JPY</span><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-red-500/15 text-red-500">Sell</span></div><p class="text-xs text-muted mb-2">Resistance rejection</p><div class="flex items-center gap-2"><div class="flex-1 h-1.5 bg-border rounded-full overflow-hidden"><div class="h-full bg-red-500 rounded-full" style="width:78%"></div></div><span class="text-xs text-muted">78%</span></div></div>
+            </div>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+            <div class="flex items-center justify-between mb-4"><h3 class="font-semibold text-text">Market Sessions</h3><i data-lucide="clock" class="w-4 h-4 text-muted shrink-0"></i></div>
+            <div class="space-y-3">
+              <div class="flex items-center justify-between p-3 rounded-xl border border-border gap-3"><div><p class="font-medium text-text">London</p><p class="text-xs text-muted">08:00 - 16:00 GMT</p></div><span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500"><span class="live-dot !bg-emerald-500"></span>Open</span></div>
+              <div class="flex items-center justify-between p-3 rounded-xl border border-border gap-3"><div><p class="font-medium text-text">New York</p><p class="text-xs text-muted">13:00 - 21:00 GMT</p></div><span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500"><span class="live-dot !bg-emerald-500"></span>Open</span></div>
+              <div class="flex items-center justify-between p-3 rounded-xl border border-border gap-3"><div><p class="font-medium text-text">Tokyo</p><p class="text-xs text-muted">00:00 - 08:00 GMT</p></div><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/15 text-amber-500">Opens in 4h</span></div>
+              <div class="flex items-center justify-between p-3 rounded-xl border border-border gap-3"><div><p class="font-medium text-text">Sydney</p><p class="text-xs text-muted">22:00 - 06:00 GMT</p></div><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/15 text-amber-500">Opens in 6h</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Drawer -->
+    <div class="drawer-overlay" id="fhDrawerOverlay"></div>
+    <div class="drawer" id="fhDrawer">
+      <div class="p-4 sm:p-6 border-b border-border flex items-center justify-between sticky top-0 bg-panel z-10">
+        <h2 class="text-xl font-bold text-text" id="fhDrawerTitle">Pair Details</h2>
+        <button class="fh-drawer-close flex w-10 h-10 items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition" aria-label="Close drawer"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+      </div>
+      <div class="p-4 sm:p-6 space-y-6">
+        <div class="p-5 rounded-2xl bg-gradient-to-br from-accent via-teal-500 to-sky-500 text-white">
+          <div class="flex items-center justify-between gap-3"><div><p class="text-2xl font-bold" id="fhDrawerPair">EUR/USD</p><p class="text-white/70 text-sm">Currency Pair Analysis</p></div><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-white/20 text-white" id="fhDrawerChange">+0.45%</span></div>
+        </div>
+        <div>
+          <h4 class="font-semibold text-text mb-3">Signal Summary</h4>
+          <div class="grid grid-cols-2 gap-3">
+            <div class="p-4 rounded-xl border border-border"><p class="text-xs text-muted mb-1">Overall Signal</p><p class="font-semibold text-emerald-500" id="fhDrawerSignal">BUY</p></div>
+            <div class="p-4 rounded-xl border border-border"><p class="text-xs text-muted mb-1">AI Confidence</p><p class="font-semibold text-text" id="fhDrawerConfidence">87%</p></div>
+          </div>
+        </div>
+        <div>
+          <h4 class="font-semibold text-text mb-3">Technical Indicators</h4>
+          <div class="space-y-3">
+            <div class="flex items-center justify-between p-3 rounded-xl border border-border"><span class="text-sm text-muted">RSI (14)</span><span class="font-semibold text-text">58.4</span></div>
+            <div class="flex items-center justify-between p-3 rounded-xl border border-border"><span class="text-sm text-muted">MACD</span><span class="font-semibold text-emerald-500">Bullish</span></div>
+            <div class="flex items-center justify-between p-3 rounded-xl border border-border"><span class="text-sm text-muted">Moving Avg (50)</span><span class="font-semibold text-emerald-500">Above</span></div>
+            <div class="flex items-center justify-between p-3 rounded-xl border border-border"><span class="text-sm text-muted">Bollinger Bands</span><span class="font-semibold text-text">Middle</span></div>
+          </div>
+        </div>
+        <div>
+          <h4 class="font-semibold text-text mb-3">Key Levels</h4>
+          <div class="grid grid-cols-2 gap-3">
+            <div class="p-3 rounded-xl border border-border"><p class="text-xs text-muted mb-1">Support 1</p><p class="font-mono font-semibold text-text">1.0820</p></div>
+            <div class="p-3 rounded-xl border border-border"><p class="text-xs text-muted mb-1">Resistance 1</p><p class="font-mono font-semibold text-text">1.0895</p></div>
+            <div class="p-3 rounded-xl border border-border"><p class="text-xs text-muted mb-1">Support 2</p><p class="font-mono font-semibold text-text">1.0785</p></div>
+            <div class="p-3 rounded-xl border border-border"><p class="text-xs text-muted mb-1">Resistance 2</p><p class="font-mono font-semibold text-text">1.0940</p></div>
+          </div>
+        </div>
+        <div class="flex gap-3">
+          <button class="fh-toast-btn flex-1 justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold whitespace-nowrap hover:-translate-y-0.5 transition" data-toast-title="Added to Watchlist" data-toast-msg="Pair added to your watchlist"><i data-lucide="bookmark" class="w-4 h-4 shrink-0"></i>Add to Watchlist</button>
+          <button class="fh-toast-btn flex-1 justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-panel border border-border text-text text-sm font-semibold whitespace-nowrap hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="You'll be notified on signal changes"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i>Set Alert</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="fhToast">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-5 h-5 text-white shrink-0"></i></div>
+      <div>
+        <p class="font-semibold text-text" id="fhToastTitle">Success</p>
+        <p class="text-sm text-muted" id="fhToastMessage">Action completed</p>
+      </div>
+      <button id="fhToastClose" class="p-2 ml-auto rounded-lg text-muted hover:bg-border/50 transition" aria-label="Dismiss"><i data-lucide="x" class="w-4 h-4 shrink-0"></i></button>
+    </div>
+
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
+  </body>
+</html>
