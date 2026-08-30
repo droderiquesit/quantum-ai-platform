@@ -12,9 +12,9 @@
 FROM node:22-alpine AS build
 WORKDIR /src
 COPY . .
-RUN npm ci --no-audit --no-fund \
-  && cd portal \
-  && npm run build
+RUN npm ci --no-audit --no-fund
+WORKDIR /src/portal
+RUN npm run build
 
 FROM node:22-alpine
 # Same non-root discipline as the platform images.

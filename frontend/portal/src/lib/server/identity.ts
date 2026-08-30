@@ -1,6 +1,14 @@
 import { createHmac, randomBytes, randomInt } from "node:crypto";
 import type { AccountAgreements, AccountType, AuthFailure } from "@algorik/auth";
 import { identityStore, type StoredSession, type StoredUser } from "./identity-store";
+import {
+  gipResetPassword,
+  gipSendPasswordReset,
+  gipSendVerification,
+  gipSignIn,
+  gipSignUp,
+  gipVerifyEmail,
+} from "./identity-platform";
 import { hashPassword, newSessionId, SESSION_TTL_MS, verifyPassword } from "./session";
 
 /**
@@ -24,9 +32,12 @@ import { hashPassword, newSessionId, SESSION_TTL_MS, verifyPassword } from "./se
  * a certainty. The code itself exists in plaintext only in the response that
  * delivers it (development) or in the email (production).
  *
- * **This is the development provider.** It implements the same journey the
- * Identity Platform adapter will, which is what makes the journey testable
- * today. Where production behaviour must differ, the difference is marked
+ * **Two providers, one journey.** With no ALGORIK_IDENTITY_PROJECT_ID this
+ * is the development provider, self-contained and testable offline. With a
+ * project configured, Google Cloud Identity Platform answers the credential
+ * questions (see identity-platform.ts) and this file keeps everything that
+ * is a product decision rather than a credential one: agreements, roles,
+ * sessions, and what a stranger is allowed to learn. Where production behaviour must differ, the difference is marked
  * with `devCode`: a field that exists only because no email service exists
  * locally, is labelled in the UI as development-only, and is never populated
  * once a real provider is configured.
@@ -94,6 +105,45 @@ export type ServiceResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly failure: AuthFailure; readonly status: number };
 
+/**
+ * Password hash sentinel for accounts whose credential lives in Identity
+ * Platform. verifyPassword is never called against it in platform mode; if
+ * a code path ever does, no password hashes to this string.
+ */
+const EXTERNAL_CREDENTIAL = "external:identity-platform";
+
+/** The local record for a platform-authenticated user: everything that is
+ * ours to decide (roles, agreements, account type) and nothing that is
+ * Google's (the password). Created at sign-up, or on first sign-in for an
+ * account that predates this store. */
+function platformProfile(
+  email: string,
+  localId: string,
+  displayName: string | null,
+  input?: SignUpInput,
+): StoredUser {
+  const existing = identityStore.userByEmail(email);
+  if (existing) return existing;
+  const user: StoredUser = {
+    id: `gip:${localId}`,
+    email,
+    passwordHash: EXTERNAL_CREDENTIAL,
+    displayName: input?.displayName?.trim() || displayName,
+    accountType: input?.accountType ?? "individual",
+    emailVerified: false,
+    agreements: input ? { ...input.agreements } : { terms: true, privacy: true, riskDisclosure: true },
+    agreementsVersion: AGREEMENTS_VERSION,
+    createdAt: Date.now(),
+    failedSignIns: 0,
+    lockedUntil: 0,
+    // Viewer only, in both providers. Sign-up grants observation of the
+    // paper platform, never operation of it.
+    roles: ["viewer"],
+  };
+  identityStore.createUser(user);
+  return user;
+}
+
 export async function signUp(input: SignUpInput): Promise<ServiceResult<{ devCode: string | null }>> {
   const email = input.email.trim().toLowerCase();
   if (!input.agreements.terms || !input.agreements.privacy || !input.agreements.riskDisclosure) {
@@ -102,6 +152,23 @@ export async function signUp(input: SignUpInput): Promise<ServiceResult<{ devCod
       status: 400,
       failure: failure("agreements_required", "The terms, privacy policy and risk disclosures must each be accepted.", "agreements"),
     };
+  }
+
+  if (!developmentProviderActive()) {
+    const created = await gipSignUp(email, input.password);
+    if (created.ok) {
+      platformProfile(email, created.value.localId, null, input);
+      await gipSendVerification(created.value.idToken);
+    } else if (created.error.code !== "EMAIL_EXISTS") {
+      // EMAIL_EXISTS falls through to the same shape as success — account
+      // existence is never revealed. Anything else is a real refusal.
+      const message =
+        created.error.code === "WEAK_PASSWORD"
+          ? "That password is too short for this platform. Use at least six characters."
+          : "Sign-up was not accepted. Check the details and try again.";
+      return { ok: false, status: 400, failure: failure("invalid_credentials", message) };
+    }
+    return { ok: true, value: { devCode: null } };
   }
 
   const existing = identityStore.userByEmail(email);
@@ -141,6 +208,40 @@ export async function signIn(
   password: string,
   device: string,
 ): Promise<ServiceResult<{ session: StoredSession; user: StoredUser }>> {
+  if (!developmentProviderActive()) {
+    const signedIn = await gipSignIn(email.trim().toLowerCase(), password);
+    if (!signedIn.ok) {
+      // Google answers INVALID_LOGIN_CREDENTIALS for missing account and
+      // wrong password alike, which is exactly the discipline the local
+      // provider implements with a decoy hash.
+      return {
+        ok: false,
+        status: 401,
+        failure: failure("invalid_credentials", "That email and password combination was not accepted."),
+      };
+    }
+    const profile = platformProfile(email.trim().toLowerCase(), signedIn.value.localId, signedIn.value.displayName);
+    if (!signedIn.value.emailVerified) {
+      return {
+        ok: false,
+        status: 403,
+        failure: failure("email_unverified", "This email address has not been verified yet.", "verify-email"),
+      };
+    }
+    if (profile.emailVerified !== true) identityStore.patchUser(profile.id, { emailVerified: true });
+    const session: StoredSession = {
+      id: newSessionId(),
+      userId: profile.id,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + SESSION_TTL_MS,
+      authenticatedAt: Date.now(),
+      method: "password",
+      device,
+    };
+    identityStore.createSession(session);
+    return { ok: true, value: { session, user: { ...profile, emailVerified: true } } };
+  }
+
   const user = identityStore.userByEmail(email);
   // The password is verified even when the user is missing, against a real
   // hash of a random value, so the response time does not say which branch
@@ -193,7 +294,21 @@ export async function signIn(
   return { ok: true, value: { session, user } };
 }
 
-export function verifyEmail(email: string, code: string): ServiceResult<null> {
+export async function verifyEmail(email: string, code: string): Promise<ServiceResult<null>> {
+  if (!developmentProviderActive()) {
+    const redeemed = await gipVerifyEmail(code);
+    if (!redeemed.ok) {
+      return {
+        ok: false,
+        status: 400,
+        failure: failure("invalid_credentials", "That code was not accepted. Request a new verification email by signing in again."),
+      };
+    }
+    const profile = identityStore.userByEmail(email.trim().toLowerCase());
+    if (profile) identityStore.patchUser(profile.id, { emailVerified: true });
+    return { ok: true, value: null };
+  }
+
   const user = identityStore.userByEmail(email);
   if (!user || !redeemCode("verify-email", user.id, code)) {
     return {
@@ -207,18 +322,44 @@ export function verifyEmail(email: string, code: string): ServiceResult<null> {
 }
 
 export function resendVerification(email: string): { devCode: string | null } {
+  // In platform mode re-sending needs a fresh idToken, and the way to get
+  // one is signing in — which the unverified-sign-in path already turns
+  // into a verification prompt. So this stays a no-op there, and the
+  // response shape stays identical either way.
   const user = identityStore.userByEmail(email);
   if (!user || user.emailVerified) return { devCode: null };
   return { devCode: developmentProviderActive() ? issueCode("verify-email", user.id) : null };
 }
 
-export function forgotPassword(email: string): { devCode: string | null } {
+export async function forgotPassword(email: string): Promise<{ devCode: string | null }> {
+  if (!developmentProviderActive()) {
+    // Google sends the mail; EMAIL_NOT_FOUND is swallowed inside the
+    // provider so this answer never says which addresses exist.
+    await gipSendPasswordReset(email.trim().toLowerCase());
+    return { devCode: null };
+  }
   const user = identityStore.userByEmail(email);
   if (!user) return { devCode: null };
   return { devCode: developmentProviderActive() ? issueCode("reset-password", user.id) : null };
 }
 
 export async function resetPassword(email: string, code: string, password: string): Promise<ServiceResult<null>> {
+  if (!developmentProviderActive()) {
+    const reset = await gipResetPassword(code, password);
+    if (!reset.ok) {
+      return {
+        ok: false,
+        status: 400,
+        failure: failure("invalid_credentials", "That code was not accepted. Codes expire — request a new reset email if needed."),
+      };
+    }
+    const profile = identityStore.userByEmail(email.trim().toLowerCase());
+    // Owning the mailbox settles verification here exactly as it does in
+    // the development provider.
+    if (profile) identityStore.patchUser(profile.id, { emailVerified: true, failedSignIns: 0, lockedUntil: 0 });
+    return { ok: true, value: null };
+  }
+
   const user = identityStore.userByEmail(email);
   if (!user || !redeemCode("reset-password", user.id, code)) {
     return {

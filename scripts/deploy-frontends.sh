@@ -30,6 +30,15 @@ if [[ -z "$(gcloud secrets versions list algorik-session-secret --project "${PRO
   echo "seeded algorik-session-secret"
 fi
 
+# The Identity Platform browser key: public by design, restricted by the
+# authorized-domains list Terraform manages. Resolved here rather than
+# committed, so the config cannot drift from the project it names.
+IDENTITY_API_KEY="$(gcloud services api-keys get-key-string \
+  "$(gcloud services api-keys list --project "${PROJECT}" --filter='displayName:Browser' --format='value(uid)' | head -1)" \
+  --project "${PROJECT}" --format='value(keyString)')"
+readonly IDENTITY_API_KEY
+[[ -n "${IDENTITY_API_KEY}" ]] || { echo "no Identity Platform browser key found" >&2; exit 1; }
+
 # --- portal ----------------------------------------------------------------
 echo "building portal image ${AR}/algorik-portal:${SHA}…"
 cp "${REPO_ROOT}/infrastructure/docker/portal.Dockerfile" "${REPO_ROOT}/frontend/Dockerfile"
@@ -44,7 +53,7 @@ gcloud run deploy algorik-portal \
   --image "${AR}/algorik-portal:${SHA}" \
   --allow-unauthenticated \
   --port 8080 --cpu 1 --memory 512Mi --min-instances 0 --max-instances 3 \
-  --set-env-vars "ALGORIK_ENV=development,ALGORIK_POSTURE=paper,ALGORIK_IDENTITY_STORE_DIR=/tmp/algorik-identity" \
+  --set-env-vars "ALGORIK_ENV=development,ALGORIK_POSTURE=paper,ALGORIK_IDENTITY_STORE_DIR=/tmp/algorik-identity,ALGORIK_IDENTITY_PROJECT_ID=${PROJECT},ALGORIK_IDENTITY_API_KEY=${IDENTITY_API_KEY}" \
   --set-secrets "ALGORIK_SESSION_SECRET=algorik-session-secret:latest" \
   --quiet
 PORTAL_URL="$(gcloud run services describe algorik-portal --project "${PROJECT}" --region "${REGION}" --format='value(status.url)')"

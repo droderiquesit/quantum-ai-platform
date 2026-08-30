@@ -15,7 +15,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       { status: 400, headers: noStore },
     );
   }
-  const result = verifyEmail(body.email, body.code);
+  const result = await verifyEmail(body.email, body.code);
   return result.ok
     ? NextResponse.json({ ok: true }, { headers: noStore })
     : NextResponse.json({ ok: false, failure: result.failure }, { status: result.status, headers: noStore });

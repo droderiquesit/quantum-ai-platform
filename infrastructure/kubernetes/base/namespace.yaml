@@ -240,7 +240,7 @@ spec:
 # port 9110 can drain london-1's capital inbox — a poll is a destructive read
 # with a single cursor, so a grant read by anybody else is a grant london-1
 # never receives. This selector is `app: qip-edge-node`, every cell, because
-# namespace.yaml is applied unrendered and cannot carry CELL_ID; a per-cell
+# namespace.yaml is applied unrendered and cannot carry a cell-id placeholder; a per-cell
 # rule needs the cell's port as a literal beside a `qip.io/cell` selector,
 # which is a per-cell document and a placeholder the cell runbook does not
 # substitute today.

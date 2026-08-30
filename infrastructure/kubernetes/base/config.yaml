@@ -78,7 +78,7 @@ data:
 
   # Where each cell finds the centre. The port must be the one that cell was
   # given above; the key is `mesh_peer_` plus the cell id, because
-  # edge-cell.yaml is rendered per cell by substituting CELL_ID and this is the
+  # edge-cell.yaml is rendered per cell by substituting the cell-id placeholder and this is the
   # only way a per-cell value reaches it without a placeholder the runbook does
   # not know to replace.
   #

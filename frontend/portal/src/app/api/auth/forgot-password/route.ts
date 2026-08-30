@@ -16,6 +16,6 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     );
   }
   // Always 200: whether the account exists is never revealed here.
-  const { devCode } = forgotPassword(body.email);
+  const { devCode } = await forgotPassword(body.email);
   return NextResponse.json({ ok: true, ...(devCode ? { devCode } : {}) }, { headers: noStore });
 }
