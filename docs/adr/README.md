@@ -18,3 +18,5 @@ no stated reversal condition cannot be revisited honestly.
 | [0010](0010-what-gets-deployed.md) | Four of the six application crates are deployed, and the other two are not |
 | [0011](0011-everything-in-rust-on-kubernetes.md) | Everything is Rust on Kubernetes; IBM Quantum is the only integration |
 | [0012](0012-where-a-library-earns-its-place.md) | A dependency is admitted only where getting it wrong is silent, the problem is specialist, and a maintained implementation exists |
+| [0013](0013-identity-verification-earns-a-dependency.md) | Verifying an identity token earns a dependency; issuing sessions does not |
+| [0014](0014-one-design-system-four-surfaces.md) | One design system, four surfaces, no second router |
