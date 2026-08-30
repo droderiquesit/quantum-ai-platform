@@ -15,7 +15,7 @@
 # bucket each. What makes one project survivable meanwhile is that every
 # resource carries the `environment` prefix below, so `dev` and `prod` cannot
 # collide on a name.
-project_id = "project-d3f96b6b-852b-4460-b6d"
+project_id = "algorik-dev"
 
 # The project's numeric id, recorded so nothing has to ask for it. It is an
 # identifier like the id above, Google's service agents are named by it, and
@@ -23,10 +23,10 @@ project_id = "project-d3f96b6b-852b-4460-b6d"
 # file can construct its own authentication with no repository variable
 # involved, which matters because a variable set from a broken shell once
 # carried an install advisory where this number should have been.
-project_number = 601575011290
+project_number = 95200532413
 
 environment      = "dev"
-region           = "europe-west2"
+region           = "us-east4"
 autonomy_ceiling = "paper_trading"
 
 node_count   = 1

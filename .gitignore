@@ -38,3 +38,14 @@ node_modules/
 
 # Compiled Python bytecode — build output, never source.
 __pycache__/
+
+# Terraform saved plans — resolved configuration, never committed.
+*.tfplan
+
+# Trunk local state — only trunk.yaml and shared config are source.
+.trunk/logs/
+.trunk/actions/
+.trunk/out/
+.trunk/tools/
+.trunk/plugins/
+.trunk/notifications/
