@@ -52,17 +52,23 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    # NodeLocal DNSCache intercepts queries to the kube-dns ClusterIP and
-    # answers them from a host-network pod on the node itself, which no
-    # namespace-and-pod selector can ever match — host-network endpoints are
-    # not pods to a NetworkPolicy. Without this rule the selector rule above
-    # reads as DNS coverage and resolution times out; the argocd controller
-    # was the first workload here to actually resolve a name and found it.
-    # The range is the node subnet (subnet_cidr, 10.0.0.0/20), ports DNS
-    # only.
+    # NodeLocal DNSCache breaks the selector rule above, invisibly: it
+    # intercepts queries to the kube-dns ClusterIP with a NOTRACK rule on
+    # the node, so the packet keeps the service VIP as its destination and
+    # the datapath never translates it to a kube-dns pod the selector could
+    # match. The policy engine is left asking an ipBlock question about
+    # 10.8.0.10 — the VIP, service_cidr's tenth address — and until this
+    # rule existed the answer was deny: every DNS query in this namespace
+    # timed out, unnoticed because the platform workloads dial addresses,
+    # not names. The argocd controller was the first process here to
+    # resolve a name and found it immediately. Proven by probe, not
+    # reasoning: a rule for the node subnet was tried first on the theory
+    # the cache answers from the node, and resolution still timed out; this
+    # VIP rule restored it within one retry. The selector rule stays for
+    # the day the cache is disabled and the VIP resolves to real pods again.
     - to:
         - ipBlock:
-            cidr: 10.0.0.0/20
+            cidr: 10.8.0.10/32
       ports:
         - protocol: UDP
           port: 53
