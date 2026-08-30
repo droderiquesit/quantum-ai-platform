@@ -57,12 +57,23 @@ should expect to correct it.
    deploy pipeline; it is applied here, deliberately, because a workload that
    trades should not appear unattended.
 
+   The image renders to a digest, not a tag. Binary Authorization refuses to
+   evaluate a tag reference at admission — the attestation CI wrote names
+   bytes, `@sha256:…` — so a manifest substituting `<commit sha>` for
+   `IMAGE_TAG` gets its pods denied with "Expected digest with sha256
+   scheme". Resolve the digest the registry holds for the commit first, then
+   render `qip-edge-node:IMAGE_TAG` to `qip-edge-node@<digest>`:
+
    ```sh
+   prefix="$(terraform output -raw image_prefix)"
+   digest="$(gcloud artifacts docker images describe \
+       "${prefix}/qip-edge-node:<commit sha>" \
+       --format='value(image_summary.digest)')"
    sed -e "s#__CELL_ID__#london-1#g" \
        -e "s#__CELL_REGION__#europe-west2#g" \
        -e "s#CELL_VENUES#<venue ids, comma separated>#g" \
-       -e "s#IMAGE_PREFIX#$(terraform output -raw image_prefix)#g" \
-       -e "s#IMAGE_TAG#<commit sha>#g" \
+       -e "s#IMAGE_PREFIX#${prefix}#g" \
+       -e "s#qip-edge-node:IMAGE_TAG#qip-edge-node@${digest}#g" \
        -e "s#ENVIRONMENT#<environment>#g" \
        -e "s#PROJECT#<project>#g" \
        infrastructure/kubernetes/base/edge-cell.yaml | kubectl apply -f -

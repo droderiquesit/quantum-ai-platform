@@ -405,6 +405,16 @@ jobs:
       # describe every environment and a diff between environments is a diff in
       # this substitution rather than in five copies of a Deployment.
       #
+      # Images render to digests, never tags. The attestation the images job
+      # wrote names bytes — `<image>@sha256:…` — and Binary Authorization's
+      # admission webhook refuses to even evaluate a tag reference: rendering
+      # `:IMAGE_TAG` to the commit sha got every pod denied with "Expected
+      # digest with sha256 scheme, but got tag or malformed digest". The digest
+      # is read back from the registry with the same lookup the sign step used,
+      # so the reference applied is the reference attested — and a tag moved
+      # between signing and applying deploys nothing rather than deploying
+      # bytes nobody signed.
+      #
       # edge-cell.yaml is not applied here. A cell needs its cell id, its region
       # and its venue ranges, and bringing one up is a deliberate act with a
       # runbook — docs/operations/deploying-an-edge-cell.md — rather than
@@ -420,15 +430,30 @@ jobs:
             esac
             sed \
               -e "s#IMAGE_PREFIX#${prefix}#g" \
-              -e "s#IMAGE_TAG#${DEPLOY_SHA}#g" \
               -e "s#ENVIRONMENT#${TARGET_ENVIRONMENT}#g" \
               -e "s#PROJECT#${{ steps.identity.outputs.project }}#g" \
               "$manifest" > "rendered/$(basename "$manifest")"
           done
+          # The binaries to resolve are read off the rendered image lines
+          # rather than kept as a list here, which would be a second copy of
+          # what the manifests already say, one workload rename away from
+          # resolving a digest for the wrong image.
+          for binary in $(sed -n "s#^ *image: ${prefix}/\([a-z0-9-]*\):IMAGE_TAG\$#\1#p" rendered/*.yaml | sort -u); do
+            digest=$(gcloud artifacts docker images describe \
+              "${prefix}/${binary}:${DEPLOY_SHA}" \
+              --format='value(image_summary.digest)')
+            if [ -z "${digest}" ]; then
+              echo "the registry reports no digest for ${binary}:${DEPLOY_SHA}." >&2
+              exit 1
+            fi
+            sed -i "s#image: ${prefix}/${binary}:IMAGE_TAG\$#image: ${prefix}/${binary}@${digest}#" rendered/*.yaml
+          done
           # Nothing may reach the cluster with a placeholder still in it. A
           # `cidr: VENUE_CIDR` would be rejected by the API server; a
           # `PROJECT` in a workload identity annotation would not be, and would
-          # produce a pod that cannot authenticate.
+          # produce a pod that cannot authenticate. IMAGE_TAG doubles as the
+          # check on the digest pass: an image line it failed to match fails
+          # here instead of reaching the admission webhook.
           ! grep -RnE 'IMAGE_PREFIX|IMAGE_TAG|PROJECT|ENVIRONMENT|CELL_ID|CELL_REGION|CELL_VENUES|VENUE_CIDR|VENUE_PORT' rendered
 
       # A dry run against the live API server first. It catches a manifest the
