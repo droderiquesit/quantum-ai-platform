@@ -51,3 +51,9 @@ __pycache__/
 .trunk/tools
 .trunk/plugins
 .trunk/notifications
+
+# Staged by scripts/deploy-frontends.sh for the duration of a Cloud Build
+# submit and removed by its exit trap; the sources of truth live in
+# infrastructure/docker/. Committing a copy would fork them.
+/frontend/Dockerfile
+/frontend/landing/Dockerfile
