@@ -1,4 +1,6 @@
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
+import { requireCsrf, sessionIdFrom } from "@/lib/server/auth-http";
+import { identityStore } from "@/lib/server/identity-store";
 import {
   resolveUpstreamPath,
   upstream,
@@ -25,7 +27,35 @@ interface RouteContext {
   params: Promise<{ path: string[] }>;
 }
 
-async function forward(request: Request, context: RouteContext): Promise<Response> {
+/**
+ * The session boundary, when authentication is required.
+ *
+ * The middleware's redirect is comfort; this is the check that counts. The
+ * cookie's signature is verified and the session looked up server-side, so a
+ * forged or revoked cookie reads nothing — and mutating calls additionally
+ * need the CSRF pair, because a browser can be made to *send* cookies
+ * cross-site but not to read the token that must be echoed in a header.
+ */
+function refuseUnauthenticated(request: NextRequest): NextResponse | null {
+  if (process.env.ALGORIK_AUTH_REQUIRED !== "true") return null;
+  const sessionId = sessionIdFrom(request);
+  if (!sessionId || !identityStore.session(sessionId)) {
+    return NextResponse.json(
+      { error: "sign in to use this console", gateway: "unauthenticated" },
+      { status: 401, headers: { "x-qip-gateway": "upstream", "cache-control": "no-store" } },
+    );
+  }
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    const refused = requireCsrf(request);
+    if (refused) return refused;
+  }
+  return null;
+}
+
+async function forward(request: NextRequest, context: RouteContext): Promise<Response> {
+  const refused = refuseUnauthenticated(request);
+  if (refused) return refused;
+
   let target: Upstream;
   let path: string;
   try {

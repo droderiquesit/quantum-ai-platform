@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { AlgorikWordmark } from "@algorik/brand";
+import { AccountMenu } from "./AccountMenu";
 import { Chip } from "@/components/data/Bits";
 import { formatClock, formatCount, formatUtcDate } from "@/lib/format";
 import { useConnections } from "@/lib/hooks/connections";
@@ -94,6 +95,7 @@ function Header() {
         </Link>
         <UtcClock />
         <ConnectionIndicator />
+        <AccountMenu />
         <span className="hidden sm:inline-flex">
           <ThemeToggle />
         </span>

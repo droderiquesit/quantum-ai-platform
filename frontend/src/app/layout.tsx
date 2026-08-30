@@ -1,5 +1,4 @@
 import type { Metadata, Viewport } from "next";
-import { AppShell } from "@/components/chrome/AppShell";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -52,12 +51,18 @@ export const viewport: Viewport = {
  */
 const THEME_BOOT = `try{if(localStorage.getItem("algorik.theme")==="light")document.documentElement.dataset.theme="light"}catch(e){}`;
 
+/**
+ * The root layout carries only what every surface shares: the document, the
+ * theme boot, and the metadata defaults. Chrome belongs to the route groups —
+ * the portal wears the console shell, marketing wears its own header, and the
+ * auth pages wear almost nothing, which is the point of the split.
+ */
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning>
       <body>
         <script dangerouslySetInnerHTML={{ __html: THEME_BOOT }} />
-        <AppShell>{children}</AppShell>
+        {children}
       </body>
     </html>
   );

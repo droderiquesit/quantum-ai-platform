@@ -22,6 +22,24 @@ const WORKER_PORT = Number(process.env.PLAYWRIGHT_WORKER_PORT ?? 3312);
 const WORKER_BASE_URL = `http://127.0.0.1:${WORKER_PORT}`;
 const UPSTREAM_PORT = Number(process.env.PLAYWRIGHT_UPSTREAM_PORT ?? 3313);
 
+/**
+ * A fourth app instance with authentication REQUIRED, for the identity
+ * journey. The other instances run open because their suites predate
+ * accounts and exercise the console directly; this one exists to prove the
+ * gate itself — sign-up through sign-out — against the development identity
+ * provider, with its own throwaway store wiped on every start.
+ */
+const AUTH_PORT = Number(process.env.PLAYWRIGHT_AUTH_PORT ?? 3314);
+const AUTH_BASE_URL = `http://127.0.0.1:${AUTH_PORT}`;
+
+/**
+ * `next start` runs as NODE_ENV=production, where the session signer refuses
+ * to invent a key (replicas could not verify each other's cookies). The test
+ * key is set here, visibly a test value, and long enough to pass the length
+ * check.
+ */
+const TEST_SESSION_SECRET = "playwright-test-signing-key-not-production-0000";
+
 export default defineConfig({
   testDir: "./tests",
   fullyParallel: true,
@@ -43,9 +61,10 @@ export default defineConfig({
     {
       name: "desktop-chromium",
       use: { ...devices["Desktop Chrome"], viewport: { width: 1600, height: 1000 } },
-      // The worker suite needs the app instance that has a real upstream
-      // behind it; running it here would point it at the dead port.
-      testIgnore: /worker\.spec\.ts/,
+      // worker.spec needs the instance with a real upstream behind it, and
+      // auth.spec needs the instance with authentication required; running
+      // either here would test the wrong server.
+      testIgnore: /(worker|auth)\.spec\.ts/,
     },
     {
       name: "tablet-chromium",
@@ -56,6 +75,11 @@ export default defineConfig({
       name: "worker-chromium",
       use: { ...devices["Desktop Chrome"], baseURL: WORKER_BASE_URL },
       testMatch: /worker\.spec\.ts/,
+    },
+    {
+      name: "auth-chromium",
+      use: { ...devices["Desktop Chrome"], baseURL: AUTH_BASE_URL, viewport: { width: 1280, height: 900 } },
+      testMatch: /auth\.spec\.ts/,
     },
   ],
   webServer: [
@@ -73,6 +97,7 @@ export default defineConfig({
         QIP_API_BASE_URL: "http://127.0.0.1:9",
         QIP_API_TIMEOUT_MS: "1500",
         NEXT_PUBLIC_QIP_ENVIRONMENT: "test",
+        ALGORIK_SESSION_SECRET: TEST_SESSION_SECRET,
       },
     },
     {
@@ -95,6 +120,30 @@ export default defineConfig({
         QIP_API_BASE_URL: `http://127.0.0.1:${UPSTREAM_PORT}`,
         QIP_API_TIMEOUT_MS: "2000",
         NEXT_PUBLIC_QIP_ENVIRONMENT: "test",
+        ALGORIK_SESSION_SECRET: TEST_SESSION_SECRET,
+      },
+    },
+    {
+      // The identity store is wiped before start so every run begins from
+      // zero users — a journey test against yesterday's store is a test whose
+      // premise depends on which tests ran yesterday.
+      command: `rm -rf .algorik-test-identity && npm run start -- --port ${AUTH_PORT} --hostname 127.0.0.1`,
+      url: AUTH_BASE_URL,
+      reuseExistingServer: false,
+      timeout: 120_000,
+      stdout: "ignore",
+      stderr: "pipe",
+      env: {
+        QIP_API_BASE_URL: "http://127.0.0.1:9",
+        QIP_API_TIMEOUT_MS: "1500",
+        NEXT_PUBLIC_QIP_ENVIRONMENT: "test",
+        ALGORIK_AUTH_REQUIRED: "true",
+        ALGORIK_IDENTITY_STORE_DIR: ".algorik-test-identity",
+        ALGORIK_SESSION_SECRET: TEST_SESSION_SECRET,
+        // Playwright serves plain HTTP on 127.0.0.1, where Chromium refuses
+        // to store a Secure cookie at all. This is the one explicit downgrade
+        // — production defaults to the strict __Host- form.
+        ALGORIK_COOKIE_SECURE: "false",
       },
     },
   ],
