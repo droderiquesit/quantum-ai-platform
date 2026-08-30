@@ -229,6 +229,20 @@ jobs:
             --tag "${prefix}/${{ matrix.binary }}:${DEPLOY_SHA}" \
             .
 
+      # Scan the image before it is pushed, signed, or attested. The image is
+      # a static binary on scratch, so anything this finds is in the binary's
+      # own dependency graph — which is serde and serde_json — and a finding
+      # here is worth stopping the line for. After the push would be too
+      # late: a signed, attested, vulnerable image is admissible.
+      - name: scan image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          image-ref: "${{ steps.identity.outputs.region }}-docker.pkg.dev/${{ steps.identity.outputs.project }}/qip-${{ env.TARGET_ENVIRONMENT }}/${{ matrix.binary }}:${{ env.DEPLOY_SHA }}"
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+
       # Tagged by commit and never by `latest`. The registry refuses to move a
       # tag onto different bytes, so a tag names one image for ever and a
       # rollback is a tag somebody can still find.

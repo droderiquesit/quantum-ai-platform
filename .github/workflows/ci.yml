@@ -133,6 +133,91 @@ jobs:
           path: "backend/**/*.cdx.json"
           retention-days: 90
 
+
+  # The browser layer, gated like the Rust workspace. One npm tree at
+  # frontend/ covers the portal and the shared packages; the landing keeps
+  # its own tree deliberately (ADR 0015/0016), so it is a separate job and
+  # one surface failing does not hide the other.
+  frontend-portal:
+    name: portal
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      # The committed token CSS must match the design-tokens package; drift
+      # here is the two-surfaces-two-shades bug the generator exists to stop.
+      - run: npm run tokens:check
+      - run: npx tsc --noEmit
+        working-directory: frontend/portal
+      - run: npm run lint --workspace portal
+      - run: npm run build --workspace portal
+      - name: behavioural suite
+        working-directory: frontend/portal
+        run: |
+          npx playwright install --with-deps chromium
+          npx playwright test
+
+  frontend-landing:
+    name: landing
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend/landing
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/landing/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - name: behavioural suite
+        run: |
+          npx playwright install --with-deps chromium
+          npx playwright test
+
+  # Dependency vulnerabilities across every lockfile in the monorepo, plus
+  # IaC misconfiguration. Licensed template packages and the committed
+  # architecture document are excluded: findings there are not actionable
+  # without breaking ADR 0015's fidelity guarantee. cargo audit already
+  # covers the Rust tree with the advisory database; this covers the rest.
+  trivy:
+    name: vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+          skip-dirs: vendor,docs/architecture/capital-ai-v4
+
+  # The meta-linter: actionlint on the workflows, shellcheck on the gate
+  # scripts, hadolint on the Dockerfile, gitleaks over the tree. Scope and
+  # exclusions live in .trunk/trunk.yaml where they are reviewed like code.
+  trunk:
+    name: trunk meta-linter
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: trunk-io/trunk-action@v1
+        with:
+          arguments: --all --no-progress
+
   # Infrastructure is code and gets the same treatment. `terraform validate`
   # catches a malformed configuration; the structural checks in the Rust test
   # suite catch a well-formed one that would deploy something unsafe.

@@ -1,0 +1,45 @@
+# Trunk meta-linter configuration.
+#
+# Scope is deliberate: high-signal linters over the code this repository
+# owns. Licensed template packages (vendor/), the committed architecture
+# document, template-lineage assets inside the landing, and build output are
+# excluded — findings there are not actionable without breaking ADR 0015's
+# fidelity guarantee, and a gate people learn to scroll past is worse than
+# no gate.
+#
+# Rust is linted by clippy and rustfmt in ci.yml, not here: two linters over
+# one language disagree eventually, and cargo's are the ones the workspace
+# denies warnings from.
+version: 0.1
+cli:
+  version: 1.25.0
+plugins:
+  sources:
+    - id: trunk
+      ref: v1.7.4
+      uri: https://github.com/trunk-io/plugins
+runtimes:
+  enabled:
+    - node@22.16.0
+    - python@3.10.8
+    - go@1.21.0
+lint:
+  enabled:
+    - actionlint@1.7.10
+    - shellcheck@0.11.0
+    - hadolint@2.14.0
+    - gitleaks@8.30.0
+  ignore:
+    - linters: [ALL]
+      paths:
+        # Licensed template packages — reference assets, never our code (ADR 0015).
+        - vendor/**
+        # The desk's architecture document, committed verbatim.
+        - docs/architecture/capital-ai-v4/**
+        # Template-lineage assets inside the landing app.
+        - frontend/landing/public/**
+        - frontend/landing/module-css/**
+        # Build output and dependency trees.
+        - backend/target/**
+        - "**/node_modules/**"
+        - "**/.next/**"
