@@ -1,0 +1,470 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <script>
+      if (localStorage.getItem("theme") === "light") document.documentElement.classList.remove("dark");
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>AI Trade Journal - SignalAIX | AI Forex & Crypto Trading Signals</title>
+    <link rel="icon" type="image/png" href="assets/images/favicon.png" />
+    <link rel="apple-touch-icon" href="assets/images/favicon.png" />
+  </head>
+  <body id="ai-trade-journal">
+    <div id="loader">
+      <div class="spinner"></div>
+      <div class="loader-text">Loading SignalAIX...</div>
+    </div>
+
+    <include-sidebar />
+
+    <main class="main-content" id="mainContent">
+      <include-top-header />
+
+      <div class="inner-content max-sm:px-3 max-lg:px-4 max-lg:py-6 lg:p-6 space-y-6">
+        <!-- Page header -->
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div class="flex items-center gap-3 min-w-0">
+            <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center shrink-0"><i data-lucide="book-open" class="w-5 h-5 text-white shrink-0"></i></div>
+            <div class="min-w-0">
+              <h1 class="text-2xl font-bold text-text">AI Trade Journal</h1>
+              <p class="text-sm text-muted">Track, analyze, and improve your trading performance with AI insights</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-3 flex-wrap">
+            <button class="atj-open-drawer inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition" data-drawer="import"><i data-lucide="upload" class="w-4 h-4 shrink-0"></i>Import Trades</button>
+            <button class="atj-open-drawer inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition" data-drawer="add"><i data-lucide="plus" class="w-4 h-4 shrink-0"></i>Add Trade</button>
+          </div>
+        </div>
+
+        <!-- Stats overview -->
+        <div class="grid grid-cols-1 xs:grid-cols-2 @4xl/content:grid-cols-4 @5xl/content:grid-cols-6 gap-4">
+          <div class="bg-panel border border-border rounded-2xl p-4 hover:border-accent/40 transition">
+            <div class="flex items-center gap-2 mb-2"><div class="w-8 h-8 rounded-lg bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="trending-up" class="w-4 h-4 text-emerald-500 shrink-0"></i></div><span class="text-xs text-muted">Total Profit</span></div>
+            <p class="text-xl font-bold text-emerald-500">+$24,580</p><p class="text-xs text-emerald-500 mt-1">+12.4% this month</p>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-4 hover:border-accent/40 transition">
+            <div class="flex items-center gap-2 mb-2"><div class="w-8 h-8 rounded-lg bg-sky-500/15 flex items-center justify-center shrink-0"><i data-lucide="chart-no-axes-column" class="w-4 h-4 text-sky-500 shrink-0"></i></div><span class="text-xs text-muted">Total Trades</span></div>
+            <p class="text-xl font-bold text-text">847</p><p class="text-xs text-muted mt-1">Last 30 days: 128</p>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-4 hover:border-accent/40 transition">
+            <div class="flex items-center gap-2 mb-2"><div class="w-8 h-8 rounded-lg bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="target" class="w-4 h-4 text-emerald-500 shrink-0"></i></div><span class="text-xs text-muted">Win Rate</span></div>
+            <p class="text-xl font-bold text-emerald-500">68.4%</p>
+            <div class="h-2 bg-border rounded-full overflow-hidden mt-2"><div class="h-full bg-gradient-to-r from-accent to-emerald-500 rounded-full" style="width:68.4%"></div></div>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-4 hover:border-accent/40 transition">
+            <div class="flex items-center gap-2 mb-2"><div class="w-8 h-8 rounded-lg bg-violet-500/15 flex items-center justify-center shrink-0"><i data-lucide="ratio" class="w-4 h-4 text-violet-400 shrink-0"></i></div><span class="text-xs text-muted">Risk/Reward</span></div>
+            <p class="text-xl font-bold text-violet-400">1:2.4</p><p class="text-xs text-emerald-500 mt-1">Above target</p>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-4 hover:border-accent/40 transition">
+            <div class="flex items-center gap-2 mb-2"><div class="w-8 h-8 rounded-lg bg-amber-500/15 flex items-center justify-center shrink-0"><i data-lucide="flame" class="w-4 h-4 text-amber-500 shrink-0"></i></div><span class="text-xs text-muted">Win Streak</span></div>
+            <p class="text-xl font-bold text-amber-500">7</p><p class="text-xs text-muted mt-1">Best: 14 trades</p>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-4 hover:border-accent/40 transition">
+            <div class="flex items-center gap-2 mb-2"><div class="w-8 h-8 rounded-lg bg-sky-500/15 flex items-center justify-center shrink-0"><i data-lucide="brain" class="w-4 h-4 text-sky-500 shrink-0"></i></div><span class="text-xs text-muted">AI Score</span></div>
+            <p class="text-xl font-bold text-accent">92</p><p class="text-xs text-sky-500 mt-1">Excellent</p>
+          </div>
+        </div>
+
+        <!-- AI Insights banner -->
+        <div class="rounded-2xl p-5 bg-gradient-to-br from-indigo-500/10 via-violet-500/10 to-emerald-500/10 border border-accent/20">
+          <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div class="flex items-start gap-4">
+              <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center shrink-0"><i data-lucide="sparkles" class="w-6 h-6 text-white shrink-0"></i></div>
+              <div>
+                <h3 class="font-semibold text-text flex items-center gap-2 flex-wrap">AI Analysis Summary<span class="inline-flex px-2 py-0.5 rounded-full text-[11px] font-semibold bg-sky-500/15 text-sky-500">Updated 2 min ago</span></h3>
+                <p class="text-muted text-sm mt-1">Your best performance is during <span class="text-emerald-500 font-medium">London-NY overlap (13:00-17:00 UTC)</span>. Consider increasing position sizes during this window. Your EUR/USD trades have a <span class="text-emerald-500 font-medium">78% win rate</span> vs 62% on GBP pairs.</p>
+              </div>
+            </div>
+            <button class="atj-open-drawer inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold whitespace-nowrap hover:border-accent/40 hover:text-accent transition shrink-0" data-drawer="ai-insights"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i>View Full Analysis</button>
+          </div>
+        </div>
+
+        <!-- Tabs + controls -->
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div class="flex gap-1 p-1 bg-panel border border-border rounded-2xl overflow-x-auto hide-scrollbar self-start max-w-full">
+            <button class="tab-button atj-tab active whitespace-nowrap px-4 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text transition" data-tab="all">All Trades</button>
+            <button class="tab-button atj-tab whitespace-nowrap px-4 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text transition" data-tab="forex">Forex</button>
+            <button class="tab-button atj-tab whitespace-nowrap px-4 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text transition" data-tab="crypto">Crypto</button>
+            <button class="tab-button atj-tab whitespace-nowrap px-4 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text transition" data-tab="winners">Winners</button>
+            <button class="tab-button atj-tab whitespace-nowrap px-4 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text transition" data-tab="losers">Losers</button>
+            <button class="tab-button atj-tab whitespace-nowrap px-4 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text transition" data-tab="analytics">Analytics</button>
+          </div>
+          <div class="flex items-center gap-3 flex-wrap">
+            <div class="relative"><i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted shrink-0"></i><input type="text" id="atjSearch" placeholder="Search..." class="pl-10 pr-3 py-2.5 w-44 rounded-xl bg-bg border border-border text-sm text-text placeholder:text-muted focus:outline-none focus:border-accent transition" /></div>
+            <div class="dropdown">
+              <button class="js-dropdown-toggle inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition"><i data-lucide="funnel" class="w-4 h-4 shrink-0"></i>Filter</button>
+              <div class="dropdown-menu w-52 mt-2 rounded-xl bg-panel border border-border shadow-2xl overflow-hidden p-1.5">
+                <p class="px-3 py-2 text-xs font-semibold text-muted uppercase tracking-wider">Time Period</p>
+                <button class="atj-filter flex w-full items-center px-3 py-2 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition">All Time</button>
+                <button class="atj-filter flex w-full items-center px-3 py-2 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition">Today</button>
+                <button class="atj-filter flex w-full items-center px-3 py-2 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition">This Week</button>
+                <button class="atj-filter flex w-full items-center px-3 py-2 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition">This Month</button>
+              </div>
+            </div>
+            <div class="dropdown">
+              <button class="js-dropdown-toggle inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition"><i data-lucide="download" class="w-4 h-4 shrink-0"></i>Export</button>
+              <div class="dropdown-menu w-52 mt-2 rounded-xl bg-panel border border-border shadow-2xl overflow-hidden p-1.5">
+                <button class="atj-export flex w-full items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition" data-format="csv"><i data-lucide="file-text" class="w-4 h-4 shrink-0"></i>Export as CSV</button>
+                <button class="atj-export flex w-full items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition" data-format="excel"><i data-lucide="file-spreadsheet" class="w-4 h-4 shrink-0"></i>Export as Excel</button>
+                <button class="atj-export flex w-full items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition" data-format="pdf"><i data-lucide="file" class="w-4 h-4 shrink-0"></i>Export as PDF</button>
+                <button class="atj-export flex w-full items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition" data-format="json"><i data-lucide="braces" class="w-4 h-4 shrink-0"></i>Export as JSON</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== Trades table (All / Forex / Crypto / Winners / Losers filter the same rows) ===== -->
+        <div class="tab-content atj-pane active" id="atj-tab-trades">
+          <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+            <p class="text-sm text-muted mb-4" id="atjTradesHeading">Showing all trades</p>
+            <div class="overflow-x-auto">
+              <table class="w-full border-collapse min-w-[860px] whitespace-nowrap">
+                <thead>
+                  <tr class="text-left text-xs font-semibold uppercase tracking-wide text-muted border-b border-border">
+                    <th class="py-3 pr-4">Date/Time</th><th class="py-3 pr-4">Pair/Asset</th><th class="py-3 pr-4">Type</th><th class="py-3 pr-4">Entry/Exit</th><th class="py-3 pr-4">Size</th><th class="py-3 pr-4">Duration</th><th class="py-3 pr-4">P/L</th><th class="py-3">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="atjTradesBody">
+                  <tr class="atj-trade border-b border-border hover:bg-accent/5 transition" data-type="forex" data-result="win" data-pair="EUR/USD">
+                    <td class="py-3 pr-4"><p class="font-medium text-text text-sm">Dec 24, 2024</p><p class="text-xs text-muted">14:32 UTC</p></td>
+                    <td class="py-3 pr-4"><div class="flex items-center gap-2"><div class="w-8 h-8 rounded-lg bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0"><span class="text-white text-xs font-bold">€$</span></div><div><p class="font-medium text-text text-sm">EUR/USD</p><span class="inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-sky-500/15 text-sky-500">Forex</span></div></div></td>
+                    <td class="py-3 pr-4"><span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i>Long</span></td>
+                    <td class="py-3 pr-4"><p class="text-sm text-text">1.0845 → 1.0892</p><p class="text-xs text-emerald-500">+47 pips</p></td>
+                    <td class="py-3 pr-4"><p class="font-medium text-text text-sm">2.5 Lots</p><p class="text-xs text-muted">$25,000</p></td>
+                    <td class="py-3 pr-4 text-sm text-text">4h 23m</td>
+                    <td class="py-3 pr-4"><p class="font-bold text-emerald-500">+$1,175.00</p><p class="text-xs text-emerald-500">+4.7%</p></td>
+                    <td class="py-3"><div class="flex items-center gap-2"><button class="atj-open-drawer flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition" data-drawer="view" data-pair="EUR/USD"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button><button class="atj-open-drawer flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition" data-drawer="edit" data-pair="EUR/USD"><i data-lucide="square-pen" class="w-4 h-4 shrink-0"></i></button></div></td>
+                  </tr>
+                  <tr class="atj-trade border-b border-border hover:bg-accent/5 transition" data-type="crypto" data-result="win" data-pair="BTC/USDT">
+                    <td class="py-3 pr-4"><p class="font-medium text-text text-sm">Dec 24, 2024</p><p class="text-xs text-muted">09:15 UTC</p></td>
+                    <td class="py-3 pr-4"><div class="flex items-center gap-2"><div class="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center shrink-0"><i data-lucide="bitcoin" class="w-4 h-4 text-white shrink-0"></i></div><div><p class="font-medium text-text text-sm">BTC/USDT</p><span class="inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/15 text-amber-500">Crypto</span></div></div></td>
+                    <td class="py-3 pr-4"><span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i>Long</span></td>
+                    <td class="py-3 pr-4"><p class="text-sm text-text">$94,250 → $96,480</p><p class="text-xs text-emerald-500">+2.37%</p></td>
+                    <td class="py-3 pr-4"><p class="font-medium text-text text-sm">0.15 BTC</p><p class="text-xs text-muted">$14,137</p></td>
+                    <td class="py-3 pr-4 text-sm text-text">6h 45m</td>
+                    <td class="py-3 pr-4"><p class="font-bold text-emerald-500">+$334.50</p><p class="text-xs text-emerald-500">+2.37%</p></td>
+                    <td class="py-3"><div class="flex items-center gap-2"><button class="atj-open-drawer flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition" data-drawer="view" data-pair="BTC/USDT"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button><button class="atj-open-drawer flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition" data-drawer="edit" data-pair="BTC/USDT"><i data-lucide="square-pen" class="w-4 h-4 shrink-0"></i></button></div></td>
+                  </tr>
+                  <tr class="atj-trade border-b border-border hover:bg-accent/5 transition" data-type="forex" data-result="loss" data-pair="GBP/USD">
+                    <td class="py-3 pr-4"><p class="font-medium text-text text-sm">Dec 23, 2024</p><p class="text-xs text-muted">16:48 UTC</p></td>
+                    <td class="py-3 pr-4"><div class="flex items-center gap-2"><div class="w-8 h-8 rounded-lg bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0"><span class="text-white text-xs font-bold">£$</span></div><div><p class="font-medium text-text text-sm">GBP/USD</p><span class="inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-sky-500/15 text-sky-500">Forex</span></div></div></td>
+                    <td class="py-3 pr-4"><span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-red-500/15 text-red-500"><i data-lucide="trending-down" class="w-3 h-3 shrink-0"></i>Short</span></td>
+                    <td class="py-3 pr-4"><p class="text-sm text-text">1.2534 → 1.2578</p><p class="text-xs text-red-500">-44 pips</p></td>
+                    <td class="py-3 pr-4"><p class="font-medium text-text text-sm">1.0 Lot</p><p class="text-xs text-muted">$10,000</p></td>
+                    <td class="py-3 pr-4 text-sm text-text">2h 12m</td>
+                    <td class="py-3 pr-4"><p class="font-bold text-red-500">-$440.00</p><p class="text-xs text-red-500">-4.4%</p></td>
+                    <td class="py-3"><div class="flex items-center gap-2"><button class="atj-open-drawer flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition" data-drawer="view" data-pair="GBP/USD"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button><button class="atj-open-drawer flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition" data-drawer="edit" data-pair="GBP/USD"><i data-lucide="square-pen" class="w-4 h-4 shrink-0"></i></button></div></td>
+                  </tr>
+                  <tr class="atj-trade border-b border-border hover:bg-accent/5 transition" data-type="crypto" data-result="win" data-pair="ETH/USDT">
+                    <td class="py-3 pr-4"><p class="font-medium text-text text-sm">Dec 23, 2024</p><p class="text-xs text-muted">11:22 UTC</p></td>
+                    <td class="py-3 pr-4"><div class="flex items-center gap-2"><div class="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center shrink-0"><span class="text-white text-xs font-bold">Ξ</span></div><div><p class="font-medium text-text text-sm">ETH/USDT</p><span class="inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/15 text-amber-500">Crypto</span></div></div></td>
+                    <td class="py-3 pr-4"><span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i>Long</span></td>
+                    <td class="py-3 pr-4"><p class="text-sm text-text">$3,420 → $3,512</p><p class="text-xs text-emerald-500">+2.69%</p></td>
+                    <td class="py-3 pr-4"><p class="font-medium text-text text-sm">2.5 ETH</p><p class="text-xs text-muted">$8,550</p></td>
+                    <td class="py-3 pr-4 text-sm text-text">8h 15m</td>
+                    <td class="py-3 pr-4"><p class="font-bold text-emerald-500">+$230.00</p><p class="text-xs text-emerald-500">+2.69%</p></td>
+                    <td class="py-3"><div class="flex items-center gap-2"><button class="atj-open-drawer flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition" data-drawer="view" data-pair="ETH/USDT"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button><button class="atj-open-drawer flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition" data-drawer="edit" data-pair="ETH/USDT"><i data-lucide="square-pen" class="w-4 h-4 shrink-0"></i></button></div></td>
+                  </tr>
+                  <tr class="atj-trade border-b border-border hover:bg-accent/5 transition" data-type="forex" data-result="win" data-pair="USD/JPY">
+                    <td class="py-3 pr-4"><p class="font-medium text-text text-sm">Dec 22, 2024</p><p class="text-xs text-muted">08:45 UTC</p></td>
+                    <td class="py-3 pr-4"><div class="flex items-center gap-2"><div class="w-8 h-8 rounded-lg bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0"><span class="text-white text-xs font-bold">$¥</span></div><div><p class="font-medium text-text text-sm">USD/JPY</p><span class="inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-sky-500/15 text-sky-500">Forex</span></div></div></td>
+                    <td class="py-3 pr-4"><span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i>Long</span></td>
+                    <td class="py-3 pr-4"><p class="text-sm text-text">156.42 → 157.18</p><p class="text-xs text-emerald-500">+76 pips</p></td>
+                    <td class="py-3 pr-4"><p class="font-medium text-text text-sm">3.0 Lots</p><p class="text-xs text-muted">$30,000</p></td>
+                    <td class="py-3 pr-4 text-sm text-text">5h 38m</td>
+                    <td class="py-3 pr-4"><p class="font-bold text-emerald-500">+$1,452.00</p><p class="text-xs text-emerald-500">+4.84%</p></td>
+                    <td class="py-3"><div class="flex items-center gap-2"><button class="atj-open-drawer flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition" data-drawer="view" data-pair="USD/JPY"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button><button class="atj-open-drawer flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition" data-drawer="edit" data-pair="USD/JPY"><i data-lucide="square-pen" class="w-4 h-4 shrink-0"></i></button></div></td>
+                  </tr>
+                  <tr class="atj-trade border-b border-border hover:bg-accent/5 transition" data-type="crypto" data-result="loss" data-pair="SOL/USDT">
+                    <td class="py-3 pr-4"><p class="font-medium text-text text-sm">Dec 21, 2024</p><p class="text-xs text-muted">19:33 UTC</p></td>
+                    <td class="py-3 pr-4"><div class="flex items-center gap-2"><div class="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center shrink-0"><span class="text-white text-xs font-bold">◎</span></div><div><p class="font-medium text-text text-sm">SOL/USDT</p><span class="inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/15 text-amber-500">Crypto</span></div></div></td>
+                    <td class="py-3 pr-4"><span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-red-500/15 text-red-500"><i data-lucide="trending-down" class="w-3 h-3 shrink-0"></i>Short</span></td>
+                    <td class="py-3 pr-4"><p class="text-sm text-text">$185.40 → $192.15</p><p class="text-xs text-red-500">-3.64%</p></td>
+                    <td class="py-3 pr-4"><p class="font-medium text-text text-sm">25 SOL</p><p class="text-xs text-muted">$4,635</p></td>
+                    <td class="py-3 pr-4 text-sm text-text">3h 52m</td>
+                    <td class="py-3 pr-4"><p class="font-bold text-red-500">-$168.75</p><p class="text-xs text-red-500">-3.64%</p></td>
+                    <td class="py-3"><div class="flex items-center gap-2"><button class="atj-open-drawer flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition" data-drawer="view" data-pair="SOL/USDT"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button><button class="atj-open-drawer flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition" data-drawer="edit" data-pair="SOL/USDT"><i data-lucide="square-pen" class="w-4 h-4 shrink-0"></i></button></div></td>
+                  </tr>
+                  <tr class="atj-trade border-b border-border hover:bg-accent/5 transition" data-type="forex" data-result="win" data-pair="AUD/USD">
+                    <td class="py-3 pr-4"><p class="font-medium text-text text-sm">Dec 20, 2024</p><p class="text-xs text-muted">13:15 UTC</p></td>
+                    <td class="py-3 pr-4"><div class="flex items-center gap-2"><div class="w-8 h-8 rounded-lg bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0"><span class="text-white text-xs font-bold">A$</span></div><div><p class="font-medium text-text text-sm">AUD/USD</p><span class="inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-sky-500/15 text-sky-500">Forex</span></div></div></td>
+                    <td class="py-3 pr-4"><span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-red-500/15 text-red-500"><i data-lucide="trending-down" class="w-3 h-3 shrink-0"></i>Short</span></td>
+                    <td class="py-3 pr-4"><p class="text-sm text-text">0.6285 → 0.6218</p><p class="text-xs text-emerald-500">+67 pips</p></td>
+                    <td class="py-3 pr-4"><p class="font-medium text-text text-sm">2.0 Lots</p><p class="text-xs text-muted">$20,000</p></td>
+                    <td class="py-3 pr-4 text-sm text-text">7h 20m</td>
+                    <td class="py-3 pr-4"><p class="font-bold text-emerald-500">+$1,340.00</p><p class="text-xs text-emerald-500">+6.7%</p></td>
+                    <td class="py-3"><div class="flex items-center gap-2"><button class="atj-open-drawer flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition" data-drawer="view" data-pair="AUD/USD"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button><button class="atj-open-drawer flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition" data-drawer="edit" data-pair="AUD/USD"><i data-lucide="square-pen" class="w-4 h-4 shrink-0"></i></button></div></td>
+                  </tr>
+                  <tr class="atj-trade border-b border-border hover:bg-accent/5 transition" data-type="crypto" data-result="win" data-pair="XRP/USDT">
+                    <td class="py-3 pr-4"><p class="font-medium text-text text-sm">Dec 19, 2024</p><p class="text-xs text-muted">21:08 UTC</p></td>
+                    <td class="py-3 pr-4"><div class="flex items-center gap-2"><div class="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 bg-slate-500/15"><span class="font-bold text-sm text-slate-300">X</span></div><div><p class="font-medium text-text text-sm">XRP/USDT</p><span class="inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/15 text-amber-500">Crypto</span></div></div></td>
+                    <td class="py-3 pr-4"><span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i>Long</span></td>
+                    <td class="py-3 pr-4"><p class="text-sm text-text">$2.18 → $2.35</p><p class="text-xs text-emerald-500">+7.8%</p></td>
+                    <td class="py-3 pr-4"><p class="font-medium text-text text-sm">5000 XRP</p><p class="text-xs text-muted">$10,900</p></td>
+                    <td class="py-3 pr-4 text-sm text-text">12h 45m</td>
+                    <td class="py-3 pr-4"><p class="font-bold text-emerald-500">+$850.00</p><p class="text-xs text-emerald-500">+7.8%</p></td>
+                    <td class="py-3"><div class="flex items-center gap-2"><button class="atj-open-drawer flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition" data-drawer="view" data-pair="XRP/USDT"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button><button class="atj-open-drawer flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition" data-drawer="edit" data-pair="XRP/USDT"><i data-lucide="square-pen" class="w-4 h-4 shrink-0"></i></button></div></td>
+                  </tr>
+                </tbody>
+              </table>
+              <p class="atj-trades-empty hidden text-center text-sm text-muted py-8">No trades match this view.</p>
+            </div>
+            <div class="flex items-center justify-between mt-6 pt-4 border-t border-border flex-wrap gap-3">
+              <p class="text-sm text-muted">Showing 1-8 of 847 trades</p>
+              <div class="flex items-center gap-2">
+                <button class="flex w-9 h-9 items-center justify-center rounded-lg border border-border text-muted disabled:opacity-40" disabled><i data-lucide="chevron-left" class="w-4 h-4 shrink-0"></i></button>
+                <button class="w-9 h-9 rounded-lg bg-accent text-white font-semibold text-sm">1</button>
+                <button class="w-9 h-9 rounded-lg border border-border text-muted font-semibold text-sm hover:border-accent/40 hover:text-accent transition">2</button>
+                <button class="w-9 h-9 rounded-lg border border-border text-muted font-semibold text-sm hover:border-accent/40 hover:text-accent transition">3</button>
+                <span class="text-muted px-1">…</span>
+                <button class="w-9 h-9 rounded-lg border border-border text-muted font-semibold text-sm hover:border-accent/40 hover:text-accent transition">106</button>
+                <button class="flex w-9 h-9 items-center justify-center rounded-lg border border-border text-text hover:border-accent/40 transition"><i data-lucide="chevron-right" class="w-4 h-4 shrink-0"></i></button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== Analytics ===== -->
+        <div class="tab-content atj-pane" id="atj-tab-analytics">
+          <div class="grid grid-cols-1 @3xl/content:grid-cols-2 gap-6 mb-6">
+            <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+              <div class="flex items-center justify-between mb-4 gap-3 flex-wrap"><h3 class="text-lg font-bold text-text">P/L Performance</h3><select id="atjPlPeriod" class="px-3 py-2 pr-8 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option value="7d">7 Days</option><option value="30d" selected>30 Days</option><option value="90d">90 Days</option><option value="1y">1 Year</option></select></div>
+              <div class="h-64"><canvas id="atjPlChart"></canvas></div>
+            </div>
+            <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+              <div class="flex items-center justify-between mb-4 gap-3 flex-wrap"><h3 class="text-lg font-bold text-text">Win/Loss Distribution</h3><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500">68.4% Win Rate</span></div>
+              <div class="h-64"><canvas id="atjWinLossChart"></canvas></div>
+            </div>
+          </div>
+          <div class="grid grid-cols-1 @3xl/content:grid-cols-3 gap-6">
+            <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+              <h3 class="text-lg font-bold text-text mb-4">Trades by Time of Day</h3>
+              <div class="h-48"><canvas id="atjTimeChart"></canvas></div>
+            </div>
+            <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+              <h3 class="text-lg font-bold text-text mb-4">Top Performing Pairs</h3>
+              <div class="space-y-3">
+                <div class="flex items-center justify-between gap-3"><div class="flex items-center gap-3 min-w-0"><div class="w-8 h-8 rounded-lg bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0"><span class="text-white text-xs font-bold">€$</span></div><span class="font-medium text-text">EUR/USD</span></div><div class="text-right shrink-0"><p class="font-bold text-emerald-500">+$8,450</p><p class="text-xs text-muted">78% win rate</p></div></div>
+                <div class="flex items-center justify-between gap-3"><div class="flex items-center gap-3 min-w-0"><div class="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center shrink-0"><i data-lucide="bitcoin" class="w-4 h-4 text-white shrink-0"></i></div><span class="font-medium text-text">BTC/USDT</span></div><div class="text-right shrink-0"><p class="font-bold text-emerald-500">+$6,230</p><p class="text-xs text-muted">72% win rate</p></div></div>
+                <div class="flex items-center justify-between gap-3"><div class="flex items-center gap-3 min-w-0"><div class="w-8 h-8 rounded-lg bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0"><span class="text-white text-xs font-bold">$¥</span></div><span class="font-medium text-text">USD/JPY</span></div><div class="text-right shrink-0"><p class="font-bold text-emerald-500">+$4,890</p><p class="text-xs text-muted">65% win rate</p></div></div>
+                <div class="flex items-center justify-between gap-3"><div class="flex items-center gap-3 min-w-0"><div class="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center shrink-0"><span class="text-white text-xs font-bold">Ξ</span></div><span class="font-medium text-text">ETH/USDT</span></div><div class="text-right shrink-0"><p class="font-bold text-emerald-500">+$3,540</p><p class="text-xs text-muted">69% win rate</p></div></div>
+              </div>
+            </div>
+            <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+              <h3 class="text-lg font-bold text-text mb-4">Trading Activity</h3>
+              <div class="flex flex-wrap gap-1">
+                <div class="w-3 h-3 rounded bg-border"></div>
+              <div class="w-3 h-3 rounded bg-emerald-700"></div>
+              <div class="w-3 h-3 rounded bg-emerald-900"></div>
+              <div class="w-3 h-3 rounded bg-emerald-500"></div>
+              <div class="w-3 h-3 rounded bg-emerald-700"></div>
+              <div class="w-3 h-3 rounded bg-emerald-400"></div>
+              <div class="w-3 h-3 rounded bg-emerald-500"></div>
+              <div class="w-3 h-3 rounded bg-emerald-900"></div>
+              <div class="w-3 h-3 rounded bg-border"></div>
+              <div class="w-3 h-3 rounded bg-emerald-700"></div>
+              <div class="w-3 h-3 rounded bg-emerald-400"></div>
+              <div class="w-3 h-3 rounded bg-emerald-500"></div>
+              <div class="w-3 h-3 rounded bg-emerald-700"></div>
+              <div class="w-3 h-3 rounded bg-emerald-900"></div>
+              <div class="w-3 h-3 rounded bg-emerald-500"></div>
+              <div class="w-3 h-3 rounded bg-emerald-400"></div>
+              <div class="w-3 h-3 rounded bg-emerald-700"></div>
+              <div class="w-3 h-3 rounded bg-border"></div>
+              <div class="w-3 h-3 rounded bg-emerald-900"></div>
+              <div class="w-3 h-3 rounded bg-emerald-500"></div>
+              <div class="w-3 h-3 rounded bg-emerald-700"></div>
+              <div class="w-3 h-3 rounded bg-emerald-400"></div>
+              <div class="w-3 h-3 rounded bg-emerald-500"></div>
+              <div class="w-3 h-3 rounded bg-emerald-700"></div>
+              <div class="w-3 h-3 rounded bg-emerald-900"></div>
+              <div class="w-3 h-3 rounded bg-border"></div>
+              <div class="w-3 h-3 rounded bg-emerald-700"></div>
+              <div class="w-3 h-3 rounded bg-emerald-500"></div>
+              <div class="w-3 h-3 rounded bg-emerald-400"></div>
+              <div class="w-3 h-3 rounded bg-emerald-700"></div>
+              <div class="w-3 h-3 rounded bg-emerald-900"></div>
+              <div class="w-3 h-3 rounded bg-emerald-500"></div>
+              <div class="w-3 h-3 rounded bg-emerald-700"></div>
+              <div class="w-3 h-3 rounded bg-emerald-400"></div>
+              <div class="w-3 h-3 rounded bg-emerald-500"></div>
+              <div class="w-3 h-3 rounded bg-emerald-900"></div>
+              <div class="w-3 h-3 rounded bg-emerald-700"></div>
+              <div class="w-3 h-3 rounded bg-border"></div>
+              <div class="w-3 h-3 rounded bg-emerald-500"></div>
+              <div class="w-3 h-3 rounded bg-emerald-700"></div>
+              <div class="w-3 h-3 rounded bg-emerald-400"></div>
+              <div class="w-3 h-3 rounded bg-emerald-500"></div>
+              <div class="w-3 h-3 rounded bg-emerald-700"></div>
+              <div class="w-3 h-3 rounded bg-emerald-900"></div>
+              <div class="w-3 h-3 rounded bg-border"></div>
+              <div class="w-3 h-3 rounded bg-emerald-700"></div>
+              <div class="w-3 h-3 rounded bg-emerald-500"></div>
+              <div class="w-3 h-3 rounded bg-emerald-400"></div>
+              <div class="w-3 h-3 rounded bg-emerald-700"></div>
+              <div class="w-3 h-3 rounded bg-emerald-500"></div>
+              <div class="w-3 h-3 rounded bg-emerald-900"></div>
+              <div class="w-3 h-3 rounded bg-emerald-700"></div>
+              <div class="w-3 h-3 rounded bg-emerald-400"></div>
+              <div class="w-3 h-3 rounded bg-emerald-500"></div>
+              <div class="w-3 h-3 rounded bg-emerald-700"></div>
+              <div class="w-3 h-3 rounded bg-border"></div>
+              <div class="w-3 h-3 rounded bg-emerald-900"></div>
+              <div class="w-3 h-3 rounded bg-emerald-500"></div>
+              <div class="w-3 h-3 rounded bg-emerald-700"></div>
+              <div class="w-3 h-3 rounded bg-emerald-400"></div>
+              <div class="w-3 h-3 rounded bg-emerald-500"></div>
+              <div class="w-3 h-3 rounded bg-emerald-700"></div>
+              <div class="w-3 h-3 rounded bg-emerald-900"></div>
+              <div class="w-3 h-3 rounded bg-emerald-500"></div>
+              <div class="w-3 h-3 rounded bg-emerald-700"></div>
+              <div class="w-3 h-3 rounded bg-emerald-400"></div>
+              <div class="w-3 h-3 rounded bg-border"></div>
+              <div class="w-3 h-3 rounded bg-emerald-700"></div>
+              <div class="w-3 h-3 rounded bg-emerald-500"></div>
+              <div class="w-3 h-3 rounded bg-emerald-900"></div>
+              </div>
+              <div class="flex items-center justify-between mt-4 text-xs text-muted">
+                <span>Less</span>
+                <div class="flex gap-1"><div class="w-3 h-3 rounded bg-border"></div><div class="w-3 h-3 rounded bg-emerald-900"></div><div class="w-3 h-3 rounded bg-emerald-700"></div><div class="w-3 h-3 rounded bg-emerald-500"></div><div class="w-3 h-3 rounded bg-emerald-400"></div></div>
+                <span>More</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Drawer -->
+    <div class="drawer-overlay" id="atjDrawerOverlay"></div>
+    <div class="drawer" id="atjDrawer">
+      <div class="p-4 sm:p-6 border-b border-border flex items-center justify-between sticky top-0 bg-panel z-10">
+        <h2 class="text-xl font-bold text-text" id="atjDrawerTitle">Add Trade</h2>
+        <button class="atj-drawer-close flex w-10 h-10 items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition" aria-label="Close drawer"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+      </div>
+      <div class="p-4 sm:p-6">
+        <!-- Add / Edit trade form (shared) -->
+        <div class="atj-panel space-y-6" data-panel="add" hidden>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div><label class="block text-sm font-medium text-text mb-2">Asset Type</label><select class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option>Forex</option><option>Crypto</option></select></div>
+            <div><label class="block text-sm font-medium text-text mb-2">Trading Pair</label><select class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option>EUR/USD</option><option>GBP/USD</option><option>USD/JPY</option><option>BTC/USDT</option><option>ETH/USDT</option></select></div>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div><label class="block text-sm font-medium text-text mb-2">Trade Type</label>
+              <div class="flex gap-2">
+                <button class="atj-side active flex-1 inline-flex items-center justify-center gap-2 py-2.5 rounded-xl border border-border text-muted text-sm font-medium transition" data-side="long"><i data-lucide="trending-up" class="w-4 h-4 shrink-0"></i>Long</button>
+                <button class="atj-side flex-1 inline-flex items-center justify-center gap-2 py-2.5 rounded-xl border border-border text-muted text-sm font-medium transition" data-side="short"><i data-lucide="trending-down" class="w-4 h-4 shrink-0"></i>Short</button>
+              </div>
+            </div>
+            <div><label class="block text-sm font-medium text-text mb-2">Position Size</label><input type="text" placeholder="e.g., 1.5 Lots" class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text placeholder:text-muted focus:outline-none focus:border-accent transition" /></div>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div><label class="block text-sm font-medium text-text mb-2">Entry Price</label><input type="text" placeholder="0.00000" class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text placeholder:text-muted focus:outline-none focus:border-accent transition" /></div>
+            <div><label class="block text-sm font-medium text-text mb-2">Exit Price</label><input type="text" placeholder="0.00000" class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text placeholder:text-muted focus:outline-none focus:border-accent transition" /></div>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div><label class="block text-sm font-medium text-text mb-2">Stop Loss</label><input type="text" placeholder="0.00000" class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text placeholder:text-muted focus:outline-none focus:border-accent transition" /></div>
+            <div><label class="block text-sm font-medium text-text mb-2">Take Profit</label><input type="text" placeholder="0.00000" class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text placeholder:text-muted focus:outline-none focus:border-accent transition" /></div>
+          </div>
+          <div><label class="block text-sm font-medium text-text mb-2">Strategy Used</label><select class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option>Breakout</option><option>Trend Following</option><option>Mean Reversion</option><option>Scalping</option><option>Swing Trading</option><option>News Trading</option></select></div>
+          <div><label class="block text-sm font-medium text-text mb-2">Notes</label><textarea class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text placeholder:text-muted focus:outline-none focus:border-accent transition h-24 resize-none" placeholder="Add trade notes, analysis, emotions..."></textarea></div>
+          <div><label class="block text-sm font-medium text-text mb-2">Tags</label><input type="text" placeholder="e.g., trend, support, breakout" class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text placeholder:text-muted focus:outline-none focus:border-accent transition" /></div>
+          <div><label class="block text-sm font-medium text-text mb-2">Screenshot</label>
+            <div class="border-2 border-dashed border-border rounded-xl p-8 text-center hover:border-accent/50 transition cursor-pointer"><i data-lucide="cloud-upload" class="w-10 h-10 mx-auto text-muted mb-2 shrink-0"></i><p class="text-muted">Drag &amp; drop or click to upload</p><p class="text-xs text-muted mt-1">PNG, JPG up to 5MB</p></div>
+          </div>
+          <div class="flex gap-3 pt-4">
+            <button class="atj-drawer-close flex-1 justify-center inline-flex items-center px-4 py-3 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition">Cancel</button>
+            <button class="atj-toast-btn flex-1 justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition" data-toast-title="Trade Saved" data-toast-msg="Your trade has been added to the journal" data-close><i data-lucide="save" class="w-4 h-4 shrink-0"></i><span id="atjSaveLabel">Save Trade</span></button>
+          </div>
+        </div>
+
+        <!-- View trade -->
+        <div class="atj-panel space-y-6" data-panel="view" hidden>
+          <div class="p-4 rounded-xl bg-gradient-to-br from-emerald-500 to-emerald-600 text-white">
+            <div class="flex items-center justify-between mb-4 gap-3"><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-white/20 text-white">Winning Trade</span><span class="text-sm opacity-75">Dec 24, 2024 14:32 UTC</span></div>
+            <div class="flex items-center gap-4"><div class="w-14 h-14 rounded-xl bg-white/20 flex items-center justify-center shrink-0"><span class="text-2xl font-bold" id="atjViewBadge">€$</span></div><div class="min-w-0"><h3 class="text-2xl font-bold" id="atjViewPair">EUR/USD</h3><p class="opacity-75">Long Position • 2.5 Lots</p></div></div>
+            <div class="mt-4 pt-4 border-t border-white/20"><div class="text-3xl font-bold">+$1,175.00</div><p class="opacity-75">+4.7% Return</p></div>
+          </div>
+          <div class="grid grid-cols-2 gap-4">
+            <div class="bg-bg border border-border rounded-xl p-3"><p class="text-xs text-muted mb-1">Entry Price</p><p class="font-bold text-text">1.0845</p></div>
+            <div class="bg-bg border border-border rounded-xl p-3"><p class="text-xs text-muted mb-1">Exit Price</p><p class="font-bold text-text">1.0892</p></div>
+            <div class="bg-bg border border-border rounded-xl p-3"><p class="text-xs text-muted mb-1">Stop Loss</p><p class="font-bold text-red-500">1.0815</p></div>
+            <div class="bg-bg border border-border rounded-xl p-3"><p class="text-xs text-muted mb-1">Take Profit</p><p class="font-bold text-emerald-500">1.0895</p></div>
+            <div class="bg-bg border border-border rounded-xl p-3"><p class="text-xs text-muted mb-1">Duration</p><p class="font-bold text-text">4h 23m</p></div>
+            <div class="bg-bg border border-border rounded-xl p-3"><p class="text-xs text-muted mb-1">Pips Gained</p><p class="font-bold text-emerald-500">+47 pips</p></div>
+          </div>
+          <div class="rounded-xl p-4 bg-gradient-to-br from-indigo-500/10 via-violet-500/10 to-emerald-500/10 border border-accent/20">
+            <div class="flex items-center gap-3 mb-3"><div class="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center shrink-0"><i data-lucide="sparkles" class="w-4 h-4 text-white shrink-0"></i></div><h4 class="font-semibold text-text">AI Trade Analysis</h4></div>
+            <ul class="space-y-2 text-sm text-muted">
+              <li class="flex items-start gap-2"><i data-lucide="circle-check" class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0"></i><span>Excellent entry timing during London session overlap</span></li>
+              <li class="flex items-start gap-2"><i data-lucide="circle-check" class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0"></i><span>Stop loss placement was optimal (30 pips risk)</span></li>
+              <li class="flex items-start gap-2"><i data-lucide="circle-alert" class="w-4 h-4 text-amber-500 mt-0.5 shrink-0"></i><span>Consider trailing stop for extended moves next time</span></li>
+            </ul>
+          </div>
+          <div class="bg-bg border border-border rounded-xl p-4">
+            <h4 class="font-semibold text-text mb-2">Strategy &amp; Notes</h4>
+            <p class="text-sm text-muted mb-3">Trend Following with Fibonacci retracement confirmation. Entry at 61.8% level with strong support confluence.</p>
+            <div class="flex flex-wrap gap-2"><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-sky-500/15 text-sky-500">Trend</span><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-sky-500/15 text-sky-500">Fibonacci</span><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-sky-500/15 text-sky-500">Support</span></div>
+          </div>
+          <div class="flex gap-3">
+            <button class="atj-open-drawer flex-1 justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-panel border border-border text-text text-sm font-semibold whitespace-nowrap hover:border-accent/40 hover:text-accent transition" data-drawer="edit"><i data-lucide="square-pen" class="w-4 h-4 shrink-0"></i>Edit Trade</button>
+            <button class="atj-toast-btn flex-1 justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold whitespace-nowrap hover:-translate-y-0.5 transition" data-toast-title="Trade Duplicated" data-toast-msg="A copy was added to your journal"><i data-lucide="copy" class="w-4 h-4 shrink-0"></i>Duplicate</button>
+          </div>
+        </div>
+
+        <!-- Import -->
+        <div class="atj-panel space-y-6" data-panel="import" hidden>
+          <div class="border-2 border-dashed border-border rounded-xl p-10 text-center hover:border-accent/50 transition cursor-pointer"><i data-lucide="cloud-upload" class="w-16 h-16 mx-auto text-muted mb-4 shrink-0"></i><h3 class="font-semibold text-text mb-2">Drop your file here</h3><p class="text-muted mb-4">or click to browse</p><p class="text-xs text-muted">Supports CSV, Excel, MT4/MT5 reports, TradingView exports</p></div>
+          <div class="space-y-3">
+            <h4 class="font-semibold text-text">Import from Exchange</h4>
+            <div class="grid grid-cols-2 gap-3">
+              <button class="atj-toast-btn inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition" data-toast-title="Connecting…" data-toast-msg="Linking your Binance account"><i data-lucide="bitcoin" class="w-5 h-5 shrink-0"></i>Binance</button>
+              <button class="atj-toast-btn inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition" data-toast-title="Connecting…" data-toast-msg="Linking your Coinbase account"><i data-lucide="coins" class="w-5 h-5 shrink-0"></i>Coinbase</button>
+              <button class="atj-toast-btn inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition" data-toast-title="Connecting…" data-toast-msg="Linking MetaTrader 4"><i data-lucide="chart-column" class="w-5 h-5 shrink-0"></i>MetaTrader 4</button>
+              <button class="atj-toast-btn inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition" data-toast-title="Connecting…" data-toast-msg="Linking MetaTrader 5"><i data-lucide="chart-column" class="w-5 h-5 shrink-0"></i>MetaTrader 5</button>
+            </div>
+          </div>
+          <div class="p-4 bg-sky-500/10 border border-sky-500/30 rounded-xl">
+            <div class="flex items-start gap-3"><i data-lucide="info" class="w-5 h-5 text-sky-500 mt-0.5 shrink-0"></i><div><h4 class="font-medium text-text">Import Tips</h4><ul class="text-sm text-muted mt-2 space-y-1"><li>• Make sure your file includes date, entry, exit, and size columns</li><li>• Duplicates will be automatically detected</li><li>• You can review imports before confirming</li></ul></div></div>
+          </div>
+        </div>
+
+        <!-- AI Insights -->
+        <div class="atj-panel space-y-6" data-panel="ai-insights" hidden>
+          <div class="text-center p-6 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 text-white">
+            <h3 class="text-lg opacity-75 mb-2">AI Performance Score</h3><div class="text-6xl font-bold mb-2">92</div><p class="opacity-75">Excellent Trading Performance</p>
+          </div>
+          <div class="space-y-3">
+            <h4 class="font-semibold text-text">Key Insights</h4>
+            <div class="rounded-xl p-4 bg-bg border border-border"><div class="flex items-start gap-3"><div class="w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center shrink-0"><i data-lucide="trending-up" class="w-4 h-4 text-emerald-500 shrink-0"></i></div><div><h5 class="font-medium text-text">Strong Trend Following</h5><p class="text-sm text-muted mt-1">Your trend-based trades have 78% success rate. Continue this strategy during trending markets.</p></div></div></div>
+            <div class="rounded-xl p-4 bg-bg border border-border"><div class="flex items-start gap-3"><div class="w-8 h-8 rounded-lg bg-amber-500/20 flex items-center justify-center shrink-0"><i data-lucide="clock" class="w-4 h-4 text-amber-500 shrink-0"></i></div><div><h5 class="font-medium text-text">Optimal Trading Hours</h5><p class="text-sm text-muted mt-1">Best performance during 13:00-17:00 UTC (London-NY overlap). Win rate drops 15% during Asian session.</p></div></div></div>
+            <div class="rounded-xl p-4 bg-bg border border-border"><div class="flex items-start gap-3"><div class="w-8 h-8 rounded-lg bg-red-500/20 flex items-center justify-center shrink-0"><i data-lucide="triangle-alert" class="w-4 h-4 text-red-500 shrink-0"></i></div><div><h5 class="font-medium text-text">Risk Management Alert</h5><p class="text-sm text-muted mt-1">Your average loss is 1.8x larger than average win. Consider tighter stop losses or wider take profits.</p></div></div></div>
+            <div class="rounded-xl p-4 bg-bg border border-border"><div class="flex items-start gap-3"><div class="w-8 h-8 rounded-lg bg-sky-500/20 flex items-center justify-center shrink-0"><i data-lucide="target" class="w-4 h-4 text-sky-500 shrink-0"></i></div><div><h5 class="font-medium text-text">Pair Performance</h5><p class="text-sm text-muted mt-1">EUR/USD is your best pair (78% win rate). Consider reducing GBP/JPY exposure (52% win rate).</p></div></div></div>
+          </div>
+          <div class="bg-bg border border-border rounded-xl p-4">
+            <h4 class="font-semibold text-text mb-3 flex items-center gap-2"><i data-lucide="lightbulb" class="w-5 h-5 text-amber-500 shrink-0"></i>AI Recommendations</h4>
+            <ul class="space-y-3 text-sm">
+              <li class="flex items-start gap-2"><span class="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-500 flex items-center justify-center text-xs font-bold shrink-0">1</span><span class="text-muted">Increase position size on EUR/USD by 20% during optimal hours</span></li>
+              <li class="flex items-start gap-2"><span class="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-500 flex items-center justify-center text-xs font-bold shrink-0">2</span><span class="text-muted">Implement trailing stops on winning trades after +30 pips</span></li>
+              <li class="flex items-start gap-2"><span class="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-500 flex items-center justify-center text-xs font-bold shrink-0">3</span><span class="text-muted">Avoid counter-trend trades on Fridays (62% loss rate)</span></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="atjToast">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-5 h-5 text-white shrink-0"></i></div>
+      <div>
+        <p class="font-semibold text-text" id="atjToastTitle">Success</p>
+        <p class="text-sm text-muted" id="atjToastMessage">Action completed</p>
+      </div>
+      <button id="atjToastClose" class="p-2 ml-auto rounded-lg text-muted hover:bg-border/50 transition" aria-label="Dismiss"><i data-lucide="x" class="w-4 h-4 shrink-0"></i></button>
+    </div>
+
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
+  </body>
+</html>

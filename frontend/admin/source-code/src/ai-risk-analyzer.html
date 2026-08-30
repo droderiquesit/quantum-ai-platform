@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <script>
+      if (localStorage.getItem("theme") === "light") document.documentElement.classList.remove("dark");
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>AI Risk Analyzer - SignalAIX | AI Forex & Crypto Trading Signals</title>
+    <link rel="icon" type="image/png" href="assets/images/favicon.png" />
+    <link rel="apple-touch-icon" href="assets/images/favicon.png" />
+  </head>
+  <body id="ai-risk-analyzer">
+    <div id="loader">
+      <div class="spinner"></div>
+      <div class="loader-text">Loading SignalAIX...</div>
+    </div>
+
+    <include-sidebar />
+
+    <main class="main-content" id="mainContent">
+      <include-top-header />
+
+      <div class="inner-content max-sm:px-3 max-lg:px-4 max-lg:py-6 lg:p-6 space-y-6">
+        <!-- Page header -->
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div class="flex items-center gap-3 min-w-0">
+            <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-red-500 via-amber-500 to-emerald-500 flex items-center justify-center shrink-0"><i data-lucide="shield-alert" class="w-6 h-6 text-white shrink-0"></i></div>
+            <div class="min-w-0">
+              <h1 class="text-2xl font-bold text-text">AI Risk Analyzer</h1>
+              <p class="text-sm text-muted">Real-time AI-powered risk assessment for your trading portfolio</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-3 flex-wrap">
+            <button class="ara-open-drawer inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition" data-drawer="settings"><i data-lucide="settings" class="w-4 h-4 shrink-0"></i>Settings</button>
+            <button id="araExport" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition"><i data-lucide="download" class="w-4 h-4 shrink-0"></i>Export</button>
+            <button id="araRun" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition"><i data-lucide="scan" class="w-4 h-4 shrink-0"></i>Run Analysis</button>
+          </div>
+        </div>
+
+        <!-- Stat cards -->
+        <div class="grid grid-cols-1 @xl/content:grid-cols-2 @5xl/content:grid-cols-4 gap-4 sm:gap-6">
+          <div class="bg-panel border border-border rounded-2xl p-5 sm:p-6 hover:border-accent/40 transition">
+            <div class="flex items-center justify-between mb-4">
+              <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-orange-500/20 to-red-500/20 flex items-center justify-center"><i data-lucide="shield-alert" class="w-6 h-6 text-orange-500 shrink-0"></i></div>
+              <span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/15 text-amber-500">Medium</span>
+            </div>
+            <p class="text-sm text-muted mb-1">Overall Risk Score</p>
+            <p class="text-3xl font-bold text-text mb-2">62<span class="text-lg text-muted">/100</span></p>
+            <div class="h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-gradient-to-r from-amber-500 to-orange-500 rounded-full" style="width:62%"></div></div>
+            <p class="text-xs text-muted mt-2 flex items-center gap-1"><i data-lucide="trending-down" class="w-3 h-3 text-emerald-500 shrink-0"></i><span class="text-emerald-500">-8%</span> from last week</p>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-5 sm:p-6 hover:border-accent/40 transition">
+            <div class="flex items-center justify-between mb-4">
+              <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-sky-500/20 to-indigo-500/20 flex items-center justify-center"><i data-lucide="chart-pie" class="w-6 h-6 text-sky-500 shrink-0"></i></div>
+              <span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-sky-500/15 text-sky-500">Diversified</span>
+            </div>
+            <p class="text-sm text-muted mb-1">Portfolio Exposure</p>
+            <p class="text-3xl font-bold text-text mb-2">$124.5K</p>
+            <div class="flex items-center gap-2 text-sm flex-wrap"><span class="text-muted">Forex:</span><span class="text-text font-medium">58%</span><span class="text-muted ml-2">Crypto:</span><span class="text-text font-medium">42%</span></div>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-5 sm:p-6 hover:border-accent/40 transition">
+            <div class="flex items-center justify-between mb-4">
+              <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-red-500/20 to-pink-500/20 flex items-center justify-center"><i data-lucide="triangle-alert" class="w-6 h-6 text-red-500 shrink-0"></i></div>
+              <span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-red-500/15 text-red-500">High</span>
+            </div>
+            <p class="text-sm text-muted mb-1">Value at Risk (95%)</p>
+            <p class="text-3xl font-bold text-red-500 mb-2">-$4,250</p>
+            <p class="text-xs text-muted">Max potential loss in 24h</p>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-5 sm:p-6 hover:border-accent/40 transition">
+            <div class="flex items-center justify-between mb-4">
+              <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-yellow-500/20 to-orange-500/20 flex items-center justify-center"><i data-lucide="bell-ring" class="w-6 h-6 text-yellow-500 shrink-0"></i></div>
+              <span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/15 text-amber-500">7 Active</span>
+            </div>
+            <p class="text-sm text-muted mb-1">Risk Alerts</p>
+            <p class="text-3xl font-bold text-text mb-2">7</p>
+            <div class="flex items-center gap-3 text-xs flex-wrap">
+              <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-red-500"></span>2 Critical</span>
+              <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-yellow-500"></span>5 Warning</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="flex gap-1 p-1 bg-panel border border-border rounded-2xl overflow-x-auto hide-scrollbar">
+          <button class="tab-button ara-tab active whitespace-nowrap inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text transition" data-tab="overview"><i data-lucide="layout-dashboard" class="w-4 h-4 shrink-0"></i>Overview</button>
+          <button class="tab-button ara-tab whitespace-nowrap inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text transition" data-tab="positions"><i data-lucide="layers" class="w-4 h-4 shrink-0"></i>Position Risk</button>
+          <button class="tab-button ara-tab whitespace-nowrap inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text transition" data-tab="correlation"><i data-lucide="git-branch" class="w-4 h-4 shrink-0"></i>Correlation</button>
+          <button class="tab-button ara-tab whitespace-nowrap inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text transition" data-tab="alerts"><i data-lucide="bell-ring" class="w-4 h-4 shrink-0"></i>Alerts</button>
+          <button class="tab-button ara-tab whitespace-nowrap inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text transition" data-tab="scenarios"><i data-lucide="flask-conical" class="w-4 h-4 shrink-0"></i>Stress Test</button>
+        </div>
+
+        <!-- ===== Overview ===== -->
+        <div class="tab-content ara-pane active" id="ara-tab-overview">
+          <div class="grid grid-cols-1 @4xl/content:grid-cols-3 gap-6">
+            <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+              <div class="flex items-center justify-between mb-6 gap-3"><h3 class="font-semibold text-text">Portfolio Risk Gauge</h3><select id="araRiskTimeframe" class="px-3 py-2 pr-8 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option value="1d">24 Hours</option><option value="7d">7 Days</option><option value="30d">30 Days</option></select></div>
+              <div class="flex flex-col items-center">
+                <div class="risk-gauge mb-4">
+                  <div class="risk-gauge-bg"></div>
+                  <div class="risk-gauge-needle" id="araRiskNeedle" style="--rotation: -45deg"></div>
+                  <div class="risk-gauge-center"></div>
+                </div>
+                <div class="text-center mt-4"><p class="text-4xl font-bold text-amber-500">62</p><p class="text-sm text-muted">Medium Risk</p></div>
+                <div class="flex items-center justify-between w-full mt-6 text-xs"><span class="text-emerald-500">Low</span><span class="text-yellow-500">Medium</span><span class="text-red-500">High</span></div>
+              </div>
+              <div class="mt-6 space-y-4">
+                <div class="flex items-center justify-between gap-3"><span class="text-sm text-muted">Market Risk</span><div class="flex items-center gap-2"><div class="w-24 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-yellow-500 rounded-full" style="width:58%"></div></div><span class="text-sm font-medium text-text">58%</span></div></div>
+                <div class="flex items-center justify-between gap-3"><span class="text-sm text-muted">Liquidity Risk</span><div class="flex items-center gap-2"><div class="w-24 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-emerald-500 rounded-full" style="width:32%"></div></div><span class="text-sm font-medium text-text">32%</span></div></div>
+                <div class="flex items-center justify-between gap-3"><span class="text-sm text-muted">Concentration Risk</span><div class="flex items-center gap-2"><div class="w-24 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-orange-500 rounded-full" style="width:71%"></div></div><span class="text-sm font-medium text-text">71%</span></div></div>
+                <div class="flex items-center justify-between gap-3"><span class="text-sm text-muted">Volatility Risk</span><div class="flex items-center gap-2"><div class="w-24 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-red-500 rounded-full" style="width:85%"></div></div><span class="text-sm font-medium text-text">85%</span></div></div>
+              </div>
+            </div>
+            <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6 @4xl/content:col-span-2 self-stretch flex flex-col">
+              <div class="flex items-center justify-between mb-6 gap-3 flex-wrap"><h3 class="font-semibold text-text">Risk Distribution Over Time</h3><select id="araChartPeriod" class="px-3 py-2 pr-8 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option value="7d">Last 7 Days</option><option value="30d" selected>Last 30 Days</option><option value="90d">Last 90 Days</option></select></div>
+              <div class="flex-1 min-h-72"><canvas id="araRiskDistChart"></canvas></div>
+            </div>
+          </div>
+          <div class="grid grid-cols-1 @3xl/content:grid-cols-2 gap-6 mt-6">
+            <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+              <div class="flex items-center gap-3 mb-6">
+                <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center shrink-0"><i data-lucide="brain" class="w-5 h-5 text-white shrink-0"></i></div>
+                <div class="min-w-0"><h3 class="font-semibold text-text">AI Risk Recommendations</h3><p class="text-xs text-muted">Generated 5 minutes ago</p></div>
+                <button id="araRefreshInsights" class="flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition ml-auto shrink-0" aria-label="Refresh"><i data-lucide="refresh-cw" class="w-4 h-4 shrink-0"></i></button>
+              </div>
+              <div class="space-y-4">
+                <div class="p-4 bg-red-500/10 border border-red-500/20 rounded-xl">
+                  <div class="flex items-start gap-3"><div class="w-8 h-8 rounded-lg bg-red-500/20 flex items-center justify-center shrink-0 mt-0.5"><i data-lucide="circle-alert" class="w-4 h-4 text-red-500 shrink-0"></i></div><div><p class="font-medium text-text text-sm">Reduce BTC/USD Position</p><p class="text-xs text-muted mt-1">Your BTC exposure represents 35% of portfolio. AI suggests reducing to 20% to minimize drawdown risk.</p><button class="ara-open-drawer text-xs text-red-500 font-medium mt-2 hover:underline" data-drawer="action">Take Action →</button></div></div>
+                </div>
+                <div class="p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-xl">
+                  <div class="flex items-start gap-3"><div class="w-8 h-8 rounded-lg bg-yellow-500/20 flex items-center justify-center shrink-0 mt-0.5"><i data-lucide="triangle-alert" class="w-4 h-4 text-yellow-500 shrink-0"></i></div><div><p class="font-medium text-text text-sm">Set Stop-Loss on EUR/USD</p><p class="text-xs text-muted mt-1">Current position lacks proper risk management. Recommend setting stop-loss at 1.0820.</p><button class="ara-open-drawer text-xs text-yellow-500 font-medium mt-2 hover:underline" data-drawer="action">Set Stop-Loss →</button></div></div>
+                </div>
+                <div class="p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-xl">
+                  <div class="flex items-start gap-3"><div class="w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center shrink-0 mt-0.5"><i data-lucide="circle-check" class="w-4 h-4 text-emerald-500 shrink-0"></i></div><div><p class="font-medium text-text text-sm">Hedge with Gold (XAU/USD)</p><p class="text-xs text-muted mt-1">Adding 5% gold allocation could reduce portfolio volatility by 12%.</p><button class="ara-open-drawer text-xs text-emerald-500 font-medium mt-2 hover:underline" data-drawer="action">View Strategy →</button></div></div>
+                </div>
+              </div>
+            </div>
+            <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+              <div class="flex items-center justify-between mb-6"><h3 class="font-semibold text-text">Asset Risk Heatmap</h3></div>
+              <div class="grid grid-cols-4 gap-2">
+                <div class="text-center"><div class="h-10 rounded-lg flex items-center justify-center text-xs font-semibold text-white bg-red-500/80 hover:scale-105 transition">BTC</div><p class="text-xs text-muted mt-1">85%</p></div>
+                <div class="text-center"><div class="h-10 rounded-lg flex items-center justify-center text-xs font-semibold text-white bg-orange-500/80 hover:scale-105 transition">ETH</div><p class="text-xs text-muted mt-1">72%</p></div>
+                <div class="text-center"><div class="h-10 rounded-lg flex items-center justify-center text-xs font-semibold text-white bg-yellow-500/80 hover:scale-105 transition">EUR</div><p class="text-xs text-muted mt-1">58%</p></div>
+                <div class="text-center"><div class="h-10 rounded-lg flex items-center justify-center text-xs font-semibold text-white bg-emerald-500/80 hover:scale-105 transition">GBP</div><p class="text-xs text-muted mt-1">35%</p></div>
+                <div class="text-center"><div class="h-10 rounded-lg flex items-center justify-center text-xs font-semibold text-white bg-yellow-500/80 hover:scale-105 transition">SOL</div><p class="text-xs text-muted mt-1">65%</p></div>
+                <div class="text-center"><div class="h-10 rounded-lg flex items-center justify-center text-xs font-semibold text-white bg-red-500/80 hover:scale-105 transition">DOGE</div><p class="text-xs text-muted mt-1">92%</p></div>
+                <div class="text-center"><div class="h-10 rounded-lg flex items-center justify-center text-xs font-semibold text-white bg-emerald-500/80 hover:scale-105 transition">JPY</div><p class="text-xs text-muted mt-1">28%</p></div>
+                <div class="text-center"><div class="h-10 rounded-lg flex items-center justify-center text-xs font-semibold text-white bg-emerald-500/80 hover:scale-105 transition">CHF</div><p class="text-xs text-muted mt-1">22%</p></div>
+                <div class="text-center"><div class="h-10 rounded-lg flex items-center justify-center text-xs font-semibold text-white bg-orange-500/80 hover:scale-105 transition">ADA</div><p class="text-xs text-muted mt-1">78%</p></div>
+                <div class="text-center"><div class="h-10 rounded-lg flex items-center justify-center text-xs font-semibold text-white bg-yellow-500/80 hover:scale-105 transition">XRP</div><p class="text-xs text-muted mt-1">55%</p></div>
+                <div class="text-center"><div class="h-10 rounded-lg flex items-center justify-center text-xs font-semibold text-white bg-emerald-500/80 hover:scale-105 transition">AUD</div><p class="text-xs text-muted mt-1">42%</p></div>
+                <div class="text-center"><div class="h-10 rounded-lg flex items-center justify-center text-xs font-semibold text-white bg-yellow-500/80 hover:scale-105 transition">CAD</div><p class="text-xs text-muted mt-1">48%</p></div>
+                <div class="text-center"><div class="h-10 rounded-lg flex items-center justify-center text-xs font-semibold text-white bg-orange-500/80 hover:scale-105 transition">BNB</div><p class="text-xs text-muted mt-1">74%</p></div>
+                <div class="text-center"><div class="h-10 rounded-lg flex items-center justify-center text-xs font-semibold text-white bg-emerald-500/80 hover:scale-105 transition">USDT</div><p class="text-xs text-muted mt-1">18%</p></div>
+                <div class="text-center"><div class="h-10 rounded-lg flex items-center justify-center text-xs font-semibold text-white bg-red-500/80 hover:scale-105 transition">SHIB</div><p class="text-xs text-muted mt-1">88%</p></div>
+                <div class="text-center"><div class="h-10 rounded-lg flex items-center justify-center text-xs font-semibold text-white bg-yellow-500/80 hover:scale-105 transition">LINK</div><p class="text-xs text-muted mt-1">62%</p></div>
+                <div class="text-center"><div class="h-10 rounded-lg flex items-center justify-center text-xs font-semibold text-white bg-emerald-500/80 hover:scale-105 transition">NZD</div><p class="text-xs text-muted mt-1">38%</p></div>
+                <div class="text-center"><div class="h-10 rounded-lg flex items-center justify-center text-xs font-semibold text-white bg-orange-500/80 hover:scale-105 transition">AVAX</div><p class="text-xs text-muted mt-1">76%</p></div>
+                <div class="text-center"><div class="h-10 rounded-lg flex items-center justify-center text-xs font-semibold text-white bg-yellow-500/80 hover:scale-105 transition">DOT</div><p class="text-xs text-muted mt-1">54%</p></div>
+                <div class="text-center"><div class="h-10 rounded-lg flex items-center justify-center text-xs font-semibold text-white bg-emerald-500/80 hover:scale-105 transition">XAU</div><p class="text-xs text-muted mt-1">25%</p></div>
+              </div>
+              <div class="flex items-center justify-center gap-4 sm:gap-6 mt-6 text-xs flex-wrap">
+                <div class="flex items-center gap-2"><div class="w-4 h-4 rounded bg-emerald-500"></div><span class="text-muted">Low (0-40%)</span></div>
+                <div class="flex items-center gap-2"><div class="w-4 h-4 rounded bg-yellow-500"></div><span class="text-muted">Medium (40-70%)</span></div>
+                <div class="flex items-center gap-2"><div class="w-4 h-4 rounded bg-red-500"></div><span class="text-muted">High (70-100%)</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== Position Risk ===== -->
+        <div class="tab-content ara-pane" id="ara-tab-positions">
+          <div class="bg-panel border border-border rounded-2xl p-4 mb-6">
+            <div class="flex flex-wrap items-center gap-3 sm:gap-4">
+              <div class="relative flex-1 min-w-[180px]"><i data-lucide="search" class="w-4 h-4 text-muted absolute left-3 top-1/2 -translate-y-1/2 shrink-0"></i><input type="text" id="araPositionSearch" placeholder="Search positions..." class="w-full pl-10 pr-3 py-2.5 rounded-xl bg-bg border border-border text-sm text-text placeholder:text-muted focus:outline-none focus:border-accent transition" /></div>
+              <select id="araAssetFilter" class="px-4 py-2.5 pr-8 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option value="all">All Assets</option><option value="forex">Forex</option><option value="crypto">Crypto</option></select>
+              <select id="araRiskFilter" class="px-4 py-2.5 pr-8 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option value="all">All Risk Levels</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select>
+              <button id="araResetFilters" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition"><i data-lucide="x" class="w-4 h-4 shrink-0"></i>Reset</button>
+            </div>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl overflow-hidden">
+            <div class="overflow-x-auto">
+              <table class="w-full border-collapse min-w-[860px] whitespace-nowrap">
+                <thead>
+                  <tr class="text-left text-xs font-semibold uppercase tracking-wide text-muted border-b border-border">
+                    <th class="py-3 px-4">Asset</th><th class="py-3 px-4">Position Size</th><th class="py-3 px-4">Entry</th><th class="py-3 px-4">Current</th><th class="py-3 px-4">P/L</th><th class="py-3 px-4">Risk Score</th><th class="py-3 px-4">VaR</th><th class="py-3 px-4">Stop Loss</th><th class="py-3 px-4">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="araPositionsBody">
+                  <tr class="ara-position-row border-b border-border hover:bg-accent/5 transition" data-asset="crypto" data-risk="critical">
+                    <td class="py-3 px-4"><div class="flex items-center gap-3"><div class="w-10 h-10 rounded-xl bg-orange-500/20 flex items-center justify-center shrink-0"><i data-lucide="bitcoin" class="w-5 h-5 text-orange-500 shrink-0"></i></div><div><p class="font-medium text-text">BTC/USD</p><p class="text-xs text-muted">Long</p></div></div></td>
+                    <td class="py-3 px-4"><p class="font-medium text-text">0.85 BTC</p><p class="text-xs text-muted">$43,520</p></td>
+                    <td class="py-3 px-4 text-text">$51,200</td><td class="py-3 px-4 text-text">$52,340</td>
+                    <td class="py-3 px-4"><span class="text-emerald-500 font-medium">+$968.90</span><p class="text-xs text-emerald-500">+2.23%</p></td>
+                    <td class="py-3 px-4"><div class="flex items-center gap-2"><div class="w-16 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-red-500 rounded-full" style="width:85%"></div></div><span class="text-sm font-medium text-red-500">85</span></div></td>
+                    <td class="py-3 px-4 text-red-500 font-medium">-$2,176</td>
+                    <td class="py-3 px-4"><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-red-500/15 text-red-500">Not Set</span></td>
+                    <td class="py-3 px-4"><div class="flex items-center gap-2"><button class="ara-open-drawer flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition" data-drawer="position" data-pair="BTC/USD"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button><button class="flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition"><i data-lucide="square-pen" class="w-4 h-4 shrink-0"></i></button></div></td>
+                  </tr>
+                  <tr class="ara-position-row border-b border-border hover:bg-accent/5 transition" data-asset="forex" data-risk="medium">
+                    <td class="py-3 px-4"><div class="flex items-center gap-3"><div class="w-10 h-10 rounded-xl bg-sky-500/20 flex items-center justify-center shrink-0"><i data-lucide="euro" class="w-5 h-5 text-sky-500 shrink-0"></i></div><div><p class="font-medium text-text">EUR/USD</p><p class="text-xs text-muted">Long</p></div></div></td>
+                    <td class="py-3 px-4"><p class="font-medium text-text">50,000 EUR</p><p class="text-xs text-muted">$54,250</p></td>
+                    <td class="py-3 px-4 text-text">1.0825</td><td class="py-3 px-4 text-text">1.0852</td>
+                    <td class="py-3 px-4"><span class="text-emerald-500 font-medium">+$135.00</span><p class="text-xs text-emerald-500">+0.25%</p></td>
+                    <td class="py-3 px-4"><div class="flex items-center gap-2"><div class="w-16 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-yellow-500 rounded-full" style="width:58%"></div></div><span class="text-sm font-medium text-yellow-500">58</span></div></td>
+                    <td class="py-3 px-4 text-red-500 font-medium">-$812</td>
+                    <td class="py-3 px-4"><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/15 text-amber-500">1.0780</span></td>
+                    <td class="py-3 px-4"><div class="flex items-center gap-2"><button class="ara-open-drawer flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition" data-drawer="position" data-pair="EUR/USD"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button><button class="flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition"><i data-lucide="square-pen" class="w-4 h-4 shrink-0"></i></button></div></td>
+                  </tr>
+                  <tr class="ara-position-row border-b border-border hover:bg-accent/5 transition" data-asset="crypto" data-risk="high">
+                    <td class="py-3 px-4"><div class="flex items-center gap-3"><div class="w-10 h-10 rounded-xl bg-indigo-500/20 flex items-center justify-center shrink-0"><span class="text-indigo-400 font-bold text-sm">Ξ</span></div><div><p class="font-medium text-text">ETH/USD</p><p class="text-xs text-muted">Long</p></div></div></td>
+                    <td class="py-3 px-4"><p class="font-medium text-text">8.5 ETH</p><p class="text-xs text-muted">$26,775</p></td>
+                    <td class="py-3 px-4 text-text">$3,150</td><td class="py-3 px-4 text-text">$3,089</td>
+                    <td class="py-3 px-4"><span class="text-red-500 font-medium">-$518.50</span><p class="text-xs text-red-500">-1.94%</p></td>
+                    <td class="py-3 px-4"><div class="flex items-center gap-2"><div class="w-16 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-orange-500 rounded-full" style="width:72%"></div></div><span class="text-sm font-medium text-orange-500">72</span></div></td>
+                    <td class="py-3 px-4 text-red-500 font-medium">-$1,338</td>
+                    <td class="py-3 px-4"><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500">$2,950</span></td>
+                    <td class="py-3 px-4"><div class="flex items-center gap-2"><button class="ara-open-drawer flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition" data-drawer="position" data-pair="ETH/USD"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button><button class="flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition"><i data-lucide="square-pen" class="w-4 h-4 shrink-0"></i></button></div></td>
+                  </tr>
+                  <tr class="ara-position-row border-b border-border hover:bg-accent/5 transition" data-asset="forex" data-risk="low">
+                    <td class="py-3 px-4"><div class="flex items-center gap-3"><div class="w-10 h-10 rounded-xl bg-emerald-500/20 flex items-center justify-center shrink-0"><i data-lucide="pound-sterling" class="w-5 h-5 text-emerald-500 shrink-0"></i></div><div><p class="font-medium text-text">GBP/USD</p><p class="text-xs text-muted">Short</p></div></div></td>
+                    <td class="py-3 px-4"><p class="font-medium text-text">30,000 GBP</p><p class="text-xs text-muted">$38,100</p></td>
+                    <td class="py-3 px-4 text-text">1.2720</td><td class="py-3 px-4 text-text">1.2685</td>
+                    <td class="py-3 px-4"><span class="text-emerald-500 font-medium">+$105.00</span><p class="text-xs text-emerald-500">+0.28%</p></td>
+                    <td class="py-3 px-4"><div class="flex items-center gap-2"><div class="w-16 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-emerald-500 rounded-full" style="width:35%"></div></div><span class="text-sm font-medium text-emerald-500">35</span></div></td>
+                    <td class="py-3 px-4 text-red-500 font-medium">-$571</td>
+                    <td class="py-3 px-4"><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500">1.2820</span></td>
+                    <td class="py-3 px-4"><div class="flex items-center gap-2"><button class="ara-open-drawer flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition" data-drawer="position" data-pair="GBP/USD"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button><button class="flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition"><i data-lucide="square-pen" class="w-4 h-4 shrink-0"></i></button></div></td>
+                  </tr>
+                </tbody>
+              </table>
+              <p class="ara-positions-empty hidden text-center text-sm text-muted py-8">No positions match your filters.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== Correlation ===== -->
+        <div class="tab-content ara-pane" id="ara-tab-correlation">
+          <div class="grid grid-cols-1 @3xl/content:grid-cols-2 gap-6">
+            <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+              <div class="flex items-center justify-between mb-6 gap-3 flex-wrap"><h3 class="font-semibold text-text">Asset Correlation Matrix</h3><select class="px-3 py-2 pr-8 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option>30 Day</option><option>90 Day</option><option>1 Year</option></select></div>
+              <div class="h-80"><canvas id="araCorrelationChart"></canvas></div>
+            </div>
+            <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+              <h3 class="font-semibold text-text mb-6">Correlation Insights</h3>
+              <div class="space-y-4">
+                <div class="p-4 border border-border rounded-xl"><div class="flex items-center justify-between mb-2 gap-3"><span class="font-medium text-text">BTC/USD ↔ ETH/USD</span><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-red-500/15 text-red-500 shrink-0">+0.92</span></div><p class="text-xs text-muted">Highly correlated — Consider reducing one position to minimize correlated risk</p></div>
+                <div class="p-4 border border-border rounded-xl"><div class="flex items-center justify-between mb-2 gap-3"><span class="font-medium text-text">EUR/USD ↔ GBP/USD</span><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/15 text-amber-500 shrink-0">+0.78</span></div><p class="text-xs text-muted">Moderate positive correlation — Positions may amplify gains/losses</p></div>
+                <div class="p-4 border border-border rounded-xl"><div class="flex items-center justify-between mb-2 gap-3"><span class="font-medium text-text">USD/JPY ↔ Gold</span><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0">-0.65</span></div><p class="text-xs text-muted">Negative correlation — Good hedge opportunity for risk reduction</p></div>
+                <div class="p-4 border border-border rounded-xl"><div class="flex items-center justify-between mb-2 gap-3"><span class="font-medium text-text">BTC/USD ↔ USD/CHF</span><span class="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold bg-sky-500/15 text-sky-500 shrink-0">+0.12</span></div><p class="text-xs text-muted">Low correlation — Good diversification, minimal systematic risk</p></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== Alerts ===== -->
+        <div class="tab-content ara-pane" id="ara-tab-alerts">
+          <div class="grid grid-cols-1 @3xl/content:grid-cols-3 gap-6">
+            <div class="@3xl/content:col-span-2 space-y-4">
+              <div class="bg-panel border border-red-500/30 rounded-2xl p-4">
+                <div class="flex items-start gap-4"><div class="w-10 h-10 rounded-xl bg-red-500/20 flex items-center justify-center shrink-0 animate-pulse"><i data-lucide="octagon-alert" class="w-5 h-5 text-red-500 shrink-0"></i></div><div class="flex-1 min-w-0"><div class="flex items-center justify-between mb-1 gap-3"><p class="font-semibold text-text">Critical: BTC Position Overleveraged</p><span class="text-xs text-muted shrink-0">2 min ago</span></div><p class="text-sm text-muted mb-3">Your BTC/USD position is using 15x leverage with no stop-loss. Risk of liquidation is elevated.</p><div class="flex items-center gap-2 flex-wrap"><button class="ara-open-drawer inline-flex items-center gap-2 py-2 px-4 text-sm rounded-xl bg-red-500 text-white font-semibold hover:bg-red-600 transition" data-drawer="action"><i data-lucide="shield" class="w-4 h-4 shrink-0"></i>Set Stop-Loss</button><button class="ara-dismiss py-2 px-4 text-sm rounded-xl bg-panel border border-border text-text font-semibold hover:border-accent/40 transition">Dismiss</button></div></div></div>
+              </div>
+              <div class="bg-panel border border-red-500/30 rounded-2xl p-4">
+                <div class="flex items-start gap-4"><div class="w-10 h-10 rounded-xl bg-red-500/20 flex items-center justify-center shrink-0 animate-pulse"><i data-lucide="trending-down" class="w-5 h-5 text-red-500 shrink-0"></i></div><div class="flex-1 min-w-0"><div class="flex items-center justify-between mb-1 gap-3"><p class="font-semibold text-text">Critical: Max Drawdown Approaching</p><span class="text-xs text-muted shrink-0">15 min ago</span></div><p class="text-sm text-muted mb-3">Portfolio drawdown has reached 18.5%, approaching your 20% risk threshold.</p><div class="flex items-center gap-2 flex-wrap"><button class="inline-flex items-center gap-2 py-2 px-4 text-sm rounded-xl bg-red-500 text-white font-semibold hover:bg-red-600 transition"><i data-lucide="shield-off" class="w-4 h-4 shrink-0"></i>Reduce Exposure</button><button class="ara-dismiss py-2 px-4 text-sm rounded-xl bg-panel border border-border text-text font-semibold hover:border-accent/40 transition">Dismiss</button></div></div></div>
+              </div>
+              <div class="bg-panel border border-orange-500/30 rounded-2xl p-4">
+                <div class="flex items-start gap-4"><div class="w-10 h-10 rounded-xl bg-orange-500/20 flex items-center justify-center shrink-0"><i data-lucide="calendar" class="w-5 h-5 text-orange-500 shrink-0"></i></div><div class="flex-1 min-w-0"><div class="flex items-center justify-between mb-1 gap-3"><p class="font-semibold text-text">High Impact Event: FOMC Meeting</p><span class="text-xs text-muted shrink-0">1 hour ago</span></div><p class="text-sm text-muted mb-3">FOMC rate decision in 4 hours. Expected volatility spike.</p><div class="flex items-center gap-2 flex-wrap"><button class="inline-flex items-center gap-2 py-2 px-4 text-sm rounded-xl bg-panel border border-border text-text font-semibold hover:border-accent/40 transition"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i>View Calendar</button><button class="ara-dismiss py-2 px-4 text-sm rounded-xl bg-panel border border-border text-text font-semibold hover:border-accent/40 transition">Dismiss</button></div></div></div>
+              </div>
+              <div class="bg-panel border border-amber-500/30 rounded-2xl p-4">
+                <div class="flex items-start gap-4"><div class="w-10 h-10 rounded-xl bg-yellow-500/20 flex items-center justify-center shrink-0"><i data-lucide="chart-pie" class="w-5 h-5 text-yellow-500 shrink-0"></i></div><div class="flex-1 min-w-0"><div class="flex items-center justify-between mb-1 gap-3"><p class="font-semibold text-text">Portfolio Concentration Warning</p><span class="text-xs text-muted shrink-0">3 hours ago</span></div><p class="text-sm text-muted mb-3">Crypto allocation at 42% exceeds your target of 30%.</p><div class="flex items-center gap-2 flex-wrap"><button class="inline-flex items-center gap-2 py-2 px-4 text-sm rounded-xl bg-panel border border-border text-text font-semibold hover:border-accent/40 transition"><i data-lucide="scale" class="w-4 h-4 shrink-0"></i>Rebalance</button><button class="ara-dismiss py-2 px-4 text-sm rounded-xl bg-panel border border-border text-text font-semibold hover:border-accent/40 transition">Dismiss</button></div></div></div>
+              </div>
+            </div>
+            <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+              <h3 class="font-semibold text-text mb-6">Alert Thresholds</h3>
+              <div class="space-y-6">
+                <div><div class="flex items-center justify-between mb-2"><label class="text-sm text-muted">Max Drawdown Alert</label><span class="text-sm font-medium text-text">20%</span></div><input type="range" class="w-full" min="5" max="50" value="20" /></div>
+                <div><div class="flex items-center justify-between mb-2"><label class="text-sm text-muted">Position Risk Score</label><span class="text-sm font-medium text-text">75</span></div><input type="range" class="w-full" min="0" max="100" value="75" /></div>
+                <div><div class="flex items-center justify-between mb-2"><label class="text-sm text-muted">Correlation Threshold</label><span class="text-sm font-medium text-text">0.80</span></div><input type="range" class="w-full" min="0" max="100" value="80" /></div>
+                <div class="border-t border-border pt-6">
+                  <h4 class="font-medium text-text mb-4">Notification Channels</h4>
+                  <div class="space-y-3">
+                    <label class="flex items-center justify-between cursor-pointer gap-3"><span class="text-sm text-muted">Email Notifications</span><input type="checkbox" checked class="custom-checkbox" /></label>
+                    <label class="flex items-center justify-between cursor-pointer gap-3"><span class="text-sm text-muted">Push Notifications</span><input type="checkbox" checked class="custom-checkbox" /></label>
+                    <label class="flex items-center justify-between cursor-pointer gap-3"><span class="text-sm text-muted">SMS Alerts</span><input type="checkbox" class="custom-checkbox" /></label>
+                    <label class="flex items-center justify-between cursor-pointer gap-3"><span class="text-sm text-muted">Telegram Bot</span><input type="checkbox" checked class="custom-checkbox" /></label>
+                  </div>
+                </div>
+                <button class="ara-toast-btn w-full justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition" data-toast-title="Settings Saved" data-toast-msg="Alert thresholds updated"><i data-lucide="save" class="w-4 h-4 shrink-0"></i>Save Settings</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== Stress Test ===== -->
+        <div class="tab-content ara-pane" id="ara-tab-scenarios">
+          <div class="grid grid-cols-1 @4xl/content:grid-cols-3 gap-6">
+            <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+              <h3 class="font-semibold text-text mb-6">Stress Test Scenarios</h3>
+              <div class="space-y-3">
+                <button class="ara-scenario active w-full p-4 border border-border rounded-xl text-left transition" data-scenario="crash"><div class="flex items-center gap-3"><div class="w-10 h-10 rounded-lg bg-red-500/20 flex items-center justify-center shrink-0"><i data-lucide="trending-down" class="w-5 h-5 text-red-500 shrink-0"></i></div><div><p class="font-medium text-text">Market Crash (-30%)</p><p class="text-xs text-muted">2008-style market event</p></div></div></button>
+                <button class="ara-scenario w-full p-4 border border-border rounded-xl text-left transition" data-scenario="winter"><div class="flex items-center gap-3"><div class="w-10 h-10 rounded-lg bg-sky-500/20 flex items-center justify-center shrink-0"><i data-lucide="snowflake" class="w-5 h-5 text-sky-500 shrink-0"></i></div><div><p class="font-medium text-text">Crypto Winter (-60%)</p><p class="text-xs text-muted">Crypto assets drop sharply</p></div></div></button>
+                <button class="ara-scenario w-full p-4 border border-border rounded-xl text-left transition" data-scenario="flash"><div class="flex items-center gap-3"><div class="w-10 h-10 rounded-lg bg-yellow-500/20 flex items-center justify-center shrink-0"><i data-lucide="zap" class="w-5 h-5 text-yellow-500 shrink-0"></i></div><div><p class="font-medium text-text">Flash Crash (-15%)</p><p class="text-xs text-muted">Sudden market drop</p></div></div></button>
+                <button class="ara-scenario w-full p-4 border border-border rounded-xl text-left transition" data-scenario="rate"><div class="flex items-center gap-3"><div class="w-10 h-10 rounded-lg bg-orange-500/20 flex items-center justify-center shrink-0"><i data-lucide="percent" class="w-5 h-5 text-orange-500 shrink-0"></i></div><div><p class="font-medium text-text">Rate Hike Shock</p><p class="text-xs text-muted">Unexpected 100bp rate hike</p></div></div></button>
+                <button class="ara-scenario w-full p-4 border border-border rounded-xl text-left transition" data-scenario="custom"><div class="flex items-center gap-3"><div class="w-10 h-10 rounded-lg bg-violet-500/20 flex items-center justify-center shrink-0"><i data-lucide="sliders-horizontal" class="w-5 h-5 text-violet-400 shrink-0"></i></div><div><p class="font-medium text-text">Custom Scenario</p><p class="text-xs text-muted">Define your own parameters</p></div></div></button>
+              </div>
+              <button id="araRunStress" class="w-full justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition mt-6"><i data-lucide="play" class="w-4 h-4 shrink-0"></i>Run Stress Test</button>
+            </div>
+            <div class="@4xl/content:col-span-2 space-y-6">
+              <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+                <div class="flex items-center justify-between mb-6 gap-3 flex-wrap"><h3 class="font-semibold text-text">Stress Test Results: Market Crash (-30%)</h3><button class="ara-export inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition"><i data-lucide="download" class="w-4 h-4 shrink-0"></i>Export</button></div>
+                <div class="grid grid-cols-1 @2xl/content:grid-cols-3 gap-4 mb-6">
+                  <div class="p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-center"><p class="text-sm text-muted mb-1">Estimated Loss</p><p class="text-2xl font-bold text-red-500">-$37,350</p><p class="text-xs text-red-400">-30% of portfolio</p></div>
+                  <div class="p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-xl text-center"><p class="text-sm text-muted mb-1">Margin Call Risk</p><p class="text-2xl font-bold text-yellow-500">HIGH</p><p class="text-xs text-yellow-400">2 positions at risk</p></div>
+                  <div class="p-4 bg-sky-500/10 border border-sky-500/20 rounded-xl text-center"><p class="text-sm text-muted mb-1">Recovery Time</p><p class="text-2xl font-bold text-sky-500">~8 mo</p><p class="text-xs text-sky-400">Based on historical data</p></div>
+                </div>
+                <div class="h-64"><canvas id="araStressChart"></canvas></div>
+              </div>
+              <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+                <h3 class="font-semibold text-text mb-4">Position Impact Analysis</h3>
+                <div class="space-y-3">
+                  <div class="flex items-center justify-between p-3 border border-border rounded-xl gap-3"><div class="flex items-center gap-3 min-w-0"><div class="w-8 h-8 rounded-lg bg-orange-500/20 flex items-center justify-center shrink-0"><i data-lucide="bitcoin" class="w-4 h-4 text-orange-500 shrink-0"></i></div><span class="font-medium text-text">BTC/USD</span></div><div class="text-right shrink-0"><p class="text-red-500 font-medium">-$15,840</p><p class="text-xs text-muted">-36.4%</p></div></div>
+                  <div class="flex items-center justify-between p-3 border border-border rounded-xl gap-3"><div class="flex items-center gap-3 min-w-0"><div class="w-8 h-8 rounded-lg bg-indigo-500/20 flex items-center justify-center shrink-0"><span class="text-indigo-400 font-bold text-xs">Ξ</span></div><span class="font-medium text-text">ETH/USD</span></div><div class="text-right shrink-0"><p class="text-red-500 font-medium">-$10,710</p><p class="text-xs text-muted">-40.0%</p></div></div>
+                  <div class="flex items-center justify-between p-3 border border-border rounded-xl gap-3"><div class="flex items-center gap-3 min-w-0"><div class="w-8 h-8 rounded-lg bg-sky-500/20 flex items-center justify-center shrink-0"><i data-lucide="euro" class="w-4 h-4 text-sky-500 shrink-0"></i></div><span class="font-medium text-text">EUR/USD</span></div><div class="text-right shrink-0"><p class="text-red-500 font-medium">-$5,425</p><p class="text-xs text-muted">-10.0%</p></div></div>
+                  <div class="flex items-center justify-between p-3 border border-border rounded-xl gap-3"><div class="flex items-center gap-3 min-w-0"><div class="w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center shrink-0"><i data-lucide="pound-sterling" class="w-4 h-4 text-emerald-500 shrink-0"></i></div><span class="font-medium text-text">GBP/USD</span></div><div class="text-right shrink-0"><p class="text-red-500 font-medium">-$5,375</p><p class="text-xs text-muted">-14.1%</p></div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Drawer -->
+    <div class="drawer-overlay" id="araDrawerOverlay"></div>
+    <div class="drawer" id="araDrawer">
+      <div class="p-4 sm:p-6 border-b border-border flex items-center justify-between sticky top-0 bg-panel z-10">
+        <h3 class="font-bold text-lg text-text" id="araDrawerTitle">Details</h3>
+        <button class="ara-drawer-close flex w-10 h-10 items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition" aria-label="Close drawer"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+      </div>
+      <div class="p-4 sm:p-6">
+        <!-- Settings -->
+        <div class="ara-panel space-y-6" data-panel="settings" hidden>
+          <div>
+            <h4 class="font-semibold text-text mb-4">Risk Parameters</h4>
+            <div class="space-y-4">
+              <div><label class="block text-sm text-muted mb-2">Risk Tolerance</label><select class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option>Conservative</option><option selected>Moderate</option><option>Aggressive</option></select></div>
+              <div><label class="block text-sm text-muted mb-2">Max Portfolio Risk (%)</label><input type="number" value="20" class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition" /></div>
+              <div><label class="block text-sm text-muted mb-2">Max Single Position (%)</label><input type="number" value="15" class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition" /></div>
+            </div>
+          </div>
+          <button class="ara-toast-btn w-full justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition" data-toast-title="Settings Saved" data-toast-msg="Parameters updated" data-close><i data-lucide="save" class="w-4 h-4 shrink-0"></i>Save Settings</button>
+        </div>
+
+        <!-- Action -->
+        <div class="ara-panel space-y-6" data-panel="action" hidden>
+          <div class="p-4 bg-red-500/10 border border-red-500/20 rounded-xl">
+            <div class="flex items-center gap-3 mb-2"><i data-lucide="circle-alert" class="w-5 h-5 text-red-500 shrink-0"></i><p class="font-semibold text-text">AI Recommendation</p></div>
+            <p class="text-sm text-muted">Reduce BTC/USD position by 40% to bring risk score below threshold.</p>
+          </div>
+          <div class="space-y-3">
+            <button class="w-full p-4 border border-border rounded-xl text-left hover:border-red-500/40 transition"><div class="flex items-center gap-3"><div class="w-10 h-10 rounded-lg bg-red-500/20 flex items-center justify-center shrink-0"><i data-lucide="trending-down" class="w-5 h-5 text-red-500 shrink-0"></i></div><div><p class="font-medium text-text">Reduce Position</p><p class="text-xs text-muted">Sell 40% of BTC holdings</p></div></div></button>
+            <button class="w-full p-4 border border-border rounded-xl text-left hover:border-yellow-500/40 transition"><div class="flex items-center gap-3"><div class="w-10 h-10 rounded-lg bg-yellow-500/20 flex items-center justify-center shrink-0"><i data-lucide="shield" class="w-5 h-5 text-yellow-500 shrink-0"></i></div><div><p class="font-medium text-text">Set Stop-Loss</p><p class="text-xs text-muted">Add protection at $48,500</p></div></div></button>
+            <button class="w-full p-4 border border-border rounded-xl text-left hover:border-emerald-500/40 transition"><div class="flex items-center gap-3"><div class="w-10 h-10 rounded-lg bg-emerald-500/20 flex items-center justify-center shrink-0"><i data-lucide="scale" class="w-5 h-5 text-emerald-500 shrink-0"></i></div><div><p class="font-medium text-text">Hedge Position</p><p class="text-xs text-muted">Open short hedge</p></div></div></button>
+          </div>
+          <button class="ara-toast-btn w-full justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition" data-toast-title="Action Executed" data-toast-msg="Position adjustment in progress" data-close>Execute Action</button>
+        </div>
+
+        <!-- Position -->
+        <div class="ara-panel space-y-6" data-panel="position" hidden>
+          <div class="flex items-center gap-4 p-4 border border-border rounded-xl">
+            <div class="w-14 h-14 rounded-xl bg-orange-500/20 flex items-center justify-center shrink-0"><i data-lucide="bitcoin" class="w-7 h-7 text-orange-500 shrink-0"></i></div>
+            <div class="min-w-0"><h4 class="font-bold text-xl text-text" id="araPosPair">BTC/USD</h4><p class="text-sm text-muted">Long Position • 0.85 BTC</p></div>
+          </div>
+          <div class="grid grid-cols-2 gap-4">
+            <div class="p-4 border border-border rounded-xl"><p class="text-xs text-muted mb-1">Entry Price</p><p class="text-lg font-semibold text-text">$51,200</p></div>
+            <div class="p-4 border border-border rounded-xl"><p class="text-xs text-muted mb-1">Current Price</p><p class="text-lg font-semibold text-text">$52,340</p></div>
+            <div class="p-4 border border-border rounded-xl"><p class="text-xs text-muted mb-1">Unrealized P/L</p><p class="text-lg font-semibold text-emerald-500">+$968.90</p></div>
+            <div class="p-4 border border-border rounded-xl"><p class="text-xs text-muted mb-1">Risk Score</p><p class="text-lg font-semibold text-red-500">85/100</p></div>
+          </div>
+          <div class="flex gap-3">
+            <button class="ara-toast-btn flex-1 justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-red-500 text-white text-sm font-semibold whitespace-nowrap hover:bg-red-600 transition" data-toast-title="Position Closed" data-toast-msg="Close order submitted" data-close><i data-lucide="x" class="w-4 h-4 shrink-0"></i>Close Position</button>
+            <button class="flex-1 justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-panel border border-border text-text text-sm font-semibold whitespace-nowrap hover:border-accent/40 hover:text-accent transition"><i data-lucide="square-pen" class="w-4 h-4 shrink-0"></i>Edit</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="araToast">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-5 h-5 text-white shrink-0"></i></div>
+      <div>
+        <p class="font-semibold text-text" id="araToastTitle">Success</p>
+        <p class="text-sm text-muted" id="araToastMessage">Operation completed</p>
+      </div>
+      <button id="araToastClose" class="p-2 ml-auto rounded-lg text-muted hover:bg-border/50 transition" aria-label="Dismiss"><i data-lucide="x" class="w-4 h-4 shrink-0"></i></button>
+    </div>
+
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
+  </body>
+</html>

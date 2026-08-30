@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>Cryptrix — AI Crypto Investing & Trading App</title>
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="shortcut icon" href="./assets/images/favicon.ico" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+    <!-- Theme Script (Placed early to prevent FOUC) -->
+    <script>
+      (function () {
+        const saved = localStorage.getItem("theme") || "dark";
+        if (saved === "dark") document.documentElement.classList.add("dark");
+        else document.documentElement.classList.remove("dark");
+      })();
+    </script>
+  <link href="assets/css/index.css" rel="stylesheet"></head>
+  <body class="font-sans overflow-x-hidden">
+    <div class="min-h-screen flex justify-center">
+      <div
+        class="relative w-full max-w-[430px] min-h-screen overflow-x-hidden shadow-[0_0_80px_rgba(0,212,170,0.08)]"
+        id="app"
+      >
+        <div
+          class="px-5 pt-4 pb-3 sticky top-0 bg-bg-dark/95 backdrop-blur-sm border-b border-white/5 z-10"
+        >
+          <div class="flex items-center justify-between mb-3">
+            <h1 class="text-2xl font-extrabold">Markets</h1>
+            <div class="flex gap-2">
+              <a
+                href="trending.html"
+                class="w-9 h-9 rounded-xl bg-surface-2 border border-white/[0.08] flex items-center justify-center"
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <polyline points="23 6 13.5 15.5 8.5 10.5 1 18" />
+                  <polyline points="17 6 23 6 23 12" />
+                </svg>
+              </a>
+              <a
+                href="gainers-losers.html"
+                class="w-9 h-9 rounded-xl bg-surface-2 border border-white/[0.08] flex items-center justify-center"
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <line x1="12" y1="1" x2="12" y2="23" />
+                  <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+                </svg>
+              </a>
+              <a
+                href="market-categories.html"
+                class="w-9 h-9 rounded-xl bg-surface-2 border border-white/[0.08] flex items-center justify-center"
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <rect x="3" y="3" width="7" height="7" />
+                  <rect x="14" y="3" width="7" height="7" />
+                  <rect x="14" y="14" width="7" height="7" />
+                  <rect x="3" y="14" width="7" height="7" />
+                </svg>
+              </a>
+            </div>
+          </div>
+          <div class="relative mb-3">
+            <svg
+              class="absolute left-3.5 top-1/2 -translate-y-1/2 text-white/30"
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <circle cx="11" cy="11" r="8" />
+              <line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+            <input
+              type="text"
+              id="mkt-search"
+              class="w-full bg-surface-2 border border-white/10 rounded-btn h-11 pl-10 pr-4 text-white placeholder-white/30 focus:outline-none focus:border-primary/50 text-sm"
+              placeholder="Search coins..."
+              oninput="filterMkt(this.value)"
+            />
+          </div>
+          <div class="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
+            <div
+              class="chip px-3 py-1.5 text-xs font-semibold rounded-pill cursor-pointer whitespace-nowrap border bg-primary text-bg-dark border-primary"
+              data-chip
+              onclick="
+                this.parentElement
+                  .querySelectorAll('[data-chip]')
+                  .forEach((c) => {
+                    c.className =
+                      'chip px-3 py-1.5 text-xs font-semibold rounded-pill cursor-pointer whitespace-nowrap border bg-surface-2 text-white/60 border-white/10';
+                  });
+                this.className =
+                  'chip px-3 py-1.5 text-xs font-semibold rounded-pill cursor-pointer whitespace-nowrap border bg-primary text-bg-dark border-primary';
+              "
+            >
+              All
+            </div>
+            <div
+              class="chip px-3 py-1.5 text-xs font-semibold rounded-pill cursor-pointer whitespace-nowrap border bg-surface-2 text-white/60 border-white/10"
+              data-chip
+              onclick="
+                this.parentElement
+                  .querySelectorAll('[data-chip]')
+                  .forEach((c) => {
+                    c.className =
+                      'chip px-3 py-1.5 text-xs font-semibold rounded-pill cursor-pointer whitespace-nowrap border bg-surface-2 text-white/60 border-white/10';
+                  });
+                this.className =
+                  'chip px-3 py-1.5 text-xs font-semibold rounded-pill cursor-pointer whitespace-nowrap border bg-primary text-bg-dark border-primary';
+              "
+            >
+              Top 100
+            </div>
+            <div
+              class="chip px-3 py-1.5 text-xs font-semibold rounded-pill cursor-pointer whitespace-nowrap border bg-surface-2 text-white/60 border-white/10"
+              data-chip
+              onclick="
+                this.parentElement
+                  .querySelectorAll('[data-chip]')
+                  .forEach((c) => {
+                    c.className =
+                      'chip px-3 py-1.5 text-xs font-semibold rounded-pill cursor-pointer whitespace-nowrap border bg-surface-2 text-white/60 border-white/10';
+                  });
+                this.className =
+                  'chip px-3 py-1.5 text-xs font-semibold rounded-pill cursor-pointer whitespace-nowrap border bg-primary text-bg-dark border-primary';
+              "
+            >
+              Trending
+            </div>
+            <div
+              class="chip px-3 py-1.5 text-xs font-semibold rounded-pill cursor-pointer whitespace-nowrap border bg-surface-2 text-white/60 border-white/10"
+              data-chip
+              onclick="
+                this.parentElement
+                  .querySelectorAll('[data-chip]')
+                  .forEach((c) => {
+                    c.className =
+                      'chip px-3 py-1.5 text-xs font-semibold rounded-pill cursor-pointer whitespace-nowrap border bg-surface-2 text-white/60 border-white/10';
+                  });
+                this.className =
+                  'chip px-3 py-1.5 text-xs font-semibold rounded-pill cursor-pointer whitespace-nowrap border bg-primary text-bg-dark border-primary';
+              "
+            >
+              DeFi
+            </div>
+            <div
+              class="chip px-3 py-1.5 text-xs font-semibold rounded-pill cursor-pointer whitespace-nowrap border bg-surface-2 text-white/60 border-white/10"
+              data-chip
+              onclick="
+                this.parentElement
+                  .querySelectorAll('[data-chip]')
+                  .forEach((c) => {
+                    c.className =
+                      'chip px-3 py-1.5 text-xs font-semibold rounded-pill cursor-pointer whitespace-nowrap border bg-surface-2 text-white/60 border-white/10';
+                  });
+                this.className =
+                  'chip px-3 py-1.5 text-xs font-semibold rounded-pill cursor-pointer whitespace-nowrap border bg-primary text-bg-dark border-primary';
+              "
+            >
+              Layer 1
+            </div>
+            <div
+              class="chip px-3 py-1.5 text-xs font-semibold rounded-pill cursor-pointer whitespace-nowrap border bg-surface-2 text-white/60 border-white/10"
+              data-chip
+              onclick="
+                this.parentElement
+                  .querySelectorAll('[data-chip]')
+                  .forEach((c) => {
+                    c.className =
+                      'chip px-3 py-1.5 text-xs font-semibold rounded-pill cursor-pointer whitespace-nowrap border bg-surface-2 text-white/60 border-white/10';
+                  });
+                this.className =
+                  'chip px-3 py-1.5 text-xs font-semibold rounded-pill cursor-pointer whitespace-nowrap border bg-primary text-bg-dark border-primary';
+              "
+            >
+              Layer 2
+            </div>
+            <div
+              class="chip px-3 py-1.5 text-xs font-semibold rounded-pill cursor-pointer whitespace-nowrap border bg-surface-2 text-white/60 border-white/10"
+              data-chip
+              onclick="
+                this.parentElement
+                  .querySelectorAll('[data-chip]')
+                  .forEach((c) => {
+                    c.className =
+                      'chip px-3 py-1.5 text-xs font-semibold rounded-pill cursor-pointer whitespace-nowrap border bg-surface-2 text-white/60 border-white/10';
+                  });
+                this.className =
+                  'chip px-3 py-1.5 text-xs font-semibold rounded-pill cursor-pointer whitespace-nowrap border bg-primary text-bg-dark border-primary';
+              "
+            >
+              Gaming
+            </div>
+          </div>
+        </div>
+        <div
+          class="px-5 py-2 flex items-center gap-2 text-[11px] text-white/30"
+        >
+          <div class="w-6">#</div>
+          <div class="flex-1">Asset</div>
+          <div class="w-14 text-center">7D</div>
+          <div class="w-[72px] text-right">Price / 24h</div>
+        </div>
+        <div id="mkt-list" class="px-5 pb-24"></div>
+
+        <nav
+  class="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] bg-surface border-t border-white/[0.08] flex items-center justify-around h-[72px] z-50"
+>
+  <a
+    href="home.html"
+    id="nav-home"
+    class="flex flex-col items-center gap-1 text-white/40 hover:text-primary transition-colors"
+  >
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+      <polyline points="9 22 9 12 15 12 15 22" />
+    </svg>
+    <span class="text-[10px] font-semibold">Home</span>
+  </a>
+  <a
+    href="market-overview.html"
+    id="nav-market"
+    class="flex flex-col items-center gap-1 text-white/40 hover:text-primary transition-colors"
+  >
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <polyline points="22 7 13.5 15.5 8.5 10.5 1 18" />
+      <polyline points="16 7 22 7 22 13" />
+    </svg>
+    <span class="text-[10px] font-semibold">Markets</span>
+  </a>
+  <a
+    href="trade.html"
+    id="nav-trade"
+    class="flex flex-col items-center gap-1 text-white/40 hover:text-primary transition-colors"
+  >
+    <div
+      class="w-12 h-12 rounded-lg bg-primary flex flex-col items-center justify-center shadow-primary"
+    >
+      <svg
+        width="22"
+        height="22"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="#000000"
+        stroke-width="2.2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <polyline points="17 1 21 5 17 9" />
+        <path d="M3 11V9a4 4 0 0 1 4-4h14" />
+        <polyline points="7 23 3 19 7 15" />
+        <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+      </svg>
+      <span class="text-[10px] text-black font-semibold">Trade</span>
+    </div>
+  </a>
+  <a
+    href="portfolio-overview.html"
+    id="nav-portfolio"
+    class="flex flex-col items-center gap-1 text-white/40 hover:text-primary transition-colors"
+  >
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <rect x="2" y="7" width="20" height="14" rx="2" ry="2" />
+      <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16" />
+    </svg>
+    <span class="text-[10px] font-semibold">Portfolio</span>
+  </a>
+  <a
+    href="profile.html"
+    id="nav-profile"
+    class="flex flex-col items-center gap-1 text-white/40 hover:text-primary transition-colors"
+  >
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+      <circle cx="12" cy="7" r="4" />
+    </svg>
+    <span class="text-[10px] font-semibold">Profile</span>
+  </a>
+</nav>
+
+      </div>
+    </div>
+    <script src="./assets/js/data.js"></script>
+    <script src="./assets/js/charts.js"></script>
+    <script src="./assets/js/components.js"></script>
+    <script src="./assets/js/app.js"></script>
+    <script>
+      const el = document.getElementById("nav-market");
+      if (el) {
+        el.classList.add("text-primary");
+        el.classList.remove("text-white/40");
+      }
+
+      document.addEventListener("DOMContentLoaded", () => {
+        const d = window.AppData;
+        if (!d) return;
+        renderMkt(d.coins);
+      });
+      function renderMkt(coins) {
+        const d = window.AppData;
+        const el = document.getElementById("mkt-list");
+        if (!el) return;
+        el.innerHTML = coins
+          .map(
+            (c, i) => `
+          <a href="coin-detail.html?id=${c.id}" class="flex items-center gap-2 py-3 border-b border-white/5 cursor-pointer">
+            <div class="w-6 text-[11px] text-white/30 text-center flex-shrink-0">${c.rank}</div>
+            <div class="w-11 h-11 rounded-[14px] flex items-center justify-center text-[11px] font-black flex-shrink-0" style="background:${c.color}22;color:${c.color}">${c.symbol.substring(0, 3)}</div>
+            <div class="flex-1 min-w-0"><div class="text-sm font-bold truncate">${c.name}</div><div class="text-[11px] text-white/40">${c.symbol}</div></div>
+            <canvas id="mc-${i}" width="56" height="28" class="flex-shrink-0"></canvas>
+            <div class="w-[72px] text-right flex-shrink-0"><div class="text-[13px] font-bold">${d.formatPrice(c.price)}</div><div class="text-[11px] ${c.change24h >= 0 ? "text-success" : "text-error"}">${d.formatChange(c.change24h)}</div></div>
+          </a>`,
+          )
+          .join("");
+        coins
+          .slice(0, 12)
+          .forEach((c, i) =>
+            setTimeout(
+              () =>
+                Charts.miniLine(
+                  `mc-${i}`,
+                  c.history7d.slice(-12),
+                  c.change24h >= 0,
+                ),
+              100 + i * 20,
+            ),
+          );
+      }
+      function filterMkt(q) {
+        const d = window.AppData;
+        if (!d) return;
+        const filtered = q
+          ? d.coins.filter(
+              (c) =>
+                c.name.toLowerCase().includes(q.toLowerCase()) ||
+                c.symbol.toLowerCase().includes(q.toLowerCase()),
+            )
+          : d.coins;
+        renderMkt(filtered);
+      }
+    </script>
+  <script defer src="index.js"></script></body>
+</html>

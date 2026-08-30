@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+     <title>Cryptrix — AI Crypto Investing & Trading App</title>
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="shortcut icon" href="./assets/images/favicon.ico" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"
+      rel="stylesheet"
+    />
+
+    <!-- Theme Script (Placed early to prevent FOUC) -->
+    <script>
+      (function () {
+        const saved = localStorage.getItem("theme") || "dark";
+        if (saved === "dark") document.documentElement.classList.add("dark");
+        else document.documentElement.classList.remove("dark");
+      })();
+    </script>
+  <link href="assets/css/index.css" rel="stylesheet"></head>
+  <body class="font-sans overflow-x-hidden">
+    <div class="min-h-screen flex justify-center">
+      <div
+        class="relative w-full max-w-[430px] min-h-screen overflow-x-hidden shadow-[0_0_80px_rgba(0,212,170,0.08)] bg-bg-dark"
+        id="app"
+      >
+        <!-- Header -->
+        <div
+          class="flex items-center justify-between px-5 py-3.5 sticky top-0 bg-surface border-b border-white/5 z-10"
+        >
+          <a
+            href="trade.html"
+            class="w-10 h-10 rounded-xl bg-surface-2 border border-white/5 flex items-center justify-center flex-shrink-0 transition-all active:scale-95"
+          >
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              class="rtl:rotate-180"
+            >
+              <path d="M19 12H5M12 19l-7-7 7-7" />
+            </svg>
+          </a>
+          <h1 class="text-[17px] font-bold text-white">Buy Crypto</h1>
+          <div class="w-10"></div>
+        </div>
+
+        <div class="px-5 pt-5 pb-24 animate-fade-up">
+          <!-- Asset Preview Card -->
+          <div
+            id="asset-preview"
+            class="bg-surface rounded-[24px] p-5 mb-5 border border-white/5 shadow-sm flex items-center justify-between"
+          >
+            <div class="flex items-center gap-4">
+              <div
+                id="coin-display-icon"
+                class="w-12 h-12 rounded-[18px] flex items-center justify-center text-[10px] font-black"
+                style="background: #f7931a15; color: #f7931a"
+              >
+                BTC
+              </div>
+              <div>
+                <div
+                  id="coin-display-name"
+                  class="text-base font-black text-white"
+                >
+                  Bitcoin
+                </div>
+                <div
+                  id="coin-display-price"
+                  class="text-[13px] text-success font-bold"
+                >
+                  $43,900.24 <span class="text-[11px] ml-1">▲ 2.34%</span>
+                </div>
+              </div>
+            </div>
+            <button
+              onclick="window.showCoinPickerSheet(updateCoin)"
+              class="px-4 h-9 rounded-full bg-surface-2 text-white text-xs font-black transition-all active:scale-90"
+            >
+              Change
+            </button>
+          </div>
+
+          <!-- Input Sections -->
+          <div class="mb-5">
+            <label class="text-[13px] font-bold text-white/50 block mb-2.5 ml-1"
+              >I want to spend</label
+            >
+            <div class="relative">
+              <input
+                type="number"
+                class="w-full bg-surface border border-white/5 rounded-[20px] h-16 px-5 pr-24 text-white text-[24px] font-black focus:outline-none focus:ring-2 focus:ring-[#00D4AA]/20 transition-all placeholder:text-white/20"
+                placeholder="0.00"
+                value="500"
+                oninput="updateReceiveAmount(this.value)"
+              />
+              <div
+                class="absolute right-3 top-1/2 -translate-y-1/2 px-4 h-10 flex items-center bg-surface-2 border border-white/5 rounded-xl text-sm font-black text-white"
+              >
+                USDT
+              </div>
+            </div>
+            <div class="flex justify-between px-1 mt-2.5">
+              <div class="text-[12px] text-white/50 font-medium">
+                Balance:
+                <span class="text-white font-bold">12,450.00 USDT</span>
+              </div>
+              <button
+                class="text-[#00D4AA] text-[12px] font-black hover:opacity-80"
+              >
+                MAX
+              </button>
+            </div>
+          </div>
+
+          <div class="flex justify-center -my-2 relative z-10">
+            <div
+              class="w-10 h-10 bg-surface rounded-full border border-white/5 flex items-center justify-center shadow-sm"
+            >
+              <svg
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="#00D4AA"
+                stroke-width="3"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M7 10l5 5 5-5" />
+              </svg>
+            </div>
+          </div>
+
+          <div class="mb-6">
+            <label class="text-[13px] font-bold text-white/50 block mb-2.5 ml-1"
+              >I will receive</label
+            >
+            <div
+              class="bg-surface border border-white/5 rounded-[20px] p-5 flex items-center justify-between"
+            >
+              <div>
+                <div
+                  id="receive-amount"
+                  class="text-[24px] font-black text-white"
+                >
+                  ≈ 0.01139
+                </div>
+                <div
+                  id="receive-symbol"
+                  class="text-[13px] text-white/50 font-bold"
+                >
+                  BTC
+                </div>
+              </div>
+              <div class="text-right">
+                <div class="text-[13px] text-white/50 font-medium">
+                  Best Rate
+                </div>
+                <div class="text-[13px] text-success font-bold">Instant</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Transaction Details -->
+          <div
+            class="bg-surface rounded-[24px] p-5 mb-8 border border-white/5 shadow-sm"
+          >
+            <div class="flex justify-between py-2.5 border-b border-white/5">
+              <span class="text-[13px] text-white/50 font-medium">Rate</span>
+              <span id="display-rate" class="text-[13px] font-bold text-white"
+                >1 BTC = 43,900.24 USDT</span
+              >
+            </div>
+            <div class="flex justify-between py-2.5 border-b border-white/5">
+              <span class="text-[13px] text-white/50 font-medium"
+                >Fee (0.1%)</span
+              >
+              <span class="text-[13px] font-bold text-white">0.50 USDT</span>
+            </div>
+            <div class="flex justify-between py-2.5">
+              <span class="text-[13px] text-white/50 font-medium"
+                >Total Cost</span
+              >
+              <span class="text-[13px] font-black text-[#00D4AA]"
+                >500.50 USDT</span
+              >
+            </div>
+          </div>
+
+          <a
+            href="order-confirmation.html"
+            class="bg-[#00D4AA] text-[#0A0B0F] font-extrabold rounded-[18px] h-14 flex items-center justify-center gap-2 transition-all active:scale-95 shadow-lg shadow-[#00D4AA]/20 w-full text-[15px]"
+          >
+            Review Order
+          </a>
+        </div>
+        <nav
+  class="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] bg-surface border-t border-white/[0.08] flex items-center justify-around h-[72px] z-50"
+>
+  <a
+    href="home.html"
+    id="nav-home"
+    class="flex flex-col items-center gap-1 text-white/40 hover:text-primary transition-colors"
+  >
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+      <polyline points="9 22 9 12 15 12 15 22" />
+    </svg>
+    <span class="text-[10px] font-semibold">Home</span>
+  </a>
+  <a
+    href="market-overview.html"
+    id="nav-market"
+    class="flex flex-col items-center gap-1 text-white/40 hover:text-primary transition-colors"
+  >
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <polyline points="22 7 13.5 15.5 8.5 10.5 1 18" />
+      <polyline points="16 7 22 7 22 13" />
+    </svg>
+    <span class="text-[10px] font-semibold">Markets</span>
+  </a>
+  <a
+    href="trade.html"
+    id="nav-trade"
+    class="flex flex-col items-center gap-1 text-white/40 hover:text-primary transition-colors"
+  >
+    <div
+      class="w-12 h-12 rounded-lg bg-primary flex flex-col items-center justify-center shadow-primary"
+    >
+      <svg
+        width="22"
+        height="22"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="#000000"
+        stroke-width="2.2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <polyline points="17 1 21 5 17 9" />
+        <path d="M3 11V9a4 4 0 0 1 4-4h14" />
+        <polyline points="7 23 3 19 7 15" />
+        <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+      </svg>
+      <span class="text-[10px] text-black font-semibold">Trade</span>
+    </div>
+  </a>
+  <a
+    href="portfolio-overview.html"
+    id="nav-portfolio"
+    class="flex flex-col items-center gap-1 text-white/40 hover:text-primary transition-colors"
+  >
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <rect x="2" y="7" width="20" height="14" rx="2" ry="2" />
+      <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16" />
+    </svg>
+    <span class="text-[10px] font-semibold">Portfolio</span>
+  </a>
+  <a
+    href="profile.html"
+    id="nav-profile"
+    class="flex flex-col items-center gap-1 text-white/40 hover:text-primary transition-colors"
+  >
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+      <circle cx="12" cy="7" r="4" />
+    </svg>
+    <span class="text-[10px] font-semibold">Profile</span>
+  </a>
+</nav>
+
+      </div>
+    </div>
+
+    <script src="./assets/js/data.js"></script>
+    <script src="./assets/js/charts.js"></script>
+    <script src="./assets/js/components.js"></script>
+    <script src="./assets/js/app.js"></script>
+    <script>
+      let currentCoin = window.AppData.coins[0]; // BTC
+
+      function updateCoin(id) {
+        const coin = window.AppData.coins.find((c) => c.id === id);
+        if (!coin) return;
+        currentCoin = coin;
+
+        document.getElementById("coin-display-icon").style.background =
+          coin.color + "15";
+        document.getElementById("coin-display-icon").style.color = coin.color;
+        document.getElementById("coin-display-icon").textContent =
+          coin.symbol.substring(0, 3);
+        document.getElementById("coin-display-name").textContent = coin.name;
+        document.getElementById("coin-display-price").innerHTML =
+          `${formatPrice(coin.price)} <span class="text-[11px] ml-1">${formatChange(coin.change24h)}</span>`;
+        document.getElementById("receive-symbol").textContent = coin.symbol;
+        document.getElementById("display-rate").textContent =
+          `1 ${coin.symbol} = ${formatPrice(coin.price)} USDT`;
+
+        updateReceiveAmount(500); // Trigger calculation with default
+        showToast(`${coin.name} selected`, "info");
+      }
+
+      function updateReceiveAmount(val) {
+        const amt = parseFloat(val) || 0;
+        const receive = amt / currentCoin.price;
+        document.getElementById("receive-amount").textContent =
+          `≈ ${receive.toFixed(6)}`;
+      }
+    </script>
+  <script defer src="index.js"></script></body>
+</html>

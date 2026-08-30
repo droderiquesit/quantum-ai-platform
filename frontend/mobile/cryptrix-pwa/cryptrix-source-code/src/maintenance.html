@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>Cryptrix — AI Crypto Investing & Trading App</title>
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="apple-touch-icon" href="/assets/images/logo.png" />
+    <meta name="theme-color" content="#00D4AA" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="shortcut icon" href="./assets/images/favicon.ico" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"
+      rel="stylesheet"
+    />
+
+    <!-- Theme Script (Placed early to prevent FOUC) -->
+    <script>
+      (function () {
+        const saved = localStorage.getItem("theme") || "dark";
+        if (saved === "dark") document.documentElement.classList.add("dark");
+        else document.documentElement.classList.remove("dark");
+      })();
+    </script>
+  </head>
+  <body class="font-sans overflow-x-hidden">
+    <div class="min-h-screen flex justify-center">
+      <div
+        class="relative w-full max-w-[430px] min-h-screen overflow-x-hidden shadow-[0_0_80px_rgba(0,212,170,0.08)]"
+        id="app"
+      >
+        <div
+          class="min-h-screen flex flex-col items-center justify-center px-6 text-center"
+        >
+          <div
+            class="w-28 h-28 rounded-full bg-secondary/15 flex items-center justify-center mx-auto mb-6 animate-pulse"
+          >
+            <svg
+              width="52"
+              height="52"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="#7B61FF"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path
+                d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
+              />
+            </svg>
+          </div>
+          <h2 class="text-2xl font-extrabold mb-3">Scheduled Maintenance</h2>
+          <p class="text-white/50 text-sm leading-relaxed mb-6 max-w-[280px]">
+            We're upgrading our systems to bring you a faster, more reliable
+            experience. We'll be back online shortly.
+          </p>
+          <div
+            class="bg-surface border border-white/[0.08] rounded-card p-4 mb-8 w-full max-w-[300px]"
+          >
+            <div class="flex justify-between py-2 border-b border-white/5">
+              <span class="text-xs text-white/40">Status</span
+              ><span class="text-xs font-semibold text-warning"
+                >In Progress</span
+              >
+            </div>
+            <div class="flex justify-between py-2 border-b border-white/5">
+              <span class="text-xs text-white/40">Started</span
+              ><span class="text-xs font-semibold">03:00 UTC</span>
+            </div>
+            <div class="flex justify-between py-2">
+              <span class="text-xs text-white/40">Est. Duration</span
+              ><span class="text-xs font-semibold">~2 hours</span>
+            </div>
+          </div>
+          <a
+            href="home.html"
+            class="bg-primary text-bg-dark font-bold rounded-btn h-12 px-8 flex items-center gap-2 shadow-primary mb-3"
+            >Refresh Status</a
+          >
+          <div class="text-xs text-white/30">Follow <strong class="text-white/50">@Cryptrix</strong> on X for real-time status updates</div>
+        </div>
+      </div>
+    </div>
+    <script src="./assets/js/data.js"></script>
+    <script src="./assets/js/components.js"></script>
+    <script src="./assets/js/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,1006 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <script>
+      if (localStorage.getItem("theme") === "light") document.documentElement.classList.remove("dark");
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Forex Analytics - SignalAIX | AI Forex & Crypto Trading Signals</title>
+    <link rel="icon" type="image/png" href="assets/images/favicon.png" />
+    <link rel="apple-touch-icon" href="assets/images/favicon.png" />
+  </head>
+  <body id="forex-analytics">
+    <div id="loader"><div class="spinner"></div><div class="loader-text">Loading SignalAIX...</div></div>
+    <include-sidebar />
+    <main class="main-content" id="mainContent">
+      <include-top-header />
+      <div class="inner-content max-sm:px-3 max-lg:px-4 max-lg:py-6 lg:p-6">
+        <!-- Page Heading -->
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+          <div class="min-w-0">
+            <h1 class="text-2xl font-bold text-text">Forex Analytics</h1>
+            <p class="text-sm text-muted">Real-time forex market analysis and insights</p>
+          </div>
+          <div class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-accent/15 text-accent text-xs font-semibold w-fit">
+            <span class="live-dot"></span>
+            Live Market
+          </div>
+        </div>
+
+        <!-- Stats Overview -->
+        <div class="grid grid-cols-1 xs:grid-cols-2 @4xl/content:grid-cols-4 gap-4 mb-6">
+          <!-- USD Index -->
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-center justify-between mb-3">
+              <div class="w-12 h-12 rounded-xl bg-emerald-500/10 flex items-center justify-center shrink-0">
+                <i data-lucide="trending-up" class="w-6 h-6 text-emerald-500 shrink-0"></i>
+              </div>
+              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">
+                <i data-lucide="arrow-up" class="w-3 h-3 shrink-0"></i>
+                +2.4%
+              </span>
+            </div>
+            <p class="text-sm text-muted mb-1">USD Index</p>
+            <p class="text-2xl font-bold text-text">104.52</p>
+            <div class="mt-3 flex items-center gap-2 text-xs text-muted">
+              <span>High: 104.78</span>
+              <span>•</span>
+              <span>Low: 103.92</span>
+            </div>
+          </div>
+
+          <!-- EUR/USD -->
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-center justify-between mb-3">
+              <div class="w-12 h-12 rounded-xl bg-red-500/10 flex items-center justify-center shrink-0">
+                <i data-lucide="trending-down" class="w-6 h-6 text-red-500 shrink-0"></i>
+              </div>
+              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-500/15 text-red-500">
+                <i data-lucide="arrow-down" class="w-3 h-3 shrink-0"></i>
+                -1.8%
+              </span>
+            </div>
+            <p class="text-sm text-muted mb-1">EUR/USD</p>
+            <p class="text-2xl font-bold text-text">1.0842</p>
+            <div class="mt-3 flex items-center gap-2 text-xs text-muted">
+              <span>High: 1.0891</span>
+              <span>•</span>
+              <span>Low: 1.0812</span>
+            </div>
+          </div>
+
+          <!-- Market Volatility -->
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-center justify-between mb-3">
+              <div class="w-12 h-12 rounded-xl bg-amber-500/10 flex items-center justify-center shrink-0">
+                <i data-lucide="activity" class="w-6 h-6 text-amber-500 shrink-0"></i>
+              </div>
+              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-500">
+                <i data-lucide="minus" class="w-3 h-3 shrink-0"></i>
+                0.05%
+              </span>
+            </div>
+            <p class="text-sm text-muted mb-1">Market Volatility</p>
+            <p class="text-2xl font-bold text-text">Medium</p>
+            <div class="mt-3">
+              <div class="h-1.5 rounded-full bg-border overflow-hidden">
+                <div class="h-full rounded-full bg-amber-500" style="width: 58%"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Trading Sessions -->
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-center justify-between mb-3">
+              <div class="w-12 h-12 rounded-xl bg-indigo-500/10 flex items-center justify-center shrink-0">
+                <i data-lucide="chart-column" class="w-6 h-6 text-indigo-500 shrink-0"></i>
+              </div>
+              <span class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-indigo-500/15 text-indigo-500">Active</span>
+            </div>
+            <p class="text-sm text-muted mb-1">Trading Sessions</p>
+            <p class="text-2xl font-bold text-text">London</p>
+            <div class="mt-3 flex items-center gap-2 text-xs text-muted flex-wrap">
+              <span class="flex items-center gap-1">
+                <span class="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span>
+                NY in 2h
+              </span>
+              <span>•</span>
+              <span>Asia closed</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab Navigation & Filters -->
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-6">
+          <div class="flex gap-1 p-1 bg-panel border border-border rounded-2xl overflow-x-auto hide-scrollbar">
+            <button class="fa-tab whitespace-nowrap px-4 py-2.5 rounded-xl text-sm font-medium bg-accent text-white transition" data-tab="overview">Overview</button>
+            <button class="fa-tab whitespace-nowrap px-4 py-2.5 rounded-xl text-sm font-medium text-muted hover:text-text transition" data-tab="pairs">Currency Pairs</button>
+            <button class="fa-tab whitespace-nowrap px-4 py-2.5 rounded-xl text-sm font-medium text-muted hover:text-text transition" data-tab="analysis">Technical Analysis</button>
+            <button class="fa-tab whitespace-nowrap px-4 py-2.5 rounded-xl text-sm font-medium text-muted hover:text-text transition" data-tab="signals">Signals</button>
+            <button class="fa-tab whitespace-nowrap px-4 py-2.5 rounded-xl text-sm font-medium text-muted hover:text-text transition" data-tab="performance">Performance</button>
+          </div>
+
+          <div class="flex items-center gap-3 flex-wrap">
+            <button class="fa-open-filter whitespace-nowrap inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-border text-sm font-semibold text-text hover:bg-border/50 transition">
+              <i data-lucide="sliders-horizontal" class="w-4 h-4 shrink-0"></i>
+              Filters
+            </button>
+            <button class="fa-open-export whitespace-nowrap inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-border text-sm font-semibold text-text hover:bg-border/50 transition">
+              <i data-lucide="download" class="w-4 h-4 shrink-0"></i>
+              Export
+            </button>
+            <button id="faNewAnalysisBtn" class="whitespace-nowrap inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-br from-accent to-teal-500 text-white text-sm font-semibold transition hover:opacity-90">
+              <i data-lucide="plus" class="w-4 h-4 shrink-0"></i>
+              New Analysis
+            </button>
+          </div>
+        </div>
+
+        <!-- Tab Content -->
+        <div>
+          <!-- Overview Tab -->
+          <div class="fa-panel" id="fa-overview-panel">
+            <div class="grid grid-cols-1 @4xl/content:grid-cols-3 gap-6">
+              <!-- Main Chart Area -->
+              <div class="@4xl/content:col-span-2 self-stretch flex flex-col">
+                <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6 flex flex-col flex-1">
+                  <div class="flex flex-col xs:flex-row xs:items-start xs:justify-between gap-3 mb-6">
+                    <div class="min-w-0">
+                      <h3 class="text-lg font-bold text-text">Market Overview</h3>
+                      <p class="text-sm text-muted">Major currency pairs performance</p>
+                    </div>
+                    <select id="faChartTimeframe" class="shrink-0 px-3 py-2 rounded-xl bg-panel border border-border text-sm text-text outline-none focus:border-accent">
+                      <option value="1H">1 Hour</option>
+                      <option value="4H" selected>4 Hours</option>
+                      <option value="1D">1 Day</option>
+                      <option value="1W">1 Week</option>
+                      <option value="1M">1 Month</option>
+                    </select>
+                  </div>
+                  <div class="relative flex-1 min-h-72 w-full">
+                    <canvas id="faMarketOverviewChart"></canvas>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Side Panels -->
+              <div class="space-y-6">
+                <!-- Top Movers -->
+                <div class="rounded-2xl bg-panel border border-border p-5">
+                  <div class="flex items-center justify-between mb-4">
+                    <h3 class="font-semibold text-text">Top Movers</h3>
+                    <button class="text-sm text-accent hover:underline">View All</button>
+                  </div>
+                  <div class="space-y-3">
+                    <div class="flex items-center justify-between gap-2 p-3 rounded-xl bg-emerald-500/5 border border-emerald-500/20">
+                      <div class="flex items-center gap-3 min-w-0">
+                        <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center text-white font-bold text-xs shrink-0">GBP</div>
+                        <div class="min-w-0">
+                          <p class="font-semibold text-text text-sm">GBP/JPY</p>
+                          <p class="text-xs text-muted truncate">British Pound / Yen</p>
+                        </div>
+                      </div>
+                      <div class="text-right shrink-0">
+                        <p class="font-bold text-emerald-500">+1.24%</p>
+                        <p class="text-xs text-muted">189.42</p>
+                      </div>
+                    </div>
+
+                    <div class="flex items-center justify-between gap-2 p-3 rounded-xl bg-emerald-500/5 border border-emerald-500/20">
+                      <div class="flex items-center gap-3 min-w-0">
+                        <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-sky-500 to-indigo-500 flex items-center justify-center text-white font-bold text-xs shrink-0">AUD</div>
+                        <div class="min-w-0">
+                          <p class="font-semibold text-text text-sm">AUD/USD</p>
+                          <p class="text-xs text-muted truncate">Australian Dollar</p>
+                        </div>
+                      </div>
+                      <div class="text-right shrink-0">
+                        <p class="font-bold text-emerald-500">+0.87%</p>
+                        <p class="text-xs text-muted">0.6521</p>
+                      </div>
+                    </div>
+
+                    <div class="flex items-center justify-between gap-2 p-3 rounded-xl bg-red-500/5 border border-red-500/20">
+                      <div class="flex items-center gap-3 min-w-0">
+                        <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center text-white font-bold text-xs shrink-0">EUR</div>
+                        <div class="min-w-0">
+                          <p class="font-semibold text-text text-sm">EUR/GBP</p>
+                          <p class="text-xs text-muted truncate">Euro / Pound</p>
+                        </div>
+                      </div>
+                      <div class="text-right shrink-0">
+                        <p class="font-bold text-red-500">-0.65%</p>
+                        <p class="text-xs text-muted">0.8612</p>
+                      </div>
+                    </div>
+
+                    <div class="flex items-center justify-between gap-2 p-3 rounded-xl bg-red-500/5 border border-red-500/20">
+                      <div class="flex items-center gap-3 min-w-0">
+                        <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center text-white font-bold text-xs shrink-0">USD</div>
+                        <div class="min-w-0">
+                          <p class="font-semibold text-text text-sm">USD/CHF</p>
+                          <p class="text-xs text-muted truncate">US Dollar / Franc</p>
+                        </div>
+                      </div>
+                      <div class="text-right shrink-0">
+                        <p class="font-bold text-red-500">-0.42%</p>
+                        <p class="text-xs text-muted">0.8845</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- AI Insights -->
+                <div class="rounded-2xl bg-panel border border-border p-5">
+                  <div class="flex items-center gap-3 mb-4">
+                    <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-violet-500 to-indigo-500 flex items-center justify-center shrink-0">
+                      <i data-lucide="sparkles" class="w-5 h-5 text-white shrink-0"></i>
+                    </div>
+                    <div class="min-w-0">
+                      <h3 class="font-semibold text-text">AI Market Insight</h3>
+                      <p class="text-xs text-muted">Updated 5 min ago</p>
+                    </div>
+                  </div>
+                  <p class="text-sm text-muted leading-relaxed mb-4">
+                    <span class="text-text font-medium">EUR/USD</span> shows strong bearish momentum with RSI divergence on 4H timeframe. Key support at 1.0780 could trigger reversal. Watch for NFP data impact on Friday.
+                  </p>
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-500/15 text-red-500">Bearish</span>
+                    <span class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-indigo-500/15 text-indigo-500">High Impact</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Currency Strength & Heatmap -->
+            <div class="grid grid-cols-1 @3xl/content:grid-cols-2 gap-6 mt-6">
+              <!-- Currency Strength -->
+              <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+                <h3 class="text-lg font-bold text-text mb-4">Currency Strength Index</h3>
+                <div class="space-y-4">
+                  <div>
+                    <div class="flex items-center justify-between mb-2">
+                      <span class="text-sm font-medium text-text">USD</span>
+                      <span class="text-sm font-semibold text-emerald-500">78.5</span>
+                    </div>
+                    <div class="h-1.5 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-gradient-to-r from-emerald-500 to-emerald-600" style="width: 78.5%"></div></div>
+                  </div>
+                  <div>
+                    <div class="flex items-center justify-between mb-2">
+                      <span class="text-sm font-medium text-text">GBP</span>
+                      <span class="text-sm font-semibold text-emerald-500">68.2</span>
+                    </div>
+                    <div class="h-1.5 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-gradient-to-r from-sky-500 to-indigo-500" style="width: 68.2%"></div></div>
+                  </div>
+                  <div>
+                    <div class="flex items-center justify-between mb-2">
+                      <span class="text-sm font-medium text-text">EUR</span>
+                      <span class="text-sm font-semibold text-amber-500">52.4</span>
+                    </div>
+                    <div class="h-1.5 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-gradient-to-r from-amber-500 to-orange-500" style="width: 52.4%"></div></div>
+                  </div>
+                  <div>
+                    <div class="flex items-center justify-between mb-2">
+                      <span class="text-sm font-medium text-text">JPY</span>
+                      <span class="text-sm font-semibold text-red-500">35.8</span>
+                    </div>
+                    <div class="h-1.5 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-gradient-to-r from-red-500 to-red-600" style="width: 35.8%"></div></div>
+                  </div>
+                  <div>
+                    <div class="flex items-center justify-between mb-2">
+                      <span class="text-sm font-medium text-text">CHF</span>
+                      <span class="text-sm font-semibold text-amber-500">48.1</span>
+                    </div>
+                    <div class="h-1.5 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-gradient-to-r from-teal-500 to-cyan-500" style="width: 48.1%"></div></div>
+                  </div>
+                  <div>
+                    <div class="flex items-center justify-between mb-2">
+                      <span class="text-sm font-medium text-text">AUD</span>
+                      <span class="text-sm font-semibold text-emerald-500">62.3</span>
+                    </div>
+                    <div class="h-1.5 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-gradient-to-r from-cyan-500 to-blue-500" style="width: 62.3%"></div></div>
+                  </div>
+                  <div>
+                    <div class="flex items-center justify-between mb-2">
+                      <span class="text-sm font-medium text-text">CAD</span>
+                      <span class="text-sm font-semibold text-amber-500">55.7</span>
+                    </div>
+                    <div class="h-1.5 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-gradient-to-r from-orange-500 to-orange-600" style="width: 55.7%"></div></div>
+                  </div>
+                  <div>
+                    <div class="flex items-center justify-between mb-2">
+                      <span class="text-sm font-medium text-text">NZD</span>
+                      <span class="text-sm font-semibold text-red-500">42.9</span>
+                    </div>
+                    <div class="h-1.5 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-gradient-to-r from-pink-500 to-rose-600" style="width: 42.9%"></div></div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Mini Heatmap -->
+              <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+                <h3 class="text-lg font-bold text-text mb-4">Currency Pair Heatmap</h3>
+                <div class="grid grid-cols-2 xs:grid-cols-3 sm:grid-cols-4 gap-2">
+                  <div class="p-3 rounded-lg text-center text-xs font-semibold" style="background: rgba(16, 185, 129, 0.3); color: #10B981;">EUR/USD<br><span class="text-xs">+0.42%</span></div>
+                  <div class="p-3 rounded-lg text-center text-xs font-semibold" style="background: rgba(239, 68, 68, 0.3); color: #EF4444;">GBP/USD<br><span class="text-xs">-0.18%</span></div>
+                  <div class="p-3 rounded-lg text-center text-xs font-semibold" style="background: rgba(16, 185, 129, 0.5); color: #10B981;">USD/JPY<br><span class="text-xs">+0.85%</span></div>
+                  <div class="p-3 rounded-lg text-center text-xs font-semibold" style="background: rgba(239, 68, 68, 0.2); color: #EF4444;">USD/CHF<br><span class="text-xs">-0.12%</span></div>
+                  <div class="p-3 rounded-lg text-center text-xs font-semibold" style="background: rgba(16, 185, 129, 0.4); color: #10B981;">AUD/USD<br><span class="text-xs">+0.56%</span></div>
+                  <div class="p-3 rounded-lg text-center text-xs font-semibold" style="background: rgba(239, 68, 68, 0.4); color: #EF4444;">USD/CAD<br><span class="text-xs">-0.34%</span></div>
+                  <div class="p-3 rounded-lg text-center text-xs font-semibold" style="background: rgba(16, 185, 129, 0.2); color: #10B981;">NZD/USD<br><span class="text-xs">+0.21%</span></div>
+                  <div class="p-3 rounded-lg text-center text-xs font-semibold" style="background: rgba(16, 185, 129, 0.6); color: #10B981;">EUR/JPY<br><span class="text-xs">+1.12%</span></div>
+                  <div class="p-3 rounded-lg text-center text-xs font-semibold" style="background: rgba(16, 185, 129, 0.7); color: #10B981;">GBP/JPY<br><span class="text-xs">+1.24%</span></div>
+                  <div class="p-3 rounded-lg text-center text-xs font-semibold" style="background: rgba(239, 68, 68, 0.3); color: #EF4444;">EUR/GBP<br><span class="text-xs">-0.28%</span></div>
+                  <div class="p-3 rounded-lg text-center text-xs font-semibold" style="background: rgba(16, 185, 129, 0.3); color: #10B981;">AUD/JPY<br><span class="text-xs">+0.45%</span></div>
+                  <div class="p-3 rounded-lg text-center text-xs font-semibold" style="background: rgba(239, 68, 68, 0.5); color: #EF4444;">EUR/CHF<br><span class="text-xs">-0.52%</span></div>
+                  <div class="p-3 rounded-lg text-center text-xs font-semibold" style="background: rgba(16, 185, 129, 0.4); color: #10B981;">CAD/JPY<br><span class="text-xs">+0.62%</span></div>
+                  <div class="p-3 rounded-lg text-center text-xs font-semibold" style="background: rgba(239, 68, 68, 0.2); color: #EF4444;">GBP/CHF<br><span class="text-xs">-0.15%</span></div>
+                  <div class="p-3 rounded-lg text-center text-xs font-semibold" style="background: rgba(16, 185, 129, 0.5); color: #10B981;">AUD/CAD<br><span class="text-xs">+0.78%</span></div>
+                  <div class="p-3 rounded-lg text-center text-xs font-semibold" style="background: rgba(16, 185, 129, 0.3); color: #10B981;">NZD/JPY<br><span class="text-xs">+0.38%</span></div>
+                  <div class="p-3 rounded-lg text-center text-xs font-semibold" style="background: rgba(239, 68, 68, 0.4); color: #EF4444;">CHF/JPY<br><span class="text-xs">-0.41%</span></div>
+                  <div class="p-3 rounded-lg text-center text-xs font-semibold" style="background: rgba(16, 185, 129, 0.5); color: #10B981;">EUR/AUD<br><span class="text-xs">+0.67%</span></div>
+                  <div class="p-3 rounded-lg text-center text-xs font-semibold" style="background: rgba(239, 68, 68, 0.2); color: #EF4444;">GBP/AUD<br><span class="text-xs">-0.19%</span></div>
+                  <div class="p-3 rounded-lg text-center text-xs font-semibold" style="background: rgba(16, 185, 129, 0.3); color: #10B981;">EUR/CAD<br><span class="text-xs">+0.33%</span></div>
+                  <div class="p-3 rounded-lg text-center text-xs font-semibold" style="background: rgba(16, 185, 129, 0.6); color: #10B981;">GBP/CAD<br><span class="text-xs">+0.91%</span></div>
+                  <div class="p-3 rounded-lg text-center text-xs font-semibold" style="background: rgba(239, 68, 68, 0.5); color: #EF4444;">AUD/NZD<br><span class="text-xs">-0.47%</span></div>
+                  <div class="p-3 rounded-lg text-center text-xs font-semibold" style="background: rgba(16, 185, 129, 0.4); color: #10B981;">CAD/CHF<br><span class="text-xs">+0.58%</span></div>
+                  <div class="p-3 rounded-lg text-center text-xs font-semibold" style="background: rgba(239, 68, 68, 0.3); color: #EF4444;">NZD/CAD<br><span class="text-xs">-0.24%</span></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Recent Market Activity Table -->
+            <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6 mt-6">
+              <div class="flex flex-col xs:flex-row xs:items-center xs:justify-between gap-3 mb-6">
+                <h3 class="text-lg font-bold text-text">Recent Market Activity</h3>
+                <div class="relative w-full xs:w-auto">
+                  <i data-lucide="search" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted"></i>
+                  <input type="text" placeholder="Search activity..." id="faTableSearch" class="w-full xs:w-48 pl-10 pr-4 py-2.5 rounded-xl bg-panel border border-border text-sm text-text outline-none focus:border-accent" />
+                </div>
+              </div>
+              <div class="overflow-x-auto">
+                <table class="w-full border-collapse min-w-[760px] whitespace-nowrap" id="faActivityTable">
+                  <thead>
+                    <tr class="text-left text-xs font-semibold text-muted uppercase tracking-wide border-b border-border">
+                      <th class="py-3 px-4">Pair</th>
+                      <th class="py-3 px-4">Price</th>
+                      <th class="py-3 px-4">Change</th>
+                      <th class="py-3 px-4">Volume</th>
+                      <th class="py-3 px-4">Signal</th>
+                      <th class="py-3 px-4">Trend</th>
+                      <th class="py-3 px-4">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody class="text-sm">
+                    <tr class="fa-row border-b border-border hover:bg-border/30 transition cursor-pointer" data-pair="EUR/USD">
+                      <td class="py-4 px-4">
+                        <div class="flex items-center gap-3">
+                          <div class="w-9 h-9 rounded-lg bg-gradient-to-br from-sky-500 to-indigo-500 flex items-center justify-center text-white font-bold text-xs shrink-0">EUR</div>
+                          <div>
+                            <p class="font-semibold text-text">EUR/USD</p>
+                            <p class="text-xs text-muted">Euro / US Dollar</p>
+                          </div>
+                        </div>
+                      </td>
+                      <td class="py-4 px-4 font-mono font-semibold text-text">1.0842</td>
+                      <td class="py-4 px-4"><span class="text-red-500 font-semibold inline-flex items-center gap-1"><i data-lucide="arrow-down" class="w-3 h-3 shrink-0"></i>-0.18%</span></td>
+                      <td class="py-4 px-4 text-muted">$2.4B</td>
+                      <td class="py-4 px-4"><span class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-500/15 text-red-500">Sell</span></td>
+                      <td class="py-4 px-4"><div class="flex items-center gap-2"><i data-lucide="trending-down" class="w-4 h-4 text-red-500 shrink-0"></i><span class="text-sm text-muted">Bearish</span></div></td>
+                      <td class="py-4 px-4"><button class="fa-view-pair w-9 h-9 inline-flex items-center justify-center rounded-lg border border-border text-muted hover:text-text hover:bg-border/50 transition" data-pair="EUR/USD"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button></td>
+                    </tr>
+                    <tr class="fa-row border-b border-border hover:bg-border/30 transition cursor-pointer" data-pair="GBP/USD">
+                      <td class="py-4 px-4">
+                        <div class="flex items-center gap-3">
+                          <div class="w-9 h-9 rounded-lg bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center text-white font-bold text-xs shrink-0">GBP</div>
+                          <div>
+                            <p class="font-semibold text-text">GBP/USD</p>
+                            <p class="text-xs text-muted">British Pound / Dollar</p>
+                          </div>
+                        </div>
+                      </td>
+                      <td class="py-4 px-4 font-mono font-semibold text-text">1.2654</td>
+                      <td class="py-4 px-4"><span class="text-emerald-500 font-semibold inline-flex items-center gap-1"><i data-lucide="arrow-up" class="w-3 h-3 shrink-0"></i>+0.32%</span></td>
+                      <td class="py-4 px-4 text-muted">$1.8B</td>
+                      <td class="py-4 px-4"><span class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">Buy</span></td>
+                      <td class="py-4 px-4"><div class="flex items-center gap-2"><i data-lucide="trending-up" class="w-4 h-4 text-emerald-500 shrink-0"></i><span class="text-sm text-muted">Bullish</span></div></td>
+                      <td class="py-4 px-4"><button class="fa-view-pair w-9 h-9 inline-flex items-center justify-center rounded-lg border border-border text-muted hover:text-text hover:bg-border/50 transition" data-pair="GBP/USD"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button></td>
+                    </tr>
+                    <tr class="fa-row border-b border-border hover:bg-border/30 transition cursor-pointer" data-pair="USD/JPY">
+                      <td class="py-4 px-4">
+                        <div class="flex items-center gap-3">
+                          <div class="w-9 h-9 rounded-lg bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center text-white font-bold text-xs shrink-0">USD</div>
+                          <div>
+                            <p class="font-semibold text-text">USD/JPY</p>
+                            <p class="text-xs text-muted">US Dollar / Yen</p>
+                          </div>
+                        </div>
+                      </td>
+                      <td class="py-4 px-4 font-mono font-semibold text-text">149.82</td>
+                      <td class="py-4 px-4"><span class="text-emerald-500 font-semibold inline-flex items-center gap-1"><i data-lucide="arrow-up" class="w-3 h-3 shrink-0"></i>+0.85%</span></td>
+                      <td class="py-4 px-4 text-muted">$3.1B</td>
+                      <td class="py-4 px-4"><span class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">Buy</span></td>
+                      <td class="py-4 px-4"><div class="flex items-center gap-2"><i data-lucide="trending-up" class="w-4 h-4 text-emerald-500 shrink-0"></i><span class="text-sm text-muted">Bullish</span></div></td>
+                      <td class="py-4 px-4"><button class="fa-view-pair w-9 h-9 inline-flex items-center justify-center rounded-lg border border-border text-muted hover:text-text hover:bg-border/50 transition" data-pair="USD/JPY"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button></td>
+                    </tr>
+                    <tr class="fa-row border-b border-border hover:bg-border/30 transition cursor-pointer" data-pair="AUD/USD">
+                      <td class="py-4 px-4">
+                        <div class="flex items-center gap-3">
+                          <div class="w-9 h-9 rounded-lg bg-gradient-to-br from-cyan-500 to-blue-500 flex items-center justify-center text-white font-bold text-xs shrink-0">AUD</div>
+                          <div>
+                            <p class="font-semibold text-text">AUD/USD</p>
+                            <p class="text-xs text-muted">Australian Dollar</p>
+                          </div>
+                        </div>
+                      </td>
+                      <td class="py-4 px-4 font-mono font-semibold text-text">0.6521</td>
+                      <td class="py-4 px-4"><span class="text-emerald-500 font-semibold inline-flex items-center gap-1"><i data-lucide="arrow-up" class="w-3 h-3 shrink-0"></i>+0.56%</span></td>
+                      <td class="py-4 px-4 text-muted">$892M</td>
+                      <td class="py-4 px-4"><span class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">Buy</span></td>
+                      <td class="py-4 px-4"><div class="flex items-center gap-2"><i data-lucide="trending-up" class="w-4 h-4 text-emerald-500 shrink-0"></i><span class="text-sm text-muted">Bullish</span></div></td>
+                      <td class="py-4 px-4"><button class="fa-view-pair w-9 h-9 inline-flex items-center justify-center rounded-lg border border-border text-muted hover:text-text hover:bg-border/50 transition" data-pair="AUD/USD"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button></td>
+                    </tr>
+                    <tr class="fa-row border-b border-border hover:bg-border/30 transition cursor-pointer" data-pair="USD/CAD">
+                      <td class="py-4 px-4">
+                        <div class="flex items-center gap-3">
+                          <div class="w-9 h-9 rounded-lg bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center text-white font-bold text-xs shrink-0">CAD</div>
+                          <div>
+                            <p class="font-semibold text-text">USD/CAD</p>
+                            <p class="text-xs text-muted">Dollar / Canadian</p>
+                          </div>
+                        </div>
+                      </td>
+                      <td class="py-4 px-4 font-mono font-semibold text-text">1.3542</td>
+                      <td class="py-4 px-4"><span class="text-red-500 font-semibold inline-flex items-center gap-1"><i data-lucide="arrow-down" class="w-3 h-3 shrink-0"></i>-0.24%</span></td>
+                      <td class="py-4 px-4 text-muted">$654M</td>
+                      <td class="py-4 px-4"><span class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-500">Hold</span></td>
+                      <td class="py-4 px-4"><div class="flex items-center gap-2"><i data-lucide="minus" class="w-4 h-4 text-amber-500 shrink-0"></i><span class="text-sm text-muted">Neutral</span></div></td>
+                      <td class="py-4 px-4"><button class="fa-view-pair w-9 h-9 inline-flex items-center justify-center rounded-lg border border-border text-muted hover:text-text hover:bg-border/50 transition" data-pair="USD/CAD"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button></td>
+                    </tr>
+                  </tbody>
+                </table>
+                <p id="faNoActivity" class="hidden text-center text-sm text-muted py-8">No matching activity found.</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Currency Pairs Tab -->
+          <div class="fa-panel hidden" id="fa-pairs-panel">
+            <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+              <div class="flex flex-col xs:flex-row xs:items-center xs:justify-between gap-3 mb-6">
+                <h3 class="text-lg font-bold text-text">All Currency Pairs</h3>
+                <div class="flex items-center gap-2 flex-wrap">
+                  <button class="fa-pair-filter px-4 py-1.5 rounded-full text-sm font-medium border border-accent bg-accent/15 text-accent transition" data-filter="all">All</button>
+                  <button class="fa-pair-filter px-4 py-1.5 rounded-full text-sm font-medium border border-border text-muted hover:border-accent hover:text-accent transition" data-filter="major">Major</button>
+                  <button class="fa-pair-filter px-4 py-1.5 rounded-full text-sm font-medium border border-border text-muted hover:border-accent hover:text-accent transition" data-filter="minor">Minor</button>
+                  <button class="fa-pair-filter px-4 py-1.5 rounded-full text-sm font-medium border border-border text-muted hover:border-accent hover:text-accent transition" data-filter="exotic">Exotic</button>
+                </div>
+              </div>
+              <div class="grid grid-cols-1 @xl/content:grid-cols-2 @4xl/content:grid-cols-3 gap-4" id="faPairsGrid">
+                <!-- Major -->
+                <div class="fa-pair-card p-4 rounded-xl border border-border hover:border-accent/50 transition cursor-pointer fa-view-pair" data-type="major" data-pair="EUR/USD">
+                  <div class="flex items-center justify-between mb-3">
+                    <div class="flex items-center gap-3 min-w-0">
+                      <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center text-white font-bold text-xs shrink-0">EUR</div>
+                      <div class="min-w-0"><p class="font-semibold text-text">EUR/USD</p><span class="text-xs text-muted capitalize">major</span></div>
+                    </div>
+                    <i data-lucide="trending-down" class="w-5 h-5 text-red-500 shrink-0"></i>
+                  </div>
+                  <div class="flex items-center justify-between">
+                    <p class="font-mono font-bold text-lg text-text">1.0842</p>
+                    <span class="text-sm font-semibold text-red-500">-0.18%</span>
+                  </div>
+                </div>
+                <div class="fa-pair-card p-4 rounded-xl border border-border hover:border-accent/50 transition cursor-pointer fa-view-pair" data-type="major" data-pair="GBP/USD">
+                  <div class="flex items-center justify-between mb-3">
+                    <div class="flex items-center gap-3 min-w-0">
+                      <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center text-white font-bold text-xs shrink-0">GBP</div>
+                      <div class="min-w-0"><p class="font-semibold text-text">GBP/USD</p><span class="text-xs text-muted capitalize">major</span></div>
+                    </div>
+                    <i data-lucide="trending-up" class="w-5 h-5 text-emerald-500 shrink-0"></i>
+                  </div>
+                  <div class="flex items-center justify-between">
+                    <p class="font-mono font-bold text-lg text-text">1.2654</p>
+                    <span class="text-sm font-semibold text-emerald-500">+0.32%</span>
+                  </div>
+                </div>
+                <div class="fa-pair-card p-4 rounded-xl border border-border hover:border-accent/50 transition cursor-pointer fa-view-pair" data-type="major" data-pair="USD/JPY">
+                  <div class="flex items-center justify-between mb-3">
+                    <div class="flex items-center gap-3 min-w-0">
+                      <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center text-white font-bold text-xs shrink-0">USD</div>
+                      <div class="min-w-0"><p class="font-semibold text-text">USD/JPY</p><span class="text-xs text-muted capitalize">major</span></div>
+                    </div>
+                    <i data-lucide="trending-up" class="w-5 h-5 text-emerald-500 shrink-0"></i>
+                  </div>
+                  <div class="flex items-center justify-between">
+                    <p class="font-mono font-bold text-lg text-text">149.82</p>
+                    <span class="text-sm font-semibold text-emerald-500">+0.85%</span>
+                  </div>
+                </div>
+                <div class="fa-pair-card p-4 rounded-xl border border-border hover:border-accent/50 transition cursor-pointer fa-view-pair" data-type="major" data-pair="AUD/USD">
+                  <div class="flex items-center justify-between mb-3">
+                    <div class="flex items-center gap-3 min-w-0">
+                      <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center text-white font-bold text-xs shrink-0">AUD</div>
+                      <div class="min-w-0"><p class="font-semibold text-text">AUD/USD</p><span class="text-xs text-muted capitalize">major</span></div>
+                    </div>
+                    <i data-lucide="trending-up" class="w-5 h-5 text-emerald-500 shrink-0"></i>
+                  </div>
+                  <div class="flex items-center justify-between">
+                    <p class="font-mono font-bold text-lg text-text">0.6521</p>
+                    <span class="text-sm font-semibold text-emerald-500">+0.56%</span>
+                  </div>
+                </div>
+                <div class="fa-pair-card p-4 rounded-xl border border-border hover:border-accent/50 transition cursor-pointer fa-view-pair" data-type="major" data-pair="USD/CAD">
+                  <div class="flex items-center justify-between mb-3">
+                    <div class="flex items-center gap-3 min-w-0">
+                      <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center text-white font-bold text-xs shrink-0">USD</div>
+                      <div class="min-w-0"><p class="font-semibold text-text">USD/CAD</p><span class="text-xs text-muted capitalize">major</span></div>
+                    </div>
+                    <i data-lucide="trending-up" class="w-5 h-5 text-amber-500 shrink-0"></i>
+                  </div>
+                  <div class="flex items-center justify-between">
+                    <p class="font-mono font-bold text-lg text-text">1.3542</p>
+                    <span class="text-sm font-semibold text-red-500">-0.24%</span>
+                  </div>
+                </div>
+                <div class="fa-pair-card p-4 rounded-xl border border-border hover:border-accent/50 transition cursor-pointer fa-view-pair" data-type="major" data-pair="USD/CHF">
+                  <div class="flex items-center justify-between mb-3">
+                    <div class="flex items-center gap-3 min-w-0">
+                      <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center text-white font-bold text-xs shrink-0">USD</div>
+                      <div class="min-w-0"><p class="font-semibold text-text">USD/CHF</p><span class="text-xs text-muted capitalize">major</span></div>
+                    </div>
+                    <i data-lucide="trending-down" class="w-5 h-5 text-red-500 shrink-0"></i>
+                  </div>
+                  <div class="flex items-center justify-between">
+                    <p class="font-mono font-bold text-lg text-text">0.8845</p>
+                    <span class="text-sm font-semibold text-red-500">-0.12%</span>
+                  </div>
+                </div>
+                <div class="fa-pair-card p-4 rounded-xl border border-border hover:border-accent/50 transition cursor-pointer fa-view-pair" data-type="major" data-pair="NZD/USD">
+                  <div class="flex items-center justify-between mb-3">
+                    <div class="flex items-center gap-3 min-w-0">
+                      <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center text-white font-bold text-xs shrink-0">NZD</div>
+                      <div class="min-w-0"><p class="font-semibold text-text">NZD/USD</p><span class="text-xs text-muted capitalize">major</span></div>
+                    </div>
+                    <i data-lucide="trending-up" class="w-5 h-5 text-emerald-500 shrink-0"></i>
+                  </div>
+                  <div class="flex items-center justify-between">
+                    <p class="font-mono font-bold text-lg text-text">0.5982</p>
+                    <span class="text-sm font-semibold text-emerald-500">+0.21%</span>
+                  </div>
+                </div>
+                <div class="fa-pair-card p-4 rounded-xl border border-border hover:border-accent/50 transition cursor-pointer fa-view-pair" data-type="minor" data-pair="EUR/GBP">
+                  <div class="flex items-center justify-between mb-3">
+                    <div class="flex items-center gap-3 min-w-0">
+                      <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center text-white font-bold text-xs shrink-0">EUR</div>
+                      <div class="min-w-0"><p class="font-semibold text-text">EUR/GBP</p><span class="text-xs text-muted capitalize">minor</span></div>
+                    </div>
+                    <i data-lucide="trending-down" class="w-5 h-5 text-red-500 shrink-0"></i>
+                  </div>
+                  <div class="flex items-center justify-between">
+                    <p class="font-mono font-bold text-lg text-text">0.8612</p>
+                    <span class="text-sm font-semibold text-red-500">-0.28%</span>
+                  </div>
+                </div>
+                <div class="fa-pair-card p-4 rounded-xl border border-border hover:border-accent/50 transition cursor-pointer fa-view-pair" data-type="minor" data-pair="EUR/JPY">
+                  <div class="flex items-center justify-between mb-3">
+                    <div class="flex items-center gap-3 min-w-0">
+                      <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center text-white font-bold text-xs shrink-0">EUR</div>
+                      <div class="min-w-0"><p class="font-semibold text-text">EUR/JPY</p><span class="text-xs text-muted capitalize">minor</span></div>
+                    </div>
+                    <i data-lucide="trending-up" class="w-5 h-5 text-emerald-500 shrink-0"></i>
+                  </div>
+                  <div class="flex items-center justify-between">
+                    <p class="font-mono font-bold text-lg text-text">162.45</p>
+                    <span class="text-sm font-semibold text-emerald-500">+1.12%</span>
+                  </div>
+                </div>
+                <div class="fa-pair-card p-4 rounded-xl border border-border hover:border-accent/50 transition cursor-pointer fa-view-pair" data-type="minor" data-pair="GBP/JPY">
+                  <div class="flex items-center justify-between mb-3">
+                    <div class="flex items-center gap-3 min-w-0">
+                      <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center text-white font-bold text-xs shrink-0">GBP</div>
+                      <div class="min-w-0"><p class="font-semibold text-text">GBP/JPY</p><span class="text-xs text-muted capitalize">minor</span></div>
+                    </div>
+                    <i data-lucide="trending-up" class="w-5 h-5 text-emerald-500 shrink-0"></i>
+                  </div>
+                  <div class="flex items-center justify-between">
+                    <p class="font-mono font-bold text-lg text-text">189.42</p>
+                    <span class="text-sm font-semibold text-emerald-500">+1.24%</span>
+                  </div>
+                </div>
+                <div class="fa-pair-card p-4 rounded-xl border border-border hover:border-accent/50 transition cursor-pointer fa-view-pair" data-type="minor" data-pair="AUD/JPY">
+                  <div class="flex items-center justify-between mb-3">
+                    <div class="flex items-center gap-3 min-w-0">
+                      <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center text-white font-bold text-xs shrink-0">AUD</div>
+                      <div class="min-w-0"><p class="font-semibold text-text">AUD/JPY</p><span class="text-xs text-muted capitalize">minor</span></div>
+                    </div>
+                    <i data-lucide="trending-up" class="w-5 h-5 text-emerald-500 shrink-0"></i>
+                  </div>
+                  <div class="flex items-center justify-between">
+                    <p class="font-mono font-bold text-lg text-text">97.65</p>
+                    <span class="text-sm font-semibold text-emerald-500">+0.45%</span>
+                  </div>
+                </div>
+                <div class="fa-pair-card p-4 rounded-xl border border-border hover:border-accent/50 transition cursor-pointer fa-view-pair" data-type="exotic" data-pair="USD/TRY">
+                  <div class="flex items-center justify-between mb-3">
+                    <div class="flex items-center gap-3 min-w-0">
+                      <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center text-white font-bold text-xs shrink-0">USD</div>
+                      <div class="min-w-0"><p class="font-semibold text-text">USD/TRY</p><span class="text-xs text-muted capitalize">exotic</span></div>
+                    </div>
+                    <i data-lucide="trending-up" class="w-5 h-5 text-emerald-500 shrink-0"></i>
+                  </div>
+                  <div class="flex items-center justify-between">
+                    <p class="font-mono font-bold text-lg text-text">32.45</p>
+                    <span class="text-sm font-semibold text-emerald-500">+0.85%</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Technical Analysis Tab -->
+          <div class="fa-panel hidden" id="fa-analysis-panel">
+            <div class="grid grid-cols-1 @3xl/content:grid-cols-2 gap-6">
+              <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+                <h3 class="text-lg font-bold text-text mb-4">Technical Indicators</h3>
+                <div class="relative h-72 w-full"><canvas id="faTechnicalChart"></canvas></div>
+              </div>
+              <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+                <h3 class="text-lg font-bold text-text mb-4">RSI &amp; MACD Analysis</h3>
+                <div class="relative h-72 w-full"><canvas id="faRsiMacdChart"></canvas></div>
+              </div>
+            </div>
+            <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6 mt-6">
+              <h3 class="text-lg font-bold text-text mb-4">Key Levels &amp; Pivot Points</h3>
+              <div class="overflow-x-auto">
+                <table class="w-full border-collapse min-w-[640px] whitespace-nowrap">
+                  <thead>
+                    <tr class="text-left text-xs font-semibold text-muted uppercase tracking-wide border-b border-border">
+                      <th class="py-3 px-4">Pair</th>
+                      <th class="py-3 px-4">Pivot</th>
+                      <th class="py-3 px-4">S1</th>
+                      <th class="py-3 px-4">S2</th>
+                      <th class="py-3 px-4">S3</th>
+                      <th class="py-3 px-4">R1</th>
+                      <th class="py-3 px-4">R2</th>
+                      <th class="py-3 px-4">R3</th>
+                    </tr>
+                  </thead>
+                  <tbody class="text-sm">
+                    <tr class="border-b border-border">
+                      <td class="py-4 px-4 font-semibold text-text">EUR/USD</td>
+                      <td class="py-4 px-4 font-mono">1.0845</td>
+                      <td class="py-4 px-4 font-mono text-red-500">1.0820</td>
+                      <td class="py-4 px-4 font-mono text-red-500">1.0795</td>
+                      <td class="py-4 px-4 font-mono text-red-500">1.0770</td>
+                      <td class="py-4 px-4 font-mono text-emerald-500">1.0870</td>
+                      <td class="py-4 px-4 font-mono text-emerald-500">1.0895</td>
+                      <td class="py-4 px-4 font-mono text-emerald-500">1.0920</td>
+                    </tr>
+                    <tr class="border-b border-border">
+                      <td class="py-4 px-4 font-semibold text-text">GBP/USD</td>
+                      <td class="py-4 px-4 font-mono">1.2650</td>
+                      <td class="py-4 px-4 font-mono text-red-500">1.2620</td>
+                      <td class="py-4 px-4 font-mono text-red-500">1.2590</td>
+                      <td class="py-4 px-4 font-mono text-red-500">1.2560</td>
+                      <td class="py-4 px-4 font-mono text-emerald-500">1.2680</td>
+                      <td class="py-4 px-4 font-mono text-emerald-500">1.2710</td>
+                      <td class="py-4 px-4 font-mono text-emerald-500">1.2740</td>
+                    </tr>
+                    <tr class="border-b border-border">
+                      <td class="py-4 px-4 font-semibold text-text">USD/JPY</td>
+                      <td class="py-4 px-4 font-mono">149.50</td>
+                      <td class="py-4 px-4 font-mono text-red-500">149.00</td>
+                      <td class="py-4 px-4 font-mono text-red-500">148.50</td>
+                      <td class="py-4 px-4 font-mono text-red-500">148.00</td>
+                      <td class="py-4 px-4 font-mono text-emerald-500">150.00</td>
+                      <td class="py-4 px-4 font-mono text-emerald-500">150.50</td>
+                      <td class="py-4 px-4 font-mono text-emerald-500">151.00</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- Signals Tab -->
+          <div class="fa-panel hidden" id="fa-signals-panel">
+            <div class="grid grid-cols-1 @3xl/content:grid-cols-3 gap-6">
+              <div class="@3xl/content:col-span-2">
+                <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+                  <h3 class="text-lg font-bold text-text mb-4">Active Trading Signals</h3>
+                  <div class="space-y-4">
+                    <div class="p-4 rounded-xl border border-emerald-500/30 bg-emerald-500/5">
+                      <div class="flex items-center justify-between gap-2 mb-3 flex-wrap">
+                        <div class="flex items-center gap-3">
+                          <span class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">BUY</span>
+                          <span class="font-bold text-text">GBP/USD</span>
+                        </div>
+                        <span class="text-xs text-muted">5 min ago</span>
+                      </div>
+                      <div class="grid grid-cols-3 gap-2 sm:gap-4 text-xs sm:text-sm">
+                        <div><p class="text-muted">Entry</p><p class="font-mono font-semibold text-text">1.2650</p></div>
+                        <div><p class="text-muted">Take Profit</p><p class="font-mono font-semibold text-emerald-500">1.2720</p></div>
+                        <div><p class="text-muted">Stop Loss</p><p class="font-mono font-semibold text-red-500">1.2610</p></div>
+                      </div>
+                      <div class="mt-3 flex items-center gap-4 flex-wrap">
+                        <span class="text-xs text-muted">AI Confidence: <span class="text-emerald-500 font-semibold">87%</span></span>
+                        <span class="text-xs text-muted">Risk/Reward: <span class="text-text font-semibold">1:1.75</span></span>
+                      </div>
+                    </div>
+
+                    <div class="p-4 rounded-xl border border-red-500/30 bg-red-500/5">
+                      <div class="flex items-center justify-between gap-2 mb-3 flex-wrap">
+                        <div class="flex items-center gap-3">
+                          <span class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-500/15 text-red-500">SELL</span>
+                          <span class="font-bold text-text">EUR/USD</span>
+                        </div>
+                        <span class="text-xs text-muted">12 min ago</span>
+                      </div>
+                      <div class="grid grid-cols-3 gap-2 sm:gap-4 text-xs sm:text-sm">
+                        <div><p class="text-muted">Entry</p><p class="font-mono font-semibold text-text">1.0845</p></div>
+                        <div><p class="text-muted">Take Profit</p><p class="font-mono font-semibold text-emerald-500">1.0780</p></div>
+                        <div><p class="text-muted">Stop Loss</p><p class="font-mono font-semibold text-red-500">1.0890</p></div>
+                      </div>
+                      <div class="mt-3 flex items-center gap-4 flex-wrap">
+                        <span class="text-xs text-muted">AI Confidence: <span class="text-emerald-500 font-semibold">82%</span></span>
+                        <span class="text-xs text-muted">Risk/Reward: <span class="text-text font-semibold">1:1.44</span></span>
+                      </div>
+                    </div>
+
+                    <div class="p-4 rounded-xl border border-emerald-500/30 bg-emerald-500/5">
+                      <div class="flex items-center justify-between gap-2 mb-3 flex-wrap">
+                        <div class="flex items-center gap-3">
+                          <span class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500">BUY</span>
+                          <span class="font-bold text-text">USD/JPY</span>
+                        </div>
+                        <span class="text-xs text-muted">28 min ago</span>
+                      </div>
+                      <div class="grid grid-cols-3 gap-2 sm:gap-4 text-xs sm:text-sm">
+                        <div><p class="text-muted">Entry</p><p class="font-mono font-semibold text-text">149.50</p></div>
+                        <div><p class="text-muted">Take Profit</p><p class="font-mono font-semibold text-emerald-500">150.50</p></div>
+                        <div><p class="text-muted">Stop Loss</p><p class="font-mono font-semibold text-red-500">148.80</p></div>
+                      </div>
+                      <div class="mt-3 flex items-center gap-4 flex-wrap">
+                        <span class="text-xs text-muted">AI Confidence: <span class="text-emerald-500 font-semibold">91%</span></span>
+                        <span class="text-xs text-muted">Risk/Reward: <span class="text-text font-semibold">1:1.43</span></span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div>
+                <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+                  <h3 class="text-lg font-bold text-text mb-4">Signal Statistics</h3>
+                  <div class="relative h-64 w-full"><canvas id="faSignalStatsChart"></canvas></div>
+                  <div class="mt-4 space-y-3">
+                    <div class="flex items-center justify-between"><span class="text-sm text-muted">Win Rate</span><span class="font-semibold text-emerald-500">78.5%</span></div>
+                    <div class="flex items-center justify-between"><span class="text-sm text-muted">Total Signals Today</span><span class="font-semibold text-text">24</span></div>
+                    <div class="flex items-center justify-between"><span class="text-sm text-muted">Profitable</span><span class="font-semibold text-emerald-500">19</span></div>
+                    <div class="flex items-center justify-between"><span class="text-sm text-muted">Stop Loss Hit</span><span class="font-semibold text-red-500">5</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Performance Tab -->
+          <div class="fa-panel hidden" id="fa-performance-panel">
+            <div class="grid grid-cols-1 @3xl/content:grid-cols-2 gap-6">
+              <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+                <h3 class="text-lg font-bold text-text mb-4">Monthly Performance</h3>
+                <div class="relative h-72 w-full"><canvas id="faPerformanceChart"></canvas></div>
+              </div>
+              <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6">
+                <h3 class="text-lg font-bold text-text mb-4">Pair Performance Breakdown</h3>
+                <div class="relative h-72 w-full"><canvas id="faPairPerformanceChart"></canvas></div>
+              </div>
+            </div>
+            <div class="grid grid-cols-1 @2xl/content:grid-cols-3 gap-4 mt-6">
+              <div class="rounded-2xl bg-panel border border-border p-6 text-center">
+                <div class="w-16 h-16 rounded-2xl bg-gradient-to-br from-emerald-500 to-emerald-600 mx-auto mb-4 flex items-center justify-center"><i data-lucide="trophy" class="w-8 h-8 text-white shrink-0"></i></div>
+                <p class="text-3xl font-bold text-text mb-1">$12,450</p>
+                <p class="text-sm text-muted">Total Profit (MTD)</p>
+              </div>
+              <div class="rounded-2xl bg-panel border border-border p-6 text-center">
+                <div class="w-16 h-16 rounded-2xl bg-gradient-to-br from-sky-500 to-indigo-500 mx-auto mb-4 flex items-center justify-center"><i data-lucide="target" class="w-8 h-8 text-white shrink-0"></i></div>
+                <p class="text-3xl font-bold text-text mb-1">156</p>
+                <p class="text-sm text-muted">Trades Executed</p>
+              </div>
+              <div class="rounded-2xl bg-panel border border-border p-6 text-center">
+                <div class="w-16 h-16 rounded-2xl bg-gradient-to-br from-violet-500 to-indigo-500 mx-auto mb-4 flex items-center justify-center"><i data-lucide="percent" class="w-8 h-8 text-white shrink-0"></i></div>
+                <p class="text-3xl font-bold text-text mb-1">82.3%</p>
+                <p class="text-sm text-muted">Overall Win Rate</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Drawer Overlay -->
+    <div class="drawer-overlay" id="faDrawerOverlay"></div>
+
+    <!-- Pair Details Drawer (static template; JS populates) -->
+    <div class="drawer" id="faPairDrawer">
+      <div class="p-4 sm:p-6 border-b border-border flex items-center justify-between sticky top-0 bg-panel z-10">
+        <div>
+          <h2 class="text-xl font-bold text-text" id="faPairName">EUR/USD</h2>
+          <p class="text-sm text-muted">Pair Details</p>
+        </div>
+        <button class="fa-close-drawer w-10 h-10 inline-flex items-center justify-center rounded-xl border border-border text-muted hover:text-text hover:bg-border/50 transition"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+      </div>
+      <div class="p-4 sm:p-6">
+        <div class="space-y-6">
+          <!-- Price Section -->
+          <div class="text-center p-6 rounded-2xl bg-gradient-to-br from-violet-500/10 to-indigo-500/10 border border-violet-500/20">
+            <p class="text-4xl font-bold text-text mb-2" id="faPdPrice">1.0842</p>
+            <span id="faPdChangeBadge" class="inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm font-semibold bg-red-500/20 text-red-500">
+              <i id="faPdChangeIcon" data-lucide="arrow-down" class="w-4 h-4 shrink-0"></i>
+              <span id="faPdChange">-0.18%</span>
+            </span>
+          </div>
+
+          <!-- Stats Grid -->
+          <div class="grid grid-cols-2 gap-4">
+            <div class="p-4 rounded-xl border border-border"><p class="text-xs text-muted mb-1">24h High</p><p class="font-mono font-semibold text-emerald-500" id="faPdHigh">1.0891</p></div>
+            <div class="p-4 rounded-xl border border-border"><p class="text-xs text-muted mb-1">24h Low</p><p class="font-mono font-semibold text-red-500" id="faPdLow">1.0812</p></div>
+            <div class="p-4 rounded-xl border border-border"><p class="text-xs text-muted mb-1">Trend</p><p class="font-semibold text-text" id="faPdTrend">Bearish</p></div>
+            <div class="p-4 rounded-xl border border-border"><p class="text-xs text-muted mb-1">AI Signal</p><p class="font-semibold text-red-500" id="faPdSignal">Sell</p></div>
+          </div>
+
+          <!-- Price Chart -->
+          <div>
+            <h4 class="font-semibold text-text mb-3">Price Chart</h4>
+            <div class="relative h-48 w-full"><canvas id="faPairChart"></canvas></div>
+          </div>
+
+          <!-- Technical Indicators -->
+          <div>
+            <h4 class="font-semibold text-text mb-3">Technical Indicators</h4>
+            <div class="space-y-3">
+              <div class="flex items-center justify-between"><span class="text-sm text-muted">RSI (14)</span><span class="font-mono text-amber-500">52.4</span></div>
+              <div class="flex items-center justify-between"><span class="text-sm text-muted">MACD</span><span class="font-mono text-red-500">-0.0012</span></div>
+              <div class="flex items-center justify-between"><span class="text-sm text-muted">Moving Avg (50)</span><span class="font-mono text-emerald-500">Above</span></div>
+              <div class="flex items-center justify-between"><span class="text-sm text-muted">Bollinger Bands</span><span class="font-mono text-muted">Middle</span></div>
+            </div>
+          </div>
+
+          <!-- AI Insight -->
+          <div class="p-4 rounded-xl bg-violet-500/10 border border-violet-500/20">
+            <div class="flex items-center gap-2 mb-2">
+              <i data-lucide="sparkles" class="w-4 h-4 text-violet-500 shrink-0"></i>
+              <span class="font-semibold text-text text-sm">AI Insight</span>
+            </div>
+            <p class="text-sm text-muted" id="faPdInsight">EUR/USD shows consolidation near key support. Watch for breakout above 1.0891 for bullish continuation or breakdown below 1.0812 for bearish move.</p>
+          </div>
+
+          <!-- Action Buttons -->
+          <div class="flex gap-3">
+            <button class="fa-toast-btn flex-1 justify-center whitespace-nowrap inline-flex items-center gap-2 px-3 py-2.5 rounded-xl bg-gradient-to-br from-accent to-teal-500 text-white text-sm font-semibold transition hover:opacity-90" data-toast-title="Watchlist" data-toast-msg="Pair added to your watchlist">
+              <i data-lucide="plus" class="w-4 h-4 shrink-0"></i>
+              Add to Watchlist
+            </button>
+            <button class="fa-toast-btn flex-1 justify-center whitespace-nowrap inline-flex items-center gap-2 px-3 py-2.5 rounded-xl border border-border text-text text-sm font-semibold transition hover:bg-border/50" data-toast-title="Alert" data-toast-msg="Price alert has been set">
+              <i data-lucide="bell" class="w-4 h-4 shrink-0"></i>
+              Set Alert
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Filter Drawer -->
+    <div class="drawer" id="faFilterDrawer">
+      <div class="p-4 sm:p-6 border-b border-border flex items-center justify-between sticky top-0 bg-panel z-10">
+        <div>
+          <h2 class="text-xl font-bold text-text">Filters</h2>
+          <p class="text-sm text-muted">Customize your view</p>
+        </div>
+        <button class="fa-close-drawer w-10 h-10 inline-flex items-center justify-center rounded-xl border border-border text-muted hover:text-text hover:bg-border/50 transition"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+      </div>
+      <div class="p-4 sm:p-6 space-y-6">
+        <div>
+          <label class="block text-sm font-semibold text-text mb-3">Pair Type</label>
+          <div class="space-y-2">
+            <label class="flex items-center gap-3 cursor-pointer"><input type="checkbox" checked class="custom-checkbox" /><span class="text-sm text-text">Major Pairs</span></label>
+            <label class="flex items-center gap-3 cursor-pointer"><input type="checkbox" checked class="custom-checkbox" /><span class="text-sm text-text">Minor Pairs</span></label>
+            <label class="flex items-center gap-3 cursor-pointer"><input type="checkbox" class="custom-checkbox" /><span class="text-sm text-text">Exotic Pairs</span></label>
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-text mb-3">Trend Direction</label>
+          <div class="space-y-2">
+            <label class="flex items-center gap-3 cursor-pointer"><input type="checkbox" checked class="custom-checkbox" /><span class="text-sm text-text">Bullish</span></label>
+            <label class="flex items-center gap-3 cursor-pointer"><input type="checkbox" checked class="custom-checkbox" /><span class="text-sm text-text">Bearish</span></label>
+            <label class="flex items-center gap-3 cursor-pointer"><input type="checkbox" checked class="custom-checkbox" /><span class="text-sm text-text">Neutral</span></label>
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-text mb-3">Signal Type</label>
+          <div class="space-y-2">
+            <label class="flex items-center gap-3 cursor-pointer"><input type="checkbox" checked class="custom-checkbox" /><span class="text-sm text-text">Buy Signals</span></label>
+            <label class="flex items-center gap-3 cursor-pointer"><input type="checkbox" checked class="custom-checkbox" /><span class="text-sm text-text">Sell Signals</span></label>
+            <label class="flex items-center gap-3 cursor-pointer"><input type="checkbox" checked class="custom-checkbox" /><span class="text-sm text-text">Hold Signals</span></label>
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-text mb-3">Date Range</label>
+          <div class="grid grid-cols-1 @xs:grid-cols-2 gap-3">
+            <div><label class="text-xs text-muted mb-1 block">From</label><input type="date" class="w-full px-3 py-2.5 rounded-xl bg-panel border border-border text-sm text-text outline-none focus:border-accent" /></div>
+            <div><label class="text-xs text-muted mb-1 block">To</label><input type="date" class="w-full px-3 py-2.5 rounded-xl bg-panel border border-border text-sm text-text outline-none focus:border-accent" /></div>
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-text mb-3">Volatility Level</label>
+          <select class="w-full px-3 py-2.5 rounded-xl bg-panel border border-border text-sm text-text outline-none focus:border-accent">
+            <option>All Levels</option>
+            <option>Low</option>
+            <option>Medium</option>
+            <option>High</option>
+          </select>
+        </div>
+        <div class="flex gap-3 pt-4">
+          <button id="faResetFilters" class="flex-1 justify-center whitespace-nowrap inline-flex items-center gap-2 px-3 py-2.5 rounded-xl border border-border text-text text-sm font-semibold transition hover:bg-border/50"><i data-lucide="rotate-ccw" class="w-4 h-4 shrink-0"></i>Reset</button>
+          <button id="faApplyFilters" class="flex-1 justify-center whitespace-nowrap inline-flex items-center gap-2 px-3 py-2.5 rounded-xl bg-gradient-to-br from-accent to-teal-500 text-white text-sm font-semibold transition hover:opacity-90"><i data-lucide="check" class="w-4 h-4 shrink-0"></i>Apply Filters</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Export Drawer -->
+    <div class="drawer" id="faExportDrawer">
+      <div class="p-4 sm:p-6 border-b border-border flex items-center justify-between sticky top-0 bg-panel z-10">
+        <div>
+          <h2 class="text-xl font-bold text-text">Export Data</h2>
+          <p class="text-sm text-muted">Download analytics data</p>
+        </div>
+        <button class="fa-close-drawer w-10 h-10 inline-flex items-center justify-center rounded-xl border border-border text-muted hover:text-text hover:bg-border/50 transition"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+      </div>
+      <div class="p-4 sm:p-6 space-y-6">
+        <div>
+          <label class="block text-sm font-semibold text-text mb-3">Export Format</label>
+          <div class="grid grid-cols-2 gap-3">
+            <label class="flex items-center gap-3 p-4 rounded-xl border border-border cursor-pointer hover:border-accent transition"><input type="radio" name="faExportFormat" value="csv" checked class="accent-emerald-500 shrink-0" /><div><p class="font-medium text-text">CSV</p><p class="text-xs text-muted">Spreadsheet format</p></div></label>
+            <label class="flex items-center gap-3 p-4 rounded-xl border border-border cursor-pointer hover:border-accent transition"><input type="radio" name="faExportFormat" value="xlsx" class="accent-emerald-500 shrink-0" /><div><p class="font-medium text-text">Excel</p><p class="text-xs text-muted">.xlsx format</p></div></label>
+            <label class="flex items-center gap-3 p-4 rounded-xl border border-border cursor-pointer hover:border-accent transition"><input type="radio" name="faExportFormat" value="pdf" class="accent-emerald-500 shrink-0" /><div><p class="font-medium text-text">PDF</p><p class="text-xs text-muted">Document format</p></div></label>
+            <label class="flex items-center gap-3 p-4 rounded-xl border border-border cursor-pointer hover:border-accent transition"><input type="radio" name="faExportFormat" value="json" class="accent-emerald-500 shrink-0" /><div><p class="font-medium text-text">JSON</p><p class="text-xs text-muted">Developer format</p></div></label>
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-text mb-3">Include Data</label>
+          <div class="space-y-2">
+            <label class="flex items-center gap-3 cursor-pointer"><input type="checkbox" checked class="custom-checkbox" /><span class="text-sm text-text">Currency Pairs Data</span></label>
+            <label class="flex items-center gap-3 cursor-pointer"><input type="checkbox" checked class="custom-checkbox" /><span class="text-sm text-text">Trading Signals</span></label>
+            <label class="flex items-center gap-3 cursor-pointer"><input type="checkbox" checked class="custom-checkbox" /><span class="text-sm text-text">Technical Analysis</span></label>
+            <label class="flex items-center gap-3 cursor-pointer"><input type="checkbox" class="custom-checkbox" /><span class="text-sm text-text">Performance Metrics</span></label>
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-text mb-3">Date Range</label>
+          <select class="w-full px-3 py-2.5 rounded-xl bg-panel border border-border text-sm text-text outline-none focus:border-accent">
+            <option>Last 24 Hours</option>
+            <option>Last 7 Days</option>
+            <option selected>Last 30 Days</option>
+            <option>Last 90 Days</option>
+            <option>Custom Range</option>
+          </select>
+        </div>
+        <button id="faExportData" class="w-full justify-center whitespace-nowrap inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-br from-accent to-teal-500 text-white text-sm font-semibold transition hover:opacity-90"><i data-lucide="download" class="w-4 h-4 shrink-0"></i>Export Data</button>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="faToast">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-5 h-5 text-white shrink-0"></i></div>
+      <div>
+        <p class="font-semibold text-text" id="faToastTitle">Success</p>
+        <p class="text-sm text-muted" id="faToastMessage">Operation completed</p>
+      </div>
+      <button id="faToastClose" class="p-2 ml-auto rounded-lg text-muted hover:bg-border/50 transition" aria-label="Dismiss"><i data-lucide="x" class="w-4 h-4 shrink-0"></i></button>
+    </div>
+
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
+  </body>
+</html>

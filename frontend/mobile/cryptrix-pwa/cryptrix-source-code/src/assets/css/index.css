@@ -1,0 +1,610 @@
+@import "tailwindcss";
+@import "swiper/css";
+@import "glightbox/dist/css/glightbox.css";
+
+/* all pages css */
+/* @import "./swap.css"; */
+
+@custom-variant dark (&: where(.dark, .dark *));
+
+@theme {
+  --color-primary: #00d4aa;
+  --color-primary-dark: #00a88a;
+  --color-secondary: #7b61ff;
+  --color-secondary-dark: #6040ee;
+  --color-accent: #ff6b35;
+  --color-success: #00c896;
+  --color-warning: #ffb800;
+  --color-error: #ff4757;
+  --color-bg-dark: #0a0b0f;
+  --color-bg-light: #f0f2fa;
+  --color-surface: #12141a;
+  --color-surface-2: #1a1d26;
+  --color-surface-3: #222636;
+  --font-family-sans: Inter, system-ui, sans-serif;
+  --radius-card: 16px;
+  --radius-btn: 12px;
+  --radius-pill: 50px;
+  --shadow-primary: 0 8px 24px rgba(0, 212, 170, 0.3);
+  --shadow-secondary: 0 8px 24px rgba(123, 97, 255, 0.3);
+  --shadow-card: 0 4px 16px rgba(0, 0, 0, 0.3);
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes slide-up {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  --animate-fade-in: fade-in 0.5s ease-out;
+  --animate-slide-up: slide-up 0.5s ease-out;
+
+  --breakpoint-sm: 576px;
+  --breakpoint-md: 768px;
+  --breakpoint-lg: 992px;
+  --breakpoint-xl: 1200px;
+  --breakpoint-xxl: 1400px;
+  --breakpoint-3xl: 1600px;
+  --breakpoint-4xl: 1800px;
+}
+
+.dark {
+  color-scheme: dark;
+}
+/* Light mode overrides */
+:root:not(.dark) body {
+  background-color: #f0f2fa;
+  color: #0a0b14;
+}
+:root:not(.dark) .bg-bg-dark {
+  background-color: #f0f2fa !important;
+}
+:root:not(.dark) .bg-\[\#06070B\] {
+  background-color: #e0e3f0 !important;
+}
+:root:not(.dark) .bg-surface {
+  background-color: #ffffff !important;
+}
+:root:not(.dark) .bg-surface-2 {
+  background-color: #e8ebfa !important;
+}
+:root:not(.dark) .bg-surface-3 {
+  background-color: #dde1f5 !important;
+}
+:root:not(.dark) .text-white {
+  color: #0a0b14 !important;
+}
+:root:not(.dark) .text-white\/40 {
+  color: rgba(10, 11, 20, 0.45) !important;
+}
+:root:not(.dark) .text-white\/50 {
+  color: rgba(10, 11, 20, 0.55) !important;
+}
+:root:not(.dark) .text-white\/60 {
+  color: rgba(10, 11, 20, 0.65) !important;
+}
+:root:not(.dark) .text-white\/70 {
+  color: rgba(10, 11, 20, 0.72) !important;
+}
+:root:not(.dark) .text-white\/80 {
+  color: rgba(10, 11, 20, 0.8) !important;
+}
+:root:not(.dark) .border-white\/\[0\.08\] {
+  border-color: rgba(0, 0, 0, 0.1) !important;
+}
+:root:not(.dark) .border-white\/5 {
+  border-color: rgba(0, 0, 0, 0.08) !important;
+}
+:root:not(.dark) .border-white\/8 {
+  border-color: rgba(0, 0, 0, 0.1) !important;
+}
+:root:not(.dark) .border-white\/10 {
+  border-color: rgba(0, 0, 0, 0.12) !important;
+}
+:root:not(.dark) .bg-white\/10 {
+  background-color: rgba(0, 0, 0, 0.12) !important;
+}
+:root:not(.dark) .bg-white\/20 {
+  background-color: rgba(0, 0, 0, 0.18) !important;
+}
+:root:not(.dark) .bg-bg-dark\/95 {
+  background-color: rgba(240, 242, 250, 0.95) !important;
+}
+:root:not(.dark) .shadow-\[0_0_80px_rgba\(0\,212\,170\,0\.08\)\] {
+  box-shadow: 0 0 40px rgba(0, 0, 0, 0.12) !important;
+}
+/* Nav in light mode */
+:root:not(.dark) nav.bg-surface {
+  background-color: #ffffff !important;
+  border-color: rgba(0, 0, 0, 0.1) !important;
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.06);
+}
+/* Inputs */
+:root:not(.dark) input,
+:root:not(.dark) select,
+:root:not(.dark) textarea {
+  background-color: #ffffff !important;
+  border-color: rgba(0, 0, 0, 0.15) !important;
+  color: #0a0b14 !important;
+}
+:root:not(.dark) input::placeholder {
+  color: rgba(0, 0, 0, 0.3) !important;
+}
+/* Cards with gradient */
+:root:not(.dark) .bg-gradient-to-br {
+  filter: none;
+}
+/* Icon strokes removed to allow currentColor inheritance */
+/* Primary color — adjust for light bg contrast */
+:root:not(.dark) {
+  --color-primary: #007a63;
+  --color-secondary: #4930d0;
+  --color-success: #065f46;
+  --color-warning: #92400e;
+  --color-error: #991b1b;
+}
+:root:not(.dark) .text-primary {
+  color: #007a63 !important;
+}
+:root:not(.dark) .text-success {
+  color: #065f46 !important;
+}
+:root:not(.dark) .text-error {
+  color: #991b1b !important;
+}
+:root:not(.dark) .text-warning {
+  color: #92400e !important;
+}
+:root:not(.dark) .text-secondary {
+  color: #4930d0 !important;
+}
+:root:not(.dark) .bg-primary {
+  background-color: #007a63 !important;
+}
+:root:not(.dark) .border-primary\/20 {
+  border-color: rgba(0, 122, 99, 0.2) !important;
+}
+:root:not(.dark) .bg-primary\/15 {
+  background-color: rgba(0, 122, 99, 0.1) !important;
+}
+:root:not(.dark) .bg-success\/15 {
+  background-color: rgba(6, 95, 70, 0.12) !important;
+}
+:root:not(.dark) .bg-error\/15 {
+  background-color: rgba(153, 27, 27, 0.12) !important;
+}
+:root:not(.dark) .bg-warning\/15 {
+  background-color: rgba(146, 64, 14, 0.12) !important;
+}
+:root:not(.dark) .bg-secondary\/15 {
+  background-color: rgba(73, 48, 208, 0.1) !important;
+}
+:root:not(.dark) .text-bg-dark {
+  color: #ffffff !important;
+}
+
+/* theme css  */
+/* ============================================================
+   Cryptrix v2 — Theme System
+   Light mode overrides. Dark mode is the default (class="dark").
+   ============================================================ */
+
+/* ── CSS Variables ─────────────────────────────────────────── */
+:root {
+  --bg: #0a0b0f;
+  --surface: #12141a;
+  --surface2: #1a1d26;
+  --surface3: #222636;
+  --text: #f0f2f8;
+  --text2: #8b91a8;
+  --text3: #555b72;
+  --border: rgba(255, 255, 255, 0.08);
+  --primary: #00d4aa;
+  --secondary: #7b61ff;
+  --success: #00c896;
+  --warning: #ffb800;
+  --error: #ff4757;
+  --accent: #ff6b35;
+}
+
+/* ── Light mode variables ──────────────────────────────────── */
+html:not(.dark) {
+  --bg: #eef1ff;
+  --surface: #ffffff;
+  --surface2: #e4e8ff;
+  --surface3: #d8dcfa;
+  --text: #0a0b14;
+  --text2: #374151;
+  --text3: #6b7280;
+  --border: rgba(0, 0, 0, 0.1);
+  --primary: #007a63;
+  --secondary: #4930d0;
+  --success: #065f46;
+  --warning: #92400e;
+  --error: #991b1b;
+  --accent: #9a3412;
+}
+
+/* ── Base resets using variables ───────────────────────────── */
+body {
+  background-color: var(--bg) !important;
+  color: var(--text) !important;
+  transition:
+    background-color 0.3s,
+    color 0.3s;
+}
+
+/* ── App wrapper ───────────────────────────────────────────── */
+html:not(.dark) #app,
+html:not(.dark) [id="app"] {
+  background-color: var(--bg) !important;
+}
+
+html:not(.dark) .min-h-screen {
+  background-color: #e0e3f0 !important;
+}
+
+/* ── Backgrounds ───────────────────────────────────────────── */
+html:not(.dark) .bg-bg-dark {
+  background-color: var(--bg) !important;
+}
+html:not(.dark) .bg-surface {
+  background-color: var(--surface) !important;
+}
+html:not(.dark) .bg-surface-2,
+html:not(.dark) .bg-surface\/2 {
+  background-color: var(--surface2) !important;
+}
+html:not(.dark) .bg-surface-3 {
+  background-color: var(--surface3) !important;
+}
+@media (hover: hover) {
+  html:not(.dark) .hover\:bg-surface-2:hover {
+    background-color: var(--surface2) !important;
+  }
+  html:not(.dark) .hover\:bg-surface-3:hover {
+    background-color: var(--surface3) !important;
+  }
+}
+html:not(.dark) .bg-\[#06070B\] {
+  background-color: #e0e3f0 !important;
+}
+html:not(.dark) .bg-\[#12141A\] {
+  background-color: var(--surface) !important;
+}
+html:not(.dark) .bg-\[#1A1D26\] {
+  background-color: var(--surface2) !important;
+}
+html:not(.dark) .bg-\[#0A0B0F\] {
+  background-color: var(--bg) !important;
+}
+
+/* ── Text colors ───────────────────────────────────────────── */
+html:not(.dark) .text-white {
+  color: var(--text) !important;
+}
+html:not(.dark) .text-white\/40,
+html:not(.dark) .text-white\/50 {
+  color: var(--text2) !important;
+}
+html:not(.dark) .text-white\/30,
+html:not(.dark) .text-white\/20,
+html:not(.dark) .text-white\/25 {
+  color: var(--text3) !important;
+}
+html:not(.dark) .text-white\/60,
+html:not(.dark) .text-white\/70 {
+  color: var(--text2) !important;
+}
+
+/* ── Border colors ─────────────────────────────────────────── */
+html:not(.dark) .border-white\/\[0\.08\],
+html:not(.dark) .border-white\/8,
+html:not(.dark) .border-white\/5,
+html:not(.dark) .border-white\/\[0\.05\],
+html:not(.dark) .border-white\/\[0\.06\] {
+  border-color: var(--border) !important;
+}
+
+/* ── Dividers ──────────────────────────────────────────────── */
+html:not(.dark) .divide-white\/5 > :not(:last-child) {
+  border-color: var(--border) !important;
+}
+
+/* ── Sticky/fixed headers ──────────────────────────────────── */
+html:not(.dark) .sticky.top-0,
+html:not(.dark) .bg-bg-dark\/95 {
+  background-color: rgba(238, 241, 255, 0.95) !important;
+}
+
+/* ── Bottom nav ─────────────────────────────────────────────── */
+html:not(.dark) nav.fixed.bottom-0 {
+  background-color: #ffffff !important;
+  border-top-color: rgba(0, 0, 0, 0.1) !important;
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.06) !important;
+}
+
+/* ── Cards ──────────────────────────────────────────────────── */
+html:not(.dark) .rounded-card,
+html:not(.dark) [class*="rounded-card"] {
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.07);
+}
+
+/* ── Inputs ─────────────────────────────────────────────────── */
+html:not(.dark) input,
+html:not(.dark) select,
+html:not(.dark) textarea {
+  background-color: #ffffff !important;
+  border-color: rgba(0, 0, 0, 0.15) !important;
+  color: var(--text) !important;
+}
+html:not(.dark) input::placeholder,
+html:not(.dark) textarea::placeholder {
+  color: rgba(0, 0, 0, 0.3) !important;
+}
+
+/* ── Ghost/secondary buttons ────────────────────────────────── */
+html:not(.dark) .bg-surface-2.border {
+  background-color: #ffffff !important;
+  border-color: rgba(0, 0, 0, 0.12) !important;
+  color: var(--text) !important;
+}
+
+/* ── Coin icon backgrounds (keep colorful) ──────────────────── */
+html:not(.dark)
+  [class*="rounded-xl"][class*="flex"][class*="items-center"][class*="justify-center"][class*="font-black"] {
+  border: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+/* ── Back button ─────────────────────────────────────────────── */
+html:not(.dark) .w-10.h-10.rounded-xl.bg-surface-2 {
+  background-color: #ffffff !important;
+  border-color: rgba(0, 0, 0, 0.1) !important;
+  color: var(--text) !important;
+}
+
+/* SVG strokes removed to allow currentColor inheritance */
+
+/* ── Text colors for brand ───────────────────────────────────── */
+html:not(.dark) .text-primary {
+  color: var(--primary) !important;
+}
+html:not(.dark) .text-secondary {
+  color: var(--secondary) !important;
+}
+html:not(.dark) .text-success {
+  color: var(--success) !important;
+}
+html:not(.dark) .text-warning {
+  color: var(--warning) !important;
+}
+html:not(.dark) .text-error {
+  color: var(--error) !important;
+}
+html:not(.dark) .text-accent {
+  color: var(--accent) !important;
+}
+
+/* ── Brand bg with opacity — adjust for light ──────────────── */
+html:not(.dark) .bg-primary\/15 {
+  background-color: rgba(0, 122, 99, 0.12) !important;
+}
+html:not(.dark) .bg-primary\/10 {
+  background-color: rgba(0, 122, 99, 0.08) !important;
+}
+html:not(.dark) .bg-success\/15 {
+  background-color: rgba(6, 95, 70, 0.1) !important;
+}
+html:not(.dark) .bg-error\/15 {
+  background-color: rgba(153, 27, 27, 0.1) !important;
+}
+html:not(.dark) .bg-warning\/15 {
+  background-color: rgba(146, 64, 14, 0.1) !important;
+}
+html:not(.dark) .bg-secondary\/15 {
+  background-color: rgba(73, 48, 208, 0.1) !important;
+}
+
+/* ── Badges ───────────────────────────────────────────────────── */
+html:not(.dark) .bg-success\/15.text-success {
+  background-color: rgba(6, 95, 70, 0.1) !important;
+  color: #065f46 !important;
+}
+html:not(.dark) .bg-error\/15.text-error {
+  background-color: rgba(153, 27, 27, 0.1) !important;
+  color: #991b1b !important;
+}
+html:not(.dark) .bg-primary\/15.text-primary {
+  background-color: rgba(0, 122, 99, 0.1) !important;
+  color: #007a63 !important;
+}
+html:not(.dark) .bg-warning\/15.text-warning {
+  background-color: rgba(146, 64, 14, 0.1) !important;
+  color: #92400e !important;
+}
+
+/* ── Tab bar ──────────────────────────────────────────────────── */
+html:not(.dark) .bg-surface-2.rounded-card.p-1 {
+  background-color: var(--surface2) !important;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+/* ── Hero gradient card ───────────────────────────────────────── */
+.portfolio-card {
+  background: linear-gradient(145deg, #0d1f1a 0%, #12141a 100%);
+}
+
+html:not(.dark) .portfolio-card {
+  background: linear-gradient(
+    145deg,
+    #e0f5f1 0%,
+    #eef1ff 60%,
+    #e8eeff 100%
+  ) !important;
+  border-color: rgba(0, 122, 99, 0.2) !important;
+}
+html:not(.dark) .portfolio-card .text-white\/50 {
+  color: rgba(0, 0, 0, 0.5) !important;
+}
+html:not(.dark) .portfolio-card .text-white\/40 {
+  color: rgba(0, 0, 0, 0.4) !important;
+}
+html:not(.dark) .portfolio-card .text-white\/30 {
+  color: rgba(0, 0, 0, 0.3) !important;
+}
+html:not(.dark) .portfolio-card .border-white\/10 {
+  border-color: rgba(0, 0, 0, 0.1) !important;
+}
+html:not(.dark) .portfolio-card .text-white\/70 {
+  color: rgba(0, 0, 0, 0.6) !important;
+}
+html:not(.dark) .border-primary\/20 {
+  border-color: rgba(0, 122, 99, 0.2) !important;
+}
+
+/* ── Bottom sheet ─────────────────────────────────────────────── */
+html:not(.dark) .rounded-t-3xl.bg-surface {
+  background-color: #ffffff !important;
+  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.12) !important;
+}
+
+/* ── Chip / filter pills ──────────────────────────────────────── */
+html:not(.dark) .bg-surface-2.rounded-pill {
+  background-color: #ffffff !important;
+  border: 1px solid rgba(0, 0, 0, 0.12) !important;
+  color: var(--text2) !important;
+}
+
+/* ── Theme toggle icon ────────────────────────────────────────── */
+#theme-icon-moon {
+  display: none;
+}
+#theme-icon-sun {
+  display: block;
+}
+html.dark #theme-icon-moon {
+  display: block;
+}
+html.dark #theme-icon-sun {
+  display: none;
+}
+
+/* ── Smooth transitions ───────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  transition-property: background-color, border-color, color;
+  transition-duration: 200ms;
+  transition-timing-function: ease;
+}
+/* Don't animate transforms/opacity */
+.transition-all,
+.transition-colors,
+.transition-transform {
+  transition: all 0.15s;
+}
+
+button {
+  cursor: pointer;
+}
+
+/* stop-loss-tp  */
+/* Common range resets */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  background: transparent;
+  cursor: pointer;
+}
+input[type="range"]:focus {
+  outline: none;
+}
+
+/* Stop Loss slider */
+.sl-range {
+  height: 6px;
+  border-radius: 9999px;
+  background: linear-gradient(
+    to right,
+    #ff4757 0%,
+    #ff4757 var(--sl-fill, 28%),
+    #fee2e2 var(--sl-fill, 28%),
+    #fee2e2 100%
+  ) !important;
+  margin: 14px 0;
+}
+.sl-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: white;
+  border: 4px solid #ff4757;
+  box-shadow: 0 4px 12px rgba(255, 71, 87, 0.3);
+  margin-top: -9px; /* Centers thumb on 6px track */
+  transition: all 0.2s ease;
+}
+.sl-range::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 9999px;
+}
+.sl-range:active::-webkit-slider-thumb {
+  transform: scale(1.15);
+  box-shadow: 0 6px 16px rgba(255, 71, 87, 0.4);
+}
+
+/* Take Profit slider */
+.tp-range {
+  height: 6px;
+  border-radius: 9999px;
+  background: linear-gradient(
+    to right,
+    #00c896 0%,
+    #00c896 var(--tp-fill, 9%),
+    #dcfce7 var(--tp-fill, 9%),
+    #dcfce7 100%
+  ) !important;
+  margin: 14px 0;
+}
+.tp-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: white;
+  border: 4px solid #00c896;
+  box-shadow: 0 4px 12px rgba(0, 200, 150, 0.3);
+  margin-top: -9px;
+  transition: all 0.2s ease;
+}
+.tp-range::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 9999px;
+}
+.tp-range:active::-webkit-slider-thumb {
+  transform: scale(1.15);
+  box-shadow: 0 6px 16px rgba(0, 200, 150, 0.4);
+}
+
+/* Label styling refinement */
+.tick-labels span {
+  position: relative;
+  font-size: 10px;
+  font-weight: 600;
+  color: #94a3b8;
+  letter-spacing: 0.02em;
+}

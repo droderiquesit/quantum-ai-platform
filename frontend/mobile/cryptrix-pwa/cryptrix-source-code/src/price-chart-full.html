@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>Cryptrix — AI Crypto Investing & Trading App</title>
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="apple-touch-icon" href="/assets/images/logo.png" />
+    <meta name="theme-color" content="#00D4AA" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="shortcut icon" href="./assets/images/favicon.ico" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+    <!-- Theme Script (Placed early to prevent FOUC) -->
+    <script>
+      (function () {
+        const saved = localStorage.getItem("theme") || "dark";
+        if (saved === "dark") document.documentElement.classList.add("dark");
+        else document.documentElement.classList.remove("dark");
+      })();
+    </script>
+  </head>
+  <body class="font-sans overflow-x-hidden">
+    <div class="min-h-screen flex justify-center">
+      <div
+        class="relative w-full max-w-[430px] min-h-screen overflow-x-hidden shadow-[0_0_80px_rgba(0,212,170,0.08)]"
+        id="app"
+      >
+        <div
+          class="flex items-center justify-between px-5 py-3.5 border-b border-white/5"
+        >
+          <a
+            href="javascript:history.back()"
+            class="w-10 h-10 rounded-xl bg-surface-2 border border-white/[0.08] flex items-center justify-center flex-shrink-0"
+          >
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M19 12H5M12 19l-7-7 7-7" />
+            </svg>
+          </a>
+          <div class="text-center">
+            <div class="text-[17px] font-bold">BTC/USDT</div>
+            <div class="text-xs text-success" id="chart-price">$43,900.24</div>
+          </div>
+          <button
+            onclick="showToast('Chart saved', 'info')"
+            class="w-10 h-10 rounded-xl bg-surface-2 border border-white/[0.08] flex items-center justify-center"
+          >
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <circle cx="18" cy="5" r="3" />
+              <circle cx="6" cy="12" r="3" />
+              <circle cx="18" cy="19" r="3" />
+              <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
+              <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+            </svg>
+          </button>
+        </div>
+        <div class="bg-bg-dark/95">
+          <div class="flex gap-1 px-5 py-3 overflow-x-auto">
+            <button
+              class="px-2.5 py-1.5 text-[11px] font-semibold rounded-lg text-white/40"
+            >
+              15m
+            </button>
+            <button
+              class="px-2.5 py-1.5 text-[11px] font-semibold rounded-lg text-white/40"
+            >
+              1H
+            </button>
+            <button
+              class="px-2.5 py-1.5 text-[11px] font-semibold rounded-lg text-white/40"
+            >
+              4H
+            </button>
+            <button
+              class="px-2.5 py-1.5 text-[11px] font-semibold rounded-lg bg-primary text-bg-dark"
+            >
+              1D
+            </button>
+            <button
+              class="px-2.5 py-1.5 text-[11px] font-semibold rounded-lg text-white/40"
+            >
+              1W
+            </button>
+            <button
+              class="px-2.5 py-1.5 text-[11px] font-semibold rounded-lg text-white/40"
+            >
+              1M
+            </button>
+          </div>
+          <div class="px-5 pb-3">
+            <canvas id="full-chart" style="height: 240px; width: 100%"></canvas>
+          </div>
+          <div class="px-5 pb-3">
+            <canvas id="vol-chart" style="height: 60px; width: 100%"></canvas>
+          </div>
+          <div class="grid grid-cols-2 gap-3 px-5 pb-5">
+            <div class="bg-surface border border-white/[0.08] rounded-card p-3">
+              <div class="text-[11px] text-white/40 mb-1">24h High</div>
+              <div class="text-sm font-bold text-success">$44,250.00</div>
+            </div>
+            <div class="bg-surface border border-white/[0.08] rounded-card p-3">
+              <div class="text-[11px] text-white/40 mb-1">24h Low</div>
+              <div class="text-sm font-bold text-error">$42,800.00</div>
+            </div>
+            <div class="bg-surface border border-white/[0.08] rounded-card p-3">
+              <div class="text-[11px] text-white/40 mb-1">24h Volume</div>
+              <div class="text-sm font-bold">$28.4B</div>
+            </div>
+            <div class="bg-surface border border-white/[0.08] rounded-card p-3">
+              <div class="text-[11px] text-white/40 mb-1">Market Cap</div>
+              <div class="text-sm font-bold">$861.2B</div>
+            </div>
+          </div>
+          <div class="flex gap-3 px-5 pb-24">
+            <a
+              href="buy-crypto.html"
+              class="flex-1 bg-primary text-bg-dark font-bold rounded-btn h-12 flex items-center justify-center shadow-primary"
+              >Buy BTC</a
+            >
+            <a
+              href="sell-crypto.html"
+              class="flex-1 bg-error/15 text-error border border-error/20 rounded-btn h-12 flex items-center justify-center font-bold"
+              >Sell BTC</a
+            >
+          </div>
+        </div>
+        <include-bottom-nav />
+      </div>
+    </div>
+    <script src="./assets/js/data.js"></script>
+    <script src="./assets/js/charts.js"></script>
+    <script src="./assets/js/components.js"></script>
+    <script src="./assets/js/app.js"></script>
+    <script>
+      document.addEventListener("DOMContentLoaded", () => {
+        const d = window.AppData;
+        if (!d) return;
+        const params = new URLSearchParams(window.location.search);
+        const id = params.get("id") || "btc";
+        const coin = d.getCoinById(id) || d.coins[0];
+
+        if (coin) {
+          const elPrice = document.getElementById("chart-price");
+          if (elPrice) elPrice.textContent = d.formatPrice(coin.price);
+
+          setTimeout(() => {
+            if (window.Charts) {
+              Charts.coinLine(
+                "full-chart",
+                coin.history30d,
+                coin.color,
+                coin.change24h >= 0,
+              );
+              // Simple volume mock
+              Charts.portfolioLine(
+                "vol-chart",
+                [20, 45, 28, 80, 99, 43, 67, 22, 55, 90],
+                "30d",
+              );
+            }
+          }, 100);
+        }
+      });
+    </script>
+  </body>
+</html>

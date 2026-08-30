@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>Cryptrix — AI Crypto Investing & Trading App</title>
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="shortcut icon" href="./assets/images/favicon.ico" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"
+      rel="stylesheet"
+    />
+
+    <!-- Theme Script (Placed early to prevent FOUC) -->
+    <script>
+      (function () {
+        const saved = localStorage.getItem("theme") || "dark";
+        if (saved === "dark") document.documentElement.classList.add("dark");
+        else document.documentElement.classList.remove("dark");
+      })();
+    </script>
+  <link href="assets/css/index.css" rel="stylesheet"></head>
+  <body class="font-sans overflow-x-hidden">
+    <div class="min-h-screen flex justify-center">
+      <div
+        class="relative w-full max-w-[430px] min-h-screen overflow-x-hidden shadow-[0_0_80px_rgba(0,212,170,0.08)] bg-bg-dark"
+        id="app"
+      >
+        <!-- Header -->
+        <div
+          class="flex items-center justify-between px-5 py-3.5 sticky top-0 bg-surface border-b border-white/5 z-10"
+        >
+          <a
+            href="swap.html"
+            class="w-10 h-10 rounded-xl bg-surface-2 border border-white/5 flex items-center justify-center flex-shrink-0 transition-all active:scale-95"
+          >
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              class="rtl:rotate-180"
+            >
+              <path d="M19 12H5M12 19l-7-7 7-7" />
+            </svg>
+          </a>
+          <h1 class="text-[17px] font-bold text-white">Confirm Swap</h1>
+          <div class="w-10"></div>
+        </div>
+        <div class="px-5 pt-5 pb-28 animate-fade-up">
+          <!-- Logo Section -->
+          <div class="text-center mb-8">
+            <div class="flex items-center justify-center gap-3 mb-5">
+              <div
+                class="w-16 h-16 rounded-[20px] flex items-center justify-center text-xs font-black shadow-sm"
+                style="
+                  background: #627eea15;
+                  color: #627eea;
+                  border: 1px solid #627eea10;
+                "
+              >
+                ETH
+              </div>
+              <div
+                class="w-10 h-10 rounded-full bg-[#00D4AA]/10 flex items-center justify-center"
+              >
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#00D4AA"
+                  stroke-width="2.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M5 12h14M12 5l7 7-7 7" />
+                </svg>
+              </div>
+              <div
+                class="w-16 h-16 rounded-[20px] flex items-center justify-center text-xs font-black shadow-sm"
+                style="
+                  background: #f7931a15;
+                  color: #f7931a;
+                  border: 1px solid #f7931a10;
+                "
+              >
+                BTC
+              </div>
+            </div>
+            <div class="text-2xl font-black text-white">
+              1.0 ETH → 0.05820 BTC
+            </div>
+            <div class="text-white/50 text-[13px] mt-1.5 font-medium">
+              At current market rate
+            </div>
+          </div>
+
+          <!-- Transaction Details -->
+          <div
+            class="bg-surface rounded-[24px] p-5 mb-5 border border-white/5 shadow-sm"
+          >
+            <div class="flex justify-between py-3 border-b border-white/5">
+              <span class="text-[13px] text-white/50 font-medium"
+                >You Send</span
+              >
+              <span class="text-[13px] font-bold text-white"
+                >1.0 ETH ($2,554.87)</span
+              >
+            </div>
+            <div class="flex justify-between py-3 border-b border-white/5">
+              <span class="text-[13px] text-white/50 font-medium"
+                >You Receive</span
+              >
+              <span class="text-[13px] font-bold text-success"
+                >≈ 0.05820 BTC</span
+              >
+            </div>
+            <div class="flex justify-between py-3 border-b border-white/5">
+              <span class="text-[13px] text-white/50 font-medium"
+                >Exchange Rate</span
+              >
+              <span class="text-[13px] font-bold text-white"
+                >1 ETH = 0.05820 BTC</span
+              >
+            </div>
+            <div class="flex justify-between py-3 border-b border-white/5">
+              <span class="text-[13px] text-white/50 font-medium"
+                >Swap Fee</span
+              >
+              <span class="text-[13px] font-bold text-white"
+                >$3.83 (0.15%)</span
+              >
+            </div>
+            <div class="flex justify-between py-3 border-b border-white/5">
+              <span class="text-[13px] text-white/50 font-medium"
+                >Slippage</span
+              >
+              <span class="text-[13px] font-bold text-[#FF4757]">0.5%</span>
+            </div>
+            <div class="flex justify-between py-3">
+              <span class="text-[13px] text-white/50 font-medium"
+                >Execution Time</span
+              >
+              <span class="text-[13px] font-bold text-white"
+                >&lt; 30 seconds</span
+              >
+            </div>
+          </div>
+
+          <!-- Warning Box -->
+          <div
+            class="bg-[#FFF9E5] border border-[#FFB800]/10 rounded-xl p-4 mb-8"
+          >
+            <div
+              class="text-[12px] text-warning/80 leading-relaxed font-semibold"
+            >
+              ⚠️ Rates are estimated. Final amount may vary by up to 0.5%
+              (slippage).
+            </div>
+          </div>
+
+          <!-- Action Buttons -->
+          <a
+            href="trade-success.html"
+            class="bg-[#00D4AA] text-[#0A0B0F] font-extrabold rounded-[16px] h-14 flex items-center justify-center gap-2 transition-all active:scale-95 shadow-lg shadow-[#00D4AA]/20 w-full text-[15px]"
+          >
+            Confirm Swap
+          </a>
+          <a
+            href="swap.html"
+            class="h-12 flex items-center justify-center font-bold text-white/50 text-[14px] w-full"
+          >
+            Cancel Transaction
+          </a>
+        </div>
+        <nav
+  class="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] bg-surface border-t border-white/[0.08] flex items-center justify-around h-[72px] z-50"
+>
+  <a
+    href="home.html"
+    id="nav-home"
+    class="flex flex-col items-center gap-1 text-white/40 hover:text-primary transition-colors"
+  >
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+      <polyline points="9 22 9 12 15 12 15 22" />
+    </svg>
+    <span class="text-[10px] font-semibold">Home</span>
+  </a>
+  <a
+    href="market-overview.html"
+    id="nav-market"
+    class="flex flex-col items-center gap-1 text-white/40 hover:text-primary transition-colors"
+  >
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <polyline points="22 7 13.5 15.5 8.5 10.5 1 18" />
+      <polyline points="16 7 22 7 22 13" />
+    </svg>
+    <span class="text-[10px] font-semibold">Markets</span>
+  </a>
+  <a
+    href="trade.html"
+    id="nav-trade"
+    class="flex flex-col items-center gap-1 text-white/40 hover:text-primary transition-colors"
+  >
+    <div
+      class="w-12 h-12 rounded-lg bg-primary flex flex-col items-center justify-center shadow-primary"
+    >
+      <svg
+        width="22"
+        height="22"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="#000000"
+        stroke-width="2.2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <polyline points="17 1 21 5 17 9" />
+        <path d="M3 11V9a4 4 0 0 1 4-4h14" />
+        <polyline points="7 23 3 19 7 15" />
+        <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+      </svg>
+      <span class="text-[10px] text-black font-semibold">Trade</span>
+    </div>
+  </a>
+  <a
+    href="portfolio-overview.html"
+    id="nav-portfolio"
+    class="flex flex-col items-center gap-1 text-white/40 hover:text-primary transition-colors"
+  >
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <rect x="2" y="7" width="20" height="14" rx="2" ry="2" />
+      <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16" />
+    </svg>
+    <span class="text-[10px] font-semibold">Portfolio</span>
+  </a>
+  <a
+    href="profile.html"
+    id="nav-profile"
+    class="flex flex-col items-center gap-1 text-white/40 hover:text-primary transition-colors"
+  >
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+      <circle cx="12" cy="7" r="4" />
+    </svg>
+    <span class="text-[10px] font-semibold">Profile</span>
+  </a>
+</nav>
+
+      </div>
+    </div>
+
+    <script src="./assets/js/data.js"></script>
+    <script src="./assets/js/charts.js"></script>
+    <script src="./assets/js/components.js"></script>
+    <script src="./assets/js/app.js"></script>
+  <script defer src="index.js"></script></body>
+</html>

@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <meta name="theme-color" content="#00D4AA" />
+    <title>Cryptrix — AI Crypto Investing & Trading App</title>
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="apple-touch-icon" href="/assets/images/logo.png" />
+    <meta name="theme-color" content="#00D4AA" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="shortcut icon" href="./assets/images/favicon.ico" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+    <!-- Theme Script (Placed early to prevent FOUC) -->
+    <script>
+      (function () {
+        const saved = localStorage.getItem("theme") || "dark";
+        if (saved === "dark") document.documentElement.classList.add("dark");
+        else document.documentElement.classList.remove("dark");
+      })();
+    </script>
+  </head>
+  <body>
+    <div class="min-h-screen flex justify-center">
+      <div
+        class="relative w-full max-w-[430px] min-h-screen overflow-x-hidden shadow-[0_0_80px_rgba(0,212,170,0.08)]"
+        id="app"
+      >
+        <!-- Header -->
+        <div class="flex items-center justify-between px-5 py-4">
+          <div class="flex items-center gap-3">
+            <div class="w-11 h-11 rounded-xl flex items-center justify-center">
+              <img
+                src="./assets/images/buyer1.png"
+                alt="user"
+                class="w-full h-full rounded-full"
+              />
+            </div>
+            <div>
+              <div class="text-xs text-white/40">Good morning 👋</div>
+              <div class="text-base font-bold">Alex Mercer</div>
+            </div>
+          </div>
+          <div class="flex gap-2">
+            <a
+              href="notifications.html"
+              class="relative w-10 h-10 rounded-xl bg-surface-2 border border-white/[0.08] flex items-center justify-center"
+            >
+              <svg
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+              </svg>
+              <div
+                class="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-error"
+              ></div>
+            </a>
+            <button
+              onclick="toggleTheme()"
+              class="w-10 h-10 rounded-xl bg-surface-2 border border-white/[0.08] flex items-center justify-center"
+              title="Toggle theme"
+            >
+              <span class="theme-icon-moon">
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+                </svg>
+              </span>
+              <span class="theme-icon-sun" style="display: none">
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <circle cx="12" cy="12" r="5" />
+                  <line x1="12" y1="1" x2="12" y2="3" />
+                  <line x1="12" y1="21" x2="12" y2="23" />
+                  <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+                  <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+                  <line x1="1" y1="12" x2="3" y2="12" />
+                  <line x1="21" y1="12" x2="23" y2="12" />
+                  <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+                  <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+                </svg>
+              </span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Total Portfolio Value Section -->
+        <div class="px-5 pb-6">
+          <div
+            class="portfolio-card relative border border-primary/20 rounded-[24px] p-6 overflow-hidden animate-fade-in shadow-lg"
+          >
+            <!-- Background mesh effect -->
+            <div
+              class="absolute -top-10 -right-10 w-32 h-32 bg-primary/10 rounded-full blur-[40px]"
+            ></div>
+
+            <div class="relative z-10">
+              <div class="flex items-center gap-2 mb-2">
+                <span class="text-[13px] font-medium text-white/50"
+                  >Total Portfolio Value</span
+                >
+                <button
+                  class="text-white/30 hover:text-white transition-colors"
+                >
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                    <circle cx="12" cy="12" r="3" />
+                  </svg>
+                </button>
+              </div>
+
+              <div
+                class="text-[38px] font-black tracking-tight text-white mb-3"
+              >
+                $47,823.56
+              </div>
+
+              <div class="flex items-center gap-2.5 mb-6">
+                <div
+                  class="flex items-center gap-1 bg-success/15 px-2.5 py-1 rounded-full"
+                >
+                  <span class="text-[11px] font-bold text-success"
+                    >▲ +$1,234.78 today</span
+                  >
+                </div>
+                <span class="text-[13px] font-bold text-success"
+                  >+2.65% (24h)</span
+                >
+              </div>
+
+              <!-- Area Chart placeholder -->
+              <div class="h-[60px] -mx-2">
+                <canvas id="home-chart" class="w-full h-full"></canvas>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Quick actions -->
+        <div class="px-5 mb-6">
+          <div class="grid grid-cols-4 gap-3">
+            <a
+              href="deposit.html"
+              class="flex flex-col items-center gap-2 group"
+            >
+              <div
+                class="w-14 h-14 rounded-2xl bg-surface border border-white/5 flex items-center justify-center group-active:scale-95 transition-all"
+              >
+                <svg
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#00D4AA"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+              </div>
+              <span class="text-[12px] font-semibold text-white/40"
+                >Deposit</span
+              >
+            </a>
+            <a
+              href="withdraw.html"
+              class="flex flex-col items-center gap-2 group"
+            >
+              <div
+                class="w-14 h-14 rounded-2xl bg-surface border border-white/5 flex items-center justify-center group-active:scale-95 transition-all"
+              >
+                <svg
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#7B61FF"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="17 8 12 3 7 8" />
+                  <line x1="12" y1="3" x2="12" y2="15" />
+                </svg>
+              </div>
+              <span class="text-[12px] font-semibold text-white/40"
+                >Withdraw</span
+              >
+            </a>
+            <a href="trade.html" class="flex flex-col items-center gap-2 group">
+              <div
+                class="w-14 h-14 rounded-2xl bg-surface border border-white/5 flex items-center justify-center group-active:scale-95 transition-all"
+              >
+                <svg
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#FF6B35"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <polyline points="17 1 21 5 17 9" />
+                  <path d="M3 11V9a4 4 0 0 1 4-4h14" />
+                  <polyline points="7 23 3 19 7 15" />
+                  <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+                </svg>
+              </div>
+              <span class="text-[12px] font-semibold text-white/40">Trade</span>
+            </a>
+            <a href="swap.html" class="flex flex-col items-center gap-2 group">
+              <div
+                class="w-14 h-14 rounded-2xl bg-surface border border-white/5 flex items-center justify-center group-active:scale-95 transition-all"
+              >
+                <svg
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#FFB800"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <polyline points="16 3 21 3 21 8" />
+                  <line x1="4" y1="20" x2="21" y2="3" />
+                  <polyline points="21 16 21 21 16 21" />
+                  <line x1="15" y1="15" x2="21" y2="21" />
+                </svg>
+              </div>
+              <span class="text-[12px] font-semibold text-white/40">Swap</span>
+            </a>
+            <a
+              href="wallet.html"
+              class="flex flex-col items-center gap-2 group"
+            >
+              <div
+                class="w-14 h-14 rounded-2xl bg-surface border border-white/5 flex items-center justify-center group-active:scale-95 transition-all"
+              >
+                <svg
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#00C896"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <rect x="1" y="4" width="22" height="16" rx="2" ry="2" />
+                  <line x1="1" y1="10" x2="23" y2="10" />
+                </svg>
+              </div>
+              <span class="text-[12px] font-semibold text-white/40"
+                >Wallet</span
+              >
+            </a>
+            <a
+              href="watchlist.html"
+              class="flex flex-col items-center gap-2 group"
+            >
+              <div
+                class="w-14 h-14 rounded-2xl bg-surface border border-white/5 flex items-center justify-center group-active:scale-95 transition-all"
+              >
+                <svg
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#FF6B35"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+              </div>
+              <span class="text-[12px] font-semibold text-white/40"
+                >Watchlist</span
+              >
+            </a>
+            <a
+              href="staking-dashboard.html"
+              class="flex flex-col items-center gap-2 group"
+            >
+              <div
+                class="w-14 h-14 rounded-2xl bg-surface border border-white/5 flex items-center justify-center group-active:scale-95 transition-all"
+              >
+                <svg
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#7B61FF"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <circle cx="12" cy="8" r="6" />
+                  <path d="M15.477 12.89L17 22l-5-3-5 3 1.523-9.11" />
+                </svg>
+              </div>
+              <span class="text-[12px] font-semibold text-white/40">Stake</span>
+            </a>
+            <a
+              href="ai-advisor.html"
+              class="flex flex-col items-center gap-2 group"
+            >
+              <div
+                class="w-14 h-14 rounded-2xl bg-surface border border-white/5 flex items-center justify-center group-active:scale-95 transition-all"
+              >
+                <svg
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#00D4AA"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <rect x="2" y="2" width="20" height="8" rx="2" />
+                  <rect x="2" y="14" width="20" height="8" rx="2" />
+                  <line x1="6" y1="6" x2="6.01" y2="6" />
+                  <line x1="6" y1="18" x2="6.01" y2="18" />
+                </svg>
+              </div>
+              <span class="text-[12px] font-semibold text-white/40"
+                >AI Advisor</span
+              >
+            </a>
+          </div>
+        </div>
+
+        <!-- AI Signal -->
+        <div class="px-5 mb-6">
+          <a
+            href="ai-advisor.html"
+            class="bg-gradient-to-br from-secondary/15 to-primary/[0.08] border border-secondary/20 rounded-card p-4 flex items-center gap-4 cursor-pointer"
+          >
+            <div
+              class="w-11 h-11 rounded-[12px] bg-secondary/20 flex items-center justify-center flex-shrink-0"
+            >
+              <svg
+                width="22"
+                height="22"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="#7B61FF"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <rect x="2" y="2" width="20" height="8" rx="2" />
+                <rect x="2" y="14" width="20" height="8" rx="2" />
+                <line x1="6" y1="6" x2="6.01" y2="6" />
+                <line x1="6" y1="18" x2="6.01" y2="18" />
+              </svg>
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="text-xs text-secondary font-bold tracking-wide mb-1">
+                🤖 AI SIGNAL
+              </div>
+              <div class="text-sm font-bold">BUY ETH — 87% confidence</div>
+              <div class="text-xs text-white/40">
+                Bullish divergence detected · 1-2 week timeframe
+              </div>
+            </div>
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="rgba(255,255,255,0.3)"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M9 18l6-6-6-6" />
+            </svg>
+          </a>
+        </div>
+
+        <!-- Markets -->
+        <div class="px-5 mb-6">
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="text-xl font-bold text-white">Market</h2>
+            <a
+              href="market-overview.html"
+              class="text-primary text-sm font-bold hover:opacity-80 transition-opacity"
+              >See All</a
+            >
+          </div>
+          <div id="home-coins" class="flex flex-col"></div>
+        </div>
+        <!-- My Portfolio Section -->
+        <section class="px-5 mb-15 animate-fade-in">
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="text-xl font-bold text-white">My Portfolio</h2>
+            <a
+              href="portfolio-overview.html"
+              class="text-primary text-sm font-bold hover:opacity-80 transition-opacity"
+              >Details</a
+            >
+          </div>
+          <div class="bg-surface border border-white/5 rounded-[24px] p-5">
+            <div class="flex justify-between items-start mb-6">
+              <div>
+                <div
+                  class="text-[11px] text-white/30 font-bold tracking-wider uppercase mb-1"
+                >
+                  Total P&amp;L
+                </div>
+                <div class="text-3xl font-black text-success">+$9,623.56</div>
+              </div>
+              <div class="text-right">
+                <div
+                  class="text-[11px] text-white/30 font-bold tracking-wider uppercase mb-1"
+                >
+                  ROI
+                </div>
+                <div class="text-2xl font-black text-success">+25.19%</div>
+              </div>
+            </div>
+            <div id="home-holdings" class="space-y-1">
+              <!-- Rendered via JS -->
+            </div>
+          </div>
+        </section>
+
+        <div class="h-10"></div>
+        <include-bottom-nav />
+      </div>
+    </div>
+
+    <!-- script files -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="./assets/js/data.js"></script>
+    <script src="./assets/js/charts.js"></script>
+    <script src="./assets/js/components.js"></script>
+    <script src="./assets/js/app.js"></script>
+  </body>
+</html>

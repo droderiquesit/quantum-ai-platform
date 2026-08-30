@@ -1,0 +1,864 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <script>
+      if (localStorage.getItem("theme") === "light") document.documentElement.classList.remove("dark");
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Pattern Detection - SignalAIX | AI Forex & Crypto Trading Signals</title>
+    <link rel="icon" type="image/png" href="assets/images/favicon.png" />
+    <link rel="apple-touch-icon" href="assets/images/favicon.png" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <link href="css/index.css" rel="stylesheet"></head>
+  <body id="pattern-detection">
+    <div id="loader">
+      <div class="spinner"></div>
+      <div class="loader-text">Loading SignalAIX...</div>
+    </div>
+
+    <div id="sidebarOverlay" class="fixed inset-0 bg-black/50 z-40 hidden lg:hidden transition-opacity duration-300 opacity-0" aria-hidden="true"></div>
+<aside class="sidebar" id="sidebar">
+  <!-- ======================================
+       Start Logo Section
+       ====================================== -->
+  <div class="logo-section flex items-center gap-3 p-5 border-b border-border shrink-0">
+    <img src="assets/images/logo.png" alt="SignalAIX" class="w-10 h-10 rounded-xl object-contain shrink-0" />
+    <div class="logo-text flex-1 min-w-0">
+      <p class="text-lg font-bold text-text leading-tight">SignalAIX</p>
+      <p class="text-xs text-muted truncate">AI Forex & Crypto Signals</p>
+    </div>
+    <button class="lg:hidden! flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:bg-border/60 hover:text-text transition js-mobile-menu-toggle" aria-label="Close sidebar">
+      <i data-lucide="x" class="w-5 h-5"></i>
+    </button>
+  </div>
+
+  <!-- ======================================
+       Start Navigation
+       ====================================== -->
+  <nav class="py-4 flex-1">
+    <!-- MAIN -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Main</div>
+
+    <a href="./index.html" class="nav-item active flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Dashboard">
+      <i data-lucide="layout-dashboard" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Dashboard</span>
+    </a>
+
+    <a href="./live-signals.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Live Signals">
+      <i data-lucide="radio" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Live Signals</span>
+      <span class="live-dot ml-auto nav-text"></span>
+    </a>
+
+    <a href="./ai-signal-generator.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Signal Generator">
+      <i data-lucide="sparkles" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Signal Generator</span>
+    </a>
+
+    <a href="./market-overview.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Market Overview">
+      <i data-lucide="globe" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Market Overview</span>
+    </a>
+
+    <!-- AI INTELLIGENCE -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">AI Intelligence</div>
+
+    <a href="./ai-market-summary.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Market Summary">
+      <i data-lucide="brain-circuit" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Market Summary</span>
+    </a>
+
+    <a href="./ai-prediction-models.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Prediction Models">
+      <i data-lucide="line-chart" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Prediction Models</span>
+    </a>
+
+    <a href="./ai-risk-analyzer.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Risk Analyzer">
+      <i data-lucide="shield-alert" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Risk Analyzer</span>
+    </a>
+
+    <a href="./ai-trade-journal.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Trade Journal">
+      <i data-lucide="notebook-pen" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Trade Journal</span>
+    </a>
+
+    <a href="./ai-strategy-builder.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Strategy Builder">
+      <i data-lucide="blocks" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Strategy Builder</span>
+    </a>
+
+    <!-- TRADING TOOLS -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Trading Tools</div>
+
+    <a href="./forex-heatmap.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Forex Heatmap">
+      <i data-lucide="grid-3x3" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Forex Heatmap</span>
+    </a>
+
+    <a href="./crypto-heatmap.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Crypto Heatmap">
+      <i data-lucide="layout-grid" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Crypto Heatmap</span>
+    </a>
+
+    <a href="./trend-scanner.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Trend Scanner">
+      <i data-lucide="scan-line" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Trend Scanner</span>
+    </a>
+
+    <a href="./pattern-detection.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Pattern Detection">
+      <i data-lucide="waypoints" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Pattern Detection</span>
+    </a>
+
+    <a href="./volatility-index.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Volatility Index">
+      <i data-lucide="activity" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Volatility Index</span>
+    </a>
+
+    <a href="./economic-calendar.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Economic Calendar">
+      <i data-lucide="calendar-clock" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Economic Calendar</span>
+    </a>
+
+    <a href="./news-sentiment.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="News & Sentiment">
+      <i data-lucide="newspaper" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">News & Sentiment</span>
+    </a>
+
+    <a href="./correlation-matrix.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Correlation Matrix">
+      <i data-lucide="table-2" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Correlation Matrix</span>
+    </a>
+
+    <!-- MARKET ANALYTICS -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Market Analytics</div>
+
+    <a href="./forex-analytics.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Forex Analytics">
+      <i data-lucide="candlestick-chart" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Forex Analytics</span>
+    </a>
+
+    <a href="./crypto-analytics.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Crypto Analytics">
+      <i data-lucide="bitcoin" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Crypto Analytics</span>
+    </a>
+
+    <a href="./top-gainers-losers.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Top Gainers & Losers">
+      <i data-lucide="arrow-up-down" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Top Gainers & Losers</span>
+    </a>
+
+    <a href="./market-sentiment.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Market Sentiment">
+      <i data-lucide="gauge" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Market Sentiment</span>
+    </a>
+
+    <a href="./liquidity-zones.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Liquidity Zones">
+      <i data-lucide="droplets" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Liquidity Zones</span>
+    </a>
+
+    <a href="./price-action-monitor.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Price Action Monitor">
+      <i data-lucide="move-up-right" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Price Action Monitor</span>
+    </a>
+
+    <!-- PORTFOLIO -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Portfolio</div>
+
+    <a href="./my-portfolio.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="My Portfolio">
+      <i data-lucide="pie-chart" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">My Portfolio</span>
+    </a>
+
+    <a href="./open-positions.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Open Positions">
+      <i data-lucide="layers" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Open Positions</span>
+    </a>
+
+    <a href="./trade-history.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Trade History">
+      <i data-lucide="history" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Trade History</span>
+    </a>
+
+    <a href="./performance-analytics.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Performance Analytics">
+      <i data-lucide="bar-chart-3" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Performance Analytics</span>
+    </a>
+
+    <a href="./risk-metrics.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Risk Metrics">
+      <i data-lucide="shield-check" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Risk Metrics</span>
+    </a>
+
+    <a href="./pl-overview.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="P/L Overview">
+      <i data-lucide="wallet" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">P/L Overview</span>
+    </a>
+
+    <!-- WATCHLISTS -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Watchlists</div>
+
+    <a href="./forex-pairs.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Forex Pairs">
+      <i data-lucide="dollar-sign" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Forex Pairs</span>
+    </a>
+
+    <a href="./crypto-pairs.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Crypto Pairs">
+      <i data-lucide="coins" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Crypto Pairs</span>
+    </a>
+
+    <a href="./custom-alerts.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Custom Alerts">
+      <i data-lucide="bell-ring" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Custom Alerts</span>
+    </a>
+
+    <a href="./saved-signals.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Saved Signals">
+      <i data-lucide="bookmark" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Saved Signals</span>
+    </a>
+
+    <!-- AUTOMATION -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Automation</div>
+
+    <a href="./bot-center.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Bot Center">
+      <i data-lucide="bot" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Bot Center</span>
+    </a>
+
+    <a href="./auto-signal-forwarder.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Auto-Signal Forwarder">
+      <i data-lucide="forward" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Auto-Signal Forwarder</span>
+    </a>
+
+    <a href="./webhook-automations.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Webhook Automations">
+      <i data-lucide="webhook" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Webhook Automations</span>
+    </a>
+
+    <a href="./api-integrations.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="API Integrations">
+      <i data-lucide="plug" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">API Integrations</span>
+    </a>
+
+    <!-- ACCOUNT -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Account</div>
+
+    <a href="./profile-security.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Profile & Security">
+      <i data-lucide="user-cog" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Profile & Security</span>
+    </a>
+
+    <a href="./notification-settings.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Notification Settings">
+      <i data-lucide="bell" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Notification Settings</span>
+      <span class="ml-auto bg-red-500 text-white text-xs px-2 py-0.5 rounded-full nav-text">5</span>
+    </a>
+
+    <a href="./connected-exchanges.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Connected Exchanges">
+      <i data-lucide="link-2" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Connected Exchanges</span>
+    </a>
+
+    <a href="./subscription-billing.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Subscription & Billing">
+      <i data-lucide="crown" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Subscription & Billing</span>
+      <span class="ml-auto text-[10px] font-bold px-2 py-0.5 rounded-md bg-accent text-white nav-text">PRO</span>
+    </a>
+
+    <a href="./help-center.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Help Center">
+      <i data-lucide="help-circle" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Help Center</span>
+    </a>
+  </nav>
+
+  <!-- ======================================
+       Start User Section
+       ====================================== -->
+  <div class="user-section mt-auto p-4 border-t border-border shrink-0">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-full flex items-center justify-center shrink-0 bg-gradient-to-br from-emerald-500 to-teal-500">
+        <span class="text-white font-semibold text-sm">AK</span>
+      </div>
+      <div class="user-info flex-1 min-w-0">
+        <p class="font-semibold text-sm text-text truncate">Alex Kim</p>
+        <p class="text-xs text-muted truncate">alex@signalaix.io</p>
+      </div>
+    </div>
+  </div>
+</aside>
+
+
+    <main class="main-content" id="mainContent">
+      <header class="sticky top-0 z-50 glass @container">
+  <div class="flex items-center justify-between px-2 sm:px-6 py-2 sm:py-4">
+    <div class="flex items-center gap-2 sm:gap-4">
+      <!-- Mobile Menu Button -->
+      <button class="lg:hidden flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 transition js-mobile-menu-toggle" id="mobileMenuBtn" aria-label="Toggle Mobile Menu">
+        <i data-lucide="menu" class="w-5 h-5"></i>
+      </button>
+
+      <!-- Sidebar Toggle (Desktop) -->
+      <button class="hidden lg:flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 transition js-sidebar-toggle" aria-label="Toggle Sidebar">
+        <i data-lucide="panel-left" class="w-5 h-5"></i>
+      </button>
+
+      <!-- Search -->
+      <div class="relative hidden md:block">
+        <i data-lucide="search" class="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-muted"></i>
+        <input type="text" id="globalSearch" placeholder="Search signals, pairs, markets... (⌘K)" class="w-80 pl-10 pr-4 py-2.5 rounded-xl bg-bg border border-border text-sm text-text placeholder:text-muted focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 transition" />
+      </div>
+    </div>
+
+    <div class="flex items-center gap-2 sm:gap-3">
+      <!-- Live Status -->
+      <div class="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-500/10 text-emerald-500 text-[11px] font-semibold">
+        <span class="live-dot !bg-emerald-500"></span>
+        LIVE
+      </div>
+
+      <!-- Quick Generate Signal -->
+      <button class="flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 hover:border-accent/30 transition js-open-drawer" data-drawer-type="quickTrade" aria-label="Generate Signal">
+        <i data-lucide="zap" class="w-5 h-5"></i>
+      </button>
+
+      <!-- Notifications -->
+      <div class="dropdown">
+        <button class="relative flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 transition js-dropdown-toggle" aria-label="Toggle Notifications">
+          <i data-lucide="bell" class="w-5 h-5"></i>
+          <span class="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-xs rounded-full flex items-center justify-center">5</span>
+        </button>
+        <div class="dropdown-menu w-75 min-[400px]:w-80 mt-2 rounded-2xl bg-panel border border-border shadow-2xl overflow-hidden max-[420px]:-left-[153px]! max-[450px]:-left-[183px]! max-[430px]:right-0!">
+          <div class="p-4 border-b border-border flex items-center justify-between">
+            <h2 class="text-base font-semibold text-text">Notifications</h2>
+            <span class="text-xs font-medium text-accent">5 new</span>
+          </div>
+          <div class="max-h-72 overflow-y-auto">
+            <div class="flex items-start gap-3 p-4 hover:bg-border/30 transition cursor-pointer">
+              <div class="w-9 h-9 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="trending-up" class="w-4 h-4 text-emerald-500"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-medium text-text truncate">New BUY signal: EUR/USD</p>
+                <p class="text-xs text-muted">AI confidence 92% · 2 min ago</p>
+              </div>
+            </div>
+            <div class="flex items-start gap-3 p-4 hover:bg-border/30 transition cursor-pointer">
+              <div class="w-9 h-9 rounded-full bg-amber-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="alert-triangle" class="w-4 h-4 text-amber-500"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-medium text-text truncate">High volatility on BTC/USDT</p>
+                <p class="text-xs text-muted">15 min ago</p>
+              </div>
+            </div>
+            <div class="flex items-start gap-3 p-4 hover:bg-border/30 transition cursor-pointer">
+              <div class="w-9 h-9 rounded-full bg-sky-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="sparkles" class="w-4 h-4 text-sky-500"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-medium text-text truncate">AI model retrained — accuracy +3%</p>
+                <p class="text-xs text-muted">1 hour ago</p>
+              </div>
+            </div>
+          </div>
+          <div class="p-3 border-t border-border">
+            <button class="w-full text-center text-sm font-medium text-accent hover:underline">View all notifications</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Theme Toggle -->
+      <button
+        class="flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 transition"
+        id="themeToggle"
+        aria-label="Toggle Theme"
+        onclick="
+          document.documentElement.classList.toggle('dark');
+          localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+        "
+      >
+        <i data-lucide="moon" class="w-5 h-5 dark:hidden"></i>
+        <i data-lucide="sun" class="w-5 h-5 hidden dark:block"></i>
+      </button>
+
+      <!-- Profile Dropdown -->
+      <div class="dropdown">
+        <button class="flex items-center gap-2 p-1 rounded-xl hover:bg-border/50 transition js-dropdown-toggle">
+          <span class="w-9 h-9 rounded-full bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center">
+            <span class="text-white font-semibold text-sm">AK</span>
+          </span>
+          <i data-lucide="chevron-down" class="w-4 h-4 text-muted hidden sm:block"></i>
+        </button>
+        <div class="dropdown-menu w-56 mt-2 rounded-2xl bg-panel border border-border shadow-2xl overflow-hidden p-2">
+          <div class="p-3 mb-1 border-b border-border">
+            <p class="font-semibold text-text">Alex Kim</p>
+            <p class="text-xs text-muted">Pro Trader</p>
+          </div>
+          <a href="./index.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-text hover:bg-accent/10 transition">
+            <i data-lucide="user" class="w-4 h-4"></i>
+            <span>My Profile</span>
+          </a>
+          <a href="./index.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-text hover:bg-accent/10 transition">
+            <i data-lucide="settings" class="w-4 h-4"></i>
+            <span>Settings</span>
+          </a>
+          <a href="./index.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-text hover:bg-accent/10 transition">
+            <i data-lucide="help-circle" class="w-4 h-4"></i>
+            <span>Help & Support</span>
+          </a>
+          <div class="mt-1 pt-1 border-t border-border">
+            <a href="./index.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-red-500 hover:bg-red-500/10 transition">
+              <i data-lucide="log-out" class="w-4 h-4"></i>
+              <span>Logout</span>
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+
+      <div class="inner-content max-sm:px-3 max-lg:px-4 max-lg:py-6 lg:p-6 space-y-6">
+        <!-- Page header -->
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div>
+            <div class="flex items-center gap-2 flex-wrap">
+              <h1 class="text-2xl md:text-3xl font-bold text-text">Pattern Detection</h1>
+              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-indigo-500/15 text-indigo-400 text-[11px] font-semibold shrink-0"><i data-lucide="sparkles" class="w-3 h-3 shrink-0"></i>AI</span>
+            </div>
+            <p class="text-sm text-muted mt-1">AI-detected chart, candlestick &amp; harmonic patterns</p>
+          </div>
+          <div class="flex items-center gap-3 flex-wrap">
+            <button id="pdFilters" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition"><i data-lucide="sliders-horizontal" class="w-4 h-4 shrink-0"></i>Filters</button>
+            <div class="dropdown">
+              <button class="js-dropdown-toggle inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition"><i data-lucide="download" class="w-4 h-4 shrink-0"></i>Export</button>
+              <div class="dropdown-menu w-52 mt-2 rounded-xl bg-panel border border-border shadow-2xl overflow-hidden p-1.5">
+                <button class="pd-export flex w-full items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition" data-format="csv"><i data-lucide="file-text" class="w-4 h-4 shrink-0"></i>Export as CSV</button>
+                <button class="pd-export flex w-full items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition" data-format="pdf"><i data-lucide="file" class="w-4 h-4 shrink-0"></i>Export as PDF</button>
+                <button class="pd-export flex w-full items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition" data-format="json"><i data-lucide="file-code" class="w-4 h-4 shrink-0"></i>Export as JSON</button>
+              </div>
+            </div>
+            <button class="pd-open-drawer inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-indigo-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition" data-drawer="scan"><i data-lucide="scan" class="w-4 h-4 shrink-0"></i>Scan Now</button>
+          </div>
+        </div>
+
+        <!-- Stat cards -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 @4xl/content:grid-cols-4 gap-4">
+          <div class="bg-panel border border-border rounded-2xl p-5 hover:border-accent/40 transition">
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0"><p class="text-sm text-muted mb-1">Patterns Detected</p><p class="text-3xl font-bold text-text">247</p><p class="text-sm text-emerald-500 mt-2 flex items-center gap-1"><i data-lucide="trending-up" class="w-4 h-4 shrink-0"></i>+18% from last week</p></div>
+              <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-sky-500 to-blue-600 flex items-center justify-center shrink-0"><i data-lucide="shapes" class="w-6 h-6 text-white shrink-0"></i></div>
+            </div>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-5 hover:border-accent/40 transition">
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0"><p class="text-sm text-muted mb-1">Bullish Patterns</p><p class="text-3xl font-bold text-emerald-500">143</p><p class="text-sm text-muted mt-2">58% of total</p></div>
+              <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center shrink-0"><i data-lucide="trending-up" class="w-6 h-6 text-white shrink-0"></i></div>
+            </div>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-5 hover:border-accent/40 transition">
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0"><p class="text-sm text-muted mb-1">Bearish Patterns</p><p class="text-3xl font-bold text-red-500">89</p><p class="text-sm text-muted mt-2">36% of total</p></div>
+              <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center shrink-0"><i data-lucide="trending-down" class="w-6 h-6 text-white shrink-0"></i></div>
+            </div>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-5 hover:border-accent/40 transition">
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0"><p class="text-sm text-muted mb-1">AI Accuracy</p><p class="text-3xl font-bold text-indigo-400">94.7%</p><p class="text-sm text-emerald-500 mt-2 flex items-center gap-1"><i data-lucide="circle-check" class="w-4 h-4 shrink-0"></i>High confidence</p></div>
+              <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center shrink-0"><i data-lucide="brain" class="w-6 h-6 text-white shrink-0"></i></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="flex gap-1 p-1 rounded-xl bg-bg border border-border overflow-x-auto">
+          <button class="pd-tab active shrink-0 px-4 py-2 rounded-lg text-sm font-semibold text-muted whitespace-nowrap transition" data-tab="all-patterns">All Patterns</button>
+          <button class="pd-tab shrink-0 px-4 py-2 rounded-lg text-sm font-semibold text-muted whitespace-nowrap transition" data-tab="chart-patterns">Chart Patterns</button>
+          <button class="pd-tab shrink-0 px-4 py-2 rounded-lg text-sm font-semibold text-muted whitespace-nowrap transition" data-tab="candlestick">Candlestick</button>
+          <button class="pd-tab shrink-0 px-4 py-2 rounded-lg text-sm font-semibold text-muted whitespace-nowrap transition" data-tab="harmonic">Harmonic</button>
+          <button class="pd-tab shrink-0 px-4 py-2 rounded-lg text-sm font-semibold text-muted whitespace-nowrap transition" data-tab="ai-detected">AI Detected</button>
+        </div>
+
+        <!-- Filter chips -->
+        <div class="flex flex-wrap gap-2">
+          <button class="pd-chip active inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="all">All Markets</button>
+          <button class="pd-chip inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="forex">Forex</button>
+          <button class="pd-chip inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="crypto">Crypto</button>
+          <button class="pd-chip inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="bullish">Bullish Only</button>
+          <button class="pd-chip inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="bearish">Bearish Only</button>
+          <button class="pd-chip inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="high-confidence">High Confidence</button>
+          <button class="pd-chip inline-flex items-center px-3.5 py-2 rounded-full border border-border text-sm font-medium text-muted whitespace-nowrap transition" data-filter="recent">Last 24h</button>
+        </div>
+
+        <!-- Tab: All Patterns -->
+        <div class="tab-content active" id="all-patterns">
+          <div class="grid grid-cols-1 @4xl/content:grid-cols-3 gap-6">
+            <div class="@4xl/content:col-span-2 space-y-6">
+              <!-- Pattern cards -->
+              <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+                <div class="flex items-center justify-between gap-3 mb-5">
+                  <h3 class="text-lg font-bold text-text">Recently Detected Patterns</h3>
+                  <button class="pd-refresh inline-flex items-center gap-1.5 text-sm text-muted hover:text-accent transition shrink-0"><i data-lucide="refresh-cw" class="w-4 h-4 shrink-0"></i>Refresh</button>
+                </div>
+                <div class="grid grid-cols-1 @xl/content:grid-cols-2 gap-4">
+                  <!-- Card 1 -->
+                  <div class="pd-open-drawer rounded-xl border border-border overflow-hidden cursor-pointer hover:border-accent/40 transition" data-drawer="detail" data-id="1">
+                    <div class="h-24 bg-bg border-b border-border"><canvas id="pdMini1"></canvas></div>
+                    <div class="p-4">
+                      <div class="flex items-center justify-between gap-2 mb-3">
+                        <div class="flex items-center gap-2 min-w-0"><span class="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-500 text-xs font-semibold">Bullish</span><span class="px-2 py-0.5 rounded-md bg-sky-500/15 text-sky-500 text-xs font-semibold">Forex</span></div>
+                        <span class="text-sm text-muted shrink-0">2m ago</span>
+                      </div>
+                      <h4 class="font-bold text-text mb-1">Double Bottom</h4>
+                      <p class="text-sm text-muted mb-3">EUR/USD • 4H Timeframe</p>
+                      <div class="flex items-center justify-between gap-2">
+                        <div class="flex items-center gap-2 min-w-0"><span class="text-sm font-bold text-emerald-500 shrink-0">90%</span><span class="text-xs text-muted">Confidence</span></div>
+                        <i data-lucide="arrow-right" class="w-4 h-4 text-muted shrink-0"></i>
+                      </div>
+                    </div>
+                  </div>
+                  <!-- Card 2 -->
+                  <div class="pd-open-drawer rounded-xl border border-border overflow-hidden cursor-pointer hover:border-accent/40 transition" data-drawer="detail" data-id="2">
+                    <div class="h-24 bg-bg border-b border-border"><canvas id="pdMini2"></canvas></div>
+                    <div class="p-4">
+                      <div class="flex items-center justify-between gap-2 mb-3">
+                        <div class="flex items-center gap-2 min-w-0"><span class="px-2 py-0.5 rounded-md bg-red-500/15 text-red-500 text-xs font-semibold">Bearish</span><span class="px-2 py-0.5 rounded-md bg-orange-500/15 text-orange-500 text-xs font-semibold">Crypto</span></div>
+                        <span class="text-sm text-muted shrink-0">5m ago</span>
+                      </div>
+                      <h4 class="font-bold text-text mb-1">Head &amp; Shoulders</h4>
+                      <p class="text-sm text-muted mb-3">BTC/USDT • 1H Timeframe</p>
+                      <div class="flex items-center justify-between gap-2">
+                        <div class="flex items-center gap-2 min-w-0"><span class="text-sm font-bold text-red-500 shrink-0">85%</span><span class="text-xs text-muted">Confidence</span></div>
+                        <i data-lucide="arrow-right" class="w-4 h-4 text-muted shrink-0"></i>
+                      </div>
+                    </div>
+                  </div>
+                  <!-- Card 3 -->
+                  <div class="pd-open-drawer rounded-xl border border-border overflow-hidden cursor-pointer hover:border-accent/40 transition" data-drawer="detail" data-id="3">
+                    <div class="h-24 bg-bg border-b border-border"><canvas id="pdMini3"></canvas></div>
+                    <div class="p-4">
+                      <div class="flex items-center justify-between gap-2 mb-3">
+                        <div class="flex items-center gap-2 min-w-0"><span class="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-500 text-xs font-semibold">Bullish</span><span class="px-2 py-0.5 rounded-md bg-sky-500/15 text-sky-500 text-xs font-semibold">Forex</span></div>
+                        <span class="text-sm text-muted shrink-0">8m ago</span>
+                      </div>
+                      <h4 class="font-bold text-text mb-1">Ascending Triangle</h4>
+                      <p class="text-sm text-muted mb-3">GBP/USD • 1D Timeframe</p>
+                      <div class="flex items-center justify-between gap-2">
+                        <div class="flex items-center gap-2 min-w-0"><span class="text-sm font-bold text-emerald-500 shrink-0">95%</span><span class="text-xs text-muted">Confidence</span></div>
+                        <i data-lucide="arrow-right" class="w-4 h-4 text-muted shrink-0"></i>
+                      </div>
+                    </div>
+                  </div>
+                  <!-- Card 4 -->
+                  <div class="pd-open-drawer rounded-xl border border-border overflow-hidden cursor-pointer hover:border-accent/40 transition" data-drawer="detail" data-id="4">
+                    <div class="h-24 bg-bg border-b border-border"><canvas id="pdMini4"></canvas></div>
+                    <div class="p-4">
+                      <div class="flex items-center justify-between gap-2 mb-3">
+                        <div class="flex items-center gap-2 min-w-0"><span class="px-2 py-0.5 rounded-md bg-violet-500/15 text-violet-400 text-xs font-semibold">Reversal</span><span class="px-2 py-0.5 rounded-md bg-orange-500/15 text-orange-500 text-xs font-semibold">Crypto</span></div>
+                        <span class="text-sm text-muted shrink-0">12m ago</span>
+                      </div>
+                      <h4 class="font-bold text-text mb-1">Bullish Engulfing</h4>
+                      <p class="text-sm text-muted mb-3">ETH/USDT • 4H Timeframe</p>
+                      <div class="flex items-center justify-between gap-2">
+                        <div class="flex items-center gap-2 min-w-0"><span class="text-sm font-bold text-violet-400 shrink-0">88%</span><span class="text-xs text-muted">Confidence</span></div>
+                        <i data-lucide="arrow-right" class="w-4 h-4 text-muted shrink-0"></i>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Table -->
+              <div class="bg-panel border border-border rounded-2xl overflow-hidden">
+                <div class="p-4 sm:p-6 border-b border-border flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                  <h3 class="text-lg font-bold text-text">All Detected Patterns</h3>
+                  <div class="relative shrink-0">
+                    <i data-lucide="search" class="w-4 h-4 text-muted absolute left-3 top-1/2 -translate-y-1/2 shrink-0"></i>
+                    <input type="text" id="pdTableSearch" placeholder="Search patterns..." class="w-full sm:w-60 pl-9 pr-3 py-2 rounded-lg bg-bg border border-border text-text text-sm placeholder:text-muted focus:outline-none focus:border-accent" />
+                  </div>
+                </div>
+                <div class="overflow-x-auto">
+                  <table class="w-full text-sm whitespace-nowrap min-w-[720px]">
+                    <thead>
+                      <tr class="text-left text-[11px] uppercase tracking-wide text-muted border-b border-border">
+                        <th class="px-4 py-3 font-semibold">Pattern</th>
+                        <th class="px-4 py-3 font-semibold">Asset</th>
+                        <th class="px-4 py-3 font-semibold">Timeframe</th>
+                        <th class="px-4 py-3 font-semibold">Type</th>
+                        <th class="px-4 py-3 font-semibold">Confidence</th>
+                        <th class="px-4 py-3 font-semibold">Status</th>
+                        <th class="px-4 py-3 font-semibold">Detected</th>
+                      </tr>
+                    </thead>
+                    <tbody id="pdTableBody">
+<tr class="pd-row pd-open-drawer border-b border-border last:border-0 hover:bg-bg/60 transition cursor-pointer" data-drawer="detail" data-id="1">
+<td class="px-4 py-4"><div class="flex items-center gap-3"><div class="w-10 h-10 rounded-lg bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center shrink-0"><i data-lucide="trending-up" class="w-5 h-5 text-white shrink-0"></i></div><div class="min-w-0"><p class="font-semibold text-text">Double Bottom</p><p class="text-xs text-muted">Chart Pattern</p></div></div></td>
+<td class="px-4 py-4 font-medium text-text">EUR/USD</td>
+<td class="px-4 py-4 text-muted">4H</td>
+<td class="px-4 py-4"><span class="px-2.5 py-1 rounded-md bg-emerald-500/15 text-emerald-500 text-xs font-semibold">Bullish</span></td>
+<td class="px-4 py-4"><div class="flex items-center gap-2"><div class="w-20 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-emerald-500 rounded-full" style="width:90%"></div></div><span class="text-sm font-medium text-emerald-500">90%</span></div></td>
+<td class="px-4 py-4"><span class="px-2.5 py-1 rounded-md bg-emerald-500/15 text-emerald-500 text-xs font-semibold">Strong</span></td>
+<td class="px-4 py-4 text-sm text-muted">2 mins ago</td>
+</tr>
+<tr class="pd-row pd-open-drawer border-b border-border last:border-0 hover:bg-bg/60 transition cursor-pointer" data-drawer="detail" data-id="2">
+<td class="px-4 py-4"><div class="flex items-center gap-3"><div class="w-10 h-10 rounded-lg bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center shrink-0"><i data-lucide="trending-down" class="w-5 h-5 text-white shrink-0"></i></div><div class="min-w-0"><p class="font-semibold text-text">Head & Shoulders</p><p class="text-xs text-muted">Chart Pattern</p></div></div></td>
+<td class="px-4 py-4 font-medium text-text">BTC/USDT</td>
+<td class="px-4 py-4 text-muted">1H</td>
+<td class="px-4 py-4"><span class="px-2.5 py-1 rounded-md bg-red-500/15 text-red-500 text-xs font-semibold">Bearish</span></td>
+<td class="px-4 py-4"><div class="flex items-center gap-2"><div class="w-20 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-red-500 rounded-full" style="width:85%"></div></div><span class="text-sm font-medium text-red-500">85%</span></div></td>
+<td class="px-4 py-4"><span class="px-2.5 py-1 rounded-md bg-amber-500/15 text-amber-500 text-xs font-semibold">Moderate</span></td>
+<td class="px-4 py-4 text-sm text-muted">5 mins ago</td>
+</tr>
+<tr class="pd-row pd-open-drawer border-b border-border last:border-0 hover:bg-bg/60 transition cursor-pointer" data-drawer="detail" data-id="3">
+<td class="px-4 py-4"><div class="flex items-center gap-3"><div class="w-10 h-10 rounded-lg bg-gradient-to-br from-sky-500 to-blue-600 flex items-center justify-center shrink-0"><i data-lucide="triangle" class="w-5 h-5 text-white shrink-0"></i></div><div class="min-w-0"><p class="font-semibold text-text">Ascending Triangle</p><p class="text-xs text-muted">Chart Pattern</p></div></div></td>
+<td class="px-4 py-4 font-medium text-text">GBP/USD</td>
+<td class="px-4 py-4 text-muted">1D</td>
+<td class="px-4 py-4"><span class="px-2.5 py-1 rounded-md bg-emerald-500/15 text-emerald-500 text-xs font-semibold">Bullish</span></td>
+<td class="px-4 py-4"><div class="flex items-center gap-2"><div class="w-20 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-emerald-500 rounded-full" style="width:95%"></div></div><span class="text-sm font-medium text-emerald-500">95%</span></div></td>
+<td class="px-4 py-4"><span class="px-2.5 py-1 rounded-md bg-emerald-500/15 text-emerald-500 text-xs font-semibold">Strong</span></td>
+<td class="px-4 py-4 text-sm text-muted">8 mins ago</td>
+</tr>
+<tr class="pd-row pd-open-drawer border-b border-border last:border-0 hover:bg-bg/60 transition cursor-pointer" data-drawer="detail" data-id="4">
+<td class="px-4 py-4"><div class="flex items-center gap-3"><div class="w-10 h-10 rounded-lg bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center shrink-0"><i data-lucide="chart-candlestick" class="w-5 h-5 text-white shrink-0"></i></div><div class="min-w-0"><p class="font-semibold text-text">Bullish Engulfing</p><p class="text-xs text-muted">Candlestick</p></div></div></td>
+<td class="px-4 py-4 font-medium text-text">ETH/USDT</td>
+<td class="px-4 py-4 text-muted">4H</td>
+<td class="px-4 py-4"><span class="px-2.5 py-1 rounded-md bg-violet-500/15 text-violet-400 text-xs font-semibold">Reversal</span></td>
+<td class="px-4 py-4"><div class="flex items-center gap-2"><div class="w-20 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-violet-500 rounded-full" style="width:88%"></div></div><span class="text-sm font-medium text-violet-400">88%</span></div></td>
+<td class="px-4 py-4"><span class="px-2.5 py-1 rounded-md bg-amber-500/15 text-amber-500 text-xs font-semibold">Moderate</span></td>
+<td class="px-4 py-4 text-sm text-muted">12 mins ago</td>
+</tr>
+<tr class="pd-row pd-open-drawer border-b border-border last:border-0 hover:bg-bg/60 transition cursor-pointer" data-drawer="detail" data-id="5">
+<td class="px-4 py-4"><div class="flex items-center gap-3"><div class="w-10 h-10 rounded-lg bg-gradient-to-br from-teal-500 to-cyan-600 flex items-center justify-center shrink-0"><i data-lucide="git-merge" class="w-5 h-5 text-white shrink-0"></i></div><div class="min-w-0"><p class="font-semibold text-text">Gartley Pattern</p><p class="text-xs text-muted">Harmonic</p></div></div></td>
+<td class="px-4 py-4 font-medium text-text">XAU/USD</td>
+<td class="px-4 py-4 text-muted">1H</td>
+<td class="px-4 py-4"><span class="px-2.5 py-1 rounded-md bg-emerald-500/15 text-emerald-500 text-xs font-semibold">Bullish</span></td>
+<td class="px-4 py-4"><div class="flex items-center gap-2"><div class="w-20 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-teal-500 rounded-full" style="width:82%"></div></div><span class="text-sm font-medium text-teal-500">82%</span></div></td>
+<td class="px-4 py-4"><span class="px-2.5 py-1 rounded-md bg-amber-500/15 text-amber-500 text-xs font-semibold">Moderate</span></td>
+<td class="px-4 py-4 text-sm text-muted">18 mins ago</td>
+</tr>
+<tr class="pd-row pd-open-drawer border-b border-border last:border-0 hover:bg-bg/60 transition cursor-pointer" data-drawer="detail" data-id="6">
+<td class="px-4 py-4"><div class="flex items-center gap-3"><div class="w-10 h-10 rounded-lg bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center shrink-0"><i data-lucide="minus" class="w-5 h-5 text-white shrink-0"></i></div><div class="min-w-0"><p class="font-semibold text-text">Doji Star</p><p class="text-xs text-muted">Candlestick</p></div></div></td>
+<td class="px-4 py-4 font-medium text-text">USD/JPY</td>
+<td class="px-4 py-4 text-muted">15M</td>
+<td class="px-4 py-4"><span class="px-2.5 py-1 rounded-md bg-slate-500/15 text-slate-400 text-xs font-semibold">Neutral</span></td>
+<td class="px-4 py-4"><div class="flex items-center gap-2"><div class="w-20 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-amber-500 rounded-full" style="width:75%"></div></div><span class="text-sm font-medium text-amber-500">75%</span></div></td>
+<td class="px-4 py-4"><span class="px-2.5 py-1 rounded-md bg-slate-500/15 text-slate-400 text-xs font-semibold">Weak</span></td>
+<td class="px-4 py-4 text-sm text-muted">25 mins ago</td>
+</tr>
+</tbody>
+                  </table>
+                </div>
+                <div class="p-4 border-t border-border flex flex-col sm:flex-row items-center justify-between gap-3">
+                  <p class="text-sm text-muted">Showing 1-6 of 247 patterns</p>
+                  <div class="flex items-center gap-2">
+                    <button class="w-9 h-9 rounded-lg border border-border text-muted flex items-center justify-center disabled:opacity-40" disabled><i data-lucide="chevron-left" class="w-4 h-4 shrink-0"></i></button>
+                    <button class="w-9 h-9 rounded-lg bg-accent text-white text-sm font-semibold">1</button>
+                    <button class="w-9 h-9 rounded-lg border border-border text-muted text-sm font-semibold hover:bg-bg transition">2</button>
+                    <button class="w-9 h-9 rounded-lg border border-border text-muted text-sm font-semibold hover:bg-bg transition">3</button>
+                    <span class="text-muted">...</span>
+                    <button class="w-9 h-9 rounded-lg border border-border text-muted text-sm font-semibold hover:bg-bg transition">42</button>
+                    <button class="w-9 h-9 rounded-lg border border-border text-muted flex items-center justify-center hover:bg-bg transition"><i data-lucide="chevron-right" class="w-4 h-4 shrink-0"></i></button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Right column -->
+            <div class="space-y-6">
+              <div class="bg-panel border border-border rounded-2xl p-5">
+                <h3 class="text-lg font-bold text-text mb-4">Pattern Distribution</h3>
+                <div class="relative h-56"><canvas id="pdDistChart"></canvas></div>
+                <div class="mt-4 grid grid-cols-2 gap-3">
+                  <div class="flex items-center gap-2"><span class="w-3 h-3 rounded-full bg-sky-500 shrink-0"></span><span class="text-sm text-muted">Chart Patterns</span></div>
+                  <div class="flex items-center gap-2"><span class="w-3 h-3 rounded-full bg-violet-500 shrink-0"></span><span class="text-sm text-muted">Candlestick</span></div>
+                  <div class="flex items-center gap-2"><span class="w-3 h-3 rounded-full bg-emerald-500 shrink-0"></span><span class="text-sm text-muted">Harmonic</span></div>
+                  <div class="flex items-center gap-2"><span class="w-3 h-3 rounded-full bg-orange-500 shrink-0"></span><span class="text-sm text-muted">AI Detected</span></div>
+                </div>
+              </div>
+
+              <div class="bg-panel border border-border rounded-2xl p-5">
+                <h3 class="text-lg font-bold text-text mb-4">AI Accuracy Trend</h3>
+                <div class="relative h-44"><canvas id="pdAccuracyChart"></canvas></div>
+              </div>
+
+              <div class="bg-panel border border-border rounded-2xl p-5">
+                <h3 class="text-lg font-bold text-text mb-4">Top Performing Patterns</h3>
+                <div class="space-y-3">
+                  <div class="flex items-center justify-between gap-3 p-3 rounded-xl bg-emerald-500/5 border border-emerald-500/20">
+                    <div class="flex items-center gap-3 min-w-0"><div class="w-10 h-10 rounded-lg bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center shrink-0"><i data-lucide="trending-up" class="w-5 h-5 text-white shrink-0"></i></div><div class="min-w-0"><p class="font-semibold text-text truncate">Double Bottom</p><p class="text-xs text-muted">96.2% accuracy</p></div></div>
+                    <span class="text-emerald-500 font-bold shrink-0">+24.5%</span>
+                  </div>
+                  <div class="flex items-center justify-between gap-3 p-3 rounded-xl bg-violet-500/5 border border-violet-500/20">
+                    <div class="flex items-center gap-3 min-w-0"><div class="w-10 h-10 rounded-lg bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center shrink-0"><i data-lucide="chart-candlestick" class="w-5 h-5 text-white shrink-0"></i></div><div class="min-w-0"><p class="font-semibold text-text truncate">Bullish Engulfing</p><p class="text-xs text-muted">94.8% accuracy</p></div></div>
+                    <span class="text-emerald-500 font-bold shrink-0">+21.2%</span>
+                  </div>
+                  <div class="flex items-center justify-between gap-3 p-3 rounded-xl bg-sky-500/5 border border-sky-500/20">
+                    <div class="flex items-center gap-3 min-w-0"><div class="w-10 h-10 rounded-lg bg-gradient-to-br from-sky-500 to-blue-600 flex items-center justify-center shrink-0"><i data-lucide="triangle" class="w-5 h-5 text-white shrink-0"></i></div><div class="min-w-0"><p class="font-semibold text-text truncate">Ascending Triangle</p><p class="text-xs text-muted">93.5% accuracy</p></div></div>
+                    <span class="text-emerald-500 font-bold shrink-0">+18.7%</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="rounded-2xl p-6 bg-gradient-to-br from-indigo-500 to-violet-600 text-white relative overflow-hidden">
+                <div class="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -translate-y-1/2 translate-x-1/2"></div>
+                <div class="relative">
+                  <div class="w-14 h-14 bg-white/20 rounded-2xl flex items-center justify-center mb-4"><i data-lucide="scan" class="w-7 h-7 shrink-0"></i></div>
+                  <h3 class="text-xl font-bold mb-2">Quick Pattern Scan</h3>
+                  <p class="text-white/70 text-sm mb-4">Run an AI-powered scan across all markets to find new patterns</p>
+                  <button class="pd-open-drawer w-full py-3 bg-white text-slate-900 font-bold rounded-xl hover:bg-white/90 transition" data-drawer="scan">Start Scan</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab: Chart Patterns -->
+        <div class="tab-content" id="chart-patterns">
+          <div class="bg-panel border border-border rounded-2xl p-6"><h3 class="text-xl font-bold text-text mb-4">Chart Patterns</h3><p class="text-muted">Classic chart patterns including triangles, head &amp; shoulders, double tops/bottoms, wedges, and flags.</p></div>
+        </div>
+        <!-- Tab: Candlestick -->
+        <div class="tab-content" id="candlestick">
+          <div class="bg-panel border border-border rounded-2xl p-6"><h3 class="text-xl font-bold text-text mb-4">Candlestick Patterns</h3><p class="text-muted">Japanese candlestick patterns including doji, engulfing, hammer, and morning/evening stars.</p></div>
+        </div>
+        <!-- Tab: Harmonic -->
+        <div class="tab-content" id="harmonic">
+          <div class="bg-panel border border-border rounded-2xl p-6"><h3 class="text-xl font-bold text-text mb-4">Harmonic Patterns</h3><p class="text-muted">Fibonacci-based harmonic patterns including Gartley, Butterfly, Bat, and Crab patterns.</p></div>
+        </div>
+        <!-- Tab: AI Detected -->
+        <div class="tab-content" id="ai-detected">
+          <div class="bg-panel border border-border rounded-2xl p-6"><h3 class="text-xl font-bold text-text mb-4">AI Detected Patterns</h3><p class="text-muted">Custom patterns detected by our proprietary AI models using machine learning algorithms.</p></div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Drawer overlay -->
+    <div class="drawer-overlay" id="pdOverlay"></div>
+
+    <!-- Drawer -->
+    <aside class="drawer" id="pdDrawer">
+      <div class="p-6 border-b border-border flex items-center justify-between sticky top-0 bg-panel z-10">
+        <h2 class="text-xl font-bold text-text" id="pdDrawerTitle">Pattern Details</h2>
+        <button class="pd-drawer-close w-9 h-9 rounded-lg flex items-center justify-center text-muted hover:bg-bg transition"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+      </div>
+
+      <!-- Panel: Detail -->
+      <div class="pd-panel p-6 space-y-6" data-panel="detail">
+        <div class="flex items-start justify-between gap-4">
+          <div class="min-w-0">
+            <div class="flex items-center gap-2 mb-2"><span class="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-500 text-xs font-semibold">Bullish</span><span class="px-2 py-0.5 rounded-md bg-sky-500/15 text-sky-500 text-xs font-semibold">Forex</span></div>
+            <h3 class="text-2xl font-bold text-text" id="pdDetailName">Double Bottom</h3>
+            <p class="text-muted" id="pdDetailSub">EUR/USD • 4H Timeframe</p>
+          </div>
+          <div class="text-center shrink-0"><p class="text-3xl font-bold text-emerald-500" id="pdDetailConf">90%</p><p class="text-xs text-muted">Confidence</p></div>
+        </div>
+        <div class="h-44 bg-bg border border-border rounded-xl"><canvas id="pdDetailChart"></canvas></div>
+        <div class="grid grid-cols-2 gap-4">
+          <div class="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20"><p class="text-xs text-muted mb-1">Target Price</p><p class="text-xl font-bold text-emerald-500">1.0892</p><p class="text-xs text-emerald-500">+1.2%</p></div>
+          <div class="p-4 rounded-xl bg-red-500/10 border border-red-500/20"><p class="text-xs text-muted mb-1">Stop Loss</p><p class="text-xl font-bold text-red-500">1.0742</p><p class="text-xs text-red-500">-0.4%</p></div>
+        </div>
+        <div class="space-y-1">
+          <div class="flex items-center justify-between gap-2 py-3 border-b border-border"><span class="text-muted">Pattern Type</span><span class="font-medium text-text shrink-0">Chart Pattern</span></div>
+          <div class="flex items-center justify-between gap-2 py-3 border-b border-border"><span class="text-muted">Signal Type</span><span class="font-medium text-emerald-500 shrink-0">Buy</span></div>
+          <div class="flex items-center justify-between gap-2 py-3 border-b border-border"><span class="text-muted">Risk/Reward</span><span class="font-medium text-text shrink-0">1:3</span></div>
+          <div class="flex items-center justify-between gap-2 py-3 border-b border-border"><span class="text-muted">Detected</span><span class="font-medium text-text shrink-0">2 minutes ago</span></div>
+          <div class="flex items-center justify-between gap-2 py-3 border-b border-border"><span class="text-muted">AI Model</span><span class="font-medium text-text shrink-0">SignalAIX v3.2</span></div>
+        </div>
+        <div class="p-4 rounded-xl bg-indigo-500/5 border border-indigo-500/20">
+          <div class="flex items-center gap-2 mb-3"><i data-lucide="brain" class="w-5 h-5 text-indigo-400 shrink-0"></i><span class="font-semibold text-text">AI Analysis</span></div>
+          <p class="text-sm text-muted">The double bottom pattern has formed with strong volume confirmation at the second bottom. The neckline breakout is expected within the next 4-8 hours. Historical accuracy for this pattern on EUR/USD is 89.3%.</p>
+        </div>
+        <div class="flex gap-3">
+          <button class="pd-toast-btn flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-indigo-500 text-white text-sm font-semibold" data-toast-title="Added to Watchlist" data-toast-msg="Pattern added to your watchlist"><i data-lucide="plus" class="w-4 h-4 shrink-0"></i>Add to Watchlist</button>
+          <button class="pd-toast-btn flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition" data-toast-title="Alert Set" data-toast-msg="You will be notified on pattern completion"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i>Set Alert</button>
+        </div>
+      </div>
+
+      <!-- Panel: Scan -->
+      <div class="pd-panel p-6 space-y-6" data-panel="scan" hidden>
+        <div>
+          <label class="block text-sm font-medium text-text mb-2">Select Markets</label>
+          <div class="grid grid-cols-2 gap-3">
+            <label class="flex items-center gap-3 p-3 rounded-xl border border-border cursor-pointer hover:border-accent/40 transition"><input type="checkbox" class="custom-checkbox shrink-0" checked /><span class="text-sm text-text">Forex</span></label>
+            <label class="flex items-center gap-3 p-3 rounded-xl border border-border cursor-pointer hover:border-accent/40 transition"><input type="checkbox" class="custom-checkbox shrink-0" checked /><span class="text-sm text-text">Crypto</span></label>
+            <label class="flex items-center gap-3 p-3 rounded-xl border border-border cursor-pointer hover:border-accent/40 transition"><input type="checkbox" class="custom-checkbox shrink-0" /><span class="text-sm text-text">Commodities</span></label>
+            <label class="flex items-center gap-3 p-3 rounded-xl border border-border cursor-pointer hover:border-accent/40 transition"><input type="checkbox" class="custom-checkbox shrink-0" /><span class="text-sm text-text">Indices</span></label>
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-text mb-2">Pattern Types</label>
+          <div class="space-y-2">
+            <label class="flex items-center gap-3 p-3 rounded-xl border border-border cursor-pointer hover:border-accent/40 transition"><input type="checkbox" class="custom-checkbox shrink-0" checked /><span class="text-sm text-text">Chart Patterns</span></label>
+            <label class="flex items-center gap-3 p-3 rounded-xl border border-border cursor-pointer hover:border-accent/40 transition"><input type="checkbox" class="custom-checkbox shrink-0" checked /><span class="text-sm text-text">Candlestick Patterns</span></label>
+            <label class="flex items-center gap-3 p-3 rounded-xl border border-border cursor-pointer hover:border-accent/40 transition"><input type="checkbox" class="custom-checkbox shrink-0" checked /><span class="text-sm text-text">Harmonic Patterns</span></label>
+            <label class="flex items-center gap-3 p-3 rounded-xl border border-border cursor-pointer hover:border-accent/40 transition"><input type="checkbox" class="custom-checkbox shrink-0" checked /><span class="text-sm text-text">AI Custom Patterns</span></label>
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-text mb-2">Timeframes</label>
+          <div class="flex flex-wrap gap-2">
+            <button class="pd-tf active px-3.5 py-1.5 rounded-full border border-border text-sm font-medium text-muted transition">All</button>
+            <button class="pd-tf px-3.5 py-1.5 rounded-full border border-border text-sm font-medium text-muted transition">15M</button>
+            <button class="pd-tf px-3.5 py-1.5 rounded-full border border-border text-sm font-medium text-muted transition">1H</button>
+            <button class="pd-tf px-3.5 py-1.5 rounded-full border border-border text-sm font-medium text-muted transition">4H</button>
+            <button class="pd-tf px-3.5 py-1.5 rounded-full border border-border text-sm font-medium text-muted transition">1D</button>
+            <button class="pd-tf px-3.5 py-1.5 rounded-full border border-border text-sm font-medium text-muted transition">1W</button>
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-text mb-2">Minimum Confidence</label>
+          <input type="range" min="50" max="100" value="75" class="w-full cursor-pointer" id="pdScanConf" />
+          <div class="flex justify-between text-xs text-muted mt-1"><span>50%</span><span id="pdScanConfVal">75%</span><span>100%</span></div>
+        </div>
+        <button class="pd-toast-btn w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-accent to-indigo-500 text-white text-sm font-semibold" data-close data-toast-title="Scan Started" data-toast-msg="AI is scanning markets for patterns..."><i data-lucide="scan" class="w-4 h-4 shrink-0"></i>Start AI Scan</button>
+      </div>
+
+      <!-- Panel: Filter -->
+      <div class="pd-panel p-6 space-y-6" data-panel="filter" hidden>
+        <div>
+          <label class="block text-sm font-medium text-text mb-2">Market Type</label>
+          <select class="appearance-none w-full px-4 py-2.5 rounded-lg bg-bg border border-border text-text text-sm cursor-pointer focus:outline-none focus:border-accent"><option>All Markets</option><option>Forex</option><option>Cryptocurrency</option><option>Commodities</option><option>Indices</option></select>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-text mb-2">Pattern Category</label>
+          <select class="appearance-none w-full px-4 py-2.5 rounded-lg bg-bg border border-border text-text text-sm cursor-pointer focus:outline-none focus:border-accent"><option>All Categories</option><option>Chart Patterns</option><option>Candlestick Patterns</option><option>Harmonic Patterns</option><option>AI Detected</option></select>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-text mb-2">Direction</label>
+          <div class="flex gap-3">
+            <label class="flex-1 flex items-center justify-center gap-2 p-3 rounded-xl border border-border cursor-pointer hover:border-emerald-500/40 transition"><input type="radio" name="pdDir" class="accent-emerald-500 shrink-0" /><span class="text-sm text-text">Bullish</span></label>
+            <label class="flex-1 flex items-center justify-center gap-2 p-3 rounded-xl border border-border cursor-pointer hover:border-red-500/40 transition"><input type="radio" name="pdDir" class="accent-red-500 shrink-0" /><span class="text-sm text-text">Bearish</span></label>
+            <label class="flex-1 flex items-center justify-center gap-2 p-3 rounded-xl border border-border cursor-pointer hover:border-amber-500/40 transition"><input type="radio" name="pdDir" class="accent-amber-500 shrink-0" checked /><span class="text-sm text-text">Both</span></label>
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-text mb-2">Timeframe</label>
+          <select class="appearance-none w-full px-4 py-2.5 rounded-lg bg-bg border border-border text-text text-sm cursor-pointer focus:outline-none focus:border-accent"><option>All Timeframes</option><option>5 Minutes</option><option>15 Minutes</option><option>1 Hour</option><option>4 Hours</option><option>1 Day</option><option>1 Week</option></select>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-text mb-2">Confidence Level</label>
+          <div class="flex items-center gap-2">
+            <input type="number" class="w-full px-3 py-2.5 rounded-lg bg-bg border border-border text-text text-sm focus:outline-none focus:border-accent" value="70" />
+            <span class="text-muted shrink-0">to</span>
+            <input type="number" class="w-full px-3 py-2.5 rounded-lg bg-bg border border-border text-text text-sm focus:outline-none focus:border-accent" value="100" />
+          </div>
+        </div>
+        <div class="flex gap-3 pt-2">
+          <button class="pd-toast-btn flex-1 inline-flex items-center justify-center px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition" data-toast-title="Filters Reset" data-toast-msg="All filters have been cleared">Reset</button>
+          <button class="pd-toast-btn flex-1 inline-flex items-center justify-center px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-indigo-500 text-white text-sm font-semibold" data-close data-toast-title="Filters Applied" data-toast-msg="Results updated based on your filters">Apply Filters</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Toast -->
+    <div class="toast" id="pdToast">
+      <div class="w-10 h-10 rounded-full bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-5 h-5 text-white shrink-0"></i></div>
+      <div class="min-w-0"><p class="font-semibold text-text" id="pdToastTitle">Success</p><p class="text-sm text-muted" id="pdToastMessage">Operation completed successfully</p></div>
+      <button id="pdToastClose" class="ml-2 w-8 h-8 rounded-lg flex items-center justify-center text-muted hover:bg-bg transition shrink-0"><i data-lucide="x" class="w-4 h-4 shrink-0"></i></button>
+    </div>
+  <script defer src="js/index.js"></script></body>
+</html>

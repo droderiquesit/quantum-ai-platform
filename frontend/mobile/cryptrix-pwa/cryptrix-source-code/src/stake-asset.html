@@ -1,0 +1,479 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>Cryptrix — AI Crypto Investing & Trading App</title>
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="shortcut icon" href="./assets/images/favicon.ico" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"
+      rel="stylesheet"
+    />
+
+    <!-- Theme Script (Placed early to prevent FOUC) -->
+    <script>
+      (function () {
+        const saved = localStorage.getItem("theme") || "dark";
+        if (saved === "dark") document.documentElement.classList.add("dark");
+        else document.documentElement.classList.remove("dark");
+      })();
+    </script>
+  </head>
+  <body class="font-sans overflow-x-hidden">
+    <div class="min-h-screen flex justify-center">
+      <div
+        class="relative w-full max-w-[430px] min-h-screen overflow-x-hidden shadow-[0_0_80px_rgba(0,212,170,0.08)] bg-bg-dark"
+        id="app"
+      >
+        <!-- Header -->
+        <div
+          class="flex items-center justify-between px-5 py-3.5 sticky top-0 bg-surface border-b border-white/5 z-10"
+        >
+          <a
+            href="staking-dashboard.html"
+            class="w-10 h-10 rounded-xl bg-surface-2 border border-white/5 flex items-center justify-center flex-shrink-0 transition-all active:scale-95"
+          >
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              class="rtl:rotate-180"
+            >
+              <path d="M19 12H5M12 19l-7-7 7-7" />
+            </svg>
+          </a>
+          <h1 class="text-[17px] font-bold text-white">Stake Assets</h1>
+          <div class="w-10"></div>
+        </div>
+
+        <div class="px-5 pt-5 pb-28">
+          <!-- Info Banner -->
+          <div
+            class="bg-[#E0F7F4] rounded-[20px] p-5 mb-7 border border-[#00D4AA]/15"
+          >
+            <div class="flex items-center gap-2 mb-1.5">
+              <span class="text-base">🌱</span>
+              <span class="text-[15px] font-extrabold text-[#008F7A]"
+                >Earn Passive Income</span
+              >
+            </div>
+            <div
+              class="text-[13px] text-[#008F7A]/70 leading-relaxed font-medium"
+            >
+              Choose an asset to stake and earn compound rewards daily. Flexible
+              plans allow instant withdrawal.
+            </div>
+          </div>
+
+          <!-- Filters -->
+          <div class="flex gap-2 overflow-x-auto pb-1 mb-6 no-scrollbar">
+            <div
+              class="px-5 py-2 text-[12px] font-bold rounded-full cursor-pointer whitespace-nowrap bg-[#00D4AA] text-[#0A0B0F] shadow-sm"
+            >
+              All
+            </div>
+            <div
+              class="px-5 py-2 text-[12px] font-bold rounded-full cursor-pointer whitespace-nowrap bg-surface text-white/50 border border-[#e2e8f0]"
+            >
+              Highest APY
+            </div>
+            <div
+              class="px-5 py-2 text-[12px] font-bold rounded-full cursor-pointer whitespace-nowrap bg-surface text-white/50 border border-[#e2e8f0]"
+            >
+              Lowest Risk
+            </div>
+            <div
+              class="px-5 py-2 text-[12px] font-bold rounded-full cursor-pointer whitespace-nowrap bg-surface text-white/50 border border-[#e2e8f0]"
+            >
+              Flexible
+            </div>
+          </div>
+
+          <!-- Ethereum Card -->
+          <div
+            class="bg-surface rounded-[20px] p-5 mb-4 border border-white/5 shadow-sm"
+          >
+            <div class="flex items-start justify-between mb-3">
+              <div class="flex items-center gap-3">
+                <div
+                  class="w-12 h-12 rounded-full flex items-center justify-center text-[11px] font-black flex-shrink-0"
+                  style="background: #627eea15; color: #627eea"
+                >
+                  ETH
+                </div>
+                <div>
+                  <div class="text-[16px] font-extrabold text-white">
+                    Ethereum
+                  </div>
+                  <div class="text-[12px] text-white/50 font-medium">
+                    30 days · Min 0.1 ETH
+                  </div>
+                </div>
+              </div>
+              <div
+                class="bg-gradient-to-r from-[#00D4AA] to-[#2C69D1] text-white text-[11px] font-black px-4 py-1.5 rounded-full"
+              >
+                4.2% APY
+              </div>
+            </div>
+            <div
+              class="text-[13px] text-white/50 font-medium leading-relaxed mb-4"
+            >
+              Liquid staking via Lido
+            </div>
+            <div class="flex items-center justify-between">
+              <div
+                class="px-3 py-1 rounded-full text-[11px] font-bold"
+                style="background: #e0f7f4; color: #00a88a"
+              >
+                Low Risk
+              </div>
+              <div class="text-[13px] text-white/50 font-bold">
+                $1,000 →
+                <span class="text-[#00A88A] font-extrabold">$1042/yr</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Solana Card -->
+          <div
+            class="bg-surface rounded-[20px] p-5 mb-4 border border-white/5 shadow-sm"
+          >
+            <div class="flex items-start justify-between mb-3">
+              <div class="flex items-center gap-3">
+                <div
+                  class="w-12 h-12 rounded-full flex items-center justify-center text-[11px] font-black flex-shrink-0"
+                  style="background: #9945ff15; color: #9945ff"
+                >
+                  SOL
+                </div>
+                <div>
+                  <div class="text-[16px] font-extrabold text-white">
+                    Solana
+                  </div>
+                  <div class="text-[12px] text-white/50 font-medium">
+                    Flexible · Min 1 SOL
+                  </div>
+                </div>
+              </div>
+              <div
+                class="bg-gradient-to-r from-[#00D4AA] to-[#2C69D1] text-white text-[11px] font-black px-4 py-1.5 rounded-full"
+              >
+                6.8% APY
+              </div>
+            </div>
+            <div
+              class="text-[13px] text-white/50 font-medium leading-relaxed mb-4"
+            >
+              Native Solana staking
+            </div>
+            <div class="flex items-center justify-between">
+              <div
+                class="px-3 py-1 rounded-full text-[11px] font-bold"
+                style="background: #e0f7f4; color: #00a88a"
+              >
+                Low Risk
+              </div>
+              <div class="text-[13px] text-white/50 font-bold">
+                $1,000 →
+                <span class="text-[#00A88A] font-extrabold">$1068/yr</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Avalanche Card -->
+          <div
+            class="bg-surface rounded-[20px] p-5 mb-4 border border-white/5 shadow-sm"
+          >
+            <div class="flex items-start justify-between mb-3">
+              <div class="flex items-center gap-3">
+                <div
+                  class="w-12 h-12 rounded-full flex items-center justify-center text-[11px] font-black flex-shrink-0"
+                  style="background: #e8414215; color: #e84142"
+                >
+                  AVA
+                </div>
+                <div>
+                  <div class="text-[16px] font-extrabold text-white">
+                    Avalanche
+                  </div>
+                  <div class="text-[12px] text-white/50 font-medium">
+                    60 days · Min 10 AVAX
+                  </div>
+                </div>
+              </div>
+              <div
+                class="bg-gradient-to-r from-[#00D4AA] to-[#2C69D1] text-white text-[11px] font-black px-4 py-1.5 rounded-full"
+              >
+                9.5% APY
+              </div>
+            </div>
+            <div
+              class="text-[13px] text-white/50 font-medium leading-relaxed mb-4"
+            >
+              AVAX validator staking
+            </div>
+            <div class="flex items-center justify-between">
+              <div
+                class="px-3 py-1 rounded-full text-[11px] font-bold"
+                style="background: #fff9e5; color: #ffb800"
+              >
+                Medium Risk
+              </div>
+              <div class="text-[13px] text-white/50 font-bold">
+                $1,000 →
+                <span class="text-[#00A88A] font-extrabold">$1095/yr</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Polygon Card -->
+          <div
+            class="bg-surface rounded-[20px] p-5 mb-4 border border-white/5 shadow-sm"
+          >
+            <div class="flex items-start justify-between mb-3">
+              <div class="flex items-center gap-3">
+                <div
+                  class="w-12 h-12 rounded-full flex items-center justify-center text-[11px] font-black flex-shrink-0"
+                  style="background: #8247e515; color: #8247e5"
+                >
+                  MAT
+                </div>
+                <div>
+                  <div class="text-[16px] font-extrabold text-white">
+                    Polygon
+                  </div>
+                  <div class="text-[12px] text-white/50 font-medium">
+                    Flexible · Min 10 MATIC
+                  </div>
+                </div>
+              </div>
+              <div
+                class="bg-gradient-to-r from-[#00D4AA] to-[#2C69D1] text-white text-[11px] font-black px-4 py-1.5 rounded-full"
+              >
+                5.2% APY
+              </div>
+            </div>
+            <div
+              class="text-[13px] text-white/50 font-medium leading-relaxed mb-4"
+            >
+              Polygon delegated staking
+            </div>
+            <div class="flex items-center justify-between">
+              <div
+                class="px-3 py-1 rounded-full text-[11px] font-bold"
+                style="background: #e0f7f4; color: #00a88a"
+              >
+                Low Risk
+              </div>
+              <div class="text-[13px] text-white/50 font-bold">
+                $1,000 →
+                <span class="text-[#00A88A] font-extrabold">$1052/yr</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Polkadot Card -->
+          <div
+            class="bg-surface rounded-[20px] p-5 mb-4 border border-white/5 shadow-sm"
+          >
+            <div class="flex items-start justify-between mb-3">
+              <div class="flex items-center gap-3">
+                <div
+                  class="w-12 h-12 rounded-full flex items-center justify-center text-[11px] font-black flex-shrink-0"
+                  style="background: #e6007a15; color: #e6007a"
+                >
+                  DOT
+                </div>
+                <div>
+                  <div class="text-[16px] font-extrabold text-white">
+                    Polkadot
+                  </div>
+                  <div class="text-[12px] text-white/50 font-medium">
+                    28 days · Min 1 DOT
+                  </div>
+                </div>
+              </div>
+              <div
+                class="bg-gradient-to-r from-[#00D4AA] to-[#2C69D1] text-white text-[11px] font-black px-4 py-1.5 rounded-full"
+              >
+                14.2% APY
+              </div>
+            </div>
+            <div
+              class="text-[13px] text-white/50 font-medium leading-relaxed mb-4"
+            >
+              Polkadot parachain staking
+            </div>
+            <div class="flex items-center justify-between">
+              <div
+                class="px-3 py-1 rounded-full text-[11px] font-bold"
+                style="background: #fff9e5; color: #ffb800"
+              >
+                Medium Risk
+              </div>
+              <div class="text-[13px] text-white/50 font-bold">
+                $1,000 →
+                <span class="text-[#00A88A] font-extrabold">$1142/yr</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Cosmos Card -->
+          <div
+            class="bg-surface rounded-[20px] p-5 mb-4 border border-white/5 shadow-sm"
+          >
+            <div class="flex items-start justify-between mb-3">
+              <div class="flex items-center gap-3">
+                <div
+                  class="w-12 h-12 rounded-full flex items-center justify-center text-[11px] font-black flex-shrink-0"
+                  style="background: #2e314815; color: #2e3148"
+                >
+                  ATO
+                </div>
+                <div>
+                  <div class="text-[16px] font-extrabold text-white">
+                    Cosmos
+                  </div>
+                  <div class="text-[12px] text-white/50 font-medium">
+                    21 days · Min 0.1 ATOM
+                  </div>
+                </div>
+              </div>
+              <div
+                class="bg-gradient-to-r from-[#00D4AA] to-[#2C69D1] text-white text-[11px] font-black px-4 py-1.5 rounded-full"
+              >
+                18.5% APY
+              </div>
+            </div>
+            <div
+              class="text-[13px] text-white/50 font-medium leading-relaxed mb-4"
+            >
+              Cosmos validator delegation
+            </div>
+            <div class="flex items-center justify-between">
+              <div
+                class="px-3 py-1 rounded-full text-[11px] font-bold"
+                style="background: #fff9e5; color: #ffb800"
+              >
+                Medium Risk
+              </div>
+              <div class="text-[13px] text-white/50 font-bold">
+                $1,000 →
+                <span class="text-[#00A88A] font-extrabold">$1185/yr</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- NEAR Card -->
+          <div
+            class="bg-surface rounded-[20px] p-5 mb-4 border border-white/5 shadow-sm"
+          >
+            <div class="flex items-start justify-between mb-3">
+              <div class="flex items-center gap-3">
+                <div
+                  class="w-12 h-12 rounded-full flex items-center justify-center text-[11px] font-black flex-shrink-0"
+                  style="background: #00c08b15; color: #00c08b"
+                >
+                  NEA
+                </div>
+                <div>
+                  <div class="text-[16px] font-extrabold text-white">
+                    NEAR Protocol
+                  </div>
+                  <div class="text-[12px] text-white/50 font-medium">
+                    Flexible · Min 1 NEAR
+                  </div>
+                </div>
+              </div>
+              <div
+                class="bg-gradient-to-r from-[#00D4AA] to-[#2C69D1] text-white text-[11px] font-black px-4 py-1.5 rounded-full"
+              >
+                11.0% APY
+              </div>
+            </div>
+            <div
+              class="text-[13px] text-white/50 font-medium leading-relaxed mb-4"
+            >
+              NEAR staking pool
+            </div>
+            <div class="flex items-center justify-between">
+              <div
+                class="px-3 py-1 rounded-full text-[11px] font-bold"
+                style="background: #fff9e5; color: #ffb800"
+              >
+                Low-Medium Risk
+              </div>
+              <div class="text-[13px] text-white/50 font-bold">
+                $1,000 →
+                <span class="text-[#00A88A] font-extrabold">$1110/yr</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Cardano Card -->
+          <div
+            class="bg-surface rounded-[20px] p-5 mb-4 border border-white/5 shadow-sm"
+          >
+            <div class="flex items-start justify-between mb-3">
+              <div class="flex items-center gap-3">
+                <div
+                  class="w-12 h-12 rounded-full flex items-center justify-center text-[11px] font-black flex-shrink-0"
+                  style="background: #0d1e2d15; color: #0d1e2d"
+                >
+                  ADA
+                </div>
+                <div>
+                  <div class="text-[16px] font-extrabold text-white">
+                    Cardano
+                  </div>
+                  <div class="text-[12px] text-white/50 font-medium">
+                    Flexible · Min 5 ADA
+                  </div>
+                </div>
+              </div>
+              <div
+                class="bg-gradient-to-r from-[#00D4AA] to-[#2C69D1] text-white text-[11px] font-black px-4 py-1.5 rounded-full"
+              >
+                4.6% APY
+              </div>
+            </div>
+            <div
+              class="text-[13px] text-white/50 font-medium leading-relaxed mb-4"
+            >
+              Cardano delegation
+            </div>
+            <div class="flex items-center justify-between">
+              <div
+                class="px-3 py-1 rounded-full text-[11px] font-bold"
+                style="background: #e0f7f4; color: #00a88a"
+              >
+                Low Risk
+              </div>
+              <div class="text-[13px] text-white/50 font-bold">
+                $1,000 →
+                <span class="text-[#00A88A] font-extrabold">$1046/yr</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <include-bottom-nav></include-bottom-nav>
+      </div>
+    </div>
+
+    <script src="./assets/js/data.js"></script>
+    <script src="./assets/js/components.js"></script>
+    <script src="./assets/js/app.js"></script>
+  </body>
+</html>

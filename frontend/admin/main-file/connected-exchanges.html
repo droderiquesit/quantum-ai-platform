@@ -1,0 +1,1137 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <script>
+      if (localStorage.getItem("theme") === "light") document.documentElement.classList.remove("dark");
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Connected Exchanges - SignalAIX | AI Forex & Crypto Trading Signals</title>
+    <link rel="icon" type="image/png" href="assets/images/favicon.png" />
+    <link rel="apple-touch-icon" href="assets/images/favicon.png" />
+  <link href="css/index.css" rel="stylesheet"></head>
+  <body id="connected-exchanges">
+    <div id="loader"><div class="spinner"></div><div class="loader-text">Loading SignalAIX...</div></div>
+    <div id="sidebarOverlay" class="fixed inset-0 bg-black/50 z-40 hidden lg:hidden transition-opacity duration-300 opacity-0" aria-hidden="true"></div>
+<aside class="sidebar" id="sidebar">
+  <!-- ======================================
+       Start Logo Section
+       ====================================== -->
+  <div class="logo-section flex items-center gap-3 p-5 border-b border-border shrink-0">
+    <img src="assets/images/logo.png" alt="SignalAIX" class="w-10 h-10 rounded-xl object-contain shrink-0" />
+    <div class="logo-text flex-1 min-w-0">
+      <p class="text-lg font-bold text-text leading-tight">SignalAIX</p>
+      <p class="text-xs text-muted truncate">AI Forex & Crypto Signals</p>
+    </div>
+    <button class="lg:hidden! flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:bg-border/60 hover:text-text transition js-mobile-menu-toggle" aria-label="Close sidebar">
+      <i data-lucide="x" class="w-5 h-5"></i>
+    </button>
+  </div>
+
+  <!-- ======================================
+       Start Navigation
+       ====================================== -->
+  <nav class="py-4 flex-1">
+    <!-- MAIN -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Main</div>
+
+    <a href="./index.html" class="nav-item active flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Dashboard">
+      <i data-lucide="layout-dashboard" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Dashboard</span>
+    </a>
+
+    <a href="./live-signals.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Live Signals">
+      <i data-lucide="radio" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Live Signals</span>
+      <span class="live-dot ml-auto nav-text"></span>
+    </a>
+
+    <a href="./ai-signal-generator.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Signal Generator">
+      <i data-lucide="sparkles" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Signal Generator</span>
+    </a>
+
+    <a href="./market-overview.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Market Overview">
+      <i data-lucide="globe" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Market Overview</span>
+    </a>
+
+    <!-- AI INTELLIGENCE -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">AI Intelligence</div>
+
+    <a href="./ai-market-summary.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Market Summary">
+      <i data-lucide="brain-circuit" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Market Summary</span>
+    </a>
+
+    <a href="./ai-prediction-models.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Prediction Models">
+      <i data-lucide="line-chart" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Prediction Models</span>
+    </a>
+
+    <a href="./ai-risk-analyzer.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Risk Analyzer">
+      <i data-lucide="shield-alert" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Risk Analyzer</span>
+    </a>
+
+    <a href="./ai-trade-journal.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Trade Journal">
+      <i data-lucide="notebook-pen" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Trade Journal</span>
+    </a>
+
+    <a href="./ai-strategy-builder.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="AI Strategy Builder">
+      <i data-lucide="blocks" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">AI Strategy Builder</span>
+    </a>
+
+    <!-- TRADING TOOLS -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Trading Tools</div>
+
+    <a href="./forex-heatmap.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Forex Heatmap">
+      <i data-lucide="grid-3x3" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Forex Heatmap</span>
+    </a>
+
+    <a href="./crypto-heatmap.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Crypto Heatmap">
+      <i data-lucide="layout-grid" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Crypto Heatmap</span>
+    </a>
+
+    <a href="./trend-scanner.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Trend Scanner">
+      <i data-lucide="scan-line" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Trend Scanner</span>
+    </a>
+
+    <a href="./pattern-detection.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Pattern Detection">
+      <i data-lucide="waypoints" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Pattern Detection</span>
+    </a>
+
+    <a href="./volatility-index.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Volatility Index">
+      <i data-lucide="activity" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Volatility Index</span>
+    </a>
+
+    <a href="./economic-calendar.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Economic Calendar">
+      <i data-lucide="calendar-clock" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Economic Calendar</span>
+    </a>
+
+    <a href="./news-sentiment.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="News & Sentiment">
+      <i data-lucide="newspaper" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">News & Sentiment</span>
+    </a>
+
+    <a href="./correlation-matrix.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Correlation Matrix">
+      <i data-lucide="table-2" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Correlation Matrix</span>
+    </a>
+
+    <!-- MARKET ANALYTICS -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Market Analytics</div>
+
+    <a href="./forex-analytics.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Forex Analytics">
+      <i data-lucide="candlestick-chart" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Forex Analytics</span>
+    </a>
+
+    <a href="./crypto-analytics.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Crypto Analytics">
+      <i data-lucide="bitcoin" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Crypto Analytics</span>
+    </a>
+
+    <a href="./top-gainers-losers.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Top Gainers & Losers">
+      <i data-lucide="arrow-up-down" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Top Gainers & Losers</span>
+    </a>
+
+    <a href="./market-sentiment.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Market Sentiment">
+      <i data-lucide="gauge" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Market Sentiment</span>
+    </a>
+
+    <a href="./liquidity-zones.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Liquidity Zones">
+      <i data-lucide="droplets" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Liquidity Zones</span>
+    </a>
+
+    <a href="./price-action-monitor.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Price Action Monitor">
+      <i data-lucide="move-up-right" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Price Action Monitor</span>
+    </a>
+
+    <!-- PORTFOLIO -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Portfolio</div>
+
+    <a href="./my-portfolio.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="My Portfolio">
+      <i data-lucide="pie-chart" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">My Portfolio</span>
+    </a>
+
+    <a href="./open-positions.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Open Positions">
+      <i data-lucide="layers" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Open Positions</span>
+    </a>
+
+    <a href="./trade-history.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Trade History">
+      <i data-lucide="history" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Trade History</span>
+    </a>
+
+    <a href="./performance-analytics.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Performance Analytics">
+      <i data-lucide="bar-chart-3" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Performance Analytics</span>
+    </a>
+
+    <a href="./risk-metrics.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Risk Metrics">
+      <i data-lucide="shield-check" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Risk Metrics</span>
+    </a>
+
+    <a href="./pl-overview.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="P/L Overview">
+      <i data-lucide="wallet" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">P/L Overview</span>
+    </a>
+
+    <!-- WATCHLISTS -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Watchlists</div>
+
+    <a href="./forex-pairs.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Forex Pairs">
+      <i data-lucide="dollar-sign" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Forex Pairs</span>
+    </a>
+
+    <a href="./crypto-pairs.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Crypto Pairs">
+      <i data-lucide="coins" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Crypto Pairs</span>
+    </a>
+
+    <a href="./custom-alerts.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Custom Alerts">
+      <i data-lucide="bell-ring" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Custom Alerts</span>
+    </a>
+
+    <a href="./saved-signals.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Saved Signals">
+      <i data-lucide="bookmark" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Saved Signals</span>
+    </a>
+
+    <!-- AUTOMATION -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Automation</div>
+
+    <a href="./bot-center.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Bot Center">
+      <i data-lucide="bot" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Bot Center</span>
+    </a>
+
+    <a href="./auto-signal-forwarder.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Auto-Signal Forwarder">
+      <i data-lucide="forward" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Auto-Signal Forwarder</span>
+    </a>
+
+    <a href="./webhook-automations.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Webhook Automations">
+      <i data-lucide="webhook" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Webhook Automations</span>
+    </a>
+
+    <a href="./api-integrations.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="API Integrations">
+      <i data-lucide="plug" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">API Integrations</span>
+    </a>
+
+    <!-- ACCOUNT -->
+    <div class="nav-section-title px-5 pt-4 pb-2 mt-2 text-[11px] font-bold uppercase tracking-[1.5px] text-muted">Account</div>
+
+    <a href="./profile-security.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Profile & Security">
+      <i data-lucide="user-cog" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Profile & Security</span>
+    </a>
+
+    <a href="./notification-settings.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Notification Settings">
+      <i data-lucide="bell" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Notification Settings</span>
+      <span class="ml-auto bg-red-500 text-white text-xs px-2 py-0.5 rounded-full nav-text">5</span>
+    </a>
+
+    <a href="./connected-exchanges.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Connected Exchanges">
+      <i data-lucide="link-2" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Connected Exchanges</span>
+    </a>
+
+    <a href="./subscription-billing.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Subscription & Billing">
+      <i data-lucide="crown" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Subscription & Billing</span>
+      <span class="ml-auto text-[10px] font-bold px-2 py-0.5 rounded-md bg-accent text-white nav-text">PRO</span>
+    </a>
+
+    <a href="./help-center.html" class="nav-item flex items-center gap-3 mx-3 my-0.5 px-4 py-3 rounded-xl text-sm font-medium text-muted hover:bg-accent/10 hover:text-text transition" data-tooltip="Help Center">
+      <i data-lucide="help-circle" class="w-5 h-5 shrink-0"></i>
+      <span class="nav-text">Help Center</span>
+    </a>
+  </nav>
+
+  <!-- ======================================
+       Start User Section
+       ====================================== -->
+  <div class="user-section mt-auto p-4 border-t border-border shrink-0">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-full flex items-center justify-center shrink-0 bg-gradient-to-br from-emerald-500 to-teal-500">
+        <span class="text-white font-semibold text-sm">AK</span>
+      </div>
+      <div class="user-info flex-1 min-w-0">
+        <p class="font-semibold text-sm text-text truncate">Alex Kim</p>
+        <p class="text-xs text-muted truncate">alex@signalaix.io</p>
+      </div>
+    </div>
+  </div>
+</aside>
+
+    <main class="main-content" id="mainContent">
+      <header class="sticky top-0 z-50 glass @container">
+  <div class="flex items-center justify-between px-2 sm:px-6 py-2 sm:py-4">
+    <div class="flex items-center gap-2 sm:gap-4">
+      <!-- Mobile Menu Button -->
+      <button class="lg:hidden flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 transition js-mobile-menu-toggle" id="mobileMenuBtn" aria-label="Toggle Mobile Menu">
+        <i data-lucide="menu" class="w-5 h-5"></i>
+      </button>
+
+      <!-- Sidebar Toggle (Desktop) -->
+      <button class="hidden lg:flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 transition js-sidebar-toggle" aria-label="Toggle Sidebar">
+        <i data-lucide="panel-left" class="w-5 h-5"></i>
+      </button>
+
+      <!-- Search -->
+      <div class="relative hidden md:block">
+        <i data-lucide="search" class="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-muted"></i>
+        <input type="text" id="globalSearch" placeholder="Search signals, pairs, markets... (⌘K)" class="w-80 pl-10 pr-4 py-2.5 rounded-xl bg-bg border border-border text-sm text-text placeholder:text-muted focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 transition" />
+      </div>
+    </div>
+
+    <div class="flex items-center gap-2 sm:gap-3">
+      <!-- Live Status -->
+      <div class="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-500/10 text-emerald-500 text-[11px] font-semibold">
+        <span class="live-dot !bg-emerald-500"></span>
+        LIVE
+      </div>
+
+      <!-- Quick Generate Signal -->
+      <button class="flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 hover:border-accent/30 transition js-open-drawer" data-drawer-type="quickTrade" aria-label="Generate Signal">
+        <i data-lucide="zap" class="w-5 h-5"></i>
+      </button>
+
+      <!-- Notifications -->
+      <div class="dropdown">
+        <button class="relative flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 transition js-dropdown-toggle" aria-label="Toggle Notifications">
+          <i data-lucide="bell" class="w-5 h-5"></i>
+          <span class="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-xs rounded-full flex items-center justify-center">5</span>
+        </button>
+        <div class="dropdown-menu w-75 min-[400px]:w-80 mt-2 rounded-2xl bg-panel border border-border shadow-2xl overflow-hidden max-[420px]:-left-[153px]! max-[450px]:-left-[183px]! max-[430px]:right-0!">
+          <div class="p-4 border-b border-border flex items-center justify-between">
+            <h2 class="text-base font-semibold text-text">Notifications</h2>
+            <span class="text-xs font-medium text-accent">5 new</span>
+          </div>
+          <div class="max-h-72 overflow-y-auto">
+            <div class="flex items-start gap-3 p-4 hover:bg-border/30 transition cursor-pointer">
+              <div class="w-9 h-9 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="trending-up" class="w-4 h-4 text-emerald-500"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-medium text-text truncate">New BUY signal: EUR/USD</p>
+                <p class="text-xs text-muted">AI confidence 92% · 2 min ago</p>
+              </div>
+            </div>
+            <div class="flex items-start gap-3 p-4 hover:bg-border/30 transition cursor-pointer">
+              <div class="w-9 h-9 rounded-full bg-amber-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="alert-triangle" class="w-4 h-4 text-amber-500"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-medium text-text truncate">High volatility on BTC/USDT</p>
+                <p class="text-xs text-muted">15 min ago</p>
+              </div>
+            </div>
+            <div class="flex items-start gap-3 p-4 hover:bg-border/30 transition cursor-pointer">
+              <div class="w-9 h-9 rounded-full bg-sky-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="sparkles" class="w-4 h-4 text-sky-500"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-medium text-text truncate">AI model retrained — accuracy +3%</p>
+                <p class="text-xs text-muted">1 hour ago</p>
+              </div>
+            </div>
+          </div>
+          <div class="p-3 border-t border-border">
+            <button class="w-full text-center text-sm font-medium text-accent hover:underline">View all notifications</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Theme Toggle -->
+      <button
+        class="flex size-11 items-center justify-center rounded-xl bg-panel border border-border text-text hover:bg-accent/10 transition"
+        id="themeToggle"
+        aria-label="Toggle Theme"
+        onclick="
+          document.documentElement.classList.toggle('dark');
+          localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+        "
+      >
+        <i data-lucide="moon" class="w-5 h-5 dark:hidden"></i>
+        <i data-lucide="sun" class="w-5 h-5 hidden dark:block"></i>
+      </button>
+
+      <!-- Profile Dropdown -->
+      <div class="dropdown">
+        <button class="flex items-center gap-2 p-1 rounded-xl hover:bg-border/50 transition js-dropdown-toggle">
+          <span class="w-9 h-9 rounded-full bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center">
+            <span class="text-white font-semibold text-sm">AK</span>
+          </span>
+          <i data-lucide="chevron-down" class="w-4 h-4 text-muted hidden sm:block"></i>
+        </button>
+        <div class="dropdown-menu w-56 mt-2 rounded-2xl bg-panel border border-border shadow-2xl overflow-hidden p-2">
+          <div class="p-3 mb-1 border-b border-border">
+            <p class="font-semibold text-text">Alex Kim</p>
+            <p class="text-xs text-muted">Pro Trader</p>
+          </div>
+          <a href="./index.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-text hover:bg-accent/10 transition">
+            <i data-lucide="user" class="w-4 h-4"></i>
+            <span>My Profile</span>
+          </a>
+          <a href="./index.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-text hover:bg-accent/10 transition">
+            <i data-lucide="settings" class="w-4 h-4"></i>
+            <span>Settings</span>
+          </a>
+          <a href="./index.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-text hover:bg-accent/10 transition">
+            <i data-lucide="help-circle" class="w-4 h-4"></i>
+            <span>Help & Support</span>
+          </a>
+          <div class="mt-1 pt-1 border-t border-border">
+            <a href="./index.html" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-red-500 hover:bg-red-500/10 transition">
+              <i data-lucide="log-out" class="w-4 h-4"></i>
+              <span>Logout</span>
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+      <div class="inner-content max-sm:px-3 max-lg:px-4 max-lg:py-6 lg:p-6">
+        <!-- Page Header -->
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-6">
+          <div>
+            <div class="flex items-center gap-3 mb-2">
+              <h1 class="text-2xl md:text-3xl font-bold text-text">Connected Exchanges</h1>
+              <div class="flex items-center gap-2 px-3 py-1 bg-emerald-500/15 text-emerald-500 rounded-full text-sm font-semibold">
+                <span class="live-dot"></span>
+                5 Connected
+              </div>
+            </div>
+            <p class="text-muted">Manage your exchange connections, API keys, and trading permissions</p>
+          </div>
+          <button
+            id="ceAddBtn"
+            class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"
+          >
+            <i data-lucide="plus" class="w-4 h-4 shrink-0"></i>
+            <span>Connect Exchange</span>
+          </button>
+        </div>
+
+        <!-- Stat Cards -->
+        <div class="grid grid-cols-1 xs:grid-cols-2 @4xl/content:grid-cols-4 gap-4 mb-6">
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="link" class="w-5 h-5 text-emerald-500 shrink-0"></i>
+              </div>
+              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500"><i data-lucide="circle-check" class="w-3 h-3 shrink-0"></i>Active</span>
+            </div>
+            <p class="text-2xl font-bold text-text">5</p>
+            <p class="text-xs text-muted mt-1">Connected Exchanges</p>
+          </div>
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-teal-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="wallet" class="w-5 h-5 text-teal-500 shrink-0"></i>
+              </div>
+              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i>+12.5%</span>
+            </div>
+            <p class="text-2xl font-bold text-text">$124,580</p>
+            <p class="text-xs text-muted mt-1">Total Balance</p>
+          </div>
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-sky-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="activity" class="w-5 h-5 text-sky-500 shrink-0"></i>
+              </div>
+              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-sky-500/15 text-sky-500">Today</span>
+            </div>
+            <p class="text-2xl font-bold text-text">2,847</p>
+            <p class="text-xs text-muted mt-1">API Calls Today</p>
+          </div>
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="refresh-cw" class="w-5 h-5 text-emerald-500 shrink-0"></i>
+              </div>
+              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500"><i data-lucide="circle-check" class="w-3 h-3 shrink-0"></i>Synced</span>
+            </div>
+            <p class="text-2xl font-bold text-text">2m ago</p>
+            <p class="text-xs text-muted mt-1">Last Sync</p>
+          </div>
+        </div>
+
+        <!-- Tabs & Filters -->
+        <div class="rounded-2xl bg-panel border border-border p-4 sm:p-6 mb-6">
+          <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+            <div class="flex gap-1 p-1 bg-bg border border-border rounded-2xl overflow-x-auto hide-scrollbar w-full">
+              <button class="ce-tab tab-button active inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="all">All Exchanges</button>
+              <button class="ce-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="crypto">Crypto</button>
+              <button class="ce-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="forex">Forex</button>
+              <button class="ce-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="inactive">Inactive</button>
+            </div>
+            <div class="flex flex-wrap items-center gap-3">
+              <div class="relative flex-1 min-w-[180px]">
+                <i data-lucide="search" class="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-muted shrink-0"></i>
+                <input type="text" id="ceSearch" placeholder="Search exchanges..." class="w-full pl-11 pr-4 py-2.5 bg-bg border border-border rounded-xl text-text text-sm focus:outline-none focus:border-accent transition-colors" />
+              </div>
+              <div class="relative">
+                <button id="ceFilterBtn" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap">
+                  <i data-lucide="list-filter" class="w-4 h-4 shrink-0"></i>
+                  <span>Filter</span>
+                  <i data-lucide="chevron-down" class="w-4 h-4 shrink-0"></i>
+                </button>
+                <div id="ceFilterMenu" class="hidden absolute right-0 mt-2 w-56 bg-panel border border-border rounded-xl shadow-xl z-50 overflow-hidden">
+                  <div class="px-4 py-3 border-b border-border">
+                    <p class="text-xs font-semibold text-muted uppercase tracking-wide">Filter by Status</p>
+                  </div>
+                  <div class="p-2 space-y-1">
+                    <label class="flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-accent/10 cursor-pointer">
+                      <input type="checkbox" class="custom-checkbox ce-filter-status" data-status="connected" checked />
+                      <span class="text-sm text-text">Connected</span>
+                    </label>
+                    <label class="flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-accent/10 cursor-pointer">
+                      <input type="checkbox" class="custom-checkbox ce-filter-status" data-status="syncing" checked />
+                      <span class="text-sm text-text">Syncing</span>
+                    </label>
+                    <label class="flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-accent/10 cursor-pointer">
+                      <input type="checkbox" class="custom-checkbox ce-filter-status" data-status="disconnected" checked />
+                      <span class="text-sm text-text">Disconnected</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+              <div class="relative">
+                <button id="ceExportBtn" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap">
+                  <i data-lucide="download" class="w-4 h-4 shrink-0"></i>
+                  <span>Export</span>
+                  <i data-lucide="chevron-down" class="w-4 h-4 shrink-0"></i>
+                </button>
+                <div id="ceExportMenu" class="hidden absolute right-0 mt-2 w-48 bg-panel border border-border rounded-xl shadow-xl z-50 overflow-hidden">
+                  <button class="ce-export-item flex items-center gap-2.5 w-full px-4 py-3 text-sm text-text hover:bg-accent/10 transition-colors" data-format="csv">
+                    <i data-lucide="file-text" class="w-4 h-4 shrink-0"></i>
+                    <span>Export as CSV</span>
+                  </button>
+                  <button class="ce-export-item flex items-center gap-2.5 w-full px-4 py-3 text-sm text-text hover:bg-accent/10 transition-colors" data-format="json">
+                    <i data-lucide="file-code" class="w-4 h-4 shrink-0"></i>
+                    <span>Export as JSON</span>
+                  </button>
+                </div>
+              </div>
+              <button id="ceRefreshBtn" class="w-11 h-11 shrink-0 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Refresh">
+                <i data-lucide="refresh-cw" class="w-5 h-5 shrink-0"></i>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Exchange Cards Grid -->
+        <div class="grid grid-cols-1 @xl/content:grid-cols-2 @4xl/content:grid-cols-3 gap-4 mb-6" id="ceGrid">
+          <!-- Binance -->
+          <div class="ce-card rounded-2xl bg-panel border border-border p-4 sm:p-6 hover:border-accent/40 transition-colors" data-exchange="binance" data-name="binance" data-type="crypto" data-status="connected">
+            <div class="flex flex-col xs:flex-row xs:items-center xs:justify-between gap-3 mb-5">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-12 h-12 rounded-xl bg-[#F0B90B]/15 flex items-center justify-center shrink-0"><span class="text-[#F0B90B] font-bold text-lg">B</span></div>
+                <div class="min-w-0"><h3 class="font-bold text-text truncate">Binance</h3><p class="text-xs text-muted">Spot &amp; Futures</p></div>
+              </div>
+              <span class="ce-status-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>Connected</span>
+            </div>
+            <div class="rounded-xl bg-bg border border-border p-4 mb-4">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-sm text-muted">Total Balance</span>
+                <button class="ce-balance-eye text-muted hover:text-accent transition-colors" title="Hide balance"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+              </div>
+              <p class="ce-balance text-2xl font-bold text-text">$45,230.85</p>
+              <div class="flex items-center gap-2 mt-1 flex-wrap">
+                <span class="text-emerald-500 text-sm font-medium">+$2,340.50</span>
+                <span class="text-muted text-sm">(+5.45%)</span>
+                <span class="text-muted text-xs">24h</span>
+              </div>
+            </div>
+            <div class="grid grid-cols-3 gap-2 mb-4">
+              <div class="text-center p-2.5 rounded-xl bg-bg border border-border"><p class="font-bold text-text">12</p><p class="text-xs text-muted">Assets</p></div>
+              <div class="text-center p-2.5 rounded-xl bg-bg border border-border"><p class="font-bold text-text">5</p><p class="text-xs text-muted">Orders</p></div>
+              <div class="text-center p-2.5 rounded-xl bg-bg border border-border"><p class="font-bold text-text">847</p><p class="text-xs text-muted">API Calls</p></div>
+            </div>
+            <div class="flex flex-wrap gap-1.5 mb-4">
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold bg-emerald-500/15 text-emerald-500"><i data-lucide="check" class="w-3 h-3 shrink-0"></i>Read</span>
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold bg-emerald-500/15 text-emerald-500"><i data-lucide="check" class="w-3 h-3 shrink-0"></i>Trade</span>
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold bg-amber-500/15 text-amber-500"><i data-lucide="minus" class="w-3 h-3 shrink-0"></i>Withdraw</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <button class="ce-manage flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-bg border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="settings" class="w-4 h-4 shrink-0"></i>Manage</button>
+              <button class="ce-sync w-10 h-10 shrink-0 flex items-center justify-center rounded-xl bg-bg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Sync"><i data-lucide="refresh-cw" class="w-4 h-4 shrink-0"></i></button>
+              <button class="ce-disconnect w-10 h-10 shrink-0 flex items-center justify-center rounded-xl bg-bg border border-border text-muted hover:text-red-500 hover:border-red-500/40 transition-colors" title="Disconnect"><i data-lucide="unplug" class="w-4 h-4 shrink-0"></i></button>
+            </div>
+          </div>
+
+          <!-- Coinbase -->
+          <div class="ce-card rounded-2xl bg-panel border border-border p-4 sm:p-6 hover:border-accent/40 transition-colors" data-exchange="coinbase" data-name="coinbase pro" data-type="crypto" data-status="connected">
+            <div class="flex flex-col xs:flex-row xs:items-center xs:justify-between gap-3 mb-5">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-12 h-12 rounded-xl bg-[#0052FF]/15 flex items-center justify-center shrink-0"><span class="text-[#0052FF] font-bold text-lg">C</span></div>
+                <div class="min-w-0"><h3 class="font-bold text-text truncate">Coinbase Pro</h3><p class="text-xs text-muted">Spot Trading</p></div>
+              </div>
+              <span class="ce-status-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>Connected</span>
+            </div>
+            <div class="rounded-xl bg-bg border border-border p-4 mb-4">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-sm text-muted">Total Balance</span>
+                <button class="ce-balance-eye text-muted hover:text-accent transition-colors" title="Hide balance"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+              </div>
+              <p class="ce-balance text-2xl font-bold text-text">$28,450.20</p>
+              <div class="flex items-center gap-2 mt-1 flex-wrap">
+                <span class="text-red-500 text-sm font-medium">-$450.30</span>
+                <span class="text-muted text-sm">(-1.56%)</span>
+                <span class="text-muted text-xs">24h</span>
+              </div>
+            </div>
+            <div class="grid grid-cols-3 gap-2 mb-4">
+              <div class="text-center p-2.5 rounded-xl bg-bg border border-border"><p class="font-bold text-text">8</p><p class="text-xs text-muted">Assets</p></div>
+              <div class="text-center p-2.5 rounded-xl bg-bg border border-border"><p class="font-bold text-text">2</p><p class="text-xs text-muted">Orders</p></div>
+              <div class="text-center p-2.5 rounded-xl bg-bg border border-border"><p class="font-bold text-text">523</p><p class="text-xs text-muted">API Calls</p></div>
+            </div>
+            <div class="flex flex-wrap gap-1.5 mb-4">
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold bg-emerald-500/15 text-emerald-500"><i data-lucide="check" class="w-3 h-3 shrink-0"></i>Read</span>
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold bg-emerald-500/15 text-emerald-500"><i data-lucide="check" class="w-3 h-3 shrink-0"></i>Trade</span>
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold bg-emerald-500/15 text-emerald-500"><i data-lucide="check" class="w-3 h-3 shrink-0"></i>Withdraw</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <button class="ce-manage flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-bg border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="settings" class="w-4 h-4 shrink-0"></i>Manage</button>
+              <button class="ce-sync w-10 h-10 shrink-0 flex items-center justify-center rounded-xl bg-bg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Sync"><i data-lucide="refresh-cw" class="w-4 h-4 shrink-0"></i></button>
+              <button class="ce-disconnect w-10 h-10 shrink-0 flex items-center justify-center rounded-xl bg-bg border border-border text-muted hover:text-red-500 hover:border-red-500/40 transition-colors" title="Disconnect"><i data-lucide="unplug" class="w-4 h-4 shrink-0"></i></button>
+            </div>
+          </div>
+
+          <!-- Kraken (syncing) -->
+          <div class="ce-card rounded-2xl bg-panel border border-border p-4 sm:p-6 hover:border-accent/40 transition-colors" data-exchange="kraken" data-name="kraken" data-type="crypto" data-status="syncing">
+            <div class="flex flex-col xs:flex-row xs:items-center xs:justify-between gap-3 mb-5">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-12 h-12 rounded-xl bg-[#5741D9]/15 flex items-center justify-center shrink-0"><span class="text-[#5741D9] font-bold text-lg">K</span></div>
+                <div class="min-w-0"><h3 class="font-bold text-text truncate">Kraken</h3><p class="text-xs text-muted">Spot &amp; Margin</p></div>
+              </div>
+              <span class="ce-status-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-500 shrink-0"><span class="w-2 h-2 rounded-full bg-amber-500"></span>Syncing</span>
+            </div>
+            <div class="rounded-xl bg-bg border border-border p-4 mb-4">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-sm text-muted">Total Balance</span>
+                <button class="ce-balance-eye text-muted hover:text-accent transition-colors" title="Hide balance"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+              </div>
+              <p class="ce-balance text-2xl font-bold text-text">$18,920.45</p>
+              <div class="flex items-center gap-2 mt-1 flex-wrap">
+                <span class="text-emerald-500 text-sm font-medium">+$890.20</span>
+                <span class="text-muted text-sm">(+4.94%)</span>
+                <span class="text-muted text-xs">24h</span>
+              </div>
+            </div>
+            <div class="grid grid-cols-3 gap-2 mb-4">
+              <div class="text-center p-2.5 rounded-xl bg-bg border border-border"><p class="font-bold text-text">6</p><p class="text-xs text-muted">Assets</p></div>
+              <div class="text-center p-2.5 rounded-xl bg-bg border border-border"><p class="font-bold text-text">0</p><p class="text-xs text-muted">Orders</p></div>
+              <div class="text-center p-2.5 rounded-xl bg-bg border border-border"><p class="font-bold text-text">312</p><p class="text-xs text-muted">API Calls</p></div>
+            </div>
+            <div class="flex flex-wrap gap-1.5 mb-4">
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold bg-emerald-500/15 text-emerald-500"><i data-lucide="check" class="w-3 h-3 shrink-0"></i>Read</span>
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold bg-emerald-500/15 text-emerald-500"><i data-lucide="check" class="w-3 h-3 shrink-0"></i>Trade</span>
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold bg-amber-500/15 text-amber-500"><i data-lucide="minus" class="w-3 h-3 shrink-0"></i>Withdraw</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <button class="ce-manage flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-bg border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="settings" class="w-4 h-4 shrink-0"></i>Manage</button>
+              <button class="ce-sync w-10 h-10 shrink-0 flex items-center justify-center rounded-xl bg-bg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Sync"><i data-lucide="refresh-cw" class="w-4 h-4 shrink-0"></i></button>
+              <button class="ce-disconnect w-10 h-10 shrink-0 flex items-center justify-center rounded-xl bg-bg border border-border text-muted hover:text-red-500 hover:border-red-500/40 transition-colors" title="Disconnect"><i data-lucide="unplug" class="w-4 h-4 shrink-0"></i></button>
+            </div>
+          </div>
+
+          <!-- ByBit -->
+          <div class="ce-card rounded-2xl bg-panel border border-border p-4 sm:p-6 hover:border-accent/40 transition-colors" data-exchange="bybit" data-name="bybit" data-type="crypto" data-status="connected">
+            <div class="flex flex-col xs:flex-row xs:items-center xs:justify-between gap-3 mb-5">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-12 h-12 rounded-xl bg-[#F7A600]/15 flex items-center justify-center shrink-0"><span class="text-[#F7A600] font-bold">BY</span></div>
+                <div class="min-w-0"><h3 class="font-bold text-text truncate">ByBit</h3><p class="text-xs text-muted">Derivatives</p></div>
+              </div>
+              <span class="ce-status-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>Connected</span>
+            </div>
+            <div class="rounded-xl bg-bg border border-border p-4 mb-4">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-sm text-muted">Total Balance</span>
+                <button class="ce-balance-eye text-muted hover:text-accent transition-colors" title="Hide balance"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+              </div>
+              <p class="ce-balance text-2xl font-bold text-text">$22,380.00</p>
+              <div class="flex items-center gap-2 mt-1 flex-wrap">
+                <span class="text-emerald-500 text-sm font-medium">+$1,230.40</span>
+                <span class="text-muted text-sm">(+5.82%)</span>
+                <span class="text-muted text-xs">24h</span>
+              </div>
+            </div>
+            <div class="grid grid-cols-3 gap-2 mb-4">
+              <div class="text-center p-2.5 rounded-xl bg-bg border border-border"><p class="font-bold text-text">4</p><p class="text-xs text-muted">Assets</p></div>
+              <div class="text-center p-2.5 rounded-xl bg-bg border border-border"><p class="font-bold text-text">8</p><p class="text-xs text-muted">Orders</p></div>
+              <div class="text-center p-2.5 rounded-xl bg-bg border border-border"><p class="font-bold text-text">1.2K</p><p class="text-xs text-muted">API Calls</p></div>
+            </div>
+            <div class="flex flex-wrap gap-1.5 mb-4">
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold bg-emerald-500/15 text-emerald-500"><i data-lucide="check" class="w-3 h-3 shrink-0"></i>Read</span>
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold bg-emerald-500/15 text-emerald-500"><i data-lucide="check" class="w-3 h-3 shrink-0"></i>Trade</span>
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold bg-red-500/15 text-red-500"><i data-lucide="x" class="w-3 h-3 shrink-0"></i>Withdraw</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <button class="ce-manage flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-bg border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="settings" class="w-4 h-4 shrink-0"></i>Manage</button>
+              <button class="ce-sync w-10 h-10 shrink-0 flex items-center justify-center rounded-xl bg-bg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Sync"><i data-lucide="refresh-cw" class="w-4 h-4 shrink-0"></i></button>
+              <button class="ce-disconnect w-10 h-10 shrink-0 flex items-center justify-center rounded-xl bg-bg border border-border text-muted hover:text-red-500 hover:border-red-500/40 transition-colors" title="Disconnect"><i data-lucide="unplug" class="w-4 h-4 shrink-0"></i></button>
+            </div>
+          </div>
+
+          <!-- OANDA (forex) -->
+          <div class="ce-card rounded-2xl bg-panel border border-border p-4 sm:p-6 hover:border-accent/40 transition-colors" data-exchange="oanda" data-name="oanda" data-type="forex" data-status="connected">
+            <div class="flex flex-col xs:flex-row xs:items-center xs:justify-between gap-3 mb-5">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-12 h-12 rounded-xl bg-[#009BAD]/15 flex items-center justify-center shrink-0"><span class="text-[#009BAD] font-bold text-lg">O</span></div>
+                <div class="min-w-0"><h3 class="font-bold text-text truncate">OANDA</h3><p class="text-xs text-muted">Forex &amp; CFD</p></div>
+              </div>
+              <span class="ce-status-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>Connected</span>
+            </div>
+            <div class="rounded-xl bg-bg border border-border p-4 mb-4">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-sm text-muted">Account Balance</span>
+                <button class="ce-balance-eye text-muted hover:text-accent transition-colors" title="Hide balance"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+              </div>
+              <p class="ce-balance text-2xl font-bold text-text">$9,599.50</p>
+              <div class="flex items-center gap-2 mt-1 flex-wrap">
+                <span class="text-emerald-500 text-sm font-medium">+$245.80</span>
+                <span class="text-muted text-sm">(+2.63%)</span>
+                <span class="text-muted text-xs">24h</span>
+              </div>
+            </div>
+            <div class="grid grid-cols-3 gap-2 mb-4">
+              <div class="text-center p-2.5 rounded-xl bg-bg border border-border"><p class="font-bold text-text">28</p><p class="text-xs text-muted">Pairs</p></div>
+              <div class="text-center p-2.5 rounded-xl bg-bg border border-border"><p class="font-bold text-text">3</p><p class="text-xs text-muted">Trades</p></div>
+              <div class="text-center p-2.5 rounded-xl bg-bg border border-border"><p class="font-bold text-text">165</p><p class="text-xs text-muted">API Calls</p></div>
+            </div>
+            <div class="flex flex-wrap gap-1.5 mb-4">
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold bg-emerald-500/15 text-emerald-500"><i data-lucide="check" class="w-3 h-3 shrink-0"></i>Read</span>
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold bg-emerald-500/15 text-emerald-500"><i data-lucide="check" class="w-3 h-3 shrink-0"></i>Trade</span>
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold bg-sky-500/15 text-sky-500"><i data-lucide="globe" class="w-3 h-3 shrink-0"></i>Forex</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <button class="ce-manage flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-bg border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="settings" class="w-4 h-4 shrink-0"></i>Manage</button>
+              <button class="ce-sync w-10 h-10 shrink-0 flex items-center justify-center rounded-xl bg-bg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Sync"><i data-lucide="refresh-cw" class="w-4 h-4 shrink-0"></i></button>
+              <button class="ce-disconnect w-10 h-10 shrink-0 flex items-center justify-center rounded-xl bg-bg border border-border text-muted hover:text-red-500 hover:border-red-500/40 transition-colors" title="Disconnect"><i data-lucide="unplug" class="w-4 h-4 shrink-0"></i></button>
+            </div>
+          </div>
+
+          <!-- Add Exchange tile -->
+          <button id="ceAddTile" class="ce-add-tile rounded-2xl bg-panel border border-dashed border-border p-6 flex flex-col items-center justify-center text-center min-h-[300px] hover:border-accent/60 transition-colors">
+            <div class="w-16 h-16 rounded-2xl bg-bg border border-dashed border-border flex items-center justify-center mb-4 shrink-0"><i data-lucide="plus" class="w-8 h-8 text-muted shrink-0"></i></div>
+            <h3 class="font-semibold text-text mb-1">Connect Exchange</h3>
+            <p class="text-sm text-muted">Add a new exchange connection to start trading with SignalAIX</p>
+          </button>
+        </div>
+
+        <!-- No results -->
+        <div id="ceNoResults" class="hidden py-12 text-center text-muted mb-6">
+          <i data-lucide="search-x" class="w-10 h-10 mx-auto mb-3 shrink-0"></i>
+          <p>No exchanges match your filters.</p>
+        </div>
+
+        <!-- Recent API Activity -->
+        <div class="rounded-2xl bg-panel border border-border overflow-hidden">
+          <div class="p-4 sm:p-6 border-b border-border">
+            <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+              <div>
+                <h2 class="text-xl font-bold text-text">Recent API Activity</h2>
+                <p class="text-sm text-muted">Monitor your exchange API calls and responses</p>
+              </div>
+              <div class="flex flex-wrap items-center gap-3">
+                <select id="ceActivityFilter" class="shrink-0 py-2.5 px-4 text-sm bg-bg border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors">
+                  <option value="all">All Exchanges</option>
+                  <option value="binance">Binance</option>
+                  <option value="coinbase">Coinbase</option>
+                  <option value="kraken">Kraken</option>
+                  <option value="bybit">ByBit</option>
+                  <option value="oanda">OANDA</option>
+                </select>
+                <button id="ceActivityExport" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-bg border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap">
+                  <i data-lucide="download" class="w-4 h-4 shrink-0"></i><span>Export</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="overflow-x-auto">
+            <table class="w-full border-collapse min-w-[760px] whitespace-nowrap text-sm">
+              <thead>
+                <tr class="text-left text-xs uppercase tracking-wide text-muted border-b border-border">
+                  <th class="py-3 px-4 sm:sticky sm:left-0 sm:bg-panel">Timestamp</th>
+                  <th class="py-3 px-4">Exchange</th>
+                  <th class="py-3 px-4">Endpoint</th>
+                  <th class="py-3 px-4">Method</th>
+                  <th class="py-3 px-4">Status</th>
+                  <th class="py-3 px-4">Latency</th>
+                  <th class="py-3 px-4 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="ceActivityBody">
+                <tr class="ce-activity-row border-b border-border hover:bg-bg/60 transition-colors" data-exchange="binance">
+                  <td class="py-4 px-4 text-text font-medium sm:sticky sm:left-0 sm:bg-panel">2025-01-15 14:32:45</td>
+                  <td class="py-4 px-4"><div class="flex items-center gap-2"><span class="w-6 h-6 rounded-md bg-[#F0B90B]/15 text-[#F0B90B] flex items-center justify-center text-xs font-bold shrink-0">B</span><span class="text-text">Binance</span></div></td>
+                  <td class="py-4 px-4 text-muted font-mono text-xs">/api/v3/account</td>
+                  <td class="py-4 px-4"><span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-sky-500/15 text-sky-500">GET</span></td>
+                  <td class="py-4 px-4"><span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-emerald-500/15 text-emerald-500">200 OK</span></td>
+                  <td class="py-4 px-4 text-emerald-500 font-medium">45ms</td>
+                  <td class="py-4 px-4"><div class="flex justify-end"><button class="ce-activity-view w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="View" data-log="1"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button></div></td>
+                </tr>
+                <tr class="ce-activity-row border-b border-border hover:bg-bg/60 transition-colors" data-exchange="coinbase">
+                  <td class="py-4 px-4 text-text font-medium sm:sticky sm:left-0 sm:bg-panel">2025-01-15 14:32:30</td>
+                  <td class="py-4 px-4"><div class="flex items-center gap-2"><span class="w-6 h-6 rounded-md bg-[#0052FF]/15 text-[#0052FF] flex items-center justify-center text-xs font-bold shrink-0">C</span><span class="text-text">Coinbase</span></div></td>
+                  <td class="py-4 px-4 text-muted font-mono text-xs">/accounts</td>
+                  <td class="py-4 px-4"><span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-sky-500/15 text-sky-500">GET</span></td>
+                  <td class="py-4 px-4"><span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-emerald-500/15 text-emerald-500">200 OK</span></td>
+                  <td class="py-4 px-4 text-emerald-500 font-medium">67ms</td>
+                  <td class="py-4 px-4"><div class="flex justify-end"><button class="ce-activity-view w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="View" data-log="2"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button></div></td>
+                </tr>
+                <tr class="ce-activity-row border-b border-border hover:bg-bg/60 transition-colors" data-exchange="bybit">
+                  <td class="py-4 px-4 text-text font-medium sm:sticky sm:left-0 sm:bg-panel">2025-01-15 14:32:15</td>
+                  <td class="py-4 px-4"><div class="flex items-center gap-2"><span class="w-6 h-6 rounded-md bg-[#F7A600]/15 text-[#F7A600] flex items-center justify-center text-xs font-bold shrink-0">BY</span><span class="text-text">ByBit</span></div></td>
+                  <td class="py-4 px-4 text-muted font-mono text-xs">/v5/position/list</td>
+                  <td class="py-4 px-4"><span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-sky-500/15 text-sky-500">GET</span></td>
+                  <td class="py-4 px-4"><span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-emerald-500/15 text-emerald-500">200 OK</span></td>
+                  <td class="py-4 px-4 text-amber-500 font-medium">123ms</td>
+                  <td class="py-4 px-4"><div class="flex justify-end"><button class="ce-activity-view w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="View" data-log="3"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button></div></td>
+                </tr>
+                <tr class="ce-activity-row border-b border-border hover:bg-bg/60 transition-colors" data-exchange="kraken">
+                  <td class="py-4 px-4 text-text font-medium sm:sticky sm:left-0 sm:bg-panel">2025-01-15 14:32:00</td>
+                  <td class="py-4 px-4"><div class="flex items-center gap-2"><span class="w-6 h-6 rounded-md bg-[#5741D9]/15 text-[#5741D9] flex items-center justify-center text-xs font-bold shrink-0">K</span><span class="text-text">Kraken</span></div></td>
+                  <td class="py-4 px-4 text-muted font-mono text-xs">/0/private/Balance</td>
+                  <td class="py-4 px-4"><span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-violet-500/15 text-violet-400">POST</span></td>
+                  <td class="py-4 px-4"><span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-amber-500/15 text-amber-500">429 Rate Limit</span></td>
+                  <td class="py-4 px-4 text-red-500 font-medium">--</td>
+                  <td class="py-4 px-4"><div class="flex justify-end"><button class="ce-activity-view w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="View" data-log="4"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button></div></td>
+                </tr>
+                <tr class="ce-activity-row border-b border-border hover:bg-bg/60 transition-colors" data-exchange="oanda">
+                  <td class="py-4 px-4 text-text font-medium sm:sticky sm:left-0 sm:bg-panel">2025-01-15 14:31:45</td>
+                  <td class="py-4 px-4"><div class="flex items-center gap-2"><span class="w-6 h-6 rounded-md bg-[#009BAD]/15 text-[#009BAD] flex items-center justify-center text-xs font-bold shrink-0">O</span><span class="text-text">OANDA</span></div></td>
+                  <td class="py-4 px-4 text-muted font-mono text-xs">/v3/accounts/{id}/positions</td>
+                  <td class="py-4 px-4"><span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-sky-500/15 text-sky-500">GET</span></td>
+                  <td class="py-4 px-4"><span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-emerald-500/15 text-emerald-500">200 OK</span></td>
+                  <td class="py-4 px-4 text-emerald-500 font-medium">89ms</td>
+                  <td class="py-4 px-4"><div class="flex justify-end"><button class="ce-activity-view w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="View" data-log="5"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button></div></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="p-4 border-t border-border flex flex-col sm:flex-row items-center justify-between gap-4">
+            <p class="text-sm text-muted">Showing 5 of 2,847 API calls</p>
+            <div class="flex items-center gap-2">
+              <button class="w-10 h-10 flex items-center justify-center rounded-lg bg-bg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors"><i data-lucide="chevron-left" class="w-4 h-4 shrink-0"></i></button>
+              <button class="ce-page-btn active w-10 h-10 flex items-center justify-center rounded-lg bg-accent text-white text-sm font-semibold transition-colors">1</button>
+              <button class="ce-page-btn w-10 h-10 flex items-center justify-center rounded-lg bg-bg border border-border text-muted hover:text-accent hover:border-accent/40 text-sm font-semibold transition-colors">2</button>
+              <button class="ce-page-btn w-10 h-10 flex items-center justify-center rounded-lg bg-bg border border-border text-muted hover:text-accent hover:border-accent/40 text-sm font-semibold transition-colors">3</button>
+              <button class="w-10 h-10 flex items-center justify-center rounded-lg bg-bg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors"><i data-lucide="chevron-right" class="w-4 h-4 shrink-0"></i></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- ============ Drawers / Overlay / Toast (page-scoped) ============ -->
+    <div class="drawer-overlay" id="ceDrawerOverlay"></div>
+
+    <!-- Connect Exchange Drawer -->
+    <div class="drawer" id="ceAddDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <div class="min-w-0">
+            <h2 class="text-xl font-bold text-text">Connect Exchange</h2>
+            <p class="text-sm text-muted">Add a new exchange to your SignalAIX account</p>
+          </div>
+          <button class="ce-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0">
+            <i data-lucide="x" class="w-5 h-5 shrink-0"></i>
+          </button>
+        </div>
+
+        <div class="space-y-6">
+          <!-- Select Exchange -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-3">Select Exchange</label>
+            <div class="grid grid-cols-1 @xs:grid-cols-2 gap-3" id="ceExchangeSelect">
+              <button class="ce-exchange-option flex items-center gap-3 p-4 rounded-xl border border-border bg-bg text-left hover:border-accent/40 transition-colors" data-exchange="binance" data-passphrase="false">
+                <span class="w-10 h-10 rounded-xl bg-[#F0B90B]/15 text-[#F0B90B] flex items-center justify-center font-bold shrink-0">B</span>
+                <div class="min-w-0"><p class="font-semibold text-text truncate">Binance</p><p class="text-xs text-muted">Crypto</p></div>
+              </button>
+              <button class="ce-exchange-option flex items-center gap-3 p-4 rounded-xl border border-border bg-bg text-left hover:border-accent/40 transition-colors" data-exchange="coinbase" data-passphrase="true">
+                <span class="w-10 h-10 rounded-xl bg-[#0052FF]/15 text-[#0052FF] flex items-center justify-center font-bold shrink-0">C</span>
+                <div class="min-w-0"><p class="font-semibold text-text truncate">Coinbase</p><p class="text-xs text-muted">Crypto</p></div>
+              </button>
+              <button class="ce-exchange-option flex items-center gap-3 p-4 rounded-xl border border-border bg-bg text-left hover:border-accent/40 transition-colors" data-exchange="kraken" data-passphrase="false">
+                <span class="w-10 h-10 rounded-xl bg-[#5741D9]/15 text-[#5741D9] flex items-center justify-center font-bold shrink-0">K</span>
+                <div class="min-w-0"><p class="font-semibold text-text truncate">Kraken</p><p class="text-xs text-muted">Crypto</p></div>
+              </button>
+              <button class="ce-exchange-option flex items-center gap-3 p-4 rounded-xl border border-border bg-bg text-left hover:border-accent/40 transition-colors" data-exchange="bybit" data-passphrase="false">
+                <span class="w-10 h-10 rounded-xl bg-[#F7A600]/15 text-[#F7A600] flex items-center justify-center font-bold shrink-0">BY</span>
+                <div class="min-w-0"><p class="font-semibold text-text truncate">ByBit</p><p class="text-xs text-muted">Crypto</p></div>
+              </button>
+              <button class="ce-exchange-option flex items-center gap-3 p-4 rounded-xl border border-border bg-bg text-left hover:border-accent/40 transition-colors" data-exchange="kucoin" data-passphrase="true">
+                <span class="w-10 h-10 rounded-xl bg-[#26A17B]/15 text-[#26A17B] flex items-center justify-center font-bold shrink-0">KC</span>
+                <div class="min-w-0"><p class="font-semibold text-text truncate">KuCoin</p><p class="text-xs text-muted">Crypto</p></div>
+              </button>
+              <button class="ce-exchange-option flex items-center gap-3 p-4 rounded-xl border border-border bg-bg text-left hover:border-accent/40 transition-colors" data-exchange="okx" data-passphrase="true">
+                <span class="w-10 h-10 rounded-xl bg-slate-500/15 text-text flex items-center justify-center font-bold text-xs shrink-0">OKX</span>
+                <div class="min-w-0"><p class="font-semibold text-text truncate">OKX</p><p class="text-xs text-muted">Crypto</p></div>
+              </button>
+              <button class="ce-exchange-option flex items-center gap-3 p-4 rounded-xl border border-border bg-bg text-left hover:border-accent/40 transition-colors" data-exchange="oanda" data-passphrase="false">
+                <span class="w-10 h-10 rounded-xl bg-[#009BAD]/15 text-[#009BAD] flex items-center justify-center font-bold shrink-0">O</span>
+                <div class="min-w-0"><p class="font-semibold text-text truncate">OANDA</p><p class="text-xs text-muted">Forex</p></div>
+              </button>
+              <button class="ce-exchange-option flex items-center gap-3 p-4 rounded-xl border border-border bg-bg text-left hover:border-accent/40 transition-colors" data-exchange="ig" data-passphrase="false">
+                <span class="w-10 h-10 rounded-xl bg-[#DC1433]/15 text-[#DC1433] flex items-center justify-center font-bold shrink-0">IG</span>
+                <div class="min-w-0"><p class="font-semibold text-text truncate">IG Markets</p><p class="text-xs text-muted">Forex/CFD</p></div>
+              </button>
+            </div>
+          </div>
+
+          <!-- API Credentials -->
+          <div class="space-y-4">
+            <div>
+              <label class="block text-sm font-semibold text-text mb-2">Connection Name</label>
+              <input id="ceConnName" type="text" placeholder="e.g., My Binance Account" class="w-full p-3 bg-transparent border border-border rounded-xl text-text text-sm focus:outline-none focus:border-accent transition-colors" />
+            </div>
+            <div>
+              <label class="block text-sm font-semibold text-text mb-2">API Key</label>
+              <input id="ceApiKeyInput" type="text" placeholder="Enter your API key" class="w-full p-3 bg-transparent border border-border rounded-xl text-text font-mono text-sm focus:outline-none focus:border-accent transition-colors" />
+            </div>
+            <div>
+              <label class="block text-sm font-semibold text-text mb-2">API Secret</label>
+              <div class="flex items-center gap-1.5">
+                <input id="ceApiSecretInput" type="password" placeholder="Enter your API secret" class="flex-1 min-w-0 p-3 bg-transparent border border-border rounded-xl text-text font-mono text-sm focus:outline-none focus:border-accent transition-colors" />
+                <button id="ceSecretEye" class="w-10 h-10 shrink-0 flex items-center justify-center rounded-xl border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Show"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+              </div>
+            </div>
+            <div id="cePassphraseField" class="hidden">
+              <label class="block text-sm font-semibold text-text mb-2">Passphrase <span class="text-muted font-normal">(if required)</span></label>
+              <input id="cePassphraseInput" type="password" placeholder="Enter passphrase" class="w-full p-3 bg-transparent border border-border rounded-xl text-text font-mono text-sm focus:outline-none focus:border-accent transition-colors" />
+            </div>
+          </div>
+
+          <!-- Permissions -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-3">API Permissions</label>
+            <div class="space-y-3">
+              <label class="flex items-center justify-between gap-3 p-3 border border-border rounded-xl cursor-pointer">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="w-10 h-10 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="eye" class="w-5 h-5 text-emerald-500 shrink-0"></i></div>
+                  <div class="min-w-0"><p class="font-medium text-text">Read Access</p><p class="text-xs text-muted">View balances, positions, and trade history</p></div>
+                </div>
+                <div class="js-toggle-switch toggle-switch active shrink-0" role="switch" aria-checked="true" tabindex="0"></div>
+              </label>
+              <label class="flex items-center justify-between gap-3 p-3 border border-border rounded-xl cursor-pointer">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="w-10 h-10 rounded-xl bg-sky-500/15 flex items-center justify-center shrink-0"><i data-lucide="repeat" class="w-5 h-5 text-sky-500 shrink-0"></i></div>
+                  <div class="min-w-0"><p class="font-medium text-text">Trading Access</p><p class="text-xs text-muted">Execute trades and manage orders</p></div>
+                </div>
+                <div class="js-toggle-switch toggle-switch shrink-0" role="switch" aria-checked="false" tabindex="0"></div>
+              </label>
+              <label class="flex items-center justify-between gap-3 p-3 border border-border rounded-xl cursor-pointer">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="w-10 h-10 rounded-xl bg-red-500/15 flex items-center justify-center shrink-0"><i data-lucide="send" class="w-5 h-5 text-red-500 shrink-0"></i></div>
+                  <div class="min-w-0"><p class="font-medium text-text">Withdrawal Access</p><p class="text-xs text-muted">Transfer funds out of exchange</p></div>
+                </div>
+                <div class="js-toggle-switch toggle-switch shrink-0" role="switch" aria-checked="false" tabindex="0"></div>
+              </label>
+            </div>
+          </div>
+
+          <!-- Security Notice -->
+          <div class="rounded-xl bg-amber-500/10 border border-amber-500/20 p-4 flex items-start gap-3">
+            <i data-lucide="shield-alert" class="w-5 h-5 text-amber-500 shrink-0 mt-0.5"></i>
+            <div><p class="text-sm font-medium text-amber-500">Security Recommendation</p><p class="text-xs text-muted mt-1">We recommend enabling IP whitelist restrictions on your exchange API settings and disabling withdrawal permissions for enhanced security.</p></div>
+          </div>
+        </div>
+
+        <div class="flex flex-wrap gap-3 mt-8">
+          <button class="ce-close-drawer flex-1 justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors">Cancel</button>
+          <button id="ceTestBtn" class="flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="plug" class="w-4 h-4 shrink-0"></i>Test</button>
+          <button id="ceConnectBtn" class="flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"><i data-lucide="check" class="w-4 h-4 shrink-0"></i>Connect</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Manage / View Exchange Drawer -->
+    <div class="drawer" id="ceManageDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6 gap-3">
+          <div class="flex items-center gap-3 min-w-0">
+            <div id="ceManageLogo" class="w-12 h-12 rounded-xl bg-[#F0B90B]/15 flex items-center justify-center shrink-0"><span class="font-bold text-lg text-[#F0B90B]">B</span></div>
+            <div class="min-w-0">
+              <h2 id="ceManageName" class="text-xl font-bold text-text truncate">Binance</h2>
+              <p id="ceManageType" class="text-sm text-muted truncate">Spot &amp; Futures</p>
+            </div>
+          </div>
+          <button class="ce-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0">
+            <i data-lucide="x" class="w-5 h-5 shrink-0"></i>
+          </button>
+        </div>
+
+        <div class="space-y-6">
+          <!-- Connection status -->
+          <div id="ceManageStatusBox" class="rounded-xl bg-emerald-500/10 border border-emerald-500/20 p-4 flex flex-col xs:flex-row xs:items-center xs:justify-between gap-3">
+            <div class="flex items-center gap-3">
+              <span id="ceManageStatusDot" class="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0"></span>
+              <div>
+                <p id="ceManageStatusLabel" class="font-medium text-text">Connected</p>
+                <p class="text-xs text-muted">Last synced: <span id="ceManageSynced">2 minutes ago</span></p>
+              </div>
+            </div>
+            <button id="ceManageSync" class="shrink-0 inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="refresh-cw" class="w-4 h-4 shrink-0"></i>Sync Now</button>
+          </div>
+
+          <!-- Balance overview -->
+          <div>
+            <h3 class="font-semibold text-text mb-3">Balance Overview</h3>
+            <div class="rounded-xl bg-bg border border-border p-4">
+              <div class="flex items-center justify-between mb-4">
+                <span class="text-muted">Total Balance</span>
+                <span id="ceManageBalance" class="text-2xl font-bold text-text">$45,230.85</span>
+              </div>
+              <div class="space-y-3">
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center gap-2"><span class="w-6 h-6 rounded-full bg-amber-500/15 text-amber-500 flex items-center justify-center text-xs font-bold shrink-0">B</span><span class="text-text">Bitcoin</span></div>
+                  <div class="text-right"><p class="font-medium text-text">0.5234 BTC</p><p class="text-xs text-muted">$22,450.30</p></div>
+                </div>
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center gap-2"><span class="w-6 h-6 rounded-full bg-sky-500/15 text-sky-500 flex items-center justify-center text-xs font-bold shrink-0">E</span><span class="text-text">Ethereum</span></div>
+                  <div class="text-right"><p class="font-medium text-text">4.2500 ETH</p><p class="text-xs text-muted">$14,280.55</p></div>
+                </div>
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center gap-2"><span class="w-6 h-6 rounded-full bg-emerald-500/15 text-emerald-500 flex items-center justify-center text-xs font-bold shrink-0">$</span><span class="text-text">USDT</span></div>
+                  <div class="text-right"><p class="font-medium text-text">8,500.00 USDT</p><p class="text-xs text-muted">$8,500.00</p></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- API configuration -->
+          <div>
+            <h3 class="font-semibold text-text mb-3">API Configuration</h3>
+            <div class="space-y-4">
+              <div>
+                <label class="block text-sm font-semibold text-text mb-2">Connection Name</label>
+                <input id="ceManageConnName" type="text" value="My Binance Account" class="w-full p-3 bg-transparent border border-border rounded-xl text-text text-sm focus:outline-none focus:border-accent transition-colors" />
+              </div>
+              <div>
+                <label class="block text-sm font-semibold text-text mb-2">API Key</label>
+                <div class="flex items-center gap-1.5">
+                  <span id="ceManageKey" class="ce-key-value flex-1 min-w-0 truncate font-mono text-xs px-2.5 py-2.5 rounded-xl bg-bg border border-border text-text" data-mask="VmFy••••••••x8Kp" data-full="VmFyaW91c0FQSUtleUhlcmUx">VmFy••••••••x8Kp</span>
+                  <button id="ceManageKeyEye" class="w-9 h-9 shrink-0 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Show"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+                  <button id="ceManageKeyCopy" class="w-9 h-9 shrink-0 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Copy"><i data-lucide="copy" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+              <div>
+                <label class="block text-sm font-semibold text-text mb-2">API Secret</label>
+                <div class="flex items-center gap-1.5">
+                  <span class="flex-1 min-w-0 truncate font-mono text-xs px-2.5 py-2.5 rounded-xl bg-bg border border-border text-muted">••••••••••••••••</span>
+                  <button id="ceManageSecretEdit" class="w-9 h-9 shrink-0 flex items-center justify-center rounded-lg border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Update secret"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+                <div id="ceManageSecretEditBox" class="hidden mt-2 flex items-center gap-1.5">
+                  <input id="ceManageSecretInput" type="password" placeholder="Enter new API secret" class="flex-1 min-w-0 p-3 bg-transparent border border-border rounded-xl text-text font-mono text-sm focus:outline-none focus:border-accent transition-colors" />
+                  <button id="ceManageSecretInputEye" class="w-10 h-10 shrink-0 flex items-center justify-center rounded-xl border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Show"><i data-lucide="eye" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Permissions -->
+          <div>
+            <h3 class="font-semibold text-text mb-3">Permissions</h3>
+            <div class="space-y-3">
+              <label class="flex items-center justify-between gap-3 p-3 border border-border rounded-xl cursor-pointer">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="w-10 h-10 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0"><i data-lucide="eye" class="w-5 h-5 text-emerald-500 shrink-0"></i></div>
+                  <div class="min-w-0"><p class="font-medium text-text">Read Access</p><p class="text-xs text-muted">View balances and history</p></div>
+                </div>
+                <div class="js-toggle-switch toggle-switch active shrink-0" role="switch" aria-checked="true" tabindex="0"></div>
+              </label>
+              <label class="flex items-center justify-between gap-3 p-3 border border-border rounded-xl cursor-pointer">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="w-10 h-10 rounded-xl bg-sky-500/15 flex items-center justify-center shrink-0"><i data-lucide="repeat" class="w-5 h-5 text-sky-500 shrink-0"></i></div>
+                  <div class="min-w-0"><p class="font-medium text-text">Trading Access</p><p class="text-xs text-muted">Execute trades</p></div>
+                </div>
+                <div class="js-toggle-switch toggle-switch active shrink-0" role="switch" aria-checked="true" tabindex="0"></div>
+              </label>
+              <label class="flex items-center justify-between gap-3 p-3 border border-border rounded-xl cursor-pointer">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="w-10 h-10 rounded-xl bg-red-500/15 flex items-center justify-center shrink-0"><i data-lucide="send" class="w-5 h-5 text-red-500 shrink-0"></i></div>
+                  <div class="min-w-0"><p class="font-medium text-text">Withdrawal Access</p><p class="text-xs text-muted">Transfer funds</p></div>
+                </div>
+                <div class="js-toggle-switch toggle-switch shrink-0" role="switch" aria-checked="false" tabindex="0"></div>
+              </label>
+            </div>
+          </div>
+
+          <!-- Rate limits -->
+          <div>
+            <h3 class="font-semibold text-text mb-3">API Rate Limits</h3>
+            <div class="rounded-xl bg-bg border border-border p-4 space-y-4">
+              <div>
+                <div class="flex items-center justify-between mb-2"><span class="text-sm text-muted">Request Weight (1m)</span><span class="text-sm font-medium text-text">847 / 1200</span></div>
+                <div class="h-2.5 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-amber-500" style="width: 70%"></div></div>
+              </div>
+              <div>
+                <div class="flex items-center justify-between mb-2"><span class="text-sm text-muted">Order Count (24h)</span><span class="text-sm font-medium text-text">156 / 200,000</span></div>
+                <div class="h-2.5 rounded-full bg-border overflow-hidden"><div class="h-full rounded-full bg-emerald-500" style="width: 4%"></div></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Danger zone -->
+          <div class="rounded-xl border border-red-500/30 bg-red-500/5 p-4">
+            <h3 class="font-semibold text-red-500 mb-1">Danger Zone</h3>
+            <p class="text-sm text-muted mb-4">Permanently disconnect this exchange. This action cannot be undone.</p>
+            <button id="ceManageDisconnect" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-red-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"><i data-lucide="unplug" class="w-4 h-4 shrink-0"></i>Disconnect Exchange</button>
+          </div>
+        </div>
+
+        <div class="flex gap-3 mt-8">
+          <button class="ce-close-drawer flex-1 justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors">Cancel</button>
+          <button id="ceManageSave" class="flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"><i data-lucide="save" class="w-4 h-4 shrink-0"></i>Save Changes</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="ceToast">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0">
+        <i data-lucide="check" class="w-5 h-5 text-white shrink-0"></i>
+      </div>
+      <div class="min-w-0">
+        <p class="font-semibold text-text" id="ceToastTitle">Success</p>
+        <p class="text-sm text-muted" id="ceToastMessage">Action completed</p>
+      </div>
+      <button class="ce-toast-close ml-auto w-9 h-9 shrink-0 flex items-center justify-center rounded-lg text-muted hover:text-text transition-colors">
+        <i data-lucide="x" class="w-4 h-4 shrink-0"></i>
+      </button>
+    </div>
+
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
+  <script defer src="js/index.js"></script></body>
+</html>

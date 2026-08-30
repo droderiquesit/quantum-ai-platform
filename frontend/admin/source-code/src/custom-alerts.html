@@ -1,0 +1,820 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <script>
+      if (localStorage.getItem("theme") === "light") document.documentElement.classList.remove("dark");
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Custom Alerts - SignalAIX | AI Forex & Crypto Trading Signals</title>
+    <link rel="icon" type="image/png" href="assets/images/favicon.png" />
+    <link rel="apple-touch-icon" href="assets/images/favicon.png" />
+  </head>
+  <body id="custom-alerts">
+    <div id="loader"><div class="spinner"></div><div class="loader-text">Loading SignalAIX...</div></div>
+    <include-sidebar />
+    <main class="main-content" id="mainContent">
+      <include-top-header />
+      <div class="inner-content max-sm:px-3 max-lg:px-4 max-lg:py-6 lg:p-6">
+        <!-- Page Header -->
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-6">
+          <div>
+            <div class="flex items-center gap-3 mb-2">
+              <h1 class="text-2xl md:text-3xl font-bold text-text">Custom Alerts</h1>
+              <div class="flex items-center gap-2 px-3 py-1 bg-amber-500/15 text-amber-500 rounded-full text-sm font-semibold">
+                <span class="live-dot"></span>
+                8 Active
+              </div>
+            </div>
+            <p class="text-muted">Monitor price movements and get instant notifications</p>
+          </div>
+          <div class="flex flex-wrap items-center gap-3">
+            <button
+              id="caFilterBtn"
+              class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"
+            >
+              <i data-lucide="sliders-horizontal" class="w-4 h-4 shrink-0"></i>
+              <span>Filters</span>
+            </button>
+            <div class="relative">
+              <button
+                id="caExportBtn"
+                class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"
+              >
+                <i data-lucide="download" class="w-4 h-4 shrink-0"></i>
+                <span>Export</span>
+                <i data-lucide="chevron-down" class="w-4 h-4 shrink-0"></i>
+              </button>
+              <div
+                id="caExportMenu"
+                class="hidden absolute right-0 mt-2 w-48 bg-panel border border-border rounded-xl shadow-xl z-50 overflow-hidden"
+              >
+                <button class="ca-export-item flex items-center gap-2.5 w-full px-4 py-3 text-sm text-text hover:bg-accent/10 transition-colors" data-format="csv">
+                  <i data-lucide="file-text" class="w-4 h-4 shrink-0"></i>
+                  <span>Export as CSV</span>
+                </button>
+                <button class="ca-export-item flex items-center gap-2.5 w-full px-4 py-3 text-sm text-text hover:bg-accent/10 transition-colors" data-format="pdf">
+                  <i data-lucide="file" class="w-4 h-4 shrink-0"></i>
+                  <span>Export as PDF</span>
+                </button>
+              </div>
+            </div>
+            <button
+              id="caCreateBtn"
+              class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"
+            >
+              <i data-lucide="bell-plus" class="w-4 h-4 shrink-0"></i>
+              <span>Create Alert</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Stat Cards -->
+        <div class="grid grid-cols-1 xs:grid-cols-2 @4xl/content:grid-cols-4 gap-4 mb-6">
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="bell-ring" class="w-5 h-5 text-emerald-500 shrink-0"></i>
+              </div>
+              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i>+4</span>
+            </div>
+            <p class="text-2xl font-bold text-text">24</p>
+            <p class="text-xs text-muted mt-1">Active Alerts</p>
+          </div>
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-amber-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="zap" class="w-5 h-5 text-amber-500 shrink-0"></i>
+              </div>
+              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-500">3P / 5S</span>
+            </div>
+            <p class="text-2xl font-bold text-text">8</p>
+            <p class="text-xs text-muted mt-1">Triggered Today</p>
+          </div>
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-violet-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="target" class="w-5 h-5 text-violet-400 shrink-0"></i>
+              </div>
+              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500"><i data-lucide="trending-up" class="w-3 h-3 shrink-0"></i>+2.3%</span>
+            </div>
+            <p class="text-2xl font-bold text-text">87.5%</p>
+            <p class="text-xs text-muted mt-1">Hit Rate</p>
+          </div>
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-start justify-between mb-3">
+              <div class="w-11 h-11 rounded-xl bg-sky-500/15 flex items-center justify-center shrink-0">
+                <i data-lucide="share-2" class="w-5 h-5 text-sky-500 shrink-0"></i>
+              </div>
+              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-sky-500/15 text-sky-500"><i data-lucide="circle-check" class="w-3 h-3 shrink-0"></i>OK</span>
+            </div>
+            <p class="text-2xl font-bold text-text">4/5</p>
+            <p class="text-xs text-muted mt-1">Channels Active</p>
+          </div>
+        </div>
+
+        <!-- Tabs + Status filter -->
+        <div class="rounded-2xl bg-panel border border-border p-4 sm:p-5 mb-6">
+          <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-5">
+            <div class="flex gap-1 p-1 bg-bg border border-border rounded-2xl overflow-x-auto hide-scrollbar w-full">
+              <button class="ca-tab tab-button active inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="all">All Alerts</button>
+              <button class="ca-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="price">Price Alerts</button>
+              <button class="ca-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="signal">Signal Alerts</button>
+              <button class="ca-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="volume">Volume</button>
+              <button class="ca-tab tab-button inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-muted whitespace-nowrap transition-colors" data-tab="triggered">Triggered</button>
+            </div>
+          </div>
+          <div class="flex flex-wrap items-center gap-2" id="caChips">
+            <span class="text-sm text-muted mr-1">Status:</span>
+            <button class="ca-chip active inline-flex items-center gap-2 px-4 py-2 rounded-full border border-accent bg-accent/15 text-accent text-sm font-medium transition-colors" data-filter="all">
+              <i data-lucide="layers" class="w-3.5 h-3.5 shrink-0"></i>All
+            </button>
+            <button class="ca-chip inline-flex items-center gap-2 px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-filter="active">
+              <i data-lucide="circle-check" class="w-3.5 h-3.5 shrink-0"></i>Active
+            </button>
+            <button class="ca-chip inline-flex items-center gap-2 px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-filter="paused">
+              <i data-lucide="circle-pause" class="w-3.5 h-3.5 shrink-0"></i>Paused
+            </button>
+            <button class="ca-chip inline-flex items-center gap-2 px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-filter="triggered">
+              <i data-lucide="bell-ring" class="w-3.5 h-3.5 shrink-0"></i>Triggered
+            </button>
+          </div>
+        </div>
+
+        <!-- Search + Sort + Bulk -->
+        <div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 mb-5">
+          <div class="relative flex-1 sm:max-w-md">
+            <i data-lucide="search" class="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-muted"></i>
+            <input
+              type="text"
+              id="caSearch"
+              placeholder="Search by pair, type, or condition..."
+              class="w-full pl-11 pr-4 py-2.5 bg-panel border border-border rounded-xl text-text text-sm placeholder:text-muted focus:outline-none focus:border-accent transition-colors"
+            />
+          </div>
+          <div class="flex items-center gap-3">
+            <select
+              id="caSort"
+              class="text-sm bg-panel border border-border rounded-xl px-3 py-2.5 text-text focus:outline-none focus:border-accent transition-colors shrink-0"
+            >
+              <option value="recent">Sort by Recent</option>
+              <option value="pair">Sort by Pair</option>
+              <option value="status">Sort by Status</option>
+            </select>
+            <div class="relative">
+              <button
+                id="caBulkBtn"
+                class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap shrink-0"
+              >
+                <i data-lucide="list-checks" class="w-4 h-4 shrink-0"></i>
+                <span class="hidden sm:inline">Bulk</span>
+              </button>
+              <div
+                id="caBulkMenu"
+                class="hidden absolute right-0 mt-2 w-44 bg-panel border border-border rounded-xl shadow-xl z-50 overflow-hidden"
+              >
+                <button class="ca-bulk-item flex items-center gap-2.5 w-full px-4 py-3 text-sm text-text hover:bg-accent/10 transition-colors" data-action="activate">
+                  <i data-lucide="play" class="w-4 h-4 shrink-0"></i><span>Activate</span>
+                </button>
+                <button class="ca-bulk-item flex items-center gap-2.5 w-full px-4 py-3 text-sm text-text hover:bg-accent/10 transition-colors" data-action="pause">
+                  <i data-lucide="pause" class="w-4 h-4 shrink-0"></i><span>Pause</span>
+                </button>
+                <button class="ca-bulk-item flex items-center gap-2.5 w-full px-4 py-3 text-sm text-red-500 hover:bg-red-500/10 transition-colors" data-action="delete">
+                  <i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i><span>Delete</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- No results -->
+        <div id="caNoResults" class="hidden rounded-2xl bg-panel border border-border p-12 text-center mb-6">
+          <div class="w-14 h-14 rounded-2xl bg-border/40 flex items-center justify-center mx-auto mb-4">
+            <i data-lucide="bell-off" class="w-7 h-7 text-muted shrink-0"></i>
+          </div>
+          <p class="font-semibold text-text mb-1">No alerts found</p>
+          <p class="text-sm text-muted">Try adjusting your filters or search.</p>
+        </div>
+
+        <!-- Alerts Grid -->
+        <div class="grid grid-cols-1 @3xl/content:grid-cols-2 gap-5 mb-6" id="caAlertsGrid">
+          <!-- Alert: BTC/USDT -->
+          <div class="ca-alert rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors" data-id="1" data-target="$70,000" data-current="$67,432" data-triggered="0" data-channels="2" data-pair="BTC/USDT" data-type="price" data-status="active" data-condition="Price Above">
+            <div class="p-5">
+              <div class="flex items-start justify-between mb-4 gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="ca-check custom-checkbox shrink-0" role="checkbox" aria-checked="false" tabindex="0"></div>
+                  <div class="w-10 h-10 rounded-xl bg-amber-500/15 flex items-center justify-center shrink-0"><i data-lucide="bitcoin" class="w-5 h-5 text-amber-500 shrink-0"></i></div>
+                  <div class="min-w-0"><p class="font-semibold text-text truncate">BTC/USDT</p><p class="text-xs text-muted truncate">Price Above</p></div>
+                </div>
+                <span class="ca-status-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>Active</span>
+              </div>
+              <div class="grid grid-cols-2 gap-3 mb-4">
+                <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Target</p><p class="font-semibold text-text">$70,000</p></div>
+                <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Current</p><p class="font-semibold text-text">$67,432</p></div>
+              </div>
+              <div class="flex items-center justify-between pt-4 border-t border-border gap-3">
+                <div class="flex items-center gap-4 min-w-0">
+                  <div class="flex items-center gap-1"><i data-lucide="bell-ring" class="w-4 h-4 text-muted shrink-0"></i><span class="text-sm text-muted">0x</span></div>
+                  <div class="flex items-center gap-1.5"><i data-lucide="bell" class="w-4 h-4 text-muted shrink-0"></i><i data-lucide="mail" class="w-4 h-4 text-muted shrink-0"></i></div>
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                  <button class="ca-toggle-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Pause/Activate"><i data-lucide="pause" class="w-4 h-4 shrink-0"></i></button>
+                  <button class="ca-edit-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Edit"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i></button>
+                  <button class="ca-delete-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-red-500 hover:border-red-500/40 transition-colors" title="Delete"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Alert: ETH/USDT -->
+          <div class="ca-alert rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors" data-id="2" data-target="$3,400" data-current="$3,542" data-triggered="2" data-channels="2" data-pair="ETH/USDT" data-type="price" data-status="active" data-condition="Price Below">
+            <div class="p-5">
+              <div class="flex items-start justify-between mb-4 gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="ca-check custom-checkbox shrink-0" role="checkbox" aria-checked="false" tabindex="0"></div>
+                  <div class="w-10 h-10 rounded-xl bg-indigo-500/15 flex items-center justify-center shrink-0"><i data-lucide="bitcoin" class="w-5 h-5 text-indigo-500 shrink-0"></i></div>
+                  <div class="min-w-0"><p class="font-semibold text-text truncate">ETH/USDT</p><p class="text-xs text-muted truncate">Price Below</p></div>
+                </div>
+                <span class="ca-status-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>Active</span>
+              </div>
+              <div class="grid grid-cols-2 gap-3 mb-4">
+                <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Target</p><p class="font-semibold text-text">$3,400</p></div>
+                <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Current</p><p class="font-semibold text-text">$3,542</p></div>
+              </div>
+              <div class="flex items-center justify-between pt-4 border-t border-border gap-3">
+                <div class="flex items-center gap-4 min-w-0">
+                  <div class="flex items-center gap-1"><i data-lucide="bell-ring" class="w-4 h-4 text-muted shrink-0"></i><span class="text-sm text-muted">2x</span></div>
+                  <div class="flex items-center gap-1.5"><i data-lucide="bell" class="w-4 h-4 text-muted shrink-0"></i><i data-lucide="send" class="w-4 h-4 text-muted shrink-0"></i></div>
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                  <button class="ca-toggle-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Pause/Activate"><i data-lucide="pause" class="w-4 h-4 shrink-0"></i></button>
+                  <button class="ca-edit-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Edit"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i></button>
+                  <button class="ca-delete-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-red-500 hover:border-red-500/40 transition-colors" title="Delete"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Alert: SOL/USDT (triggered, signal) -->
+          <div class="ca-alert rounded-2xl bg-panel border border-amber-500/40 transition-colors" data-id="3" data-target="Any" data-current="$148.35" data-triggered="5" data-channels="3" data-pair="SOL/USDT" data-type="signal" data-status="triggered" data-condition="Buy Signal">
+            <div class="p-5">
+              <div class="flex items-start justify-between mb-4 gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="ca-check custom-checkbox shrink-0" role="checkbox" aria-checked="false" tabindex="0"></div>
+                  <div class="w-10 h-10 rounded-xl bg-violet-500/15 flex items-center justify-center shrink-0"><i data-lucide="sparkles" class="w-5 h-5 text-violet-400 shrink-0"></i></div>
+                  <div class="min-w-0"><p class="font-semibold text-text truncate">SOL/USDT</p><p class="text-xs text-muted truncate">Buy Signal</p></div>
+                </div>
+                <span class="ca-status-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-500/15 text-red-500 shrink-0"><span class="w-2 h-2 rounded-full bg-red-500"></span>Triggered</span>
+              </div>
+              <div class="grid grid-cols-2 gap-3 mb-4">
+                <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Target</p><p class="font-semibold text-text">Any</p></div>
+                <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Current</p><p class="font-semibold text-text">$148.35</p></div>
+              </div>
+              <div class="flex items-center justify-between pt-4 border-t border-border gap-3">
+                <div class="flex items-center gap-4 min-w-0">
+                  <div class="flex items-center gap-1"><i data-lucide="bell-ring" class="w-4 h-4 text-muted shrink-0"></i><span class="text-sm text-muted">5x</span></div>
+                  <div class="flex items-center gap-1.5"><i data-lucide="bell" class="w-4 h-4 text-muted shrink-0"></i><i data-lucide="mail" class="w-4 h-4 text-muted shrink-0"></i><i data-lucide="smartphone" class="w-4 h-4 text-muted shrink-0"></i></div>
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                  <button class="ca-toggle-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Pause/Activate"><i data-lucide="play" class="w-4 h-4 shrink-0"></i></button>
+                  <button class="ca-edit-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Edit"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i></button>
+                  <button class="ca-delete-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-red-500 hover:border-red-500/40 transition-colors" title="Delete"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Alert: BNB/USDT (volume) -->
+          <div class="ca-alert rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors" data-id="4" data-target="3B" data-current="2.1B" data-triggered="1" data-channels="1" data-pair="BNB/USDT" data-type="volume" data-status="active" data-condition="Volume Spike">
+            <div class="p-5">
+              <div class="flex items-start justify-between mb-4 gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="ca-check custom-checkbox shrink-0" role="checkbox" aria-checked="false" tabindex="0"></div>
+                  <div class="w-10 h-10 rounded-xl bg-amber-500/15 flex items-center justify-center shrink-0"><i data-lucide="chart-column" class="w-5 h-5 text-amber-500 shrink-0"></i></div>
+                  <div class="min-w-0"><p class="font-semibold text-text truncate">BNB/USDT</p><p class="text-xs text-muted truncate">Volume Spike</p></div>
+                </div>
+                <span class="ca-status-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>Active</span>
+              </div>
+              <div class="grid grid-cols-2 gap-3 mb-4">
+                <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Target</p><p class="font-semibold text-text">3B</p></div>
+                <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Current</p><p class="font-semibold text-text">2.1B</p></div>
+              </div>
+              <div class="flex items-center justify-between pt-4 border-t border-border gap-3">
+                <div class="flex items-center gap-4 min-w-0">
+                  <div class="flex items-center gap-1"><i data-lucide="bell-ring" class="w-4 h-4 text-muted shrink-0"></i><span class="text-sm text-muted">1x</span></div>
+                  <div class="flex items-center gap-1.5"><i data-lucide="bell" class="w-4 h-4 text-muted shrink-0"></i></div>
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                  <button class="ca-toggle-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Pause/Activate"><i data-lucide="pause" class="w-4 h-4 shrink-0"></i></button>
+                  <button class="ca-edit-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Edit"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i></button>
+                  <button class="ca-delete-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-red-500 hover:border-red-500/40 transition-colors" title="Delete"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Alert: XRP/USDT (price change, paused) -->
+          <div class="ca-alert rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors" data-id="5" data-target="5%" data-current="$0.45" data-triggered="3" data-channels="1" data-pair="XRP/USDT" data-type="price" data-status="paused" data-condition="% Change > 5%">
+            <div class="p-5">
+              <div class="flex items-start justify-between mb-4 gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="ca-check custom-checkbox shrink-0" role="checkbox" aria-checked="false" tabindex="0"></div>
+                  <div class="w-10 h-10 rounded-xl bg-sky-500/15 flex items-center justify-center shrink-0"><i data-lucide="percent" class="w-5 h-5 text-sky-500 shrink-0"></i></div>
+                  <div class="min-w-0"><p class="font-semibold text-text truncate">XRP/USDT</p><p class="text-xs text-muted truncate">% Change &gt; 5%</p></div>
+                </div>
+                <span class="ca-status-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-500 shrink-0"><span class="w-2 h-2 rounded-full bg-amber-500"></span>Paused</span>
+              </div>
+              <div class="grid grid-cols-2 gap-3 mb-4">
+                <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Target</p><p class="font-semibold text-text">5%</p></div>
+                <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Current</p><p class="font-semibold text-text">$0.45</p></div>
+              </div>
+              <div class="flex items-center justify-between pt-4 border-t border-border gap-3">
+                <div class="flex items-center gap-4 min-w-0">
+                  <div class="flex items-center gap-1"><i data-lucide="bell-ring" class="w-4 h-4 text-muted shrink-0"></i><span class="text-sm text-muted">3x</span></div>
+                  <div class="flex items-center gap-1.5"><i data-lucide="mail" class="w-4 h-4 text-muted shrink-0"></i></div>
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                  <button class="ca-toggle-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Pause/Activate"><i data-lucide="play" class="w-4 h-4 shrink-0"></i></button>
+                  <button class="ca-edit-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Edit"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i></button>
+                  <button class="ca-delete-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-red-500 hover:border-red-500/40 transition-colors" title="Delete"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Alert: ADA/USDT (technical) -->
+          <div class="ca-alert rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors" data-id="6" data-target="RSI 30" data-current="RSI 45" data-triggered="0" data-channels="2" data-pair="ADA/USDT" data-type="technical" data-status="active" data-condition="RSI Oversold">
+            <div class="p-5">
+              <div class="flex items-start justify-between mb-4 gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="ca-check custom-checkbox shrink-0" role="checkbox" aria-checked="false" tabindex="0"></div>
+                  <div class="w-10 h-10 rounded-xl bg-indigo-500/15 flex items-center justify-center shrink-0"><i data-lucide="activity" class="w-5 h-5 text-indigo-500 shrink-0"></i></div>
+                  <div class="min-w-0"><p class="font-semibold text-text truncate">ADA/USDT</p><p class="text-xs text-muted truncate">RSI Oversold</p></div>
+                </div>
+                <span class="ca-status-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>Active</span>
+              </div>
+              <div class="grid grid-cols-2 gap-3 mb-4">
+                <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Target</p><p class="font-semibold text-text">RSI 30</p></div>
+                <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Current</p><p class="font-semibold text-text">RSI 45</p></div>
+              </div>
+              <div class="flex items-center justify-between pt-4 border-t border-border gap-3">
+                <div class="flex items-center gap-4 min-w-0">
+                  <div class="flex items-center gap-1"><i data-lucide="bell-ring" class="w-4 h-4 text-muted shrink-0"></i><span class="text-sm text-muted">0x</span></div>
+                  <div class="flex items-center gap-1.5"><i data-lucide="bell" class="w-4 h-4 text-muted shrink-0"></i><i data-lucide="send" class="w-4 h-4 text-muted shrink-0"></i></div>
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                  <button class="ca-toggle-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Pause/Activate"><i data-lucide="pause" class="w-4 h-4 shrink-0"></i></button>
+                  <button class="ca-edit-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Edit"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i></button>
+                  <button class="ca-delete-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-red-500 hover:border-red-500/40 transition-colors" title="Delete"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Alert: AVAX/USDT (price above) -->
+          <div class="ca-alert rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors" data-id="7" data-target="$38" data-current="$35.42" data-triggered="1" data-channels="2" data-pair="AVAX/USDT" data-type="price" data-status="active" data-condition="Price Above">
+            <div class="p-5">
+              <div class="flex items-start justify-between mb-4 gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="ca-check custom-checkbox shrink-0" role="checkbox" aria-checked="false" tabindex="0"></div>
+                  <div class="w-10 h-10 rounded-xl bg-red-500/15 flex items-center justify-center shrink-0"><i data-lucide="bitcoin" class="w-5 h-5 text-red-500 shrink-0"></i></div>
+                  <div class="min-w-0"><p class="font-semibold text-text truncate">AVAX/USDT</p><p class="text-xs text-muted truncate">Price Above</p></div>
+                </div>
+                <span class="ca-status-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>Active</span>
+              </div>
+              <div class="grid grid-cols-2 gap-3 mb-4">
+                <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Target</p><p class="font-semibold text-text">$38</p></div>
+                <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Current</p><p class="font-semibold text-text">$35.42</p></div>
+              </div>
+              <div class="flex items-center justify-between pt-4 border-t border-border gap-3">
+                <div class="flex items-center gap-4 min-w-0">
+                  <div class="flex items-center gap-1"><i data-lucide="bell-ring" class="w-4 h-4 text-muted shrink-0"></i><span class="text-sm text-muted">1x</span></div>
+                  <div class="flex items-center gap-1.5"><i data-lucide="bell" class="w-4 h-4 text-muted shrink-0"></i><i data-lucide="mail" class="w-4 h-4 text-muted shrink-0"></i></div>
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                  <button class="ca-toggle-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Pause/Activate"><i data-lucide="pause" class="w-4 h-4 shrink-0"></i></button>
+                  <button class="ca-edit-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Edit"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i></button>
+                  <button class="ca-delete-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-red-500 hover:border-red-500/40 transition-colors" title="Delete"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Alert: DOGE/USDT (signal, triggered) -->
+          <div class="ca-alert rounded-2xl bg-panel border border-amber-500/40 transition-colors" data-id="8" data-target="Any" data-current="$0.1245" data-triggered="2" data-channels="1" data-pair="DOGE/USDT" data-type="signal" data-status="triggered" data-condition="Strong Buy">
+            <div class="p-5">
+              <div class="flex items-start justify-between mb-4 gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="ca-check custom-checkbox shrink-0" role="checkbox" aria-checked="false" tabindex="0"></div>
+                  <div class="w-10 h-10 rounded-xl bg-violet-500/15 flex items-center justify-center shrink-0"><i data-lucide="sparkles" class="w-5 h-5 text-violet-400 shrink-0"></i></div>
+                  <div class="min-w-0"><p class="font-semibold text-text truncate">DOGE/USDT</p><p class="text-xs text-muted truncate">Strong Buy</p></div>
+                </div>
+                <span class="ca-status-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-500/15 text-red-500 shrink-0"><span class="w-2 h-2 rounded-full bg-red-500"></span>Triggered</span>
+              </div>
+              <div class="grid grid-cols-2 gap-3 mb-4">
+                <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Target</p><p class="font-semibold text-text">Any</p></div>
+                <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Current</p><p class="font-semibold text-text">$0.1245</p></div>
+              </div>
+              <div class="flex items-center justify-between pt-4 border-t border-border gap-3">
+                <div class="flex items-center gap-4 min-w-0">
+                  <div class="flex items-center gap-1"><i data-lucide="bell-ring" class="w-4 h-4 text-muted shrink-0"></i><span class="text-sm text-muted">2x</span></div>
+                  <div class="flex items-center gap-1.5"><i data-lucide="bell" class="w-4 h-4 text-muted shrink-0"></i></div>
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                  <button class="ca-toggle-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Pause/Activate"><i data-lucide="play" class="w-4 h-4 shrink-0"></i></button>
+                  <button class="ca-edit-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Edit"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i></button>
+                  <button class="ca-delete-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-red-500 hover:border-red-500/40 transition-colors" title="Delete"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Alert: DOT/USDT (price below) -->
+          <div class="ca-alert rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors" data-id="9" data-target="$7.00" data-current="$7.23" data-triggered="0" data-channels="2" data-pair="DOT/USDT" data-type="price" data-status="active" data-condition="Price Below">
+            <div class="p-5">
+              <div class="flex items-start justify-between mb-4 gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="ca-check custom-checkbox shrink-0" role="checkbox" aria-checked="false" tabindex="0"></div>
+                  <div class="w-10 h-10 rounded-xl bg-indigo-500/15 flex items-center justify-center shrink-0"><i data-lucide="bitcoin" class="w-5 h-5 text-indigo-500 shrink-0"></i></div>
+                  <div class="min-w-0"><p class="font-semibold text-text truncate">DOT/USDT</p><p class="text-xs text-muted truncate">Price Below</p></div>
+                </div>
+                <span class="ca-status-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>Active</span>
+              </div>
+              <div class="grid grid-cols-2 gap-3 mb-4">
+                <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Target</p><p class="font-semibold text-text">$7.00</p></div>
+                <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Current</p><p class="font-semibold text-text">$7.23</p></div>
+              </div>
+              <div class="flex items-center justify-between pt-4 border-t border-border gap-3">
+                <div class="flex items-center gap-4 min-w-0">
+                  <div class="flex items-center gap-1"><i data-lucide="bell-ring" class="w-4 h-4 text-muted shrink-0"></i><span class="text-sm text-muted">0x</span></div>
+                  <div class="flex items-center gap-1.5"><i data-lucide="bell" class="w-4 h-4 text-muted shrink-0"></i><i data-lucide="mail" class="w-4 h-4 text-muted shrink-0"></i></div>
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                  <button class="ca-toggle-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Pause/Activate"><i data-lucide="pause" class="w-4 h-4 shrink-0"></i></button>
+                  <button class="ca-edit-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Edit"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i></button>
+                  <button class="ca-delete-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-red-500 hover:border-red-500/40 transition-colors" title="Delete"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Alert: LINK/USDT (technical) -->
+          <div class="ca-alert rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors" data-id="10" data-target="Any" data-current="$14.52" data-triggered="2" data-channels="2" data-pair="LINK/USDT" data-type="technical" data-status="active" data-condition="MACD Cross">
+            <div class="p-5">
+              <div class="flex items-start justify-between mb-4 gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="ca-check custom-checkbox shrink-0" role="checkbox" aria-checked="false" tabindex="0"></div>
+                  <div class="w-10 h-10 rounded-xl bg-sky-500/15 flex items-center justify-center shrink-0"><i data-lucide="activity" class="w-5 h-5 text-sky-500 shrink-0"></i></div>
+                  <div class="min-w-0"><p class="font-semibold text-text truncate">LINK/USDT</p><p class="text-xs text-muted truncate">MACD Cross</p></div>
+                </div>
+                <span class="ca-status-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500 shrink-0"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>Active</span>
+              </div>
+              <div class="grid grid-cols-2 gap-3 mb-4">
+                <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Target</p><p class="font-semibold text-text">Any</p></div>
+                <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Current</p><p class="font-semibold text-text">$14.52</p></div>
+              </div>
+              <div class="flex items-center justify-between pt-4 border-t border-border gap-3">
+                <div class="flex items-center gap-4 min-w-0">
+                  <div class="flex items-center gap-1"><i data-lucide="bell-ring" class="w-4 h-4 text-muted shrink-0"></i><span class="text-sm text-muted">2x</span></div>
+                  <div class="flex items-center gap-1.5"><i data-lucide="bell" class="w-4 h-4 text-muted shrink-0"></i><i data-lucide="smartphone" class="w-4 h-4 text-muted shrink-0"></i></div>
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                  <button class="ca-toggle-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Pause/Activate"><i data-lucide="pause" class="w-4 h-4 shrink-0"></i></button>
+                  <button class="ca-edit-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Edit"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i></button>
+                  <button class="ca-delete-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-red-500 hover:border-red-500/40 transition-colors" title="Delete"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Alert: MATIC/USDT (volume, paused) -->
+          <div class="ca-alert rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors" data-id="11" data-target="1B" data-current="678M" data-triggered="4" data-channels="1" data-pair="MATIC/USDT" data-type="volume" data-status="paused" data-condition="Volume > 1B">
+            <div class="p-5">
+              <div class="flex items-start justify-between mb-4 gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="ca-check custom-checkbox shrink-0" role="checkbox" aria-checked="false" tabindex="0"></div>
+                  <div class="w-10 h-10 rounded-xl bg-violet-500/15 flex items-center justify-center shrink-0"><i data-lucide="chart-column" class="w-5 h-5 text-violet-400 shrink-0"></i></div>
+                  <div class="min-w-0"><p class="font-semibold text-text truncate">MATIC/USDT</p><p class="text-xs text-muted truncate">Volume &gt; 1B</p></div>
+                </div>
+                <span class="ca-status-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-500 shrink-0"><span class="w-2 h-2 rounded-full bg-amber-500"></span>Paused</span>
+              </div>
+              <div class="grid grid-cols-2 gap-3 mb-4">
+                <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Target</p><p class="font-semibold text-text">1B</p></div>
+                <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Current</p><p class="font-semibold text-text">678M</p></div>
+              </div>
+              <div class="flex items-center justify-between pt-4 border-t border-border gap-3">
+                <div class="flex items-center gap-4 min-w-0">
+                  <div class="flex items-center gap-1"><i data-lucide="bell-ring" class="w-4 h-4 text-muted shrink-0"></i><span class="text-sm text-muted">4x</span></div>
+                  <div class="flex items-center gap-1.5"><i data-lucide="mail" class="w-4 h-4 text-muted shrink-0"></i></div>
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                  <button class="ca-toggle-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Pause/Activate"><i data-lucide="play" class="w-4 h-4 shrink-0"></i></button>
+                  <button class="ca-edit-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Edit"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i></button>
+                  <button class="ca-delete-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-red-500 hover:border-red-500/40 transition-colors" title="Delete"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Alert: INJ/USDT (price change, expired) -->
+          <div class="ca-alert rounded-2xl bg-panel border border-border hover:border-accent/40 transition-colors" data-id="12" data-target="10%" data-current="$7.89" data-triggered="1" data-channels="1" data-pair="INJ/USDT" data-type="price" data-status="expired" data-condition="% Change > 10%">
+            <div class="p-5">
+              <div class="flex items-start justify-between mb-4 gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="ca-check custom-checkbox shrink-0" role="checkbox" aria-checked="false" tabindex="0"></div>
+                  <div class="w-10 h-10 rounded-xl bg-teal-500/15 flex items-center justify-center shrink-0"><i data-lucide="percent" class="w-5 h-5 text-teal-500 shrink-0"></i></div>
+                  <div class="min-w-0"><p class="font-semibold text-text truncate">INJ/USDT</p><p class="text-xs text-muted truncate">% Change &gt; 10%</p></div>
+                </div>
+                <span class="ca-status-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-slate-500/15 text-muted shrink-0"><span class="w-2 h-2 rounded-full bg-slate-500"></span>Expired</span>
+              </div>
+              <div class="grid grid-cols-2 gap-3 mb-4">
+                <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Target</p><p class="font-semibold text-text">10%</p></div>
+                <div class="p-3 bg-bg rounded-xl"><p class="text-xs text-muted mb-1">Current</p><p class="font-semibold text-text">$7.89</p></div>
+              </div>
+              <div class="flex items-center justify-between pt-4 border-t border-border gap-3">
+                <div class="flex items-center gap-4 min-w-0">
+                  <div class="flex items-center gap-1"><i data-lucide="bell-ring" class="w-4 h-4 text-muted shrink-0"></i><span class="text-sm text-muted">1x</span></div>
+                  <div class="flex items-center gap-1.5"><i data-lucide="bell" class="w-4 h-4 text-muted shrink-0"></i></div>
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                  <button class="ca-toggle-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Pause/Activate"><i data-lucide="play" class="w-4 h-4 shrink-0"></i></button>
+                  <button class="ca-edit-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Edit"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i></button>
+                  <button class="ca-delete-btn w-8 h-8 flex items-center justify-center rounded-lg bg-panel border border-border text-red-500 hover:border-red-500/40 transition-colors" title="Delete"><i data-lucide="trash-2" class="w-4 h-4 shrink-0"></i></button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Pagination -->
+        <div class="flex flex-col sm:flex-row items-center justify-between gap-4 mb-8">
+          <p class="text-sm text-muted">Showing <span class="font-semibold text-text">1-12</span> of <span class="font-semibold text-text">24</span> alerts</p>
+          <div class="flex items-center gap-2">
+            <button class="w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted disabled:opacity-40" disabled><i data-lucide="chevron-left" class="w-4 h-4 shrink-0"></i></button>
+            <button class="w-9 h-9 rounded-lg bg-gradient-to-r from-accent to-teal-500 text-white font-semibold text-sm">1</button>
+            <button class="w-9 h-9 rounded-lg border border-border text-muted hover:border-accent/40 font-semibold text-sm transition-colors">2</button>
+            <button class="w-9 h-9 flex items-center justify-center rounded-lg bg-panel border border-border text-muted hover:border-accent/40 transition-colors"><i data-lucide="chevron-right" class="w-4 h-4 shrink-0"></i></button>
+          </div>
+        </div>
+
+        <!-- Activity chart + Recent Triggers -->
+        <div class="grid grid-cols-1 @3xl/content:grid-cols-3 gap-6">
+          <div class="@3xl/content:col-span-2 self-stretch rounded-2xl bg-panel border border-border p-5 sm:p-6 flex flex-col">
+            <div class="flex flex-col xs:flex-row xs:items-center justify-between gap-2 mb-6">
+              <h3 class="font-semibold text-text">Alert Activity (Last 7 Days)</h3>
+              <div class="flex items-center gap-4 text-xs shrink-0">
+                <span class="flex items-center gap-2"><span class="w-3 h-3 rounded-full bg-emerald-500"></span>Triggered</span>
+                <span class="flex items-center gap-2"><span class="w-3 h-3 rounded-full bg-sky-500"></span>Created</span>
+              </div>
+            </div>
+            <div class="flex-1 min-h-64"><canvas id="caActivityChart"></canvas></div>
+          </div>
+          <div class="rounded-2xl bg-panel border border-border p-5 sm:p-6">
+            <div class="flex items-center justify-between mb-4">
+              <h3 class="font-semibold text-text">Recent Triggers</h3>
+              <button class="ca-view-all text-sm text-accent hover:opacity-80 font-medium">View All</button>
+            </div>
+            <div class="space-y-4">
+              <div class="flex items-center justify-between gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                  <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0"></span>
+                  <div class="min-w-0"><p class="font-medium text-text text-sm truncate">SOL/USDT</p><p class="text-xs text-muted truncate">Buy Signal</p></div>
+                </div>
+                <span class="text-xs text-muted shrink-0">5 min ago</span>
+              </div>
+              <div class="flex items-center justify-between gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                  <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0"></span>
+                  <div class="min-w-0"><p class="font-medium text-text text-sm truncate">DOGE/USDT</p><p class="text-xs text-muted truncate">Strong Buy</p></div>
+                </div>
+                <span class="text-xs text-muted shrink-0">23 min ago</span>
+              </div>
+              <div class="flex items-center justify-between gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                  <span class="w-2.5 h-2.5 rounded-full bg-amber-500 shrink-0"></span>
+                  <div class="min-w-0"><p class="font-medium text-text text-sm truncate">ETH/USDT</p><p class="text-xs text-muted truncate">Price Alert</p></div>
+                </div>
+                <span class="text-xs text-muted shrink-0">1 hour ago</span>
+              </div>
+              <div class="flex items-center justify-between gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                  <span class="w-2.5 h-2.5 rounded-full bg-sky-500 shrink-0"></span>
+                  <div class="min-w-0"><p class="font-medium text-text text-sm truncate">BNB/USDT</p><p class="text-xs text-muted truncate">Volume Spike</p></div>
+                </div>
+                <span class="text-xs text-muted shrink-0">2 hours ago</span>
+              </div>
+              <div class="flex items-center justify-between gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                  <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0"></span>
+                  <div class="min-w-0"><p class="font-medium text-text text-sm truncate">LINK/USDT</p><p class="text-xs text-muted truncate">MACD Cross</p></div>
+                </div>
+                <span class="text-xs text-muted shrink-0">3 hours ago</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Drawer overlay -->
+    <div class="drawer-overlay" id="caDrawerOverlay"></div>
+
+    <!-- Create / Edit Alert Drawer (edit reuses this form) -->
+    <div class="drawer" id="caFormDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <div class="min-w-0">
+            <h2 class="text-xl font-bold text-text" id="caFormTitle">Create New Alert</h2>
+            <p class="text-sm text-muted">Set a condition and notification channels</p>
+          </div>
+          <button class="ca-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0">
+            <i data-lucide="x" class="w-5 h-5 shrink-0"></i>
+          </button>
+        </div>
+
+        <div class="space-y-5">
+          <!-- Trading Pair -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Trading Pair</label>
+            <div class="grid grid-cols-2 @xs:grid-cols-3 gap-2" id="caPairGrid">
+              <button class="ca-pair-btn active p-3 rounded-xl border border-accent bg-accent/15 text-accent text-sm font-medium transition-colors" data-pair="BTC/USDT">BTC/USDT</button>
+              <button class="ca-pair-btn p-3 rounded-xl border border-border text-muted text-sm font-medium hover:text-text hover:border-accent/40 transition-colors" data-pair="ETH/USDT">ETH/USDT</button>
+              <button class="ca-pair-btn p-3 rounded-xl border border-border text-muted text-sm font-medium hover:text-text hover:border-accent/40 transition-colors" data-pair="SOL/USDT">SOL/USDT</button>
+              <button class="ca-pair-btn p-3 rounded-xl border border-border text-muted text-sm font-medium hover:text-text hover:border-accent/40 transition-colors" data-pair="BNB/USDT">BNB/USDT</button>
+              <button class="ca-pair-btn p-3 rounded-xl border border-border text-muted text-sm font-medium hover:text-text hover:border-accent/40 transition-colors" data-pair="XRP/USDT">XRP/USDT</button>
+              <button class="ca-pair-btn p-3 rounded-xl border border-border text-muted text-sm font-medium hover:text-text hover:border-accent/40 transition-colors" data-pair="ADA/USDT">ADA/USDT</button>
+            </div>
+          </div>
+
+          <!-- Alert Type -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Alert Type</label>
+            <select id="caFormType" class="w-full p-3 bg-transparent border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors">
+              <option>Price Above</option>
+              <option>Price Below</option>
+              <option>% Change</option>
+              <option>Volume Spike</option>
+              <option>AI Signal</option>
+              <option>Technical</option>
+            </select>
+          </div>
+
+          <!-- Target -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Target Value</label>
+            <input type="number" placeholder="Enter value" class="w-full p-3 bg-transparent border border-border rounded-xl text-text text-lg font-bold focus:outline-none focus:border-accent transition-colors" />
+          </div>
+
+          <!-- Frequency -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-2">Frequency</label>
+            <div class="grid grid-cols-1 @xs:grid-cols-3 gap-2" id="caFreqGrid">
+              <button class="ca-freq-btn active p-3 rounded-xl border border-accent bg-accent/15 text-accent text-sm font-medium transition-colors" data-freq="once">Once</button>
+              <button class="ca-freq-btn p-3 rounded-xl border border-border text-muted text-sm font-medium hover:text-text hover:border-accent/40 transition-colors" data-freq="every">Every Time</button>
+              <button class="ca-freq-btn p-3 rounded-xl border border-border text-muted text-sm font-medium hover:text-text hover:border-accent/40 transition-colors" data-freq="daily">Daily</button>
+            </div>
+          </div>
+
+          <!-- Notification channels -->
+          <div>
+            <label class="block text-sm font-semibold text-text mb-3">Notifications</label>
+            <div class="space-y-3">
+              <label class="flex items-center justify-between p-3 border border-border rounded-xl cursor-pointer">
+                <div class="flex items-center gap-3"><i data-lucide="bell" class="w-5 h-5 text-muted shrink-0"></i><span class="text-text">Push</span></div>
+                <div class="js-toggle-switch toggle-switch active" role="switch" aria-checked="true" tabindex="0"></div>
+              </label>
+              <label class="flex items-center justify-between p-3 border border-border rounded-xl cursor-pointer">
+                <div class="flex items-center gap-3"><i data-lucide="mail" class="w-5 h-5 text-muted shrink-0"></i><span class="text-text">Email</span></div>
+                <div class="js-toggle-switch toggle-switch active" role="switch" aria-checked="true" tabindex="0"></div>
+              </label>
+              <label class="flex items-center justify-between p-3 border border-border rounded-xl cursor-pointer">
+                <div class="flex items-center gap-3"><i data-lucide="smartphone" class="w-5 h-5 text-muted shrink-0"></i><span class="text-text">SMS</span></div>
+                <div class="js-toggle-switch toggle-switch" role="switch" aria-checked="false" tabindex="0"></div>
+              </label>
+              <label class="flex items-center justify-between p-3 border border-border rounded-xl cursor-pointer">
+                <div class="flex items-center gap-3"><i data-lucide="send" class="w-5 h-5 text-muted shrink-0"></i><span class="text-text">Telegram</span></div>
+                <div class="js-toggle-switch toggle-switch" role="switch" aria-checked="false" tabindex="0"></div>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex gap-3 mt-8">
+          <button class="ca-close-drawer flex-1 justify-center inline-flex items-center px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors">Cancel</button>
+          <button id="caFormSubmit" class="flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap">
+            <i data-lucide="bell-plus" class="w-4 h-4 shrink-0"></i><span id="caFormSubmitLabel">Create Alert</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- View Alert Drawer -->
+    <div class="drawer" id="caViewDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6 gap-3">
+          <div class="flex items-center gap-3 min-w-0">
+            <div class="w-12 h-12 rounded-xl bg-accent/15 flex items-center justify-center shrink-0"><i data-lucide="bell-ring" class="w-6 h-6 text-accent shrink-0"></i></div>
+            <div class="min-w-0">
+              <h2 class="text-xl font-bold text-text truncate" id="caViewPair">BTC/USDT</h2>
+              <p class="text-sm text-muted truncate" id="caViewCondition">Price Above</p>
+            </div>
+          </div>
+          <button class="ca-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0">
+            <i data-lucide="x" class="w-5 h-5 shrink-0"></i>
+          </button>
+        </div>
+
+        <div class="space-y-5">
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <div class="flex items-center justify-between mb-4">
+              <span class="text-sm text-muted">Status</span>
+              <span id="caViewStatus" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 text-emerald-500"><span id="caViewStatusDot" class="w-2 h-2 rounded-full bg-emerald-500"></span><span id="caViewStatusLabel">Active</span></span>
+            </div>
+            <div class="grid grid-cols-1 @xs:grid-cols-2 gap-4">
+              <div class="p-4 bg-bg rounded-xl text-center"><p class="text-xs text-muted mb-1">Target</p><p class="text-xl font-bold text-text" id="caViewTarget">$70,000</p></div>
+              <div class="p-4 bg-bg rounded-xl text-center"><p class="text-xs text-muted mb-1">Current</p><p class="text-xl font-bold text-text" id="caViewCurrent">$67,432</p></div>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-3 gap-3">
+            <div class="rounded-2xl bg-panel border border-border p-4 text-center"><p class="text-2xl font-bold text-text" id="caViewTriggered">0</p><p class="text-xs text-muted">Triggered</p></div>
+            <div class="rounded-2xl bg-panel border border-border p-4 text-center"><p class="text-2xl font-bold text-text" id="caViewChannels">2</p><p class="text-xs text-muted">Channels</p></div>
+            <div class="rounded-2xl bg-panel border border-border p-4 text-center"><p class="text-2xl font-bold text-text">7d</p><p class="text-xs text-muted">Age</p></div>
+          </div>
+
+          <div class="rounded-2xl bg-panel border border-border p-5">
+            <h4 class="font-semibold text-text mb-3">Notification Channels</h4>
+            <div class="flex flex-wrap gap-2" id="caViewChannelTags">
+              <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-sky-500/15 text-sky-500">Push</span>
+              <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-sky-500/15 text-sky-500">Email</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex gap-3 mt-8">
+          <button id="caViewEditBtn" class="flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="pencil" class="w-4 h-4 shrink-0"></i>Edit</button>
+          <button id="caViewToggleBtn" class="flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"><i data-lucide="pause" class="w-4 h-4 shrink-0"></i><span id="caViewToggleLabel">Pause</span></button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Filter Drawer -->
+    <div class="drawer" id="caFilterDrawer">
+      <div class="@container p-4 sm:p-6">
+        <div class="flex items-center justify-between mb-6">
+          <h2 class="text-xl font-bold text-text">Filter Alerts</h2>
+          <button class="ca-close-drawer w-10 h-10 flex items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent transition-colors shrink-0">
+            <i data-lucide="x" class="w-5 h-5 shrink-0"></i>
+          </button>
+        </div>
+
+        <div class="space-y-6">
+          <div>
+            <label class="block text-sm font-semibold text-text mb-3">Type</label>
+            <div class="flex flex-wrap gap-2 ca-filter-group" data-group="type">
+              <button class="ca-filter-opt active px-4 py-2 rounded-full border border-accent bg-accent/15 text-accent text-sm font-medium transition-colors" data-value="all">All</button>
+              <button class="ca-filter-opt px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-value="price">Price</button>
+              <button class="ca-filter-opt px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-value="signal">Signal</button>
+              <button class="ca-filter-opt px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-value="volume">Volume</button>
+              <button class="ca-filter-opt px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-value="technical">Technical</button>
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-sm font-semibold text-text mb-3">Status</label>
+            <div class="flex flex-wrap gap-2 ca-filter-group" data-group="status">
+              <button class="ca-filter-opt active px-4 py-2 rounded-full border border-accent bg-accent/15 text-accent text-sm font-medium transition-colors" data-value="all">All</button>
+              <button class="ca-filter-opt px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-value="active">Active</button>
+              <button class="ca-filter-opt px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-value="paused">Paused</button>
+              <button class="ca-filter-opt px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-value="triggered">Triggered</button>
+              <button class="ca-filter-opt px-4 py-2 rounded-full border border-border bg-panel text-muted text-sm font-medium hover:text-text transition-colors" data-value="expired">Expired</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex gap-3 mt-8">
+          <button class="ca-reset-filters flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 transition-colors whitespace-nowrap"><i data-lucide="rotate-ccw" class="w-4 h-4 shrink-0"></i>Reset</button>
+          <button class="ca-apply-filters flex-1 justify-center inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"><i data-lucide="check" class="w-4 h-4 shrink-0"></i>Apply</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="caToast">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0">
+        <i data-lucide="check" class="w-5 h-5 text-white shrink-0"></i>
+      </div>
+      <div class="min-w-0">
+        <p class="font-semibold text-text" id="caToastTitle">Success</p>
+        <p class="text-sm text-muted" id="caToastMessage">Action completed</p>
+      </div>
+      <button class="ca-toast-close ml-auto w-9 h-9 shrink-0 flex items-center justify-center rounded-lg text-muted hover:text-text transition-colors">
+        <i data-lucide="x" class="w-4 h-4 shrink-0"></i>
+      </button>
+    </div>
+
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
+  </body>
+</html>

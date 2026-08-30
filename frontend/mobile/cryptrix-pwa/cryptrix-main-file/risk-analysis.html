@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>Cryptrix — AI Crypto Investing & Trading App</title>
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="apple-touch-icon" href="/assets/images/logo.png" />
+    <meta name="theme-color" content="#00D4AA" />
+     <link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="shortcut icon" href="./assets/images/favicon.ico" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  
+    <!-- Theme Script (Placed early to prevent FOUC) -->
+    <script>
+      (function() {
+        const saved = localStorage.getItem('theme') || 'dark';
+        if (saved === 'dark') document.documentElement.classList.add('dark');
+        else document.documentElement.classList.remove('dark');
+      })();
+    </script>
+  <link href="assets/css/index.css" rel="stylesheet"></head>
+  <body class="font-sans overflow-x-hidden">
+    <div class="min-h-screen flex justify-center">
+      <div
+        class="relative w-full max-w-[430px] min-h-screen overflow-x-hidden shadow-[0_0_80px_rgba(0,212,170,0.08)]"
+        id="app"
+      >
+        <div
+          class="flex items-center justify-between px-5 py-3.5 sticky top-0 bg-bg-dark/95 backdrop-blur-sm border-b border-white/5 z-10"
+        >
+          <a
+            href="ai-advisor.html"
+            class="w-10 h-10 rounded-xl bg-surface-2 border border-white/[0.08] flex items-center justify-center flex-shrink-0"
+          >
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M19 12H5M12 19l-7-7 7-7" />
+            </svg>
+          </a>
+          <h1 class="text-[17px] font-bold">Risk Analysis</h1>
+          <div class="w-10"></div>
+        </div>
+        <div class="px-5 pt-5 pb-24 animate-fade-up">
+          <div
+            class="text-center p-7 bg-surface border border-white/[0.08] rounded-[20px] mb-6"
+          >
+            <div class="relative w-[200px] h-[110px] mx-auto mb-4">
+              <canvas
+                id="risk-gauge-big"
+                style="width: 200px; height: 110px"
+              ></canvas>
+              <div
+                class="absolute bottom-0 left-1/2 -translate-x-1/2 text-center"
+              >
+                <div class="text-[28px] font-black text-warning">6.5</div>
+                <div class="text-[13px] text-warning font-semibold">
+                  Medium Risk
+                </div>
+              </div>
+            </div>
+            <div class="flex justify-between w-[200px] mx-auto">
+              <span class="text-[10px] text-success">Low</span>
+              <span class="text-[10px] text-warning">Medium</span>
+              <span class="text-[10px] text-error">High</span>
+            </div>
+          </div>
+          <div
+            class="bg-surface border border-white/[0.08] rounded-card p-4 mb-4"
+          >
+            <div class="text-[15px] font-bold mb-4">Risk Factors</div>
+            <div class="mb-4">
+              <div class="flex justify-between mb-1.5">
+                <div>
+                  <div class="text-[13px] font-semibold">
+                    Concentration Risk
+                  </div>
+                  <div class="text-[11px] text-white/40">
+                    BTC+ETH = 67% of portfolio
+                  </div>
+                </div>
+                <div class="text-sm font-extrabold text-error">8/10</div>
+              </div>
+              <div class="h-1.5 bg-surface/10 rounded-full overflow-hidden">
+                <div
+                  class="h-full rounded-full bg-error"
+                  style="width: 80%"
+                ></div>
+              </div>
+            </div>
+            <div class="mb-4">
+              <div class="flex justify-between mb-1.5">
+                <div>
+                  <div class="text-[13px] font-semibold">Volatility</div>
+                  <div class="text-[11px] text-white/40">
+                    24h price swing exposure
+                  </div>
+                </div>
+                <div class="text-sm font-extrabold text-warning">6/10</div>
+              </div>
+              <div class="h-1.5 bg-surface/10 rounded-full overflow-hidden">
+                <div
+                  class="h-full rounded-full bg-warning"
+                  style="width: 60%"
+                ></div>
+              </div>
+            </div>
+            <div class="mb-4">
+              <div class="flex justify-between mb-1.5">
+                <div>
+                  <div class="text-[13px] font-semibold">Liquidity Risk</div>
+                  <div class="text-[11px] text-white/40">
+                    All assets highly liquid
+                  </div>
+                </div>
+                <div class="text-sm font-extrabold text-success">3/10</div>
+              </div>
+              <div class="h-1.5 bg-surface/10 rounded-full overflow-hidden">
+                <div
+                  class="h-full rounded-full bg-success"
+                  style="width: 30%"
+                ></div>
+              </div>
+            </div>
+            <div class="mb-4">
+              <div class="flex justify-between mb-1.5">
+                <div>
+                  <div class="text-[13px] font-semibold">Correlation Risk</div>
+                  <div class="text-[11px] text-white/40">
+                    High cross-asset correlation
+                  </div>
+                </div>
+                <div class="text-sm font-extrabold text-warning">7/10</div>
+              </div>
+              <div class="h-1.5 bg-surface/10 rounded-full overflow-hidden">
+                <div
+                  class="h-full rounded-full bg-warning"
+                  style="width: 70%"
+                ></div>
+              </div>
+            </div>
+            <div>
+              <div class="flex justify-between mb-1.5">
+                <div>
+                  <div class="text-[13px] font-semibold">Leverage</div>
+                  <div class="text-[11px] text-white/40">
+                    No leverage used — Safe
+                  </div>
+                </div>
+                <div class="text-sm font-extrabold text-success">0/10</div>
+              </div>
+              <div class="h-1.5 bg-surface/10 rounded-full overflow-hidden">
+                <div
+                  class="h-full rounded-full bg-success"
+                  style="width: 0%"
+                ></div>
+              </div>
+            </div>
+          </div>
+          <div
+            class="bg-surface border border-white/[0.08] rounded-card p-4 mb-6"
+          >
+            <div class="text-[15px] font-bold mb-4">AI Recommendations</div>
+            <div class="flex gap-2.5 mb-3">
+              <div
+                class="w-6 h-6 rounded-full bg-primary/15 flex items-center justify-center flex-shrink-0 mt-0.5"
+              >
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#00D4AA"
+                  stroke-width="2.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              </div>
+              <div class="text-[13px] text-white/50 leading-relaxed">
+                Diversify into more assets to reduce concentration risk
+              </div>
+            </div>
+            <div class="flex gap-2.5 mb-3">
+              <div
+                class="w-6 h-6 rounded-full bg-primary/15 flex items-center justify-center flex-shrink-0 mt-0.5"
+              >
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#00D4AA"
+                  stroke-width="2.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              </div>
+              <div class="text-[13px] text-white/50 leading-relaxed">
+                Consider adding stablecoins for downside protection
+              </div>
+            </div>
+            <div class="flex gap-2.5 mb-3">
+              <div
+                class="w-6 h-6 rounded-full bg-primary/15 flex items-center justify-center flex-shrink-0 mt-0.5"
+              >
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#00D4AA"
+                  stroke-width="2.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              </div>
+              <div class="text-[13px] text-white/50 leading-relaxed">
+                Enable stop-loss orders for your top holdings
+              </div>
+            </div>
+            <div class="flex gap-2.5">
+              <div
+                class="w-6 h-6 rounded-full bg-primary/15 flex items-center justify-center flex-shrink-0 mt-0.5"
+              >
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#00D4AA"
+                  stroke-width="2.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              </div>
+              <div class="text-[13px] text-white/50 leading-relaxed">
+                Review rebalancing quarterly to maintain target allocation
+              </div>
+            </div>
+          </div>
+          <a
+            href="portfolio-rebalance.html"
+            class="bg-primary text-bg-dark font-bold rounded-btn h-12 flex items-center justify-center gap-2 transition-all active:scale-95 shadow-primary w-full"
+            >Optimize Portfolio</a
+          >
+        <nav
+  class="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] bg-surface border-t border-white/[0.08] flex items-center justify-around h-[72px] z-50"
+>
+  <a
+    href="home.html"
+    id="nav-home"
+    class="flex flex-col items-center gap-1 text-white/40 hover:text-primary transition-colors"
+  >
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+      <polyline points="9 22 9 12 15 12 15 22" />
+    </svg>
+    <span class="text-[10px] font-semibold">Home</span>
+  </a>
+  <a
+    href="market-overview.html"
+    id="nav-market"
+    class="flex flex-col items-center gap-1 text-white/40 hover:text-primary transition-colors"
+  >
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <polyline points="22 7 13.5 15.5 8.5 10.5 1 18" />
+      <polyline points="16 7 22 7 22 13" />
+    </svg>
+    <span class="text-[10px] font-semibold">Markets</span>
+  </a>
+  <a
+    href="trade.html"
+    id="nav-trade"
+    class="flex flex-col items-center gap-1 text-white/40 hover:text-primary transition-colors"
+  >
+    <div
+      class="w-12 h-12 rounded-lg bg-primary flex flex-col items-center justify-center shadow-primary"
+    >
+      <svg
+        width="22"
+        height="22"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="#000000"
+        stroke-width="2.2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <polyline points="17 1 21 5 17 9" />
+        <path d="M3 11V9a4 4 0 0 1 4-4h14" />
+        <polyline points="7 23 3 19 7 15" />
+        <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+      </svg>
+      <span class="text-[10px] text-black font-semibold">Trade</span>
+    </div>
+  </a>
+  <a
+    href="portfolio-overview.html"
+    id="nav-portfolio"
+    class="flex flex-col items-center gap-1 text-white/40 hover:text-primary transition-colors"
+  >
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <rect x="2" y="7" width="20" height="14" rx="2" ry="2" />
+      <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16" />
+    </svg>
+    <span class="text-[10px] font-semibold">Portfolio</span>
+  </a>
+  <a
+    href="profile.html"
+    id="nav-profile"
+    class="flex flex-col items-center gap-1 text-white/40 hover:text-primary transition-colors"
+  >
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+      <circle cx="12" cy="7" r="4" />
+    </svg>
+    <span class="text-[10px] font-semibold">Profile</span>
+  </a>
+</nav>
+
+      </div>
+    </div>
+
+    <script src="./assets/js/data.js"></script>
+    <script src="./assets/js/charts.js"></script>
+    <script src="./assets/js/components.js"></script>
+    <script src="./assets/js/app.js"></script>
+    <script>
+      document.addEventListener("DOMContentLoaded", () => {
+        setTimeout(() => Charts.riskGauge("risk-gauge-big", 65), 100);
+      });
+    </script>
+  <script defer src="index.js"></script></body>
+</html>

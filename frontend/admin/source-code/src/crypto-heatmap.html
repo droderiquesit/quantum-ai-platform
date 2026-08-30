@@ -1,0 +1,568 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <script>
+      if (localStorage.getItem("theme") === "light") document.documentElement.classList.remove("dark");
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Crypto Heatmap - SignalAIX | AI Forex & Crypto Trading Signals</title>
+    <link rel="icon" type="image/png" href="assets/images/favicon.png" />
+    <link rel="apple-touch-icon" href="assets/images/favicon.png" />
+  </head>
+  <body id="crypto-heatmap">
+    <div id="loader">
+      <div class="spinner"></div>
+      <div class="loader-text">Loading SignalAIX...</div>
+    </div>
+
+    <include-sidebar />
+
+    <main class="main-content" id="mainContent">
+      <include-top-header />
+
+      <div class="inner-content max-sm:px-3 max-lg:px-4 max-lg:py-6 lg:p-6 space-y-6">
+        <!-- Page header -->
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div>
+            <h1 class="text-2xl md:text-3xl font-bold text-text">Crypto Heatmap</h1>
+            <p class="text-sm text-muted mt-1">Real-time cryptocurrency market visualization with AI-powered insights</p>
+          </div>
+          <div class="flex items-center gap-3 flex-wrap">
+            <button id="chRefresh" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition"><i data-lucide="refresh-cw" class="w-4 h-4 shrink-0" id="chRefreshIcon"></i>Refresh</button>
+            <div class="dropdown">
+              <button class="js-dropdown-toggle inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition"><i data-lucide="download" class="w-4 h-4 shrink-0"></i>Export<i data-lucide="chevron-down" class="w-4 h-4 shrink-0"></i></button>
+              <div class="dropdown-menu w-48 mt-2 rounded-xl bg-panel border border-border shadow-2xl overflow-hidden p-1.5">
+                <button class="ch-export flex w-full items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition" data-format="csv"><i data-lucide="file-text" class="w-4 h-4 shrink-0"></i>Export as CSV</button>
+                <button class="ch-export flex w-full items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition" data-format="json"><i data-lucide="braces" class="w-4 h-4 shrink-0"></i>Export as JSON</button>
+                <button class="ch-export flex w-full items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition" data-format="png"><i data-lucide="image" class="w-4 h-4 shrink-0"></i>Export as PNG</button>
+                <button class="ch-export flex w-full items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text hover:bg-accent/10 hover:text-accent transition" data-format="pdf"><i data-lucide="file" class="w-4 h-4 shrink-0"></i>Export as PDF</button>
+              </div>
+            </div>
+            <button class="ch-open-drawer inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition" data-drawer="ai"><i data-lucide="sparkles" class="w-4 h-4 shrink-0"></i>AI Analysis</button>
+          </div>
+        </div>
+
+        <!-- Stat cards -->
+        <div class="grid grid-cols-1 xs:grid-cols-2 @4xl/content:grid-cols-4 gap-4">
+          <div class="bg-panel border border-border rounded-2xl p-4 hover:border-accent/40 transition">
+            <div class="flex items-center justify-between mb-2"><div class="w-9 h-9 rounded-lg bg-emerald-500/10 flex items-center justify-center shrink-0"><i data-lucide="trending-up" class="w-5 h-5 text-emerald-500 shrink-0"></i></div><span class="inline-flex px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500">+12.5%</span></div>
+            <p class="text-xl font-bold text-text">$2.84T</p><p class="text-xs text-muted mt-1">Total Market Cap</p>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-4 hover:border-accent/40 transition">
+            <div class="flex items-center justify-between mb-2"><div class="w-9 h-9 rounded-lg bg-sky-500/10 flex items-center justify-center shrink-0"><i data-lucide="chart-column" class="w-5 h-5 text-sky-500 shrink-0"></i></div><span class="inline-flex px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500">+8.3%</span></div>
+            <p class="text-xl font-bold text-text">$142.8B</p><p class="text-xs text-muted mt-1">24h Volume</p>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-4 hover:border-accent/40 transition">
+            <div class="flex items-center justify-between mb-2"><div class="w-9 h-9 rounded-lg bg-orange-500/10 flex items-center justify-center shrink-0"><i data-lucide="bitcoin" class="w-5 h-5 text-orange-500 shrink-0"></i></div><span class="inline-flex px-2 py-0.5 rounded-full text-xs font-semibold bg-orange-500/15 text-orange-500">54.2%</span></div>
+            <p class="text-xl font-bold text-text">54.2%</p><p class="text-xs text-muted mt-1">BTC Dominance</p>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-4 hover:border-accent/40 transition">
+            <div class="flex items-center justify-between mb-2"><div class="w-9 h-9 rounded-lg bg-violet-500/10 flex items-center justify-center shrink-0"><i data-lucide="activity" class="w-5 h-5 text-violet-400 shrink-0"></i></div><span class="inline-flex px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-500/15 text-amber-500">Greed</span></div>
+            <p class="text-xl font-bold text-text">72</p><p class="text-xs text-muted mt-1">Fear &amp; Greed Index</p>
+          </div>
+        </div>
+
+        <!-- Tabs + view toggles -->
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div class="flex gap-1 p-1 bg-panel border border-border rounded-2xl overflow-x-auto hide-scrollbar self-start max-w-full">
+            <button class="tab-button ch-tab active whitespace-nowrap px-4 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text transition" data-cat="all">All Coins</button>
+            <button class="tab-button ch-tab whitespace-nowrap px-4 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text transition" data-cat="defi">DeFi</button>
+            <button class="tab-button ch-tab whitespace-nowrap px-4 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text transition" data-cat="layer1">Layer 1</button>
+            <button class="tab-button ch-tab whitespace-nowrap px-4 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text transition" data-cat="layer2">Layer 2</button>
+            <button class="tab-button ch-tab whitespace-nowrap px-4 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text transition" data-cat="meme">Meme</button>
+            <button class="tab-button ch-tab whitespace-nowrap px-4 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text transition" data-cat="gaming">Gaming</button>
+            <button class="tab-button ch-tab whitespace-nowrap px-4 py-2 rounded-xl text-sm font-semibold text-muted hover:text-text transition" data-cat="ai">AI</button>
+          </div>
+          <div class="flex items-center gap-2 flex-wrap">
+            <button class="ch-tf active px-3.5 py-2 rounded-full text-xs font-medium border border-border text-muted transition" data-tf="1H">1H</button>
+            <button class="ch-tf px-3.5 py-2 rounded-full text-xs font-medium border border-border text-muted transition" data-tf="24H">24H</button>
+            <button class="ch-tf px-3.5 py-2 rounded-full text-xs font-medium border border-border text-muted transition" data-tf="7D">7D</button>
+            <button class="ch-tf px-3.5 py-2 rounded-full text-xs font-medium border border-border text-muted transition" data-tf="30D">30D</button>
+            <span class="w-px h-6 bg-border mx-1"></span>
+            <button class="ch-open-drawer flex w-10 h-10 items-center justify-center rounded-xl bg-panel border border-border text-text hover:text-accent hover:border-accent/40 transition" data-drawer="filter" aria-label="Filter settings"><i data-lucide="sliders-horizontal" class="w-4 h-4 shrink-0"></i></button>
+            <button class="ch-view active flex w-10 h-10 items-center justify-center rounded-xl bg-accent border border-accent text-white transition" data-view="heatmap" aria-label="Heatmap view"><i data-lucide="grid-3x3" class="w-4 h-4 shrink-0"></i></button>
+            <button class="ch-view flex w-10 h-10 items-center justify-center rounded-xl bg-panel border border-border text-text transition" data-view="list" aria-label="List view"><i data-lucide="list" class="w-4 h-4 shrink-0"></i></button>
+          </div>
+        </div>
+
+        <!-- Search + sort -->
+        <div class="flex items-center gap-3 flex-wrap">
+          <div class="relative flex-1 min-w-[180px]"><i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted shrink-0"></i><input type="text" id="chSearch" placeholder="Search cryptocurrency..." class="w-full pl-10 pr-3 py-2.5 rounded-xl bg-bg border border-border text-sm text-text placeholder:text-muted focus:outline-none focus:border-accent transition" /></div>
+          <select id="chSort" class="px-4 py-2.5 pr-8 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option value="market_cap">Market Cap</option><option value="volume">Volume</option><option value="change">% Change</option><option value="name">Name</option></select>
+          <button id="chSortOrder" class="flex w-10 h-10 items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition" aria-label="Toggle sort order"><i data-lucide="arrow-up-down" class="w-4 h-4 shrink-0"></i></button>
+        </div>
+
+        <!-- Heatmap grid -->
+        <div id="chHeatmapContainer" class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+          <div class="flex items-center justify-between mb-4 gap-3 flex-wrap">
+            <h3 class="font-semibold text-text">Market Heatmap</h3>
+            <p class="text-xs text-muted inline-flex items-center gap-1.5"><i data-lucide="clock" class="w-3.5 h-3.5 shrink-0"></i>Updated 5s ago</p>
+          </div>
+          <div class="hidden md:flex items-center justify-center gap-1 mb-4 text-[10px] text-muted">
+            <span>Loss</span>
+            <div class="w-5 h-3 rounded bg-red-600"></div><div class="w-5 h-3 rounded bg-red-500"></div><div class="w-5 h-3 rounded bg-red-400"></div><div class="w-5 h-3 rounded bg-slate-500"></div><div class="w-5 h-3 rounded bg-emerald-300"></div><div class="w-5 h-3 rounded bg-emerald-500"></div><div class="w-5 h-3 rounded bg-emerald-600"></div>
+            <span>Gain</span>
+          </div>
+          <div class="grid grid-cols-2 sm:grid-cols-3 @4xl/content:grid-cols-5 auto-rows-[110px] gap-2" id="chHeatmapGrid">
+            <button class="ch-cell bg-gradient-to-br from-emerald-400 to-emerald-300 sm:col-span-2 sm:row-span-2 rounded-xl p-3 text-left text-white hover:scale-[1.02] transition min-h-[110px] flex flex-col justify-between" data-symbol="BTC" data-cat="layer1" data-name="bitcoin">
+              <div><p class="font-bold text-lg leading-tight">BTC</p><p class="text-xs text-white/70">Bitcoin</p></div>
+              <div><p class="font-semibold text-sm">$68,542.30</p><p class="text-xs font-medium">+2.34%</p></div>
+            </button>
+            <button class="ch-cell bg-gradient-to-br from-emerald-400 to-emerald-300 sm:col-span-2 sm:row-span-2 rounded-xl p-3 text-left text-white hover:scale-[1.02] transition min-h-[110px] flex flex-col justify-between" data-symbol="ETH" data-cat="layer1" data-name="ethereum">
+              <div><p class="font-bold text-lg leading-tight">ETH</p><p class="text-xs text-white/70">Ethereum</p></div>
+              <div><p class="font-semibold text-sm">$3,542.18</p><p class="text-xs font-medium">+1.87%</p></div>
+            </button>
+            <button class="ch-cell bg-gradient-to-br from-emerald-600 to-emerald-500  rounded-xl p-3 text-left text-white hover:scale-[1.02] transition min-h-[110px] flex flex-col justify-between" data-symbol="SOL" data-cat="layer1" data-name="solana">
+              <div><p class="font-bold text-lg leading-tight">SOL</p><p class="text-xs text-white/70">Solana</p></div>
+              <div><p class="font-semibold text-sm">$178.45</p><p class="text-xs font-medium">+8.45%</p></div>
+            </button>
+            <button class="ch-cell bg-gradient-to-br from-slate-500 to-slate-400  rounded-xl p-3 text-left text-white hover:scale-[1.02] transition min-h-[110px] flex flex-col justify-between" data-symbol="BNB" data-cat="layer1" data-name="bnb">
+              <div><p class="font-bold text-lg leading-tight">BNB</p><p class="text-xs text-white/70">BNB</p></div>
+              <div><p class="font-semibold text-sm">$612.80</p><p class="text-xs font-medium">+0.92%</p></div>
+            </button>
+            <button class="ch-cell bg-gradient-to-br from-red-400 to-red-300 sm:col-span-2 sm:row-span-2 rounded-xl p-3 text-left text-white hover:scale-[1.02] transition min-h-[110px] flex flex-col justify-between" data-symbol="XRP" data-cat="layer1" data-name="ripple">
+              <div><p class="font-bold text-lg leading-tight">XRP</p><p class="text-xs text-white/70">Ripple</p></div>
+              <div><p class="font-semibold text-sm">$2.34</p><p class="text-xs font-medium">-3.21%</p></div>
+            </button>
+            <button class="ch-cell bg-gradient-to-br from-emerald-500 to-emerald-400  rounded-xl p-3 text-left text-white hover:scale-[1.02] transition min-h-[110px] flex flex-col justify-between" data-symbol="ADA" data-cat="layer1" data-name="cardano">
+              <div><p class="font-bold text-lg leading-tight">ADA</p><p class="text-xs text-white/70">Cardano</p></div>
+              <div><p class="font-semibold text-sm">$1.08</p><p class="text-xs font-medium">+4.12%</p></div>
+            </button>
+            <button class="ch-cell bg-gradient-to-br from-emerald-500 to-emerald-400  rounded-xl p-3 text-left text-white hover:scale-[1.02] transition min-h-[110px] flex flex-col justify-between" data-symbol="AVAX" data-cat="layer1" data-name="avalanche">
+              <div><p class="font-bold text-lg leading-tight">AVAX</p><p class="text-xs text-white/70">Avalanche</p></div>
+              <div><p class="font-semibold text-sm">$42.18</p><p class="text-xs font-medium">+6.82%</p></div>
+            </button>
+            <button class="ch-cell bg-gradient-to-br from-red-500 to-red-400  rounded-xl p-3 text-left text-white hover:scale-[1.02] transition min-h-[110px] flex flex-col justify-between" data-symbol="DOGE" data-cat="meme" data-name="dogecoin">
+              <div><p class="font-bold text-lg leading-tight">DOGE</p><p class="text-xs text-white/70">Dogecoin</p></div>
+              <div><p class="font-semibold text-sm">$0.1284</p><p class="text-xs font-medium">-5.60%</p></div>
+            </button>
+            <button class="ch-cell bg-gradient-to-br from-emerald-400 to-emerald-300  rounded-xl p-3 text-left text-white hover:scale-[1.02] transition min-h-[110px] flex flex-col justify-between" data-symbol="MATIC" data-cat="layer2" data-name="polygon">
+              <div><p class="font-bold text-lg leading-tight">MATIC</p><p class="text-xs text-white/70">Polygon</p></div>
+              <div><p class="font-semibold text-sm">$0.92</p><p class="text-xs font-medium">+3.40%</p></div>
+            </button>
+            <button class="ch-cell bg-gradient-to-br from-emerald-500 to-emerald-400  rounded-xl p-3 text-left text-white hover:scale-[1.02] transition min-h-[110px] flex flex-col justify-between" data-symbol="ARB" data-cat="layer2" data-name="arbitrum">
+              <div><p class="font-bold text-lg leading-tight">ARB</p><p class="text-xs text-white/70">Arbitrum</p></div>
+              <div><p class="font-semibold text-sm">$1.45</p><p class="text-xs font-medium">+5.20%</p></div>
+            </button>
+            <button class="ch-cell bg-gradient-to-br from-emerald-500 to-emerald-400  rounded-xl p-3 text-left text-white hover:scale-[1.02] transition min-h-[110px] flex flex-col justify-between" data-symbol="OP" data-cat="layer2" data-name="optimism">
+              <div><p class="font-bold text-lg leading-tight">OP</p><p class="text-xs text-white/70">Optimism</p></div>
+              <div><p class="font-semibold text-sm">$2.78</p><p class="text-xs font-medium">+4.10%</p></div>
+            </button>
+            <button class="ch-cell bg-gradient-to-br from-emerald-400 to-emerald-300  rounded-xl p-3 text-left text-white hover:scale-[1.02] transition min-h-[110px] flex flex-col justify-between" data-symbol="LINK" data-cat="defi" data-name="chainlink">
+              <div><p class="font-bold text-lg leading-tight">LINK</p><p class="text-xs text-white/70">Chainlink</p></div>
+              <div><p class="font-semibold text-sm">$18.90</p><p class="text-xs font-medium">+2.80%</p></div>
+            </button>
+            <button class="ch-cell bg-gradient-to-br from-emerald-400 to-emerald-300  rounded-xl p-3 text-left text-white hover:scale-[1.02] transition min-h-[110px] flex flex-col justify-between" data-symbol="UNI" data-cat="defi" data-name="uniswap">
+              <div><p class="font-bold text-lg leading-tight">UNI</p><p class="text-xs text-white/70">Uniswap</p></div>
+              <div><p class="font-semibold text-sm">$12.40</p><p class="text-xs font-medium">+3.90%</p></div>
+            </button>
+            <button class="ch-cell bg-gradient-to-br from-emerald-500 to-emerald-400  rounded-xl p-3 text-left text-white hover:scale-[1.02] transition min-h-[110px] flex flex-col justify-between" data-symbol="AAVE" data-cat="defi" data-name="aave">
+              <div><p class="font-bold text-lg leading-tight">AAVE</p><p class="text-xs text-white/70">Aave</p></div>
+              <div><p class="font-semibold text-sm">$310.50</p><p class="text-xs font-medium">+7.10%</p></div>
+            </button>
+            <button class="ch-cell bg-gradient-to-br from-red-500 to-red-400  rounded-xl p-3 text-left text-white hover:scale-[1.02] transition min-h-[110px] flex flex-col justify-between" data-symbol="SHIB" data-cat="meme" data-name="shiba inu">
+              <div><p class="font-bold text-lg leading-tight">SHIB</p><p class="text-xs text-white/70">Shiba Inu</p></div>
+              <div><p class="font-semibold text-sm">$0.000024</p><p class="text-xs font-medium">-6.40%</p></div>
+            </button>
+            <button class="ch-cell bg-gradient-to-br from-emerald-600 to-emerald-500  rounded-xl p-3 text-left text-white hover:scale-[1.02] transition min-h-[110px] flex flex-col justify-between" data-symbol="PEPE" data-cat="meme" data-name="pepe">
+              <div><p class="font-bold text-lg leading-tight">PEPE</p><p class="text-xs text-white/70">Pepe</p></div>
+              <div><p class="font-semibold text-sm">$0.000018</p><p class="text-xs font-medium">+12.30%</p></div>
+            </button>
+            <button class="ch-cell bg-gradient-to-br from-emerald-500 to-emerald-400  rounded-xl p-3 text-left text-white hover:scale-[1.02] transition min-h-[110px] flex flex-col justify-between" data-symbol="IMX" data-cat="gaming" data-name="immutable">
+              <div><p class="font-bold text-lg leading-tight">IMX</p><p class="text-xs text-white/70">Immutable</p></div>
+              <div><p class="font-semibold text-sm">$1.62</p><p class="text-xs font-medium">+5.60%</p></div>
+            </button>
+            <button class="ch-cell bg-gradient-to-br from-emerald-600 to-emerald-500  rounded-xl p-3 text-left text-white hover:scale-[1.02] transition min-h-[110px] flex flex-col justify-between" data-symbol="RNDR" data-cat="ai" data-name="render">
+              <div><p class="font-bold text-lg leading-tight">RNDR</p><p class="text-xs text-white/70">Render</p></div>
+              <div><p class="font-semibold text-sm">$7.85</p><p class="text-xs font-medium">+9.20%</p></div>
+            </button>
+            <button class="ch-cell bg-gradient-to-br from-emerald-600 to-emerald-500  rounded-xl p-3 text-left text-white hover:scale-[1.02] transition min-h-[110px] flex flex-col justify-between" data-symbol="FET" data-cat="ai" data-name="fetch.ai">
+              <div><p class="font-bold text-lg leading-tight">FET</p><p class="text-xs text-white/70">Fetch.ai</p></div>
+              <div><p class="font-semibold text-sm">$1.34</p><p class="text-xs font-medium">+10.80%</p></div>
+            </button>
+            <button class="ch-cell bg-gradient-to-br from-red-400 to-red-300  rounded-xl p-3 text-left text-white hover:scale-[1.02] transition min-h-[110px] flex flex-col justify-between" data-symbol="SAND" data-cat="gaming" data-name="the sandbox">
+              <div><p class="font-bold text-lg leading-tight">SAND</p><p class="text-xs text-white/70">The Sandbox</p></div>
+              <div><p class="font-semibold text-sm">$0.58</p><p class="text-xs font-medium">-2.40%</p></div>
+            </button>
+          </div>
+          <p class="ch-empty hidden text-center text-sm text-muted py-8">No coins match your search.</p>
+        </div>
+
+        <!-- List view -->
+        <div id="chListContainer" class="hidden bg-panel border border-border rounded-2xl p-4 sm:p-6">
+          <div class="flex items-center justify-between mb-4 gap-3 flex-wrap"><h3 class="font-semibold text-text">Cryptocurrency List</h3><p class="text-xs text-muted">Showing 20 of 250 coins</p></div>
+          <div class="overflow-x-auto">
+            <table class="w-full border-collapse min-w-[820px] whitespace-nowrap">
+              <thead><tr class="text-left text-xs font-semibold uppercase tracking-wide text-muted border-b border-border"><th class="py-3 pr-4">#</th><th class="py-3 pr-4">Coin</th><th class="py-3 pr-4">Price</th><th class="py-3 pr-4">1h %</th><th class="py-3 pr-4">24h %</th><th class="py-3 pr-4">7d %</th><th class="py-3 pr-4">Market Cap</th><th class="py-3 pr-4">Volume (24h)</th><th class="py-3">Watch</th></tr></thead>
+              <tbody id="chTableBody">
+                <tr class="ch-row border-b border-border hover:bg-accent/5 transition" data-cat="layer1" data-name="bitcoin" data-symbol="btc">
+                  <td class="py-3 pr-4 text-muted">1</td>
+                  <td class="py-3 pr-4"><button class="ch-coin flex items-center gap-3 text-left hover:text-accent transition" data-symbol="BTC"><span class="w-8 h-8 rounded-full bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center text-white text-[10px] font-bold shrink-0">BTC</span><div><p class="font-medium text-text">Bitcoin</p><p class="text-xs text-muted">BTC</p></div></button></td>
+                  <td class="py-3 pr-4 font-mono text-text">$68,542.30</td>
+                  <td class="py-3 pr-4 text-emerald-500">+0.45%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+2.34%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+5.67%</td>
+                  <td class="py-3 pr-4 text-text">$1.34T</td>
+                  <td class="py-3 pr-4 text-text">$28.5B</td>
+                  <td class="py-3"><button class="ch-watch flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-amber-500 hover:bg-amber-500/10 transition" data-symbol="BTC"><i data-lucide="star" class="w-4 h-4 shrink-0"></i></button></td>
+                </tr>
+                <tr class="ch-row border-b border-border hover:bg-accent/5 transition" data-cat="layer1" data-name="ethereum" data-symbol="eth">
+                  <td class="py-3 pr-4 text-muted">2</td>
+                  <td class="py-3 pr-4"><button class="ch-coin flex items-center gap-3 text-left hover:text-accent transition" data-symbol="ETH"><span class="w-8 h-8 rounded-full bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center text-white text-[10px] font-bold shrink-0">ETH</span><div><p class="font-medium text-text">Ethereum</p><p class="text-xs text-muted">ETH</p></div></button></td>
+                  <td class="py-3 pr-4 font-mono text-text">$3,542.18</td>
+                  <td class="py-3 pr-4 text-red-500">-0.32%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+1.87%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+3.21%</td>
+                  <td class="py-3 pr-4 text-text">$425.0B</td>
+                  <td class="py-3 pr-4 text-text">$15.2B</td>
+                  <td class="py-3"><button class="ch-watch flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-amber-500 hover:bg-amber-500/10 transition" data-symbol="ETH"><i data-lucide="star" class="w-4 h-4 shrink-0"></i></button></td>
+                </tr>
+                <tr class="ch-row border-b border-border hover:bg-accent/5 transition" data-cat="layer1" data-name="solana" data-symbol="sol">
+                  <td class="py-3 pr-4 text-muted">3</td>
+                  <td class="py-3 pr-4"><button class="ch-coin flex items-center gap-3 text-left hover:text-accent transition" data-symbol="SOL"><span class="w-8 h-8 rounded-full bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center text-white text-[10px] font-bold shrink-0">SOL</span><div><p class="font-medium text-text">Solana</p><p class="text-xs text-muted">SOL</p></div></button></td>
+                  <td class="py-3 pr-4 font-mono text-text">$178.45</td>
+                  <td class="py-3 pr-4 text-emerald-500">+1.24%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+8.45%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+12.30%</td>
+                  <td class="py-3 pr-4 text-text">$82.0B</td>
+                  <td class="py-3 pr-4 text-text">$4.1B</td>
+                  <td class="py-3"><button class="ch-watch flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-amber-500 hover:bg-amber-500/10 transition" data-symbol="SOL"><i data-lucide="star" class="w-4 h-4 shrink-0"></i></button></td>
+                </tr>
+                <tr class="ch-row border-b border-border hover:bg-accent/5 transition" data-cat="layer1" data-name="bnb" data-symbol="bnb">
+                  <td class="py-3 pr-4 text-muted">4</td>
+                  <td class="py-3 pr-4"><button class="ch-coin flex items-center gap-3 text-left hover:text-accent transition" data-symbol="BNB"><span class="w-8 h-8 rounded-full bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center text-white text-[10px] font-bold shrink-0">BNB</span><div><p class="font-medium text-text">BNB</p><p class="text-xs text-muted">BNB</p></div></button></td>
+                  <td class="py-3 pr-4 font-mono text-text">$612.80</td>
+                  <td class="py-3 pr-4 text-emerald-500">+0.18%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+0.92%</td>
+                  <td class="py-3 pr-4 text-red-500">-1.45%</td>
+                  <td class="py-3 pr-4 text-text">$89.0B</td>
+                  <td class="py-3 pr-4 text-text">$1.8B</td>
+                  <td class="py-3"><button class="ch-watch flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-amber-500 hover:bg-amber-500/10 transition" data-symbol="BNB"><i data-lucide="star" class="w-4 h-4 shrink-0"></i></button></td>
+                </tr>
+                <tr class="ch-row border-b border-border hover:bg-accent/5 transition" data-cat="layer1" data-name="ripple" data-symbol="xrp">
+                  <td class="py-3 pr-4 text-muted">5</td>
+                  <td class="py-3 pr-4"><button class="ch-coin flex items-center gap-3 text-left hover:text-accent transition" data-symbol="XRP"><span class="w-8 h-8 rounded-full bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center text-white text-[10px] font-bold shrink-0">XRP</span><div><p class="font-medium text-text">Ripple</p><p class="text-xs text-muted">XRP</p></div></button></td>
+                  <td class="py-3 pr-4 font-mono text-text">$2.34</td>
+                  <td class="py-3 pr-4 text-red-500">-1.12%</td>
+                  <td class="py-3 pr-4 text-red-500">-3.21%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+4.56%</td>
+                  <td class="py-3 pr-4 text-text">$134.0B</td>
+                  <td class="py-3 pr-4 text-text">$6.8B</td>
+                  <td class="py-3"><button class="ch-watch flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-amber-500 hover:bg-amber-500/10 transition" data-symbol="XRP"><i data-lucide="star" class="w-4 h-4 shrink-0"></i></button></td>
+                </tr>
+                <tr class="ch-row border-b border-border hover:bg-accent/5 transition" data-cat="layer1" data-name="cardano" data-symbol="ada">
+                  <td class="py-3 pr-4 text-muted">6</td>
+                  <td class="py-3 pr-4"><button class="ch-coin flex items-center gap-3 text-left hover:text-accent transition" data-symbol="ADA"><span class="w-8 h-8 rounded-full bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center text-white text-[10px] font-bold shrink-0">ADA</span><div><p class="font-medium text-text">Cardano</p><p class="text-xs text-muted">ADA</p></div></button></td>
+                  <td class="py-3 pr-4 font-mono text-text">$1.08</td>
+                  <td class="py-3 pr-4 text-emerald-500">+0.56%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+4.12%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+7.89%</td>
+                  <td class="py-3 pr-4 text-text">$38.0B</td>
+                  <td class="py-3 pr-4 text-text">$1.2B</td>
+                  <td class="py-3"><button class="ch-watch flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-amber-500 hover:bg-amber-500/10 transition" data-symbol="ADA"><i data-lucide="star" class="w-4 h-4 shrink-0"></i></button></td>
+                </tr>
+                <tr class="ch-row border-b border-border hover:bg-accent/5 transition" data-cat="layer1" data-name="avalanche" data-symbol="avax">
+                  <td class="py-3 pr-4 text-muted">7</td>
+                  <td class="py-3 pr-4"><button class="ch-coin flex items-center gap-3 text-left hover:text-accent transition" data-symbol="AVAX"><span class="w-8 h-8 rounded-full bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center text-white text-[10px] font-bold shrink-0">AVA</span><div><p class="font-medium text-text">Avalanche</p><p class="text-xs text-muted">AVAX</p></div></button></td>
+                  <td class="py-3 pr-4 font-mono text-text">$42.18</td>
+                  <td class="py-3 pr-4 text-emerald-500">+2.10%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+6.82%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+9.40%</td>
+                  <td class="py-3 pr-4 text-text">$17.0B</td>
+                  <td class="py-3 pr-4 text-text">$890.0M</td>
+                  <td class="py-3"><button class="ch-watch flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-amber-500 hover:bg-amber-500/10 transition" data-symbol="AVAX"><i data-lucide="star" class="w-4 h-4 shrink-0"></i></button></td>
+                </tr>
+                <tr class="ch-row border-b border-border hover:bg-accent/5 transition" data-cat="meme" data-name="dogecoin" data-symbol="doge">
+                  <td class="py-3 pr-4 text-muted">8</td>
+                  <td class="py-3 pr-4"><button class="ch-coin flex items-center gap-3 text-left hover:text-accent transition" data-symbol="DOGE"><span class="w-8 h-8 rounded-full bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center text-white text-[10px] font-bold shrink-0">DOG</span><div><p class="font-medium text-text">Dogecoin</p><p class="text-xs text-muted">DOGE</p></div></button></td>
+                  <td class="py-3 pr-4 font-mono text-text">$0.1284</td>
+                  <td class="py-3 pr-4 text-red-500">-2.40%</td>
+                  <td class="py-3 pr-4 text-red-500">-5.60%</td>
+                  <td class="py-3 pr-4 text-red-500">-8.20%</td>
+                  <td class="py-3 pr-4 text-text">$18.5B</td>
+                  <td class="py-3 pr-4 text-text">$2.1B</td>
+                  <td class="py-3"><button class="ch-watch flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-amber-500 hover:bg-amber-500/10 transition" data-symbol="DOGE"><i data-lucide="star" class="w-4 h-4 shrink-0"></i></button></td>
+                </tr>
+                <tr class="ch-row border-b border-border hover:bg-accent/5 transition" data-cat="layer2" data-name="polygon" data-symbol="matic">
+                  <td class="py-3 pr-4 text-muted">9</td>
+                  <td class="py-3 pr-4"><button class="ch-coin flex items-center gap-3 text-left hover:text-accent transition" data-symbol="MATIC"><span class="w-8 h-8 rounded-full bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center text-white text-[10px] font-bold shrink-0">MAT</span><div><p class="font-medium text-text">Polygon</p><p class="text-xs text-muted">MATIC</p></div></button></td>
+                  <td class="py-3 pr-4 font-mono text-text">$0.92</td>
+                  <td class="py-3 pr-4 text-emerald-500">+0.88%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+3.40%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+2.10%</td>
+                  <td class="py-3 pr-4 text-text">$9.2B</td>
+                  <td class="py-3 pr-4 text-text">$540.0M</td>
+                  <td class="py-3"><button class="ch-watch flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-amber-500 hover:bg-amber-500/10 transition" data-symbol="MATIC"><i data-lucide="star" class="w-4 h-4 shrink-0"></i></button></td>
+                </tr>
+                <tr class="ch-row border-b border-border hover:bg-accent/5 transition" data-cat="layer2" data-name="arbitrum" data-symbol="arb">
+                  <td class="py-3 pr-4 text-muted">10</td>
+                  <td class="py-3 pr-4"><button class="ch-coin flex items-center gap-3 text-left hover:text-accent transition" data-symbol="ARB"><span class="w-8 h-8 rounded-full bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center text-white text-[10px] font-bold shrink-0">ARB</span><div><p class="font-medium text-text">Arbitrum</p><p class="text-xs text-muted">ARB</p></div></button></td>
+                  <td class="py-3 pr-4 font-mono text-text">$1.45</td>
+                  <td class="py-3 pr-4 text-emerald-500">+1.60%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+5.20%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+6.80%</td>
+                  <td class="py-3 pr-4 text-text">$4.8B</td>
+                  <td class="py-3 pr-4 text-text">$420.0M</td>
+                  <td class="py-3"><button class="ch-watch flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-amber-500 hover:bg-amber-500/10 transition" data-symbol="ARB"><i data-lucide="star" class="w-4 h-4 shrink-0"></i></button></td>
+                </tr>
+                <tr class="ch-row border-b border-border hover:bg-accent/5 transition" data-cat="layer2" data-name="optimism" data-symbol="op">
+                  <td class="py-3 pr-4 text-muted">11</td>
+                  <td class="py-3 pr-4"><button class="ch-coin flex items-center gap-3 text-left hover:text-accent transition" data-symbol="OP"><span class="w-8 h-8 rounded-full bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center text-white text-[10px] font-bold shrink-0">OP</span><div><p class="font-medium text-text">Optimism</p><p class="text-xs text-muted">OP</p></div></button></td>
+                  <td class="py-3 pr-4 font-mono text-text">$2.78</td>
+                  <td class="py-3 pr-4 text-emerald-500">+0.95%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+4.10%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+3.30%</td>
+                  <td class="py-3 pr-4 text-text">$3.4B</td>
+                  <td class="py-3 pr-4 text-text">$310.0M</td>
+                  <td class="py-3"><button class="ch-watch flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-amber-500 hover:bg-amber-500/10 transition" data-symbol="OP"><i data-lucide="star" class="w-4 h-4 shrink-0"></i></button></td>
+                </tr>
+                <tr class="ch-row border-b border-border hover:bg-accent/5 transition" data-cat="defi" data-name="chainlink" data-symbol="link">
+                  <td class="py-3 pr-4 text-muted">12</td>
+                  <td class="py-3 pr-4"><button class="ch-coin flex items-center gap-3 text-left hover:text-accent transition" data-symbol="LINK"><span class="w-8 h-8 rounded-full bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center text-white text-[10px] font-bold shrink-0">LIN</span><div><p class="font-medium text-text">Chainlink</p><p class="text-xs text-muted">LINK</p></div></button></td>
+                  <td class="py-3 pr-4 font-mono text-text">$18.90</td>
+                  <td class="py-3 pr-4 text-red-500">-0.45%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+2.80%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+5.10%</td>
+                  <td class="py-3 pr-4 text-text">$11.8B</td>
+                  <td class="py-3 pr-4 text-text">$680.0M</td>
+                  <td class="py-3"><button class="ch-watch flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-amber-500 hover:bg-amber-500/10 transition" data-symbol="LINK"><i data-lucide="star" class="w-4 h-4 shrink-0"></i></button></td>
+                </tr>
+                <tr class="ch-row border-b border-border hover:bg-accent/5 transition" data-cat="defi" data-name="uniswap" data-symbol="uni">
+                  <td class="py-3 pr-4 text-muted">13</td>
+                  <td class="py-3 pr-4"><button class="ch-coin flex items-center gap-3 text-left hover:text-accent transition" data-symbol="UNI"><span class="w-8 h-8 rounded-full bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center text-white text-[10px] font-bold shrink-0">UNI</span><div><p class="font-medium text-text">Uniswap</p><p class="text-xs text-muted">UNI</p></div></button></td>
+                  <td class="py-3 pr-4 font-mono text-text">$12.40</td>
+                  <td class="py-3 pr-4 text-emerald-500">+1.20%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+3.90%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+4.40%</td>
+                  <td class="py-3 pr-4 text-text">$7.4B</td>
+                  <td class="py-3 pr-4 text-text">$290.0M</td>
+                  <td class="py-3"><button class="ch-watch flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-amber-500 hover:bg-amber-500/10 transition" data-symbol="UNI"><i data-lucide="star" class="w-4 h-4 shrink-0"></i></button></td>
+                </tr>
+                <tr class="ch-row border-b border-border hover:bg-accent/5 transition" data-cat="defi" data-name="aave" data-symbol="aave">
+                  <td class="py-3 pr-4 text-muted">14</td>
+                  <td class="py-3 pr-4"><button class="ch-coin flex items-center gap-3 text-left hover:text-accent transition" data-symbol="AAVE"><span class="w-8 h-8 rounded-full bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center text-white text-[10px] font-bold shrink-0">AAV</span><div><p class="font-medium text-text">Aave</p><p class="text-xs text-muted">AAVE</p></div></button></td>
+                  <td class="py-3 pr-4 font-mono text-text">$310.50</td>
+                  <td class="py-3 pr-4 text-emerald-500">+2.30%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+7.10%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+11.20%</td>
+                  <td class="py-3 pr-4 text-text">$4.6B</td>
+                  <td class="py-3 pr-4 text-text">$210.0M</td>
+                  <td class="py-3"><button class="ch-watch flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-amber-500 hover:bg-amber-500/10 transition" data-symbol="AAVE"><i data-lucide="star" class="w-4 h-4 shrink-0"></i></button></td>
+                </tr>
+                <tr class="ch-row border-b border-border hover:bg-accent/5 transition" data-cat="meme" data-name="shiba inu" data-symbol="shib">
+                  <td class="py-3 pr-4 text-muted">15</td>
+                  <td class="py-3 pr-4"><button class="ch-coin flex items-center gap-3 text-left hover:text-accent transition" data-symbol="SHIB"><span class="w-8 h-8 rounded-full bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center text-white text-[10px] font-bold shrink-0">SHI</span><div><p class="font-medium text-text">Shiba Inu</p><p class="text-xs text-muted">SHIB</p></div></button></td>
+                  <td class="py-3 pr-4 font-mono text-text">$0.000024</td>
+                  <td class="py-3 pr-4 text-red-500">-3.10%</td>
+                  <td class="py-3 pr-4 text-red-500">-6.40%</td>
+                  <td class="py-3 pr-4 text-red-500">-9.80%</td>
+                  <td class="py-3 pr-4 text-text">$14.4B</td>
+                  <td class="py-3 pr-4 text-text">$980.0M</td>
+                  <td class="py-3"><button class="ch-watch flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-amber-500 hover:bg-amber-500/10 transition" data-symbol="SHIB"><i data-lucide="star" class="w-4 h-4 shrink-0"></i></button></td>
+                </tr>
+                <tr class="ch-row border-b border-border hover:bg-accent/5 transition" data-cat="meme" data-name="pepe" data-symbol="pepe">
+                  <td class="py-3 pr-4 text-muted">16</td>
+                  <td class="py-3 pr-4"><button class="ch-coin flex items-center gap-3 text-left hover:text-accent transition" data-symbol="PEPE"><span class="w-8 h-8 rounded-full bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center text-white text-[10px] font-bold shrink-0">PEP</span><div><p class="font-medium text-text">Pepe</p><p class="text-xs text-muted">PEPE</p></div></button></td>
+                  <td class="py-3 pr-4 font-mono text-text">$0.000018</td>
+                  <td class="py-3 pr-4 text-emerald-500">+4.50%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+12.30%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+18.40%</td>
+                  <td class="py-3 pr-4 text-text">$7.6B</td>
+                  <td class="py-3 pr-4 text-text">$1.5B</td>
+                  <td class="py-3"><button class="ch-watch flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-amber-500 hover:bg-amber-500/10 transition" data-symbol="PEPE"><i data-lucide="star" class="w-4 h-4 shrink-0"></i></button></td>
+                </tr>
+                <tr class="ch-row border-b border-border hover:bg-accent/5 transition" data-cat="gaming" data-name="immutable" data-symbol="imx">
+                  <td class="py-3 pr-4 text-muted">17</td>
+                  <td class="py-3 pr-4"><button class="ch-coin flex items-center gap-3 text-left hover:text-accent transition" data-symbol="IMX"><span class="w-8 h-8 rounded-full bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center text-white text-[10px] font-bold shrink-0">IMX</span><div><p class="font-medium text-text">Immutable</p><p class="text-xs text-muted">IMX</p></div></button></td>
+                  <td class="py-3 pr-4 font-mono text-text">$1.62</td>
+                  <td class="py-3 pr-4 text-emerald-500">+1.80%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+5.60%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+7.20%</td>
+                  <td class="py-3 pr-4 text-text">$2.4B</td>
+                  <td class="py-3 pr-4 text-text">$140.0M</td>
+                  <td class="py-3"><button class="ch-watch flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-amber-500 hover:bg-amber-500/10 transition" data-symbol="IMX"><i data-lucide="star" class="w-4 h-4 shrink-0"></i></button></td>
+                </tr>
+                <tr class="ch-row border-b border-border hover:bg-accent/5 transition" data-cat="ai" data-name="render" data-symbol="rndr">
+                  <td class="py-3 pr-4 text-muted">18</td>
+                  <td class="py-3 pr-4"><button class="ch-coin flex items-center gap-3 text-left hover:text-accent transition" data-symbol="RNDR"><span class="w-8 h-8 rounded-full bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center text-white text-[10px] font-bold shrink-0">RND</span><div><p class="font-medium text-text">Render</p><p class="text-xs text-muted">RNDR</p></div></button></td>
+                  <td class="py-3 pr-4 font-mono text-text">$7.85</td>
+                  <td class="py-3 pr-4 text-emerald-500">+2.90%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+9.20%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+14.50%</td>
+                  <td class="py-3 pr-4 text-text">$4.0B</td>
+                  <td class="py-3 pr-4 text-text">$320.0M</td>
+                  <td class="py-3"><button class="ch-watch flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-amber-500 hover:bg-amber-500/10 transition" data-symbol="RNDR"><i data-lucide="star" class="w-4 h-4 shrink-0"></i></button></td>
+                </tr>
+                <tr class="ch-row border-b border-border hover:bg-accent/5 transition" data-cat="ai" data-name="fetch.ai" data-symbol="fet">
+                  <td class="py-3 pr-4 text-muted">19</td>
+                  <td class="py-3 pr-4"><button class="ch-coin flex items-center gap-3 text-left hover:text-accent transition" data-symbol="FET"><span class="w-8 h-8 rounded-full bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center text-white text-[10px] font-bold shrink-0">FET</span><div><p class="font-medium text-text">Fetch.ai</p><p class="text-xs text-muted">FET</p></div></button></td>
+                  <td class="py-3 pr-4 font-mono text-text">$1.34</td>
+                  <td class="py-3 pr-4 text-emerald-500">+3.40%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+10.80%</td>
+                  <td class="py-3 pr-4 text-emerald-500">+16.20%</td>
+                  <td class="py-3 pr-4 text-text">$3.3B</td>
+                  <td class="py-3 pr-4 text-text">$410.0M</td>
+                  <td class="py-3"><button class="ch-watch flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-amber-500 hover:bg-amber-500/10 transition" data-symbol="FET"><i data-lucide="star" class="w-4 h-4 shrink-0"></i></button></td>
+                </tr>
+                <tr class="ch-row border-b border-border hover:bg-accent/5 transition" data-cat="gaming" data-name="the sandbox" data-symbol="sand">
+                  <td class="py-3 pr-4 text-muted">20</td>
+                  <td class="py-3 pr-4"><button class="ch-coin flex items-center gap-3 text-left hover:text-accent transition" data-symbol="SAND"><span class="w-8 h-8 rounded-full bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center text-white text-[10px] font-bold shrink-0">SAN</span><div><p class="font-medium text-text">The Sandbox</p><p class="text-xs text-muted">SAND</p></div></button></td>
+                  <td class="py-3 pr-4 font-mono text-text">$0.58</td>
+                  <td class="py-3 pr-4 text-red-500">-0.80%</td>
+                  <td class="py-3 pr-4 text-red-500">-2.40%</td>
+                  <td class="py-3 pr-4 text-red-500">-4.10%</td>
+                  <td class="py-3 pr-4 text-text">$1.3B</td>
+                  <td class="py-3 pr-4 text-text">$95.0M</td>
+                  <td class="py-3"><button class="ch-watch flex w-8 h-8 items-center justify-center rounded-lg text-muted hover:text-amber-500 hover:bg-amber-500/10 transition" data-symbol="SAND"><i data-lucide="star" class="w-4 h-4 shrink-0"></i></button></td>
+                </tr>
+              </tbody>
+            </table>
+            <p class="ch-list-empty hidden text-center text-sm text-muted py-8">No coins match your search.</p>
+          </div>
+        </div>
+
+        <!-- AI insights + top movers -->
+        <div class="grid grid-cols-1 @3xl/content:grid-cols-3 gap-6">
+          <div class="@3xl/content:col-span-2 bg-panel border border-border rounded-2xl p-4 sm:p-6">
+            <div class="flex items-center gap-3 mb-4"><div class="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center shrink-0"><i data-lucide="sparkles" class="w-5 h-5 text-white shrink-0"></i></div><div><h3 class="font-semibold text-text">AI Market Analysis</h3><p class="text-xs text-muted">Updated 2 minutes ago</p></div></div>
+            <div class="space-y-3">
+              <div class="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20"><div class="flex items-start gap-3"><i data-lucide="trending-up" class="w-5 h-5 text-emerald-500 mt-0.5 shrink-0"></i><div><h4 class="font-medium text-text text-sm">Bullish Momentum</h4><p class="text-xs text-muted mt-1">Layer 1 tokens showing strong accumulation. BTC holding key support at $66,000 with rising volume.</p></div></div></div>
+              <div class="p-4 rounded-xl bg-orange-500/10 border border-orange-500/20"><div class="flex items-start gap-3"><i data-lucide="triangle-alert" class="w-5 h-5 text-orange-500 mt-0.5 shrink-0"></i><div><h4 class="font-medium text-text text-sm">Volatility Alert</h4><p class="text-xs text-muted mt-1">Meme coins exhibiting elevated risk. Consider tighter stops on DOGE/SHIB positions.</p></div></div></div>
+              <div class="p-4 rounded-xl bg-sky-500/10 border border-sky-500/20"><div class="flex items-start gap-3"><i data-lucide="target" class="w-5 h-5 text-sky-500 mt-0.5 shrink-0"></i><div><h4 class="font-medium text-text text-sm">Key Levels to Watch</h4><p class="text-xs text-muted mt-1">ETH resistance at $3,650, support at $3,420. A clean break could trigger a move to $3,900.</p></div></div></div>
+              <div class="p-4 rounded-xl bg-violet-500/10 border border-violet-500/20"><div class="flex items-start gap-3"><i data-lucide="brain-circuit" class="w-5 h-5 text-violet-400 mt-0.5 shrink-0"></i><div><h4 class="font-medium text-text text-sm">AI Sentiment Shift</h4><p class="text-xs text-muted mt-1">Model confidence rising on AI &amp; Layer 1 sectors. RNDR and FET flagged as strong-momentum candidates for the next 24h.</p></div></div></div>
+              <div class="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20"><div class="flex items-start gap-3"><i data-lucide="droplet" class="w-5 h-5 text-amber-500 mt-0.5 shrink-0"></i><div><h4 class="font-medium text-text text-sm">Liquidity Watch</h4><p class="text-xs text-muted mt-1">Stablecoin inflows up 8% this week, signalling capital waiting on the sidelines for a clearer trend.</p></div></div></div>
+            </div>
+          </div>
+          <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+            <h3 class="font-semibold text-text mb-4">Top Movers (24h)</h3>
+            <p class="text-xs font-semibold text-emerald-500 uppercase tracking-wide mb-2">Top Gainers</p>
+            <div class="space-y-2 mb-4">
+              <div class="flex items-center justify-between p-2.5 rounded-xl bg-emerald-500/5 border border-emerald-500/10"><div class="flex items-center gap-2"><span class="w-7 h-7 rounded-full bg-emerald-500/20 flex items-center justify-center text-[10px] font-bold text-emerald-500 shrink-0">PEP</span><div><p class="text-sm font-medium text-text">PEPE</p><p class="text-[10px] text-muted">Pepe</p></div></div><div class="text-right"><p class="text-emerald-500 text-sm font-semibold">+12.30%</p></div></div>
+              <div class="flex items-center justify-between p-2.5 rounded-xl bg-emerald-500/5 border border-emerald-500/10"><div class="flex items-center gap-2"><span class="w-7 h-7 rounded-full bg-emerald-500/20 flex items-center justify-center text-[10px] font-bold text-emerald-500 shrink-0">FET</span><div><p class="text-sm font-medium text-text">FET</p><p class="text-[10px] text-muted">Fetch.ai</p></div></div><div class="text-right"><p class="text-emerald-500 text-sm font-semibold">+10.80%</p></div></div>
+              <div class="flex items-center justify-between p-2.5 rounded-xl bg-emerald-500/5 border border-emerald-500/10"><div class="flex items-center gap-2"><span class="w-7 h-7 rounded-full bg-emerald-500/20 flex items-center justify-center text-[10px] font-bold text-emerald-500 shrink-0">RND</span><div><p class="text-sm font-medium text-text">RNDR</p><p class="text-[10px] text-muted">Render</p></div></div><div class="text-right"><p class="text-emerald-500 text-sm font-semibold">+9.20%</p></div></div>
+            </div>
+            <p class="text-xs font-semibold text-red-500 uppercase tracking-wide mb-2">Top Losers</p>
+            <div class="space-y-2">
+              <div class="flex items-center justify-between p-2.5 rounded-xl bg-red-500/5 border border-red-500/10"><div class="flex items-center gap-2"><span class="w-7 h-7 rounded-full bg-red-500/20 flex items-center justify-center text-[10px] font-bold text-red-500 shrink-0">SHI</span><div><p class="text-sm font-medium text-text">SHIB</p><p class="text-[10px] text-muted">Shiba Inu</p></div></div><div class="text-right"><p class="text-red-500 text-sm font-semibold">-6.40%</p></div></div>
+              <div class="flex items-center justify-between p-2.5 rounded-xl bg-red-500/5 border border-red-500/10"><div class="flex items-center gap-2"><span class="w-7 h-7 rounded-full bg-red-500/20 flex items-center justify-center text-[10px] font-bold text-red-500 shrink-0">DOG</span><div><p class="text-sm font-medium text-text">DOGE</p><p class="text-[10px] text-muted">Dogecoin</p></div></div><div class="text-right"><p class="text-red-500 text-sm font-semibold">-5.60%</p></div></div>
+              <div class="flex items-center justify-between p-2.5 rounded-xl bg-red-500/5 border border-red-500/10"><div class="flex items-center gap-2"><span class="w-7 h-7 rounded-full bg-red-500/20 flex items-center justify-center text-[10px] font-bold text-red-500 shrink-0">XRP</span><div><p class="text-sm font-medium text-text">XRP</p><p class="text-[10px] text-muted">Ripple</p></div></div><div class="text-right"><p class="text-red-500 text-sm font-semibold">-3.21%</p></div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sector performance -->
+        <div class="bg-panel border border-border rounded-2xl p-4 sm:p-6">
+          <div class="flex items-center justify-between mb-4 gap-3 flex-wrap">
+            <h3 class="font-semibold text-text">Sector Performance</h3>
+            <div class="flex items-center gap-2">
+              <button class="ch-sector active px-3 py-1.5 rounded-full text-xs font-medium border border-border text-muted transition" data-sector="24H">24H</button>
+              <button class="ch-sector px-3 py-1.5 rounded-full text-xs font-medium border border-border text-muted transition" data-sector="7D">7D</button>
+              <button class="ch-sector px-3 py-1.5 rounded-full text-xs font-medium border border-border text-muted transition" data-sector="30D">30D</button>
+            </div>
+          </div>
+          <div class="grid grid-cols-2 @4xl/content:grid-cols-4 @5xl/content:grid-cols-7 gap-3">
+            <div class="p-4 rounded-xl border border-border text-center"><i data-lucide="layers" class="w-6 h-6 mx-auto text-emerald-500 shrink-0"></i><p class="text-sm font-medium text-text mt-2">DeFi</p><p class="text-xs text-emerald-500">+4.56%</p></div>
+            <div class="p-4 rounded-xl border border-border text-center"><i data-lucide="box" class="w-6 h-6 mx-auto text-emerald-500 shrink-0"></i><p class="text-sm font-medium text-text mt-2">Layer 1</p><p class="text-xs text-emerald-500">+3.21%</p></div>
+            <div class="p-4 rounded-xl border border-border text-center"><i data-lucide="boxes" class="w-6 h-6 mx-auto text-emerald-500 shrink-0"></i><p class="text-sm font-medium text-text mt-2">Layer 2</p><p class="text-xs text-emerald-500">+5.10%</p></div>
+            <div class="p-4 rounded-xl border border-border text-center"><i data-lucide="smile" class="w-6 h-6 mx-auto text-red-500 shrink-0"></i><p class="text-sm font-medium text-text mt-2">Meme</p><p class="text-xs text-red-500">-2.84%</p></div>
+            <div class="p-4 rounded-xl border border-border text-center"><i data-lucide="gamepad-2" class="w-6 h-6 mx-auto text-emerald-500 shrink-0"></i><p class="text-sm font-medium text-text mt-2">Gaming</p><p class="text-xs text-emerald-500">+1.92%</p></div>
+            <div class="p-4 rounded-xl border border-border text-center"><i data-lucide="brain" class="w-6 h-6 mx-auto text-emerald-500 shrink-0"></i><p class="text-sm font-medium text-text mt-2">AI</p><p class="text-xs text-emerald-500">+8.40%</p></div>
+            <div class="p-4 rounded-xl border border-border text-center"><i data-lucide="image" class="w-6 h-6 mx-auto text-red-500 shrink-0"></i><p class="text-sm font-medium text-text mt-2">NFT</p><p class="text-xs text-red-500">-1.15%</p></div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Drawer -->
+    <div class="drawer-overlay" id="chDrawerOverlay"></div>
+    <div class="drawer" id="chDrawer">
+      <div class="p-4 sm:p-6 border-b border-border flex items-center justify-between sticky top-0 bg-panel z-10">
+        <h2 class="text-xl font-bold text-text" id="chDrawerTitle">Details</h2>
+        <button class="ch-drawer-close flex w-10 h-10 items-center justify-center rounded-xl bg-panel border border-border text-muted hover:text-accent hover:border-accent/40 transition" aria-label="Close drawer"><i data-lucide="x" class="w-5 h-5 shrink-0"></i></button>
+      </div>
+      <div class="p-4 sm:p-6">
+        <!-- Coin details -->
+        <div class="ch-panel space-y-6" data-panel="coin" hidden>
+          <div class="flex items-center gap-4">
+            <div class="w-16 h-16 rounded-2xl bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center text-white font-bold shrink-0" id="chCoinBadge">BTC</div>
+            <div class="min-w-0"><h3 class="text-xl font-bold text-text" id="chCoinName">Bitcoin</h3><p class="text-sm text-muted" id="chCoinSymbol">BTC</p></div>
+          </div>
+          <div class="p-4 rounded-xl bg-bg border border-border">
+            <p class="text-xs text-muted mb-1">Current Price</p>
+            <div class="flex items-center gap-3 flex-wrap"><p class="text-2xl font-bold text-text" id="chCoinPrice">$68,542.30</p><span class="font-semibold" id="chCoinChange">+2.34%</span></div>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div class="p-4 rounded-xl border border-border"><p class="text-xs text-muted mb-1">Market Cap</p><p class="font-semibold text-text" id="chCoinCap">$1.35T</p></div>
+            <div class="p-4 rounded-xl border border-border"><p class="text-xs text-muted mb-1">24h Volume</p><p class="font-semibold text-text" id="chCoinVol">$28.5B</p></div>
+            <div class="p-4 rounded-xl border border-border"><p class="text-xs text-muted mb-1">1h Change</p><p class="font-semibold" id="chCoin1h">+0.45%</p></div>
+            <div class="p-4 rounded-xl border border-border"><p class="text-xs text-muted mb-1">7d Change</p><p class="font-semibold" id="chCoin7d">+5.67%</p></div>
+          </div>
+          <div class="rounded-xl p-4 bg-gradient-to-br from-indigo-500/10 via-violet-500/10 to-emerald-500/10 border border-accent/20">
+            <div class="flex items-center gap-2 mb-2"><i data-lucide="sparkles" class="w-4 h-4 text-violet-400 shrink-0"></i><span class="font-semibold text-text">AI Analysis</span><span class="inline-flex px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-500">Bullish</span></div>
+            <p class="text-sm text-muted">Strong on-chain accumulation with healthy funding rates. AI confidence 84%. Support $66,000 · Resistance $71,500.</p>
+          </div>
+          <div class="flex gap-3">
+            <button class="ch-toast-btn flex-1 justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold whitespace-nowrap hover:-translate-y-0.5 transition" data-toast-title="Added to Watchlist" data-toast-msg="Coin added to your watchlist"><i data-lucide="star" class="w-4 h-4 shrink-0"></i>Add to Watchlist</button>
+            <button class="ch-toast-btn flex-1 justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-panel border border-border text-text text-sm font-semibold whitespace-nowrap hover:border-accent/40 hover:text-accent transition" data-toast-title="Alert Set" data-toast-msg="Price alert created"><i data-lucide="bell" class="w-4 h-4 shrink-0"></i>Set Alert</button>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <button class="ch-toast-btn justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-emerald-500 text-white text-sm font-semibold hover:bg-emerald-600 transition" data-toast-title="Buy Order" data-toast-msg="Opening buy ticket…"><i data-lucide="trending-up" class="w-4 h-4 shrink-0"></i>Buy</button>
+            <button class="ch-toast-btn justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-red-500 text-white text-sm font-semibold hover:bg-red-600 transition" data-toast-title="Sell Order" data-toast-msg="Opening sell ticket…"><i data-lucide="trending-down" class="w-4 h-4 shrink-0"></i>Sell</button>
+          </div>
+        </div>
+
+        <!-- AI market analysis -->
+        <div class="ch-panel space-y-6" data-panel="ai" hidden>
+          <div class="flex items-center gap-3"><div class="w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center shrink-0"><i data-lucide="brain" class="w-6 h-6 text-white shrink-0"></i></div><div><h3 class="font-bold text-text">AI Market Intelligence</h3><p class="text-sm text-muted">Generated just now</p></div></div>
+          <div class="p-4 rounded-xl bg-bg border border-border"><h4 class="font-medium text-text mb-2">Market Overview</h4><p class="text-sm text-muted">Total market cap up 12.5% this week. BTC dominance steady at 54.2% as capital rotates into Layer 1 and AI tokens.</p></div>
+          <div class="p-4 rounded-xl bg-orange-500/10 border border-orange-500/20"><h4 class="font-medium text-text mb-2">Risk Alerts</h4><ul class="text-sm text-muted space-y-1"><li>• Meme sector volatility elevated (-2.84% 24h)</li><li>• Funding rates rising on perps — watch for squeezes</li><li>• Low-cap liquidity thin during off-hours</li></ul></div>
+          <div class="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20"><h4 class="font-medium text-text mb-2">Opportunities</h4><ul class="text-sm text-muted space-y-1"><li>• AI tokens (RNDR, FET) showing strong momentum</li><li>• ETH coiling below $3,650 resistance</li><li>• Layer 2 accumulation as fees rise on L1</li></ul></div>
+          <button class="ch-toast-btn w-full justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition" data-toast-title="Report Ready" data-toast-msg="Your full report is downloading"><i data-lucide="download" class="w-4 h-4 shrink-0"></i>Download Full Report</button>
+        </div>
+
+        <!-- Filter settings -->
+        <div class="ch-panel space-y-6" data-panel="filter" hidden>
+          <div>
+            <h4 class="font-semibold text-text mb-3">Display Settings</h4>
+            <div class="space-y-3">
+              <label class="flex items-center justify-between cursor-pointer gap-3"><span class="text-sm text-text">Show Sparklines</span><input type="checkbox" checked class="custom-checkbox" /></label>
+              <label class="flex items-center justify-between cursor-pointer gap-3"><span class="text-sm text-text">Show Volume</span><input type="checkbox" checked class="custom-checkbox" /></label>
+              <label class="flex items-center justify-between cursor-pointer gap-3"><span class="text-sm text-text">Compact Mode</span><input type="checkbox" class="custom-checkbox" /></label>
+            </div>
+          </div>
+          <div>
+            <h4 class="font-semibold text-text mb-3">Filter by Market Cap</h4>
+            <div class="grid grid-cols-2 gap-2">
+              <button class="ch-cap px-3 py-2.5 rounded-xl border border-border text-muted text-sm font-medium transition" data-cap="all">All</button>
+              <button class="ch-cap active px-3 py-2.5 rounded-xl border border-border text-muted text-sm font-medium transition" data-cap="large">Large Cap (&gt;$10B)</button>
+              <button class="ch-cap px-3 py-2.5 rounded-xl border border-border text-muted text-sm font-medium transition" data-cap="mid">Mid Cap ($1B-$10B)</button>
+              <button class="ch-cap px-3 py-2.5 rounded-xl border border-border text-muted text-sm font-medium transition" data-cap="small">Small Cap (&lt;$1B)</button>
+            </div>
+          </div>
+          <div>
+            <h4 class="font-semibold text-text mb-3">Minimum Volume</h4>
+            <select class="w-full px-4 py-3 rounded-xl bg-bg border border-border text-sm text-text focus:outline-none focus:border-accent transition"><option>No minimum</option><option>$1M+</option><option>$10M+</option><option>$100M+</option><option>$1B+</option></select>
+          </div>
+          <div class="flex gap-3">
+            <button class="ch-drawer-close flex-1 justify-center inline-flex items-center px-4 py-3 rounded-xl bg-panel border border-border text-text text-sm font-semibold hover:border-accent/40 hover:text-accent transition">Reset</button>
+            <button class="ch-toast-btn flex-1 justify-center inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-accent to-teal-500 text-white text-sm font-semibold hover:-translate-y-0.5 transition" data-toast-title="Filters Applied" data-toast-msg="Heatmap updated with new filters" data-close><i data-lucide="check" class="w-4 h-4 shrink-0"></i>Apply Filters</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="chToast">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-accent to-teal-500 flex items-center justify-center shrink-0"><i data-lucide="check" class="w-5 h-5 text-white shrink-0"></i></div>
+      <div>
+        <p class="font-semibold text-text" id="chToastTitle">Success</p>
+        <p class="text-sm text-muted" id="chToastMessage">Action completed</p>
+      </div>
+      <button id="chToastClose" class="p-2 ml-auto rounded-lg text-muted hover:bg-border/50 transition" aria-label="Dismiss"><i data-lucide="x" class="w-4 h-4 shrink-0"></i></button>
+    </div>
+
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
+  </body>
+</html>

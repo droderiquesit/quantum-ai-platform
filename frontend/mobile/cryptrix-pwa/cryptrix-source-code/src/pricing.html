@@ -1,0 +1,757 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>Cryptrix — AI Crypto Investing & Trading App</title>
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="apple-touch-icon" href="/assets/images/logo.png" />
+    <meta name="theme-color" content="#00D4AA" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="shortcut icon" href="./assets/images/favicon.ico" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+    <!-- Theme Script (Placed early to prevent FOUC) -->
+    <script>
+      (function () {
+        const saved = localStorage.getItem("theme") || "dark";
+        if (saved === "dark") document.documentElement.classList.add("dark");
+        else document.documentElement.classList.remove("dark");
+      })();
+    </script>
+  </head>
+  <body class="font-sans overflow-x-hidden">
+    <div class="min-h-screen flex justify-center">
+      <div
+        class="relative w-full max-w-[430px] min-h-screen overflow-x-hidden shadow-[0_0_80px_rgba(0,212,170,0.08)]"
+        id="app"
+      >
+        <div
+          class="flex items-center justify-between px-5 py-3.5 sticky top-0 bg-bg-dark/95 backdrop-blur-sm border-b border-white/5 z-10"
+        >
+          <a
+            href="profile.html"
+            class="w-10 h-10 rounded-xl bg-surface-2 border border-white/[0.08] flex items-center justify-center flex-shrink-0"
+          >
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              class="rtl:rotate-180"
+            >
+              <path d="M19 12H5M12 19l-7-7 7-7" />
+            </svg>
+          </a>
+          <h1 class="text-[17px] font-bold">Upgrade Plan</h1>
+          <div class="w-10"></div>
+        </div>
+        <div class="px-5 pt-5 pb-28 animate-fade-up">
+          <!-- Promo Banner -->
+          <div
+            class="bg-gradient-to-br from-secondary/80 to-primary/80 rounded-[24px] p-6 mb-6 text-center text-white relative overflow-hidden shadow-lg shadow-primary/20"
+          >
+            <div
+              class="absolute -top-10 -right-10 w-32 h-32 bg-surface/10 rounded-full blur-3xl"
+            ></div>
+            <div
+              class="absolute -bottom-10 -left-10 w-32 h-32 bg-surface/10 rounded-full blur-3xl"
+            ></div>
+
+            <div class="relative z-10">
+              <div
+                class="w-12 h-12 bg-surface/20 rounded-2xl flex items-center justify-center mx-auto mb-3 backdrop-blur-md"
+              >
+                <svg
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path
+                    d="M2 4l3 12h14l3-12-6 7-4-7-4 7-6-7z"
+                    fill="#FFD700"
+                    stroke="#FFD700"
+                  />
+                  <path d="M5 20h14" stroke-width="3" stroke-linecap="round" />
+                </svg>
+              </div>
+              <h2 class="text-xl font-black mb-1">Unlock the Full Power of AI Trading</h2>
+              <p
+                class="text-white/80 text-xs max-w-[240px] mx-auto leading-relaxed"
+              >
+                AI-powered signals, unlimited trades, zero trading fees, and
+                professional-grade market intelligence
+              </p>
+            </div>
+          </div>
+
+          <!-- Billing Toggle -->
+          <div
+            class="flex items-center justify-between bg-surface-2 border border-white/5 rounded-pill p-1 mb-8"
+          >
+            <button
+              id="toggleMonthly"
+              class="flex-1 py-2.5 text-xs font-bold rounded-pill bg-primary text-bg-dark transition-all"
+            >
+              Monthly
+            </button>
+            <button
+              id="toggleAnnual"
+              class="flex-1 py-2.5 text-xs font-bold rounded-pill text-white/40 hover:text-white transition-all flex items-center justify-center gap-1.5"
+            >
+              Annual
+              <span
+                class="bg-success/20 text-success text-[9px] px-1.5 py-0.5 rounded-full"
+                >-20%</span
+              >
+            </button>
+          </div>
+
+          <!-- Pricing Cards -->
+          <div class="space-y-6">
+            <!-- Free Card -->
+            <div
+              class="bg-surface border border-white/[0.08] rounded-[24px] p-6 relative"
+            >
+              <div class="flex items-start justify-between mb-6">
+                <div class="flex items-center gap-3">
+                  <div
+                    class="w-10 h-10 rounded-xl bg-warning/10 flex items-center justify-center"
+                  >
+                    <svg
+                      width="20"
+                      height="20"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="#FFB800"
+                      stroke-width="2"
+                    >
+                      <circle cx="12" cy="12" r="10" />
+                      <path d="M12 6v12M6 12h12" />
+                    </svg>
+                  </div>
+                  <div>
+                    <h3 class="text-base font-bold">Free</h3>
+                    <p class="text-white/40 text-[10px]">Always free, no card needed</p>
+                  </div>
+                </div>
+                <div class="text-right">
+                  <div class="text-2xl font-black">$0</div>
+                  <div class="text-white/40 text-[10px]">forever</div>
+                </div>
+              </div>
+              <ul class="space-y-3 mb-6">
+                <li class="flex items-center gap-2.5 text-[13px] text-white/70">
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#00C896"
+                    stroke-width="3"
+                  >
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  Basic portfolio tracking
+                </li>
+                <li class="flex items-center gap-2.5 text-[13px] text-white/70">
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#00C896"
+                    stroke-width="3"
+                  >
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  5 price alerts
+                </li>
+                <li class="flex items-center gap-2.5 text-[13px] text-white/70">
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#00C896"
+                    stroke-width="3"
+                  >
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  Market overview
+                </li>
+                <li class="flex items-center gap-2.5 text-[13px] text-white/70">
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#00C896"
+                    stroke-width="3"
+                  >
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  Email support
+                </li>
+              </ul>
+            </div>
+
+            <!-- Pro Card (Most Popular) -->
+            <div
+              class="bg-surface border-2 border-primary rounded-[24px] p-6 relative shadow-lg shadow-primary/10"
+            >
+              <div
+                class="absolute -top-3 left-1/2 -translate-x-1/2 bg-primary text-bg-dark text-[10px] font-black px-4 py-1 rounded-full uppercase tracking-wider"
+              >
+                Most Popular
+              </div>
+
+              <div class="flex items-start justify-between mb-6">
+                <div class="flex items-center gap-3">
+                  <div
+                    class="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center"
+                  >
+                    <svg
+                      width="20"
+                      height="20"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="#00D4AA"
+                      stroke-width="2"
+                    >
+                      <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <h3 class="text-base font-bold text-primary">Pro</h3>
+                    <p class="text-white/40 text-[10px]">
+                      Ideal for active traders
+                    </p>
+                  </div>
+                </div>
+                <div class="text-right">
+                  <div class="text-2xl font-black" id="proPrice">$29</div>
+                  <div class="text-white/40 text-[10px]" id="proPeriod">
+                    per month
+                  </div>
+                </div>
+              </div>
+              <ul class="space-y-3 mb-6">
+                <li class="flex items-center gap-2.5 text-[13px] text-white/70">
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#00C896"
+                    stroke-width="3"
+                  >
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  Everything in Free
+                </li>
+                <li class="flex items-center gap-2.5 text-[13px] text-white/70">
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#00C896"
+                    stroke-width="3"
+                  >
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  AI trading signals (unlimited)
+                </li>
+                <li class="flex items-center gap-2.5 text-[13px] text-white/70">
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#00C896"
+                    stroke-width="3"
+                  >
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  Advanced portfolio analytics
+                </li>
+                <li class="flex items-center gap-2.5 text-[13px] text-white/70">
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#00C896"
+                    stroke-width="3"
+                  >
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  Unlimited price alerts
+                </li>
+                <li class="flex items-center gap-2.5 text-[13px] text-white/70">
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#00C896"
+                    stroke-width="3"
+                  >
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  Real-time market data
+                </li>
+                <li class="flex items-center gap-2.5 text-[13px] text-white/70">
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#00C896"
+                    stroke-width="3"
+                  >
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  Priority support
+                </li>
+                <li class="flex items-center gap-2.5 text-[13px] text-white/70">
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#00C896"
+                    stroke-width="3"
+                  >
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  0.05% trading fee (50% off)
+                </li>
+              </ul>
+              <div
+                class="w-full h-12 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary font-bold text-sm backdrop-blur-sm"
+              >
+                ✓ Your Active Plan
+              </div>
+            </div>
+
+            <!-- Elite Card -->
+            <div
+              class="bg-surface border border-white/[0.08] rounded-[24px] p-6 relative overflow-hidden group"
+            >
+              <div
+                class="absolute -top-10 -right-10 w-32 h-32 bg-secondary/5 rounded-full blur-3xl group-hover:bg-secondary/10 transition-all"
+              ></div>
+
+              <div class="flex items-start justify-between mb-6">
+                <div class="flex items-center gap-3">
+                  <div
+                    class="w-10 h-10 rounded-xl bg-secondary/10 flex items-center justify-center"
+                  >
+                    <svg
+                      width="20"
+                      height="20"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="#7B61FF"
+                      stroke-width="2"
+                    >
+                      <path d="M2 4l3 12h14l3-12-6 7-4-7-4 7-6-7z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <h3 class="text-base font-bold text-secondary">Elite</h3>
+                    <p class="text-white/40 text-[10px]">
+                      For professional traders
+                    </p>
+                  </div>
+                </div>
+                <div class="text-right">
+                  <div class="text-2xl font-black" id="elitePrice">$79</div>
+                  <div class="text-white/40 text-[10px]" id="elitePeriod">
+                    per month
+                  </div>
+                </div>
+              </div>
+              <ul class="space-y-3 mb-6">
+                <li class="flex items-center gap-2.5 text-[13px] text-white/70">
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#00C896"
+                    stroke-width="3"
+                  >
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  Everything in Pro
+                </li>
+                <li class="flex items-center gap-2.5 text-[13px] text-white/70">
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#00C896"
+                    stroke-width="3"
+                  >
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  AI Robo-advisor (24/7)
+                </li>
+                <li class="flex items-center gap-2.5 text-[13px] text-white/70">
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#00C896"
+                    stroke-width="3"
+                  >
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  Copy trading (Top Traders)
+                </li>
+                <li class="flex items-center gap-2.5 text-[13px] text-white/70">
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#00C896"
+                    stroke-width="3"
+                  >
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  API access (1000 req/min)
+                </li>
+                <li class="flex items-center gap-2.5 text-[13px] text-white/70">
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#00C896"
+                    stroke-width="3"
+                  >
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  Dedicated account manager
+                </li>
+                <li
+                  class="flex items-center gap-2.5 text-[13px] text-secondary font-bold"
+                >
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#00C896"
+                    stroke-width="3"
+                  >
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  ZERO trading fees
+                </li>
+                <li class="flex items-center gap-2.5 text-[13px] text-white/70">
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#00C896"
+                    stroke-width="3"
+                  >
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  Early access to new features
+                </li>
+              </ul>
+              <a
+                href="checkout.html"
+                class="w-full h-12 rounded-xl bg-gradient-to-r from-secondary to-[#6040EE] flex items-center justify-center text-white font-bold text-sm shadow-lg shadow-secondary/20 active:scale-95 transition-all"
+              >
+                Upgrade to Elite
+              </a>
+            </div>
+          </div>
+
+          <!-- Feature Comparison -->
+          <div class="mt-12 mb-10">
+            <h4
+              class="text-sm font-bold mb-6 flex items-center justify-between"
+            >
+              Feature Comparison
+            </h4>
+            <div
+              class="bg-surface border border-white/5 rounded-[24px] overflow-hidden"
+            >
+              <table class="w-full text-left text-[11px]">
+                <thead class="bg-surface/5">
+                  <tr>
+                    <th class="py-3 px-4 text-white/60 font-medium">Feature</th>
+                    <th class="py-3 px-2 text-center text-white/60 font-medium">
+                      Free
+                    </th>
+                    <th class="py-3 px-2 text-center text-primary font-bold">
+                      Pro
+                    </th>
+                    <th class="py-3 px-2 text-center text-secondary font-bold">
+                      Elite
+                    </th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-white/5">
+                  <tr>
+                    <td class="py-3 px-4 text-white/80">AI Signals</td>
+                    <td class="py-3 px-2 text-center">❌</td>
+                    <td class="py-3 px-2 text-center">✅</td>
+                    <td class="py-3 px-2 text-center">✅</td>
+                  </tr>
+                  <tr>
+                    <td class="py-3 px-4 text-white/80">Price Alerts</td>
+                    <td class="py-3 px-2 text-center">5</td>
+                    <td class="py-3 px-2 text-center text-primary font-bold">
+                      ∞
+                    </td>
+                    <td class="py-3 px-2 text-center text-secondary font-bold">
+                      ∞
+                    </td>
+                  </tr>
+                  <tr>
+                    <td class="py-3 px-4 text-white/80">Analytics</td>
+                    <td class="py-3 px-2 text-center">Basic</td>
+                    <td class="py-3 px-2 text-center text-primary">Advanced</td>
+                    <td class="py-3 px-2 text-center text-secondary">
+                      Premium
+                    </td>
+                  </tr>
+                  <tr>
+                    <td class="py-3 px-4 text-white/80">Trade Fees</td>
+                    <td class="py-3 px-2 text-center">0.1%</td>
+                    <td class="py-3 px-2 text-center">0.05%</td>
+                    <td class="py-3 px-2 text-center text-secondary font-bold">
+                      0%
+                    </td>
+                  </tr>
+                  <tr>
+                    <td class="py-3 px-4 text-white/80">API Access</td>
+                    <td class="py-3 px-2 text-center">❌</td>
+                    <td class="py-3 px-2 text-center">❌</td>
+                    <td class="py-3 px-2 text-center">✅</td>
+                  </tr>
+                  <tr>
+                    <td class="py-3 px-4 text-white/80">Support</td>
+                    <td class="py-3 px-2 text-center text-white/40">Email</td>
+                    <td class="py-3 px-2 text-center text-primary">Priority</td>
+                    <td class="py-3 px-2 text-center text-secondary">
+                      Dedicated
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Trust Badges -->
+          <div class="grid grid-cols-3 gap-3 mb-12">
+            <div
+              class="bg-surface-2 border border-white/5 rounded-2xl p-4 text-center"
+            >
+              <div class="text-xl mb-1">🔒</div>
+              <div class="text-[10px] font-bold">Secure</div>
+              <div class="text-[8px] text-white/40">256-bit SSL</div>
+            </div>
+            <div
+              class="bg-surface-2 border border-white/5 rounded-2xl p-4 text-center"
+            >
+              <div class="text-xl mb-1">💳</div>
+              <div class="text-[10px] font-bold">Easy</div>
+              <div class="text-[8px] text-white/40">Cancel anytime</div>
+            </div>
+            <div
+              class="bg-surface-2 border border-white/5 rounded-2xl p-4 text-center"
+            >
+              <div class="text-xl mb-1">🌍</div>
+              <div class="text-[10px] font-bold">Global</div>
+              <div class="text-[8px] text-white/40">150+ countries</div>
+            </div>
+          </div>
+
+          <!-- FAQ Section -->
+          <div class="mb-10">
+            <h4
+              class="text-sm font-bold mb-5 flex items-center justify-between"
+            >
+              Frequently Asked Questions
+            </h4>
+            <div class="space-y-3">
+              <div
+                class="bg-surface-2 border border-white/5 rounded-2xl overflow-hidden"
+              >
+                <div
+                  onclick="
+                    const n = this.nextElementSibling;
+                    n.style.display =
+                      n.style.display === 'block' ? 'none' : 'block';
+                  "
+                  class="px-5 py-4 flex items-center justify-between cursor-pointer"
+                >
+                  <span class="text-xs font-semibold"
+                    >Can I cancel anytime?</span
+                  >
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M6 9l6 6 6-6" />
+                  </svg>
+                </div>
+                <div
+                  class="px-5 pb-4 text-[11px] text-white/40 leading-relaxed"
+                  style="display: none"
+                >
+                  Yes. You can cancel at any time from your account billing
+                  settings. You'll retain full access to your plan until the
+                  end of the current billing period.
+                </div>
+              </div>
+              <div
+                class="bg-surface-2 border border-white/5 rounded-2xl overflow-hidden"
+              >
+                <div
+                  onclick="
+                    const n = this.nextElementSibling;
+                    n.style.display =
+                      n.style.display === 'block' ? 'none' : 'block';
+                  "
+                  class="px-5 py-4 flex items-center justify-between cursor-pointer"
+                >
+                  <span class="text-xs font-semibold"
+                    >What payment methods are accepted?</span
+                  >
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M6 9l6 6 6-6" />
+                  </svg>
+                </div>
+                <div
+                  class="px-5 pb-4 text-[11px] text-white/40 leading-relaxed"
+                  style="display: none"
+                >
+                  We accept major credit cards (Visa, Mastercard, Amex), Apple
+                  Pay, Google Pay, and several popular cryptocurrencies like
+                  BTC, ETH, and USDT.
+                </div>
+              </div>
+              <div
+                class="bg-surface-2 border border-white/5 rounded-2xl overflow-hidden"
+              >
+                <div
+                  onclick="
+                    const n = this.nextElementSibling;
+                    n.style.display =
+                      n.style.display === 'block' ? 'none' : 'block';
+                  "
+                  class="px-5 py-4 flex items-center justify-between cursor-pointer"
+                >
+                  <span class="text-xs font-semibold"
+                    >Is there a free trial?</span
+                  >
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M6 9l6 6 6-6" />
+                  </svg>
+                </div>
+                <div
+                  class="px-5 pb-4 text-[11px] text-white/40 leading-relaxed"
+                  style="display: none"
+                >
+                  Yes. We offer a 7-day free trial on the Pro plan, giving you
+                  full access to AI signals, advanced analytics, and all Pro
+                  features — no commitment required.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <include-bottom-nav />
+      </div>
+    </div>
+    <script>
+      const toggleMonthly = document.getElementById("toggleMonthly");
+      const toggleAnnual = document.getElementById("toggleAnnual");
+      const proPrice = document.getElementById("proPrice");
+      const proPeriod = document.getElementById("proPeriod");
+      const elitePrice = document.getElementById("elitePrice");
+      const elitePeriod = document.getElementById("elitePeriod");
+
+      const prices = {
+        monthly: { pro: "$29", elite: "$79", period: "per month" },
+        annual: {
+          pro: "$23",
+          elite: "$63",
+          period: "per month, billed annually",
+        },
+      };
+
+      function updatePrices(type) {
+        proPrice.textContent = prices[type].pro;
+        elitePrice.textContent = prices[type].elite;
+        proPeriod.textContent = prices[type].period;
+        elitePeriod.textContent = prices[type].period;
+
+        if (type === "monthly") {
+          toggleMonthly.classList.add("bg-primary", "text-bg-dark");
+          toggleMonthly.classList.remove("text-white/40");
+          toggleAnnual.classList.remove("bg-primary", "text-bg-dark");
+          toggleAnnual.classList.add("text-white/40");
+        } else {
+          toggleAnnual.classList.add("bg-primary", "text-bg-dark");
+          toggleAnnual.classList.remove("text-white/40");
+          toggleMonthly.classList.remove("bg-primary", "text-bg-dark");
+          toggleMonthly.classList.add("text-white/40");
+        }
+      }
+
+      toggleMonthly.addEventListener("click", () => updatePrices("monthly"));
+      toggleAnnual.addEventListener("click", () => updatePrices("annual"));
+    </script>
+    <script src="./assets/js/data.js"></script>
+    <script src="./assets/js/charts.js"></script>
+    <script src="./assets/js/components.js"></script>
+    <script src="./assets/js/app.js"></script>
+  </body>
+</html>
