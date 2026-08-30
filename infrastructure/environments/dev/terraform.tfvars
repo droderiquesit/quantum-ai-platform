@@ -46,7 +46,27 @@ max_node_count = 3
 # cluster with a public control plane is a private cluster in name only.
 authorised_networks = []
 
-edge_cells = {}
+# The first two remote cells of the v4 footprint (docs/operations/
+# deploying-an-edge-cell.md): London in the metro, Tokyo in the metro.
+# CIDRs follow the runbook's ladder — cell 1 and cell 2. `venues` is empty
+# deliberately: a fresh cell can reach nothing until the venue ranges are
+# added, which is step 9 of the runbook and never the default.
+edge_cells = {
+  london-1 = {
+    region       = "europe-west2"
+    subnet_cidr  = "10.16.0.0/20"
+    pod_cidr     = "10.20.0.0/14"
+    service_cidr = "10.24.0.0/20"
+    venues       = {}
+  }
+  tokyo-1 = {
+    region       = "asia-northeast1"
+    subnet_cidr  = "10.32.0.0/20"
+    pod_cidr     = "10.36.0.0/14"
+    service_cidr = "10.40.0.0/20"
+    venues       = {}
+  }
+}
 
 # Every managed service off. Development runs on memory and local files, which
 # is what the three implemented storage targets are for.

@@ -113,7 +113,16 @@ resource "google_container_cluster" "primary" {
     # key_name is still tracked. Remove this ignore when the provider is
     # upgraded to a major that knows the new enum; until then a plan that
     # is forever red teaches people to stop reading plans.
-    ignore_changes = [database_encryption[0].state]
+    ignore_changes = [
+      database_encryption[0].state,
+      # The top-level node_config describes only the throwaway default pool,
+      # which remove_default_node_pool deleted at creation. The provider
+      # still diffs its recorded state (a tags list nothing can change) and
+      # then fails the update with 'Node pool "default-pool" not found' —
+      # taking every unrelated change in the same apply down with it. The
+      # real pool is its own resource and is fully tracked.
+      node_config,
+    ]
   }
 
   # Binary authorisation: only images signed by our pipeline run.
@@ -216,11 +225,15 @@ resource "google_container_cluster" "primary" {
   }
 
   monitoring_config {
+    # Listed in the API's own canonical order (SCHEDULER before
+    # CONTROLLER_MANAGER); any other order reads back as a permanent diff,
+    # and the update that would "fix" it trips over the removed default
+    # pool and fails the whole apply.
     enable_components = [
       "SYSTEM_COMPONENTS",
       "APISERVER",
-      "CONTROLLER_MANAGER",
       "SCHEDULER",
+      "CONTROLLER_MANAGER",
       "STORAGE",
       "POD",
       "DAEMONSET",

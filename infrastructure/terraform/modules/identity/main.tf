@@ -34,6 +34,16 @@ resource "google_identity_platform_config" "algorik" {
   count   = var.enabled ? 1 : 0
   project = var.project_id
 
+  lifecycle {
+    # The API materializes a default multi_tenant block (allow_tenants =
+    # false) on every read; the provider then plans its removal on every
+    # run, applies it, and the API adds it back — a diff that can never
+    # converge and says nothing. Multi-tenancy stays off either way, and
+    # the same applies to the phone_number sign-in block inside sign_in:
+    # materialized disabled, planned away, added back.
+    ignore_changes = [multi_tenant, sign_in[0].phone_number]
+  }
+
   # Every domain a browser may be redirected back to after authentication.
   # Google-issued URLs first (Cloud Run's *.run.app hostnames arrive as
   # deployment outputs), algorik.ai domains added at migration. Localhost
