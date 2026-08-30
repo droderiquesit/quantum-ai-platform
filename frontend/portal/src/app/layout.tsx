@@ -49,6 +49,8 @@ export const viewport: Viewport = {
  * Dark is the default and stores no attribute, so a browser with storage
  * denied simply gets the default.
  */
+import { ThemeSync } from "@/components/chrome/ThemeSync";
+
 const THEME_BOOT = `try{document.documentElement.dataset.theme=localStorage.getItem("algorik.theme")==="light"?"light":"dark"}catch(e){document.documentElement.dataset.theme="dark"}`;
 
 /**
@@ -62,6 +64,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" suppressHydrationWarning>
       <body>
         <script dangerouslySetInnerHTML={{ __html: THEME_BOOT }} />
+        <ThemeSync />
         {children}
       </body>
     </html>
