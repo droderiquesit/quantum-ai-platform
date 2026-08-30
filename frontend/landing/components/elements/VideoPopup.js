@@ -1,54 +1,44 @@
 'use client'
-import { useState } from 'react'
-import ModalVideo from 'react-modal-video'
+import { useRef } from 'react'
 
+// A video lightbox with no video is a lie on a landing page, so this renders
+// nothing unless a caller supplies a real videoId. The template shipped a
+// stock YouTube demo here (and a react-modal-video dependency pinned to
+// React 18); both are gone — when the desk records an actual product video,
+// pass its id and the native <dialog> below plays it with no dependency.
+export default function VideoPopup({ style, text, videoId }) {
+    const dialogRef = useRef(null)
+    if (!videoId) return null
 
-export default function VideoPopup({ style, text }) {
-    const [isOpen, setOpen] = useState(false)
+    const open = () => dialogRef.current?.showModal()
+    const close = () => dialogRef.current?.close()
+
+    const trigger = (
+        <a onClick={open} className="overlay-link lightbox-image video-fancybox ripple">
+            <span className={style ? 'icon-10' : 'icon-11'} />
+        </a>
+    )
+
     return (
         <>
-            {/* <a onClick={() => setOpen(true)} className="lightbox-image"><i className="icon-play" /></a> */}
-            {/* <span className="icon-10" onClick={() => setOpen(true)} /> */}
-            {!style &&
-                <a onClick={() => setOpen(true)} className="overlay-link lightbox-image video-fancybox ripple"><span className="icon-11" />
-                </a>
-
-            }
-
-
-            {style === 1 &&
+            {!style && trigger}
+            {style >= 1 && (
                 <div className="video-btn">
-                    <a onClick={() => setOpen(true)} className="overlay-link lightbox-image video-fancybox ripple"><span className="icon-10" /> </a>
+                    {trigger}
+                    {style === 2 && <h6>{text || 'Latest Program Video'}</h6>}
                 </div>
-            }
-            {style === 2 &&
-                <div className="video-btn">
-                    <a onClick={() => setOpen(true)} className="overlay-link lightbox-image video-fancybox ripple"><span className="icon-10" /></a><h6>{text ? text : "Latest Program Video"}</h6>
-                </div>
-            }
-            {style === 3 &&
-                <div className="video-btn">
-                    <a onClick={() => setOpen(true)} className="lightbox-image">
-                        <i className="customicon-play-button" />
-                        <span className="border-animation border-1" />
-                        <span className="border-animation border-2" />
-                        <span className="border-animation border-3" />
-                    </a>
-                </div>
-            }
-            {style === 4 &&
-                <div className="video-btn">
-                    <a onClick={() => setOpen(true)} className="lightbox-image">
-                        <img src="/assets/images-4/icons/video-btn-1.png" alt="" /></a>
-                </div>
-            }
-            {style === 5 &&
-                <a onClick={() => setOpen(true)} className="video-btn overlay-link lightbox-image video-fancybox ripple"><span className="fas fa-play" /></a>
-            }
-
-
-
-            <ModalVideo channel='youtube' autoplay isOpen={isOpen} videoId="vfhzo499OeA" onClose={() => setOpen(false)} />
+            )}
+            <dialog ref={dialogRef} onClick={close} style={{ padding: 0, border: 0, background: 'transparent', maxWidth: '90vw' }}>
+                <iframe
+                    title="video"
+                    width="960"
+                    height="540"
+                    style={{ maxWidth: '90vw', maxHeight: '80vh', display: 'block', border: 0 }}
+                    src={`https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1`}
+                    allow="autoplay; encrypted-media"
+                    allowFullScreen
+                />
+            </dialog>
         </>
     )
 }
