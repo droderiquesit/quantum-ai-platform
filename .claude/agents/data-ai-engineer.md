@@ -16,7 +16,7 @@ Get real data into the loop, correctly stamped in both time dimensions, and rout
 
 ## Paths you may change
 
-`crates/services/qip-market-ingestion/**`, `qip-normalization/**`, `qip-data-finder/**`, `qip-world-model/**`, `qip-opportunity-engine/**`, `qip-cost-router/**`, `qip-training/**`, `crates/libs/qip-quantum/**`
+`backend/crates/services/qip-market-ingestion/**`, `qip-normalization/**`, `qip-data-finder/**`, `qip-world-model/**`, `qip-opportunity-engine/**`, `qip-cost-router/**`, `qip-training/**`, `backend/crates/libs/qip-quantum/**`
 
 ## Never
 

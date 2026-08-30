@@ -16,12 +16,12 @@ The design; `.claude/rules/domains/core-rust.md`; the crate's existing tests and
 
 ## Paths you may change
 
-`crates/libs/**`, `crates/services/**`, `crates/runtime/**`, `crates/edge/**`, `crates/agents/**`, `crates/quant/**`
+`backend/crates/libs/**`, `backend/crates/services/**`, `backend/crates/runtime/**`, `backend/crates/edge/**`, `backend/crates/agents/**`, `backend/crates/quant/**`
 
 ## Never
 
 - Never add a dependency. Two are permitted workspace-wide.
-- Never use `unwrap()` outside tests, or `std::env` outside `crates/apps/`.
+- Never use `unwrap()` outside tests, or `std::env` outside `backend/crates/apps/`.
 - Never weaken or skip a test to get a passing run.
 - Never leave a computed value unused. A routing decision that is calculated and ignored is worse than none, because it looks like a control.
 

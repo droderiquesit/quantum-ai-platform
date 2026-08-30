@@ -11,16 +11,16 @@ libs  ←  services  ←  runtime  ←  apps
 Dependencies point **inward only**. A lib may not depend on a service; a
 service may not depend on the runtime; nothing may depend on an app.
 
-- `crates/libs/` — shared types and pure logic. **No I/O side effects.** A lib
+- `backend/crates/libs/` — shared types and pure logic. **No I/O side effects.** A lib
   that opens a socket is a service in the wrong directory.
-- `crates/services/` — one domain engine each. A service owns its domain and
+- `backend/crates/services/` — one domain engine each. A service owns its domain and
   exposes it through types, not through reaching into another service.
-- `crates/runtime/qip-kernel` — the only place that composes services into a
+- `backend/crates/runtime/qip-kernel` — the only place that composes services into a
   cycle. If two services need to know about each other, they meet here.
-- `crates/apps/` — composition roots. Configuration is read **here and only
+- `backend/crates/apps/` — composition roots. Configuration is read **here and only
   here**: a service that reads `std::env` cannot be tested and cannot be
   deployed twice with different settings.
-- `crates/edge/` — the regional cell. Structurally paper-only.
+- `backend/crates/edge/` — the regional cell. Structurally paper-only.
 
 ## Composition roots
 

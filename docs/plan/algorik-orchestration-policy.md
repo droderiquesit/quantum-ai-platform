@@ -112,8 +112,8 @@ six** are established and written down:
 5. **Expected cost** — priced per task class, with a ceiling, before the first
    call.
 6. **Data classification** — which classes may be sent at all. Anything under
-   `crates/services/qip-risk-engine`, `qip-execution-engine`, `qip-capital`,
-   `qip-compliance` or `crates/edge` does not leave, at any price.
+   `backend/crates/services/qip-risk-engine`, `qip-execution-engine`, `qip-capital`,
+   `qip-compliance` or `backend/crates/edge` does not leave, at any price.
 
 **Nothing is assumed free, open, self-hosted, or authorized because its name is
 familiar.** Ollama and vLLM are local *runtimes*, not permissions — running a
@@ -250,6 +250,7 @@ failure is a false statement about the system, whoever wrote it.
 Deterministic and machine-checked, in this order:
 
 ```
+cd backend
 cargo fmt --all --check
 cargo clippy --workspace --all-targets        # zero warnings
 cargo test --workspace --no-fail-fast         # --no-fail-fast is not optional

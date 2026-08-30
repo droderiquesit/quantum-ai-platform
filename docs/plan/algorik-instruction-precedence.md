@@ -17,7 +17,7 @@ working tree clean.
 | Domain rules | `.claude/rules/{00-enterprise-governance,01-security-and-safety,02-change-management,10-product-direction}.md` | Governance, safety, change management, product direction |
 | Architecture rules | `.claude/rules/architecture/{00-boundaries,01-testing-strategy}.md` | Dependency direction; test placement and mutation duty |
 | Domain rules | `.claude/rules/domains/*.md` | core-rust, data-and-streaming, frontend, infrastructure, observability, risk-and-execution |
-| Nested instructions | `frontend/CLAUDE.md`, `infrastructure/CLAUDE.md` | Closest-to-file conventions |
+| Nested instructions | `frontend/portal/CLAUDE.md`, `infrastructure/CLAUDE.md` | Closest-to-file conventions |
 | Claude config | `.claude/settings.json` | Permissions, deny-list, two hooks |
 | Agents | `.claude/agents/` — 13 agents | Reused, not duplicated (see §4) |
 | Skills | `.claude/skills/` — 8 skills | `vision-to-plan` used to produce this plan |
@@ -39,7 +39,7 @@ on. That is a finding, not a skipped step.
    and `00-enterprise-governance.md`.
 3. **Root Claude configuration** — `CLAUDE.md`, `.claude/settings.json`.
 4. **Domain-level configuration** — `.claude/rules/domains/*`, `architecture/*`.
-5. **Application-level instructions** — `frontend/CLAUDE.md`, `infrastructure/CLAUDE.md`.
+5. **Application-level instructions** — `frontend/portal/CLAUDE.md`, `infrastructure/CLAUDE.md`.
 6. **Package-level conventions** — per-crate and per-package docs.
 
 The brief states it supersedes conflicting *frontend, authentication,
@@ -102,14 +102,14 @@ packages and 22 passing Playwright tests.
 
 **Superseded by commit `c12b98f`.** The licensed package arrived while this
 programme was in its second slice: the SignalAIX admin template
-(`frontend/admin/`), a landing template (`frontend/landing/`), the Cryptrix
-mobile PWA (`frontend/mobile/`), and the real Algorik brand assets
-(`frontend/logos/`) — horizontal logo, icon set, favicon, Apple touch icon,
+(`vendor/templates/signalaix/`), a landing template (`frontend/landing/`), the Cryptrix
+mobile PWA (`vendor/templates/cryptrix/`), and the real Algorik brand assets
+(now in `frontend/packages/brand/assets/`) — horizontal logo, icon set, favicon, Apple touch icon,
 Android Chrome icons and a `site.webmanifest` declaring `#071B4D`.
 
 The resolution above is therefore **withdrawn**. The brand is not authored
-in-tree: `packages/brand` now serves the supplied artwork, and
-`packages/design-tokens` derives its colours from the shipped icon — navy
+in-tree: `frontend/packages/brand` now serves the supplied artwork, and
+`frontend/packages/design-tokens` derives its colours from the shipped icon — navy
 `#071B4D`, cyan `#00c3fd`, blue `#005df8`, violet `#3700db`, sampled rather
 than chosen. The invented "aperture" mark written under the old assumption has
 been deleted.
@@ -125,9 +125,11 @@ The brief asks for root-level `packages/`. The existing app lives at
 deploying it, but does carry the only passing behavioural suite in the
 repository.
 
-Resolution: `packages/` is created at the root as npm workspaces and the
-existing app **consumes** them in place rather than being moved. A move buys
-nothing here and risks the one tested surface. Recorded in ADR 0014.
+Resolution: `packages/` is created as npm workspaces and the existing app
+**consumes** them in place rather than being moved. A move buys nothing here
+and risks the one tested surface. Recorded in ADR 0014. (ADR 0016 later moved
+the workspace root and the packages under `frontend/`, once the portal's own
+gates existed to prove the move safe.)
 
 ## 4. Agents and skills — reused, not duplicated
 
@@ -154,7 +156,7 @@ refactor · replace · remove as duplicate · retain during migration.
 
 | Resource | Path | Classification |
 |---|---|---|
-| Design tokens | `frontend/src/app/globals.css` `@theme` | **move to shared package** (`design-tokens`) |
+| Design tokens | `frontend/portal/src/app/globals.css` `@theme` | **move to shared package** (`design-tokens`) |
 | Component primitives | `components/data/{Panel,Bits,Kpi,States,Simulated}.tsx` | **move to shared package** (`ui`) |
 | Chart primitives | `components/viz/primitives.tsx` | **move to shared package** (`charts`) |
 | API client + types | `lib/api/{client,types,endpoints}.ts` | **move to shared package** (`api-client`, `shared-types`) |
@@ -163,9 +165,9 @@ refactor · replace · remove as duplicate · retain during migration.
 | Simulation framework | `lib/sim/index.ts` | **move to shared package** (`testing`) |
 | Gateway (BFF) | `app/api/gateway`, `lib/server/upstream.ts` | **refactor** — becomes the session-aware BFF |
 | Chrome | `components/chrome/*` | **refactor** — shell splits into shared and app-specific |
-| Console pages (35) | `frontend/src/app/**` | **reuse unchanged** — become the portal |
+| Console pages (35) | `frontend/portal/src/app/**` | **reuse unchanged** — become the portal |
 | PWA (manifest, worker, icons) | `frontend/public/*`, `app/manifest.ts` | **reuse unchanged** — the mobile surface |
-| Playwright suite (22 tests) | `frontend/tests/*` | **reuse unchanged**, extended |
+| Playwright suite (22 tests) | `frontend/portal/tests/*` | **reuse unchanged**, extended |
 | Brand assets | — | **absent; authored new** |
 | Licensed template | — | **absent** (see C3) |
 

@@ -12,11 +12,11 @@ Make the platform's state legible to the desk operating it.
 
 ## Inputs required
 
-`frontend/src/**`, `crates/apps/qip-web/src/pages.rs`, the API surface.
+`frontend/portal/src/**`, `backend/crates/apps/qip-web/src/pages.rs`, the API surface.
 
 ## Paths you may change
 
-`frontend/src/**`, `docs/product/**`
+`frontend/portal/src/**`, `docs/product/**`
 
 ## Never
 

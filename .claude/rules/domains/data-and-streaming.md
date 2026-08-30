@@ -1,8 +1,8 @@
 # Domain: data and event streaming
 
-**Scope** — `crates/services/qip-market-ingestion/**`, `qip-normalization/**`,
-`qip-data-finder/**`, `qip-streaming/**`, `crates/libs/qip-events/**`,
-`crates/edge/qip-sequencing/**`
+**Scope** — `backend/crates/services/qip-market-ingestion/**`, `qip-normalization/**`,
+`qip-data-finder/**`, `qip-streaming/**`, `backend/crates/libs/qip-events/**`,
+`backend/crates/edge/qip-sequencing/**`
 
 ## Approved
 

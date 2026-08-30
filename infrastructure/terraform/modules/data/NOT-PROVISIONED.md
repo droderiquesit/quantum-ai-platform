@@ -14,7 +14,7 @@ than to discover from a bill.
 The diagram places Google Pub/Sub between the data mesh and the regional
 brains, carrying every state delta and capital envelope in the platform.
 
-ADR 0011 replaced it with an in-tree HTTP/1.1 mesh (`crates/libs/qip-transport`),
+ADR 0011 replaced it with an in-tree HTTP/1.1 mesh (`backend/crates/libs/qip-transport`),
 and that decision is load-bearing rather than cosmetic: retries with seeded
 jitter, a bounded outbound queue that refuses rather than drops, at-least-once
 delivery with idempotency keys, dead-lettering, a circuit breaker and a durable
@@ -44,7 +44,7 @@ reasoning did not change, so it now lives in the variable's description where
 somebody deciding will actually read it, and the rest of this section is the
 long form.
 
-`crates/libs/qip-confidential` deliberately does **not** provide confidential
+`backend/crates/libs/qip-confidential` deliberately does **not** provide confidential
 computing: it is statistical disclosure control — a k-anonymity gate, a
 monotone privacy budget and calibrated noise — and its module documentation
 says in its first paragraph that there is no enclave, no attestation and no

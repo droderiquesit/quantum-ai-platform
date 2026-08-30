@@ -12,8 +12,8 @@
 # own HTTP, hashing and numerics, so there is nothing here that needs a dynamic
 # library.
 #
-# The toolchain is pinned by rust-toolchain.toml in the repository root, so the
-# tag below only has to be new enough to honour it.
+# The toolchain is pinned by backend/rust-toolchain.toml, so the tag below only
+# has to be new enough to honour it.
 
 FROM rust:1.94-alpine AS build
 
@@ -24,7 +24,10 @@ ARG BINARY
 RUN apk add --no-cache musl-dev
 
 WORKDIR /src
-COPY . .
+# The build context is the repository root; only the Rust workspace under
+# backend/ participates in the image. Copying the whole context would drag the
+# frontend's node_modules into every image build for nothing.
+COPY backend/ .
 
 # --locked, because a build that resolves a different dependency graph from the
 # one the test suite ran against is not the thing that was tested.

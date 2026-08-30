@@ -14,7 +14,7 @@ them, and they are never reported as live before that.
 ## Phase 0 — where the programme is now
 
 Everything is local. The applications read every URL and identity setting from
-validated environment configuration (`packages/shared-types`), which is the
+validated environment configuration (`frontend/packages/shared-types`), which is the
 mechanism that makes the rest of this document configuration-only:
 
 | Key | Local value | After first deploy | After migration |

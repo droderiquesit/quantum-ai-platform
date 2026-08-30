@@ -1,7 +1,7 @@
 # Domain: observability and SRE
 
-**Scope** — `crates/libs/qip-observability/**`, `ops/observability/**`, and the
-health surfaces in `crates/apps/**`
+**Scope** — `backend/crates/libs/qip-observability/**`, `docs/ops/observability/**`, and the
+health surfaces in `backend/crates/apps/**`
 
 ## The state of this domain
 

@@ -37,6 +37,6 @@ output "node_pool_bounds" {
 }
 
 output "confidential_nodes" {
-  description = "Whether the node pool's memory is encrypted by an AMD SEV key. See the variable: this is not what crates/libs/qip-confidential provides."
+  description = "Whether the node pool's memory is encrypted by an AMD SEV key. See the variable: this is not what backend/crates/libs/qip-confidential provides."
   value       = var.enable_confidential_nodes
 }

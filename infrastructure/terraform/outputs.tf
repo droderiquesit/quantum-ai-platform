@@ -175,7 +175,7 @@ output "confidential_nodes" {
     Whether the node pool's memory is encrypted by an AMD SEV key.
 
     Surfaced so the answer comes from the infrastructure rather than from a
-    crate's name. `crates/libs/qip-confidential` is statistical disclosure
+    crate's name. `backend/crates/libs/qip-confidential` is statistical disclosure
     control with no enclave and no attestation, and this being true does not
     change that; see the variable and modules/data/NOT-PROVISIONED.md.
   EOT

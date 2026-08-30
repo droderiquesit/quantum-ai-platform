@@ -1,0 +1,181 @@
+# Quantum AI Investment Platform — Cargo workspace.
+#
+# Architectural boundaries are enforced by the compiler: a crate can only reach
+# what it declares in `[dependencies]`. See docs/adr/0002-two-dependencies.md
+# and docs/adr/0016-repository-layout.md.
+[workspace]
+resolver = "3"
+members = [
+    # --- libraries: shared, dependency-light, no I/O side effects ---
+    "crates/libs/qip-core",
+    "crates/libs/qip-numerics",
+    "crates/libs/qip-events",
+    "crates/libs/qip-financial",
+    "crates/libs/qip-observability",
+    "crates/libs/qip-storage",
+    "crates/libs/qip-market",
+    "crates/libs/qip-portfolio",
+    "crates/libs/qip-risk",
+    "crates/libs/qip-ai",
+    "crates/libs/qip-agents",
+    "crates/libs/qip-quantum",
+    "crates/libs/qip-contracts",
+    "crates/libs/qip-compliance",
+    "crates/libs/qip-transport",
+    "crates/libs/qip-confidential",
+
+    # --- source-adjacent edge cells: the hot execution path ---
+    "crates/edge/qip-protocols",
+    "crates/edge/qip-sequencing",
+    "crates/edge/qip-orderbook",
+    "crates/edge/qip-feature-dag",
+    "crates/edge/qip-strategy",
+    "crates/edge/qip-arbitrage",
+    "crates/edge/qip-routing",
+    "crates/edge/qip-edge",
+
+    # --- domain services: each owns one stage of the intelligence loop ---
+    "crates/services/qip-data-finder",
+    "crates/services/qip-market-ingestion",
+    "crates/services/qip-normalization",
+    "crates/services/qip-entity-resolution",
+    "crates/services/qip-world-model",
+    "crates/services/qip-opportunity-engine",
+    "crates/services/qip-reasoning-engine",
+    "crates/services/qip-simulation-engine",
+    "crates/services/qip-optimization-engine",
+    "crates/services/qip-portfolio-engine",
+    "crates/services/qip-risk-engine",
+    "crates/services/qip-execution-engine",
+    "crates/services/qip-learning-engine",
+    "crates/services/qip-mesh",
+    "crates/services/qip-chain",
+    "crates/services/qip-prediction",
+    "crates/services/qip-lifecycle",
+    "crates/services/qip-capital",
+    "crates/services/qip-cost-router",
+    "crates/services/qip-twin",
+    "crates/services/qip-capital-fabric",
+    "crates/services/qip-streaming",
+    "crates/services/qip-training",
+    "crates/services/qip-brokers",
+    "crates/services/qip-evolution",
+
+    # --- investment agent organization ---
+    "crates/agents/qip-investment-agents",
+
+    # --- quantitative research ---
+    "crates/quant/qip-quant",
+
+    # --- composition root ---
+    "crates/runtime/qip-kernel",
+
+    # --- workspace-level tests ---
+    "crates/tests/qip-acceptance",
+
+    # --- deployable binaries ---
+    "crates/apps/qip-api",
+    "crates/apps/qip-web",
+    "crates/apps/qip-cli",
+    "crates/apps/qip-fastbrain",
+    "crates/apps/qip-deepbrain",
+    "crates/apps/qip-edge-node",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/droderiquesit/quantum-ai-platform"
+authors = ["Quantum AI Platform Engineering"]
+
+# Third-party surface is deliberately limited to serialization. Everything else
+# (HTTP, numerics, hashing, RNG, quantum simulation) is implemented in-tree so
+# the platform is auditable, reproducible and offline-buildable.
+# See docs/adr/0003-dependency-policy.md.
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+
+qip-core = { path = "crates/libs/qip-core" }
+qip-numerics = { path = "crates/libs/qip-numerics" }
+qip-events = { path = "crates/libs/qip-events" }
+qip-financial = { path = "crates/libs/qip-financial" }
+qip-observability = { path = "crates/libs/qip-observability" }
+qip-storage = { path = "crates/libs/qip-storage" }
+qip-market = { path = "crates/libs/qip-market" }
+qip-portfolio = { path = "crates/libs/qip-portfolio" }
+qip-risk = { path = "crates/libs/qip-risk" }
+qip-ai = { path = "crates/libs/qip-ai" }
+qip-agents = { path = "crates/libs/qip-agents" }
+qip-quantum = { path = "crates/libs/qip-quantum" }
+qip-contracts = { path = "crates/libs/qip-contracts" }
+qip-compliance = { path = "crates/libs/qip-compliance" }
+qip-transport = { path = "crates/libs/qip-transport" }
+qip-confidential = { path = "crates/libs/qip-confidential" }
+
+qip-protocols = { path = "crates/edge/qip-protocols" }
+qip-sequencing = { path = "crates/edge/qip-sequencing" }
+qip-orderbook = { path = "crates/edge/qip-orderbook" }
+qip-feature-dag = { path = "crates/edge/qip-feature-dag" }
+qip-strategy = { path = "crates/edge/qip-strategy" }
+qip-arbitrage = { path = "crates/edge/qip-arbitrage" }
+qip-routing = { path = "crates/edge/qip-routing" }
+qip-edge = { path = "crates/edge/qip-edge" }
+
+qip-data-finder = { path = "crates/services/qip-data-finder" }
+qip-market-ingestion = { path = "crates/services/qip-market-ingestion" }
+qip-normalization = { path = "crates/services/qip-normalization" }
+qip-entity-resolution = { path = "crates/services/qip-entity-resolution" }
+qip-world-model = { path = "crates/services/qip-world-model" }
+qip-opportunity-engine = { path = "crates/services/qip-opportunity-engine" }
+qip-reasoning-engine = { path = "crates/services/qip-reasoning-engine" }
+qip-simulation-engine = { path = "crates/services/qip-simulation-engine" }
+qip-optimization-engine = { path = "crates/services/qip-optimization-engine" }
+qip-portfolio-engine = { path = "crates/services/qip-portfolio-engine" }
+qip-risk-engine = { path = "crates/services/qip-risk-engine" }
+qip-execution-engine = { path = "crates/services/qip-execution-engine" }
+qip-learning-engine = { path = "crates/services/qip-learning-engine" }
+qip-mesh = { path = "crates/services/qip-mesh" }
+qip-chain = { path = "crates/services/qip-chain" }
+qip-prediction = { path = "crates/services/qip-prediction" }
+qip-lifecycle = { path = "crates/services/qip-lifecycle" }
+qip-capital = { path = "crates/services/qip-capital" }
+qip-cost-router = { path = "crates/services/qip-cost-router" }
+qip-twin = { path = "crates/services/qip-twin" }
+qip-capital-fabric = { path = "crates/services/qip-capital-fabric" }
+qip-streaming = { path = "crates/services/qip-streaming" }
+qip-training = { path = "crates/services/qip-training" }
+qip-brokers = { path = "crates/services/qip-brokers" }
+qip-evolution = { path = "crates/services/qip-evolution" }
+
+qip-investment-agents = { path = "crates/agents/qip-investment-agents" }
+qip-quant = { path = "crates/quant/qip-quant" }
+qip-kernel = { path = "crates/runtime/qip-kernel" }
+qip-acceptance = { path = "crates/tests/qip-acceptance" }
+qip-web = { path = "crates/apps/qip-web" }
+qip-api = { path = "crates/apps/qip-api" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+todo = "deny"
+unimplemented = "deny"
+panic_in_result_fn = "deny"
+float_cmp = "warn"
+needless_pass_by_value = "allow"
+must_use_candidate = "allow"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+[profile.bench]
+opt-level = 3
+debug = true

@@ -27,6 +27,9 @@ jobs:
   format:
     name: format
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
     steps:
       - uses: actions/checkout@v4
       - name: install the pinned toolchain
@@ -36,21 +39,31 @@ jobs:
   lint:
     name: clippy
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
     steps:
       - uses: actions/checkout@v4
       - name: install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
       - run: cargo clippy --workspace --all-targets --all-features
 
   test:
     name: test
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
     steps:
       - uses: actions/checkout@v4
       - name: install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
       - run: cargo test --workspace --all-features
 
   # The build that would actually be deployed. Run separately from the tests
@@ -60,11 +73,16 @@ jobs:
   release-build:
     name: release build
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
     steps:
       - uses: actions/checkout@v4
       - name: install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
       - run: cargo build --workspace --release --locked
 
   # The dependency policy, enforced. The platform depends on serde and
@@ -85,6 +103,9 @@ jobs:
   security-audit:
     name: security audit
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
     steps:
       - uses: actions/checkout@v4
       - name: install the pinned toolchain
@@ -97,6 +118,9 @@ jobs:
   sbom:
     name: sbom
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
     steps:
       - uses: actions/checkout@v4
       - name: install the pinned toolchain
@@ -106,7 +130,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: sbom
-          path: "**/*.cdx.json"
+          path: "backend/**/*.cdx.json"
           retention-days: 90
 
   # Infrastructure is code and gets the same treatment. `terraform validate`

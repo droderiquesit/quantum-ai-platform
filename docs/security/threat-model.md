@@ -14,7 +14,7 @@ without creating a service-account key — are in [credentials.md](credentials.m
 and are not repeated here. This document assumes them.
 
 **Executable assertions live in
-[`crates/tests/qip-acceptance/tests/security.rs`](../../crates/tests/qip-acceptance/tests/security.rs).**
+[`backend/crates/tests/qip-acceptance/tests/security.rs`](../../backend/crates/tests/qip-acceptance/tests/security.rs).**
 Threats with a test there are marked *asserted*; threats without one are
 documentation only, and that is itself part of the honest position.
 
@@ -57,14 +57,14 @@ Not "we prompt carefully". Two independent mechanisms, neither of which relies
 on anyone remembering a rule.
 
 **The hot path is structurally unable to reach a language model.** No crate
-under `crates/edge`, and none of the five decision engines
+under `backend/crates/edge`, and none of the five decision engines
 (`qip-execution-engine`, `qip-risk-engine`, `qip-portfolio-engine`,
 `qip-optimization-engine`, `qip-simulation-engine`), declares a dependency edge
 that reaches `qip-ai` — transitively, so an intermediate crate cannot launder
 one. This is asserted over the parsed manifests by
 `no_safety_critical_engine_can_reach_a_language_model` and
 `no_edge_cell_can_reach_a_language_model` in
-[`architecture.rs`](../../crates/tests/qip-acceptance/tests/architecture.rs).
+[`architecture.rs`](../../backend/crates/tests/qip-acceptance/tests/architecture.rs).
 A second, finer check —
 `nothing_that_decides_or_executes_names_the_language_model_interface` — greps
 the same crates' source for `qip_ai::language` and `LanguageModel`, because
@@ -494,7 +494,7 @@ per-deployable service account rather than the default compute one, workload
 identity so no key file lives on disk, and `GKE_METADATA` with the legacy
 endpoints disabled so a compromised pod cannot read the node's credentials.
 All of those are asserted structurally in
-[`infrastructure.rs`](../../crates/tests/qip-acceptance/tests/infrastructure.rs).
+[`infrastructure.rs`](../../backend/crates/tests/qip-acceptance/tests/infrastructure.rs).
 
 **What does not.** **Halt state is process-local** — a recorded caveat, and the
 one with the most operational consequence here: a halt recorded at the centre
@@ -517,7 +517,7 @@ Recorded here so nobody is surprised. Each of these is already carried as a
 caveat by the compliance plane rather than invented for this document:
 `CompliancePlane::report` builds one `ControlStatus` per control from
 `Control::all`, each with its `caveats`, and
-[`plane.rs`](../../crates/libs/qip-compliance/src/plane.rs) is where the wording
+[`plane.rs`](../../backend/crates/libs/qip-compliance/src/plane.rs) is where the wording
 lives. `ComplianceReport::caveats()` returns the honest list for a reviewer who
 wants it rather than the headline. `compliance_proof.rs` asserts the caveats
 survive, because a report whose honest gaps were tidied away is a regression
@@ -618,10 +618,10 @@ Stated so the boundary of this document is legible:
 
 | Suite | What it defends |
 |---|---|
-| [`security.rs`](../../crates/tests/qip-acceptance/tests/security.rs) | This document, made executable |
-| [`architecture.rs`](../../crates/tests/qip-acceptance/tests/architecture.rs) | The absent dependency edges — §2, §3.6 |
-| [`infrastructure.rs`](../../crates/tests/qip-acceptance/tests/infrastructure.rs) | The deployment's structural properties — §3.1, §3.12 |
-| [`compliance_proof.rs`](../../crates/tests/qip-acceptance/tests/compliance_proof.rs) | That the six controls' mechanisms and caveats are real — §4 |
+| [`security.rs`](../../backend/crates/tests/qip-acceptance/tests/security.rs) | This document, made executable |
+| [`architecture.rs`](../../backend/crates/tests/qip-acceptance/tests/architecture.rs) | The absent dependency edges — §2, §3.6 |
+| [`infrastructure.rs`](../../backend/crates/tests/qip-acceptance/tests/infrastructure.rs) | The deployment's structural properties — §3.1, §3.12 |
+| [`compliance_proof.rs`](../../backend/crates/tests/qip-acceptance/tests/compliance_proof.rs) | That the six controls' mechanisms and caveats are real — §4 |
 | [`scripts/check-secrets.sh`](../../scripts/check-secrets.sh) | Credentials in the history — §3.1 |
 | [`scripts/check-dependencies.sh`](../../scripts/check-dependencies.sh) | The supply chain the core rests on — §1 |
 

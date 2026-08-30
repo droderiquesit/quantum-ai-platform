@@ -1,7 +1,7 @@
 # Domain: core Rust
 
-**Scope** — `crates/libs/**`, `crates/services/**`, `crates/runtime/**`,
-`crates/edge/**`, `crates/agents/**`, `crates/quant/**`
+**Scope** — `backend/crates/libs/**`, `backend/crates/services/**`, `backend/crates/runtime/**`,
+`backend/crates/edge/**`, `backend/crates/agents/**`, `backend/crates/quant/**`
 
 ## Approved
 
@@ -20,7 +20,7 @@
 - `unsafe` (forbidden at the workspace root).
 - `todo!()`, `unimplemented!()`, and `panic!()` in a `Result`-returning function.
 - `unwrap()`/`expect()` outside `#[cfg(test)]` and `tests/`.
-- `std::env` outside `crates/apps/**` — a service that reads the environment
+- `std::env` outside `backend/crates/apps/**` — a service that reads the environment
   cannot be tested and cannot be deployed twice with different settings.
 - Any new dependency without an ADR.
 - Clamping an invalid input instead of refusing it.

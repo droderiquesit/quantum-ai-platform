@@ -18,7 +18,7 @@
 # ## Why this is a reverse proxy and not a forward proxy
 #
 # This is the part that decides the whole shape, and it is not a preference.
-# `HttpRequest::encode` in `crates/libs/qip-transport/src/http.rs` writes an
+# `HttpRequest::encode` in `backend/crates/libs/qip-transport/src/http.rs` writes an
 # origin-form request line — `GET /storage/v1/... HTTP/1.1` — and a `host:`
 # header carrying whatever authority the configured base URL had. It never
 # emits `CONNECT`, and it never emits an absolute-form URI. A conventional
@@ -77,11 +77,11 @@
 #     would be every region including the ones this platform has no data
 #     residency story for.
 #   * `quantum.cloud.ibm.com` — the endpoint `HostedConfig` carries in
-#     `crates/libs/qip-quantum/tests/hosted.rs`, which is the current IBM
+#     `backend/crates/libs/qip-quantum/tests/hosted.rs`, which is the current IBM
 #     Quantum Platform API.
 #   * `api.quantum.ibm.com` — the endpoint the same `HostedConfig` carries in
-#     `crates/libs/qip-quantum/tests/quantum.rs` and in
-#     `crates/services/qip-optimization-engine/tests/optimization.rs`. Two
+#     `backend/crates/libs/qip-quantum/tests/quantum.rs` and in
+#     `backend/crates/services/qip-optimization-engine/tests/optimization.rs`. Two
 #     entries rather than one because two are configured in the workspace, and
 #     an allowlist that omits one of them turns a working configuration into a
 #     404 from a proxy the operator will not think to suspect.

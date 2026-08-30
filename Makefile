@@ -42,16 +42,16 @@ all: check build audit sbom infra
 # ---------------------------------------------------------------------------
 
 fmt:
-	cargo fmt --all
+	cd backend && cargo fmt --all
 
 fmt-check:
-	cargo fmt --all --check
+	cd backend && cargo fmt --all --check
 
 lint:
-	cargo clippy --workspace --all-targets --all-features
+	cd backend && cargo clippy --workspace --all-targets --all-features
 
 test:
-	cargo test --workspace --all-features
+	cd backend && cargo test --workspace --all-features
 
 # The same suite, reported honestly.
 #
@@ -65,7 +65,7 @@ count:
 # A green debug test suite that cannot be released is not a green build. The
 # release profile also catches the optimisation-dependent problems debug hides.
 build release:
-	cargo build --workspace --release --locked
+	cd backend && cargo build --workspace --release --locked
 
 # The two suites worth naming separately, because they are the ones that answer
 # "does the platform work" rather than "does this function work".
@@ -73,13 +73,13 @@ build release:
 # `e2e` is the single automated run through all seven layers, from a discovered
 # source to a realised fill to a counterfactual to a model update.
 e2e:
-	cargo test -p qip-acceptance --test e2e -- --nocapture
+	cd backend && cargo test -p qip-acceptance --test e2e -- --nocapture
 
 acceptance:
-	cargo test -p qip-acceptance
+	cd backend && cargo test -p qip-acceptance
 
 doc:
-	cargo doc --workspace --no-deps
+	cd backend && cargo doc --workspace --no-deps
 
 # ---------------------------------------------------------------------------
 # Policy
@@ -97,10 +97,10 @@ secrets:
 
 # Needs the advisory database, so it is not in the offline set.
 audit:
-	cargo audit --deny warnings
+	cd backend && cargo audit --deny warnings
 
 sbom:
-	cargo cyclonedx --format json --all
+	cd backend && cargo cyclonedx --format json --all
 
 # ---------------------------------------------------------------------------
 # Infrastructure
@@ -130,7 +130,7 @@ tf-validate:
 # impersonation flow it requires, in docs/security/credentials.md.
 
 clean:
-	cargo clean
+	cd backend && cargo clean
 
 help:
 	@echo "check      the offline gates; this is the default and what CI runs first"

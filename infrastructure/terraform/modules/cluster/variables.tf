@@ -160,7 +160,7 @@ variable "enable_confidential_nodes" {
     because this is where somebody will read it.
 
     The hardening is real. The reason it is not simply on is the name next to
-    it: `crates/libs/qip-confidential` is **not** confidential computing. It is
+    it: `backend/crates/libs/qip-confidential` is **not** confidential computing. It is
     statistical disclosure control — a k-anonymity gate, a monotone privacy
     budget and calibrated noise — and its own module documentation says in its
     first paragraph that there is no enclave, no attestation and no hardware

@@ -34,14 +34,18 @@ readonly PERMITTED=(
   "memchr"
 )
 
-if [[ ! -f Cargo.lock ]]; then
-  echo "Cargo.lock is missing; the build is not reproducible without it" >&2
+# The Rust workspace lives under backend/ (ADR 0016); resolve it from the
+# script's own location so the gate passes or fails identically from any cwd.
+readonly LOCKFILE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/backend/Cargo.lock"
+
+if [[ ! -f "$LOCKFILE" ]]; then
+  echo "backend/Cargo.lock is missing; the build is not reproducible without it" >&2
   exit 1
 fi
 
 # Every package in the lockfile that is not one of ours.
 mapfile -t locked < <(
-  grep '^name = ' Cargo.lock | sed 's/name = "//; s/"//' | sort -u | grep -v '^qip-'
+  grep '^name = ' "$LOCKFILE" | sed 's/name = "//; s/"//' | sort -u | grep -v '^qip-'
 )
 
 violations=()

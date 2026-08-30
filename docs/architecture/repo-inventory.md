@@ -8,10 +8,10 @@
 ## Codebase Overview
 - **Total Crates:** 59 (libs, services, apps, agents, runtime, edge, quant)
 - **Directory Structure:**
-  - `crates/apps/`: qip-api, qip-cli, qip-deepbrain, qip-fastbrain, qip-edge-node, qip-web
-  - `crates/libs/`: 18 library crates (storage, quantum, core, market, portfolio, etc.)
-  - `crates/services/`: Market ingestion, data-finder, optimization, etc.
-  - `crates/tests/`: qip-acceptance (179 tests across 13 files)
+  - `backend/crates/apps/`: qip-api, qip-cli, qip-deepbrain, qip-fastbrain, qip-edge-node, qip-web
+  - `backend/crates/libs/`: 18 library crates (storage, quantum, core, market, portfolio, etc.)
+  - `backend/crates/services/`: Market ingestion, data-finder, optimization, etc.
+  - `backend/crates/tests/`: qip-acceptance (179 tests across 13 files)
 
 ## False Completion Inventory
 
@@ -24,13 +24,13 @@
 
 ### Panic Locations (7 instances)
 ```
-crates/libs/qip-storage/src/redis.rs:2022
-crates/libs/qip-core/src/testing.rs:53
-crates/libs/qip-core/src/decimal.rs:317
-crates/runtime/qip-kernel/src/config.rs:410
-crates/runtime/qip-kernel/src/config.rs:460
-crates/apps/qip-fastbrain/src/health.rs:431
-crates/apps/qip-deepbrain/src/health.rs:460
+backend/crates/libs/qip-storage/src/redis.rs:2022
+backend/crates/libs/qip-core/src/testing.rs:53
+backend/crates/libs/qip-core/src/decimal.rs:317
+backend/crates/runtime/qip-kernel/src/config.rs:410
+backend/crates/runtime/qip-kernel/src/config.rs:460
+backend/crates/apps/qip-fastbrain/src/health.rs:431
+backend/crates/apps/qip-deepbrain/src/health.rs:460
 ```
 
 ### Comment Markers
@@ -81,7 +81,7 @@ itself into a deployment it has not earned.
 | `/training` | GET |
 | `/quantum` | GET |
 
-**OpenAPI:** `crates/apps/qip-api/src/openapi.rs` exists.
+**OpenAPI:** `backend/crates/apps/qip-api/src/openapi.rs` exists.
 **Streaming:** No WebSocket, SSE, or EventSource found.
 
 ## Data Connector Abstraction
@@ -104,7 +104,7 @@ itself into a deployment it has not earned.
 ## IBM Quantum Integration
 
 ### Real HTTP Adapter (Not Simulated)
-- **File:** `crates/libs/qip-quantum/src/provider.rs`
+- **File:** `backend/crates/libs/qip-quantum/src/provider.rs`
 - **Implementation:** Full HTTP client adapter for IBM Quantum Platform
   - Uses `qip_transport::HttpClient` for TLS-terminating proxy communication
   - `HostedTransport` pattern: TLS proxy over `http://` on cluster network
@@ -121,7 +121,7 @@ itself into a deployment it has not earned.
 
 ## Test Inventory
 
-### Test Files (crates/tests/qip-acceptance/tests/)
+### Test Files (backend/crates/tests/qip-acceptance/tests/)
 | File | #[test] | #[ignore] |
 |------|---------|-----------|
 | acceptance.rs | 12 | 0 |

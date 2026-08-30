@@ -7,7 +7,7 @@
  * would put a supply chain in front of the thing that reads this repository's
  * source.
  *
- * It is **dev tooling**. Nothing in `crates/` or `packages/` may import it,
+ * It is **dev tooling**. Nothing in `backend/crates/` or `frontend/packages/` may import it,
  * and the platform does not depend on it existing.
  *
  * ## What it refuses, and why

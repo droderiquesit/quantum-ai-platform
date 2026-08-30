@@ -89,7 +89,7 @@ locals {
   # binding names, so the three cannot drift apart.
   #
   # There is deliberately no entry for `qip-web`. It is a library the API links
-  # and renders from — `crates/apps/qip-web` declares no `[[bin]]` and has no
+  # and renders from — `backend/crates/apps/qip-web` declares no `[[bin]]` and has no
   # `main.rs` — so an account for it would be an identity with nothing
   # attached, which is the state this file is being changed to remove.
   #
@@ -223,7 +223,7 @@ module "cluster" {
 
   # Off. Confidential VMs are real hardening and this is a decision rather than
   # a default — see the variable and modules/data/NOT-PROVISIONED.md. The short
-  # version: `crates/libs/qip-confidential` is statistical disclosure control
+  # version: `backend/crates/libs/qip-confidential` is statistical disclosure control
   # with no enclave and no attestation, and enabling this next to a crate with
   # that name lets the two together imply a guarantee neither provides.
   enable_confidential_nodes = var.enable_confidential_nodes

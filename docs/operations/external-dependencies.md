@@ -222,7 +222,7 @@ rollout check, but for a different reason — the pipeline does not apply
 [a runbook](deploying-an-edge-cell.md), because a workload that trades should
 not appear unattended.
 
-`crates/tests/qip-acceptance/tests/infrastructure.rs` holds this as an explicit,
+`backend/crates/tests/qip-acceptance/tests/infrastructure.rs` holds this as an explicit,
 shrinking list. The test fails when a binary on it gains a serving loop, which
 is what forces the exemption to be removed rather than forgotten.
 
@@ -299,6 +299,6 @@ credentials in the environment this was written in, so `terraform init`,
 unavailable, and so was `kubectl --dry-run`.
 
 Everything here is checked structurally instead, by tests that read the files:
-`crates/tests/qip-acceptance/tests/infrastructure.rs`. Those tests can tell that
+`backend/crates/tests/qip-acceptance/tests/infrastructure.rs`. Those tests can tell that
 a security property has been deleted. They cannot tell that the configuration
 would apply.

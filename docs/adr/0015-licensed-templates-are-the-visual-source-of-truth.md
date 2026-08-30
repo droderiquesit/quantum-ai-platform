@@ -6,8 +6,8 @@ mobile-as-PWA and no-second-router decisions stand).
 
 ## Decision
 
-The owner supplied the licensed template packages in-repo (`frontend/admin` —
-SignalAIX, `frontend/landing/fortradex`, `frontend/mobile/cryptrix-pwa`) and
+The owner supplied the licensed template packages in-repo (`vendor/templates/signalaix` —
+SignalAIX, `frontend/landing`, `vendor/templates/cryptrix`) and
 directed, twice, that the product look like them. Using a purchased template
 as the skin of one's own product is the licence's intended use, so the
 surfaces now adopt the templates' own assets rather than an in-house
@@ -24,7 +24,7 @@ approximation:
   dependency tree).
 - **Mobile**: Cryptrix styles the installed PWA screens (tracked separately).
 
-`packages/design-tokens` remains the single mechanical source the stylesheet
+`frontend/packages/design-tokens` remains the single mechanical source the stylesheet
 is generated from, but its *values* are now SignalAIX's palette verbatim, and
 the generator additionally emits the template's own token names
 (`--color-bg`, `--color-panel`, `--color-text`, `--color-muted`,

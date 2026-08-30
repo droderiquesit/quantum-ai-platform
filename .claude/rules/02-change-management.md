@@ -30,7 +30,7 @@ apply are not skipped.
 | Dependency policy | `./scripts/check-dependencies.sh` |
 | Secret scan | `./scripts/check-secrets.sh` |
 | Terraform | `terraform fmt -check` and `terraform validate` |
-| Frontend | `npm run lint` and `npm run build` in `frontend/` |
+| Frontend | `npm run lint` and `npm run build` in `frontend/portal/` |
 | Everything | `make check` |
 
 **Use `--no-fail-fast`.** Without it `cargo test` stops at the first failing

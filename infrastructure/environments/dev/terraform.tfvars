@@ -61,7 +61,7 @@ enable_vertex_ai     = false
 # --- Off, and each is a decision rather than an oversight --------------------
 
 # Confidential VMs on the nodes. Real hardening, and off because
-# `crates/libs/qip-confidential` is statistical disclosure control with no
+# `backend/crates/libs/qip-confidential` is statistical disclosure control with no
 # enclave and no attestation — turning this on next to a crate with that name
 # lets the two together imply a guarantee neither provides. It is also never a
 # one-line change: the machine type above is Intel and this needs n2d, c2d or

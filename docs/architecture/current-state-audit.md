@@ -4,7 +4,7 @@
 the workspace to green.** Every count below was measured, not
 recalled, by the same commands that produced the first set: `.rs` files under
 `*/src/*` and under `*/tests/*` counted separately with `wc -l`, crate
-directories under `crates/*/*`, and the passing-test total summed out of
+directories under `backend/crates/*/*`, and the passing-test total summed out of
 `cargo test --workspace --no-fail-fast`. The workspace was measured in a clean
 checkout, so no half-finished edit is counted as landed.
 
@@ -43,7 +43,7 @@ file was.
 | CI workflows | 2 (`ci.yml`, `deploy.yml`) | unchanged |
 | Third-party dependencies | 2 (`serde`, `serde_json`) | unchanged |
 
-Layout: `crates/{libs,edge,services,agents,quant,runtime,apps,tests}` — 14
+Layout: `backend/crates/{libs,edge,services,agents,quant,runtime,apps,tests}` — 14
 libraries, 8 edge crates, 25 services, 1 agent organisation, 1 quant crate, 1
 composition root, 6 applications, 1 workspace test crate.
 
@@ -264,9 +264,9 @@ accepted: a named **decision core** of fifteen crates keeps `serde` and
 `serde_json`, and an **I/O edge** may take from a vetted allowlist.
 
 **The tier is recorded and not in force.** ADR 0009 says the boundary "is
-enforced in `crates/tests/qip-acceptance/tests/architecture.rs`". The test that
+enforced in `backend/crates/tests/qip-acceptance/tests/architecture.rs`". The test that
 exists there — `no_crate_declares_a_third_party_dependency_beyond_the_two_
-permitted` — walks every `Cargo.toml` under `crates/` and permits `serde` and
+permitted` — walks every `Cargo.toml` under `backend/crates/` and permits `serde` and
 `serde_json` in all of them. It draws no core/edge distinction, and neither does
 `scripts/check-dependencies.sh`, which allowlists eleven lockfile packages
 workspace-wide. No crate takes an edge dependency, so nothing has yet tested
@@ -411,7 +411,7 @@ tree at `dc9ee9a`.
   superseded by that table and should not be requoted.
 
 * **The two loops now meet, once, in one test.** This is the row that changed.
-  `crates/tests/qip-acceptance/tests/e2e.rs` is a single test — deliberately
+  `backend/crates/tests/qip-acceptance/tests/e2e.rs` is a single test — deliberately
   one, because seven tests that each pass in isolation are exactly what a system
   whose parts do not meet looks like — and it passes. It walks: two candidate
   sources assessed and one refused for having no discoverable licence; ingest;
@@ -444,7 +444,7 @@ tree at `dc9ee9a`.
 * **The backtester was flattering executions, and was found doing it.** Fixed
   at `237c0f0`; kept here because the diagnosis is the part worth remembering.
   Two tests failed deterministically in
-  `crates/services/qip-simulation-engine/tests/market_conditions.rs`:
+  `backend/crates/services/qip-simulation-engine/tests/market_conditions.rs`:
 
   * `a_slippage_regime_multiplies_what_is_paid_beyond_the_reference` — a
     ten-times slippage regime moves the cost from 5.8002bp to 40.0016bp, about
@@ -569,7 +569,7 @@ over one.
 
 ### What runs them together
 
-`crates/tests/qip-acceptance/tests/e2e_live.rs`, one test, alongside
+`backend/crates/tests/qip-acceptance/tests/e2e_live.rs`, one test, alongside
 `tests/live/mod.rs` — a loopback server that can be a vendor, a venue, a
 JSON-RPC node or a real `MeshEndpoint`, written once here rather than four times
 in the walk. Six of the eight paths above are exercised in one run; `narrative`

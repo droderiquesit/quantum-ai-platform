@@ -50,7 +50,7 @@ passed every check. What was wrong was reaching it from silence.
 
 ### 1. `qip_market::TradeCondition` — Default removed, absence refused
 
-`crates/libs/qip-market/src/quote.rs`
+`backend/crates/libs/qip-market/src/quote.rs`
 
 `TradeCondition::default()` was `Regular`, and `Trade::condition` was
 `#[serde(default)]`. `Regular` is the one condition for which
@@ -65,11 +65,11 @@ The `Default` derive is gone and the field is no longer `#[serde(default)]`, so
 a record that does not state how it printed does not decode at all.
 
 Test: `a_trade_that_states_no_condition_does_not_decode`
-(`crates/libs/qip-market/tests/structure.rs`).
+(`backend/crates/libs/qip-market/tests/structure.rs`).
 
 ### 2. The REST adapter's absent trade condition — refused
 
-`crates/services/qip-market-ingestion/src/rest.rs`
+`backend/crates/services/qip-market-ingestion/src/rest.rs`
 
 `decode_trade` read `None => TradeCondition::Regular`. The module's own
 documentation already said what it refuses — "a trade condition this decoder
@@ -80,13 +80,13 @@ to guess, and the refusal names both the print and the value it will not fall
 back to. The module docs were corrected to match.
 
 Test: `an_absent_trade_condition_is_refused_rather_than_read_as_regular`
-(`crates/services/qip-market-ingestion/tests/rest_feed.rs`), which sits beside
+(`backend/crates/services/qip-market-ingestion/tests/rest_feed.rs`), which sits beside
 the existing `an_unreadable_trade_condition_is_refused_rather_than_defaulted_to_regular`.
 
 ### 3. `DataQuality` on the wire types — absence refused
 
-`crates/libs/qip-market/src/{quote.rs,bar.rs}` (`Quote`, `Trade`, `Tick`,
-`Bar`), `crates/libs/qip-financial/src/intelligence.rs` (`NewsItem`,
+`backend/crates/libs/qip-market/src/{quote.rs,bar.rs}` (`Quote`, `Trade`, `Tick`,
+`Bar`), `backend/crates/libs/qip-financial/src/intelligence.rs` (`NewsItem`,
 `FundamentalUpdate`, `MacroObservation`, `AlternativeDataPoint`).
 
 Eight types carried `#[serde(default)] pub quality: DataQuality`. This is
@@ -104,13 +104,13 @@ the same time. Nothing serialises these types without `quality` — no
 `skip_serializing_if` — so anything the platform wrote can still be read back.
 
 Tests: `a_market_record_that_states_no_quality_does_not_decode`
-(`crates/libs/qip-market/tests/structure.rs`),
+(`backend/crates/libs/qip-market/tests/structure.rs`),
 `an_intelligence_record_that_states_no_quality_does_not_decode`
-(`crates/libs/qip-financial/tests/object_model.rs`).
+(`backend/crates/libs/qip-financial/tests/object_model.rs`).
 
 ### 4. `ReplayAdapter` — an undeclared capture is no longer internally licensed
 
-`crates/services/qip-market-ingestion/src/replay.rs`
+`backend/crates/services/qip-market-ingestion/src/replay.rs`
 
 `ReplayAdapter::open` and `from_records` hardcoded
 `licensing: LicensingClass::Internal` — case 1, verbatim, at a boundary. A
@@ -131,11 +131,11 @@ not `Synthetic`: recorded data is not generated data, and a replay of a real
 session is exactly what a backtest is supposed to be allowed to reason from.
 
 Test: `a_replay_nobody_declared_a_licence_for_is_not_displayable`
-(`crates/services/qip-market-ingestion/tests/sense.rs`).
+(`backend/crates/services/qip-market-ingestion/tests/sense.rs`).
 
 ### 5. `ListingStatus` — Default removed
 
-`crates/libs/qip-financial/src/extensions.rs`
+`backend/crates/libs/qip-financial/src/extensions.rs`
 
 `ListingStatus::default()` was `Listed`. Nothing reached it: `EquityDetails`
 does not derive `Default` and the field is not `#[serde(default)]`, so it was a
@@ -146,7 +146,7 @@ worse than not having one, so the derive is gone. A suspended or delisted line
 now cannot decode as a tradable one by omission.
 
 Test: `an_equity_that_states_no_listing_status_does_not_decode`
-(`crates/libs/qip-financial/tests/object_model.rs`).
+(`backend/crates/libs/qip-financial/tests/object_model.rs`).
 
 ## What was examined and deliberately left
 
@@ -218,9 +218,9 @@ the edge journal, replay captures) and configuration (every `from_env`).
 Three greps find most of it:
 
 ```
-grep -rn '#\[default\]' crates/                     # permissive enum variants
-grep -rn -A2 '#\[serde(default)\]' crates/          # fields reachable from silence
-grep -rn 'unwrap_or_default()' crates/              # the same thing, spelled out
+grep -rn '#\[default\]' backend/crates/                     # permissive enum variants
+grep -rn -A2 '#\[serde(default)\]' backend/crates/          # fields reachable from silence
+grep -rn 'unwrap_or_default()' backend/crates/              # the same thing, spelled out
 ```
 
 The question to ask at each hit is not "is this default sensible" but: **if

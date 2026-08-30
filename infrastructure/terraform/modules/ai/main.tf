@@ -16,7 +16,7 @@
 # # Why the metadata store is the part that matters
 #
 # The platform's model governance depends on a model card whose evaluation is
-# the verdict of the fit it describes — `crates/runtime/qip-kernel/src/central/
+# the verdict of the fit it describes — `backend/crates/runtime/qip-kernel/src/central/
 # models.rs` refuses to let a caller assert `passed` for exactly that reason. A
 # managed training service that recorded runs somewhere the platform's registry
 # could not read would split that record in two, and the half a regulator asks

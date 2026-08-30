@@ -249,7 +249,7 @@ resource "google_container_cluster" "primary" {
   #
   # This is a decision rather than a default, and the reasoning is in
   # modules/data/NOT-PROVISIONED.md. Briefly: AMD SEV memory encryption on the
-  # nodes is a real hardening step, and `crates/libs/qip-confidential` is not
+  # nodes is a real hardening step, and `backend/crates/libs/qip-confidential` is not
   # confidential computing — it is statistical disclosure control, and its own
   # documentation says in its first paragraph that there is no enclave and no
   # attestation. Turning this on next to a crate with that name would let the

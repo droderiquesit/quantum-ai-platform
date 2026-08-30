@@ -30,8 +30,8 @@ being able to say precisely why it did what it did is.
   tests.
 - **Two dependencies only** — `serde`, `serde_json` (ADR 0002, ADR 0009).
   No async runtime: blocking I/O with explicit timeouts, deliberately.
-- **Next.js + TypeScript** in `frontend/` (its own toolchain — see
-  `frontend/CLAUDE.md`).
+- **Next.js + TypeScript** in `frontend/portal/` and `frontend/landing/`
+  (their own toolchains — see `frontend/CLAUDE.md`).
 - **Google Cloud**: GKE, Secret Manager CSI, KMS, Binary Authorization,
   Workload Identity Federation. Terraform 1.9.8, `hashicorp/google ~> 6.12`.
 - **GitHub Actions**: `ci.yml` (gate), `deploy.yml` (build/sign/attest/deploy),
@@ -41,24 +41,34 @@ being able to say precisely why it did what it did is.
 
 ## Layout
 
+Four top-level domains, plus the repo-wide concerns (ADR 0016):
+
 | Path | What lives there |
 |---|---|
-| `crates/libs/` | Shared, dependency-light, no I/O side effects |
-| `crates/services/` | Domain engines — ingestion, risk, portfolio, execution |
-| `crates/runtime/` | `qip-kernel`: the cycle and the composition of everything |
-| `crates/apps/` | Deployable binaries: api, fastbrain, deepbrain, edge-node, web, cli |
-| `crates/edge/` | Regional cell: routing, order book, sequencing, envelopes |
-| `crates/tests/` | `qip-acceptance` — cross-cutting suites |
-| `infrastructure/` | Terraform modules, environments, Kubernetes manifests |
+| `backend/` | The entire Rust workspace — `Cargo.toml`, `Cargo.lock`, toolchain pins |
+| `backend/crates/libs/` | Shared, dependency-light, no I/O side effects |
+| `backend/crates/services/` | Domain engines — ingestion, risk, portfolio, execution |
+| `backend/crates/runtime/` | `qip-kernel`: the cycle and the composition of everything |
+| `backend/crates/apps/` | Deployable binaries: api, fastbrain, deepbrain, edge-node, web, cli |
+| `backend/crates/edge/` | Regional cell: routing, order book, sequencing, envelopes |
+| `backend/crates/tests/` | `qip-acceptance` — cross-cutting suites |
+| `frontend/portal/` | The authenticated Next.js console and installed PWA |
+| `frontend/landing/` | The public landing application — the front door |
+| `frontend/mobile/` | The mobile channel — see its README: the phone app is the portal PWA |
+| `frontend/packages/` | Shared browser packages (brand, design tokens, …) |
+| `data/` | Data domain: local run state, datasets and catalogues when they exist |
+| `infrastructure/` | Terraform modules, environments, Kubernetes manifests, Dockerfile |
+| `vendor/templates/` | Licensed template packages — reference assets (ADR 0015) |
 | `docs/adr/` | Architecture decisions. Read before proposing a change one covers |
+| `docs/ops/` | Threat model, policies, observability notes |
 
 ## Commands
 
 ```
 make check      # fmt-check, lint, test, deps, secrets — the gate
 make all        # check + build + audit + sbom + infra
-cargo test --workspace --no-fail-fast     # 3075 passing; --no-fail-fast matters
-cargo clippy --workspace --all-targets    # must be zero warnings
+cd backend && cargo test --workspace --no-fail-fast   # --no-fail-fast matters
+cd backend && cargo clippy --workspace --all-targets  # must be zero warnings
 ./scripts/check-dependencies.sh           # must say "all permitted"
 ./scripts/check-secrets.sh                # must say "nothing found"
 ```

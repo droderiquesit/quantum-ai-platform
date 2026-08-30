@@ -1,9 +1,10 @@
-/target
+/backend/target
 **/*.rs.bk
 Cargo.lock.orig
 
 # Local platform state written by the demo / dev runtime
 /.qip-state/
+/data/local/
 /artifacts/
 *.jsonl.tmp
 
@@ -34,3 +35,6 @@ node_modules/
 # Development identity stores — local users and sessions, never committed.
 .algorik-dev/
 .algorik-test-identity/
+
+# Compiled Python bytecode — build output, never source.
+__pycache__/

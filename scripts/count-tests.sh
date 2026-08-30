@@ -18,6 +18,8 @@ trap 'rm -f "$OUTPUT"' EXIT
 
 # `--no-fail-fast` so every target runs; without it the first failing binary
 # stops the others and the totals are a lower bound nobody labelled as one.
+# The workspace lives under backend/ (ADR 0016).
+cd "$(dirname "${BASH_SOURCE[0]}")/../backend"
 cargo test --workspace --all-features --no-fail-fast >"$OUTPUT" 2>&1
 readonly STATUS=$?
 

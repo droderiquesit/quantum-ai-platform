@@ -12,7 +12,7 @@ supports a claim that it is.**
 
 (The phrase a reader might expect in that sentence does not appear anywhere in
 this repository, in the affirmative or the negative.
-`crates/tests/qip-acceptance/tests/documentation.rs` greps every document for
+`backend/crates/tests/qip-acceptance/tests/documentation.rs` greps every document for
 it and fails. That is deliberately blunt: a checker clever enough to allow the
 negated form is a checker that will eventually get the negation wrong, and the
 cost of the bluntness is one awkward sentence.)
@@ -177,7 +177,7 @@ several rows.
 | Kernel / composition root | **PASS** | 28 | A cycle never panics and never stops early; a failing stage records why and the loop continues. |
 | Determinism and replay | **PASS** | 66 | No ambient clock, no ambient RNG; injected `Clock` and seeded `Xoshiro256`. Bit-exact replay. |
 | Infrastructure as code | **PARTIAL** | 54 | 54 structural tests assert properties a plan would not catch — the node pool has no public addresses, no workload identity holds delete on the evidence bucket, no credential appears in any manifest, every binary the workspace builds is either deployed or excluded by a named decision. **Never validated against a provider schema and never applied.** |
-| End-to-end demonstration | **PASS** | 1 | `crates/tests/qip-acceptance/tests/e2e.rs`: one run from a discovered source through ingest, a regional brain, the global loop, a three-arm dislocation, an allocation, a dual approval, a signed grant the cell verifies itself, an order, a partial fill reported as a break, an outcome on a hash chain beside six alternatives that cannot be added to it, and a solver benchmark whose quantum arm names the credential it lacks. Its own module doc states what it does not prove. |
+| End-to-end demonstration | **PASS** | 1 | `backend/crates/tests/qip-acceptance/tests/e2e.rs`: one run from a discovered source through ingest, a regional brain, the global loop, a three-arm dislocation, an allocation, a dual approval, a signed grant the cell verifies itself, an order, a partial fill reported as a break, an outcome on a hash chain beside six alternatives that cannot be added to it, and a solver benchmark whose quantum arm names the credential it lacks. Its own module doc states what it does not prove. |
 | Chaos and stress | **PASS** | 16 + 16 | Every test names the specific safe outcome the failure has to produce. "Nothing crashed" is not asserted anywhere, because it is the assertion that lets a system which silently invented a number pass. |
 
 ---

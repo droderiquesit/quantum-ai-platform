@@ -3,7 +3,7 @@
 Workspace state at audit time: `./scripts/count-tests.sh` reports **2,862 passed, 0 failed** ("the suite is green").
 Prior audit (`docs/architecture/current-state-audit.md`) was measured at 2,086 tests — it is stale and was treated
 only as a list of claims to re-check. Every verdict below was re-derived by grep/read of the current tree.
-`infrastructure/terraform/` and `crates/apps/qip-cli/` were excluded per instruction (other agents editing).
+`infrastructure/terraform/` and `backend/crates/apps/qip-cli/` were excluded per instruction (other agents editing).
 
 **Verdict key**
 - **BUILT+WIRED** — implemented and reachable from a running binary (`qip-fastbrain`, `qip-deepbrain`, `qip-api`, `qip-edge-node`) or the composed `qip_kernel::Platform` they construct.
@@ -14,18 +14,18 @@ only as a list of claims to re-check. Every verdict below was re-derived by grep
 - **DIVERGED** — deliberately replaced, with the ADR named.
 
 **The single most important composition fact**, established first because it colors every layer:
-the three central binaries construct `Platform` (`crates/apps/qip-fastbrain/src/main.rs:104`,
-`crates/apps/qip-deepbrain/src/main.rs:124`, `crates/apps/qip-api/src/main.rs:66`), and the cycle they run is real —
+the three central binaries construct `Platform` (`backend/crates/apps/qip-fastbrain/src/main.rs:104`,
+`backend/crates/apps/qip-deepbrain/src/main.rs:124`, `backend/crates/apps/qip-api/src/main.rs:66`), and the cycle they run is real —
 but **the deployed composition cannot place an order**:
 
 1. `stage_decide` unconditionally emits a `nothing_to_do` proposal — there is no code path that expresses an
-   approved thesis as a trade (`crates/runtime/qip-kernel/src/platform.rs:1321-1330`; the only call is
+   approved thesis as a trade (`backend/crates/runtime/qip-kernel/src/platform.rs:1321-1330`; the only call is
    `self.constructor.nothing_to_do(...)`, reason string hardcoded).
 2. `Platform::submit_order` (the full control path: pre-trade risk, autonomy, kill switch, capture) is called only
-   by tests (`crates/runtime/qip-kernel/tests/kernel.rs:294-366`, `tests/platform_outcomes.rs:147`); `qip-api`
-   exposes only `GET /orders` (`crates/apps/qip-api/src/routes.rs:370`), no submit/approve/release endpoint.
+   by tests (`backend/crates/runtime/qip-kernel/tests/kernel.rs:294-366`, `tests/platform_outcomes.rs:147`); `qip-api`
+   exposes only `GET /orders` (`backend/crates/apps/qip-api/src/routes.rs:370`), no submit/approve/release endpoint.
 3. `Cell::deploy` (the only way a strategy enters the hot path) is called exclusively in tests
-   (`crates/edge/qip-edge/tests/*.rs`, `crates/tests/qip-acceptance/tests/{stress,e2e,e2e_live,chaos}.rs`);
+   (`backend/crates/edge/qip-edge/tests/*.rs`, `backend/crates/tests/qip-acceptance/tests/{stress,e2e,e2e_live,chaos}.rs`);
    `qip-edge-node/src/main.rs` assembles the cell, gateway, mesh link and journal but never deploys a strategy —
    it prints `cell.deployed_strategies().len()` (main.rs:442), which is 0 in every deployment.
 
@@ -35,12 +35,12 @@ but **the deployed composition cannot place an order**:
 
 | Element | Verdict | Evidence |
 |---|---|---|
-| Market Data (all asset classes) | PARTIAL | Types + synthetic environment wired: `qip-market-ingestion/src/synthetic/`, pulled by fastbrain's feed (`crates/apps/qip-fastbrain/src/feed.rs` — doc: "Nothing here is production-grade"). A live REST market-data adapter exists (`qip-market-ingestion/src/rest.rs:232 RestMarketDataAdapter`) but is consumed only by `crates/tests/qip-acceptance/tests/e2e_live.rs:738` — no binary polls it. |
-| Order Books L1/2/3 | BUILT+WIRED | `crates/edge/qip-orderbook/src/{l2,l3,auction,venue}.rs`; venue state used by the edge cell (per-venue books; gateway drains fills, `qip-edge-node/src/gateway.rs`); depth handling in `qip-market-ingestion/src/depth.rs`. |
+| Market Data (all asset classes) | PARTIAL | Types + synthetic environment wired: `qip-market-ingestion/src/synthetic/`, pulled by fastbrain's feed (`backend/crates/apps/qip-fastbrain/src/feed.rs` — doc: "Nothing here is production-grade"). A live REST market-data adapter exists (`qip-market-ingestion/src/rest.rs:232 RestMarketDataAdapter`) but is consumed only by `backend/crates/tests/qip-acceptance/tests/e2e_live.rs:738` — no binary polls it. |
+| Order Books L1/2/3 | BUILT+WIRED | `backend/crates/edge/qip-orderbook/src/{l2,l3,auction,venue}.rs`; venue state used by the edge cell (per-venue books; gateway drains fills, `qip-edge-node/src/gateway.rs`); depth handling in `qip-market-ingestion/src/depth.rs`. |
 | News & Social Events | PARTIAL | `NewsItem` type + synthetic narratives (`qip-market-ingestion/src/narrative.rs`, `synthetic/narrative.rs`); `WorldModel::absorb_news` exists (`qip-world-model/src/world.rs:213`) but is never called at runtime — `Platform::observe` discards all non-bar records via a `_ =>` arm (platform.rs, observe body; see Layer 3). No live news adapter. |
 | Company Data (filings, earnings) | PARTIAL | `FundamentalUpdate` + `absorb_fundamental` (`world.rs:303`); same discard path; synthetic only. |
 | Macro & Econ Indicators | PARTIAL | `MacroObservation` + `absorb_macro` (`world.rs:345`); same discard path; synthetic only. |
-| On-Chain/DeFi (NFTs, wallets) | PARTIAL | `qip-chain` is real and wired: `Platform::observe_chain`/`confirmed_chain` (platform.rs:1824-1897), chain summarized in `stage_understand`; modules `amm, block, bridge, finality, gas, mempool, rpc, state`. **NFTs and wallets: ABSENT** — zero hits for nft/wallet in `crates/services/qip-chain/src`. `rpc.rs` is the port to a real node. |
+| On-Chain/DeFi (NFTs, wallets) | PARTIAL | `qip-chain` is real and wired: `Platform::observe_chain`/`confirmed_chain` (platform.rs:1824-1897), chain summarized in `stage_understand`; modules `amm, block, bridge, finality, gas, mempool, rpc, state`. **NFTs and wallets: ABSENT** — zero hits for nft/wallet in `backend/crates/services/qip-chain/src`. `rpc.rs` is the port to a real node. |
 | Alt Data (satellite, IoT, mobility, web) | PARTIAL | `qip-market-ingestion/src/alternative.rs` models exactly these ("Satellite imagery, IoT telemetry, mobility counts, web-scraped panels", line 3; `satellite.parking_lot_counts`, `footfall`, `container_throughput` at 470-980) with tri-temporal instants. Synthetic/config-driven only; discarded by `observe`. |
 | Reference Data (prices, FX, rates, IDs, corp actions) | PARTIAL | `SensedRecord::{CorporateAction, ReferenceData}` (`qip-market-ingestion/src/adapter.rs:31-43`); corp-action handling in `qip-normalization/src/{normalizer,contract}.rs`; instrument identity in `qip-financial`. No live source; normalization itself is unwired (below). |
 | AI Feed Discovery Agents | BUILT-UNWIRED | `qip-data-finder` (14 modules incl. `scoring.rs, quality.rs, robots.rs, legal.rs, replacement.rs`) is constructed inside `Platform` (platform.rs:63-66), but discovery is only driven by `Platform::assess_sources`, whose sole caller is `qip-acceptance/tests/e2e.rs:499`. `NetworkProbe` remains a refusing port; the API's `/sources` route answers `NO_DATA_FINDER` (`qip-api/src/missing.rs:40`, routes.rs:398). |

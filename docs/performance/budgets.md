@@ -1,7 +1,7 @@
 # Performance budgets
 
 Every number in this document was measured by
-`crates/tests/qip-acceptance/tests/performance.rs`, on the machine that ran it,
+`backend/crates/tests/qip-acceptance/tests/performance.rs`, on the machine that ran it,
 in one thread, with the fixture built before the clock started. Run
 `make e2e`'s sibling — `cargo test --release -p qip-acceptance --test
 performance -- --nocapture` — and the same lines print again.

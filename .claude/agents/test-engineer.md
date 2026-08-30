@@ -16,7 +16,7 @@ The change; `.claude/rules/architecture/01-testing-strategy.md`.
 
 ## Paths you may change
 
-`crates/**/tests/**`, `#[cfg(test)]` modules, `frontend/tests/**`
+`backend/crates/**/tests/**`, `#[cfg(test)]` modules, `frontend/portal/tests/**`
 
 ## Never
 

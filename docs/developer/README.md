@@ -48,6 +48,7 @@ and every number it reports must carry a provenance. Both are enforced by
 ## Running the checks
 
 ```sh
+cd backend
 cargo fmt --all
 cargo clippy --workspace --all-targets    # warnings are denied in CI
 cargo test --workspace

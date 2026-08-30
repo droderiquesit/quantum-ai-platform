@@ -85,17 +85,26 @@ is a decision that appears in a diff.
 ## Layout
 
 ```
-crates/
-  libs/        shared, dependency-light, no I/O side effects
-  services/    one per stage of the loop
-  agents/      the eighteen-agent investment organisation
-  quant/       signals and the strategy SDK
-  runtime/     the composition root
-  apps/        the four deployables
-  tests/       workspace-level acceptance, infrastructure and documentation
+backend/         the Rust workspace: Cargo.toml, toolchain pins, and
+  crates/
+    libs/        shared, dependency-light, no I/O side effects
+    services/    one per stage of the loop
+    agents/      the eighteen-agent investment organisation
+    quant/       signals and the strategy SDK
+    runtime/     the composition root
+    apps/        the four deployables
+    tests/       workspace-level acceptance, infrastructure and documentation
+frontend/        the browser layer and npm workspace root
+  portal/        the authenticated console and installed PWA
+  landing/       the public site
+  mobile/        the mobile channel (the phone app is the portal PWA)
+  packages/      shared browser packages
+data/            data domain: local run state, datasets when they exist
 infrastructure/
-  terraform/   GKE, networking, secrets, alerting
-  kubernetes/  manifests, default-deny network policy
+  terraform/     GKE, networking, secrets, alerting
+  kubernetes/    manifests, default-deny network policy
+vendor/
+  templates/     licensed template packages (reference assets)
 docs/
   architecture/  how it fits together
   adr/           why it is the way it is
@@ -106,6 +115,7 @@ docs/
 ## Building
 
 ```sh
+cd backend
 cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets
@@ -134,6 +144,6 @@ QIP_TOKEN_OPERATOR=$(head -c 32 /dev/urandom | base64) cargo run -p qip-api
   the kill switch trips
 * [Development](docs/developer/README.md) — conventions and how to add a stage
 
-`crates/tests/qip-acceptance/tests/documentation.rs` checks that what these
+`backend/crates/tests/qip-acceptance/tests/documentation.rs` checks that what these
 claim matches what the code does. Documentation that has drifted from the code
 is worse than none, because someone will believe it.

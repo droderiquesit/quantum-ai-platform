@@ -1,8 +1,8 @@
 # Domain: risk, trading and compliance
 
-**Scope** — `crates/services/qip-risk-engine/**`, `qip-execution-engine/**`,
+**Scope** — `backend/crates/services/qip-risk-engine/**`, `qip-execution-engine/**`,
 `qip-portfolio-engine/**`, `qip-brokers/**`, `qip-capital/**`,
-`crates/edge/qip-routing/**`, `crates/libs/qip-compliance/**`
+`backend/crates/edge/qip-routing/**`, `backend/crates/libs/qip-compliance/**`
 
 **The highest-consequence domain here.** Read
 `.claude/rules/01-security-and-safety.md` before changing anything in it.

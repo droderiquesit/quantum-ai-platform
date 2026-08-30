@@ -46,11 +46,11 @@ omitted is named with its reason.
 
 | Gate | Command |
 |---|---|
-| Build | `cargo build --workspace` |
-| Format | `cargo fmt --all --check` |
-| Lint | `cargo clippy --workspace --all-targets` |
-| Unit + integration | `cargo test --workspace --no-fail-fast` |
-| Contract / acceptance | `cargo test -p qip-acceptance` |
+| Build | `cd backend && cargo build --workspace` |
+| Format | `cd backend && cargo fmt --all --check` |
+| Lint | `cd backend && cargo clippy --workspace --all-targets` |
+| Unit + integration | `cd backend && cargo test --workspace --no-fail-fast` |
+| Contract / acceptance | `cd backend && cargo test -p qip-acceptance` |
 | Dependency policy | `./scripts/check-dependencies.sh` |
 | Secrets | `./scripts/check-secrets.sh` |
 | Infrastructure | `terraform fmt -check`, `terraform validate` |

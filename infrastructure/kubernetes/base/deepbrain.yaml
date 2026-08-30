@@ -129,7 +129,7 @@ spec:
             # kept QIP_MESH_CELLS out of every manifest and QIP_MIRROR_PATH in
             # edge-cell.yaml after the binary began refusing it, so it is now
             # checked rather than commented — see
-            # crates/tests/qip-acceptance/tests/manifest_wiring.rs.
+            # backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs.
             - name: QIP_DEEPBRAIN_HEALTH_ADDRESS
               value: "0.0.0.0:8080"
             - name: QIP_AUTONOMY_CEILING

@@ -5,8 +5,8 @@
 | Kind | Location |
 |---|---|
 | Unit — one type's own invariants | `#[cfg(test)] mod tests` beside the code |
-| Crate contract | `crates/<group>/<crate>/tests/` |
-| Cross-cutting behaviour | `crates/tests/qip-acceptance/tests/` |
+| Crate contract | `backend/crates/<group>/<crate>/tests/` |
+| Cross-cutting behaviour | `backend/crates/tests/qip-acceptance/tests/` |
 
 The acceptance suites are `acceptance`, `architecture`, `chaos`,
 `compliance_proof`, `documentation`, `e2e`, `e2e_live`, `infrastructure`,

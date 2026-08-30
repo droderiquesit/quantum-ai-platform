@@ -19,8 +19,8 @@ readonly PATTERNS=(
 )
 
 readonly EXCLUDE_PATHS=(
-  ':(exclude)target'
-  ':(exclude)Cargo.lock'
+  ':(exclude)backend/target'
+  ':(exclude)backend/Cargo.lock'
   ':(exclude)scripts/check-secrets.sh'
   # Test fixtures use obviously fake tokens, and flagging them would train
   # everyone to pass --no-verify.

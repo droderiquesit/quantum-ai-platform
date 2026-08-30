@@ -28,7 +28,7 @@ variable "enable_vertex_ai" {
   description = <<-EOT
     Managed training and model registry.
 
-    `crates/services/qip-training/src/vertex.rs` is a complete port with no
+    `backend/crates/services/qip-training/src/vertex.rs` is a complete port with no
     transport: it has no Google client, no credential and no egress path, and
     every method reports itself unavailable naming what is missing. Its module
     documentation gives the reason plainly — a fake connection that appeared to

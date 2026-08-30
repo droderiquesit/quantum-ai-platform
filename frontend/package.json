@@ -1,44 +1,17 @@
 {
-  "name": "@algorik/portal",
-  "version": "0.1.0",
+  "name": "algorik-frontend",
   "private": true,
-  "description": "Algorik customer portal. Paper trading only: no control here submits a live order.",
+  "description": "Algorik — the frontend workspace root. The Rust workspace is governed by backend/Cargo.toml; this file governs only the browser layer. The landing site keeps its own dependency tree deliberately (ADR 0015, ADR 0016).",
+  "workspaces": [
+    "packages/*",
+    "portal"
+  ],
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "eslint .",
-    "typecheck": "tsc --noEmit",
-    "test": "playwright test",
-    "test:headed": "playwright test --headed",
-    "test:report": "playwright show-report"
-  },
-  "dependencies": {
-    "@algorik/analytics": "*",
-    "@algorik/api-client": "*",
-    "@algorik/auth": "*",
-    "@algorik/brand": "*",
-    "@algorik/charts": "*",
-    "@algorik/design-tokens": "*",
-    "@algorik/feature-flags": "*",
-    "@algorik/shared-types": "*",
-    "@algorik/testing": "*",
-    "@algorik/ui": "*",
-    "@algorik/validation": "*",
-    "chart.js": "^4.5.1",
-    "next": "16.3.2",
-    "react": "19.2.8",
-    "react-dom": "19.2.8"
-  },
-  "devDependencies": {
-    "@playwright/test": "1.56.1",
-    "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "eslint": "^9",
-    "eslint-config-next": "16.3.2",
-    "tailwindcss": "^4",
-    "typescript": "^5"
+    "build": "npm run build --workspace portal",
+    "lint": "npm run lint --workspace portal",
+    "typecheck": "npm run typecheck --workspace portal",
+    "test": "npm run test --workspace portal",
+    "tokens": "node scripts/generate-theme-css.mjs",
+    "tokens:check": "node scripts/generate-theme-css.mjs --check"
   }
 }
