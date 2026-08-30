@@ -1,0 +1,191 @@
+# Mirror and attest the third-party images the platform adopts.
+#
+# Binary Authorization's default rule denies what the platform's attestor has
+# not signed. That leaves two ways to run a third-party controller: an
+# `exempt_image_patterns` entry, which admits an upstream repository unsigned
+# for ever, or this — copy the reviewed digest into the platform's own
+# registry, prove the bytes survived the copy, scan them with the same gate
+# the platform's images pass, and attest them with the same attestor. The
+# policy keeps exactly one rule, and the answer to "which foreign code runs
+# in our cluster" is the git history of infrastructure/gitops/vendored-images.txt.
+#
+# The identity that signs is the same CI service account deploy.yml signs
+# with, holding the same five narrow grants. Deliberately no new identity:
+# "the pipeline signs" stays the single doctrine, and the review surface for
+# a vendored image is the commit that added its digest to the list.
+#
+# The copy is done with crane, not docker. `docker pull` of a multi-arch
+# index dereferences it to one platform's manifest, and pushing that back
+# produces a different digest than was reviewed — the attestation would then
+# name bytes the manifest list never mentions. crane copies the index
+# byte-for-byte, and the digest-equality check below is what proves it did.
+name: vendor
+
+on:
+  # A change to the list mirrors into dev automatically — same branch gating
+  # as the deploy pipeline's automatic path.
+  push:
+    branches:
+      - "main"
+      - "claude/autonomous-investment-platform-76gt4y"
+    paths:
+      - "infrastructure/gitops/vendored-images.txt"
+      - ".github/workflows/vendor.yml"
+  # Other environments are a person's deliberate act, like deploying to them.
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Which environment's registry and attestor to vendor into."
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - test
+          - stage
+          - prod
+
+permissions:
+  contents: read
+
+env:
+  TARGET_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+  CRANE_VERSION: v0.22.0
+  CRANE_SHA256: edb74d53fad9a596860f59d1c5d04a43dfb5f441dc71f57060dd0bf39483c833
+
+jobs:
+  mirror:
+    name: mirror and attest into ${{ inputs.environment || 'dev' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Identical derivation to deploy.yml, for the identical reason: every
+      # value authentication and attestation need is a pure function of the
+      # committed tfvars, so nothing here can be poisoned by a stale
+      # repository variable.
+      - name: derive the identity from the tfvars
+        id: identity
+        run: |
+          set -euo pipefail
+          tfvars="infrastructure/environments/${TARGET_ENVIRONMENT}/terraform.tfvars"
+          [ -f "$tfvars" ] || { echo "no tfvars at $tfvars" >&2; exit 1; }
+          project="$(sed -n 's/^project_id[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
+          number="$(sed -n 's/^project_number[[:space:]]*=[[:space:]]*\([0-9]*\)/\1/p' "$tfvars" | head -1)"
+          region="$(sed -n 's/^region[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
+          [ -n "$region" ] || region="europe-west2"   # the variable's default
+          [ -n "$project" ] && [ -n "$number" ] || {
+            echo "$tfvars carries no project_id/project_number" >&2
+            exit 1
+          }
+          ring="qip-${TARGET_ENVIRONMENT}"
+          {
+            echo "project=$project"
+            echo "region=$region"
+            echo "provider=projects/$number/locations/global/workloadIdentityPools/qip-github-${TARGET_ENVIRONMENT}/providers/github"
+            echo "account=qip-ci-${TARGET_ENVIRONMENT}@$project.iam.gserviceaccount.com"
+            echo "attestor=${ring}-build"
+            echo "key_version=projects/$project/locations/$region/keyRings/$ring/cryptoKeys/${ring}-attestor/cryptoKeyVersions/1"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: authenticate without a key
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ steps.identity.outputs.provider }}
+          service_account: ${{ steps.identity.outputs.account }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          install_components: beta
+
+      - name: let crane push to artifact registry
+        run: gcloud auth configure-docker "${{ steps.identity.outputs.region }}-docker.pkg.dev" --quiet
+
+      # Pinned by version and checksum, like every other tool this pipeline
+      # downloads. A mirroring tool is exactly the wrong place to trust a
+      # moving tag.
+      - name: install crane
+        run: |
+          set -euo pipefail
+          curl -sSLo /tmp/crane.tar.gz \
+            "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz"
+          echo "${CRANE_SHA256}  /tmp/crane.tar.gz" | sha256sum -c -
+          sudo tar -C /usr/local/bin -xzf /tmp/crane.tar.gz crane
+
+      - name: install trivy
+        run: |
+          set -euo pipefail
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
+            | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg >/dev/null
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" \
+            | sudo tee /etc/apt/sources.list.d/trivy.list >/dev/null
+          sudo apt-get update -qq && sudo apt-get install -y -qq trivy
+
+      - name: mirror, verify, scan, attest
+        env:
+          BINAUTHZ_ATTESTOR: ${{ steps.identity.outputs.attestor }}
+          BINAUTHZ_KEY_VERSION: ${{ steps.identity.outputs.key_version }}
+          GCP_PROJECT: ${{ steps.identity.outputs.project }}
+          GCP_REGION: ${{ steps.identity.outputs.region }}
+        run: |
+          set -euo pipefail
+          prefix="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/qip-${TARGET_ENVIRONMENT}"
+          mirrored=0
+          while read -r source dest tag; do
+            case "$source" in ""|\#*) continue ;; esac
+            source_digest="${source#*@}"
+            case "$source_digest" in
+              sha256:*) ;;
+              *) echo "$source names no sha256 digest; a tag is whatever its owner says it is today." >&2; exit 1 ;;
+            esac
+            dest_ref="${prefix}/${dest}:${tag}"
+
+            crane copy "$source" "$dest_ref"
+
+            # The property the whole file promises: the bytes in our registry
+            # are the bytes that were reviewed. crane preserves the index
+            # digest; this is the proof rather than the assumption.
+            mirrored_digest="$(crane digest "$dest_ref")"
+            if [ "$mirrored_digest" != "$source_digest" ]; then
+              echo "the copy of $source arrived as $mirrored_digest; refusing to scan or sign it." >&2
+              exit 1
+            fi
+            image="${prefix}/${dest}@${source_digest}"
+
+            # The same gate the platform's own images pass before signing.
+            # A vendored controller with a known critical or high CVE is a
+            # finding to act on — pin a newer digest — not one to sign past.
+            trivy image \
+              --severity CRITICAL,HIGH \
+              --exit-code 1 \
+              --ignore-unfixed \
+              "$image"
+
+            # Idempotent for the same reason deploy.yml's sign step is:
+            # re-running for an unchanged list is normal, and an existing
+            # attestation for these exact bytes is success.
+            existing=$(gcloud container binauthz attestations list \
+              --project "${GCP_PROJECT}" \
+              --attestor "${BINAUTHZ_ATTESTOR}" \
+              --attestor-project "${GCP_PROJECT}" \
+              --artifact-url "${image}" \
+              --format='value(name)')
+            if [ -n "${existing}" ]; then
+              echo "${image} is already attested."
+            else
+              gcloud beta container binauthz attestations sign-and-create \
+                --project "${GCP_PROJECT}" \
+                --artifact-url "${image}" \
+                --attestor "${BINAUTHZ_ATTESTOR}" \
+                --attestor-project "${GCP_PROJECT}" \
+                --keyversion "${BINAUTHZ_KEY_VERSION}"
+            fi
+            mirrored=$((mirrored + 1))
+          done < infrastructure/gitops/vendored-images.txt
+          # An empty run means the list parsed to nothing, which is far more
+          # likely a format regression than a decision to vendor nothing.
+          [ "$mirrored" -gt 0 ] || { echo "no images were mirrored; the list parsed to nothing." >&2; exit 1; }
+          echo "mirrored and attested ${mirrored} image(s)."

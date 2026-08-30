@@ -1,0 +1,30 @@
+# Third-party images the platform adopts, mirrored into its own registry.
+#
+# Binary Authorization's default rule denies every image the platform's
+# attestor has not signed, and that is the point of it — so a third-party
+# controller can run here in one of two ways: an exemption pattern that
+# admits its upstream repository unsigned for ever, or an adoption. This
+# file is the adoption path: `.github/workflows/vendor.yml` copies each
+# source digest into the environment's Artifact Registry byte-for-byte,
+# proves the digest survived the copy, scans it with the same gate the
+# platform's own images pass, and attests it with the same attestor. The
+# admission policy stays exactly one rule with no holes, and "which foreign
+# code runs in our cluster" is answered by this file's git history.
+#
+# Sources are named by digest, never by tag. A tag is whatever its owner
+# says it is today; the digest is what was reviewed when the line was
+# added. Moving to a new upstream version is a new digest in a new commit.
+#
+# Format: <source-ref-by-digest> <destination-path> <destination-tag>
+# The destination lands at <registry>/<destination-path>:<destination-tag>
+# in the target environment's registry. The tag is for humans browsing the
+# registry; everything that matters references the digest.
+
+# Argo CD v3.5.2 (core install), per ADR 0017. Digest is the multi-arch
+# index for quay.io/argoproj/argocd:v3.5.2, resolved 2026-08-30.
+quay.io/argoproj/argocd@sha256:e2aadfae709d904e87f46ba4aa49601d827b3022db22cd4d03aae816a2e7097b vendor/argocd v3.5.2
+
+# Redis, Argo CD's cache — the version its v3.5.2 manifests pin. Digest is
+# the multi-arch index for public.ecr.aws/docker/library/redis:8.2.3-alpine,
+# resolved 2026-08-30.
+public.ecr.aws/docker/library/redis@sha256:08ad0b1d280850169a790dba1393ff7a90aef951fc19632cf4d3ce4f78e679ba vendor/redis 8.2.3-alpine
