@@ -434,6 +434,14 @@ jobs:
       # A dry run against the live API server first. It catches a manifest the
       # cluster will reject — an admission policy, a bad field — without having
       # applied half of it.
+      # The namespace goes first, for real: a server-side dry-run refuses
+      # every namespaced object whose namespace does not exist yet, and a
+      # dry-run cannot create one. Creating a namespace is idempotent and
+      # carries no workload, so applying it before the check costs nothing
+      # and unblocks the check for everything that lives inside it.
+      - name: ensure the namespace exists
+        run: kubectl apply --server-side -f rendered/namespace.yaml
+
       - name: check the manifests against the cluster
         run: kubectl apply --server-side --dry-run=server -f rendered/
 
