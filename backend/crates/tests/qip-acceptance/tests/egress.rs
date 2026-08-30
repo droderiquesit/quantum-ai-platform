@@ -1061,13 +1061,25 @@ fn no_workload_in_the_namespace_has_an_egress_rule_that_bypasses_the_proxy() {
         "no egress destination was read at all"
     );
     for destination in &destinations {
+        // kube-dns was always in this test's list of permitted shapes — see
+        // the comment above — but it never appeared as a CIDR while the DNS
+        // rule was selector-based. Under NodeLocal DNSCache the query keeps
+        // the kube-dns service VIP as its destination and the selector can
+        // never match, so namespace.yaml names the VIP as an ipBlock
+        // (service_cidr's tenth address, port 53 only, not internet-routable)
+        // and this assert names the same address. This test fired on the
+        // commit that added the rule, which is its own proof it still refuses
+        // an address it has not been told about.
         assert!(
-            destination == "199.36.153.8/30" || destination == "VENUE_CIDR",
+            destination == "199.36.153.8/30"
+                || destination == "VENUE_CIDR"
+                || destination == "10.8.0.10/32",
             "a policy permits egress to {destination}. Anything that is not \
-             private Google access or an edge cell's own venue range is a \
-             route to the internet that does not pass through the proxy, and a \
-             workload that can reach the internet can exfiltrate the position \
-             history it was trained on."
+             private Google access, the cluster's own DNS service address, or \
+             an edge cell's own venue range is a route to the internet that \
+             does not pass through the proxy, and a workload that can reach \
+             the internet can exfiltrate the position history it was trained \
+             on."
         );
     }
     assert!(

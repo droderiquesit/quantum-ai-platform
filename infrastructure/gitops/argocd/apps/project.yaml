@@ -16,7 +16,8 @@ metadata:
 spec:
   description: The qip platform, from its own repository, into its own namespace.
   sourceRepos:
-    - git@github.com:droderiquesit/quantum-ai-platform.git
+    # Over ssh.github.com:443 — see dev.yaml on why not port 22.
+    - ssh://git@ssh.github.com:443/droderiquesit/quantum-ai-platform.git
   destinations:
     - server: https://kubernetes.default.svc
       namespace: qip

@@ -22,7 +22,12 @@ spec:
   # qip project in project.yaml is the narrow one this Application belongs in.
   project: qip
   source:
-    repoURL: git@github.com:droderiquesit/quantum-ai-platform.git
+    # ssh.github.com:443 — GitHub's SSH endpoint on the one port the
+    # repo server's egress permits. Plain git@github.com speaks on 22,
+    # and widening the egress rule to a second port for the same trust
+    # relationship would be the wrong direction; the upstream
+    # known-hosts ConfigMap already pins this endpoint's keys.
+    repoURL: ssh://git@ssh.github.com:443/droderiquesit/quantum-ai-platform.git
     # The platform's development branch, which is also its default branch.
     targetRevision: claude/autonomous-investment-platform-76gt4y
     path: infrastructure/helm/qip
