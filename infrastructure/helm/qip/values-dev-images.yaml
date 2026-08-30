@@ -1,0 +1,15 @@
+# dev's promoted image digests — the file a promotion writes.
+#
+# This is the GitOps half of what deploy.yml's render step computes on the
+# fly: one digest per workload, and nothing else. Under ADR 0017 a Kargo
+# stage becomes this file's author; until then it records the digests the
+# last green pipeline deployment applied (run 33339573747, commit 5370279),
+# written so the introduce-phase Argo CD Application has a committed state
+# to diff the cluster against. While both delivery paths run, the pipeline
+# keeps deploying newer commits and this file lags — that drift appearing
+# in Argo's diff view is the migration window working as described, not a
+# fault.
+images:
+  api: sha256:db8becf3b83e196e36fc2c1888b9b460ce2805a23c0e3a409b21ea669af8bc16
+  deepbrain: sha256:ef15489f2b623d02a3d257cd530dc0f1c14db7ea1d6f95f3659f840b2b6017c5
+  fastbrain: sha256:5c85e0b1d6741aa684e0691d32b4d34e4e8a5be5f3900483dab4219636725ced

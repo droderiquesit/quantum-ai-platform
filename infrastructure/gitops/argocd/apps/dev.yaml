@@ -1,0 +1,41 @@
+# The dev Application: this repository's qip chart, reconciled by the Argo CD
+# in the cluster it describes.
+#
+# Sync is deliberately manual — syncPolicy carries no `automated` block — for
+# the length of ADR 0017's migration window. Two unattended writers to the
+# qip namespace (the pipeline's kubectl and an auto-syncing Argo) would each
+# undo the other on every disagreement; during the window Argo only *reports*
+# drift between this chart at the pinned revision and the cluster, which is
+# the equivalence evidence the cut-over (retiring the kubectl path) requires.
+# Turning on automated sync is that cut-over's commit, not this one.
+#
+# Applied by hand like the install itself (see ../README.md), committed so
+# the Application's definition has the same review trail as everything else
+# it deploys.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: qip-dev
+  namespace: argocd
+spec:
+  # Not `default`: the core install bootstraps no default project, and the
+  # qip project in project.yaml is the narrow one this Application belongs in.
+  project: qip
+  source:
+    repoURL: git@github.com:droderiquesit/quantum-ai-platform.git
+    # The platform's development branch, which is also its default branch.
+    targetRevision: claude/autonomous-investment-platform-76gt4y
+    path: infrastructure/helm/qip
+    helm:
+      valueFiles:
+        - values-dev.yaml
+        # The promoted digests — the file a Kargo stage will write.
+        - values-dev-images.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: qip
+  syncPolicy:
+    syncOptions:
+      # The namespace is the chart's own resource; Argo must not invent it.
+      - CreateNamespace=false
+      - ServerSideApply=true
