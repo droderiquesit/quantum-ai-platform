@@ -215,6 +215,8 @@ jobs:
           service_account: ${{ steps.identity.outputs.account }}
 
       - uses: google-github-actions/setup-gcloud@v2
+        with:
+          install_components: beta
 
       - name: let docker push to artifact registry
         run: gcloud auth configure-docker "${{ steps.identity.outputs.region }}-docker.pkg.dev" --quiet
@@ -312,7 +314,9 @@ jobs:
             exit 0
           fi
 
-          gcloud container binauthz attestations sign-and-create \
+          # `sign-and-create` moved to the beta track in current gcloud;
+          # the component is installed in the setup step above.
+          gcloud beta container binauthz attestations sign-and-create \
             --project "${GCP_PROJECT}" \
             --artifact-url "${image}" \
             --attestor "${BINAUTHZ_ATTESTOR}" \

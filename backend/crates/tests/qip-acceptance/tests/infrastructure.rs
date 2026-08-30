@@ -456,7 +456,7 @@ fn every_attestation_command_the_pipeline_runs_has_a_grant_that_permits_it() {
     // about live commands rather than ones that were removed years ago.
     for command in [
         "gcloud container binauthz attestations list",
-        "gcloud container binauthz attestations sign-and-create",
+        "gcloud beta container binauthz attestations sign-and-create",
     ] {
         assert!(
             workflow.contains(command),
