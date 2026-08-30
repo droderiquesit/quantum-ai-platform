@@ -366,7 +366,7 @@ spec:
         # verifies grants, and it has no business holding the API's tokens.
         - name: secrets
           csi:
-            driver: secrets-store.csi.k8s.io
+            driver: secrets-store-gke.csi.k8s.io
             readOnly: true
             volumeAttributes:
               secretProviderClass: qip-envelope-key

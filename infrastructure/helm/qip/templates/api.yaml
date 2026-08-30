@@ -192,7 +192,7 @@ spec:
         # is also the truth: nothing writes a credential back.
         - name: secrets
           csi:
-            driver: secrets-store.csi.k8s.io
+            driver: secrets-store-gke.csi.k8s.io
             readOnly: true
             volumeAttributes:
               secretProviderClass: qip-api-secrets

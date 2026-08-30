@@ -613,7 +613,7 @@ fn no_credential_appears_in_a_kubernetes_manifest() {
         // after the first pod has already failed.
         if content.contains("QIP_TOKEN_") {
             assert!(
-                content.contains("secrets-store.csi.k8s.io"),
+                content.contains("secrets-store-gke.csi.k8s.io"),
                 "{} sets a token without projecting it from the secret store",
                 path.display()
             );
@@ -1901,25 +1901,50 @@ fn every_credential_a_workload_mounts_exists_in_terraform_and_is_readable_by_it(
 
 #[test]
 fn the_cluster_runs_the_driver_that_projects_the_secrets_the_manifests_mount() {
-    // The manifests ask for `secrets-store.csi.k8s.io` volumes. That driver is
-    // a cluster add-on, and a manifest that mounts it on a cluster without it
-    // produces pods stuck in ContainerCreating with an event nobody reads
-    // until the rollout times out. The two facts live in different languages
-    // in different directories, so this is the only place they meet.
+    // The failure this prevents happened, on the first real deployment: pods
+    // stuck in ContainerCreating for hours on "driver name
+    // secrets-store.csi.k8s.io not found in the list of registered CSI
+    // drivers". This test existed then and passed, because it only checked
+    // that the manifests name *a* driver and the cluster enables *an*
+    // add-on — and those were two different dialects. `secret_manager_config`
+    // enables GKE's managed add-on, which registers
+    // `secrets-store-gke.csi.k8s.io` and expects `provider: gke`; the
+    // manifests spoke the open-source driver's names. The two facts live in
+    // different languages in different directories, and this is the only
+    // place they meet, so the meeting has to assert the exact strings.
     let cluster = without_comments(&read("infrastructure/terraform/modules/cluster/main.tf"));
-    let manifests_mount_the_driver = manifest_documents()
+    let documents = manifest_documents();
+    let manifests_mount_the_driver = documents
         .iter()
-        .any(|(_, document)| document.contains("secrets-store.csi.k8s.io"));
+        .any(|(_, document)| document.contains("driver: secrets-store-gke.csi.k8s.io"));
     assert!(
         manifests_mount_the_driver,
-        "no manifest mounts the secret-store driver any more; if the credential \
-         delivery changed shape, retire this test alongside secret_manager_config"
+        "no manifest mounts the managed secret-store driver any more; if the \
+         credential delivery changed shape, retire this test alongside \
+         secret_manager_config"
     );
     assert!(
         cluster.contains("secret_manager_config"),
-        "the manifests mount secrets-store.csi.k8s.io volumes and the cluster \
-         never enables the Secret Manager CSI add-on"
+        "the manifests mount secrets-store-gke.csi.k8s.io volumes and the \
+         cluster never enables the Secret Manager add-on"
     );
+    // The add-on's driver rejects a class written for the open-source
+    // provider, so a single leftover `provider: gcp` or open-source driver
+    // name is this exact outage waiting in whichever manifest carries it.
+    for (path, document) in &documents {
+        assert!(
+            !document.contains("driver: secrets-store.csi.k8s.io"),
+            "{} mounts the open-source driver name, which the managed add-on \
+             does not register",
+            path.display()
+        );
+        assert!(
+            !document.contains("provider: gcp"),
+            "{} declares the open-source provider; the managed add-on expects \
+             `provider: gke`",
+            path.display()
+        );
+    }
 }
 
 #[test]
