@@ -29,10 +29,10 @@ test.describe("the phone layout", () => {
       page.getByTestId("sidebar").getByRole("link", { name: "Executive dashboard" }),
     ).toBeVisible();
 
-    await overlay.click({ position: { x: 5, y: 5 } });
-    await expect(
-      page.getByTestId("sidebar").getByRole("link", { name: "Executive dashboard" }),
-    ).toBeHidden();
+    // Click right of the 260px panel: the panel sits above the overlay, so a
+    // click at its left edge would test the panel, not the dismissal.
+    await overlay.click({ position: { x: 380, y: 300 } });
+    await expect(overlay, "the overlay outlived its dismissal").toHaveCount(0);
   });
 
   test("the kill switch stays reachable when the header has no room", async ({ page }) => {
@@ -109,7 +109,7 @@ test.describe("the phone layout", () => {
     await expect(
       page.getByTestId("sidebar-overlay"),
       "the panel stayed over the page it navigated to",
-    ).toBeHidden();
+    ).toHaveCount(0);
   });
 });
 

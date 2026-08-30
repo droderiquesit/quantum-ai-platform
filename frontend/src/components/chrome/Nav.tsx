@@ -86,15 +86,18 @@ export function Sidebar({
 
   return (
     <>
-      <div
-        id="sidebarOverlay"
-        data-testid="sidebar-overlay"
-        onClick={onClose}
-        className={`fixed inset-0 bg-black/50 z-40 lg:hidden transition-opacity duration-300 ${
-          mobileOpen ? "opacity-100" : "opacity-0 pointer-events-none"
-        }`}
-        aria-hidden="true"
-      />
+      {/* In the DOM only while open: an overlay that is merely transparent
+          still reads as present to assistive tech and to the test harness,
+          and "closed" must be a fact of the tree, not of a style. */}
+      {mobileOpen ? (
+        <div
+          id="sidebarOverlay"
+          data-testid="sidebar-overlay"
+          onClick={onClose}
+          className="fixed inset-0 bg-black/50 z-40 lg:hidden"
+          aria-hidden="true"
+        />
+      ) : null}
       <aside
         className={`sidebar ${collapsed ? "collapsed" : ""} ${mobileOpen ? "mobile-open" : ""}`}
         data-testid="sidebar"
