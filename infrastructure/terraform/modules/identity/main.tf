@@ -68,8 +68,12 @@ resource "google_identity_platform_config" "algorik" {
     sign_up_quota_config {
       quota          = var.sign_up_quota_per_hour
       quota_duration = "3600s"
-      # start_time is omitted: the quota applies from creation. A dated
-      # window is for planned campaigns, not a standing guard.
+      # The provider requires all three fields together; the comment that
+      # previously omitted this one produced "Missing required argument" at
+      # plan time. A committed static instant in the past means the quota
+      # has simply always applied, and the plan stays deterministic — a
+      # timestamp() here would diff on every run.
+      start_time = "2026-09-01T00:00:00Z"
     }
   }
 

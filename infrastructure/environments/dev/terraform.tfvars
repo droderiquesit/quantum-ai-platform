@@ -104,3 +104,15 @@ cluster_deletion_protection = false
 # the alerts do not exist, which is the honest description of an environment
 # whose workloads have never emitted a metric.
 # workload_metrics_exist = true
+
+# --- Customer identity ------------------------------------------------------
+# Identity Platform for customer sign-in, activated once real hostnames
+# existed to authorize. The domains are the Cloud Run URLs a deploy actually
+# printed (never invented, per the variable's contract) plus localhost for
+# development against the real project.
+enable_identity_platform = true
+identity_authorized_domains = [
+  "localhost",
+  "algorik-portal-rgxpsss2lq-uk.a.run.app",
+  "algorik-landing-rgxpsss2lq-uk.a.run.app",
+]

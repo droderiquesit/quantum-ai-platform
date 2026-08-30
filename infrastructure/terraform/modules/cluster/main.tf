@@ -90,6 +90,18 @@ resource "google_container_cluster" "primary" {
     key_name = var.kms_key_id
   }
 
+  lifecycle {
+    # The GKE API now reports the encryption state as
+    # "ALL_OBJECTS_ENCRYPTION_ENABLED" while provider ~>6.12 only speaks
+    # "ENCRYPTED"/"DECRYPTED" — so every plan showed a state change and
+    # every apply of it was refused as a badRequest: an update that could
+    # never converge. The encryption itself is on, under our key, and
+    # key_name is still tracked. Remove this ignore when the provider is
+    # upgraded to a major that knows the new enum; until then a plan that
+    # is forever red teaches people to stop reading plans.
+    ignore_changes = [database_encryption[0].state]
+  }
+
   # Binary authorisation: only images signed by our pipeline run.
   binary_authorization {
     evaluation_mode = "PROJECT_SINGLETON_POLICY_ENFORCE"
