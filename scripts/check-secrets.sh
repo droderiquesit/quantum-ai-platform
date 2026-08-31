@@ -29,7 +29,15 @@ readonly EXCLUDE_PATHS=(
 
 found=0
 for pattern in "${PATTERNS[@]}"; do
-  if matches=$(git grep -n -I -E "$pattern" -- . "${EXCLUDE_PATHS[@]}" 2>/dev/null); then
+  # One known non-secret shaped like one: cert-manager's cainjector
+  # annotation assigns `...-from-secret:` a namespace/name *reference*
+  # ("cert-manager/cert-manager-webhook-ca"), which holds nothing, and the
+  # vendored upstream manifest carries it verbatim. Filtered by its exact
+  # annotation key rather than excluding the vendored file, so a real
+  # credential pasted into that file would still be caught. The acceptance
+  # suite's copy of this check carries the same single exemption.
+  if matches=$(git grep -n -I -E "$pattern" -- . "${EXCLUDE_PATHS[@]}" 2>/dev/null \
+    | grep -v 'cert-manager\.io/inject-ca-from-secret:'); then
     echo "possible secret matching /$pattern/:" >&2
     echo "$matches" >&2
     found=1

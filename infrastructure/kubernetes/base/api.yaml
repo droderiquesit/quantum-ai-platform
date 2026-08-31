@@ -325,11 +325,11 @@ spec:
 # across, and would make the disruption budget above unable to allow a single
 # eviction.
 #
-# maxReplicas is 6, and it is a capacity number rather than an ambition. The
-# pool is regional with two nodes per zone across three zones and there is no
-# cluster autoscaler, so nothing here can summon a node: six replicas at 250m
-# is 1.5 CPU of requests, which fits the pool as committed. An autoscaler whose
-# maximum does not fit does not add capacity, it leaves pods Pending.
+# maxReplicas is 6, and it is a capacity number rather than an ambition: six
+# replicas at 250m is 1.5 CPU of requests, which fits the pool as committed
+# even before the pool autoscaler (modules/cluster) adds a node. An
+# autoscaler whose maximum does not fit does not add capacity, it leaves
+# pods Pending.
 #
 # Six is also where more replicas stop helping, for reasons that are not
 # capacity and are not fixed by raising this number:
@@ -345,51 +345,66 @@ spec:
 #
 # Both would be closed by moving that state out of the process rather than by
 # scaling further, which is the honest next step and is not this change.
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
+# A KEDA ScaledObject rather than a bare HorizontalPodAutoscaler, by the
+# desk's direction. KEDA's cpu trigger manages an HPA underneath
+# (keda-hpa-qip-api), so today's behaviour is identical to the HPA this
+# replaces — same target, same bounds, same behaviour block — and what is
+# bought is the seam: the day an event-driven signal exists (queue depth, a
+# stream-connection gauge), it becomes one more entry under `triggers` here
+# instead of a second scaling system arguing with the first. One owner per
+# scale decision, structurally.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
 metadata:
   name: qip-api
   namespace: qip
+  annotations:
+    # Adopt the HorizontalPodAutoscaler this object replaced instead of
+    # creating a second one beside it. Two HPAs reconciling one Deployment
+    # do not error, they argue — each writes its own replica count and the
+    # workload breathes with the disagreement. Transfer keeps the object
+    # (and its name, which dashboards already know) under one owner.
+    scaledobject.keda.sh/transfer-hpa-ownership: "true"
 spec:
-  # Written inline on purpose, and it must stay that way. The acceptance suite
-  # finds workloads by looking for a line reading `kind: Deployment` at any
-  # indentation; a block-style target puts exactly that line in this document
-  # and makes an autoscaler look like a Deployment with no containers, no
-  # service account and no probes, which fails several checks that have nothing
-  # to do with autoscaling.
+  # Only the name: KEDA defaults the target to apps/v1 Deployment, and a
+  # default the controller documents beats restating it. (The acceptance
+  # suite's parser anchors `kind:` matches at column zero these days, so a
+  # nested kind would not confuse it — the old HPA's inline-flow workaround
+  # died with that fix.)
   scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
     name: qip-api
-  minReplicas: 2
-  maxReplicas: 6
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 300
-  behavior:
-    scaleUp:
-      # A minute of agreement before acting, then at most double. Traffic
-      # arrives faster than it leaves, so this side is the permissive one.
-      stabilizationWindowSeconds: 60
-      policies:
-        - type: Percent
-          value: 100
-          periodSeconds: 60
-    scaleDown:
-      # Slow, and one replica at a time. Every replica removed takes its
-      # rate-limit counters and its record of which cells have reported with
-      # it, so shedding four at once loses most of what the console knows;
-      # and a set that flaps discards it repeatedly while a node drain is
-      # trying to make progress against the disruption budget above.
-      stabilizationWindowSeconds: 600
-      policies:
-        - type: Pods
-          value: 1
-          periodSeconds: 300
+  minReplicaCount: 2
+  maxReplicaCount: 6
+  triggers:
+    - type: cpu
+      metricType: Utilization
+      metadata:
+        value: "300"
+  advanced:
+    horizontalPodAutoscalerConfig:
+      # The adopted HPA's existing name — required for the ownership
+      # transfer above to find it.
+      name: qip-api
+      behavior:
+        scaleUp:
+          # A minute of agreement before acting, then at most double. Traffic
+          # arrives faster than it leaves, so this side is the permissive one.
+          stabilizationWindowSeconds: 60
+          policies:
+            - type: Percent
+              value: 100
+              periodSeconds: 60
+        scaleDown:
+          # Slow, and one replica at a time. Every replica removed takes its
+          # rate-limit counters and its record of which cells have reported with
+          # it, so shedding four at once loses most of what the console knows;
+          # and a set that flaps discards it repeatedly while a node drain is
+          # trying to make progress against the disruption budget above.
+          stabilizationWindowSeconds: 600
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 300
 # ---------------------------------------------------------------------------
 # The chain this workload does not keep, and why closing it is not a manifest
 # change.

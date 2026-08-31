@@ -913,8 +913,18 @@ fn block_under(text: &str, key: &str) -> String {
 /// about the container rather than about which controller manages it. Keying
 /// these checks on `kind: Deployment` alone is how a workload converted to a
 /// `StatefulSet` would quietly stop being checked.
+///
+/// Anchored at column zero, exactly like `documents_of_kind` and for exactly
+/// its reason: `kind:` appears nested inside other objects' target
+/// references, and the substring version of this helper pulled
+/// `autoscaling.yaml` — three VerticalPodAutoscalers whose `targetRef` each
+/// name `kind: Deployment` — into the workload set and demanded its
+/// nonexistent containers carry probes and drop capabilities. The parser
+/// above had already been fixed; this helper was the copy the fix missed.
 fn is_workload(content: &str) -> bool {
-    content.contains("kind: Deployment") || content.contains("kind: StatefulSet")
+    WORKLOAD_KINDS
+        .iter()
+        .any(|kind| content.lines().any(|line| line == format!("kind: {kind}")))
 }
 
 /// The kinds of workload the manifests may declare.
