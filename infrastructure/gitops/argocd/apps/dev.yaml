@@ -22,12 +22,19 @@ spec:
   # qip project in project.yaml is the narrow one this Application belongs in.
   project: qip
   source:
-    # ssh.github.com:443 — GitHub's SSH endpoint on the one port the
-    # repo server's egress permits. Plain git@github.com speaks on 22,
-    # and widening the egress rule to a second port for the same trust
-    # relationship would be the wrong direction; the upstream
-    # known-hosts ConfigMap already pins this endpoint's keys.
-    repoURL: ssh://git@ssh.github.com:443/droderiquesit/quantum-ai-platform.git
+    # Anonymous HTTPS, and the absence of a credential is the point. This
+    # repository is public, so the reconciler needs no key to read it —
+    # which is strictly better than the deploy key this replaced: a private
+    # key held in the cluster is a key that can leak, be rotated wrongly, or
+    # outlive the person who made it, and read access it grants was already
+    # granted to everyone. 443 is the one port the repo server's egress
+    # permits, so this needs no policy change either.
+    #
+    # If this repository is ever made private, this URL stops working and
+    # the Application reports a comparison error rather than silently
+    # serving stale manifests — at which point a credential becomes a real
+    # requirement and gets its own reviewed commit.
+    repoURL: https://github.com/droderiquesit/quantum-ai-platform.git
     # The platform's development branch, which is also its default branch.
     targetRevision: claude/autonomous-investment-platform-76gt4y
     path: infrastructure/helm/qip

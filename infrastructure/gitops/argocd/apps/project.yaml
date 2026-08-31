@@ -16,14 +16,29 @@ metadata:
 spec:
   description: The qip platform, from its own repository, into its own namespace.
   sourceRepos:
-    # Over ssh.github.com:443 — see dev.yaml on why not port 22.
-    - ssh://git@ssh.github.com:443/droderiquesit/quantum-ai-platform.git
+    # Anonymous HTTPS — see dev.yaml on why the reconciler holds no
+    # credential for a public repository.
+    - https://github.com/droderiquesit/quantum-ai-platform.git
   destinations:
     - server: https://kubernetes.default.svc
       namespace: qip
+  # Exactly the cluster-scoped kinds the chart contains, and no others. The
+  # first draft allowed only Namespace, which was not a narrower policy but a
+  # broken one: the chart also carries the journal StorageClass and the
+  # qip-burst ComputeClass, so Argo could never reconcile them and reported
+  # them `Unknown` — a resource the reconciler is responsible for and cannot
+  # touch is the worst of both readings. Anything beyond these three still
+  # needs a commit here, which is the property the whitelist is for.
   clusterResourceWhitelist:
     - group: ""
       kind: Namespace
+    # The journal volumes' StorageClass — provisioning parameters belong with
+    # the workload that depends on them.
+    - group: storage.k8s.io
+      kind: StorageClass
+    # The machine shape node auto-provisioning may invent for burst workloads.
+    - group: cloud.google.com
+      kind: ComputeClass
   namespaceResourceWhitelist:
     - group: "*"
       kind: "*"
