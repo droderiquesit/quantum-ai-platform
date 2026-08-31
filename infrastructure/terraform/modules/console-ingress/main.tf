@@ -56,19 +56,38 @@ resource "google_compute_global_address" "kargo" {
 
 # Who may pass the proxy.
 #
-# One grant covers both consoles: `google_iap_web_iam_member` binds at the
-# project's IAP resource, which is the parent of every backend service in it.
-# Adding a third console later therefore adds no access decision — which is
-# the arrangement to keep, because an access list that has to be remembered
-# separately per console is one that will eventually be forgotten for one.
-#
 # `roles/iap.httpsResourceAccessor` is the whole access decision: an identity
 # not on this list is refused by Google before the request reaches the load
 # balancer's backend, which is why the list is short and lives in a reviewed
 # file. It is deliberately not `allAuthenticatedUsers` — that admits every
 # Google account in the world, which is a different thing from admitting the
 # desk.
-resource "google_iap_web_iam_member" "console_operators" {
+#
+# `_type_compute_` is load-bearing, and the first attempt used the wrong one.
+# IAP's IAM resources form a hierarchy, and a binding is only read at or below
+# the node it is attached to:
+#
+#     projects/{p}/iap_web                      google_iap_web_iam_member
+#     projects/{p}/iap_web/compute              this resource
+#     projects/{p}/iap_web/compute/services/{s} google_iap_web_backend_service_iam_member
+#
+# A GKE Ingress backend lives at the third line, and `google_iap_web_iam_member`
+# attaches to the first — which does not cascade. The apply succeeded, the
+# console_operators list looked granted, and the desk got
+# "You don't have access" from IAP with `gcloud iap web get-iam-policy
+# --resource-type=backend-services` returning an empty policy. That is the
+# worst shape a permission bug takes: everything reports success and the
+# grant simply is not where the check reads.
+#
+# The middle line is chosen over the third deliberately. GKE names a backend
+# service after the cluster, namespace, service and port
+# (`k8s1-92e95901-argocd-argocd-server-443-…`), so a per-service binding would
+# have to predict a generated name and would silently stop applying when the
+# Service is recreated under a new one. Binding at `compute` covers every
+# backend service in the project, so a third console later adds no access
+# decision — which is the arrangement to keep, because a list that must be
+# remembered per console is one that will eventually be forgotten for one.
+resource "google_iap_web_type_compute_iam_member" "console_operators" {
   for_each = var.enabled ? toset(var.operators) : toset([])
   project  = var.project_id
   role     = "roles/iap.httpsResourceAccessor"
