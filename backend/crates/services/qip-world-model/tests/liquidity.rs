@@ -493,3 +493,61 @@ fn the_topology_lists_what_it_has_seen() {
     assert!(map.share_of(&VenueId::new("XNYS")).is_some());
     assert!(map.share_of(&VenueId::new("XLON")).is_none());
 }
+
+// --- bounded retention -------------------------------------------------------
+
+#[test]
+fn absorbing_past_the_per_venue_bound_evicts_the_oldest_observations_and_the_count_stops_growing() {
+    // The failure this prevents has happened: fed from a live quote stream,
+    // the topology held every observation since assembly — 120,805 after
+    // seven hours on the deployed fastbrain — and the working set grew
+    // linearly with uptime on a platform whose product rules cap working
+    // sets. The bound must evict the *oldest*: a bound that evicted the
+    // newest would pass a count check while the map silently froze at the
+    // depth the venue showed at assembly.
+    use qip_world_model::liquidity::HISTORY_PER_VENUE;
+
+    let absorbed_count = HISTORY_PER_VENUE + 44;
+    assert!(
+        absorbed_count > HISTORY_PER_VENUE,
+        "the premise: more observations are absorbed than one venue may keep"
+    );
+
+    let mut topology = LiquidityTopology::default();
+    let first_at = now().saturating_sub(Duration::from_secs(absorbed_count as i64));
+    for index in 0..absorbed_count {
+        let at = first_at.saturating_add(Duration::from_secs(index as i64));
+        // Depth counts upward with the observation's index, so which
+        // observation a read serves is visible in the depth it reports.
+        topology
+            .absorb(
+                observation("XNYS", VenueStatus::Open, 1 + index as i64, 10, at),
+                at,
+            )
+            .expect("valid observation");
+    }
+
+    assert_eq!(
+        topology.observation_count(),
+        HISTORY_PER_VENUE,
+        "the per-venue series grew past its bound"
+    );
+
+    // The newest observation is the one a current map serves.
+    let map = topology
+        .map(&object(), now(), now())
+        .expect("a fresh map exists");
+    assert_eq!(
+        map.total_bid_depth,
+        Decimal::from_int(absorbed_count as i64),
+        "the newest observation did not survive eviction; the map is serving older depth"
+    );
+
+    // A query reaching back past the bound finds nothing: the oldest
+    // observation was evicted, and unknown — not a stale answer — is what the
+    // module's own honesty rules require a missing basis to read as.
+    assert!(
+        topology.map(&object(), first_at, now()).is_none(),
+        "an observation older than the bound is still being served"
+    );
+}

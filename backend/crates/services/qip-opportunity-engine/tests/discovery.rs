@@ -571,3 +571,74 @@ fn resetting_clears_the_novelty_history() {
     );
     assert_eq!(engine.emitted_count(), 1);
 }
+
+#[test]
+fn the_regime_detector_fits_a_bounded_recent_window_however_long_the_series_grows() {
+    // The failure this prevents has happened: this was the only detector
+    // whose lookback was the whole series, and its fit is rebuilt from
+    // scratch at O(window x EM iterations) per instrument per scan — so on
+    // the deployed fastbrain its cost grew with uptime until the cycle
+    // breached its 50ms ceiling. The fit window is the detector's stated
+    // lookback, like every other detector's, and the anomaly's sample_size
+    // is where that statement is visible from outside.
+    let detector = RegimeDetector::default();
+
+    // The firing fixture from the transition test, with two hundred further
+    // calm observations in front of it, so the series is longer than the
+    // window while the stress episode and the fresh turn both sit inside it.
+    let mut rng = Xoshiro256::seeded(7);
+    let mut price = 100.0;
+    let mut prices = Vec::new();
+    for _ in 0..200 {
+        price *= (rng.normal_with(0.0, 0.004)).exp();
+        prices.push(price);
+    }
+    for i in 0..420 {
+        let stressed = (250..320).contains(&i) || i >= 408;
+        let sd = if stressed { 0.035 } else { 0.004 };
+        price *= (rng.normal_with(0.0, sd)).exp();
+        prices.push(price);
+    }
+    assert!(
+        prices.len() - 1 > detector.fit_window,
+        "the premise: the series carries more returns than the fit window"
+    );
+
+    let anomalies = detector.detect(&DetectionContext::new(now()).with_prices("REGIME", prices));
+    assert_eq!(
+        anomalies.len(),
+        1,
+        "the fresh transition inside the window should still be reported"
+    );
+    assert_eq!(
+        anomalies[0].sample_size, detector.fit_window,
+        "the fit read {} returns where its stated lookback is {}; an unbounded fit is the \
+         detector whose cost grows with uptime",
+        anomalies[0].sample_size, detector.fit_window
+    );
+}
+
+#[test]
+fn the_regime_fit_work_per_instrument_is_bounded_by_its_stated_budget() {
+    // The control being asserted is the configuration itself, the way a risk
+    // limit is asserted at its configured value: the fit's worst case is
+    // exactly `EM_MAX_ITERATIONS x fit_window` per instrument — the
+    // tolerance can only end a fit early — and that product is what has to
+    // fit inside a 50ms cycle alongside four other instruments and seven
+    // other detectors. The budget was measured at ~21ms across five
+    // instruments in an unoptimised build at 25 x 250; the previous
+    // configuration (120 iterations over an unbounded series) was 250ms and
+    // growing when the deployed fastbrain breached its ceiling.
+    let detector = RegimeDetector::default();
+    assert!(
+        detector.fit_window >= detector.minimum_history,
+        "the premise: the window serves at least the detector's own minimum history"
+    );
+    assert!(
+        RegimeDetector::EM_MAX_ITERATIONS * detector.fit_window <= 25 * 250,
+        "the regime fit may spend {} iteration-observations per instrument per scan, past \
+         the 6,250 the cycle budget was measured against; whoever raises this owns the \
+         re-measurement",
+        RegimeDetector::EM_MAX_ITERATIONS * detector.fit_window
+    );
+}

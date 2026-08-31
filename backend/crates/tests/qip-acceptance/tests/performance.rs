@@ -712,3 +712,168 @@ fn the_budgets_document_says_what_is_measured_and_what_is_not() {
         );
     }
 }
+
+#[test]
+fn the_cycle_cost_stops_growing_once_the_history_working_sets_reach_their_bounds() -> Result<()> {
+    // The regression this catches has shipped: the kernel's history series,
+    // the liquidity topology and the prediction set all held every
+    // observation since assembly, and because DISCOVER rescans every series
+    // per cycle, the deployed fastbrain's cycle grew from 2.4ms at cycle 255
+    // to 310ms at cycle 16,728 — six times its 50ms ceiling — and the
+    // readiness probe took the node out of rotation. The property asserted
+    // here is *flatness beyond the bounds*, which no slow machine can fake
+    // in either direction: a platform fed several times more history than
+    // the caps must hold the same working set, and pay about the same per
+    // cycle, as one fed exactly at them.
+    use qip_core::Context;
+    use qip_financial::object::FinancialObject;
+    use qip_financial::quality::Provenance;
+    use qip_financial::universe::Universe;
+    use qip_kernel::{Platform, PlatformConfig, Stage};
+    use qip_market::quote::Quote;
+    use qip_observability::Telemetry;
+
+    const SYMBOLS: [&str; 5] = ["AAA", "BBB", "CCC", "DDD", "EEE"];
+
+    fn universe() -> Result<Universe> {
+        let mut universe = Universe::new();
+        for symbol in SYMBOLS {
+            universe.insert(
+                FinancialObject::builder(
+                    object(symbol),
+                    symbol,
+                    qip_financial::asset_class::InstrumentType::CommonStock,
+                )
+                .venue("XNYS")
+                .sector(qip_financial::asset_class::Sector::InformationTechnology)
+                .price(dec!("100"))
+                .provenance(Provenance::synthetic("performance", start()))
+                .build(start())?,
+            )?;
+        }
+        Ok(universe)
+    }
+
+    /// The last `keep` bars of one fixed `total`-bar path.
+    ///
+    /// Both platforms are fed suffixes of the *same* path so that, after
+    /// retention, they hold byte-identical series — otherwise the regime
+    /// fit's data-dependent EM iteration count would differ between two tapes
+    /// and read here as a difference retention caused.
+    fn bars_tail(symbol: &str, total: usize, keep: usize) -> Vec<SensedRecord> {
+        let mut price = 100.0_f64;
+        (0..total)
+            .map(|index| {
+                let noise = ((index as f64 * 0.7548776662) % 1.0 - 0.5) * 0.008;
+                let open = price;
+                price *= 1.0 + noise;
+                let at = start().saturating_sub(Duration::from_days((total - index) as i64));
+                SensedRecord::Bar(Box::new(Bar {
+                    object_id: object(symbol),
+                    venue: "XNYS".to_string(),
+                    interval: Interval::Day,
+                    open_time: at,
+                    open: Decimal::from_f64(open).expect("representable"),
+                    high: Decimal::from_f64(open.max(price) * 1.002).expect("representable"),
+                    low: Decimal::from_f64(open.min(price) * 0.998).expect("representable"),
+                    close: Decimal::from_f64(price).expect("representable"),
+                    volume: dec!("1000000"),
+                    trade_count: 5_000,
+                    vwap: Decimal::from_f64((open + price) / 2.0),
+                    quality: qip_financial::quality::DataQuality::default(),
+                }))
+            })
+            .skip(total - keep)
+            .collect()
+    }
+
+    /// The last `keep` quotes of one fixed `total`-quote path.
+    fn quotes_tail(symbol: &str, total: usize, keep: usize) -> Vec<SensedRecord> {
+        (0..total)
+            .map(|index| {
+                let wiggle = ((index as f64 * 0.618) % 1.0 - 0.5) * 0.02;
+                SensedRecord::Quote(Quote {
+                    object_id: object(symbol),
+                    venue: "XNYS".to_string(),
+                    at: start().saturating_sub(Duration::from_secs((total - index) as i64)),
+                    bid: Decimal::from_f64(99.9 + wiggle).expect("representable"),
+                    ask: Decimal::from_f64(100.1 + wiggle).expect("representable"),
+                    bid_size: dec!("500"),
+                    ask_size: dec!("500"),
+                    quality: qip_financial::quality::DataQuality::default(),
+                })
+            })
+            .skip(total - keep)
+            .collect()
+    }
+
+    fn platform_fed(bars_each: usize, quotes_each: usize) -> Result<Platform> {
+        let config = PlatformConfig::default();
+        let (context, _clock) = Context::deterministic(start(), config.seed);
+        let mut platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            universe()?,
+            risk_limits(),
+        )?;
+        for symbol in SYMBOLS {
+            platform.observe(bars_tail(symbol, 2_416, bars_each));
+            platform.observe(quotes_tail(symbol, 24_161, quotes_each));
+        }
+        Ok(platform)
+    }
+
+    fn cheapest_cycle(platform: &mut Platform) -> (WallDuration, usize) {
+        let mut cheapest = WallDuration::MAX;
+        let mut sensed = 0usize;
+        for _ in 0..3 {
+            let began = Instant::now();
+            let report = platform.run_cycle(start());
+            cheapest = cheapest.min(began.elapsed());
+            sensed = report
+                .stages
+                .iter()
+                .find(|stage| stage.stage == Stage::Sense)
+                .map_or(0, |stage| stage.produced);
+        }
+        (cheapest, sensed)
+    }
+
+    // One platform at the bounds, one fed several times past them — the
+    // second is the deployed evidence's shape (2,416 bars and 24,161 depth
+    // observations per instrument at cycle 16,728).
+    let mut at_bounds = platform_fed(512, 512)?;
+    let mut past_bounds = platform_fed(2_416, 24_161)?;
+
+    let (bounded, bounded_sensed) = cheapest_cycle(&mut at_bounds);
+    let (grown, grown_sensed) = cheapest_cycle(&mut past_bounds);
+
+    // The premise, exactly: retention capped the second platform's working
+    // set to the first's. If the bounds are removed this fails before any
+    // timing is read.
+    assert!(bounded_sensed > 0, "the fixture fed the platform nothing");
+    assert_eq!(
+        grown_sensed, bounded_sensed,
+        "a platform fed 4.7x more bars holds a larger sense working set than one fed at the \
+         bounds; the history caps are not being applied at retention"
+    );
+
+    println!(
+        "cycle at bounds: {bounded:?}; cycle fed 4.7x past bounds: {grown:?} \
+         ({} profile, this machine, single-threaded)",
+        profile()
+    );
+    report("kernel cycle (bounded history)", 1, bounded, 500_000.0);
+
+    // Flatness, loosely: the two cycles walk identical working sets, so only
+    // a series that escaped its bound — cost growing with what was fed rather
+    // than with what is retained — can push this past double.
+    let ratio = grown.as_secs_f64() / bounded.as_secs_f64().max(1e-9);
+    assert!(
+        ratio < 2.0,
+        "a cycle over a 4.7x-larger feed costs {ratio:.1}x one at the bounds; per-cycle work \
+         is growing with uptime again"
+    );
+    Ok(())
+}

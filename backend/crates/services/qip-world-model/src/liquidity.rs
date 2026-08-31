@@ -70,6 +70,23 @@ use std::collections::BTreeMap;
 /// remembered one.
 pub const DEFAULT_MAX_STALENESS: Duration = Duration::from_mins(5);
 
+/// How many observations one venue's series in one instrument keeps.
+///
+/// The failure this prevents has happened: fed from a live quote stream, the
+/// topology held every depth observation since assembly — 120,805 of them
+/// after seven hours on the deployed fastbrain — and the working set grew
+/// linearly with uptime, on a process whose product rules say working sets
+/// are capped and the event log is the record. Eviction is oldest-first at
+/// the insert, so nothing between inserts ever meets an unbounded series.
+///
+/// Two hundred and fifty-six per venue is two orders of magnitude more than
+/// any reader consumes: a [`LiquidityMap`] counts exactly one observation per
+/// venue and a [`LiquidityDrift`] two, and under the default five-minute
+/// staleness bound anything older stopped counting long before it is evicted.
+/// What the bound trades away is only how far back a bitemporal query can
+/// reach — and a replay reads the event log, not this working set.
+pub const HISTORY_PER_VENUE: usize = 256;
+
 /// One venue's visible depth in one instrument at one instant.
 ///
 /// Depth is size at or near the touch — the caller states how many levels it
@@ -504,6 +521,14 @@ impl LiquidityTopology {
         }) {
             Ok(position) => series[position] = stored,
             Err(position) => series.insert(position, stored),
+        }
+        // Retention, applied at the insert: the series is in observed-time
+        // order, so draining the front evicts exactly the oldest observations
+        // and every read of "the latest observation known by then" is
+        // untouched until a query reaches further back than the bound.
+        if series.len() > HISTORY_PER_VENUE {
+            let excess = series.len() - HISTORY_PER_VENUE;
+            series.drain(..excess);
         }
         Ok(())
     }

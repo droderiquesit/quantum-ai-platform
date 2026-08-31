@@ -314,6 +314,39 @@ const PROPOSAL_HISTORY: usize = 256;
 /// that grew with uptime would make the oldest deployment the slowest.
 const EQUITY_HISTORY: usize = 256;
 
+/// How many observations each per-instrument history series keeps — the
+/// price, volume, quoted-spread and named-observation series the detectors
+/// scan.
+///
+/// The failure this prevents has happened: the deployed fastbrain held every
+/// observation since assembly, and because the DISCOVER stage clones and
+/// rescans every series on every cycle, cycle time grew with uptime — from
+/// 2.4ms at cycle 255 to 310ms at cycle 16,728, six times the 50ms fast-path
+/// ceiling, and the readiness probe correctly took the node out of rotation.
+/// The bound sits here, at the point of retention, so no per-cycle consumer
+/// has to defend itself against an unbounded series.
+///
+/// Five hundred and twelve is roughly two trading years of daily bars and at
+/// least double the longest lookback any consumer states: the regime
+/// detector's 250-return fit window is the largest, the structural-break and
+/// return-anomaly detectors need 60, the correlation baseline 90, the
+/// simulate stage 60, and the covariance estimate 20 shared returns. Nothing
+/// that reads these series can tell the difference between this bound and
+/// unbounded history except by being fast.
+pub const SERIES_HISTORY: usize = 512;
+
+/// How many falsifiable claims the platform keeps in memory, open or scored.
+///
+/// A working window like [`PROPOSAL_HISTORY`], not the record — the cycle
+/// journal keeps every hypothesis with its confidence the cycle it was made.
+/// The failure this prevents has happened: every unsettled claim rolls
+/// forward by design ([`UndeterminedRule::RollForward`]), so the deployed
+/// fastbrain accumulated 16,674 open predictions in seven hours, and both the
+/// per-cycle open-count and every scoring pass walked all of them. A claim
+/// still unsettled after a thousand newer claims is a question the source
+/// stopped answering, not one worth carrying in memory forever.
+const PREDICTION_HISTORY: usize = 1024;
+
 /// How many price levels per side a book observation sums into the liquidity
 /// topology.
 ///
@@ -1355,14 +1388,14 @@ impl Platform {
                 SensedRecord::Bar(bar) => {
                     let key = bar.object_id.as_str().to_string();
                     self.ensure_world_object(key.as_str(), bar.close_time());
-                    self.price_history
-                        .entry(key.clone())
-                        .or_default()
-                        .push(bar.close.to_f64());
-                    self.volume_history
-                        .entry(key)
-                        .or_default()
-                        .push(bar.volume.to_f64());
+                    push_bounded(
+                        self.price_history.entry(key.clone()).or_default(),
+                        bar.close.to_f64(),
+                    );
+                    push_bounded(
+                        self.volume_history.entry(key).or_default(),
+                        bar.volume.to_f64(),
+                    );
                     bars.push(bar);
                     absorbed += 1;
                 }
@@ -1389,10 +1422,12 @@ impl Platform {
                 SensedRecord::Quote(quote) => {
                     self.ensure_world_object(quote.object_id.as_str(), quote.at);
                     if let Some(bps) = spread_bps(quote.bid, quote.ask) {
-                        self.spread_history
-                            .entry(quote.object_id.as_str().to_string())
-                            .or_default()
-                            .push(bps);
+                        push_bounded(
+                            self.spread_history
+                                .entry(quote.object_id.as_str().to_string())
+                                .or_default(),
+                            bps,
+                        );
                     }
                     // A quote is one level of depth. A venue publishing a
                     // live quote is quoting continuously as far as this
@@ -1414,10 +1449,12 @@ impl Platform {
                     if let (Some(spread), Some(mid)) = (book.spread(), book.mid())
                         && mid.is_positive()
                     {
-                        self.spread_history
-                            .entry(book.object_id.as_str().to_string())
-                            .or_default()
-                            .push(spread.to_f64() / mid.to_f64() * 10_000.0);
+                        push_bounded(
+                            self.spread_history
+                                .entry(book.object_id.as_str().to_string())
+                                .or_default(),
+                            spread.to_f64() / mid.to_f64() * 10_000.0,
+                        );
                     }
                     let observation =
                         DepthObservation::from_book(&book, BOOK_DEPTH_LEVELS, VenueStatus::Open);
@@ -1441,10 +1478,12 @@ impl Platform {
                     if let Some(surprise) = update.surprise() {
                         // The surprise series the observation detector scans,
                         // keyed the way `SensedRecord::subject` names it.
-                        self.observation_history
-                            .entry(format!("{}:{}", update.entity_id, update.metric))
-                            .or_default()
-                            .push(surprise);
+                        push_bounded(
+                            self.observation_history
+                                .entry(format!("{}:{}", update.entity_id, update.metric))
+                                .or_default(),
+                            surprise,
+                        );
                     }
                     self.push_market_event(MarketEvent::from_fundamental(&update));
                     absorbed += 1;
@@ -2880,7 +2919,7 @@ impl Platform {
             SettlementRule::unit(UndeterminedRule::RollForward),
             Duration::from_days(1),
         )?;
-        self.predictions.push(RecordedPrediction {
+        self.keep_prediction(RecordedPrediction {
             hypothesis: reasoned.hypothesis.hypothesis_id.as_str().to_string(),
             cycle: self.cycle,
             proposition,
@@ -2889,6 +2928,22 @@ impl Platform {
             scored_at: None,
         });
         Ok(true)
+    }
+
+    /// Keep a falsifiable claim, bounded by [`PREDICTION_HISTORY`].
+    ///
+    /// The only way a prediction enters the working set, and eviction happens
+    /// here at the insert so no cycle ever walks more than the cap — the
+    /// REASON stage counts the open ones every time it records a claim, and a
+    /// scoring pass walks all of them. Oldest first: with roughly one claim a
+    /// cycle, the evicted claim's horizon passed over a thousand cycles ago
+    /// and its source never published enough to settle it.
+    fn keep_prediction(&mut self, prediction: RecordedPrediction) {
+        self.predictions.push(prediction);
+        if self.predictions.len() > PREDICTION_HISTORY {
+            let excess = self.predictions.len() - PREDICTION_HISTORY;
+            self.predictions.drain(..excess);
+        }
     }
 
     fn stage_simulate(&mut self, _now: Timestamp) -> StageOutcome {
@@ -4243,6 +4298,27 @@ fn slippage_bps(arrival: Decimal, achieved: Decimal, side: Side) -> f64 {
     direction * (achieved.to_f64() - arrival) / arrival * 10_000.0
 }
 
+/// Append to a history series, evicting the oldest observation once the
+/// series holds [`SERIES_HISTORY`].
+///
+/// Eviction happens here, at the insert, rather than by a scan somewhere in
+/// the cycle: a cap enforced by a periodic prune is a cap that is over budget
+/// between prunes, and the whole point of the bound is that no cycle ever
+/// meets a series longer than it. Oldest-first, because every consumer of
+/// these series reads recency — a detector fed the newest 512 sees the same
+/// tape it saw unbounded; one fed a hole in the middle would not.
+fn push_bounded(series: &mut Vec<f64>, value: f64) {
+    series.push(value);
+    if series.len() > SERIES_HISTORY {
+        // One drain rather than a remove per excess element. On the hot path
+        // the overshoot is always the single value just pushed, but a series
+        // that arrived longer by any other route would otherwise converge one
+        // element per observation, paying the over-budget cost on every cycle
+        // in between — which is the failure the bound exists to prevent.
+        series.drain(..series.len() - SERIES_HISTORY);
+    }
+}
+
 /// Quoted spread in basis points — a statistic, and therefore `f64` like
 /// every other series the detectors read.
 ///
@@ -4787,6 +4863,232 @@ mod decide_tests {
         assert!(
             platform.pending_theses.is_empty(),
             "an unsizeable thesis was requeued; it will not size better against the same history"
+        );
+    }
+}
+
+#[cfg(test)]
+mod retention_tests {
+    //! The working sets that grow as the process runs, held at their bounds.
+    //!
+    //! Unit tests, because the bounds guard private fields at their single
+    //! point of retention. The failure each prevents is not hypothetical: the
+    //! deployed fastbrain's cycle grew from 2.4ms at cycle 255 to 310ms at
+    //! cycle 16,728 — six times its 50ms ceiling — because these series held
+    //! every observation since assembly and the DISCOVER stage rescans all of
+    //! them every cycle.
+
+    // The series carry closes and volumes these tests construct as exact small
+    // integers, so an equality is exactly the assertion intended: the newest
+    // value survived and the oldest was the one evicted. An epsilon here would
+    // pretend to an imprecision that does not exist and would pass a bound
+    // that evicted the wrong end by less than the tolerance.
+    #![allow(clippy::float_cmp)]
+
+    use super::*;
+    use qip_financial::quality::DataQuality;
+    use qip_financial::universe::Universe;
+    use qip_market::bar::Interval;
+    use qip_market::quote::Quote;
+    use qip_observability::Telemetry;
+    use qip_risk::limits::LimitSet;
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    fn platform() -> Platform {
+        let config = PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles")
+    }
+
+    /// Bars whose closes count upward, so a test can tell exactly which
+    /// observations survived eviction.
+    fn counting_bars(count: usize) -> Vec<SensedRecord> {
+        (0..count)
+            .map(|index| {
+                let close = 100.0 + index as f64;
+                let at = start().saturating_sub(Duration::from_days((count - index) as i64));
+                SensedRecord::Bar(Box::new(Bar {
+                    object_id: ObjectId::from_string("obj-AAA"),
+                    venue: "XNYS".to_string(),
+                    interval: Interval::Day,
+                    open_time: at,
+                    open: Decimal::from_f64(close).unwrap(),
+                    high: Decimal::from_f64(close + 1.0).unwrap(),
+                    low: Decimal::from_f64(close - 1.0).unwrap(),
+                    close: Decimal::from_f64(close).unwrap(),
+                    volume: Decimal::from_int(1_000 + index as i64),
+                    trade_count: 100,
+                    vwap: Decimal::from_f64(close),
+                    quality: DataQuality::default(),
+                }))
+            })
+            .collect()
+    }
+
+    /// Quotes whose spread widens by one basis point of price per quote, so
+    /// the newest spread observation is distinguishable from every other.
+    fn counting_quotes(count: usize) -> Vec<SensedRecord> {
+        (0..count)
+            .map(|index| {
+                let half_spread = 0.01 * (1.0 + index as f64);
+                SensedRecord::Quote(Quote {
+                    object_id: ObjectId::from_string("obj-AAA"),
+                    venue: "XNYS".to_string(),
+                    at: start().saturating_sub(Duration::from_secs((count - index) as i64)),
+                    bid: Decimal::from_f64(100.0 - half_spread).unwrap(),
+                    ask: Decimal::from_f64(100.0 + half_spread).unwrap(),
+                    bid_size: Decimal::from_int(500),
+                    ask_size: Decimal::from_int(500),
+                    quality: DataQuality::default(),
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_price_and_volume_series_stop_growing_at_the_bound_and_keep_the_newest_bars() {
+        let mut platform = platform();
+        let fed = SERIES_HISTORY + 100;
+        assert!(
+            fed > SERIES_HISTORY,
+            "the premise: more bars are fed than the series may keep"
+        );
+
+        let absorbed = platform.observe(counting_bars(fed));
+        assert_eq!(absorbed, fed, "the premise: every bar was absorbed");
+
+        let prices = platform
+            .price_history
+            .get("obj-AAA")
+            .expect("the series exists");
+        let volumes = platform
+            .volume_history
+            .get("obj-AAA")
+            .expect("the series exists");
+        assert_eq!(
+            prices.len(),
+            SERIES_HISTORY,
+            "the price series grew past its bound; on a long-running process the DISCOVER \
+             stage's cost grows with it until the cycle breaches its ceiling"
+        );
+        assert_eq!(
+            volumes.len(),
+            SERIES_HISTORY,
+            "the volume series grew past its bound"
+        );
+        // Oldest-first eviction: the newest bar survives and the survivors are
+        // exactly the most recent `SERIES_HISTORY` closes. A bound that evicted
+        // the newest would pass a length check while feeding the detectors a
+        // tape frozen at assembly.
+        assert_eq!(
+            *prices.last().expect("non-empty"),
+            100.0 + (fed - 1) as f64,
+            "the newest close did not survive eviction"
+        );
+        assert_eq!(
+            prices[0],
+            100.0 + (fed - SERIES_HISTORY) as f64,
+            "the oldest retained close is not the one the bound implies; eviction is not \
+             oldest-first"
+        );
+    }
+
+    #[test]
+    fn the_spread_series_stops_growing_at_the_bound_and_keeps_the_newest_quotes() {
+        let mut platform = platform();
+        let fed = SERIES_HISTORY + 50;
+        assert!(
+            fed > SERIES_HISTORY,
+            "the premise: more quotes are fed than the series may keep"
+        );
+
+        let absorbed = platform.observe(counting_quotes(fed));
+        assert_eq!(absorbed, fed, "the premise: every quote was absorbed");
+
+        let spreads = platform
+            .spread_history
+            .get("obj-AAA")
+            .expect("the series exists");
+        assert_eq!(
+            spreads.len(),
+            SERIES_HISTORY,
+            "the spread series grew past its bound; it is fed roughly ten times as often as \
+             the bar series, which is how the live process reached 120k entries in seven hours"
+        );
+        // The newest quote's spread survives: quote `fed - 1` has half-spread
+        // 0.01 * fed, so its spread in basis points is 2 * 0.01 * fed / 100 * 10_000.
+        let newest = *spreads.last().expect("non-empty");
+        let expected = 2.0 * 0.01 * fed as f64 / 100.0 * 10_000.0;
+        assert!(
+            (newest - expected).abs() < 1.0,
+            "the newest spread observation did not survive eviction: {newest} against {expected}"
+        );
+    }
+
+    #[test]
+    fn the_prediction_set_stops_growing_at_the_bound_and_keeps_the_newest_claims() {
+        let mut platform = platform();
+        let recorded = PREDICTION_HISTORY + 10;
+        assert!(
+            recorded > PREDICTION_HISTORY,
+            "the premise: more claims are recorded than the set may keep"
+        );
+
+        for cycle in 0..recorded {
+            let proposition = Proposition::new(
+                "close is above the reference by the horizon",
+                ResolutionCriteria::Threshold {
+                    metric: "close:obj-AAA".to_string(),
+                    comparison: Comparison::GreaterThan,
+                    value: Decimal::from_int(100),
+                },
+                ResolutionSource::new(
+                    "platform-market-data",
+                    SourceKind::Official,
+                    vec!["close:obj-AAA".to_string()],
+                ),
+                start().saturating_add(Duration::from_days(1)),
+                SettlementRule::unit(UndeterminedRule::RollForward),
+                Duration::from_days(1),
+            )
+            .expect("a valid proposition");
+            platform.keep_prediction(RecordedPrediction {
+                hypothesis: format!("hyp-{cycle}"),
+                cycle: cycle as u64,
+                proposition,
+                recorded_at: start(),
+                verdict: None,
+                scored_at: None,
+            });
+        }
+
+        assert_eq!(
+            platform.predictions.len(),
+            PREDICTION_HISTORY,
+            "the prediction set grew past its bound; every unsettled claim rolls forward by \
+             design, so on the live process this set reached 16,674 open claims in seven hours"
+        );
+        // Oldest-first: the survivors are the newest claims, because the claim
+        // worth keeping is the one whose horizon can still arrive.
+        assert_eq!(
+            platform.predictions.first().expect("non-empty").cycle,
+            (recorded - PREDICTION_HISTORY) as u64,
+            "eviction is not oldest-first"
+        );
+        assert_eq!(
+            platform.predictions.last().expect("non-empty").cycle,
+            (recorded - 1) as u64,
+            "the newest claim did not survive eviction"
         );
     }
 }

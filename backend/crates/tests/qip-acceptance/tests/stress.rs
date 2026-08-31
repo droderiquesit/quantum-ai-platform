@@ -67,6 +67,7 @@ use qip_financial::object::FinancialObject;
 use qip_financial::quality::Provenance;
 use qip_financial::universe::Universe;
 use qip_kernel::cycle::Stage;
+use qip_kernel::platform::SERIES_HISTORY;
 use qip_kernel::{Platform, PlatformConfig};
 use qip_learning_engine::feedback::{LessonCandidate, PromotionBar};
 use qip_market::bar::{Bar, Interval};
@@ -504,8 +505,12 @@ fn a_very_high_synthetic_event_rate_is_absorbed_without_losing_an_event() -> Res
         "absorbing {EVENTS} events took {seconds:.3}s, past the {CEILING_SECONDS}s ceiling"
     );
 
-    // And the platform still reports the whole of what it holds. A stage that
-    // quietly truncated under load would show up here and nowhere else.
+    // And the platform still reports the whole of what it holds — which, since
+    // the retention bound landed, is not the whole of what it absorbed. The two
+    // numbers are different properties and both are asserted: everything was
+    // absorbed (above, exactly), and what is *held* is the declared bound,
+    // saturated. A stage that quietly truncated under load would report fewer
+    // than the bound and would show up here and nowhere else.
     let report = platform.run_cycle(start());
     assert!(
         report.traversed_every_stage(),
@@ -513,10 +518,20 @@ fn a_very_high_synthetic_event_rate_is_absorbed_without_losing_an_event() -> Res
         report.summarise()
     );
     let sense = report.stage(Stage::Sense).expect("sense ran");
+    let held = SERIES_HISTORY * names.len();
+    assert!(
+        held < EVENTS,
+        "the premise: this load must exceed the bound, or saturation proves nothing"
+    );
     assert_eq!(
-        sense.produced, EVENTS,
-        "sense reported {} of {EVENTS} observations: {}",
-        sense.produced, sense.detail
+        sense.produced,
+        held,
+        "sense holds {} observations; the bound implies {held} ({SERIES_HISTORY} per series \
+         across {} instruments), so the working set was truncated below policy \
+         rather than by it: {}",
+        sense.produced,
+        names.len(),
+        sense.detail
     );
     Ok(())
 }

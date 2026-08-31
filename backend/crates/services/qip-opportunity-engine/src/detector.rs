@@ -537,6 +537,43 @@ pub struct RegimeDetector {
     /// filtered probability takes several observations to cross, so the window
     /// has to be wider than the crossing itself.
     pub transition_lookback: usize,
+    /// Most recent returns the model is fitted and filtered on.
+    ///
+    /// This detector was the only one whose lookback was the whole series,
+    /// and the fit is rebuilt from scratch on every scan at O(window x EM
+    /// iterations) per instrument — so on a long-running process its cost
+    /// grew with uptime while every other detector's stayed flat, and the
+    /// deployed fastbrain's cycle breached its 50ms ceiling on exactly this
+    /// path. Two hundred and fifty returns is roughly a trading year: enough
+    /// for both states of a two-state model to appear in the sample, and more
+    /// than double [`Self::minimum_history`]. A transition older than the
+    /// window was never reportable anyway — [`Self::transition_lookback`] is
+    /// fifteen.
+    pub fit_window: usize,
+}
+
+impl RegimeDetector {
+    /// EM iteration budget for the regime fit, applied per instrument per
+    /// scan.
+    ///
+    /// The scan's worst case is this budget times [`Self::fit_window`] per
+    /// instrument, whatever the tolerance does — the tolerance only ends a
+    /// fit early. Convergence at [`Self::EM_TOLERANCE`] takes six to nine
+    /// iterations on every series measured; the budget exists for the tapes
+    /// where the likelihood plateaus without crossing it, which is where the
+    /// previous budget of 120 spent a hundred iterations polishing decimals
+    /// the 0.75 probability threshold cannot see — at ~20ms per instrument,
+    /// most of a breached fast-path cycle on its own.
+    pub const EM_MAX_ITERATIONS: usize = 25;
+
+    /// Log-likelihood tolerance for the regime fit.
+    ///
+    /// The decision this fit feeds reads a filtered probability against a
+    /// 0.75 threshold. At 1e-5 the fitted probability agrees with the 1e-7
+    /// fit to three decimal places on every series measured; what 1e-7
+    /// bought was convergence failure — a quiet 256-bar tape ran the full
+    /// iteration budget without ever crossing it.
+    pub const EM_TOLERANCE: f64 = 1e-5;
 }
 
 impl Default for RegimeDetector {
@@ -546,6 +583,7 @@ impl Default for RegimeDetector {
             probability_threshold: 0.75,
             minimum_persistence: 5.0,
             transition_lookback: 15,
+            fit_window: 250,
         }
     }
 }
@@ -570,14 +608,20 @@ impl Detector for RegimeDetector {
             if returns.len() < self.minimum_history {
                 continue;
             }
-            let Ok(model) = GaussianHmm::fit(&returns, 120, 1e-7) else {
+            // The stated lookback, like every other detector's: the fit sees
+            // the most recent `fit_window` returns however long the series is,
+            // so the scan's cost is a property of the detector rather than of
+            // the process's uptime.
+            let returns = &returns[returns.len().saturating_sub(self.fit_window)..];
+            let Ok(model) = GaussianHmm::fit(returns, Self::EM_MAX_ITERATIONS, Self::EM_TOLERANCE)
+            else {
                 continue;
             };
             if !model.states_are_persistent(self.minimum_persistence) {
                 continue;
             }
 
-            let filtered = model.filter(&returns);
+            let filtered = model.filter(returns);
             if filtered.len() < 2 {
                 continue;
             }
