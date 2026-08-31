@@ -794,6 +794,23 @@ fn no_secret_value_appears_in_any_committed_configuration() {
             {
                 report("an AWS access key id", &mut findings);
             }
+            // cert-manager's cainjector annotation is a pointer, not a value:
+            // `cert-manager.io/inject-ca-from-secret: "cert-manager/cert-manager-webhook-ca"`
+            // names WHERE a CA certificate lives (namespace/name), holds
+            // nothing, and appears verbatim in the vendored upstream
+            // manifest. Exempted by its exact annotation key rather than by
+            // teaching the heuristic about slashes, because a credential
+            // containing a slash is entirely possible and a heuristic that
+            // knows one annotation is easier to audit than one that knows a
+            // grammar. This check fired on exactly these lines when the
+            // manifest was vendored, which is the proof it still catches a
+            // quoted value assigned to `secret`.
+            if lowered
+                .trim_start()
+                .starts_with("cert-manager.io/inject-ca-from-secret:")
+            {
+                continue;
+            }
             for key in [
                 "password",
                 "passwd",
