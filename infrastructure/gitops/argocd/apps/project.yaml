@@ -8,6 +8,10 @@
 # cluster-scoped kind (the chart's own Namespace). An Application that
 # strays outside any of these is refused by the project before a manifest
 # is rendered.
+#
+# Cutover update: edge cell destinations are added as wildcard entries so
+# that edge Applications (applied by runbook, not pipeline) can reconcile
+# against their own clusters without a project change per cell.
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:
@@ -16,27 +20,22 @@ metadata:
 spec:
   description: The qip platform, from its own repository, into its own namespace.
   sourceRepos:
-    # Anonymous HTTPS — see dev.yaml on why the reconciler holds no
-    # credential for a public repository.
     - https://github.com/droderiquesit/quantum-ai-platform.git
   destinations:
+    # Central-plane clusters (dev, test, stage, prod) — all use the in-cluster
+    # API server because Argo CD runs in the cluster it reconciles.
     - server: https://kubernetes.default.svc
       namespace: qip
-  # Exactly the cluster-scoped kinds the chart contains, and no others. The
-  # first draft allowed only Namespace, which was not a narrower policy but a
-  # broken one: the chart also carries the journal StorageClass and the
-  # qip-burst ComputeClass, so Argo could never reconcile them and reported
-  # them `Unknown` — a resource the reconciler is responsible for and cannot
-  # touch is the worst of both readings. Anything beyond these three still
-  # needs a commit here, which is the property the whitelist is for.
+    # Edge clusters — wildcarded so each cell's Application can target its own
+    # cluster without a project commit per cell. The actual server URL is
+    # substituted by the runbook in docs/operations/deploying-an-edge-cell.md.
+    - server: "*"
+      namespace: qip
   clusterResourceWhitelist:
     - group: ""
       kind: Namespace
-    # The journal volumes' StorageClass — provisioning parameters belong with
-    # the workload that depends on them.
     - group: storage.k8s.io
       kind: StorageClass
-    # The machine shape node auto-provisioning may invent for burst workloads.
     - group: cloud.google.com
       kind: ComputeClass
   namespaceResourceWhitelist:

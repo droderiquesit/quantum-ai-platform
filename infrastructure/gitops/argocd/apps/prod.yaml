@@ -1,14 +1,13 @@
-# The dev Application: this repository's qip chart, reconciled by the Argo CD
-# in the cluster it describes.
+# The prod Application: the qip chart reconciled against the production cluster.
 #
-# Cutover (this commit): automated sync is enabled. The kubectl path in
-# deploy.yml has been retired; Argo CD is now the sole writer to the qip
-# namespace. Prune removes resources the chart no longer contains, and
-# self-heal reverts manual kubectl edits to the declared state.
+# Automated sync is enabled with prune and self-heal, but the prod GitHub
+# environment carries required reviewers — a person must approve the workflow
+# run before the digests commit lands. That is the human gate; Argo CD
+# itself is unattended once the commit is on the branch.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: qip-dev
+  name: qip-prod
   namespace: argocd
 spec:
   project: qip
@@ -18,8 +17,8 @@ spec:
     path: infrastructure/helm/qip
     helm:
       valueFiles:
-        - values-dev.yaml
-        - values-dev-images.yaml
+        - values-prod.yaml
+        - values-prod-images.yaml
   destination:
     server: https://kubernetes.default.svc
     namespace: qip
