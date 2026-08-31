@@ -1,17 +1,30 @@
 # How the load balancer talks to Argo CD, and who it lets through.
 #
-# The identity check is the whole reason this platform is willing to publish
-# an admin console at all. `iap.enabled` puts Identity-Aware Proxy in front of
-# the backend: Google authenticates the request at its edge and refuses anyone
-# not holding roles/iap.httpsResourceAccessor on this project, so an
-# unauthenticated visitor never reaches Argo CD's login page. Argo CD's own
-# login still happens afterwards — two checks, not one.
+# Identity-Aware Proxy is OFF, at the desk's explicit and repeated
+# instruction. What that means concretely: https://argocd.<address>.nip.io is
+# reachable by anyone on the internet, and Argo CD's own admin login is the
+# only remaining gate. That login is real rather than nominal — account
+# `admin`, generated password in `argocd-initial-admin-secret` — but it is a
+# password on a public address instead of an identity check at Google's edge,
+# and whoever passes it can deploy arbitrary workloads into this cluster.
 #
-# No `oauthclientCredentials`. IAP used to require an OAuth brand and client
-# created through the IAP OAuth Admin APIs, which Google shut down in March
-# 2026; the replacement is IAP's Google-managed client, which this field's
-# absence selects. That is also the better arrangement for the reason this
-# platform has no service-account keys anywhere: a client secret in a
+# Recorded here rather than argued, so the next reader knows it is a decision
+# and not an oversight. Two things follow from it and are worth doing:
+# rotating that admin password off its generated default, and configuring SSO
+# so the console has an identity check of its own.
+#
+# Re-enabling is this one field plus `kubectl apply -k
+# infrastructure/gitops/argocd/overlays/dev`. Nothing else has to be rebuilt:
+# `enable_console_ingress` and `console_operators` in the environment's
+# tfvars, and the `google_iap_web_type_compute_iam_member` grant they produce,
+# are all deliberately left in place.
+#
+# If it is re-enabled, leave `oauthclientCredentials` absent. IAP used to
+# require an OAuth brand and client created through the IAP OAuth Admin APIs,
+# which Google shut down in March 2026 and which now refuse on a project that
+# never had a brand; the field's absence selects IAP's Google-managed client,
+# which is the only path available and is also the better one, for the reason
+# this platform has no service-account keys anywhere — a client secret in a
 # manifest is a client secret in every backup of it.
 apiVersion: cloud.google.com/v1
 kind: BackendConfig
@@ -20,7 +33,7 @@ metadata:
   namespace: argocd
 spec:
   iap:
-    enabled: true
+    enabled: false
   # Argo CD serves HTTPS with a self-signed certificate on 8080 and redirects
   # plaintext to it. Health-checking over HTTP would therefore see a 307 for
   # ever and the backend would never turn healthy — so the check speaks the

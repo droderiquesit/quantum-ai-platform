@@ -11,17 +11,24 @@ metadata:
   name: kargo-api
   namespace: kargo
 spec:
-  # Identity-Aware Proxy, with no client credentials at all.
+  # Identity-Aware Proxy, OFF, at the desk's explicit and repeated
+  # instruction — the same decision as Argo CD's, whose BackendConfig records
+  # the reasoning in full.
   #
-  # `enabled: true` and no `oauthclientCredentials` selects IAP's
-  # Google-managed OAuth client. The alternative — a brand and client from the
-  # IAP OAuth Admin APIs — is not available: Google shut those APIs down in
-  # March 2026 and they refuse on a project that never had a brand. The
-  # managed client is also the better arrangement here for the same reason
-  # this platform has no service-account keys: there is no secret to leak,
-  # rotate, or find in a state backup.
+  # Concretely: https://kargo.<address>.nip.io is reachable by anyone on the
+  # internet, and Kargo's own admin login is the only remaining gate. That
+  # password lives in Secret Manager as `algorik-kargo-admin-password`, so it
+  # is a real credential rather than a default — but it is a password on a
+  # public address, and Kargo is the engine that promotes releases between
+  # environments.
+  #
+  # Re-enabling is this one field plus `kubectl apply -k
+  # infrastructure/gitops/kargo/overlays/dev`. The IAP grant and the operator
+  # list are deliberately left in place, so nothing else has to be rebuilt.
+  # Leave `oauthclientCredentials` absent if it is: the Google-managed client
+  # its absence selects is the only path Google still offers.
   iap:
-    enabled: true
+    enabled: false
 
   # The load balancer speaks HTTPS to the pod, so the health check must too —
   # a plaintext probe against a TLS listener is refused at the handshake, the
