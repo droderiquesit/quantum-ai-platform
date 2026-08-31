@@ -1,0 +1,11 @@
+# dev: the upstream image name becomes the vendored, attested copy in dev's
+# registry, pinned by the digest vendored-images.txt reviewed. Binary
+# Authorization admits nothing else.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+images:
+  - name: ghcr.io/akuity/kargo
+    newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/vendor/kargo
+    digest: sha256:e1028c697953736421d37abb9266faf6e6876e8f5982811862b38022a9c2fb6f
