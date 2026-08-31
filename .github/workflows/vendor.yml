@@ -82,6 +82,17 @@ jobs:
             echo "$tfvars carries no project_id/project_number" >&2
             exit 1
           }
+          # Refused before authenticating, not after. An environment still
+          # carrying the marker has no project, so every value derived below —
+          # the workload-identity audience, the service account, the attestor,
+          # the key version — would be constructed from a name that exists
+          # nowhere, and the run would die at the OIDC exchange with a message
+          # about an audience rather than about the environment.
+          if [ "$project" = "unprovisioned" ]; then
+            echo "environment '${TARGET_ENVIRONMENT}' is not provisioned: its tfvars carry the 'unprovisioned' marker." >&2
+            echo "Create a project for it (its own, never one another environment uses), record the id and number in $tfvars, then deploy." >&2
+            exit 1
+          fi
           ring="qip-${TARGET_ENVIRONMENT}"
           {
             echo "project=$project"

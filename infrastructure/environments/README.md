@@ -16,15 +16,29 @@ service account's limit of 30, so `production` could not deploy a cell at all.
 Directory name and variable value are the same string on purpose — the thing you
 type is the thing that lands in a resource name.
 
-`project_id` **is** in these files, and all four name the same project today.
-Separate projects per environment would be better — a blast radius that stops at
-a project boundary is the only one that reliably stops — and the change is one
-line per file plus a state bucket each. What makes one project survivable
-meanwhile is that every resource carries the `environment` prefix, so `dev` and
-`prod` cannot collide on a name. The id itself is an identifier and not a
-secret: it appears in every resource name and in the pipeline's own
-configuration, so keeping it out of version control would buy nothing and cost
-reproducibility.
+`project_id` **is** in these files, and each environment names a project of its
+own — or says it has none. `dev` is `algorik-dev` and is the only one
+provisioned; `test`, `stage` and `prod` carry the literal marker
+`unprovisioned`, which `terraform` refuses at plan time and `deploy.yml` and
+`vendor.yml` refuse before they authenticate, each naming what is missing.
+
+These three used to carry a real id — all four named one project, on the
+reasoning that the `environment` prefix kept resource names apart. That
+premise expired twice without the files noticing: `dev` moved to its own
+project, and the project the other three named was deleted, so their recorded
+id pointed at nothing while reading as entirely plausible in review. A dead id
+that looks real is worse than an obvious hole, which is what the marker is.
+
+Provisioning one of them means a project of its own — never a project another
+environment already uses, because two environments in one project share one
+IAM boundary, one KMS key ring and one Binary Authorization attestor whatever
+their name prefixes say — plus its own state bucket, and the id and number
+recorded here. `every_environment_names_a_project_of_its_own` in the
+acceptance suite holds both halves of that.
+
+The id itself is an identifier and not a secret: it appears in every resource
+name and in the pipeline's own configuration, so keeping it out of version
+control would buy nothing and cost reproducibility.
 
 `project_number` is not here — it is a `terraform output`, not an input.
 

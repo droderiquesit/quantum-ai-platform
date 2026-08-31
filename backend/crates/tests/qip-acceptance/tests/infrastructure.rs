@@ -1770,6 +1770,86 @@ fn no_workflow_depends_on_a_repository_variable() {
     }
 }
 
+/// The value assigned to a top-level tfvars key, quotes stripped.
+///
+/// `first_value` reads `key: value`, which is YAML; a tfvars file is HCL and
+/// writes `key = value`, so reading one with the other silently finds nothing
+/// and every assertion downstream is skipped — which is exactly how this test
+/// first "passed" nothing. Anchored at the start of the line because these
+/// keys are top-level, and a nested `project_id` inside an `edge_cells` block
+/// would be a different fact.
+fn tfvars_value(tfvars: &str, key: &str) -> Option<String> {
+    tfvars.lines().find_map(|line| {
+        let rest = line.strip_prefix(key)?;
+        let rest = rest.trim_start().strip_prefix('=')?;
+        Some(rest.trim().trim_matches('"').to_string())
+    })
+}
+
+#[test]
+fn every_environment_names_a_project_of_its_own() {
+    // Two environments sharing one project share one IAM boundary, one KMS
+    // key ring and one Binary Authorization attestor, whatever their resource
+    // name prefixes say. A compromise of the test pipeline's service account
+    // would then sit inside production's project, and the blast radius that
+    // was supposed to stop at a project boundary would not stop anywhere.
+    //
+    // The files said all four named one project, on the reasoning that the
+    // `environment` prefix kept the names apart. That premise expired twice
+    // over without the files noticing: `dev` moved to `algorik-dev`, and the
+    // project the other three still named was deleted, so their recorded id
+    // pointed at nothing while reading as entirely plausible. Both halves are
+    // pinned here — an environment either names a project no other
+    // environment names, or says out loud that it has none.
+    const UNPROVISIONED: &str = "unprovisioned";
+
+    let mut provisioned: Vec<(String, String)> = Vec::new();
+    let mut checked = 0usize;
+    const ENVIRONMENTS: [&str; 4] = ["dev", "test", "stage", "prod"];
+
+    for environment in ENVIRONMENTS {
+        let tfvars = without_comments(&read(&format!(
+            "infrastructure/environments/{environment}/terraform.tfvars"
+        )));
+        let project = tfvars_value(&tfvars, "project_id")
+            .unwrap_or_else(|| panic!("{environment} names no project_id at all"));
+        checked += 1;
+        if project == UNPROVISIONED {
+            // An unprovisioned environment must also carry a number nothing
+            // can authenticate with: a real number beside the marker is the
+            // half-updated state this check exists to catch.
+            let number = tfvars_value(&tfvars, "project_number")
+                .unwrap_or_else(|| panic!("{environment} names no project_number"));
+            assert_eq!(
+                number, "0",
+                "{environment} is marked unprovisioned but records project_number {number}; \
+                 one of the two is stale"
+            );
+            continue;
+        }
+        if let Some((other, _)) = provisioned.iter().find(|(_, id)| id == &project) {
+            panic!(
+                "{environment} and {other} both deploy into project {project}. Separate \
+                 environments must not share one IAM boundary, key ring and attestor; give \
+                 {environment} its own project or mark it `{UNPROVISIONED}`."
+            );
+        }
+        provisioned.push((environment.to_string(), project));
+    }
+
+    assert_eq!(
+        checked,
+        ENVIRONMENTS.len(),
+        "not every environment was read; this check stopped checking"
+    );
+    // The premise: at least one environment is real, or the whole check is
+    // satisfied by four markers and proves nothing about sharing.
+    assert!(
+        provisioned.iter().any(|(name, _)| name == "dev"),
+        "dev names no provisioned project, so this check has nothing to compare"
+    );
+}
+
 #[test]
 fn the_teardown_writes_the_flag_to_state_before_it_reads_it() {
     // `down` is two commands, and the order is the whole point. GKE reads

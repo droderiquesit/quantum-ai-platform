@@ -9,25 +9,29 @@
 # `london-1` because it is one of the six that is genuinely in the right
 # metropolitan area, so a latency number measured here means something.
 
-# The project this environment lives in. An identifier, not a secret: it
-# appears in every resource name and in the pipeline's own configuration, so
-# keeping it out of version control would buy nothing and cost reproducibility.
+# This environment is NOT PROVISIONED, and the marker below is what says so.
 #
-# All four environments name the same project today. Separate projects would
-# be better — a blast radius that stops at a project boundary is the only one
-# that reliably stops — and the change is this one line per file plus a state
-# bucket each. What makes one project survivable meanwhile is that every
-# resource carries the `environment` prefix below, so `dev` and `prod` cannot
-# collide on a name.
-project_id = "project-d3f96b6b-852b-4460-b6d"
+# It used to carry a real project id — the one all four environments shared,
+# on the reasoning that the `environment` prefix kept their resource names
+# apart. Two things retired that arrangement. `dev` moved to its own project
+# (`algorik-dev`), so the premise that all four name one project stopped
+# being true; and the project the other three still named was deleted, so the
+# recorded id pointed at nothing while still looking entirely plausible in a
+# file review.
+#
+# A dead id that looks real is worse than an obvious hole: a plan or a deploy
+# aimed here would fail at authentication with a message about an audience
+# nobody could explain. `unprovisioned` fails immediately instead, in
+# variables.tf at plan time and in deploy.yml before it authenticates, and
+# both refusals name what to do. Provisioning this environment means a real
+# project of its own with its own state bucket — never a project another
+# environment already uses, which `every_environment_names_a_project_of_its_own`
+# in the acceptance suite enforces.
+project_id = "unprovisioned"
 
-# The project's numeric id, recorded so nothing has to ask for it. It is an
-# identifier like the id above, Google's service agents are named by it, and
-# the workload-identity audience contains it — a workflow that can read this
-# file can construct its own authentication with no repository variable
-# involved, which matters because a variable set from a broken shell once
-# carried an install advisory where this number should have been.
-project_number = 601575011290
+# Zero, because there is no project to number. The real value is read from
+# the project at provisioning time and recorded here then.
+project_number = 0
 
 environment      = "test"
 region           = "europe-west2"

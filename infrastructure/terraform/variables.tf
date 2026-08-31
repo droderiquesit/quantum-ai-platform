@@ -12,6 +12,19 @@ variable "project_id" {
     condition     = can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", var.project_id))
     error_message = "The project id must be a valid Google Cloud project identifier."
   }
+
+  # An environment whose tfvars still say `unprovisioned` has no project, and
+  # this is where that stops — at plan time, with a message naming the act
+  # that is missing. The alternative is what this replaced: a plausible-looking
+  # id pointing at a deleted project, which fails much later with an
+  # authentication error about an audience nobody can explain. The marker is a
+  # valid project-id *shape*, so the check above admits it and only this one
+  # refuses it; that is deliberate, because the shape check should keep saying
+  # what it says and this should say what it says.
+  validation {
+    condition     = var.project_id != "unprovisioned"
+    error_message = "This environment is not provisioned: its tfvars still carry the `unprovisioned` marker. Create a project for it — its own, never one another environment already uses — record the id and number in infrastructure/environments/<env>/terraform.tfvars, and give it a state bucket."
+  }
 }
 
 variable "region" {
