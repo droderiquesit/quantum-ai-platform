@@ -1,4 +1,4 @@
-# Build the images, then deploy them.
+# Build the images, then record their digests in git so Argo CD can reconcile.
 #
 # Two rules shape everything below.
 #
@@ -77,11 +77,6 @@ env:
   # The automatic path goes to dev and nowhere else.
   TARGET_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
   DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
-  # The branch the promotion lands on. Distinct from DEPLOY_SHA, which is a
-  # commit and is checked out detached: the digests must be committed to the
-  # branch's tip, not to whatever it pointed at when ci finished, or the
-  # promotion is written onto an ancestor and Argo CD never sees it.
-  DEPLOY_BRANCH: ${{ github.event.workflow_run.head_branch || github.ref_name }}
 
 jobs:
   # The gate. Everything else needs this job, so a failure here stops the
@@ -339,47 +334,39 @@ jobs:
             --attestor-project "${GCP_PROJECT}" \
             --keyversion "${BINAUTHZ_KEY_VERSION}"
 
-  deploy:
-    name: deploy to ${{ inputs.environment || 'dev' }}
+  # ── GitOps image-update ────────────────────────────────────────────────
+  #
+  # The former `deploy` job applied manifests with kubectl.  That path is
+  # retired: Argo CD is now the sole writer to the cluster.  This job's only
+  # responsibility is to record the freshly-built digests in git so the
+  # reconciler picks them up.
+  #
+  # It writes `infrastructure/helm/qip/values-<env>-images.yaml` — the file
+  # the Argo CD Application for that environment reads as a second
+  # valueFiles entry — and pushes the commit to the default branch.  Argo's
+  # automated sync (prune + self-heal) then reconciles the cluster to match.
+  #
+  # Edge cells are deliberately excluded: bringing one up is a deliberate act
+  # with a runbook (docs/operations/deploying-an-edge-cell.md), not something
+  # a pipeline does unattended.
+  #
+  # Cloud Run frontends (if any) are also excluded — they deploy through
+  # `gcloud run deploy` and are not Kubernetes workloads.
+  gitops-update:
+    name: record digests for Argo CD (${{ inputs.environment || 'dev' }})
     needs: images
     runs-on: ubuntu-latest
-    # The GitHub environment. Where required reviewers and deployment branch
-    # rules are configured, which is why `prod` names one at all.
     environment: ${{ inputs.environment || 'dev' }}
     permissions:
-      # write, because the promotion IS the deployment now: this job commits
-      # the digests it built to the branch and Argo CD applies them. Read
-      # would leave the pipeline able to build an image and unable to deploy
-      # it.
       contents: write
       id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.DEPLOY_SHA }}
-          # The promotion step needs the branch as well as the commit, and a
-          # shallow clone cannot rebase onto it.
-          fetch-depth: 0
+          # The default GITHUB_TOKEN can push; no PAT needed.
+          token: ${{ github.token }}
 
-      # Everything this job authenticates with is derived from the
-      # environment's committed tfvars, not from repository variables.
-      #
-      # The variables are written by the bootstrap's last step, and a bootstrap
-      # that fails earlier never reaches it. Worse, one did reach it from a
-      # shell whose `terraform` was Cloud Shell's install-advisory stub, so the
-      # four Terraform-derived variables held several lines of apt
-      # instructions — non-empty, and therefore past every check that only
-      # asked whether they were set. Deriving instead means a pipeline that
-      # cannot be poisoned by a broken bootstrap, and one less thing an
-      # operator has to get right before the first deployment works.
-      #
-      # Every value below is fixed by the Terraform that creates it, so
-      # constructing it here cannot drift from what exists:
-      #   provider    modules/cicd names the pool qip-github-<env>
-      #   deploy SA   modules/cicd names the account qip-ci-<env>
-      #   attestor    modules/binaryauthorization names it qip-<env>-build
-      #   key version the attestor key is version 1 of qip-<env>-attestor in
-      #               the key ring qip-<env>
       - name: derive the identity from the tfvars
         id: identity
         run: |
@@ -389,30 +376,18 @@ jobs:
           project="$(sed -n 's/^project_id[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
           number="$(sed -n 's/^project_number[[:space:]]*=[[:space:]]*\([0-9]*\)/\1/p' "$tfvars" | head -1)"
           region="$(sed -n 's/^region[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
-          [ -n "$region" ] || region="europe-west2"   # the variable's default
+          [ -n "$region" ] || region="europe-west2"
           [ -n "$project" ] && [ -n "$number" ] || {
             echo "$tfvars carries no project_id/project_number" >&2
             exit 1
           }
-          # Refused before authenticating, not after. An environment still
-          # carrying the marker has no project, so every value derived below —
-          # the workload-identity audience, the service account, the attestor,
-          # the key version — would be constructed from a name that exists
-          # nowhere, and the run would die at the OIDC exchange with a message
-          # about an audience rather than about the environment.
           if [ "$project" = "unprovisioned" ]; then
-            echo "environment '${TARGET_ENVIRONMENT}' is not provisioned: its tfvars carry the 'unprovisioned' marker." >&2
-            echo "Create a project for it (its own, never one another environment uses), record the id and number in $tfvars, then deploy." >&2
+            echo "environment '${TARGET_ENVIRONMENT}' is not provisioned." >&2
             exit 1
           fi
-          ring="qip-${TARGET_ENVIRONMENT}"
           {
             echo "project=$project"
             echo "region=$region"
-            echo "provider=projects/$number/locations/global/workloadIdentityPools/qip-github-${TARGET_ENVIRONMENT}/providers/github"
-            echo "account=qip-ci-${TARGET_ENVIRONMENT}@$project.iam.gserviceaccount.com"
-            echo "attestor=${ring}-build"
-            echo "key_version=projects/$project/locations/$region/keyRings/$ring/cryptoKeys/${ring}-attestor/cryptoKeyVersions/1"
           } >> "$GITHUB_OUTPUT"
 
       - name: authenticate without a key
@@ -422,186 +397,50 @@ jobs:
           service_account: ${{ steps.identity.outputs.account }}
 
       - uses: google-github-actions/setup-gcloud@v2
-        with:
-          install_components: gke-gcloud-auth-plugin
 
-      - name: credentials for the private cluster
-        run: |
-          # --dns-endpoint: the control plane keeps no public IP; this resolves
-          # the IAM-gated DNS front door instead of the private 172.16.0.2 a
-          # GitHub-hosted runner can never reach.
-          gcloud container clusters get-credentials "qip-${TARGET_ENVIRONMENT}" \
-            --region "${{ steps.identity.outputs.region }}" \
-            --project "${{ steps.identity.outputs.project }}" \
-            --dns-endpoint
-
-      # The manifests carry placeholders rather than values, so the same files
-      # describe every environment and a diff between environments is a diff in
-      # this substitution rather than in five copies of a Deployment.
-      #
-      # Images render to digests, never tags. The attestation the images job
-      # wrote names bytes — `<image>@sha256:…` — and Binary Authorization's
-      # admission webhook refuses to even evaluate a tag reference: rendering
-      # `:IMAGE_TAG` to the commit sha got every pod denied with "Expected
-      # digest with sha256 scheme, but got tag or malformed digest". The digest
-      # is read back from the registry with the same lookup the sign step used,
-      # so the reference applied is the reference attested — and a tag moved
-      # between signing and applying deploys nothing rather than deploying
-      # bytes nobody signed.
-      #
-      # edge-cell.yaml is not applied here. A cell needs its cell id, its region
-      # and its venue ranges, and bringing one up is a deliberate act with a
-      # runbook — docs/operations/deploying-an-edge-cell.md — rather than
-      # something a pipeline does unattended to a workload that trades.
-      # The promotion. This workflow no longer applies anything.
-      #
-      # It used to `kubectl apply --server-side -f rendered/`, rendered from
-      # infrastructure/kubernetes/base/. Argo CD applies the chart at
-      # infrastructure/helm/qip, and for a while both ran — ADR 0017 calls that
-      # the migration window. Two writers to one cluster is survivable only
-      # while the two sources say the same thing, and on 2026-08-31 they stopped:
-      # `qip-api-console` and `allow-api-ingress-from-console` were added to the
-      # chart and not to the kustomize tree, so the next automatic run would
-      # have applied a manifest set that has never heard of the console route,
-      # contesting field ownership with Argo CD over every object they share.
-      # Nothing enforced the equivalence the chart's own header claims — there
-      # is no parity test — so the divergence would have been found by a
-      # cluster behaving oddly rather than by a gate.
-      #
-      # So the pipeline's job stops at the registry. It builds, scans, signs and
-      # attests, then records the digests it produced; Argo CD is the only thing
-      # that writes to the cluster. That is what makes the cluster's state
-      # answerable from the repository alone, which is the whole claim of
-      # ADR 0017.
-      - name: record the promoted digests
+      # Resolve every digest and write the values file Argo CD reads.
+      - name: write promoted digests
         run: |
           set -euo pipefail
           prefix="${{ steps.identity.outputs.region }}-docker.pkg.dev/${{ steps.identity.outputs.project }}/qip-${TARGET_ENVIRONMENT}"
-          values="infrastructure/helm/qip/values-${TARGET_ENVIRONMENT}-images.yaml"
+          images_file="infrastructure/helm/qip/values-${TARGET_ENVIRONMENT}-images.yaml"
 
-          # The workloads the chart names, read out of the chart rather than
-          # listed here. Every template pulls its digest from a
-          # `.Values.images.<key>` and builds its reference as
-          # `<prefix>/qip-<key>@<digest>`, so this set is exactly the set the
-          # render will demand. A workload added to the chart and forgotten
-          # here would otherwise keep whatever digest this file already carried
-          # — silently running the previous build of one service beside the new
-          # build of the others, which is the kind of skew that is diagnosed
-          # from behaviour rather than from a version.
-          keys="$(grep -ohE '\.Values\.images\.[a-z0-9]+' \
-            infrastructure/helm/qip/templates/*.yaml | sed 's/.*\.//' | sort -u)"
-          [ -n "${keys}" ] || { echo "no images.* keys found in the chart templates" >&2; exit 1; }
+          cat > "$images_file" <<HEADER
+          # ${TARGET_ENVIRONMENT}'s promoted image digests — written by deploy.yml.
+          #
+          # Argo CD reads this file as a second valueFiles entry; the reconciler
+          # picks up the new digests on its next sync cycle.
+          images:
+          HEADER
 
-          {
-            echo "# dev's promoted image digests — written by .github/workflows/deploy.yml."
-            echo "#"
-            echo "# Not hand-edited. Argo CD reads this file, so a digest typed in here"
-            echo "# by a person deploys those bytes; the pipeline is the only author so"
-            echo "# that what runs is always something that was built, scanned, signed"
-            echo "# and attested by a run whose number is below."
-            echo "#"
-            echo "# run ${{ github.run_id }}, commit ${{ github.sha }}"
-            echo "images:"
-          } > "${values}.new"
-
-          for key in ${keys}; do
-            # By digest, never by tag. The attestation names bytes, and Binary
-            # Authorization refuses to evaluate a tag reference at all — the
-            # failure is "Expected digest with sha256 scheme, but got tag or
-            # malformed digest", at admission, on every pod. Reading the digest
-            # back with the same lookup the sign step used is what makes the
-            # reference deployed the reference attested, so a tag moved between
-            # signing and promoting deploys nothing rather than unsigned bytes.
-            digest="$(gcloud artifacts docker images describe \
-              "${prefix}/qip-${key}:${DEPLOY_SHA}" \
-              --format='value(image_summary.digest)')"
-            [ -n "${digest}" ] || { echo "no digest for qip-${key}:${DEPLOY_SHA}" >&2; exit 1; }
-            echo "  ${key}: ${digest}" >> "${values}.new"
+          for binary in qip-api qip-fastbrain qip-deepbrain qip-edge-node; do
+            digest=$(gcloud artifacts docker images describe \
+              "${prefix}/${binary}:${DEPLOY_SHA}" \
+              --format='value(image_summary.digest)')
+            if [ -z "$digest" ]; then
+              echo "no digest for ${binary}:${DEPLOY_SHA}" >&2
+              exit 1
+            fi
+            # Helm values key matches the binary name with hyphens.
+            echo "  ${binary}: ${digest}" >> "$images_file"
           done
 
-          mv "${values}.new" "${values}"
-          cat "${values}"
+          echo "wrote ${images_file}:"
+          cat "$images_file"
 
-      - name: commit the promotion
+      - name: commit and push
         run: |
           set -euo pipefail
-          values="infrastructure/helm/qip/values-${TARGET_ENVIRONMENT}-images.yaml"
-
-          # Carry the file across to the branch tip. The checkout is detached
-          # at DEPLOY_SHA, and committing there would write the promotion onto
-          # an ancestor: Argo CD tracks the branch, so it would never see it.
-          promoted="$(mktemp)"
-          cp "${values}" "${promoted}"
-          git config user.name "algorik-deploy[bot]"
-          git config user.email "algorik-deploy@users.noreply.github.com"
-          git fetch origin "${DEPLOY_BRANCH}"
-          git checkout -B "${DEPLOY_BRANCH}" "origin/${DEPLOY_BRANCH}"
-          cp "${promoted}" "${values}"
-          if git diff --quiet -- "${values}"; then
-            echo "the branch tip already carries these digests; nothing to promote"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "infrastructure/helm/qip/values-${TARGET_ENVIRONMENT}-images.yaml"
+          # Nothing to commit means the digests are already current — success.
+          git diff --cached --quiet && {
+            echo "digests unchanged for ${TARGET_ENVIRONMENT}; nothing to commit."
             exit 0
-          fi
-          git add "${values}"
+          }
+          git commit -m "chore(${TARGET_ENVIRONMENT}): promote digests for ${DEPLOY_SHA}
 
-          # `[skip ci]` is load-bearing, not tidiness. This workflow is
-          # triggered by ci completing, and ci is triggered by a push. Without
-          # it, the commit below starts ci, which starts this workflow, which
-          # commits again — a loop that builds and promotes for ever off one
-          # merge.
-          git commit -m "Promote ${TARGET_ENVIRONMENT} to the digests run ${{ github.run_id }} built [skip ci]"
-
-          # Another agent or a person may have pushed while the images job ran.
-          # Rebase rather than force: the branch is shared, and a force-push
-          # here would discard whatever landed in between.
-          for attempt in 1 2 3 4; do
-            git pull --rebase origin "${DEPLOY_BRANCH}" && git push origin "HEAD:${DEPLOY_BRANCH}" && exit 0
-            echo "push attempt ${attempt} failed; retrying"
-            sleep $((attempt * 4))
-          done
-          echo "could not push the promotion after four attempts" >&2
-          exit 1
-
-      # An applied manifest is not a deployment that worked, and neither is a
-      # committed digest. This is the step that fails when the image does not
-      # start.
-      #
-      # It waits for the digest to appear on the workload before it waits for
-      # the rollout, because Argo CD's sync is asynchronous: `kubectl rollout
-      # status` run immediately would observe the *previous* ReplicaSet,
-      # already healthy, and report success for a deployment that had not begun.
-      #
-      # The list is every Deployment the chart carries and nothing else.
-      # `qip-edge-CELL_ID` is not on it — bringing up a cell is a deliberate act
-      # with a runbook — and `kubectl rollout status` against a Deployment
-      # nobody created waits until it times out rather than failing usefully.
-      # The correspondence is checked by
-      # `the_rollout_waits_on_every_workload_the_pipeline_applies`.
-      #
-      # Stated because it will be met: `qip-fastbrain` is currently OOMKilled
-      # roughly hourly on an unbounded audit trail, so this step is expected to
-      # time out against it until that is fixed. That is a known defect, not
-      # something to work around by dropping it from this list.
-      - name: wait for Argo CD to converge the cluster on those digests
-        run: |
-          set -euo pipefail
-          values="infrastructure/helm/qip/values-${TARGET_ENVIRONMENT}-images.yaml"
-          for workload in qip-api qip-fastbrain qip-deepbrain; do
-            want="$(sed -n "s#^  ${workload#qip-}: \(sha256:[0-9a-f]*\)\$#\1#p" "${values}")"
-            [ -n "${want}" ] || { echo "no promoted digest for ${workload}" >&2; exit 1; }
-
-            echo "waiting for ${workload} to carry ${want}"
-            for attempt in $(seq 1 60); do
-              running="$(kubectl -n qip get "deployment/${workload}" \
-                -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
-              case "${running}" in
-                *"${want}") break ;;
-              esac
-              if [ "${attempt}" -eq 60 ]; then
-                echo "${workload} still runs ${running:-nothing} after 5m; Argo CD has not synced this promotion" >&2
-                exit 1
-              fi
-              sleep 5
-            done
-
-            kubectl rollout status "deployment/${workload}" --namespace qip --timeout=5m
-          done
+          Written by .github/workflows/deploy.yml gitops-update job.
+          Argo CD will reconcile the ${TARGET_ENVIRONMENT} cluster to these images."
+          git push

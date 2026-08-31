@@ -1,14 +1,12 @@
-# The dev Application: this repository's qip chart, reconciled by the Argo CD
-# in the cluster it describes.
+# The test Application: the qip chart reconciled against the test cluster.
 #
-# Cutover (this commit): automated sync is enabled. The kubectl path in
-# deploy.yml has been retired; Argo CD is now the sole writer to the qip
-# namespace. Prune removes resources the chart no longer contains, and
-# self-heal reverts manual kubectl edits to the declared state.
+# Automated sync with prune and self-heal — the same policy as dev. The test
+# environment exists to catch integration issues before they reach stage, and
+# an unattended reconciler keeps it honest.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: qip-dev
+  name: qip-test
   namespace: argocd
 spec:
   project: qip
@@ -18,9 +16,11 @@ spec:
     path: infrastructure/helm/qip
     helm:
       valueFiles:
-        - values-dev.yaml
-        - values-dev-images.yaml
+        - values-test.yaml
+        - values-test-images.yaml
   destination:
+    # The test cluster's API server. Replace with the actual endpoint once
+    # the test GKE cluster is provisioned.
     server: https://kubernetes.default.svc
     namespace: qip
   syncPolicy:

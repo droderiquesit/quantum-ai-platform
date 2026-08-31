@@ -1,14 +1,11 @@
-# The dev Application: this repository's qip chart, reconciled by the Argo CD
-# in the cluster it describes.
+# The stage Application: the qip chart reconciled against the staging cluster.
 #
-# Cutover (this commit): automated sync is enabled. The kubectl path in
-# deploy.yml has been retired; Argo CD is now the sole writer to the qip
-# namespace. Prune removes resources the chart no longer contains, and
-# self-heal reverts manual kubectl edits to the declared state.
+# Automated sync with prune and self-heal. Stage mirrors prod's topology
+# without its required-reviewer gate, so drift here is caught before prod.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: qip-dev
+  name: qip-stage
   namespace: argocd
 spec:
   project: qip
@@ -18,8 +15,8 @@ spec:
     path: infrastructure/helm/qip
     helm:
       valueFiles:
-        - values-dev.yaml
-        - values-dev-images.yaml
+        - values-stage.yaml
+        - values-stage-images.yaml
   destination:
     server: https://kubernetes.default.svc
     namespace: qip

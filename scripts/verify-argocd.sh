@@ -32,10 +32,6 @@ if ! kubectl get namespace argocd >/dev/null 2>&1; then
   note "FIX: scripts/bootstrap-gitops.sh dev"
   exit 1
 fi
-# Split READY on the slash and compare the halves. A regex with a
-# backreference (`^([0-9]+)/\1$`) looks right and silently matches nothing in
-# POSIX awk, which reports every healthy controller as broken — this script
-# did exactly that on its first run.
 not_ready="$(kubectl get deploy -n argocd --no-headers 2>/dev/null \
   | awk '{split($2, r, "/"); if (r[1] != r[2]) print "  " $1 " " $2}')"
 if [ -n "$not_ready" ]; then
@@ -82,16 +78,31 @@ revision="$(kubectl get application "$app" -n argocd -o jsonpath='{.status.sync.
 note "sync=${sync:-<none>}  health=${health:-<none>}"
 [ -n "$revision" ] && note "reading revision ${revision}"
 
+# Check whether automated sync is enabled.
+automated="$(kubectl get application "$app" -n argocd -o jsonpath='{.spec.syncPolicy.automated}' 2>/dev/null)"
+if [ -n "$automated" ]; then
+  note "automated sync is enabled (prune + self-heal)"
+else
+  note "automated sync is NOT enabled — sync is manual"
+  note "NOTE: central-plane Applications (dev, test, stage, prod) should have"
+  note "      automated sync enabled. Only edge cells use manual sync."
+fi
+
 case "$sync" in
   Synced)
     note "the cluster matches the chart at that revision"
     ;;
   OutOfSync)
-    note "the cluster differs from the chart — expected while deploy.yml still"
-    note "applies with kubectl, and the reason this Application syncs manually:"
-    note "two unattended writers to one namespace undo each other. Resources"
-    note "kubectl applied also carry no Argo tracking metadata, which alone"
-    note "reads as OutOfSync without any content differing."
+    if [ -n "$automated" ]; then
+      note "OutOfSync with automated sync enabled — the reconciler should"
+      note "be syncing. Check the Argo CD controller logs:"
+      note "  kubectl logs -n argocd deployment/argocd-application-controller"
+      fail=1
+    else
+      note "OutOfSync — expected for manual-sync Applications. Run:"
+      note "  argocd app sync $app"
+      note "or click Sync in the Argo CD UI."
+    fi
     ;;
   *)
     note "the reconciler cannot compare. The condition below says why:"

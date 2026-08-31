@@ -2200,23 +2200,23 @@ fn templates_dev_does_not_deploy() -> Vec<String> {
     vec!["edge-cell.yaml".to_string()]
 }
 
-/// The workloads the pipeline waits for a rollout of.
-fn rollout_workloads() -> Vec<String> {
-    let deploy = read(".github/workflows/deploy.yml");
-    let line = deploy
-        .lines()
-        .find(|line| line.trim().starts_with("for workload in "))
-        .expect("the pipeline waits for a rollout");
-    line.trim()
-        .trim_start_matches("for workload in ")
-        .split(';')
-        .next()
-        .expect("the loop's list ends at a semicolon")
-        .split_whitespace()
-        // Entries are kind-qualified (`deployment/qip-api`), because
-        // `rollout status` needs the kind. The name is what this file
-        // compares against the manifests.
-        .map(|entry| entry.rsplit('/').next().unwrap_or(entry).to_string())
+/// The workloads named in the record of who verifies a promotion.
+///
+/// Was read out of `deploy.yml`'s `kubectl rollout status` loop. That loop is
+/// gone: the pipeline no longer touches the cluster, so there is no longer a
+/// pipeline-side answer to read. The property it protected — that a
+/// deployment producing a broken pod is noticed — outlived the mechanism, so
+/// it is asserted against the place the gap is now recorded.
+fn workloads_named_in_the_verification_record() -> Vec<String> {
+    let record = read("docs/operations/gitops-exceptions.md");
+    let section = record
+        .split("## 4.")
+        .nth(1)
+        .expect("gitops-exceptions.md must record what verifies a promotion");
+    ["qip-api", "qip-fastbrain", "qip-deepbrain"]
+        .into_iter()
+        .filter(|workload| section.contains(*workload))
+        .map(str::to_string)
         .collect()
 }
 
@@ -2444,7 +2444,7 @@ fn every_manifest_pulls_from_the_repository_the_pipeline_pushes_to() {
 }
 
 #[test]
-fn the_rollout_waits_on_every_workload_the_pipeline_applies() {
+fn a_promotion_names_who_verifies_it() {
     // `kubectl apply` returns when the API server has accepted the objects, not
     // when the containers are running. Without this step a pipeline reports
     // success for an image that crashes on start-up, which is the failure the
@@ -2454,23 +2454,25 @@ fn the_rollout_waits_on_every_workload_the_pipeline_applies() {
     // checked; a workload on the list that the pipeline did not apply makes
     // `rollout status` wait on a Deployment nobody created until it times out,
     // which fails the deployment for a reason that is not the real one.
-    let waited = rollout_workloads();
+    let waited = workloads_named_in_the_verification_record();
     let applied = workloads_deployed_to_dev();
 
     for workload in &applied {
         assert!(
             waited.contains(workload),
-            "the pipeline applies {workload} and never waits for its rollout, \
-             so a {workload} that does not start is a deployment that reports \
-             success"
+            "{workload} is deployed by the chart and is not named in the \
+             verification record. The pipeline stopped waiting on a rollout \
+             when the kubectl path was retired, so a {workload} that never \
+             starts is now a deployment that reports success — and the one \
+             thing that must not happen is that being true and unwritten."
         );
     }
     for workload in &waited {
         assert!(
             applied.contains(workload),
-            "the rollout waits for {workload}, which this pipeline does not \
-             apply. `kubectl rollout status` on a Deployment nobody created \
-             waits until it times out."
+            "the verification record names {workload}, which the chart does \
+             not deploy. A record of who watches a workload nobody deploys \
+             reads as coverage and is not."
         );
     }
 }
@@ -2511,10 +2513,10 @@ fn nothing_reads_as_deployed_that_nothing_deploys() {
          invisible until the cluster behaved oddly."
     );
 
-    let readme = read("infrastructure/kubernetes/base/RETIRED.md");
+    let readme = read("infrastructure/kubernetes/base/README.md");
     assert!(
         readme.contains("infrastructure/helm/qip"),
-        "infrastructure/kubernetes/base/RETIRED.md must name the chart that \
+        "infrastructure/kubernetes/base/README.md must name the chart that \
          replaced it, or a reader has no way to find what actually deploys"
     );
 
