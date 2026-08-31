@@ -39,16 +39,27 @@ export function EquitiesMark() {
     )
 }
 
-/** Currencies — two exchanged legs around a settlement node. */
+/** Currencies — a pair, exchanged both ways, inside a per-venue bound. */
 export function CurrenciesMark() {
     return (
         <Frame label="Currencies">
-            <circle cx="103" cy="105" r="46" fill="none" stroke={INK} strokeWidth="2" opacity="0.75" />
-            <path d="M64 88 H142 l-16 -14" fill="none" stroke={STROKE} strokeWidth="6"
-                strokeLinecap="round" strokeLinejoin="round" />
-            <path d="M142 124 H64 l16 14" fill="none" stroke={INK} strokeWidth="6"
-                strokeLinecap="round" strokeLinejoin="round" />
-            <circle cx="103" cy="105" r="66" fill="none" stroke="#cfe0d8" strokeWidth="1" strokeDasharray="3 7" />
+            <circle cx="103" cy="105" r="70" fill="none" stroke="#cfe0d8" strokeWidth="1" strokeDasharray="3 7" />
+            <circle cx="56" cy="105" r="24" fill={INK} opacity="0.85" />
+            <circle cx="150" cy="105" r="24" fill={STROKE} />
+            <path d="M78 86 q25 -22 50 0" fill="none" stroke={STROKE} strokeWidth="5"
+                strokeLinecap="round" markerEnd="url(#mark-arrow-green)" />
+            <path d="M128 124 q-25 22 -50 0" fill="none" stroke={INK} strokeWidth="5"
+                strokeLinecap="round" markerEnd="url(#mark-arrow-ink)" />
+            <defs>
+                <marker id="mark-arrow-green" viewBox="0 0 10 10" refX="7" refY="5"
+                    markerWidth="4" markerHeight="4" orient="auto">
+                    <path d="M0 0 L10 5 L0 10 z" fill={STROKE} />
+                </marker>
+                <marker id="mark-arrow-ink" viewBox="0 0 10 10" refX="7" refY="5"
+                    markerWidth="4" markerHeight="4" orient="auto">
+                    <path d="M0 0 L10 5 L0 10 z" fill={INK} />
+                </marker>
+            </defs>
         </Frame>
     )
 }

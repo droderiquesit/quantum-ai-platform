@@ -331,3 +331,55 @@
   left: 12px;
   top: 12px;
 }
+
+/* --- hero artwork --------------------------------------------------------
+ * The template's banner reserved the right half for `banner-img-*.png`, a grey
+ * placeholder. The mark sits in the same place and is hidden where the slide
+ * stacks, because a 340px drawing under a 60px headline is not a hero.
+ * ---------------------------------------------------------------------- */
+.banner-art {
+  position: absolute;
+  right: 92px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 420px;
+  max-width: 34%;
+  z-index: 4;
+  opacity: 0;
+  transition: opacity 900ms ease 900ms;
+}
+
+.banner-carousel .swiper-slide-active .banner-art {
+  opacity: 1;
+}
+
+@media only screen and (max-width: 1199px) {
+  .banner-art { display: none; }
+}
+
+/* --- coverage cards ------------------------------------------------------
+ * The template revealed each card's body copy and its link only on hover, and
+ * reserved 120px of empty space for them meanwhile. On a touch screen there is
+ * no hover: the sentence explaining each asset class and the link to the
+ * platform page were simply unreachable, and the section rendered as five
+ * headings over a large blank rectangle. Both are shown always.
+ * ---------------------------------------------------------------------- */
+.trading-block-one .inner-box p {
+  opacity: 1;
+  top: 0;
+  margin-bottom: 24px;
+}
+
+.trading-block-one .inner-box .theme-btn {
+  opacity: 1;
+  top: 0;
+}
+
+.trading-block-one .inner-box:hover .image-box {
+  filter: none;
+}
+
+@media only screen and (max-width: 991px) {
+  .trading-section .inner-container .trading-block-one { width: 100%; }
+  .trading-block-one .inner-box { border-right: none; border-bottom: 1px solid #e5e5e5; }
+}
