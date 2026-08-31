@@ -1,23 +1,24 @@
 #!/usr/bin/env bash
-# Open the delivery consoles — Argo CD and Kargo — and print their URLs.
+# Print the delivery consoles' published URLs, and open a tunnel as a
+# fallback.
 #
-# There is no internet-facing URL for either, deliberately. Both are admin
-# control planes for a cluster that has no ingress at all: the nodes have no
-# public addresses, the control plane has no public endpoint, and every
-# namespace denies ingress by default. A password-authenticated admin console
-# on the public internet would be the widest hole in that posture, and it
-# would be opened for convenience rather than for a requirement.
+# Both consoles now have a real address: an HTTPS load balancer behind
+# Identity-Aware Proxy, which authenticates the operator's Google identity at
+# Google's edge before the request reaches a backend at all. Who may pass is
+# `console_operators` in the environment's tfvars — an IAM list in a reviewed
+# file, not whoever holds the admin password below. Argo CD's own login still
+# happens behind IAP, so each console has two checks rather than one.
 #
-# So access is a tunnel authenticated by the operator's own Google identity:
-# kubectl port-forward runs over the IAM-gated control-plane connection, which
-# means the person reaching these consoles is the person IAM already vetted,
-# and no listening surface is created for anyone else. The URLs below are real
-# and work — they are just local to whoever ran this script.
+# The tunnel remains, and is not vestigial. It is the way in when IAP itself
+# is the thing that is broken, when a certificate is still provisioning (a
+# Google-managed certificate takes up to an hour on first issue), and for an
+# operator not yet on the IAM list. port-forward runs over the IAM-gated
+# control-plane connection and creates no listening surface for anyone else,
+# so it is a safe fallback rather than a hole.
 #
-# When algorik.ai lands, the reviewed way to publish these is an HTTPS load
-# balancer behind Identity-Aware Proxy with a Google-managed certificate, so
-# the same identity check happens at the edge. That is a deliberate commit,
-# not something this script should improvise.
+# The URLs are read from the cluster rather than hard-coded here, because the
+# Ingress is what actually decides them and a copy in a script is a second
+# source of truth for a fact that already has one.
 #
 # Usage: scripts/open-consoles.sh [environment]     (default: dev)
 #   Ctrl-C stops both tunnels.
@@ -41,6 +42,36 @@ kubectl get namespace argocd >/dev/null 2>&1 || {
 
 argocd_password="$(kubectl get secret argocd-initial-admin-secret -n argocd \
   -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true)"
+
+# The published address, asked of the Ingress that defines it. Absent until
+# the console-ingress work is applied, which is why every line below tolerates
+# an empty answer rather than failing: the tunnel still works without it.
+published() {
+  kubectl -n "$1" get ingress "$2" -o jsonpath='{.spec.rules[0].host}' 2>/dev/null || true
+}
+# Provisioning, Active, or FailedNotVisible. A browser cannot open the URL
+# until this says Active, and the first issue takes up to an hour, so printing
+# it is the difference between "wait" and "something is wrong".
+certificate_state() {
+  kubectl -n "$1" get managedcertificate "$2" \
+    -o jsonpath='{.status.certificateStatus}' 2>/dev/null || true
+}
+
+argocd_host="$(published argocd argocd-console)"
+kargo_host="$(published kargo kargo-console)"
+
+if [ -n "$argocd_host" ] || [ -n "$kargo_host" ]; then
+  echo
+  echo "  Published, behind Identity-Aware Proxy — sign in with the Google"
+  echo "  account named in ${tfvars}'s console_operators:"
+  [ -n "$argocd_host" ] &&
+    echo "    Argo CD   https://${argocd_host}   certificate: $(certificate_state argocd argocd-console)"
+  [ -n "$kargo_host" ] &&
+    echo "    Kargo     https://${kargo_host}   certificate: $(certificate_state kargo kargo-console)"
+  echo
+  echo "  A certificate that is still Provisioning means the URL is correct and"
+  echo "  not yet servable. Use the tunnel below until it reads Active."
+fi
 
 echo
 echo "  Argo CD   https://localhost:8443     user: admin"
