@@ -39,6 +39,41 @@ IDENTITY_API_KEY="$(gcloud services api-keys get-key-string \
 readonly IDENTITY_API_KEY
 [[ -n "${IDENTITY_API_KEY}" ]] || { echo "no Identity Platform browser key found" >&2; exit 1; }
 
+# --- the console's route to the platform (ADR 0018) ------------------------
+#
+# Read from the environment's tfvars rather than restated here. Terraform
+# reserves this address and the Helm chart's Service claims it; a third literal
+# in a shell script is the copy nobody thinks to change, because it is the only
+# one that is not configuration. `console_route.rs` fails the build if this
+# script ever contains the address instead of reading it.
+readonly TFVARS="${REPO_ROOT}/infrastructure/environments/dev/terraform.tfvars"
+tfvar() { sed -n "s/^$1[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" "${TFVARS}" | head -1; }
+
+API_ADDRESS="$(tfvar api_internal_address)"
+CONSOLE_SUBNET_CIDR="$(tfvar console_egress_cidr)"
+readonly API_ADDRESS CONSOLE_SUBNET_CIDR
+# Fail closed and say which half is missing. A console deployed without these
+# answers 500 on every gateway call with "QIP_API_BASE_URL is not set" — an
+# honest message, and one that describes a deployment fault as a platform one.
+[[ -n "${API_ADDRESS}" ]] || { echo "api_internal_address is not set in ${TFVARS}; the console would have no platform to read" >&2; exit 1; }
+[[ -n "${CONSOLE_SUBNET_CIDR}" ]] || { echo "console_egress_cidr is not set in ${TFVARS}; the console would have no route into the VPC" >&2; exit 1; }
+readonly VPC_NETWORK="qip-dev"
+readonly CONSOLE_SUBNET="qip-dev-console-egress"
+readonly CONSOLE_SA="qip-dev-console@${PROJECT}.iam.gserviceaccount.com"
+# The platform credential, projected as a file rather than an environment
+# variable: an environment variable holding a token is readable from
+# /proc/<pid>/environ, is inherited by every child, and lands in a crash dump.
+# `qip_core::secret` and the console's own `secret.ts` both resolve the _FILE
+# form, so this is the same contract the Rust binaries use.
+readonly TOKEN_MOUNT="/var/run/secrets/qip/token-viewer"
+
+# The session secret is created by this script, so its grant belongs to this
+# script too — Terraform owns the account and the platform tokens, and neither
+# tool reaches into what the other created.
+gcloud secrets add-iam-policy-binding algorik-session-secret \
+  --project "${PROJECT}" --member "serviceAccount:${CONSOLE_SA}" \
+  --role roles/secretmanager.secretAccessor --quiet >/dev/null
+
 # --- portal ----------------------------------------------------------------
 echo "building portal image ${AR}/algorik-portal:${SHA}…"
 cp "${REPO_ROOT}/infrastructure/docker/portal.Dockerfile" "${REPO_ROOT}/frontend/Dockerfile"
@@ -52,9 +87,12 @@ gcloud run deploy algorik-portal \
   --project "${PROJECT}" --region "${REGION}" \
   --image "${AR}/algorik-portal:${SHA}" \
   --allow-unauthenticated \
+  --service-account "${CONSOLE_SA}" \
   --port 8080 --cpu 1 --memory 512Mi --min-instances 0 --max-instances 3 \
-  --set-env-vars "ALGORIK_ENV=development,ALGORIK_POSTURE=paper,ALGORIK_IDENTITY_STORE_DIR=/tmp/algorik-identity,ALGORIK_IDENTITY_PROJECT_ID=${PROJECT},ALGORIK_IDENTITY_API_KEY=${IDENTITY_API_KEY}" \
-  --set-secrets "ALGORIK_SESSION_SECRET=algorik-session-secret:latest" \
+  --network "${VPC_NETWORK}" --subnet "${CONSOLE_SUBNET}" \
+  --vpc-egress private-ranges-only \
+  --set-env-vars "ALGORIK_ENV=development,ALGORIK_POSTURE=paper,ALGORIK_IDENTITY_PROJECT_ID=${PROJECT},ALGORIK_IDENTITY_API_KEY=${IDENTITY_API_KEY},QIP_API_BASE_URL=http://${API_ADDRESS}:8080,QIP_API_TOKEN_FILE=${TOKEN_MOUNT}" \
+  --set-secrets "ALGORIK_SESSION_SECRET=algorik-session-secret:latest,${TOKEN_MOUNT}=qip-token-viewer-dev:latest" \
   --quiet
 PORTAL_URL="$(gcloud run services describe algorik-portal --project "${PROJECT}" --region "${REGION}" --format='value(status.url)')"
 readonly PORTAL_URL

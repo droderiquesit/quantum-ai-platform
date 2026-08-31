@@ -173,6 +173,12 @@ module "network" {
   subnet_cidr  = var.subnet_cidr
   pod_cidr     = var.pod_cidr
   service_cidr = var.service_cidr
+
+  # The console's route to the platform (ADR 0018). Both null in an
+  # environment that has not opted in, which creates neither the subnet nor
+  # the firewall rule that goes with it.
+  console_egress_cidr  = var.console_egress_cidr
+  api_internal_address = var.api_internal_address
 }
 
 module "cluster" {
@@ -279,6 +285,10 @@ module "secrets" {
   # The venue credential is readable only by an environment that could use it.
   # An environment that cannot trade live has no business holding one.
   venue_credential_readable = var.autonomy_ceiling != "paper_trading"
+
+  # The console's identity and its one grant, created only where the console
+  # has a route to the platform at all (ADR 0018).
+  console_enabled = var.console_egress_cidr != null
 }
 
 # Pods authenticate as their Google service accounts through the cluster's

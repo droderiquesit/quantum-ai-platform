@@ -755,3 +755,17 @@ variable "console_operators" {
   type        = list(string)
   default     = []
 }
+
+# --- The console's route to the platform (ADR 0018) --------------------------
+
+variable "console_egress_cidr" {
+  description = "CIDR of the subnet Cloud Run attaches the console to for direct VPC egress. Null means the console has no route to the platform and says so on every page, which is the state this variable exists to end."
+  type        = string
+  default     = null
+}
+
+variable "api_internal_address" {
+  description = "Reserved internal address for qip-api's internal load balancer. Must sit inside subnet_cidr and outside the range GKE allocates node addresses from. Null means no internal load balancer is created."
+  type        = string
+  default     = null
+}

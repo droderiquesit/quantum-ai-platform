@@ -1,13 +1,16 @@
 import { createHmac, randomBytes, randomInt } from "node:crypto";
 import type { AccountAgreements, AccountType, AuthFailure } from "@algorik/auth";
-import { identityStore, type StoredSession, type StoredUser } from "./identity-store";
+import { identityStore, type StoredUser } from "./identity-store";
 import {
+  gipReadProfile,
   gipResetPassword,
   gipSendPasswordReset,
   gipSendVerification,
   gipSignIn,
   gipSignUp,
   gipVerifyEmail,
+  gipWriteProfile,
+  type StoredProfileClaims,
 } from "./identity-platform";
 import { hashPassword, newSessionId, SESSION_TTL_MS, verifyPassword } from "./session";
 
@@ -48,6 +51,42 @@ const LOCKOUT_MS = 15 * 60 * 1000;
 const CODE_TTL_MS = 15 * 60 * 1000;
 const CODE_ATTEMPTS = 5;
 const AGREEMENTS_VERSION = 1;
+
+/**
+ * One sign-in, as the sealed cookie carries it (ADR 0019).
+ *
+ * Everything the console needs to answer "who is this and what may they see"
+ * is here, because there is no server-side session record to look it up in.
+ * That is the whole change: the previous design kept a random id in the cookie
+ * and the session in a JSON file under `/tmp`, which on Cloud Run is
+ * per-instance and in-memory — so a user was signed in to one instance and
+ * anonymous to the next.
+ *
+ * `roles` is in the cookie and is therefore something the browser holds. It is
+ * sealed, so a browser that edits it produces a cookie that fails the
+ * signature check and reads as no session at all. What it is not is an
+ * entitlement anywhere else: the platform authenticates the console by its own
+ * `viewer` token, and nothing in this claim set reaches `qip-api`.
+ */
+export interface SessionClaims {
+  readonly id: string;
+  readonly userId: string;
+  readonly email: string;
+  readonly displayName: string | null;
+  readonly accountType: AccountType;
+  readonly emailVerified: boolean;
+  readonly roles: readonly string[];
+  readonly createdAt: number;
+  readonly expiresAt: number;
+  readonly authenticatedAt: number;
+  readonly method: "development" | "password" | "google";
+  /** Coarse device note. Never a raw user-agent dump. */
+  readonly device: string;
+}
+
+/** The roles sign-up grants. Observation of the paper platform, never
+ * operation of it — elevation is an operator decision with an audit trail. */
+const SIGNUP_ROLES: readonly string[] = ["viewer"];
 
 function failure(code: AuthFailure["code"], message: string, next?: AuthFailure["next"]): AuthFailure {
   return next ? { code, message, next } : { code, message };
@@ -106,42 +145,29 @@ export type ServiceResult<T> =
   | { readonly ok: false; readonly failure: AuthFailure; readonly status: number };
 
 /**
- * Password hash sentinel for accounts whose credential lives in Identity
- * Platform. verifyPassword is never called against it in platform mode; if
- * a code path ever does, no password hashes to this string.
+ * The facts the console owns about a platform account, as they are stored.
+ *
+ * These are custom claims on the Identity Platform account record, not a row
+ * in a store of ours (ADR 0019). Google holds the credential and the mailbox
+ * proof; this holds what the *platform* decided — what kind of account it is,
+ * which agreements were accepted and at which version, and what the session
+ * may see.
+ *
+ * What this replaces is worth naming, because it was a defect rather than a
+ * gap. The old code kept the same fields in a JSON file under `/tmp` and, when
+ * a scale event had discarded it, rebuilt the record with
+ * `agreements: { terms: true, privacy: true, riskDisclosure: true }`. The
+ * platform asserted a user had accepted terms it had never shown them, and the
+ * assertion was manufactured from the absence of the record that would have
+ * proved it.
  */
-const EXTERNAL_CREDENTIAL = "external:identity-platform";
-
-/** The local record for a platform-authenticated user: everything that is
- * ours to decide (roles, agreements, account type) and nothing that is
- * Google's (the password). Created at sign-up, or on first sign-in for an
- * account that predates this store. */
-function platformProfile(
-  email: string,
-  localId: string,
-  displayName: string | null,
-  input?: SignUpInput,
-): StoredUser {
-  const existing = identityStore.userByEmail(email);
-  if (existing) return existing;
-  const user: StoredUser = {
-    id: `gip:${localId}`,
-    email,
-    passwordHash: EXTERNAL_CREDENTIAL,
-    displayName: input?.displayName?.trim() || displayName,
-    accountType: input?.accountType ?? "individual",
-    emailVerified: false,
-    agreements: input ? { ...input.agreements } : { terms: true, privacy: true, riskDisclosure: true },
+function signUpClaims(input: SignUpInput): StoredProfileClaims {
+  return {
+    accountType: input.accountType,
+    agreements: { ...input.agreements },
     agreementsVersion: AGREEMENTS_VERSION,
-    createdAt: Date.now(),
-    failedSignIns: 0,
-    lockedUntil: 0,
-    // Viewer only, in both providers. Sign-up grants observation of the
-    // paper platform, never operation of it.
-    roles: ["viewer"],
+    roles: [...SIGNUP_ROLES],
   };
-  identityStore.createUser(user);
-  return user;
 }
 
 export async function signUp(input: SignUpInput): Promise<ServiceResult<{ devCode: string | null }>> {
@@ -157,7 +183,23 @@ export async function signUp(input: SignUpInput): Promise<ServiceResult<{ devCod
   if (!developmentProviderActive()) {
     const created = await gipSignUp(email, input.password);
     if (created.ok) {
-      platformProfile(email, created.value.localId, null, input);
+      // The agreements record is written before the verification mail is
+      // sent, and a failure to write it fails the sign-up. The alternative —
+      // an account that exists with no record of what its owner accepted — is
+      // exactly the state ADR 0019 exists to end, and it would be reached
+      // silently every time this call failed.
+      const stored = await gipWriteProfile(created.value.localId, signUpClaims(input));
+      if (!stored) {
+        return {
+          ok: false,
+          status: 503,
+          failure: failure(
+            "invalid_credentials",
+            "The account was created but the agreements you accepted could not be recorded. " +
+              "Use the password-reset link to finish setting the account up, or try again shortly.",
+          ),
+        };
+      }
       await gipSendVerification(created.value.idToken);
     } else if (created.error.code !== "EMAIL_EXISTS") {
       // EMAIL_EXISTS falls through to the same shape as success — account
@@ -194,9 +236,7 @@ export async function signUp(input: SignUpInput): Promise<ServiceResult<{ devCod
     createdAt: Date.now(),
     failedSignIns: 0,
     lockedUntil: 0,
-    // Viewer only. Sign-up grants observation of the paper platform, never
-    // operation of it — elevation is an operator decision with an audit trail.
-    roles: ["viewer"],
+    roles: [...SIGNUP_ROLES],
   };
   identityStore.createUser(user);
   const devCode = developmentProviderActive() ? issueCode("verify-email", user.id) : null;
@@ -207,7 +247,7 @@ export async function signIn(
   email: string,
   password: string,
   device: string,
-): Promise<ServiceResult<{ session: StoredSession; user: StoredUser }>> {
+): Promise<ServiceResult<SessionClaims>> {
   if (!developmentProviderActive()) {
     const signedIn = await gipSignIn(email.trim().toLowerCase(), password);
     if (!signedIn.ok) {
@@ -220,7 +260,6 @@ export async function signIn(
         failure: failure("invalid_credentials", "That email and password combination was not accepted."),
       };
     }
-    const profile = platformProfile(email.trim().toLowerCase(), signedIn.value.localId, signedIn.value.displayName);
     if (!signedIn.value.emailVerified) {
       return {
         ok: false,
@@ -228,18 +267,44 @@ export async function signIn(
         failure: failure("email_unverified", "This email address has not been verified yet.", "verify-email"),
       };
     }
-    if (profile.emailVerified !== true) identityStore.patchUser(profile.id, { emailVerified: true });
-    const session: StoredSession = {
-      id: newSessionId(),
-      userId: profile.id,
-      createdAt: Date.now(),
-      expiresAt: Date.now() + SESSION_TTL_MS,
-      authenticatedAt: Date.now(),
-      method: "password",
-      device,
+
+    // The agreements record decides whether this sign-in may proceed. An
+    // account with no profile is an account this platform cannot show a
+    // consent record for, and the answer is to ask — never to assume, and
+    // never to invent one, which is what the store-backed version did every
+    // time Cloud Run discarded its filesystem.
+    const profile = await gipReadProfile(signedIn.value.localId);
+    if (!profile) {
+      return {
+        ok: false,
+        status: 403,
+        failure: failure(
+          "agreements_required",
+          "This account has no record of the terms, privacy policy and risk disclosures " +
+            "being accepted. Accept them to continue.",
+          "agreements",
+        ),
+      };
+    }
+
+    const now = Date.now();
+    return {
+      ok: true,
+      value: {
+        id: newSessionId(),
+        userId: `gip:${signedIn.value.localId}`,
+        email: email.trim().toLowerCase(),
+        displayName: signedIn.value.displayName,
+        accountType: profile.accountType,
+        emailVerified: true,
+        roles: profile.roles,
+        createdAt: now,
+        expiresAt: now + SESSION_TTL_MS,
+        authenticatedAt: now,
+        method: "password",
+        device,
+      },
     };
-    identityStore.createSession(session);
-    return { ok: true, value: { session, user: { ...profile, emailVerified: true } } };
   }
 
   const user = identityStore.userByEmail(email);
@@ -281,17 +346,26 @@ export async function signIn(
   }
 
   identityStore.patchUser(user.id, { failedSignIns: 0, lockedUntil: 0 });
-  const session: StoredSession = {
-    id: newSessionId(),
-    userId: user.id,
-    createdAt: Date.now(),
-    expiresAt: Date.now() + SESSION_TTL_MS,
-    authenticatedAt: Date.now(),
-    method: developmentProviderActive() ? "development" : "password",
-    device,
+  const now = Date.now();
+  // The same sealed-claim session as the platform provider builds. One shape
+  // in both modes, so what is exercised offline is what runs deployed.
+  return {
+    ok: true,
+    value: {
+      id: newSessionId(),
+      userId: user.id,
+      email: user.email,
+      displayName: user.displayName,
+      accountType: user.accountType,
+      emailVerified: user.emailVerified,
+      roles: user.roles,
+      createdAt: now,
+      expiresAt: now + SESSION_TTL_MS,
+      authenticatedAt: now,
+      method: "development",
+      device,
+    },
   };
-  identityStore.createSession(session);
-  return { ok: true, value: { session, user } };
 }
 
 export async function verifyEmail(email: string, code: string): Promise<ServiceResult<null>> {
@@ -304,8 +378,9 @@ export async function verifyEmail(email: string, code: string): Promise<ServiceR
         failure: failure("invalid_credentials", "That code was not accepted. Request a new verification email by signing in again."),
       };
     }
-    const profile = identityStore.userByEmail(email.trim().toLowerCase());
-    if (profile) identityStore.patchUser(profile.id, { emailVerified: true });
+    // Nothing local to update: `emailVerified` is Identity Platform's fact and
+    // is read from the account at every sign-in. A second copy here is the
+    // kind of thing that goes stale and then gets believed.
     return { ok: true, value: null };
   }
 
@@ -324,8 +399,14 @@ export async function verifyEmail(email: string, code: string): Promise<ServiceR
 export function resendVerification(email: string): { devCode: string | null } {
   // In platform mode re-sending needs a fresh idToken, and the way to get
   // one is signing in — which the unverified-sign-in path already turns
-  // into a verification prompt. So this stays a no-op there, and the
-  // response shape stays identical either way.
+  // into a verification prompt. So this is a no-op there, and the response
+  // shape stays identical either way.
+  //
+  // Returned here rather than falling through the lookup below. The
+  // development store is empty in platform mode, so the lookup would reach
+  // the same answer by accident, and an answer reached by accident is one
+  // that changes when the accident does.
+  if (!developmentProviderActive()) return { devCode: null };
   const user = identityStore.userByEmail(email);
   if (!user || user.emailVerified) return { devCode: null };
   return { devCode: developmentProviderActive() ? issueCode("verify-email", user.id) : null };
@@ -353,10 +434,9 @@ export async function resetPassword(email: string, code: string, password: strin
         failure: failure("invalid_credentials", "That code was not accepted. Codes expire — request a new reset email if needed."),
       };
     }
-    const profile = identityStore.userByEmail(email.trim().toLowerCase());
-    // Owning the mailbox settles verification here exactly as it does in
-    // the development provider.
-    if (profile) identityStore.patchUser(profile.id, { emailVerified: true, failedSignIns: 0, lockedUntil: 0 });
+    // Owning the mailbox settles verification, and Identity Platform records
+    // that itself when it redeems the code — as it records the lockout state
+    // this provider does not keep. There is nothing local left to patch.
     return { ok: true, value: null };
   }
 
@@ -394,24 +474,28 @@ export interface PublicSession {
   };
 }
 
-/** The session as the browser may see it. No id, no hash, no entitlement. */
-export function publicSession(sessionId: string): PublicSession | null {
-  const session = identityStore.session(sessionId);
-  if (!session) return null;
-  const user = identityStore.userById(session.userId);
-  if (!user) return null;
+/**
+ * The session as the browser may see it.
+ *
+ * A projection rather than a lookup, now that the claims are the session. It
+ * still exists, and is still the only thing a route may return, because the
+ * sealed cookie holds fields the browser has no business being handed back —
+ * the session handle and the device note among them. Returning the claim set
+ * directly is the shortcut that turns an internal shape into a public one.
+ */
+export function publicSession(claims: SessionClaims): PublicSession {
   return {
     status: "authenticated",
     session: {
       user: {
-        email: user.email,
-        displayName: user.displayName,
-        accountType: user.accountType,
-        emailVerified: user.emailVerified,
-        roles: user.roles,
+        email: claims.email,
+        displayName: claims.displayName,
+        accountType: claims.accountType,
+        emailVerified: claims.emailVerified,
+        roles: claims.roles,
       },
-      expiresAt: session.expiresAt,
-      authenticatedAt: session.authenticatedAt,
+      expiresAt: claims.expiresAt,
+      authenticatedAt: claims.authenticatedAt,
     },
   };
 }

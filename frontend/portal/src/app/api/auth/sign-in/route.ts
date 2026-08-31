@@ -26,6 +26,6 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 
   const response = NextResponse.json({ ok: true }, { headers: noStore });
-  attachSession(response, result.value.session.id);
+  attachSession(response, result.value);
   return response;
 }

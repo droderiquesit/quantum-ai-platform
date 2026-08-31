@@ -137,3 +137,86 @@ resource "google_compute_firewall" "allow_internal" {
   source_ranges = [var.subnet_cidr, var.pod_cidr]
   target_tags   = ["qip-node"]
 }
+
+# --- The console's route to the platform (ADR 0018) --------------------------
+#
+# The portal runs on Cloud Run and the platform runs in this VPC behind private
+# nodes. These three resources are the whole route, and each is scoped to the
+# one thing that needs it.
+
+# The subnet Cloud Run puts the portal's network interface in.
+#
+# Its own subnet rather than a share of the primary: the primary is where GKE
+# allocates node addresses, and a pool that grows into a range Cloud Run is
+# also drawing from produces an allocation failure in whichever of the two asks
+# second. Separate ranges make that impossible rather than unlikely.
+resource "google_compute_subnetwork" "console_egress" {
+  count   = var.console_egress_cidr == null ? 0 : 1
+  project = var.project_id
+  name    = "qip-${var.environment}-console-egress"
+  region  = var.region
+  network = google_compute_network.vpc.id
+
+  ip_cidr_range = var.console_egress_cidr
+
+  # The portal reads Secret Manager and Identity Platform. Private Google
+  # access is how it does that without the egress leaving the VPC.
+  private_ip_google_access = true
+
+  log_config {
+    aggregation_interval = "INTERVAL_5_SEC"
+    flow_sampling        = 0.5
+    metadata             = "INCLUDE_ALL_METADATA"
+  }
+}
+
+# The address qip-api's internal load balancer answers on.
+#
+# Reserved here so that the value the console is configured with, the value the
+# Helm chart gives the Service, and the value that actually exists are the same
+# value. An acceptance test asserts the first two agree; this resource is what
+# makes the third one true.
+resource "google_compute_address" "api_internal" {
+  count        = var.api_internal_address == null ? 0 : 1
+  project      = var.project_id
+  name         = "qip-${var.environment}-api-internal"
+  region       = var.region
+  subnetwork   = google_compute_subnetwork.primary.id
+  address_type = "INTERNAL"
+  address      = var.api_internal_address
+
+  # `SHARED_LOADBALANCER_VIP` rather than `GCE_ENDPOINT`: the forwarding rule
+  # is created by GKE from the Service, not by Terraform, and reserving the
+  # address for an endpoint Terraform does not own leaves the two arguing over
+  # who allocated it.
+  purpose = "SHARED_LOADBALANCER_VIP"
+
+  labels = var.labels
+}
+
+# The console's subnet may reach the API's port. Nothing else new may.
+#
+# Deliberately not a widening of `allow_internal` above: that rule describes
+# traffic between nodes and pods, and adding a serverless range to it would
+# make a rule about the cluster's interior also a rule about who may enter it.
+# Two rules that each say one thing beat one rule that says two.
+resource "google_compute_firewall" "allow_console_to_api" {
+  count     = var.console_egress_cidr == null ? 0 : 1
+  project   = var.project_id
+  name      = "qip-${var.environment}-allow-console-to-api"
+  network   = google_compute_network.vpc.id
+  direction = "INGRESS"
+  priority  = 1000
+
+  allow {
+    protocol = "tcp"
+    ports    = ["8080"]
+  }
+
+  source_ranges = [var.console_egress_cidr]
+  target_tags   = ["qip-node"]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
+}

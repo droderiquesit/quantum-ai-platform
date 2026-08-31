@@ -8,11 +8,22 @@
  * This module is imported only by route handlers, which never run in the
  * browser: the credential it reads must not cross that line.
  */
+import { secretFromEnvironment } from "./secret";
+
 export interface Upstream {
   readonly baseUrl: string;
   readonly token: string | null;
   readonly timeoutMs: number;
 }
+
+/**
+ * The credential the platform expects.
+ *
+ * Named here rather than inline because it is resolved through the `_FILE`
+ * contract in `./secret`, and both halves of that contract have to name the
+ * same variable for the "both set" refusal to mean anything.
+ */
+const TOKEN_VARIABLE = "QIP_API_TOKEN";
 
 export class UpstreamNotConfigured extends Error {}
 
@@ -30,11 +41,19 @@ export function upstream(): Upstream {
   } catch {
     throw new UpstreamNotConfigured(`QIP_API_BASE_URL is not a URL: ${raw}`);
   }
-  const token = process.env.QIP_API_TOKEN?.trim();
+  // Resolved through the `_FILE` indirection the Secret Manager CSI driver and
+  // Cloud Run's secret volumes both project, so the token is a mounted file
+  // rather than a line in `/proc/<pid>/environ`. `secretFromEnvironment`
+  // throws on a configuration that cannot be resolved — both sources set, or a
+  // named file that is missing or empty — and that throw is deliberate: the
+  // platform answers 401 to an unauthenticated call, so a console that
+  // silently continued without its credential would report the platform
+  // unreachable when the fault is entirely its own.
+  const token = secretFromEnvironment(TOKEN_VARIABLE);
   const timeout = Number(process.env.QIP_API_TIMEOUT_MS ?? 10_000);
   return {
     baseUrl: parsed.origin + parsed.pathname.replace(/\/$/, ""),
-    token: token && token.length > 0 ? token : null,
+    token,
     timeoutMs: Number.isFinite(timeout) && timeout > 0 ? timeout : 10_000,
   };
 }

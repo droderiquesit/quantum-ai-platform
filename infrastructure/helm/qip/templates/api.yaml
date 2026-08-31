@@ -520,3 +520,78 @@ spec:
 # Until then this workload is a Deployment with an `emptyDir`, and
 # `QIP_STORAGE_TARGET` is set from the config map explicitly so that the
 # durability question is answered in the open rather than by omission.
+{{- if .Values.consoleRoute }}
+---
+# The address the console reaches this API on (ADR 0018).
+#
+# An internal passthrough Network Load Balancer. "Internal" is the whole
+# security property: the address is RFC1918 and reachable only from inside the
+# VPC, so publishing it gives `qip-api` no public surface — which matters more
+# here than on most services, because `POST /api/v1/kill-switch` is on this
+# port and an operator interface on the internet is a different failure from a
+# console that cannot read.
+#
+# A third Service rather than a second port on either of the two above.
+# `qip-api` is round-robin and must stay that way (the autoscaler comment says
+# why); `qip-api-mesh` pins by client IP, and the console behind one Cloud Run
+# egress subnet would pin every operator request to one replica and undo the
+# only autoscaler in this repository. Neither existing Service can carry this
+# without becoming the other one.
+#
+# `loadBalancerIP` is the reserved address from Terraform, not an allocation.
+# The console is configured with this literal; an address that moved would
+# present as a timeout rather than as the configuration change it was.
+apiVersion: v1
+kind: Service
+metadata:
+  name: qip-api-console
+  namespace: qip
+  annotations:
+    networking.gke.io/load-balancer-type: "Internal"
+    # Same region today, so global access changes nothing. Set because the
+    # alternative failure — a console deployed to a second region reaching a
+    # load balancer that silently refuses it — is diagnosed by nobody quickly.
+    networking.gke.io/internal-load-balancer-allow-global-access: "true"
+spec:
+  type: LoadBalancer
+  loadBalancerIP: {{ required "consoleRoute.apiInternalAddress is required when consoleRoute is set" .Values.consoleRoute.apiInternalAddress | quote }}
+  selector:
+    app: qip-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+# Who may enter through it: the console's subnet, and nothing else.
+#
+# This is a separate policy rather than an extra `from` on `allow-api-ingress`
+# for a reason worth stating. `allow-api-ingress` admits the `ingress-nginx`
+# namespace — and there is no `ingress-nginx` namespace in this cluster, so
+# that rule currently admits nobody and the API is unreachable from outside the
+# pod network entirely. Editing a rule that describes something which does not
+# exist, in order to describe something that does, produces a policy that
+# explains neither. This one names its own subject.
+#
+# An internal passthrough load balancer preserves the client address, so what
+# arrives at the pod is a source in the console's /26 — an ipBlock, not a
+# namespace. Any wider block here would be a hole in `default-deny` shaped like
+# the VPC rather than like the console.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-api-ingress-from-console
+  namespace: qip
+spec:
+  podSelector:
+    matchLabels:
+      app: qip-api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: {{ required "consoleRoute.egressCidr is required when consoleRoute is set" .Values.consoleRoute.egressCidr | quote }}
+      ports:
+        - protocol: TCP
+          port: 8080
+{{- end }}

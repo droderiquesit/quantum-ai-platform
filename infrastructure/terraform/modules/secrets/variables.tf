@@ -47,3 +47,13 @@ variable "project_number" {
   EOT
   type        = number
 }
+
+variable "console_enabled" {
+  type = bool
+  # The console's own identity exists only where the console has a platform to
+  # read. An environment that has not opted into ADR 0018's route gets no
+  # account and no grant, because an identity that can read a credential it
+  # has no way to use is a standing grant with no purpose to justify it.
+  default     = false
+  description = "Create the console's service account and let it read the viewer token."
+}

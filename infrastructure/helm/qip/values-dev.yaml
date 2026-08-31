@@ -10,3 +10,14 @@
 environment: dev
 project: algorik-dev
 imagePrefix: us-east4-docker.pkg.dev/algorik-dev/qip-dev
+
+# The console's route to the platform (ADR 0018).
+#
+# Both values are Terraform's, repeated here because Helm cannot read a state
+# file. `api_internal_address` and `console_egress_cidr` in
+# infrastructure/environments/dev/terraform.tfvars are the originals, and
+# `console_route.rs` in the acceptance suite refuses a commit where this file
+# and that one disagree.
+consoleRoute:
+  apiInternalAddress: "10.0.15.250"
+  egressCidr: "10.0.16.0/26"

@@ -82,3 +82,21 @@ cell:
   #     cidr: "203.0.113.0/24"
   #     port: 443
   venues: {}
+
+# The console's route to the platform (ADR 0018).
+#
+# Absent by default, and absent is the correct default: unset, the chart
+# renders no internal load balancer and no ingress policy for one, and
+# `qip-api` keeps the posture it has today — reachable from inside the pod
+# network and nowhere else.
+#
+# An environment that opts in sets both keys in its own values file, copying
+# the two literals from its terraform.tfvars. Both are required together: an
+# address with no permitted source is a load balancer nothing may enter, and a
+# permitted source with no address is a policy guarding nothing. The templates
+# demand each by name rather than defaulting either, so half a configuration
+# stops the render instead of shipping.
+#
+# consoleRoute:
+#   apiInternalAddress: "10.0.15.250"   # = api_internal_address in tfvars
+#   egressCidr: "10.0.16.0/26"          # = console_egress_cidr in tfvars

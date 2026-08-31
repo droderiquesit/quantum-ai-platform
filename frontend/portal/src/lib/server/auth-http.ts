@@ -6,10 +6,10 @@ import {
   csrfCookieOptions,
   sessionCookieName,
   sessionCookieOptions,
-  SESSION_TTL_MS,
-  sealSession,
-  unsealSession,
+  sealClaims,
+  unsealClaims,
 } from "./session";
+import type { SessionClaims } from "./identity";
 
 /**
  * The shared plumbing of the auth routes, so each route is only its own rule.
@@ -50,13 +50,32 @@ export function requireCsrf(request: NextRequest): NextResponse | null {
   return csrfAccepted(request, cookie) ? null : csrfRefusal();
 }
 
-/** The signed-in session id, or null. Signature-checked, never trusted raw. */
-export function sessionIdFrom(request: NextRequest): string | null {
-  return unsealSession(request.cookies.get(sessionCookieName())?.value);
+/**
+ * The signed-in session, or null. Signature-checked, never trusted raw.
+ *
+ * Expiry is enforced here rather than left to the cookie's `maxAge`. A browser
+ * that ignores `maxAge`, or a copy of the cookie replayed by something that is
+ * not a browser at all, would otherwise present a session this process had no
+ * reason to stop honouring. The claim is the authority; the cookie attribute
+ * is a courtesy to the browser.
+ */
+export function sessionFrom(request: NextRequest): SessionClaims | null {
+  const claims = unsealClaims<SessionClaims>(request.cookies.get(sessionCookieName())?.value);
+  if (!claims) return null;
+  if (typeof claims.expiresAt !== "number" || claims.expiresAt <= Date.now()) return null;
+  return claims;
 }
 
-export function attachSession(response: NextResponse, sessionId: string): void {
-  response.cookies.set(sessionCookieName(), sealSession(sessionId), sessionCookieOptions(SESSION_TTL_MS));
+export function attachSession(response: NextResponse, claims: SessionClaims): void {
+  response.cookies.set(
+    sessionCookieName(),
+    sealClaims(claims),
+    // The cookie's lifetime is the claim's, not a constant. The two drifting
+    // apart would leave either a cookie the browser discards while the server
+    // would still honour it, or one the browser keeps sending after it stopped
+    // meaning anything.
+    sessionCookieOptions(Math.max(0, claims.expiresAt - Date.now())),
+  );
 }
 
 export function clearSession(response: NextResponse): void {

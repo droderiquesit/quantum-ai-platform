@@ -288,3 +288,29 @@ output "kargo_address_name" {
   description = "The address's name, which Kargo's Ingress references by kubernetes.io/ingress.global-static-ip-name."
   value       = module.console_ingress.kargo_address_name
 }
+
+# --- The console's route to the platform (ADR 0018) --------------------------
+#
+# `scripts/deploy-frontends.sh` reads both. They are outputs rather than
+# constants in the script because the script deploying against a value
+# Terraform did not create is the drift this arrangement exists to prevent.
+
+output "console_egress_subnet" {
+  description = "The subnet the console attaches to, or null where it has no route to the platform."
+  value       = module.network.console_egress_subnet
+}
+
+output "api_internal_address" {
+  description = "The address qip-api's internal load balancer answers on, or null where none exists."
+  value       = module.network.api_internal_address
+}
+
+output "api_internal_base_url" {
+  description = "The value QIP_API_BASE_URL takes on the console. Null where the console has no platform to read, so a deployment cannot set the variable to the string 'null' and spend an afternoon on it."
+  value       = module.network.api_internal_address == null ? null : "http://${module.network.api_internal_address}:8080"
+}
+
+output "console_service_account_email" {
+  description = "The identity scripts/deploy-frontends.sh must deploy the portal under. Null where the console has no platform to read."
+  value       = module.secrets.console_service_account_email
+}

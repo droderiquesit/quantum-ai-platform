@@ -151,3 +151,25 @@ enable_console_ingress = true
 console_operators = [
   "user:droderiques.it@gmail.com",
 ]
+
+# --- The console's route to the platform (ADR 0018) --------------------------
+#
+# Until these existed the portal had no platform to read. `QIP_API_BASE_URL`
+# was unset because no value could have worked: `qip-api` is a ClusterIP
+# Service in a private cluster, and Cloud Run had no path into the VPC at all.
+# Every page said "unavailable" — correctly, and permanently.
+#
+# 10.0.16.0/26 sits immediately above the primary subnet's 10.0.0.0/20 and
+# below nothing. It is a /26 because that is the smallest direct VPC egress
+# accepts, and the console needs a handful of addresses, not a network.
+console_egress_cidr = "10.0.16.0/26"
+
+# Inside the primary subnet, at the far end of it. GKE allocates node
+# addresses from the bottom of the range upward, so the top is where a
+# reserved address does not collide with a pool that grows.
+#
+# This value is repeated in infrastructure/helm/qip/values-dev.yaml, where the
+# Service claims it. `console_route.rs` refuses a commit where the two
+# disagree — the same guard manifest_wiring.rs applies to the mesh ports, for
+# the same reason: an address written twice is an address that drifts once.
+api_internal_address = "10.0.15.250"

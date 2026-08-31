@@ -1,6 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { requireCsrf, sessionIdFrom } from "@/lib/server/auth-http";
-import { identityStore } from "@/lib/server/identity-store";
+import { requireCsrf, sessionFrom } from "@/lib/server/auth-http";
 import {
   resolveUpstreamPath,
   upstream,
@@ -31,15 +30,20 @@ interface RouteContext {
  * The session boundary, when authentication is required.
  *
  * The middleware's redirect is comfort; this is the check that counts. The
- * cookie's signature is verified and the session looked up server-side, so a
- * forged or revoked cookie reads nothing — and mutating calls additionally
- * need the CSRF pair, because a browser can be made to *send* cookies
- * cross-site but not to read the token that must be echoed in a header.
+ * cookie's signature is verified and its expiry enforced here, so a forged
+ * cookie reads as no session — and mutating calls additionally need the CSRF
+ * pair, because a browser can be made to *send* cookies cross-site but not to
+ * read the token that must be echoed in a header.
+ *
+ * There is no server-side lookup any more (ADR 0019), and the honest reading
+ * of what that changes is: a session cannot be revoked before it expires. It
+ * also could not be before, because the record it was looked up in lived in a
+ * per-instance in-memory filesystem — the lookup failing was how a signed-in
+ * user became anonymous at a scale event, not how a revoked one was refused.
  */
 function refuseUnauthenticated(request: NextRequest): NextResponse | null {
   if (process.env.ALGORIK_AUTH_REQUIRED !== "true") return null;
-  const sessionId = sessionIdFrom(request);
-  if (!sessionId || !identityStore.session(sessionId)) {
+  if (!sessionFrom(request)) {
     return NextResponse.json(
       { error: "sign in to use this console", gateway: "unauthenticated" },
       { status: 401, headers: { "x-qip-gateway": "upstream", "cache-control": "no-store" } },

@@ -15,10 +15,25 @@ import { createHmac, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
  * Three properties this file exists to hold:
  *
  * **The browser never holds a credential it could replay elsewhere.** The
- * cookie carries a session id and a signature over it, not a token, not a
- * role, and nothing about what the user may do. Everything the session means
- * is looked up server-side, so a tampered cookie fails a signature check
- * rather than granting something.
+ * cookie carries the session's own claims and a signature over them. It is
+ * not a password, not a platform token, and not anything that authenticates
+ * anywhere but here — the console's `viewer` credential for `qip-api` stays
+ * server-side and is never derived from this cookie.
+ *
+ * **The cookie is the session; there is no server-side copy** (ADR 0019).
+ * This reverses what this file used to do, and the reversal is the point. The
+ * cookie held a random id and the session it named lived in a JSON file under
+ * `/tmp` — which on Cloud Run is per-instance and in-memory. A user signed in
+ * against one instance and was anonymous to the next, and everything was lost
+ * on every scale event. A sealed claim set is verifiable by any instance
+ * without any of them remembering anything.
+ *
+ * What that costs is revocation: a sealed cookie is honoured until it
+ * expires, and signing out clears the browser's copy rather than invalidating
+ * a copy taken from it. ADR 0019 argues why that is acceptable for a
+ * twelve-hour `viewer` session on a paper-trading console, and names the
+ * change that would make it unacceptable. A tampered cookie still fails the
+ * signature check and reads as no session at all.
  *
  * **Comparisons are constant-time.** A signature or password check that
  * returns early on the first differing byte leaks, over enough attempts,
@@ -116,23 +131,49 @@ function constantTimeEquals(left: string, right: string): boolean {
   return timingSafeEqual(ha, hb);
 }
 
-/** `<id>.<signature>` — the cookie's whole contents. */
-export function sealSession(sessionId: string): string {
-  const signature = createHmac("sha256", signingKey()).update(sessionId).digest("base64url");
-  return `${sessionId}.${signature}`;
+/**
+ * `<base64url(claims)>.<signature>` — the cookie's whole contents.
+ *
+ * The signature covers the encoded payload rather than the decoded object, so
+ * verification never parses anything before it has established the bytes are
+ * ours. A verifier that parsed first would be running a JSON parser on
+ * attacker-controlled input as its outermost operation.
+ */
+export function sealClaims(claims: unknown): string {
+  const payload = Buffer.from(JSON.stringify(claims), "utf8").toString("base64url");
+  const signature = createHmac("sha256", signingKey()).update(payload).digest("base64url");
+  return `${payload}.${signature}`;
 }
 
-/** The session id, or null if the cookie was absent, malformed or tampered. */
-export function unsealSession(cookieValue: string | undefined): string | null {
+/**
+ * The claims, or null if the cookie was absent, malformed or tampered.
+ *
+ * Null for every failure, deliberately: a caller that could tell "no cookie"
+ * from "bad signature" would eventually report the difference to someone, and
+ * the difference is only interesting to whoever is forging one.
+ */
+export function unsealClaims<T>(cookieValue: string | undefined): T | null {
   if (!cookieValue) return null;
   const separator = cookieValue.lastIndexOf(".");
   if (separator <= 0) return null;
-  const sessionId = cookieValue.slice(0, separator);
+  const payload = cookieValue.slice(0, separator);
   const presented = cookieValue.slice(separator + 1);
-  const expected = createHmac("sha256", signingKey()).update(sessionId).digest("base64url");
-  return constantTimeEquals(presented, expected) ? sessionId : null;
+  const expected = createHmac("sha256", signingKey()).update(payload).digest("base64url");
+  if (!constantTimeEquals(presented, expected)) return null;
+  try {
+    return JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as T;
+  } catch {
+    return null;
+  }
 }
 
+/**
+ * A handle for one sign-in.
+ *
+ * Nothing looks this up any more — it exists so a session can be named in a
+ * log line or a device list without naming the user, and so two sign-ins by
+ * one person are distinguishable.
+ */
 export function newSessionId(): string {
   return randomBytes(32).toString("base64url");
 }

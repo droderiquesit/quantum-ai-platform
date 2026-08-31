@@ -49,3 +49,8 @@ output "service_account_names" {
     for name, account in google_service_account.workload : name => account.name
   }
 }
+
+output "console_service_account_email" {
+  description = "The identity the portal runs as, or null where the console has no platform to read."
+  value       = one(google_service_account.console[*].email)
+}

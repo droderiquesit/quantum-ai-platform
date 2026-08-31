@@ -316,3 +316,73 @@ resource "google_project_iam_member" "logging" {
   role    = "roles/logging.logWriter"
   member  = "serviceAccount:${google_service_account.workload[each.key].email}"
 }
+
+# --- The console's identity (ADR 0018) ---------------------------------------
+
+# The account the portal runs as.
+#
+# Its own account, and the reason is what it replaces: the portal was deployed
+# under `<project-number>-compute@developer.gserviceaccount.com`, the project's
+# default compute identity. That account is shared by anything in the project
+# that does not name one, it accumulates grants nobody attributes to a
+# particular workload, and a grant given to it for the console is a grant given
+# to everything else that defaults to it. Naming the identity is what makes the
+# next line a statement about the console rather than about the project.
+resource "google_service_account" "console" {
+  count        = var.console_enabled ? 1 : 0
+  project      = var.project_id
+  account_id   = "qip-${var.environment}-console"
+  display_name = "The portal, reading the platform as viewer"
+  description  = "Runs the Cloud Run portal. Reads qip-token-viewer only; see ADR 0018."
+}
+
+# The console reads the platform as `viewer`, and holds no other platform
+# credential.
+#
+# Viewer is the whole entitlement and it is worth naming what it excludes:
+# `POST /api/v1/cycle` is `analyst`, and both directions of
+# `/api/v1/kill-switch` are `operator`. The console renders what the platform
+# decided; it does not run a cycle and it cannot halt one. A console compromise
+# is therefore a disclosure of what this deployment already shows a signed-in
+# operator, not a control of it.
+resource "google_secret_manager_secret_iam_member" "console_viewer_token" {
+  count     = var.console_enabled ? 1 : 0
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.platform["qip-token-viewer"].secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.console[0].email}"
+}
+
+# The console writes the agreements a user accepted onto their account
+# (ADR 0019), and reads them back at sign-in.
+#
+# A custom role, because every predefined role that can do this can do far
+# more. `roles/identitytoolkit.admin` and `roles/firebaseauth.admin` both carry
+# `firebaseauth.users.delete`, `firebaseauth.configs.getSecret` — the project's
+# own signing configuration — and, in the first case,
+# `identitytoolkit.tenants.setIamPolicy`, which is the permission to decide who
+# else administers identity. The console reads an account and updates an
+# account. Two permissions is what that is, and widening a grant to make an
+# error go away is exactly the move the infrastructure rules refuse.
+resource "google_project_iam_custom_role" "console_profile_claims" {
+  count       = var.console_enabled ? 1 : 0
+  project     = var.project_id
+  role_id     = "qip_${var.environment}_console_profile_claims"
+  title       = "Console profile claims"
+  description = "Read and update Identity Platform custom claims. Cannot delete an account, read the project's identity configuration, or change who administers it."
+
+  permissions = [
+    # Read the profile at sign-in.
+    "firebaseauth.users.get",
+    # Write it at sign-up. An account created without one is refused a
+    # session, so this is not optional and its absence is not silent.
+    "firebaseauth.users.update",
+  ]
+}
+
+resource "google_project_iam_member" "console_profile_claims" {
+  count   = var.console_enabled ? 1 : 0
+  project = var.project_id
+  role    = google_project_iam_custom_role.console_profile_claims[0].id
+  member  = "serviceAccount:${google_service_account.console[0].email}"
+}

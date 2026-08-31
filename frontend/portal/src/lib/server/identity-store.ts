@@ -2,13 +2,23 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 /**
- * The development identity store.
+ * The development identity store, and nothing else (ADR 0019).
  *
- * A file-backed record of users, sessions and one-time codes, for the local
- * authentication slice. It exists so the entire journey — sign-up,
- * verification, session, sign-out, reset — works and is testable before any
- * Google project does, and its interface is the contract a production store
- * (Identity Platform plus the platform's own user record) implements later.
+ * A file-backed record of users and one-time codes for the offline
+ * authentication slice — the provider that runs with no
+ * `ALGORIK_IDENTITY_PROJECT_ID`, so the whole journey works and is testable
+ * against no Google project at all.
+ *
+ * **Nothing deployed reaches this file.** It used to: the Cloud Run service
+ * set `ALGORIK_IDENTITY_STORE_DIR=/tmp/algorik-identity`, where `/tmp` is
+ * per-instance and in-memory, so a signed-in user was anonymous to the next
+ * instance and every record vanished on scale-to-zero. Worse, the code that
+ * found a record missing rebuilt it with every agreement marked accepted.
+ * Identity Platform now holds the account and its custom claims hold what this
+ * platform decided about it, which is one store rather than one-and-a-half.
+ *
+ * Sessions are no longer here at all. They are sealed claim sets in the cookie
+ * itself, which any instance can verify and none has to remember.
  *
  * Deliberately not a database. One JSON file, written atomically via rename,
  * because the failure that matters in development is a half-written file after
@@ -16,10 +26,9 @@ import { dirname, join } from "node:path";
  * state or the new one, never a torn one.
  *
  * What is stored is already the production shape of *caution*: passwords only
- * as scrypt hashes, one-time codes only as HMACs, session ids in the clear
- * (they are random handles, not secrets derived from anything), and no
- * plaintext credential anywhere. Getting the habits right in the throwaway
- * store is the point — the store is temporary, the shapes it teaches are not.
+ * as scrypt hashes, one-time codes only as HMACs, and no plaintext credential
+ * anywhere. Getting the habits right in the throwaway store is the point — the
+ * store is temporary, the shapes it teaches are not.
  */
 
 export interface StoredUser {
@@ -40,17 +49,6 @@ export interface StoredUser {
   readonly roles: readonly string[];
 }
 
-export interface StoredSession {
-  readonly id: string;
-  readonly userId: string;
-  readonly createdAt: number;
-  readonly expiresAt: number;
-  readonly authenticatedAt: number;
-  readonly method: "development" | "password" | "google";
-  /** Coarse device note for the session list; never a raw user-agent dump. */
-  readonly device: string;
-}
-
 export interface StoredCode {
   /** HMAC of the code, keyed like the session cookie. Never the code. */
   readonly codeHash: string;
@@ -62,11 +60,10 @@ export interface StoredCode {
 
 interface StoreShape {
   users: Record<string, StoredUser>;
-  sessions: Record<string, StoredSession>;
   codes: Record<string, StoredCode>;
 }
 
-const EMPTY: StoreShape = { users: {}, sessions: {}, codes: {} };
+const EMPTY: StoreShape = { users: {}, codes: {} };
 
 function storePath(): string {
   const dir = process.env.ALGORIK_IDENTITY_STORE_DIR?.trim() || join(process.cwd(), ".algorik-dev");
@@ -79,11 +76,10 @@ function load(): StoreShape {
     const parsed = JSON.parse(raw) as StoreShape;
     return {
       users: parsed.users ?? {},
-      sessions: parsed.sessions ?? {},
       codes: parsed.codes ?? {},
     };
   } catch {
-    return { ...EMPTY, users: {}, sessions: {}, codes: {} };
+    return { ...EMPTY, users: {}, codes: {} };
   }
 }
 
@@ -121,35 +117,6 @@ export const identityStore = {
       const existing = state.users[id];
       if (existing) state.users[id] = { ...existing, ...patch };
     });
-  },
-
-  createSession(session: StoredSession): void {
-    update((state) => {
-      state.sessions[session.id] = session;
-    });
-  },
-  session(id: string): StoredSession | null {
-    const found = load().sessions[id];
-    if (!found) return null;
-    if (found.expiresAt <= Date.now()) {
-      // Expiry is enforced at read: a session that outlived its clock is
-      // removed here rather than trusted until a sweeper runs.
-      update((state) => {
-        delete state.sessions[id];
-      });
-      return null;
-    }
-    return found;
-  },
-  deleteSession(id: string): void {
-    update((state) => {
-      delete state.sessions[id];
-    });
-  },
-  sessionsForUser(userId: string): readonly StoredSession[] {
-    return Object.values(load().sessions)
-      .filter((session) => session.userId === userId && session.expiresAt > Date.now())
-      .sort((a, b) => b.createdAt - a.createdAt);
   },
 
   putCode(key: string, code: StoredCode): void {
