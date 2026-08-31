@@ -1,15 +1,24 @@
-# dev's promoted image digests — the file a promotion writes.
+# dev's promoted image digests — written by .github/workflows/deploy.yml.
 #
-# This is the GitOps half of what deploy.yml's render step computes on the
-# fly: one digest per workload, and nothing else. Under ADR 0017 a Kargo
-# stage becomes this file's author; until then it records the digests the
-# last green pipeline deployment applied (run 33339573747, commit 5370279),
-# written so the introduce-phase Argo CD Application has a committed state
-# to diff the cluster against. While both delivery paths run, the pipeline
-# keeps deploying newer commits and this file lags — that drift appearing
-# in Argo's diff view is the migration window working as described, not a
-# fault.
+# Not hand-edited after this commit. Argo CD reads this file and now syncs it
+# automatically, so a digest typed in here by a person deploys those bytes.
+# The pipeline is the sole author so that what runs is always something a
+# numbered run built, scanned, signed and attested.
+#
+# This particular content was reconciled by hand, once, and the reason matters
+# because it is the trap the automated cut-over sets. Until now the pipeline
+# applied with kubectl and this file only *recorded* — so it lagged, exactly
+# as its previous header said it would. It named the digests of run
+# 33339573747 while the cluster ran three entirely different images. Enabling
+# automated sync against that file would not have been a no-op: Argo CD would
+# have honoured it and rolled all three workloads back to builds from days
+# earlier, as a deployment nobody asked for and nothing announced.
+#
+# So the file was reconciled to what the cluster actually ran before the
+# automation was turned on. Those digests are known-good rather than merely
+# current: Binary Authorization admitted the pods running them, and it admits
+# nothing that the attestor has not signed.
 images:
-  api: sha256:db8becf3b83e196e36fc2c1888b9b460ce2805a23c0e3a409b21ea669af8bc16
-  deepbrain: sha256:ef15489f2b623d02a3d257cd530dc0f1c14db7ea1d6f95f3659f840b2b6017c5
-  fastbrain: sha256:5c85e0b1d6741aa684e0691d32b4d34e4e8a5be5f3900483dab4219636725ced
+  api: sha256:f66c1578f5cb80918db30d9520d5cdbfe16b3fc2877fefaf1f6ee9e0802a45e3
+  deepbrain: sha256:319d4eb32dfcc66cf19485281e3ae012087c03698755ccd6eba1279b406bfb3e
+  fastbrain: sha256:1daf48d4ac04042f5ca3abbf809248cec9b0a646b1a63d3d3b1565ca305bcd87

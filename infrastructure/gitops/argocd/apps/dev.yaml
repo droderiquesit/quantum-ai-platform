@@ -1,13 +1,28 @@
 # The dev Application: this repository's qip chart, reconciled by the Argo CD
 # in the cluster it describes.
 #
-# Sync is deliberately manual — syncPolicy carries no `automated` block — for
-# the length of ADR 0017's migration window. Two unattended writers to the
-# qip namespace (the pipeline's kubectl and an auto-syncing Argo) would each
-# undo the other on every disagreement; during the window Argo only *reports*
-# drift between this chart at the pinned revision and the cluster, which is
-# the equivalence evidence the cut-over (retiring the kubectl path) requires.
-# Turning on automated sync is that cut-over's commit, not this one.
+# Sync is automatic. This is the cut-over commit the previous version of this
+# comment said would turn it on: deploy.yml no longer applies anything, so
+# Argo CD is the only writer to the qip namespace and the objection to two
+# unattended writers undoing each other no longer holds.
+#
+# `prune` and `selfHeal` are both on, and each earns its risk. Without prune,
+# deleting a template from the chart leaves the object running in the cluster
+# for ever, and the repository stops being an answer to "what is deployed".
+# Without selfHeal, a `kubectl edit` outlives the next sync, which is the
+# specific failure the composition roots already guard against for autonomy —
+# `kubectl edit configmap` is named in .claude/rules/01-security-and-safety.md
+# as the thing the second layer exists to catch.
+#
+# The trap this arrangement sets, recorded because it nearly fired: turning
+# automation on makes values-dev-images.yaml authoritative *immediately*.
+# While the kubectl path ran, that file only recorded and was allowed to lag,
+# and it did — it named run 33339573747's digests while the cluster ran three
+# different images. Enabling sync against it would have rolled all three
+# workloads back to older builds, silently, as the first act of the new
+# system. The file was reconciled to the running digests in the same commit
+# that turned this on. Any future environment gets the same treatment before
+# its Application is automated.
 #
 # Applied by hand like the install itself (see ../README.md), committed so
 # the Application's definition has the same review trail as everything else
@@ -47,6 +62,13 @@ spec:
     server: https://kubernetes.default.svc
     namespace: qip
   syncPolicy:
+    automated:
+      # Delete what the chart no longer declares, so the repository is the
+      # whole answer rather than most of it.
+      prune: true
+      # Revert what was changed by hand. A console edit that survives is a
+      # cluster whose state no commit explains.
+      selfHeal: true
     syncOptions:
       # The namespace is the chart's own resource; Argo must not invent it.
       - CreateNamespace=false

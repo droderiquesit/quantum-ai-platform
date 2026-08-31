@@ -77,6 +77,11 @@ env:
   # The automatic path goes to dev and nowhere else.
   TARGET_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
   DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+  # The branch the promotion lands on. Distinct from DEPLOY_SHA, which is a
+  # commit and is checked out detached: the digests must be committed to the
+  # branch's tip, not to whatever it pointed at when ci finished, or the
+  # promotion is written onto an ancestor and Argo CD never sees it.
+  DEPLOY_BRANCH: ${{ github.event.workflow_run.head_branch || github.ref_name }}
 
 jobs:
   # The gate. Everything else needs this job, so a failure here stops the
@@ -342,12 +347,19 @@ jobs:
     # rules are configured, which is why `prod` names one at all.
     environment: ${{ inputs.environment || 'dev' }}
     permissions:
-      contents: read
+      # write, because the promotion IS the deployment now: this job commits
+      # the digests it built to the branch and Argo CD applies them. Read
+      # would leave the pipeline able to build an image and unable to deploy
+      # it.
+      contents: write
       id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.DEPLOY_SHA }}
+          # The promotion step needs the branch as well as the commit, and a
+          # shallow clone cannot rebase onto it.
+          fetch-depth: 0
 
       # Everything this job authenticates with is derived from the
       # environment's committed tfvars, not from repository variables.
@@ -441,88 +453,155 @@ jobs:
       # and its venue ranges, and bringing one up is a deliberate act with a
       # runbook — docs/operations/deploying-an-edge-cell.md — rather than
       # something a pipeline does unattended to a workload that trades.
-      - name: render the manifests
+      # The promotion. This workflow no longer applies anything.
+      #
+      # It used to `kubectl apply --server-side -f rendered/`, rendered from
+      # infrastructure/kubernetes/base/. Argo CD applies the chart at
+      # infrastructure/helm/qip, and for a while both ran — ADR 0017 calls that
+      # the migration window. Two writers to one cluster is survivable only
+      # while the two sources say the same thing, and on 2026-08-31 they stopped:
+      # `qip-api-console` and `allow-api-ingress-from-console` were added to the
+      # chart and not to the kustomize tree, so the next automatic run would
+      # have applied a manifest set that has never heard of the console route,
+      # contesting field ownership with Argo CD over every object they share.
+      # Nothing enforced the equivalence the chart's own header claims — there
+      # is no parity test — so the divergence would have been found by a
+      # cluster behaving oddly rather than by a gate.
+      #
+      # So the pipeline's job stops at the registry. It builds, scans, signs and
+      # attests, then records the digests it produced; Argo CD is the only thing
+      # that writes to the cluster. That is what makes the cluster's state
+      # answerable from the repository alone, which is the whole claim of
+      # ADR 0017.
+      - name: record the promoted digests
         run: |
           set -euo pipefail
           prefix="${{ steps.identity.outputs.region }}-docker.pkg.dev/${{ steps.identity.outputs.project }}/qip-${TARGET_ENVIRONMENT}"
-          mkdir -p rendered
-          for manifest in infrastructure/kubernetes/base/*.yaml; do
-            case "$(basename "$manifest")" in
-              edge-cell.yaml) continue ;;
-            esac
-            sed \
-              -e "s#IMAGE_PREFIX#${prefix}#g" \
-              -e "s#ENVIRONMENT#${TARGET_ENVIRONMENT}#g" \
-              -e "s#PROJECT#${{ steps.identity.outputs.project }}#g" \
-              "$manifest" > "rendered/$(basename "$manifest")"
+          values="infrastructure/helm/qip/values-${TARGET_ENVIRONMENT}-images.yaml"
+
+          # The workloads the chart names, read out of the chart rather than
+          # listed here. Every template pulls its digest from a
+          # `.Values.images.<key>` and builds its reference as
+          # `<prefix>/qip-<key>@<digest>`, so this set is exactly the set the
+          # render will demand. A workload added to the chart and forgotten
+          # here would otherwise keep whatever digest this file already carried
+          # — silently running the previous build of one service beside the new
+          # build of the others, which is the kind of skew that is diagnosed
+          # from behaviour rather than from a version.
+          keys="$(grep -ohE '\.Values\.images\.[a-z0-9]+' \
+            infrastructure/helm/qip/templates/*.yaml | sed 's/.*\.//' | sort -u)"
+          [ -n "${keys}" ] || { echo "no images.* keys found in the chart templates" >&2; exit 1; }
+
+          {
+            echo "# dev's promoted image digests — written by .github/workflows/deploy.yml."
+            echo "#"
+            echo "# Not hand-edited. Argo CD reads this file, so a digest typed in here"
+            echo "# by a person deploys those bytes; the pipeline is the only author so"
+            echo "# that what runs is always something that was built, scanned, signed"
+            echo "# and attested by a run whose number is below."
+            echo "#"
+            echo "# run ${{ github.run_id }}, commit ${{ github.sha }}"
+            echo "images:"
+          } > "${values}.new"
+
+          for key in ${keys}; do
+            # By digest, never by tag. The attestation names bytes, and Binary
+            # Authorization refuses to evaluate a tag reference at all — the
+            # failure is "Expected digest with sha256 scheme, but got tag or
+            # malformed digest", at admission, on every pod. Reading the digest
+            # back with the same lookup the sign step used is what makes the
+            # reference deployed the reference attested, so a tag moved between
+            # signing and promoting deploys nothing rather than unsigned bytes.
+            digest="$(gcloud artifacts docker images describe \
+              "${prefix}/qip-${key}:${DEPLOY_SHA}" \
+              --format='value(image_summary.digest)')"
+            [ -n "${digest}" ] || { echo "no digest for qip-${key}:${DEPLOY_SHA}" >&2; exit 1; }
+            echo "  ${key}: ${digest}" >> "${values}.new"
           done
-          # The binaries to resolve are read off the rendered image lines
-          # rather than kept as a list here, which would be a second copy of
-          # what the manifests already say, one workload rename away from
-          # resolving a digest for the wrong image.
-          for binary in $(sed -n "s#^ *image: ${prefix}/\([a-z0-9-]*\):IMAGE_TAG\$#\1#p" rendered/*.yaml | sort -u); do
-            digest=$(gcloud artifacts docker images describe \
-              "${prefix}/${binary}:${DEPLOY_SHA}" \
-              --format='value(image_summary.digest)')
-            if [ -z "${digest}" ]; then
-              echo "the registry reports no digest for ${binary}:${DEPLOY_SHA}." >&2
-              exit 1
-            fi
-            sed -i "s#image: ${prefix}/${binary}:IMAGE_TAG\$#image: ${prefix}/${binary}@${digest}#" rendered/*.yaml
-          done
-          # Nothing may reach the cluster with a placeholder still in it. A
-          # `cidr: VENUE_CIDR` would be rejected by the API server; a
-          # `PROJECT` in a workload identity annotation would not be, and would
-          # produce a pod that cannot authenticate. IMAGE_TAG doubles as the
-          # check on the digest pass: an image line it failed to match fails
-          # here instead of reaching the admission webhook.
-          ! grep -RnE 'IMAGE_PREFIX|IMAGE_TAG|PROJECT|ENVIRONMENT|CELL_ID|CELL_REGION|CELL_VENUES|VENUE_CIDR|VENUE_PORT' rendered
 
-      # A dry run against the live API server first. It catches a manifest the
-      # cluster will reject — an admission policy, a bad field — without having
-      # applied half of it.
-      # The namespace goes first, for real: a server-side dry-run refuses
-      # every namespaced object whose namespace does not exist yet, and a
-      # dry-run cannot create one. Creating a namespace is idempotent and
-      # carries no workload, so applying it before the check costs nothing
-      # and unblocks the check for everything that lives inside it.
-      - name: ensure the namespace exists
-        run: kubectl apply --server-side -f rendered/namespace.yaml
+          mv "${values}.new" "${values}"
+          cat "${values}"
 
-      - name: check the manifests against the cluster
-        run: kubectl apply --server-side --dry-run=server -f rendered/
-
-      - name: apply
-        run: kubectl apply --server-side -f rendered/
-
-      # An apply that returns is not a deployment that worked. This is the step
-      # that fails when the image does not start.
-      #
-      # The list is every Deployment the step above applied and nothing else.
-      # `qip-edge-CELL_ID` is not on it because `edge-cell.yaml` was skipped,
-      # and `kubectl rollout status` against a Deployment nobody created waits
-      # until it times out rather than failing usefully. The correspondence is
-      # checked by `the_rollout_waits_on_every_workload_the_pipeline_applies`,
-      # so adding a manifest without adding it here fails the test suite rather
-      # than producing a pipeline that reports success for a workload it never
-      # looked at.
-      #
-      # Stated because it will be met on the first real run: two of these three
-      # do not serve yet. `qip-fastbrain` and `qip-deepbrain` return from
-      # `fn run`, so their containers exit and are restarted, and this step is
-      # expected to time out against them until the serving loops land. That is
-      # a known blocking gap, recorded with the others in
-      # docs/operations/external-dependencies.md — not something to work around
-      # by dropping them from this list.
-      # Each entry is kind-qualified. `kubectl rollout status` needs the kind,
-      # and a workload converted from a Deployment to a StatefulSet — which is
-      # what any workload keeping a journal becomes — would otherwise leave
-      # this step waiting on a Deployment that does not exist, until it times
-      # out, reporting a failure that is not the real one.
-      - name: wait for the rollout
+      - name: commit the promotion
         run: |
           set -euo pipefail
-          for workload in deployment/qip-api deployment/qip-fastbrain deployment/qip-deepbrain; do
-            kubectl rollout status "${workload}" \
-              --namespace qip --timeout=5m
+          values="infrastructure/helm/qip/values-${TARGET_ENVIRONMENT}-images.yaml"
+
+          # Carry the file across to the branch tip. The checkout is detached
+          # at DEPLOY_SHA, and committing there would write the promotion onto
+          # an ancestor: Argo CD tracks the branch, so it would never see it.
+          promoted="$(mktemp)"
+          cp "${values}" "${promoted}"
+          git config user.name "algorik-deploy[bot]"
+          git config user.email "algorik-deploy@users.noreply.github.com"
+          git fetch origin "${DEPLOY_BRANCH}"
+          git checkout -B "${DEPLOY_BRANCH}" "origin/${DEPLOY_BRANCH}"
+          cp "${promoted}" "${values}"
+          if git diff --quiet -- "${values}"; then
+            echo "the branch tip already carries these digests; nothing to promote"
+            exit 0
+          fi
+          git add "${values}"
+
+          # `[skip ci]` is load-bearing, not tidiness. This workflow is
+          # triggered by ci completing, and ci is triggered by a push. Without
+          # it, the commit below starts ci, which starts this workflow, which
+          # commits again — a loop that builds and promotes for ever off one
+          # merge.
+          git commit -m "Promote ${TARGET_ENVIRONMENT} to the digests run ${{ github.run_id }} built [skip ci]"
+
+          # Another agent or a person may have pushed while the images job ran.
+          # Rebase rather than force: the branch is shared, and a force-push
+          # here would discard whatever landed in between.
+          for attempt in 1 2 3 4; do
+            git pull --rebase origin "${DEPLOY_BRANCH}" && git push origin "HEAD:${DEPLOY_BRANCH}" && exit 0
+            echo "push attempt ${attempt} failed; retrying"
+            sleep $((attempt * 4))
+          done
+          echo "could not push the promotion after four attempts" >&2
+          exit 1
+
+      # An applied manifest is not a deployment that worked, and neither is a
+      # committed digest. This is the step that fails when the image does not
+      # start.
+      #
+      # It waits for the digest to appear on the workload before it waits for
+      # the rollout, because Argo CD's sync is asynchronous: `kubectl rollout
+      # status` run immediately would observe the *previous* ReplicaSet,
+      # already healthy, and report success for a deployment that had not begun.
+      #
+      # The list is every Deployment the chart carries and nothing else.
+      # `qip-edge-CELL_ID` is not on it — bringing up a cell is a deliberate act
+      # with a runbook — and `kubectl rollout status` against a Deployment
+      # nobody created waits until it times out rather than failing usefully.
+      # The correspondence is checked by
+      # `the_rollout_waits_on_every_workload_the_pipeline_applies`.
+      #
+      # Stated because it will be met: `qip-fastbrain` is currently OOMKilled
+      # roughly hourly on an unbounded audit trail, so this step is expected to
+      # time out against it until that is fixed. That is a known defect, not
+      # something to work around by dropping it from this list.
+      - name: wait for Argo CD to converge the cluster on those digests
+        run: |
+          set -euo pipefail
+          values="infrastructure/helm/qip/values-${TARGET_ENVIRONMENT}-images.yaml"
+          for workload in qip-api qip-fastbrain qip-deepbrain; do
+            want="$(sed -n "s#^  ${workload#qip-}: \(sha256:[0-9a-f]*\)\$#\1#p" "${values}")"
+            [ -n "${want}" ] || { echo "no promoted digest for ${workload}" >&2; exit 1; }
+
+            echo "waiting for ${workload} to carry ${want}"
+            for attempt in $(seq 1 60); do
+              running="$(kubectl -n qip get "deployment/${workload}" \
+                -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
+              case "${running}" in
+                *"${want}") break ;;
+              esac
+              if [ "${attempt}" -eq 60 ]; then
+                echo "${workload} still runs ${running:-nothing} after 5m; Argo CD has not synced this promotion" >&2
+                exit 1
+              fi
+              sleep 5
+            done
+
+            kubectl rollout status "deployment/${workload}" --namespace qip --timeout=5m
           done

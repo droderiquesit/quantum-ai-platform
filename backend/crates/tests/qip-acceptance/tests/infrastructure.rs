@@ -2190,24 +2190,14 @@ fn image_matrix() -> Vec<String> {
     binaries
 }
 
-/// The manifests the deploy pipeline renders but deliberately does not apply.
+/// The templates the chart carries but dev does not deploy.
 ///
-/// Read off the `case` in the render step, so a manifest that stops being
-/// skipped stops being exempt here in the same commit.
-fn manifests_the_pipeline_skips() -> Vec<String> {
-    let deploy = read(".github/workflows/deploy.yml");
-    let skipped: Vec<String> = deploy
-        .lines()
-        .filter_map(|line| line.trim().strip_suffix(") continue ;;"))
-        .map(str::to_string)
-        .collect();
-    assert!(
-        !skipped.is_empty(),
-        "no manifest is skipped by the render step. Either every manifest is \
-         applied now — in which case the rollout check must wait on all of \
-         them — or the `case` has been rewritten and this walk reads nothing."
-    );
-    skipped
+/// The edge cell is the only one, and it is gated on a value rather than
+/// skipped by a pipeline: bringing up a cell needs a cell id, a region and a
+/// set of venue ranges, and it is a deliberate act with a runbook rather than
+/// something an unattended sync does to a workload that trades.
+fn templates_dev_does_not_deploy() -> Vec<String> {
+    vec!["edge-cell.yaml".to_string()]
 }
 
 /// The workloads the pipeline waits for a rollout of.
@@ -2230,21 +2220,52 @@ fn rollout_workloads() -> Vec<String> {
         .collect()
 }
 
-/// Every workload the pipeline actually applies, by workload name.
-fn workloads_the_pipeline_applies() -> Vec<String> {
-    let skipped = manifests_the_pipeline_skips();
-    let applied: Vec<String> = workload_documents()
-        .into_iter()
-        .filter(|(path, _)| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_none_or(|name| !skipped.iter().any(|skip| skip == name))
-        })
-        .map(|(_, document)| first_value(&document, "name").expect("a Deployment is named"))
-        .collect();
+/// Every workload that actually gets deployed, by workload name.
+///
+/// Read out of the Helm chart, because the chart is what Argo CD applies.
+/// It used to be read out of `deploy.yml`'s render step, which was correct
+/// while the pipeline applied with kubectl and is not any more: the pipeline
+/// now stops at the registry and commits digests, so a check that reads it
+/// would be asking the wrong file what is deployed.
+fn workloads_deployed_to_dev() -> Vec<String> {
+    let excluded = templates_dev_does_not_deploy();
+    let mut applied: Vec<String> = Vec::new();
+    for path in files_with_extension("infrastructure/helm/qip/templates", "yaml") {
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("a template has a name")
+            .to_string();
+        if excluded.contains(&name) {
+            continue;
+        }
+        let content = std::fs::read_to_string(&path).expect("readable");
+        // A chart template is not parseable YAML — it carries Go template
+        // actions — so the Deployment's name is matched textually. The names
+        // in this chart are literals rather than expressions, which is what
+        // makes that sound; a templated name would not match and would fail
+        // the count assertion below rather than passing silently.
+        let mut in_deployment = false;
+        for line in content.lines() {
+            if line.trim() == "kind: Deployment" {
+                in_deployment = true;
+            } else if in_deployment {
+                if let Some(rest) = line.trim().strip_prefix("name: ") {
+                    let candidate = rest.trim().trim_matches('"');
+                    if candidate.starts_with("qip-") && !candidate.contains("{{") {
+                        applied.push(candidate.to_string());
+                        in_deployment = false;
+                    }
+                }
+            }
+        }
+    }
+    applied.sort();
+    applied.dedup();
     assert!(
         applied.len() >= 3,
-        "only {applied:?} would be applied; the manifest walk is not reaching them"
+        "only {applied:?} were found in the chart; the template walk is not \
+         reaching them and every check built on it is asserting nothing"
     );
     applied
 }
@@ -2434,7 +2455,7 @@ fn the_rollout_waits_on_every_workload_the_pipeline_applies() {
     // `rollout status` wait on a Deployment nobody created until it times out,
     // which fails the deployment for a reason that is not the real one.
     let waited = rollout_workloads();
-    let applied = workloads_the_pipeline_applies();
+    let applied = workloads_deployed_to_dev();
 
     for workload in &applied {
         assert!(
@@ -2455,26 +2476,56 @@ fn the_rollout_waits_on_every_workload_the_pipeline_applies() {
 }
 
 #[test]
-fn every_manifest_is_somewhere_something_applies_it() {
-    // `infrastructure/kubernetes/overlays` was an empty directory nothing
-    // referenced — no kustomization, no pipeline step, no runbook. Empty it was
-    // harmless. With a manifest in it, it would have been a set of resources a
-    // reviewer reads as deployed and that nothing applies.
+fn nothing_reads_as_deployed_that_nothing_deploys() {
+    // The failure this prevents: a directory of manifests a reviewer takes for
+    // the running system, that nothing applies. It began as a guard on an
+    // empty `infrastructure/kubernetes/overlays` — harmless while empty, a lie
+    // the moment somebody put a manifest in it.
+    //
+    // On 2026-08-31 the same failure arrived at a hundred times the size.
+    // deploy.yml stopped applying `infrastructure/kubernetes/base/*.yaml`
+    // because Argo CD applies the Helm chart instead, which left that whole
+    // directory in exactly the state this test exists to forbid. It is kept —
+    // 22 checks read it as the description of the platform's Kubernetes shape
+    // — so what it now needs is to say plainly that it is not what runs.
+    //
+    // The marker is required rather than assumed. A comment somebody may or
+    // may not have written is not a guarantee; a test that fails without it
+    // is.
+    // Comments are stripped before the match, and that is not fussiness. The
+    // first version of this check read the whole file and failed on the
+    // comment in deploy.yml that explains why the apply was removed — a test
+    // that forbids describing the thing it forbids. `#` opens a comment in
+    // both YAML and the shell inside a `run:` block, so one rule covers both.
     let deploy = read(".github/workflows/deploy.yml");
+    let commands: String = deploy
+        .lines()
+        .map(|line| line.split('#').next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
-        deploy.contains("for manifest in infrastructure/kubernetes/base/*.yaml"),
-        "the pipeline no longer renders infrastructure/kubernetes/base/*.yaml, \
-         so this check is looking at the wrong directory"
+        !commands.contains("kubectl apply"),
+        "deploy.yml applies to the cluster again. Argo CD applies the chart; \
+         two unattended writers to one namespace undo each other on every \
+         disagreement, and the divergence that made this a real incident was \
+         invisible until the cluster behaved oddly."
     );
 
-    let skipped = manifests_the_pipeline_skips();
+    let readme = read("infrastructure/kubernetes/base/RETIRED.md");
+    assert!(
+        readme.contains("infrastructure/helm/qip"),
+        "infrastructure/kubernetes/base/RETIRED.md must name the chart that \
+         replaced it, or a reader has no way to find what actually deploys"
+    );
+
+    let skipped = templates_dev_does_not_deploy();
     let runbooks: String = files_with_extension("docs/operations", "md")
         .iter()
         .filter_map(|path| std::fs::read_to_string(path).ok())
         .collect();
 
     let mut checked = 0usize;
-    for path in files_with_extension("infrastructure/kubernetes", "yaml") {
+    for path in files_with_extension("infrastructure/helm/qip/templates", "yaml") {
         let name = path
             .file_name()
             .and_then(|name| name.to_str())
@@ -2482,9 +2533,9 @@ fn every_manifest_is_somewhere_something_applies_it() {
             .to_string();
         assert!(
             path.parent()
-                .is_some_and(|parent| parent.ends_with("infrastructure/kubernetes/base")),
-            "{} is a manifest outside the one directory the pipeline renders. \
-             Nothing applies it.",
+                .is_some_and(|parent| parent.ends_with("infrastructure/helm/qip/templates")),
+            "{} is a template outside the directory the Argo CD Application \
+             points at. Nothing applies it.",
             path.display()
         );
         if skipped.contains(&name) {
