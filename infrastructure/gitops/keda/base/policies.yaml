@@ -1,0 +1,189 @@
+# What KEDA may reach and what may reach it. Upstream ships no network
+# policies at all; under this platform's posture that means writing them is
+# part of adopting the component, not an optional hardening pass.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: keda
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# DNS, in the two-rule form the argocd namespace proved: the selector rule
+# for a cluster without NodeLocal DNSCache, and the kube-dns service VIP
+# (service_cidr's tenth address) for this cluster, where the cache's
+# NOTRACK interception keeps the VIP as the destination no selector can
+# match. See infrastructure/kubernetes/base/namespace.yaml for the full
+# story, including the probe that proved it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: keda
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 10.8.0.10/32
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Every KEDA pod's whole job is the Kubernetes API: the operator watches
+# ScaledObjects and writes the HPAs they own, the metrics adapter answers
+# the aggregation layer and must TokenReview its callers, and the webhook
+# server reconciles its own certificate secret. So the namespace-wide
+# egress is the control plane and nothing else. Deliberately absent: any
+# route to the internet or to workload namespaces. Every event-driven
+# scaler someone eventually configures — a queue, a broker, an HTTP
+# endpoint — names a target this posture does not reach, and the honest
+# way to add one is a rule here naming that target in the same commit as
+# the ScaledObject, not a wildcard now that lets a mistyped trigger URL
+# probe the VPC from inside this namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-control-plane-egress
+  namespace: keda
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 172.16.0.0/28
+      ports:
+        - protocol: TCP
+          port: 443
+---
+# The API server calls the admission webhook on 9443 — the Service says
+# 443 but policy is enforced post-DNAT against the container port — to
+# validate ScaledObjects, ScaledJobs and TriggerAuthentications. In this
+# private cluster that call arrives through the konnectivity tunnel — pods
+# in kube-system — with the master range kept alongside for the direct
+# path some GKE versions use. Both sources, one port. This one matters
+# more than a usual webhook: upstream ships `failurePolicy: Ignore`, so a
+# blocked call does not fail loudly, it silently waves through the invalid
+# ScaledObject the webhook exists to refuse.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-webhook-ingress
+  namespace: keda
+spec:
+  podSelector:
+    matchLabels:
+      app: keda-admission-webhooks
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+        - ipBlock:
+            cidr: 172.16.0.0/28
+      ports:
+        - protocol: TCP
+          port: 9443
+---
+# The aggregation layer's leg of external metrics. The API server proxies
+# every `external.metrics.k8s.io/v1beta1` request — which is how an HPA
+# managed by a ScaledObject reads its trigger value — to the adapter's
+# 6443, the port `--secure-port` binds and the Service's 443 targets. Same
+# two sources as the webhook: konnectivity from kube-system, master range
+# for the direct path. Without this rule the APIService goes Unavailable
+# and every external-metric HPA in the cluster reports FailedGetExternalMetric
+# instead of scaling — a KEDA that deploys green and does nothing.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-metrics-apiserver-ingress
+  namespace: keda
+spec:
+  podSelector:
+    matchLabels:
+      app: keda-metrics-apiserver
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+        - ipBlock:
+            cidr: 172.16.0.0/28
+      ports:
+        - protocol: TCP
+          port: 6443
+---
+# The adapter holds no scaler state of its own: every metric value it
+# serves, it fetches over gRPC from the operator's MetricsService on 9666
+# (the `metricsservice` port on the keda-operator Service). Default-deny
+# severs that hop in both directions, so it takes both halves below —
+# egress from the adapter, ingress to the operator, each scoped to the
+# other's pods rather than the namespace. Miss either and the failure is
+# the quiet kind: the adapter answers the aggregation layer with errors
+# while its own /readyz stays green, because readiness does not exercise
+# the gRPC path.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-adapter-to-operator-egress
+  namespace: keda
+spec:
+  podSelector:
+    matchLabels:
+      app: keda-metrics-apiserver
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: keda-operator
+      ports:
+        - protocol: TCP
+          port: 9666
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-operator-from-adapter-ingress
+  namespace: keda
+spec:
+  podSelector:
+    matchLabels:
+      app: keda-operator
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: keda-metrics-apiserver
+      ports:
+        - protocol: TCP
+          port: 9666

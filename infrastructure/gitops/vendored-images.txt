@@ -42,6 +42,15 @@ quay.io/jetstack/cert-manager-cainjector@sha256:ccf6b919ec0500745a47a910118f834f
 # acknowledging findings in a component nothing uses.
 ghcr.io/akuity/kargo@sha256:e1028c697953736421d37abb9266faf6e6876e8f5982811862b38022a9c2fb6f vendor/kargo v1.11.2
 
+# KEDA v2.20.2 — event-driven workload autoscaling. All three scanned
+# 0 CRITICAL at adoption (each carries ~21-23 fixable HIGHs in the Go
+# toolchain awaiting upstream's rebuild — the standing weather for Go
+# images, reported non-blocking by the gate). Digests are the multi-arch
+# indexes for the 2.20.2 tags, resolved 2026-08-31.
+ghcr.io/kedacore/keda@sha256:fe74c7b8849586a67ad2201bcb89e7f5ac221ff90399ecaa8fd28427f1ef11e6 vendor/keda 2.20.2
+ghcr.io/kedacore/keda-metrics-apiserver@sha256:27286536a8a775aeeee37a7e343f8ecebb27ebf680ee1181a4f99e82eefb253b vendor/keda-metrics-apiserver 2.20.2
+ghcr.io/kedacore/keda-admission-webhooks@sha256:41f74102aba7959c6e8d08b433ab8a5fd6cae7c5646c78f7fe3de40a52df3439 vendor/keda-admission-webhooks 2.20.2
+
 # Redis, Argo CD's cache. Deliberately NOT the 8.2.3 its v3.5.2 manifests
 # pin: that image sits on a stale alpine 3.22.3 whose OpenSSL carries a
 # fixable CRITICAL (CVE-2026-31789), while 8.4.2-alpine's rebuild on 3.22.4
