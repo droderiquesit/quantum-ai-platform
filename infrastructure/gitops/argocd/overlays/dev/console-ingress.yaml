@@ -1,0 +1,65 @@
+# dev's published address for the Argo CD console.
+#
+# The hostname embeds the reserved address, and both come from Terraform —
+# `terraform output console_url` and `console_address_name` in
+# modules/console-ingress. They are written here as literals for the same
+# reason the Identity Platform authorized domains are: a manifest cannot read
+# Terraform, and a value invented rather than copied from a real output is the
+# failure that produces a certificate for a name nothing resolves.
+#
+# nip.io resolves any address embedded in a name back to that address, which
+# is what makes a Google-managed certificate possible before algorik.ai is
+# delegated: the certificate authority's only question is whether the name
+# points at this load balancer, and by construction it does. When the real
+# domain lands, this file changes to a name in it and nothing else about the
+# arrangement moves.
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: argocd-console
+  namespace: argocd
+spec:
+  domains:
+    - argocd.136-68-65-168.nip.io
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: argocd-console
+  namespace: argocd
+  annotations:
+    # The reserved address, by name. Reserved rather than ephemeral because
+    # the certificate is issued for a hostname derived from the address: an
+    # address that changed on recreation would invalidate the certificate
+    # naming it, and the console would fail closed with a TLS error nobody
+    # could place.
+    kubernetes.io/ingress.global-static-ip-name: qip-dev-console
+    networking.gke.io/managed-certificates: argocd-console
+    # External Application Load Balancer — the only class that speaks IAP.
+    kubernetes.io/ingress.class: gce
+    # Plaintext is refused rather than redirected. A console reachable over
+    # HTTP even for one redirect is a console whose session cookie can be
+    # asked for in clear text.
+    networking.gke.io/v1beta1.FrontendConfig: argocd-console
+spec:
+  rules:
+    - host: argocd.136-68-65-168.nip.io
+      http:
+        paths:
+          - path: /*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: argocd-server
+                port:
+                  name: https
+---
+apiVersion: networking.gke.io/v1beta1
+kind: FrontendConfig
+metadata:
+  name: argocd-console
+  namespace: argocd
+spec:
+  redirectToHttps:
+    enabled: true
+    responseCodeName: MOVED_PERMANENTLY_DEFAULT

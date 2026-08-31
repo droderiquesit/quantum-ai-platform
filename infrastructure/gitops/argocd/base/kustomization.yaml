@@ -18,7 +18,15 @@ resources:
   - namespace.yaml
   - upstream/install-v3.5.2.yaml
   - egress-policies.yaml
+  # The load balancer's half: how it reaches argocd-server and who IAP lets
+  # through. The address, certificate and Ingress are per-environment and
+  # live in the overlays.
+  - console-backend.yaml
 patches:
+  # The Service annotations that put argocd-server behind the load
+  # balancer, kept out of the vendored upstream file so an upgrade cannot
+  # drop them.
+  - path: console-service-patch.yaml
   - patch: |-
       $patch: delete
       apiVersion: apps/v1

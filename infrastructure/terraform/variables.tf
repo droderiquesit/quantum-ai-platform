@@ -743,3 +743,15 @@ variable "identity_mfa_state" {
   type        = string
   default     = "ENABLED"
 }
+
+variable "enable_console_ingress" {
+  description = "Publish Argo CD and Kargo on a real HTTPS URL behind Identity-Aware Proxy. Off by default: it is the one route into a cluster built to have none."
+  type        = bool
+  default     = false
+}
+
+variable "console_operators" {
+  description = "IAM members permitted through Identity-Aware Proxy to the delivery consoles (user:…, group:…). Empty means the URL exists and nobody may pass it, which is the correct default."
+  type        = list(string)
+  default     = []
+}

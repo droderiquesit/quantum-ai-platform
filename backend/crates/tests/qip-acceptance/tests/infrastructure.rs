@@ -1601,17 +1601,50 @@ fn the_image_registry_is_not_world_readable_and_nothing_can_delete_from_it() {
     );
 
     // World-readable, in either of the two ways an IAM binding can be.
+    //
+    // A `validation` block is skipped, and only a `validation` block. It is
+    // the one construct in HCL that can name these principals without
+    // granting anything — `console-ingress/variables.tf` names both in a
+    // condition that *refuses* an operator list containing either, which is
+    // the guarantee this test exists to protect rather than a breach of it.
+    // Scanning the whole file for the bare token could not tell the two
+    // apart, and read the refusal as the grant.
+    //
+    // Everything outside a validation block is still checked in full, so a
+    // grant laundered through a `locals` value is caught exactly as before.
+    let mut scanned = 0usize;
     for path in files_with_extension("infrastructure/terraform", "tf") {
         let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
-        for member in ["allUsers", "allAuthenticatedUsers"] {
-            assert!(
-                !content.contains(member),
-                "{} grants a role to {member}, which tells an attacker exactly \
-                 what is running and lets them read it",
-                path.display()
-            );
+        let mut validation_depth: usize = 0;
+        for line in content.lines() {
+            let opened = line.matches('{').count();
+            let closed = line.matches('}').count();
+            let entering =
+                validation_depth == 0 && line.trim_start().starts_with("validation") && opened > 0;
+            if entering || validation_depth > 0 {
+                validation_depth += opened;
+                validation_depth -= closed.min(validation_depth);
+                continue;
+            }
+            scanned += 1;
+            for member in ["allUsers", "allAuthenticatedUsers"] {
+                assert!(
+                    !line.contains(member),
+                    "{} grants a role to {member}, which tells an attacker exactly \
+                     what is running and lets them read it",
+                    path.display()
+                );
+            }
         }
     }
+
+    // The premise: lines were actually read. A path that silently found no
+    // files would satisfy every assertion above by never running one.
+    assert!(
+        scanned > 1000,
+        "only {scanned} lines of Terraform were scanned, so this test proved \
+         nothing about the ones it did not read"
+    );
 }
 
 // --- the edge-cell module ---------------------------------------------------

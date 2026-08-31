@@ -136,3 +136,18 @@ identity_authorized_domains = [
   "algorik-portal-rgxpsss2lq-uk.a.run.app",
   "algorik-landing-rgxpsss2lq-uk.a.run.app",
 ]
+
+# Publish the delivery consoles on a real URL, behind Identity-Aware Proxy.
+#
+# The desk asked for an address it can open rather than a tunnel it has to
+# start. IAP is what makes that safe to say yes to: the request is
+# authenticated against Google identity at Google's edge, so an
+# unauthenticated visitor never reaches Argo CD's login page, and who may
+# pass is the list below rather than whoever holds a password.
+enable_console_ingress = true
+
+# The desk. A group would be better than a person once there is more than
+# one operator — membership then changes without an apply.
+console_operators = [
+  "user:droderiques.it@gmail.com",
+]

@@ -149,6 +149,7 @@ module "services" {
   enable_spanner                 = var.enable_spanner
   enable_vertex_ai               = var.enable_vertex_ai
   enable_security_command_center = var.enable_security_command_center
+  enable_console_ingress         = var.enable_console_ingress
 
   # False. Disabling an API on destroy does not revoke access, it deletes the
   # resources under it — including ones this configuration never created. See
@@ -515,6 +516,24 @@ module "binary_authorization" {
   # modules/binaryauthorization/OUT-OF-BAND.md says what a stronger
   # arrangement would be and why this repository cannot hold it.
   ci_service_account = module.cicd.service_account_email
+}
+
+# The delivery consoles on a real URL, behind an identity check.
+#
+# Off unless an environment turns it on: this is the only route into a cluster
+# deliberately built to have none, so it is a decision recorded per
+# environment rather than a default. See the module for why the identity check
+# is Identity-Aware Proxy rather than the consoles' own passwords.
+module "console_ingress" {
+  source = "./modules/console-ingress"
+
+  depends_on = [module.services]
+
+  enabled     = var.enable_console_ingress
+  project_id  = var.project_id
+  environment = var.environment
+  labels      = local.labels
+  operators   = var.console_operators
 }
 
 # Private links and direct peering.

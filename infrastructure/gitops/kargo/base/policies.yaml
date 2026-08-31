@@ -147,3 +147,40 @@ spec:
       ports:
         - protocol: TCP
           port: 9443
+---
+# The load balancer's own reach to kargo-api, and nothing else's.
+#
+# `default-deny` above refuses ingress to every pod in this namespace, which
+# is correct and is also why the Ingress needs this: with container-native
+# load balancing the request does not arrive via a node port, it arrives at
+# the pod IP directly from Google's front ends. Without this policy the
+# backend never turns healthy and the console answers 502 forever, with
+# nothing in kargo-api's log — the packet is dropped before it is a
+# connection.
+#
+# The two ranges are Google's, fixed and documented: 130.211.0.0/22 and
+# 35.191.0.0/16 carry both the health checks and the proxied user traffic of
+# an external Application Load Balancer. Naming them rather than opening the
+# port to the world is what keeps the reachable surface equal to "through the
+# load balancer, which means through IAP" — an in-cluster pod, or a peered
+# network, still cannot reach the console's API.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-api-ingress-from-load-balancer
+  namespace: kargo
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 130.211.0.0/22
+        - ipBlock:
+            cidr: 35.191.0.0/16
+      ports:
+        - protocol: TCP
+          port: 8080

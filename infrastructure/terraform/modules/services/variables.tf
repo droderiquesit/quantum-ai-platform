@@ -82,3 +82,9 @@ variable "disable_services_on_destroy" {
   type        = bool
   default     = false
 }
+
+variable "enable_console_ingress" {
+  description = "Publish the delivery consoles on a real URL behind Identity-Aware Proxy. Enables iap.googleapis.com; the Ingress and certificate live in modules/console-ingress and the manifests."
+  type        = bool
+  default     = false
+}

@@ -1,0 +1,36 @@
+# How the load balancer talks to Argo CD, and who it lets through.
+#
+# The identity check is the whole reason this platform is willing to publish
+# an admin console at all. `iap.enabled` puts Identity-Aware Proxy in front of
+# the backend: Google authenticates the request at its edge and refuses anyone
+# not holding roles/iap.httpsResourceAccessor on this project, so an
+# unauthenticated visitor never reaches Argo CD's login page. Argo CD's own
+# login still happens afterwards — two checks, not one.
+#
+# No `oauthclientCredentials`. IAP used to require an OAuth brand and client
+# created through the IAP OAuth Admin APIs, which Google shut down in March
+# 2026; the replacement is IAP's Google-managed client, which this field's
+# absence selects. That is also the better arrangement for the reason this
+# platform has no service-account keys anywhere: a client secret in a
+# manifest is a client secret in every backup of it.
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: argocd-server
+  namespace: argocd
+spec:
+  iap:
+    enabled: true
+  # Argo CD serves HTTPS with a self-signed certificate on 8080 and redirects
+  # plaintext to it. Health-checking over HTTP would therefore see a 307 for
+  # ever and the backend would never turn healthy — so the check speaks the
+  # protocol the pod speaks. The load balancer does not verify the backend's
+  # certificate, which is the accepted shape for a hop that never leaves the
+  # VPC.
+  healthCheck:
+    type: HTTPS
+    requestPath: /healthz
+    port: 8080
+  # Long enough for the UI's streaming endpoints, which hold a connection open
+  # while an Application reconciles.
+  timeoutSec: 300

@@ -1,0 +1,39 @@
+# Kargo's half of the load balancer: who the proxy admits, and how the load
+# balancer decides the pod is alive.
+#
+# Identical in shape to infrastructure/gitops/argocd/base/console-backend.yaml
+# and deliberately not factored into a shared component — the two are separate
+# because they are allowed to diverge (a different health path, a different
+# timeout) without the other silently inheriting it.
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: kargo-api
+  namespace: kargo
+spec:
+  # Identity-Aware Proxy, with no client credentials at all.
+  #
+  # `enabled: true` and no `oauthclientCredentials` selects IAP's
+  # Google-managed OAuth client. The alternative — a brand and client from the
+  # IAP OAuth Admin APIs — is not available: Google shut those APIs down in
+  # March 2026 and they refuse on a project that never had a brand. The
+  # managed client is also the better arrangement here for the same reason
+  # this platform has no service-account keys: there is no secret to leak,
+  # rotate, or find in a state backup.
+  iap:
+    enabled: true
+
+  # The load balancer speaks HTTPS to the pod, so the health check must too —
+  # a plaintext probe against a TLS listener is refused at the handshake, the
+  # backend never turns healthy, and the Ingress serves 502 with nothing in
+  # the pod's own logs to explain it.
+  healthCheck:
+    type: HTTPS
+    requestPath: /healthz
+    port: 8080
+
+  # Kargo's UI holds a long-lived stream open for live promotion state. The
+  # default 30s backend timeout cuts that every thirty seconds and the UI
+  # reconnects in a loop; five minutes is the same allowance Argo CD's
+  # backend gets for the same reason.
+  timeoutSec: 300

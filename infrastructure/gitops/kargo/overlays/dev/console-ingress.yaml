@@ -1,0 +1,72 @@
+# dev's published address for Kargo: the certificate, the front end, and the
+# Ingress that binds them to the reserved address Terraform holds.
+#
+# Per-environment rather than in the base because the hostname contains the
+# address, and the address is an environment's own.
+---
+# The certificate Google issues and renews.
+#
+# `kargo.34-36-179-58.nip.io` resolves, by nip.io's construction, to
+# 34.36.179.58 — which is `qip-dev-kargo`, the address the Ingress below
+# binds. That equality is the whole reason a managed certificate can be issued
+# before algorik.ai is delegated: the certificate authority's only check is
+# that the name points at this load balancer, and it does.
+#
+# The address is reserved, not ephemeral, so this name cannot come to mean
+# something else. When the real domain lands, a record replaces the nip.io
+# name here and nothing else about the arrangement changes.
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: kargo-console
+  namespace: kargo
+spec:
+  domains:
+    - kargo.34-36-179-58.nip.io
+---
+# Plaintext is answered with a redirect rather than served.
+#
+# Without this the load balancer answers :80 as well as :443, and a console
+# that authenticates a Google identity is reachable over a channel that
+# publishes the session cookie to every hop.
+apiVersion: networking.gke.io/v1beta1
+kind: FrontendConfig
+metadata:
+  name: kargo-console
+  namespace: kargo
+spec:
+  redirectToHttps:
+    enabled: true
+    responseCodeName: MOVED_PERMANENTLY_DEFAULT
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kargo-console
+  namespace: kargo
+  annotations:
+    # `gce`, not `gce-internal`: an internal load balancer is reachable only
+    # from inside the VPC, which is the arrangement the desk asked to stop
+    # tunnelling through. IAP is what makes the external one safe.
+    kubernetes.io/ingress.class: gce
+    # Bind the reserved address by name. Naming it is what keeps the
+    # certificate above valid: an Ingress given an ephemeral address would
+    # take a new one on every recreation and the name would stop resolving
+    # to it.
+    kubernetes.io/ingress.global-static-ip-name: qip-dev-kargo
+    networking.gke.io/managed-certificates: kargo-console
+    networking.gke.io/v1beta1.FrontendConfig: kargo-console
+spec:
+  rules:
+    - host: kargo.34-36-179-58.nip.io
+      http:
+        paths:
+          - path: /*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: kargo-api
+                # By name, which the base's Service patch supplies — the
+                # chart ships this port unnamed.
+                port:
+                  name: https

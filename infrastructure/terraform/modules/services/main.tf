@@ -85,6 +85,12 @@ locals {
     # this enables the project's half of a service whose activation is an
     # organisation-level act.
     var.enable_security_command_center ? { "securitycenter.googleapis.com" = "modules/scc" } : {},
+    # Identity-Aware Proxy, which is what stands in front of the delivery
+    # consoles when they are published. Without it the Ingress would serve
+    # Argo CD's own password login to the whole internet; with it, the
+    # request is authenticated against Google identity before it reaches the
+    # load balancer's backend at all.
+    var.enable_console_ingress ? { "iap.googleapis.com" = "modules/console-ingress" } : {},
   )
 
   services = merge(local.always, local.optional)

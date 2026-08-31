@@ -258,3 +258,33 @@ output "identity_frontend_environment" {
   description = "Environment keys the Algorik applications read for customer identity. Empty until an environment enables identity. The browser API key is deliberately not an output — it is delivered through configuration, never round-tripped through Terraform output into logs."
   value       = module.identity.frontend_environment
 }
+
+output "console_url" {
+  description = "The URL Argo CD is published on, or empty when the consoles are not published."
+  value       = module.console_ingress.hostname == "" ? "" : "https://${module.console_ingress.hostname}"
+}
+
+output "console_address" {
+  description = "The reserved address Argo CD's load balancer answers on."
+  value       = module.console_ingress.address
+}
+
+output "console_address_name" {
+  description = "The address's name, which the Ingress references by kubernetes.io/ingress.global-static-ip-name."
+  value       = module.console_ingress.address_name
+}
+
+output "kargo_url" {
+  description = "The URL Kargo is published on, or empty when the consoles are not published."
+  value       = module.console_ingress.kargo_hostname == "" ? "" : "https://${module.console_ingress.kargo_hostname}"
+}
+
+output "kargo_address" {
+  description = "The reserved address Kargo's load balancer answers on."
+  value       = module.console_ingress.kargo_address
+}
+
+output "kargo_address_name" {
+  description = "The address's name, which Kargo's Ingress references by kubernetes.io/ingress.global-static-ip-name."
+  value       = module.console_ingress.kargo_address_name
+}

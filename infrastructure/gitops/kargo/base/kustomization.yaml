@@ -14,3 +14,12 @@ kind: Kustomization
 resources:
   - policies.yaml
   - upstream/kargo-v1.11.2.yaml
+  # The load balancer's half: how it reaches kargo-api and who IAP lets
+  # through. The address, certificate and Ingress are per-environment and
+  # live in the overlays.
+  - console-backend.yaml
+patches:
+  # The Service annotations and the port name that put kargo-api behind the
+  # load balancer, kept out of the rendered chart so an upgrade cannot drop
+  # them.
+  - path: console-service-patch.yaml
