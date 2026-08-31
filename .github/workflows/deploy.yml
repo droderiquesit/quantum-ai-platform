@@ -1,4 +1,4 @@
-# Build the images, then deploy them.
+# Build the images, then record their digests in git so Argo CD can reconcile.
 #
 # Two rules shape everything below.
 #
@@ -334,40 +334,39 @@ jobs:
             --attestor-project "${GCP_PROJECT}" \
             --keyversion "${BINAUTHZ_KEY_VERSION}"
 
-  deploy:
-    name: deploy to ${{ inputs.environment || 'dev' }}
+  # ── GitOps image-update ────────────────────────────────────────────────
+  #
+  # The former `deploy` job applied manifests with kubectl.  That path is
+  # retired: Argo CD is now the sole writer to the cluster.  This job's only
+  # responsibility is to record the freshly-built digests in git so the
+  # reconciler picks them up.
+  #
+  # It writes `infrastructure/helm/qip/values-<env>-images.yaml` — the file
+  # the Argo CD Application for that environment reads as a second
+  # valueFiles entry — and pushes the commit to the default branch.  Argo's
+  # automated sync (prune + self-heal) then reconciles the cluster to match.
+  #
+  # Edge cells are deliberately excluded: bringing one up is a deliberate act
+  # with a runbook (docs/operations/deploying-an-edge-cell.md), not something
+  # a pipeline does unattended.
+  #
+  # Cloud Run frontends (if any) are also excluded — they deploy through
+  # `gcloud run deploy` and are not Kubernetes workloads.
+  gitops-update:
+    name: record digests for Argo CD (${{ inputs.environment || 'dev' }})
     needs: images
     runs-on: ubuntu-latest
-    # The GitHub environment. Where required reviewers and deployment branch
-    # rules are configured, which is why `prod` names one at all.
     environment: ${{ inputs.environment || 'dev' }}
     permissions:
-      contents: read
+      contents: write
       id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.DEPLOY_SHA }}
+          # The default GITHUB_TOKEN can push; no PAT needed.
+          token: ${{ github.token }}
 
-      # Everything this job authenticates with is derived from the
-      # environment's committed tfvars, not from repository variables.
-      #
-      # The variables are written by the bootstrap's last step, and a bootstrap
-      # that fails earlier never reaches it. Worse, one did reach it from a
-      # shell whose `terraform` was Cloud Shell's install-advisory stub, so the
-      # four Terraform-derived variables held several lines of apt
-      # instructions — non-empty, and therefore past every check that only
-      # asked whether they were set. Deriving instead means a pipeline that
-      # cannot be poisoned by a broken bootstrap, and one less thing an
-      # operator has to get right before the first deployment works.
-      #
-      # Every value below is fixed by the Terraform that creates it, so
-      # constructing it here cannot drift from what exists:
-      #   provider    modules/cicd names the pool qip-github-<env>
-      #   deploy SA   modules/cicd names the account qip-ci-<env>
-      #   attestor    modules/binaryauthorization names it qip-<env>-build
-      #   key version the attestor key is version 1 of qip-<env>-attestor in
-      #               the key ring qip-<env>
       - name: derive the identity from the tfvars
         id: identity
         run: |
@@ -377,30 +376,18 @@ jobs:
           project="$(sed -n 's/^project_id[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
           number="$(sed -n 's/^project_number[[:space:]]*=[[:space:]]*\([0-9]*\)/\1/p' "$tfvars" | head -1)"
           region="$(sed -n 's/^region[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
-          [ -n "$region" ] || region="europe-west2"   # the variable's default
+          [ -n "$region" ] || region="europe-west2"
           [ -n "$project" ] && [ -n "$number" ] || {
             echo "$tfvars carries no project_id/project_number" >&2
             exit 1
           }
-          # Refused before authenticating, not after. An environment still
-          # carrying the marker has no project, so every value derived below —
-          # the workload-identity audience, the service account, the attestor,
-          # the key version — would be constructed from a name that exists
-          # nowhere, and the run would die at the OIDC exchange with a message
-          # about an audience rather than about the environment.
           if [ "$project" = "unprovisioned" ]; then
-            echo "environment '${TARGET_ENVIRONMENT}' is not provisioned: its tfvars carry the 'unprovisioned' marker." >&2
-            echo "Create a project for it (its own, never one another environment uses), record the id and number in $tfvars, then deploy." >&2
+            echo "environment '${TARGET_ENVIRONMENT}' is not provisioned." >&2
             exit 1
           fi
-          ring="qip-${TARGET_ENVIRONMENT}"
           {
             echo "project=$project"
             echo "region=$region"
-            echo "provider=projects/$number/locations/global/workloadIdentityPools/qip-github-${TARGET_ENVIRONMENT}/providers/github"
-            echo "account=qip-ci-${TARGET_ENVIRONMENT}@$project.iam.gserviceaccount.com"
-            echo "attestor=${ring}-build"
-            echo "key_version=projects/$project/locations/$region/keyRings/$ring/cryptoKeys/${ring}-attestor/cryptoKeyVersions/1"
           } >> "$GITHUB_OUTPUT"
 
       - name: authenticate without a key
@@ -410,119 +397,50 @@ jobs:
           service_account: ${{ steps.identity.outputs.account }}
 
       - uses: google-github-actions/setup-gcloud@v2
-        with:
-          install_components: gke-gcloud-auth-plugin
 
-      - name: credentials for the private cluster
-        run: |
-          # --dns-endpoint: the control plane keeps no public IP; this resolves
-          # the IAM-gated DNS front door instead of the private 172.16.0.2 a
-          # GitHub-hosted runner can never reach.
-          gcloud container clusters get-credentials "qip-${TARGET_ENVIRONMENT}" \
-            --region "${{ steps.identity.outputs.region }}" \
-            --project "${{ steps.identity.outputs.project }}" \
-            --dns-endpoint
-
-      # The manifests carry placeholders rather than values, so the same files
-      # describe every environment and a diff between environments is a diff in
-      # this substitution rather than in five copies of a Deployment.
-      #
-      # Images render to digests, never tags. The attestation the images job
-      # wrote names bytes — `<image>@sha256:…` — and Binary Authorization's
-      # admission webhook refuses to even evaluate a tag reference: rendering
-      # `:IMAGE_TAG` to the commit sha got every pod denied with "Expected
-      # digest with sha256 scheme, but got tag or malformed digest". The digest
-      # is read back from the registry with the same lookup the sign step used,
-      # so the reference applied is the reference attested — and a tag moved
-      # between signing and applying deploys nothing rather than deploying
-      # bytes nobody signed.
-      #
-      # edge-cell.yaml is not applied here. A cell needs its cell id, its region
-      # and its venue ranges, and bringing one up is a deliberate act with a
-      # runbook — docs/operations/deploying-an-edge-cell.md — rather than
-      # something a pipeline does unattended to a workload that trades.
-      - name: render the manifests
+      # Resolve every digest and write the values file Argo CD reads.
+      - name: write promoted digests
         run: |
           set -euo pipefail
           prefix="${{ steps.identity.outputs.region }}-docker.pkg.dev/${{ steps.identity.outputs.project }}/qip-${TARGET_ENVIRONMENT}"
-          mkdir -p rendered
-          for manifest in infrastructure/kubernetes/base/*.yaml; do
-            case "$(basename "$manifest")" in
-              edge-cell.yaml) continue ;;
-            esac
-            sed \
-              -e "s#IMAGE_PREFIX#${prefix}#g" \
-              -e "s#ENVIRONMENT#${TARGET_ENVIRONMENT}#g" \
-              -e "s#PROJECT#${{ steps.identity.outputs.project }}#g" \
-              "$manifest" > "rendered/$(basename "$manifest")"
-          done
-          # The binaries to resolve are read off the rendered image lines
-          # rather than kept as a list here, which would be a second copy of
-          # what the manifests already say, one workload rename away from
-          # resolving a digest for the wrong image.
-          for binary in $(sed -n "s#^ *image: ${prefix}/\([a-z0-9-]*\):IMAGE_TAG\$#\1#p" rendered/*.yaml | sort -u); do
+          images_file="infrastructure/helm/qip/values-${TARGET_ENVIRONMENT}-images.yaml"
+
+          cat > "$images_file" <<HEADER
+          # ${TARGET_ENVIRONMENT}'s promoted image digests — written by deploy.yml.
+          #
+          # Argo CD reads this file as a second valueFiles entry; the reconciler
+          # picks up the new digests on its next sync cycle.
+          images:
+          HEADER
+
+          for binary in qip-api qip-fastbrain qip-deepbrain qip-edge-node; do
             digest=$(gcloud artifacts docker images describe \
               "${prefix}/${binary}:${DEPLOY_SHA}" \
               --format='value(image_summary.digest)')
-            if [ -z "${digest}" ]; then
-              echo "the registry reports no digest for ${binary}:${DEPLOY_SHA}." >&2
+            if [ -z "$digest" ]; then
+              echo "no digest for ${binary}:${DEPLOY_SHA}" >&2
               exit 1
             fi
-            sed -i "s#image: ${prefix}/${binary}:IMAGE_TAG\$#image: ${prefix}/${binary}@${digest}#" rendered/*.yaml
+            # Helm values key matches the binary name with hyphens.
+            echo "  ${binary}: ${digest}" >> "$images_file"
           done
-          # Nothing may reach the cluster with a placeholder still in it. A
-          # `cidr: VENUE_CIDR` would be rejected by the API server; a
-          # `PROJECT` in a workload identity annotation would not be, and would
-          # produce a pod that cannot authenticate. IMAGE_TAG doubles as the
-          # check on the digest pass: an image line it failed to match fails
-          # here instead of reaching the admission webhook.
-          ! grep -RnE 'IMAGE_PREFIX|IMAGE_TAG|PROJECT|ENVIRONMENT|CELL_ID|CELL_REGION|CELL_VENUES|VENUE_CIDR|VENUE_PORT' rendered
 
-      # A dry run against the live API server first. It catches a manifest the
-      # cluster will reject — an admission policy, a bad field — without having
-      # applied half of it.
-      # The namespace goes first, for real: a server-side dry-run refuses
-      # every namespaced object whose namespace does not exist yet, and a
-      # dry-run cannot create one. Creating a namespace is idempotent and
-      # carries no workload, so applying it before the check costs nothing
-      # and unblocks the check for everything that lives inside it.
-      - name: ensure the namespace exists
-        run: kubectl apply --server-side -f rendered/namespace.yaml
+          echo "wrote ${images_file}:"
+          cat "$images_file"
 
-      - name: check the manifests against the cluster
-        run: kubectl apply --server-side --dry-run=server -f rendered/
-
-      - name: apply
-        run: kubectl apply --server-side -f rendered/
-
-      # An apply that returns is not a deployment that worked. This is the step
-      # that fails when the image does not start.
-      #
-      # The list is every Deployment the step above applied and nothing else.
-      # `qip-edge-CELL_ID` is not on it because `edge-cell.yaml` was skipped,
-      # and `kubectl rollout status` against a Deployment nobody created waits
-      # until it times out rather than failing usefully. The correspondence is
-      # checked by `the_rollout_waits_on_every_workload_the_pipeline_applies`,
-      # so adding a manifest without adding it here fails the test suite rather
-      # than producing a pipeline that reports success for a workload it never
-      # looked at.
-      #
-      # Stated because it will be met on the first real run: two of these three
-      # do not serve yet. `qip-fastbrain` and `qip-deepbrain` return from
-      # `fn run`, so their containers exit and are restarted, and this step is
-      # expected to time out against them until the serving loops land. That is
-      # a known blocking gap, recorded with the others in
-      # docs/operations/external-dependencies.md — not something to work around
-      # by dropping them from this list.
-      # Each entry is kind-qualified. `kubectl rollout status` needs the kind,
-      # and a workload converted from a Deployment to a StatefulSet — which is
-      # what any workload keeping a journal becomes — would otherwise leave
-      # this step waiting on a Deployment that does not exist, until it times
-      # out, reporting a failure that is not the real one.
-      - name: wait for the rollout
+      - name: commit and push
         run: |
           set -euo pipefail
-          for workload in deployment/qip-api deployment/qip-fastbrain deployment/qip-deepbrain; do
-            kubectl rollout status "${workload}" \
-              --namespace qip --timeout=5m
-          done
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "infrastructure/helm/qip/values-${TARGET_ENVIRONMENT}-images.yaml"
+          # Nothing to commit means the digests are already current — success.
+          git diff --cached --quiet && {
+            echo "digests unchanged for ${TARGET_ENVIRONMENT}; nothing to commit."
+            exit 0
+          }
+          git commit -m "chore(${TARGET_ENVIRONMENT}): promote digests for ${DEPLOY_SHA}
+
+          Written by .github/workflows/deploy.yml gitops-update job.
+          Argo CD will reconcile the ${TARGET_ENVIRONMENT} cluster to these images."
+          git push

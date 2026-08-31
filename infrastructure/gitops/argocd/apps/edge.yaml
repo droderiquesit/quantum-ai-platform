@@ -1,0 +1,48 @@
+# Edge cell Application template.
+#
+# Edge cells are not deployed by the pipeline. ADR 0008: bringing a cell up
+# is a deliberate act with a runbook (docs/operations/deploying-an-edge-cell.md),
+# because a cell that trades must have its capital envelope, venue ranges and
+# cell id configured before it starts.
+#
+# This template is applied by hand. An operator copies it, substitutes the
+# cell-specific values (CELL_ID, CELL_REGION, destination server), and applies
+# it. Sync is deliberately manual: a cell's lifecycle is not a pipeline's to
+# manage.
+#
+# See docs/operations/deploying-an-edge-cell.md for the full procedure.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: qip-edge-__CELL_ID__
+  namespace: argocd
+  labels:
+    qip.io/cell: __CELL_ID__
+    qip.io/component: edge
+spec:
+  project: qip
+  source:
+    repoURL: https://github.com/droderiquesit/quantum-ai-platform.git
+    targetRevision: claude/autonomous-investment-platform-76gt4y
+    path: infrastructure/helm/qip
+    helm:
+      valueFiles:
+        - values.yaml
+      # Cell-specific overrides are passed as --set at apply time or written
+      # into a per-cell values file by the runbook.
+      parameters:
+        - name: cell.enabled
+          value: "true"
+        - name: cell.id
+          value: "__CELL_ID__"
+        - name: cell.region
+          value: "__CELL_REGION__"
+  destination:
+    # The edge cluster's API server — substituted by the runbook.
+    server: __EDGE_CLUSTER_SERVER__
+    namespace: qip
+  # Manual sync: a cell is a controlled deployment, not an auto-reconciled one.
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=false
+      - ServerSideApply=true
