@@ -1,31 +1,38 @@
 'use client'
 import Link from "next/link"
+import { NAV_FLAT, POSTURE, SIGN_IN, SIGN_UP } from "@/lib/site"
 
-const PORTAL = process.env.NEXT_PUBLIC_ALGORIK_PORTAL_URL ?? "http://127.0.0.1:3400"
-
-/** Same four destinations as the desktop menu, plus the portal doors. */
-export default function MobileMenu({ isSidebar, handleMobileMenu, handleSidebar }) {
+/**
+ * Every destination, flat.
+ *
+ * A nested mobile menu hides pages behind a tap on exactly the width where
+ * most visitors arrive, and a hidden legal page is the one a regulator looks
+ * for first. So the phone gets the whole list, not a subset of it.
+ */
+export default function MobileMenu({ handleMobileMenu }) {
     return (
-        <>
-            <div className="mobile-menu">
-                <div className="menu-backdrop" onClick={handleMobileMenu} />
-                <div className="close-btn" onClick={handleMobileMenu}><i className="fas fa-times" /></div>
-                <nav className="menu-box">
-                    <div className="nav-logo">
-                        <Link href="/"><img src="/assets/images/logo.png" alt="Algorik" title="" /></Link>
-                    </div>
-                    <div className="menu-outer">
-                        <ul className="navigation clearfix">
-                            <li><Link href="/" onClick={handleMobileMenu}>Home</Link></li>
-                            <li><Link href="/platform" onClick={handleMobileMenu}>Platform</Link></li>
-                            <li><Link href="/about" onClick={handleMobileMenu}>Company</Link></li>
-                            <li><Link href="/contact" onClick={handleMobileMenu}>Contact</Link></li>
-                            <li><a href={`${PORTAL}/sign-in`}>Sign In</a></li>
-                            <li><a href={`${PORTAL}/sign-up`}>Get Started</a></li>
-                        </ul>
-                    </div>
-                </nav>
-            </div>
-        </>
+        <div className="mobile-menu">
+            <div className="menu-backdrop" onClick={handleMobileMenu} />
+            <div className="close-btn" onClick={handleMobileMenu}><i className="fas fa-times" /></div>
+            <nav className="menu-box">
+                <div className="nav-logo">
+                    <Link href="/" onClick={handleMobileMenu}>
+                        <img src="/assets/images/logo.png" alt="Algorik" width="140" height="34" />
+                    </Link>
+                </div>
+                <div className="menu-outer">
+                    <ul className="navigation clearfix">
+                        {NAV_FLAT.map((item) => (
+                            <li key={item.href}>
+                                <Link href={item.href} onClick={handleMobileMenu}>{item.label}</Link>
+                            </li>
+                        ))}
+                        <li><a href={SIGN_IN}>Sign In</a></li>
+                        <li><a href={SIGN_UP}>Get Started</a></li>
+                    </ul>
+                </div>
+                <p className="mobile-posture">{POSTURE} — simulated execution only</p>
+            </nav>
+        </div>
     )
 }

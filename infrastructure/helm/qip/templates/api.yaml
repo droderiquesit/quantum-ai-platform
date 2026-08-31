@@ -555,6 +555,24 @@ metadata:
 spec:
   type: LoadBalancer
   loadBalancerIP: {{ required "consoleRoute.apiInternalAddress is required when consoleRoute is set" .Values.consoleRoute.apiInternalAddress | quote }}
+  # Preserve the caller's address, and route only to nodes that actually hold
+  # a qip-api pod.
+  #
+  # `Cluster` — the default — was wrong here in a way that looked like
+  # flakiness rather than a misconfiguration. An internal passthrough load
+  # balancer with `Cluster` will deliver to any node, and a node that does not
+  # host the pod SNATs the packet to its own address before forwarding it. The
+  # source then reads 10.0.0.x, the node subnet, instead of the console egress
+  # /26 — and `allow-api-ingress-from-console` drops it, correctly, because
+  # that is not an address it admits. Measured before this change: one request
+  # in six succeeded, and the one that did came back in 0.33s while the rest
+  # spent the full 10s timeout. The successes were the times the load balancer
+  # happened to pick a node that held a pod.
+  #
+  # The other way to make the symptom go away is to add the node subnet to the
+  # policy. That is the fix to refuse: it would admit every node and every pod
+  # on them, which is most of the cluster, to make two legitimate callers work.
+  externalTrafficPolicy: Local
   selector:
     app: qip-api
   ports:

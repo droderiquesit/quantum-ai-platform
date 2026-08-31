@@ -1,30 +1,17 @@
+import { CtaBand } from "@/components/sections/Blocks"
 
-
+/**
+ * The template's newsletter strip: an input and a submit button wired to
+ * nothing, which is a promise to write back that this deployment could not
+ * keep. It is a pair of links now — both of which go somewhere.
+ */
 export default function Subscribe() {
-  return (
-    <>
-      <section className="subscribe-section">
-            <div className="bg-color"></div>
-            <div className="auto-container">
-                <div className="inner-container">
-                    <div className="shape" style={{ backgroundImage: "url(assets/images/shape/shape-5.png)" }}></div>
-                    <div className="row align-items-center">
-                        <div className="col-lg-6 col-md-12 col-sm-12 text-column">
-                            <div className="text-box">
-                                <h2>Questions? Talk to the desk.</h2>
-                            </div>
-                        </div>
-                        <div className="col-lg-6 col-md-12 col-sm-12 form-column">
-                            <div className="form-inner">
-                                <div className="form-group" style={{ textAlign: "right" }}>
-                                        <a href="/contact" className="theme-btn btn-one">Contact us<i className="icon-26"></i></a>
-                                    </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </section>
-    </>
-  )
+    return (
+        <CtaBand
+            title="Questions? Talk to the desk."
+            lede="Algorik is paper trading, structurally. If reproducibility, attribution and governance are what your evaluation turns on, we should talk."
+            secondaryHref="/contact"
+            secondaryLabel="Contact us"
+        />
+    )
 }
