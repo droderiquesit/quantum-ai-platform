@@ -1,4 +1,5 @@
 import Link from "next/link"
+import Brand from "../Brand"
 import Menu from "../Menu"
 import MobileMenu from "../MobileMenu"
 import { POSTURE, SIGN_IN, SIGN_UP } from "@/lib/site"
@@ -20,9 +21,10 @@ export default function Header1({ scroll, handleMobileMenu }) {
             <div className="header-top">
                 <div className="large-container">
                     <div className="top-inner">
+                        {/* Posture, in the words the platform's own rules require. The
+                            template's headset icon went with the support line it belonged
+                            to: this strip is a statement of posture, not an offer of help. */}
                         <div className="support-box">
-                            <div className="icon-box"><i className="icon-07"></i></div>
-                            {/* Posture, in the words the platform's own rules require. */}
                             <span>{POSTURE} — simulated execution only</span>
                         </div>
                         <div className="option-block">
@@ -37,7 +39,7 @@ export default function Header1({ scroll, handleMobileMenu }) {
                 <div className="large-container">
                     <div className="outer-box">
                         <figure className="logo-box">
-                            <Link href="/"><img src="/assets/images/logo.png" alt="Algorik" width="140" height="34" /></Link>
+                            <Link href="/" aria-label="Algorik home"><Brand height={38} /></Link>
                         </figure>
                         <div className="menu-area clearfix">
                             <div className="mobile-nav-toggler" onClick={handleMobileMenu}
@@ -60,7 +62,7 @@ export default function Header1({ scroll, handleMobileMenu }) {
                 <div className="large-container">
                     <div className="outer-box">
                         <figure className="logo-box">
-                            <Link href="/"><img src="/assets/images/logo.png" alt="Algorik" width="140" height="34" /></Link>
+                            <Link href="/" aria-label="Algorik home"><Brand height={38} /></Link>
                         </figure>
                         <div className="menu-area clearfix">
                             <nav className="main-menu clearfix">

@@ -126,7 +126,7 @@ export function PostureNote({ children }) {
  */
 export function LegalShell({ title, children }) {
     return (
-        <section className="algorik-legal pt_90 pb_100">
+        <section className="algorik-legal pt_90 pb_100" aria-label={title}>
             <div className="auto-container">
                 <div className="algorik-legal-inner">
                     <div className="algorik-draft" role="note">
@@ -134,7 +134,6 @@ export function LegalShell({ title, children }) {
                         effective date, and is not in force. It is published so the intent is
                         inspectable — not so it can be relied upon.
                     </div>
-                    <h2>{title}</h2>
                     {children}
                 </div>
             </div>

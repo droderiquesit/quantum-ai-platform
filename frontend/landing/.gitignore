@@ -1,3 +1,7 @@
 node_modules/
 .next/
 out/
+
+# Playwright writes traces and error contexts here on a failing run.
+test-results/
+playwright-report/

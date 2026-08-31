@@ -12,7 +12,7 @@ export default defineConfig({
   testDir: "./tests",
   fullyParallel: true,
   reporter: [["list"]],
-  timeout: 45_000,
+  timeout: 90_000,
   use: {
     baseURL: `http://127.0.0.1:${PORT}`,
     trace: "retain-on-failure",

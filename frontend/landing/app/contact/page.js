@@ -58,9 +58,9 @@ export default function ContactPage() {
                                         platform submits a live order, and nothing on this site could place one.</p>
                                 </Card>
                                 <Card title="No office to print">
-                                    <p>This deployment has no public office or telephone number. The template shipped
-                                        both as invented placeholders; a fabricated address on a contact page is the
-                                        fastest way to teach a visitor that the rest of the site lies too.</p>
+                                    <p>This deployment has no public office and no telephone number, so neither is
+                                        printed. A fabricated address on a contact page is the fastest way to teach a
+                                        visitor that the rest of the site lies too.</p>
                                 </Card>
                             </CardGrid>
                         </div>

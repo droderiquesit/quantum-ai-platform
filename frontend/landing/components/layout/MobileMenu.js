@@ -1,5 +1,6 @@
 'use client'
 import Link from "next/link"
+import Brand from "./Brand"
 import { NAV_FLAT, POSTURE, SIGN_IN, SIGN_UP } from "@/lib/site"
 
 /**
@@ -17,7 +18,7 @@ export default function MobileMenu({ handleMobileMenu }) {
             <nav className="menu-box">
                 <div className="nav-logo">
                     <Link href="/" onClick={handleMobileMenu}>
-                        <img src="/assets/images/logo.png" alt="Algorik" width="140" height="34" />
+                        <Brand height={32} onDark />
                     </Link>
                 </div>
                 <div className="menu-outer">

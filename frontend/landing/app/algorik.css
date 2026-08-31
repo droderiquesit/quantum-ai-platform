@@ -379,7 +379,113 @@
   filter: none;
 }
 
+/* Equal-height cards with the link on the baseline: five cards whose buttons
+   sit at five different heights read as five different components. */
+.trading-section .inner-container {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.trading-section .inner-container .trading-block-one {
+  float: none;
+  display: flex;
+}
+
+.trading-block-one .inner-box {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+.trading-block-one .inner-box .btn-box {
+  margin-top: auto;
+}
+
 @media only screen and (max-width: 991px) {
   .trading-section .inner-container .trading-block-one { width: 100%; }
   .trading-block-one .inner-box { border-right: none; border-bottom: 1px solid #e5e5e5; }
+}
+
+/* --- footer ----------------------------------------------------------------
+ * The right-hand column is a links list inside a card, so it needs the
+ * links-widget colours as well as the card. Without them the portal doors
+ * rendered as the browser's default blue underlined links, which on a footer
+ * of black links reads as an error.
+ * ------------------------------------------------------------------------ */
+.main-footer .logo-widget .links-list li a:hover,
+.main-footer .links-widget .links-list li a:hover {
+  color: var(--theme-color);
+}
+
+.main-footer .logo-widget .widget-content .links-list {
+  margin-bottom: 4px;
+}
+
+/* The lockup's ink is navy; on the dark mobile menu it sits on a light chip
+   rather than being recoloured into a second, unapproved lockup. */
+.algorik-brand-chip {
+  display: inline-flex;
+  background: #ffffff;
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+/* --- call-to-action band ---------------------------------------------------
+ * The band is the theme green, and `.btn-one` is also the theme green: the
+ * primary button rendered as green-on-green and was invisible. It is inverted
+ * here rather than recoloured globally, because everywhere else on the site
+ * the green button is the correct one.
+ * ------------------------------------------------------------------------ */
+.subscribe-section .theme-btn.btn-one {
+  background: #ffffff;
+  /* The template's `.theme-btn` sets `color: #fff !important`, so an override
+     without !important loses even at higher specificity. */
+  color: var(--secondary-color) !important;
+}
+
+.subscribe-section .theme-btn.btn-one:hover {
+  background: var(--secondary-color);
+  color: #ffffff !important;
+}
+
+.subscribe-section .theme-btn.btn-two {
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  color: #ffffff;
+}
+
+.subscribe-section .theme-btn.btn-two:hover {
+  background: #ffffff;
+  color: var(--secondary-color) !important;
+}
+
+.subscribe-section .text-box h2 {
+  color: #ffffff;
+}
+
+/* --- links and buttons inside light cards ----------------------------------
+ * `.theme-btn.btn-two` is transparent with a white border and `color: #fff
+ * !important` — correct on the dark header and the green band, invisible on a
+ * white card, which is where the legal index put it. And an <a> inside a card
+ * heading fell through to the browser's default blue.
+ * ------------------------------------------------------------------------ */
+.algorik-card h3 a {
+  color: inherit;
+}
+
+.algorik-card h3 a:hover {
+  color: var(--theme-color);
+}
+
+.algorik-card .theme-btn.btn-two {
+  border: 1px solid var(--secondary-color);
+  color: var(--secondary-color) !important;
+}
+
+.algorik-card .theme-btn.btn-two:hover {
+  background: var(--secondary-color);
+  color: #ffffff !important;
+}
+
+.algorik-card-body p:last-child .theme-btn {
+  margin-top: 4px;
 }

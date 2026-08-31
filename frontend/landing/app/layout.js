@@ -15,6 +15,10 @@ export const metadata = {
         "Algorik senses global markets, reasons with a panel of AI agents, and executes only against simulators. Paper trading, hash-chained auditability, quantum research measured against a classical baseline.",
     applicationName: "Algorik",
     robots: { index: true, follow: true },
+    icons: {
+        icon: "/favicon.ico",
+        apple: "/apple-touch-icon.png",
+    },
 }
 
 export default function RootLayout({ children }) {

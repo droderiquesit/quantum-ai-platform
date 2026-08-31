@@ -121,7 +121,14 @@ for (const file of sources) {
 
     // Every internal destination must be a route this app serves. A nav that
     // links to a page nobody built is the defect this whole file exists for.
-    for (const match of text.matchAll(/href=["'](\/[^"'#?]*)(?:[#?][^"']*)?["']/g)) {
+    //
+    // Both spellings are checked: the JSX attribute `href="/x"` and the data
+    // property `href: "/x"`. The navigation is generated from a data structure,
+    // so a rule that only read attributes passed a mutation that added
+    // `{ label: "Careers", href: "/careers" }` to the menu — the Playwright
+    // link test caught it, this file did not, and that gap is what this
+    // comment records.
+    for (const match of text.matchAll(/href(?:=|:\s*)["'](\/[^"'#?]*)(?:[#?][^"']*)?["']/g)) {
         const target = match[1].length > 1 ? match[1].replace(/\/$/, "") : "/";
         if (target.startsWith("/assets/")) continue;
         if (routes.has(target) || REDIRECTED.has(target)) continue;

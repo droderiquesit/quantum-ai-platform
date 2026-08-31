@@ -1,4 +1,5 @@
 import Link from "next/link"
+import Brand from "../Brand"
 import { CONTACT_EMAIL, FOOTER_COLUMNS, POSTURE, SIGN_IN, SIGN_UP } from "@/lib/site"
 
 /**
@@ -41,12 +42,12 @@ export default function Footer1() {
                             </div>
                             <div className="footer-lower">
                                 <figure className="footer-logo">
-                                    <Link href="/"><img src="/assets/images/logo.png" alt="Algorik" width="140" height="34" /></Link>
+                                    <Link href="/" aria-label="Algorik home"><Brand height={36} /></Link>
                                 </figure>
                             </div>
                         </div>
                         <div className="col-lg-4 col-md-6 col-sm-12 footer-column">
-                            <div className="footer-widget logo-widget ml_80">
+                            <div className="footer-widget logo-widget links-widget ml_80">
                                 <div className="widget-content">
                                     <div className="widget-title mb_11"><h3>The doors</h3></div>
                                     <ul className="links-list clearfix">
