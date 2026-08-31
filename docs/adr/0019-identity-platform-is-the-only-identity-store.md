@@ -78,9 +78,13 @@ object.
 race as above, now invisible because the code still looks like a local file
 write.
 
-## What a stateless session costs
+## What it costs
 
-**Revocation.** A sealed cookie is valid until it expires; there is no server
+Two things: revocation, and one grant on the console's identity.
+
+### Revocation
+
+A sealed cookie is valid until it expires; there is no server
 to tell it otherwise. Signing out clears the cookie, which handles the case
 that actually happens, but it does not invalidate a copy someone else took.
 Before, revocation was possible in principle — and in practice a session
@@ -98,7 +102,9 @@ on the platform. If that day comes, the fix is a revocation check against
 Identity Platform's `validSince` on each request, and this ADR is where to
 start.
 
-**A grant on the console's identity.** Writing custom claims is an
+### A grant on the console's identity
+
+Writing custom claims is an
 administrative operation on the Identity Platform project. The console gets a
 custom role holding exactly two permissions — `firebaseauth.users.get` and
 `firebaseauth.users.update` — rather than `roles/identitytoolkit.admin`, which

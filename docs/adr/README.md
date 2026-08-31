@@ -23,3 +23,5 @@ no stated reversal condition cannot be revisited honestly.
 | [0015](0015-licensed-templates-are-the-visual-source-of-truth.md) | The licensed templates are the visual source of truth |
 | [0016](0016-repository-layout.md) | One layout: backend, frontend, data, infrastructure — each top-level directory answers one question |
 | [0017](0017-gitops-delivery.md) | Delivery becomes GitOps: a Helm chart, Argo CD sync, Kargo promotion |
+| [0018](0018-the-console-reaches-the-platform-over-the-vpc.md) | The console reaches the platform over the VPC, on an internal load balancer, as viewer |
+| [0019](0019-identity-platform-is-the-only-identity-store.md) | Identity Platform is the only identity store, and the session is a sealed cookie |
