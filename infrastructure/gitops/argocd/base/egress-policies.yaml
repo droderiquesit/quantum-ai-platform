@@ -116,6 +116,70 @@ spec:
         - protocol: TCP
           port: 8081
 ---
+# The web UI and API server. It reads and writes Application state through
+# the Kubernetes API, asks the repo server for rendered manifests and
+# diffs, and caches in Redis — the same three destinations as the
+# application controller, because it is the interactive face of the same
+# reconciliation. Deliberately absent: dex on 5556 (the Deployment is
+# deleted in kustomization.yaml) and any route to the internet — the
+# server serves people, it fetches nothing.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-server-egress
+  namespace: argocd
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-server
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 172.16.0.0/28
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: argocd-repo-server
+      ports:
+        - protocol: TCP
+          port: 8081
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: argocd-redis
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+# The notifications controller watches Applications through the Kubernetes
+# API. Every delivery route (email, chat, webhooks) is unconfigured, so no
+# egress beyond the control plane exists to permit; configuring a route
+# some day means adding its destination here in the same commit, or the
+# notification will hang exactly the way the redis init container did.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-notifications-egress
+  namespace: argocd
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-notifications-controller
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 172.16.0.0/28
+      ports:
+        - protocol: TCP
+          port: 443
+---
 # Redis initiates one thing, and "a cache initiates nothing" was this file's
 # first premise to die on contact with the cluster: v3's redis pod carries a
 # secret-init init container that writes the argocd-redis auth secret

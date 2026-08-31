@@ -1,11 +1,33 @@
-# Argo CD core, as this platform runs it: the verbatim upstream install plus
-# the namespace governance and egress posture upstream leaves to the
-# operator. Environment overlays substitute the vendored image digests; this
-# base carries everything that is true in every environment.
+# Argo CD, full install less dex: the reconciler plus the web UI and
+# notifications controller, with the namespace governance and egress posture
+# upstream leaves to the operator. Environment overlays substitute the
+# vendored image digests; this base carries everything true in every
+# environment.
+#
+# The move from core-install to the full manifest was the desk's explicit
+# call for the real web UI. What did not move: dex. It exists to federate
+# SSO this platform has not configured, and its current image scanned with
+# five CRITICALs (see vendored-images.txt, which refuses it by name) — so
+# the Deployment and Service are deleted here and the UI authenticates with
+# the built-in admin account. Wiring SSO later means vendoring a
+# then-current dex and deleting these two patches, in one commit.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: argocd
 resources:
   - namespace.yaml
-  - upstream/core-install-v3.5.2.yaml
+  - upstream/install-v3.5.2.yaml
   - egress-policies.yaml
+patches:
+  - patch: |-
+      $patch: delete
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: argocd-dex-server
+  - patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: argocd-dex-server

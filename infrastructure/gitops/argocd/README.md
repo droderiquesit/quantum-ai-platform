@@ -6,14 +6,32 @@ writer to the cluster is the operator that reads git.
 
 ## What is installed, and what deliberately is not
 
-**Argo CD core** (`core-install`), not the full install. The difference is
-the API server, the UI, Dex, and the notifications controller — every one of
-them a listening surface in a cluster whose posture is default-deny, and none
-of them needed for reconciliation. Operators who want the UI run
-`argocd admin dashboard` through their own kubectl credentials, which is a
-port-forward under an identity IAM already vetted, not a service waiting on
-the network. If the desk later decides the UI earns its surface, that is an
-upgrade of this directory in a reviewed commit, not a default.
+**The full install, less dex.** The first commit of this directory installed
+core only — no API server, no UI — on the reasoning that every listening
+surface in a default-deny cluster must earn its place. The desk then asked
+for the web UI explicitly, which is exactly the reviewed decision that
+paragraph demanded, so the API server, UI and notifications controller are
+in. Dex stayed out on its own demerits: it federates SSO nothing configures,
+and its current image scanned with five CRITICALs (vendored-images.txt
+refuses it by name), so the kustomization deletes its Deployment and Service
+and the UI authenticates with the built-in admin account.
+
+### Reaching the UI
+
+No Ingress or LoadBalancer exists — nothing routes into this cluster from
+outside, and that stays true. The UI is reached over the operator's own
+kubectl credentials:
+
+```sh
+kubectl port-forward svc/argocd-server -n argocd 8443:443
+# then open https://localhost:8443 — user `admin`, password from:
+kubectl get secret argocd-initial-admin-secret -n argocd \
+  -o jsonpath='{.data.password}' | base64 -d
+```
+
+An internet-facing route (IAP behind a managed certificate) is a decision
+for when the algorik.ai domain lands, not something to improvise around a
+self-signed certificate and a password.
 
 ## Where the images come from
 
