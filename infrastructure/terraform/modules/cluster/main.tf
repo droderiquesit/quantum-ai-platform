@@ -143,12 +143,17 @@ resource "google_container_cluster" "primary" {
 
   # How the cluster autoscaler behaves, stated rather than inherited.
   #
-  # `enabled = false` is node auto-provisioning, which is a different feature
-  # from the node pool autoscaling below: it lets GKE invent node pools with
-  # machine types and service accounts nobody reviewed. Everything this
-  # configuration does to constrain a node — the pool's own service account,
-  # shielded boot, `GKE_METADATA`, the customer-managed key — would be absent
-  # from a pool the autoscaler created for itself.
+  # `enabled = true` is node auto-provisioning: when no existing pool can hold
+  # a schedulable pod, GKE creates one — the layer above the per-pool
+  # autoscaling below, and the GKE-native form of what Karpenter does
+  # elsewhere. An earlier revision disabled it, correctly, because a pool the
+  # autoscaler invented would have carried none of what this configuration
+  # demands of a node. `auto_provisioning_defaults` is what retires that
+  # objection: every auto-created pool gets the same reviewed service
+  # account, shielded boot, and management posture as the committed pool, and
+  # the resource limits bound how much infrastructure a scheduling burst can
+  # summon. A ComputeClass in the manifests narrows machine shape further for
+  # workloads that opt in.
   #
   # `BALANCED` is the profile, and the alternative is the reason to write it
   # down. `OPTIMIZE_UTILIZATION` removes an underused node aggressively, which
@@ -158,8 +163,53 @@ resource "google_container_cluster" "primary" {
   # event the pod specifications are written to avoid. Paying for some idle
   # capacity is the cheaper side of that trade.
   cluster_autoscaling {
-    enabled             = false
+    enabled             = true
     autoscaling_profile = "BALANCED"
+
+    # The whole-cluster ceiling, committed pool included. Not sizing advice:
+    # it is the blast radius of a scheduling mistake, priced in cores.
+    resource_limits {
+      resource_type = "cpu"
+      minimum       = 1
+      maximum       = var.nap_max_cpu_cores
+    }
+    resource_limits {
+      resource_type = "memory"
+      minimum       = 1
+      maximum       = var.nap_max_memory_gb
+    }
+
+    auto_provisioning_defaults {
+      # The same node identity as the committed pool — an auto-created node
+      # with the default compute account would be the privilege escalation
+      # the earlier `enabled = false` existed to prevent.
+      service_account = var.service_account
+      oauth_scopes    = ["https://www.googleapis.com/auth/cloud-platform"]
+
+      management {
+        auto_repair  = true
+        auto_upgrade = true
+      }
+
+      shielded_instance_config {
+        enable_secure_boot          = true
+        enable_integrity_monitoring = true
+      }
+
+      disk_type = var.node_disk_type
+    }
+  }
+
+  # The VPA recommender — the fourth scaling layer: HPA/KEDA sets replica
+  # counts, the pool autoscaler and auto-provisioning add nodes, and this
+  # measures whether the requests everything above packs on are the right
+  # ones. The per-workload VerticalPodAutoscaler objects in the manifests
+  # run in recommendation mode only: a VPA that rewrote requests would be a
+  # second writer to the same pods KEDA scales, and the fast path's
+  # requests-equal-limits contract is a reviewed decision, not a value a
+  # recommender may drift.
+  vertical_pod_autoscaling {
+    enabled = true
   }
 
   # The Backup for GKE agent.

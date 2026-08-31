@@ -1,0 +1,84 @@
+# The two scaling layers that live in manifests rather than in the cluster's
+# Terraform: the machine shape auto-provisioned nodes may take, and the
+# recommenders that measure whether the requests everything else packs on
+# are the right ones.
+#
+# The full ladder, for the reader auditing "can this platform scale":
+#   pods        — KEDA's ScaledObject on qip-api (api.yaml), which owns the
+#                 HPA it replaced;
+#   nodes       — the committed pool's per-zone autoscaler (modules/cluster);
+#   node pools  — node auto-provisioning with reviewed defaults
+#                 (modules/cluster), shaped by the ComputeClass below;
+#   requests    — the VPA recommenders below, in recommendation mode only.
+---
+# What an auto-provisioned node is allowed to be. Node auto-provisioning
+# answers "no existing pool fits this pod" by inventing a pool; this class
+# is the reviewed answer to what it may invent: the cost-efficient general
+# family, at least two cores, and nothing exotic. `whenUnsatisfiable:
+# DoNotScaleUp` is the fail-closed half — a pod asking for a shape this
+# class refuses stays Pending where a person can see it, rather than
+# summoning whatever machine would make the scheduler quiet.
+#
+# No workload selects this class yet (selection is a per-workload
+# `nodeSelector: cloud.google.com/compute-class: qip-burst`). It exists so
+# that the day a workload bursts beyond the committed pool, the machine
+# shape it lands on was decided here, in review, and not at 3am by an
+# autoscaler.
+apiVersion: cloud.google.com/v1
+kind: ComputeClass
+metadata:
+  name: qip-burst
+spec:
+  priorities:
+    - machineFamily: e2
+      minCores: 2
+  nodePoolAutoCreation:
+    enabled: true
+  whenUnsatisfiable: DoNotScaleUp
+---
+# Recommendation mode only, for all three VPAs below, and the restraint is
+# the point: `updateMode: "Off"` means the recommender measures and reports
+# and never writes. A VPA that rewrote requests here would be a second
+# writer to the pods KEDA scales, and the fast path's requests-equal-limits
+# contract (fastbrain.yaml says why) is a reviewed decision, not a value a
+# recommender may drift. Reading the recommendation is
+# `kubectl describe vpa -n qip`; acting on one is a reviewed edit to the
+# workload's manifest, like any other resource change.
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: qip-api
+  namespace: qip
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: qip-api
+  updatePolicy:
+    updateMode: "Off"
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: qip-fastbrain
+  namespace: qip
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: qip-fastbrain
+  updatePolicy:
+    updateMode: "Off"
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: qip-deepbrain
+  namespace: qip
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: qip-deepbrain
+  updatePolicy:
+    updateMode: "Off"

@@ -229,3 +229,15 @@ variable "cluster_deletion_protection" {
   type        = bool
   default     = true
 }
+
+variable "nap_max_cpu_cores" {
+  description = "Whole-cluster CPU ceiling for the autoscaler, committed pool included. The blast radius of a scheduling mistake, priced in cores."
+  type        = number
+  default     = 32
+}
+
+variable "nap_max_memory_gb" {
+  description = "Whole-cluster memory ceiling for the autoscaler, in GB. The other half of the blast radius."
+  type        = number
+  default     = 128
+}
