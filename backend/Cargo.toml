@@ -175,6 +175,3 @@ lto = "thin"
 codegen-units = 1
 panic = "abort"
 
-[profile.bench]
-opt-level = 3
-debug = true
