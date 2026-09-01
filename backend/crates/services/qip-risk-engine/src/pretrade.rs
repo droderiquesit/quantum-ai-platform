@@ -270,6 +270,19 @@ impl PreTradeChecker {
     /// limit: the limits are heterogeneous and some are not analytically
     /// invertible, and a search over a monotone predicate is both simpler and
     /// harder to get subtly wrong.
+    ///
+    /// The bisection runs entirely in [`Decimal`]. It used to bisect a `f64`
+    /// fraction and rebuild the quantity as
+    /// `Decimal::from_f64(full.to_f64() * mid)`, which put a `Decimal → f64 →
+    /// Decimal` round trip inside the loop that decides how much of a breaching
+    /// order survives. Two failures followed from that. The reported permitted
+    /// quantity was a binary-floating-point approximation of the true boundary,
+    /// so it could land a hair *above* a hard limit — a control that returns a
+    /// size the limit would reject is not a control. And the answer was not
+    /// reproducible from the event log, because the rounding depended on the
+    /// magnitude of the order rather than on the limits. There is no crossing
+    /// into `f64` anywhere below; the endpoints are halved on the underlying
+    /// scaled integer, which is exact.
     fn largest_permissible(
         &self,
         order: &ProposedOrder,
@@ -292,21 +305,39 @@ impl PreTradeChecker {
         };
 
         let full = order.quantity;
-        let (ok, _) = passes(full);
+        let (ok, blocked_by) = passes(full);
         if ok {
             return Some((full, String::new()));
         }
 
-        // Bisect on the fraction of the order that passes.
-        let mut low = 0.0_f64;
-        let mut high = 1.0_f64;
-        let mut limiting = String::new();
-        for _ in 0..40 {
-            let mid = 0.5 * (low + high);
-            let Some(quantity) = Decimal::from_f64(full.to_f64() * mid) else {
+        // Bisect on the quantity itself. `low` is always a quantity that
+        // passes — zero passes by construction, which is what makes the
+        // invariant hold on the first iteration — and `high` is always one
+        // that does not, `full` having just been shown to breach.
+        let mut low = Decimal::ZERO;
+        let mut high = full;
+        // Seeded from the full-size breach so a reduction always names what
+        // reduced it. An unnamed constraint reads to an operator as "the
+        // system shrank my order and will not say why".
+        let mut limiting = blocked_by;
+        // One scaled unit is the smallest quantity the type can express, so a
+        // gap of one means `low` is the largest representable passing size and
+        // there is nothing left to search.
+        let smallest_step: i128 = 1;
+        // Bounded because a loop whose termination depends on arithmetic the
+        // caller supplies is a hang waiting for an unusual order. `i128` at
+        // nine decimal places needs at most 127 halvings to close any gap.
+        for _ in 0..127 {
+            if (high.raw() - low.raw()).abs() <= smallest_step {
                 break;
-            };
-            let (ok, name) = passes(quantity);
+            }
+            // Halving the scaled integer is exact for even raws and truncates
+            // toward zero otherwise, so the midpoint never overshoots `high`.
+            let mid = Decimal::from_raw(low.raw() + (high.raw() - low.raw()) / 2);
+            if mid == low || mid == high {
+                break;
+            }
+            let (ok, name) = passes(mid);
             if ok {
                 low = mid;
             } else {
@@ -316,10 +347,9 @@ impl PreTradeChecker {
                 }
             }
         }
-        let quantity = Decimal::from_f64(full.to_f64() * low)?;
-        if quantity.is_zero() {
+        if low.is_zero() {
             return None;
         }
-        Some((quantity, limiting))
+        Some((low, limiting))
     }
 }

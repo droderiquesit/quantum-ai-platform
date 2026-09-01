@@ -77,14 +77,16 @@ fn manager() -> OrderManager {
 /// A simulated venue that fills everything, so the tests are about the gates
 /// rather than about fill mechanics.
 fn simulator() -> SimulatedBroker {
-    SimulatedBroker::new(
-        SimulationSettings {
-            rejection_probability: 0.0,
-            immediate_fill_fraction: 1.0,
-            ..SimulationSettings::default()
-        },
-        3,
-    )
+    SimulatedBroker::new(fills_everything(), 3)
+}
+
+/// Settings that never reject and fill in full, so the gate tests are about
+/// the gates rather than about fill mechanics.
+fn fills_everything() -> SimulationSettings {
+    SimulationSettings::default()
+        .with_rejection_probability(0.0)
+        .and_then(|s| s.with_immediate_fill_fraction(Decimal::ONE))
+        .expect("0.0 and 1.0 are inside the permitted ranges")
 }
 
 fn live_venue(credential: bool, enabled: bool) -> LiveBroker {
@@ -783,16 +785,12 @@ fn slippage_is_signed_so_positive_is_always_worse() -> Result<()> {
 #[test]
 fn cancelling_a_scope_stops_every_open_order_in_it() -> Result<()> {
     let mut manager = manager();
-    let mut broker = SimulatedBroker::new(
-        SimulationSettings {
-            rejection_probability: 0.0,
-            // Partial fills leave the orders open, which is the case that
-            // matters for a halt.
-            immediate_fill_fraction: 0.5,
-            ..SimulationSettings::default()
-        },
-        3,
-    );
+    // Partial fills leave the orders open, which is the case that matters for
+    // a halt.
+    let settings = SimulationSettings::default()
+        .with_rejection_probability(0.0)?
+        .with_immediate_fill_fraction(dec!("0.5"))?;
+    let mut broker = SimulatedBroker::new(settings, 3);
     let controller = AutonomyController::new();
 
     for symbol in ["AAA", "BBB"] {
@@ -827,9 +825,9 @@ fn the_simulator_does_not_fill_everything_at_once_by_default() -> Result<()> {
     // A simulator that always fills in full teaches a strategy that liquidity
     // is free, and the lesson is expensive to unlearn.
     let settings = SimulationSettings::default();
-    assert!(settings.immediate_fill_fraction < 1.0);
+    assert!(settings.immediate_fill_fraction() < Decimal::ONE);
     assert!(
-        settings.rejection_probability > 0.0,
+        settings.rejection_probability() > 0.0,
         "rejections must be exercised"
     );
     Ok(())
@@ -837,14 +835,7 @@ fn the_simulator_does_not_fill_everything_at_once_by_default() -> Result<()> {
 
 #[test]
 fn a_market_order_pays_the_spread() -> Result<()> {
-    let mut broker = SimulatedBroker::new(
-        SimulationSettings {
-            rejection_probability: 0.0,
-            immediate_fill_fraction: 1.0,
-            ..SimulationSettings::default()
-        },
-        1,
-    );
+    let mut broker = SimulatedBroker::new(fills_everything(), 1);
     let buy = order("AAA", Side::Buy, "1000");
     let fills = broker.submit(&buy, now())?;
     assert_eq!(fills.len(), 1);
@@ -866,14 +857,7 @@ fn a_market_order_pays_the_spread() -> Result<()> {
 
 #[test]
 fn a_limit_order_does_not_fill_through_its_price() -> Result<()> {
-    let mut broker = SimulatedBroker::new(
-        SimulationSettings {
-            rejection_probability: 0.0,
-            immediate_fill_fraction: 1.0,
-            ..SimulationSettings::default()
-        },
-        1,
-    );
+    let mut broker = SimulatedBroker::new(fills_everything(), 1);
     let mut buy = order("AAA", Side::Buy, "1000");
     // The simulator fills a buy slightly above 100; a limit below that must
     // not trade.
@@ -882,6 +866,141 @@ fn a_limit_order_does_not_fill_through_its_price() -> Result<()> {
 
     buy.order_type = OrderType::Limit { price: dec!("110") };
     assert!(!broker.submit(&buy, now())?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn an_immediate_fill_fraction_outside_its_range_is_refused_rather_than_clamped() -> Result<()> {
+    // This used to be `clamp(0.0, 1.0)` at the point of use, so an operator who
+    // configured 1.6 silently got 1.0 and one who configured -0.5 silently got
+    // no fills at all. A value silently corrected is a caller bug that survives
+    // into every backtest run afterwards.
+    //
+    // Premise first: the builder admits a good value, or refusing a bad one
+    // proves nothing.
+    let good = SimulationSettings::default().with_immediate_fill_fraction(dec!("0.25"))?;
+    assert_eq!(good.immediate_fill_fraction(), dec!("0.25"));
+
+    for bad in [dec!("1.6"), dec!("-0.5"), Decimal::ZERO] {
+        let refused = SimulationSettings::default().with_immediate_fill_fraction(bad);
+        let Err(error) = refused else {
+            panic!("a fill fraction of {bad} was accepted");
+        };
+        assert!(
+            error.message().contains("at most 1"),
+            "the refusal must name the range the caller should have used: {}",
+            error.message()
+        );
+    }
+
+    // And the boundary itself is admitted: a gate that refuses everything is
+    // not a gate.
+    assert_eq!(
+        SimulationSettings::default()
+            .with_immediate_fill_fraction(Decimal::ONE)?
+            .immediate_fill_fraction(),
+        Decimal::ONE
+    );
+    Ok(())
+}
+
+#[test]
+fn settings_deserialized_from_a_document_face_the_same_refusal_as_the_builder() -> Result<()> {
+    // A settings blob read from a file is exactly the case the clamp used to
+    // swallow, so the validation has to sit on the serde path too.
+    let good = serde_json::to_string(&SimulationSettings::default())
+        .map_err(|e| qip_core::error::Error::schema(e.to_string()))?;
+    let parsed: SimulationSettings =
+        serde_json::from_str(&good).map_err(|e| qip_core::error::Error::schema(e.to_string()))?;
+    assert_eq!(parsed.immediate_fill_fraction(), dec!("0.6"));
+
+    let bad = good.replace(
+        r#""immediate_fill_fraction":"0.6""#,
+        r#""immediate_fill_fraction":"1.6""#,
+    );
+    assert_ne!(bad, good, "the substitution did not fire");
+    let refused: std::result::Result<SimulationSettings, _> = serde_json::from_str(&bad);
+    assert!(
+        refused.is_err(),
+        "a document carrying an impossible fill fraction was accepted"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_fill_price_that_cannot_be_represented_is_refused_not_reported_as_the_arrival_price()
+-> Result<()> {
+    // The fallback used to be `.unwrap_or(arrival)`: a cost the conversion
+    // could not represent became a fill at the arrival price, which is zero
+    // slippage — the most flattering answer available, delivered silently.
+    let buy = order("AAA", Side::Buy, "1000");
+
+    // Premise: with sane settings this order fills, and away from arrival.
+    let mut sane = SimulatedBroker::new(fills_everything(), 1);
+    let fills = sane.submit(&buy, now())?;
+    assert_eq!(fills.len(), 1);
+    assert!(fills[0].price > buy.arrival_price);
+
+    // A half-spread this large makes the price adjustment unrepresentable.
+    let settings = fills_everything().with_half_spread_bps(1e35)?;
+    let mut broken = SimulatedBroker::new(settings, 1);
+    let Err(error) = broken.submit(&buy, now()) else {
+        panic!("an unrepresentable fill price produced a fill instead of a refusal");
+    };
+    assert!(
+        error.message().contains("half_spread_bps"),
+        "the refusal must name the setting to change: {}",
+        error.message()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_commission_that_cannot_be_computed_is_refused_not_booked_as_zero() -> Result<()> {
+    // `.unwrap_or(Decimal::ZERO)` on the commission booked a free trade
+    // whenever the arithmetic failed. Free is the most favourable answer there
+    // is, and a simulator that fails favourably flatters every strategy
+    // measured against it.
+    let mut broker = SimulatedBroker::new(fills_everything(), 1);
+
+    // Premise: an ordinary fill books a strictly positive commission, so the
+    // commission path is live and a zero would be visible.
+    let ordinary = order("AAA", Side::Buy, "1000");
+    let fills = broker.submit(&ordinary, now())?;
+    assert_eq!(fills.len(), 1);
+    assert!(
+        fills[0].costs > Decimal::ZERO,
+        "the ordinary case books no commission, so this test could not tell zero from a refusal"
+    );
+
+    // A notional beyond what the fixed-point type can express.
+    let huge = Order::new(
+        OrderId::from_string("ord-huge"),
+        object("HUGE"),
+        Side::Buy,
+        dec!("1000000000000000"),
+        OrderType::Market,
+        dec!("1000000000000000"),
+        "prop-1",
+        vec!["hyp-1".to_string()],
+        "momentum",
+        now(),
+    );
+    let Err(error) = broker.submit(&huge, now()) else {
+        panic!("an uncomputable commission produced a fill instead of a refusal");
+    };
+    assert!(
+        error.message().contains("commission"),
+        "the refusal must say the cost is what could not be computed: {}",
+        error.message()
+    );
+    assert!(
+        error
+            .message()
+            .contains("must not be booked without its cost"),
+        "the refusal must say why the fill was withheld: {}",
+        error.message()
+    );
     Ok(())
 }
 

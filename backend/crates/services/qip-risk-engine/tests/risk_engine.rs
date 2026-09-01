@@ -415,6 +415,100 @@ fn reduction_is_opt_in_and_finds_a_permissible_size() -> Result<()> {
 }
 
 #[test]
+fn the_permitted_quantity_is_the_exact_boundary_and_one_more_unit_breaches() -> Result<()> {
+    // The bisection used to rebuild each trial quantity through
+    // `Decimal::from_f64(full.to_f64() * mid)`, so the size it handed back was
+    // a binary-floating-point neighbour of the true boundary rather than the
+    // boundary. That is the failure this pins: a size the limits would refuse,
+    // returned by the control whose job is to produce a size they accept.
+    //
+    // The price is deliberately 3 and not 100. At a round price the boundary
+    // lands on a dyadic fraction of the order — exactly half of it — which the
+    // old `f64` bisection hit on its very first midpoint, so a test written at
+    // 100 passes against the defect it was written to catch. It did, when this
+    // test was first drafted. At 3 the boundary is a third of the order and
+    // the two implementations diverge.
+    let checker = PreTradeChecker::new(limits()).allowing_reduction();
+    let current = state("10000000", "0");
+    let requested = order("AAA", "1000000", "3");
+
+    let result = checker.check(&requested, &current, now())?;
+    let PreTradeDecision::Reduced {
+        permitted_quantity, ..
+    } = &result.decision
+    else {
+        panic!("expected a reduction, got {:?}", result.decision);
+    };
+    // Premise: a reduction actually happened, so there is a boundary to test.
+    assert!(*permitted_quantity > Decimal::ZERO);
+    assert!(*permitted_quantity < dec!("1000000"));
+
+    let at = |quantity: Decimal| -> Result<bool> {
+        let mut trial = requested.clone();
+        trial.quantity = quantity;
+        Ok(checker.check(&trial, &current, now())?.is_approved())
+    };
+
+    assert!(
+        at(*permitted_quantity)?,
+        "the permitted quantity {permitted_quantity} does not itself pass the limits"
+    );
+    // One scaled unit is the smallest quantity `Decimal` can express, so this
+    // is the tightest possible statement that the answer is the boundary and
+    // not merely near it.
+    let one_more = Decimal::from_raw(permitted_quantity.raw() + 1);
+    assert!(
+        !at(one_more)?,
+        "{one_more} also passes, so {permitted_quantity} is not the largest permissible size"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_permitted_quantity_is_identical_across_runs_and_across_order_direction() -> Result<()> {
+    // Reproducibility from the event log is the whole product. A bisection in
+    // `f64` gave an answer whose last digits depended on the magnitude of the
+    // order rather than on the limits, which is not something a reader of the
+    // log could ever reconstruct.
+    let checker = PreTradeChecker::new(limits()).allowing_reduction();
+    let current = state("10000000", "0");
+
+    // Price 3 rather than 100 for the reason given in the boundary test above:
+    // at a round price the boundary is a dyadic fraction of the order and both
+    // implementations agree by accident.
+    let buy = checker
+        .check(&order("AAA", "1000000", "3"), &current, now())?
+        .decision
+        .permitted_quantity(dec!("1000000"));
+    let again = checker
+        .check(&order("AAA", "1000000", "3"), &current, now())?
+        .decision
+        .permitted_quantity(dec!("1000000"));
+    // Premise: something was actually reduced, or the equality is vacuous.
+    assert!(
+        buy > Decimal::ZERO && buy < dec!("1000000"),
+        "no reduction: {buy}"
+    );
+    assert_eq!(buy, again, "the same order gave two different answers");
+
+    let mut sell = order("AAA", "1000000", "3");
+    sell.quantity = dec!("-1000000");
+    let short = checker
+        .check(&sell, &current, now())?
+        .decision
+        .permitted_quantity(dec!("-1000000"));
+    assert!(
+        short < Decimal::ZERO,
+        "a sale must reduce to a sale: {short}"
+    );
+    assert_eq!(
+        short, -buy,
+        "the limits here are symmetric, so the permitted sale must mirror the permitted purchase exactly"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_reducing_order_shrinks_gross_exposure_rather_than_growing_it() -> Result<()> {
     // The projection has to account for a sale reducing an existing position;
     // adding the order's notional to gross regardless would refuse the very
