@@ -30,9 +30,11 @@ use qip_lifecycle::demotion::{
 };
 use qip_lifecycle::evidence::{KillCondition, StrategyEvidence};
 use qip_lifecycle::ledger::{LifecycleLedger, attempt_promotion};
+use qip_observability::metrics::Metrics;
 use qip_strategy::compile::CompiledStrategy;
 use qip_strategy::program::Program;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// A strategy the centre is considering, with everything a gate will ask for.
 ///
@@ -210,6 +212,11 @@ impl StrategyFactory {
     pub fn with_demotion_policy(mut self, policy: DemotionPolicy) -> Self {
         self.monitor = DemotionMonitor::new(policy);
         self
+    }
+
+    /// Count every rung the ledger records into `metrics`.
+    pub fn attach_metrics(&mut self, metrics: Arc<Metrics>) {
+        self.ledger.attach_metrics(metrics);
     }
 
     /// Register a candidate.

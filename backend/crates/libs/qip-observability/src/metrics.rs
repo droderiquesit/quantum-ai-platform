@@ -628,4 +628,15 @@ pub mod names {
     /// incident without writing a series, so the one event an operator most
     /// needed to see was the one no chart could show.
     pub const CENTRAL_CELL_HALTS: &str = "qip_central_cell_halts_total";
+
+    /// Strategy moves recorded by the lifecycle ledger, by the rung left
+    /// (`from`) and the rung entered (`to`). Promotions and demotions are two
+    /// series rather than one with a direction label, because an alert on
+    /// demotions is the one that matters and should not have to filter. The
+    /// strategy is not a label: rungs are seven and closed, strategies are
+    /// however many the foundry proposes. A strategy demoted for decayed
+    /// performance used to reach the ledger and no series, which made a
+    /// capital-affecting action invisible to every operator.
+    pub const STRATEGY_PROMOTIONS: &str = "qip_strategy_promotions_total";
+    pub const STRATEGY_DEMOTIONS: &str = "qip_strategy_demotions_total";
 }

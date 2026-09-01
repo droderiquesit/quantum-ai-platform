@@ -910,10 +910,11 @@ impl Platform {
             router = router.with_quantum(Arc::new(SimulatedProvider::new(config.seed)));
         }
 
-        let central = CentralPlane::with_reproducible_key(
+        let mut central = CentralPlane::with_reproducible_key(
             &central_signing_secret(config.seed),
             config.central.clone(),
         )?;
+        central.attach_metrics(Arc::clone(&telemetry.metrics));
 
         // The finder is configured for the usage the platform actually intends.
         // `Usage::Trade` is the strictest of the four, so a source registered
@@ -1136,6 +1137,14 @@ impl Platform {
             names::CENTRAL_CELL_HALTS,
             "scoped halts the central plane placed on a cell, by cause",
         );
+        metrics.describe(
+            names::STRATEGY_PROMOTIONS,
+            "strategies admitted to a rung by a gate, by the rungs left and entered",
+        );
+        metrics.describe(
+            names::STRATEGY_DEMOTIONS,
+            "strategies pushed down or retired, by the rungs left and entered",
+        );
     }
 
     pub fn config(&self) -> &PlatformConfig {
@@ -1182,7 +1191,12 @@ impl Platform {
         (&mut self.insights, &self.central)
     }
 
-    pub fn set_central(&mut self, central: CentralPlane) {
+    pub fn set_central(&mut self, mut central: CentralPlane) {
+        // The swapped-in plane is the one every deployment trades on, and a
+        // plane that arrived without the registry would count its rungs into
+        // nothing — the reproducible plane it replaces was wired, and the
+        // silence would begin exactly when the real key arrived.
+        central.attach_metrics(Arc::clone(&self.telemetry.metrics));
         self.central = central;
     }
 

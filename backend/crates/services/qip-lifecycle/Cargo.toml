@@ -20,6 +20,11 @@ qip-ai.workspace = true
 # implements — deflated Sharpe, purged k-fold, overfitting assessment — rather
 # than trusting numbers a researcher submitted alongside the strategy.
 qip-simulation-engine.workspace = true
+# The ledger records every rung a strategy moves across. A demotion for decayed
+# performance is a capital-affecting action, and one that reached the ledger
+# and no series was invisible to every operator; the registry is an in-memory
+# lib, so the inward dependency direction holds.
+qip-observability.workspace = true
 
 
 [lints]

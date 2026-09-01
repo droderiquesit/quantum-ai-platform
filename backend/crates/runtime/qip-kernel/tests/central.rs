@@ -748,6 +748,70 @@ fn a_reconciliation_break_is_recorded_by_direction_and_the_halt_by_cause() -> Re
     Ok(())
 }
 
+/// The plane a deployment builds arrives through `set_central`, after the
+/// platform already owns the registry. If the swap did not attach it, every
+/// deployed ledger would count its rungs into nothing while the reproducible
+/// plane the tests use counted fine — a silence that begins exactly when the
+/// real key arrives. This test walks the swapped-in plane, not the default.
+#[test]
+fn a_swapped_in_central_plane_counts_its_rungs_into_the_platform_registry() -> Result<()> {
+    let mut platform = platform()?;
+    platform.set_central(plane()?);
+    let id = strategy();
+    register(platform.central_mut(), &id, CELL)?;
+    assert_eq!(
+        platform
+            .telemetry()
+            .metrics
+            .snapshot()
+            .counter_total(names::STRATEGY_PROMOTIONS),
+        0,
+        "registration is not a rung"
+    );
+
+    walk_to(platform.central_mut(), &id, GateStage::Shadow)?;
+    assert_eq!(
+        platform.central().factory().stage_of(&id),
+        GateStage::Shadow
+    );
+    platform.central_mut().factory_mut().demote(
+        &id,
+        GateStage::Paper,
+        "test",
+        "looked wrong",
+        start(),
+    )?;
+
+    let snapshot = platform.telemetry().metrics.snapshot();
+    assert_eq!(
+        snapshot.counter(
+            names::STRATEGY_PROMOTIONS,
+            &labels([("from", "paper"), ("to", "shadow")])
+        ),
+        1
+    );
+    assert_eq!(snapshot.counter_total(names::STRATEGY_PROMOTIONS), 3);
+    assert_eq!(
+        snapshot.counter(
+            names::STRATEGY_DEMOTIONS,
+            &labels([("from", "shadow"), ("to", "paper")])
+        ),
+        1
+    );
+    for series in snapshot
+        .series
+        .iter()
+        .filter(|s| s.name == names::STRATEGY_PROMOTIONS || s.name == names::STRATEGY_DEMOTIONS)
+    {
+        assert!(
+            !series.help.is_empty(),
+            "{} exports undescribed",
+            series.name
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn the_compliance_report_enumerates_all_six_controls_with_its_caveats_intact() -> Result<()> {
     let platform = platform()?;

@@ -40,9 +40,11 @@ use qip_contracts::signal::StrategyId;
 use qip_contracts::{CapitalEnvelope, Utilisation};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, Timestamp};
+use qip_observability::metrics::Metrics;
 use qip_risk_engine::autonomy::KillSwitch;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// The key id every signature the central plane makes is recorded under.
 ///
@@ -405,6 +407,15 @@ impl CentralPlane {
 
     pub fn config(&self) -> &CentralConfig {
         &self.config
+    }
+
+    /// Count every strategy move the plane's ledger records into `metrics`.
+    ///
+    /// Attached after assembly rather than taken by the constructor, because
+    /// the plane a deployment builds is swapped into a platform that already
+    /// owns the registry, and the swap is where the two meet.
+    pub fn attach_metrics(&mut self, metrics: Arc<Metrics>) {
+        self.factory.attach_metrics(metrics);
     }
 
     pub fn factory(&self) -> &StrategyFactory {

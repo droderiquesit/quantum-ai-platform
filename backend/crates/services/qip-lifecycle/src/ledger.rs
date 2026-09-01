@@ -26,8 +26,10 @@ use qip_contracts::governance::Approval;
 use qip_contracts::signal::StrategyId;
 use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
+use qip_observability::metrics::{Metrics, labels, names};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// A promotion that has already cleared its authority check.
 ///
@@ -128,11 +130,42 @@ impl LedgerEntry {
 #[derive(Clone, Debug, Default)]
 pub struct LifecycleLedger {
     entries: BTreeMap<StrategyId, Vec<LedgerEntry>>,
+    /// Where each move is counted, if whoever composed the ledger gave it a
+    /// registry. Handed in rather than constructed, because a ledger that
+    /// made its own registry would count into a series nothing scrapes; and
+    /// optional rather than required, because the ledger's job is the record
+    /// and a missing registry must not stop a demotion.
+    metrics: Option<Arc<Metrics>>,
 }
 
 impl LifecycleLedger {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Count moves into `metrics` from now on.
+    pub fn with_metrics(mut self, metrics: Arc<Metrics>) -> Self {
+        self.attach_metrics(metrics);
+        self
+    }
+
+    /// Count moves into `metrics` from now on, for a ledger that already
+    /// exists — which is every ledger a composition root reaches, since the
+    /// plane builds its own before the root can hand anything in.
+    pub fn attach_metrics(&mut self, metrics: Arc<Metrics>) {
+        self.metrics = Some(metrics);
+    }
+
+    /// Count one recorded move. Keyed on the rungs alone: seven, closed, and
+    /// what an alert wants to filter on. Never the strategy, whose number is
+    /// whatever the foundry proposes.
+    fn record_move(&self, series: &str, from: GateStage, to: GateStage) {
+        if let Some(metrics) = &self.metrics {
+            metrics.count(
+                series,
+                labels([("from", from.as_str()), ("to", to.as_str())]),
+            );
+        }
     }
 
     /// Where a strategy stands. An unknown strategy is a candidate: there is
@@ -257,6 +290,7 @@ impl LifecycleLedger {
                 outcome: Some(outcome),
                 approval: promotion.approval().cloned(),
             });
+        self.record_move(names::STRATEGY_PROMOTIONS, record.from, record.to);
         Ok(record)
     }
 
@@ -315,6 +349,7 @@ impl LifecycleLedger {
                 outcome: None,
                 approval: None,
             });
+        self.record_move(names::STRATEGY_DEMOTIONS, record.from, record.to);
         Ok(record)
     }
 

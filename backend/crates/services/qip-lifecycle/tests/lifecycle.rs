@@ -27,8 +27,10 @@ use qip_lifecycle::evidence::{
 };
 use qip_lifecycle::gates::{Gate, HoldoutGate, PaperGate, PilotGate, ScaledGate, ShadowGate};
 use qip_lifecycle::ledger::{AuthorisedPromotion, LifecycleLedger, attempt_promotion};
+use qip_observability::metrics::{Metrics, labels, names};
 use qip_simulation_engine::validation::PurgedSplit;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 fn start() -> Timestamp {
     Timestamp::from_secs(1_700_000_000)
@@ -800,6 +802,111 @@ fn performance_decay_against_the_pilot_baseline_demotes_without_a_human() -> Res
     let demotion = demotion.ok_or_else(|| qip_core::error::Error::not_found("demotion"))?;
     assert!(demotion.approver.is_none(), "no human was in the loop");
     assert_eq!(ledger.stage_of(&strategy()), GateStage::Shadow);
+    Ok(())
+}
+
+/// Every rung a strategy climbs is counted by the rungs left and entered, and
+/// by nothing else. The strategy's own id is refused as a label: rungs are
+/// seven and closed, strategies are however many the foundry proposes, and a
+/// series keyed on them grows until it cannot be scraped.
+#[test]
+fn every_promotion_is_counted_by_the_rungs_it_moves_between() -> Result<()> {
+    let metrics = Arc::new(Metrics::new("lifecycle-test"));
+    let mut ledger = LifecycleLedger::new().with_metrics(Arc::clone(&metrics));
+    assert_eq!(
+        metrics.snapshot().counter_total(names::STRATEGY_PROMOTIONS),
+        0,
+        "nothing has moved yet"
+    );
+
+    walk_to_scaled(&mut ledger)?;
+    assert_eq!(ledger.stage_of(&strategy()), GateStage::Scaled);
+
+    let snapshot = metrics.snapshot();
+    for (from, to) in [
+        (GateStage::Candidate, GateStage::Holdout),
+        (GateStage::Holdout, GateStage::Paper),
+        (GateStage::Paper, GateStage::Shadow),
+        (GateStage::Shadow, GateStage::Pilot),
+        (GateStage::Pilot, GateStage::Scaled),
+    ] {
+        assert_eq!(
+            snapshot.counter(
+                names::STRATEGY_PROMOTIONS,
+                &labels([("from", from.as_str()), ("to", to.as_str())])
+            ),
+            1,
+            "one move from {} to {}",
+            from.as_str(),
+            to.as_str()
+        );
+    }
+    assert_eq!(snapshot.counter_total(names::STRATEGY_PROMOTIONS), 5);
+    assert_eq!(
+        snapshot.counter_total(names::STRATEGY_DEMOTIONS),
+        0,
+        "a walk up is not a demotion"
+    );
+    for series in snapshot
+        .series
+        .iter()
+        .filter(|s| s.name == names::STRATEGY_PROMOTIONS)
+    {
+        assert!(
+            series.labels.values().all(|v| v != strategy().as_str()),
+            "the strategy id is an unbounded label: {:?}",
+            series.labels
+        );
+    }
+    Ok(())
+}
+
+/// An automatic demotion for decayed performance is a capital-affecting action
+/// no human was in the loop for. It reached the ledger and no series, so the
+/// one move an operator most needed to see was the one nothing charted.
+#[test]
+fn an_automatic_demotion_for_decayed_performance_is_counted() -> Result<()> {
+    let metrics = Arc::new(Metrics::new("lifecycle-test"));
+    let (mut ledger, baseline) = pilot_fixture()?;
+    ledger.attach_metrics(Arc::clone(&metrics));
+    assert_eq!(ledger.stage_of(&strategy()), GateStage::Pilot);
+    assert_eq!(
+        metrics.snapshot().counter_total(names::STRATEGY_DEMOTIONS),
+        0,
+        "nothing has been demoted yet"
+    );
+
+    let now = start().saturating_add(Duration::from_days(60));
+    let mut observation = healthy_observation(now);
+    observation.returns = good_returns(11, 60, -0.0002);
+    let (triggers, demotion) = DemotionMonitor::default().enforce(
+        &mut ledger,
+        &baseline,
+        &observation,
+        Some(&healthy_registry(now)),
+        now,
+    )?;
+    assert!(
+        triggers
+            .iter()
+            .any(|t| matches!(t, DemotionTrigger::PerformanceDecay { .. })),
+        "{triggers:?}"
+    );
+    let demotion = demotion.ok_or_else(|| qip_core::error::Error::not_found("demotion"))?;
+    assert_eq!(demotion.from, GateStage::Pilot);
+    assert_eq!(demotion.to, GateStage::Shadow);
+
+    let snapshot = metrics.snapshot();
+    assert_eq!(
+        snapshot.counter(
+            names::STRATEGY_DEMOTIONS,
+            &labels([("from", "pilot"), ("to", "shadow")])
+        ),
+        1,
+        "one demotion out of capital; series: {:?}",
+        snapshot.series.iter().map(|s| &s.name).collect::<Vec<_>>()
+    );
+    assert_eq!(snapshot.counter_total(names::STRATEGY_DEMOTIONS), 1);
     Ok(())
 }
 
