@@ -26,9 +26,11 @@
 //! **Cardinality is bounded by construction.** `cell` and `region` are fixed
 //! for the life of the process. `venue` is bounded by the cell's configured
 //! venue set. `gate` is bounded by the string literals `Cell::refuse` is
-//! called with. `capability`, `source` and `kind` are enums. Nothing here is
-//! labelled by instrument, strategy or order id, and that is deliberate: a
-//! series per order id is a memory leak wearing a dashboard.
+//! called with. `source` and `kind` are enums, and `capability` is the three
+//! policy-fed variants of one. Nothing here is labelled by instrument,
+//! strategy or order id, and that is deliberate: a series per order id is a
+//! memory leak wearing a dashboard. Each `with(...)` call below says what
+//! bounds its own label.
 
 use qip_contracts::degradation::{Capability, DegradationState, Freshness};
 use qip_contracts::signal::SignalKind;
@@ -168,6 +170,8 @@ impl CellMetrics {
     /// updated. A gauge that goes stale at `1` and a cell that is still halted
     /// look identical on a chart.
     pub fn halt(&self, kill_switch: bool, policy: bool) {
+        // `source` takes exactly the two literals below — one per halt
+        // discipline the cell has — so this is two series per cell.
         self.metrics.gauge(
             names::EDGE_HALTED,
             self.with("source", "kill_switch"),
@@ -180,12 +184,24 @@ impl CellMetrics {
         );
     }
 
-    /// A gate refused. `gate` is a string literal at every call site.
+    /// A gate refused.
+    ///
+    /// `gate` is a string literal at every call site — `Cell::refuse` is
+    /// never handed a formatted string, and the reason, which is formatted,
+    /// goes to the journal and not to a label. The series count is the number
+    /// of distinct literals in `cell.rs`, which is a property of the source
+    /// and not of the market.
     pub fn refusal(&self, gate: &str) {
         self.metrics
             .count(names::EDGE_REFUSALS, self.with("gate", gate));
     }
 
+    /// A strategy raised a signal.
+    ///
+    /// Keyed on the signal's kind, a four-variant enum, and deliberately not
+    /// on the strategy or the instrument that raised it: both are unbounded
+    /// over the life of a cell, and the question this series answers — is the
+    /// cell seeing anything to act on — does not need either.
     pub fn signal(&self, kind: SignalKind) {
         self.metrics
             .count(names::EDGE_SIGNALS_RAISED, self.with("kind", kind.as_str()));
@@ -199,17 +215,34 @@ impl CellMetrics {
     /// against, rather than what it would have sized against at some earlier
     /// instant.
     ///
-    /// Five capabilities, one series each: the enum is closed and this is the
-    /// whole of it, so a capability that is never observed still reports
-    /// `unavailable` rather than vanishing from the chart. Absence is the
-    /// worst case in this table, and a missing series reads as good news.
+    /// Only the capabilities a policy payload feeds are published: the causal
+    /// graph, episodic memory and the belief state — the three
+    /// `PolicyItem::capability` maps, and the two that set the sizing
+    /// multiplier. `Ingestion` is deliberately absent because
+    /// `Cell::narrowing` never observes it: book staleness is refused per book
+    /// at the routing seam and counted under the `stale_book` gate, and the
+    /// table's `unavailable` for it is `nothing_known()`'s default, not a
+    /// measurement. `CounterfactualScoring` never ships and §6.2 gives its
+    /// loss no trading impact. Publishing either would put a permanent `2` on
+    /// a chart whose whole purpose is a `max`, and an operator would learn to
+    /// ignore the one series that pages on a real narrowing.
+    ///
+    /// Each of the three is written on every pass, so a capability that goes
+    /// from stale back to fresh is a series falling to zero rather than one
+    /// that stopped being updated.
     pub fn narrowing(&self, state: &DegradationState) {
-        for capability in Capability::all() {
+        for capability in [
+            Capability::CausalGraph,
+            Capability::EpisodicMemory,
+            Capability::BeliefState,
+        ] {
             let severity = match state.freshness(capability) {
                 Freshness::Fresh => 0.0,
                 Freshness::Stale => 1.0,
                 Freshness::Unavailable => 2.0,
             };
+            // `capability` is one of the three variants named above; the
+            // series count is three per cell, whatever the payload carries.
             self.metrics.gauge(
                 names::EDGE_CAPABILITY_FRESHNESS,
                 self.with("capability", capability.as_str()),
@@ -256,6 +289,13 @@ impl CellMetrics {
         );
     }
 
+    /// An order reached a venue.
+    ///
+    /// `venue` is one of `CellConfig::venues` — `Cell::venue_for` selects
+    /// from that list and nothing else — so the series count is the size of a
+    /// list fixed at deployment. The order id and the instrument are not
+    /// labels: an order id is a new series per order, which is a registry
+    /// that grows without bound for as long as the cell trades.
     pub fn order_placed(&self, venue: &VenueId) {
         self.metrics.count(
             names::EDGE_ORDERS_PLACED,
@@ -271,6 +311,12 @@ impl CellMetrics {
             .count(names::EDGE_INTENTS_CANCELLED, self.base.clone());
     }
 
+    /// A cross was booked between two of the platform's own strategies.
+    ///
+    /// Keyed on the venue whose mid priced it, bounded exactly as
+    /// [`Self::order_placed`] is: the venue came from the net intent, which
+    /// took it from the configured list. The strategies on each side are in
+    /// the journal, not on a label.
     pub fn internal_cross(&self, venue: &VenueId) {
         self.metrics.count(
             names::EDGE_INTERNAL_CROSSES,
@@ -337,14 +383,22 @@ mod tests {
     }
 
     #[test]
-    fn every_capability_reports_a_freshness_even_when_nothing_was_observed() {
-        // Absence is the worst case in the §6.2 table, so a capability nobody
-        // reported must appear as `unavailable` rather than not appear. A
-        // missing series reads as good news on every dashboard ever built.
+    fn only_the_capabilities_a_payload_feeds_are_published_and_each_reports_even_when_absent() {
+        // Two properties, and both matter. The three policy-fed capabilities
+        // must appear even when nothing was observed: absence is the worst
+        // case in the §6.2 table, and a missing series reads as good news on
+        // every dashboard ever built. And the two the cell never measures
+        // must *not* appear: `nothing_known()` reports ingestion as
+        // unavailable by default, not by observation, and a permanent `2` on
+        // a chart whose purpose is a `max` teaches an operator to ignore it.
         let recorder = recorder();
         recorder.narrowing(&DegradationState::nothing_known());
         let snapshot = recorder.registry().snapshot();
-        for capability in Capability::all() {
+        for capability in [
+            Capability::CausalGraph,
+            Capability::EpisodicMemory,
+            Capability::BeliefState,
+        ] {
             assert_eq!(
                 snapshot.gauge(
                     names::EDGE_CAPABILITY_FRESHNESS,
@@ -356,6 +410,21 @@ mod tests {
                 ),
                 Some(2.0),
                 "{} did not report as unavailable with nothing known",
+                capability.as_str()
+            );
+        }
+        for capability in [Capability::Ingestion, Capability::CounterfactualScoring] {
+            assert_eq!(
+                snapshot.gauge(
+                    names::EDGE_CAPABILITY_FRESHNESS,
+                    &labels([
+                        ("capability", capability.as_str()),
+                        ("cell", "cell-a"),
+                        ("region", "eu-west")
+                    ])
+                ),
+                None,
+                "{} was published although the cell never measures it",
                 capability.as_str()
             );
         }

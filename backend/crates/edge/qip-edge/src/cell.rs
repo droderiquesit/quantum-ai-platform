@@ -1300,9 +1300,14 @@ impl Cell {
     }
 
     fn refuse(&mut self, report: &mut WorkReport, gate: &str, reason: &str, now: Timestamp) {
-        // Every refusal in the cell funnels through here, so one recording
-        // site covers every gate. `gate` is a string literal at each call, and
-        // that is what bounds this series' cardinality.
+        // Every gate a *pass* can refuse at funnels through here, so one
+        // recording site covers all of them. `gate` is a string literal at
+        // each call, and that is what bounds this series' cardinality. The
+        // three refusals that journal directly — a replayed halt, a release
+        // that predates its barrier, and a net that cancelled to zero — are
+        // not pass-time gates and are deliberately not counted here: the
+        // first two are control-plane events with no "why was the cell
+        // quiet" reading, and the third is counted as a cancellation.
         self.metrics.refusal(gate);
         report.refusals.push((gate.to_string(), reason.to_string()));
         self.journal.record(
