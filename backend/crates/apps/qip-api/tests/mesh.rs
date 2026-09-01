@@ -30,14 +30,17 @@ use qip_api::mesh::{CellAddress, MeshBackbone, MeshSettings, PendingGrant};
 use qip_api::routes::Api;
 use qip_api::{Handler, harden_central};
 use qip_contracts::capital::{CapitalEnvelope, Utilisation};
+use qip_contracts::intent::Contributor;
+use qip_contracts::message::BookSide;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
 use qip_core::time::{Duration, Timestamp};
-use qip_core::{Clock, Context, Decimal, ManualClock};
+use qip_core::{Clock, Context, Decimal, ManualClock, ObjectId};
 use qip_edge::envelope::sign_payload;
 use qip_edge::mesh::{
-    CapitalDownlink, CellStateDelta, CellUplink, DownlinkConfig, StrategyUtilisation, UplinkConfig,
+    CapitalDownlink, CellStateDelta, CellUplink, DeltaOrder, DownlinkConfig, StrategyUtilisation,
+    UplinkConfig,
 };
 use qip_kernel::{Platform, PlatformConfig};
 use qip_storage::kv::MemoryKeyValueStore;
@@ -226,11 +229,39 @@ fn delta(utilisation_orders_sent: u64) -> CellStateDelta {
             },
             envelope_expires_at: at(Duration::from_hours(8)),
         }],
-        orders: Vec::new(),
+        // A real netted order, not an empty vector. This suite exists because
+        // "only a frame the edge crate itself produced can prove the mirror
+        // right", and a delta carrying no order proves nothing about
+        // `DeltaOrder` — the half of the mirror most likely to drift, since it
+        // is the half that gained a field.
+        orders: vec![DeltaOrder {
+            order_id: "london-1-1".to_string(),
+            strategy: StrategyId::new(STRATEGY),
+            object_id: ObjectId::from_string("ACME"),
+            venue: VenueId::new("XLON"),
+            side: BookSide::Bid,
+            quantity: Decimal::from_int(60),
+            price: Decimal::from_int(100),
+            simulated: true,
+            contributors: vec![
+                Contributor {
+                    strategy: StrategyId::new(STRATEGY),
+                    signed_size: Decimal::from_int(100),
+                    inputs: vec![("book_pressure{levels=5}".to_string(), 11)],
+                },
+                Contributor {
+                    strategy: StrategyId::new("momentum-2"),
+                    signed_size: Decimal::from_int(-40),
+                    inputs: vec![("momentum{}".to_string(), 9)],
+                },
+            ],
+        }],
         refusals: Vec::new(),
         refusals_omitted: 0,
         reconciliation_breaks: Vec::new(),
         reconciliation_breaks_omitted: 0,
+        crosses: Vec::new(),
+        crosses_omitted: 0,
     }
 }
 
@@ -318,6 +349,15 @@ fn a_delta_published_twice_by_a_restarted_cell_is_one_ingestion() -> Result<()> 
     assert_eq!(
         status["counters"]["reports_ingested"], 1,
         "two deliveries produced two ingestions: {status}"
+    );
+    // The order the delta carried was decoded at the centre, over real
+    // sockets, out of bytes the edge crate's own serializer produced. Until
+    // the fixture carried an order this counter was zero and `DeltaOrder` —
+    // the half of the mirror that gained a field — crossed the wire in no test
+    // anywhere.
+    assert_eq!(
+        status["counters"]["orders_reported"], 1,
+        "the netted order did not survive the decode at the centre: {status}"
     );
     Ok(())
 }

@@ -1078,6 +1078,16 @@ fn a_partial_offset_is_crossed_internally_at_the_mid_and_booked_to_both_sides() 
 
     // The price is the book's mid, which is a price neither side chose. The
     // book is seeded symmetrically at 100, so the mid is 100.
+    //
+    // This literal is weaker than it looks, and knowingly so: every intent in a
+    // pass is priced off the same mid, so here the mid and
+    // `NetIntent::reference_price` are the same number and this assertion
+    // cannot tell them apart. A mutation pricing crosses from the reference
+    // price — the thing §27.1 forbids by name — passes this whole file. What
+    // actually holds the rule is
+    // `qip_edge::cell::crossing_tests::a_cross_is_priced_at_the_book_mid_and_not_at_a_price_either_side_chose`,
+    // which drives the private seam with a reference price nothing in the book
+    // could produce. Do not delete that test on the strength of this one.
     assert_eq!(
         cross.price,
         dec!("100"),

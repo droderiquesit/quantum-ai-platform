@@ -932,12 +932,17 @@ impl Cell {
         gateway: &mut dyn Placer,
         report: &mut WorkReport,
     ) -> Result<Option<PlacedOrder>> {
-        // Before the zero-net guard below, deliberately: a net that cancelled
-        // to nothing is the *largest* possible cross, and evaluating crossing
-        // only on the survivors would skip the case the cap exists for.
-        self.cross_internally(net_intent, now, report);
+        // Evaluated before the zero-net guard below so that a net cancelling
+        // to nothing is still assessed rather than skipped. It is *not* true,
+        // as this comment previously claimed, that doing so lets the cap catch
+        // its flagship case: see `cross_internally`, where the arithmetic that
+        // makes a full cancellation permanently out of cap is set out.
+        let crossed = self.cross_internally(net_intent, now, report);
 
         let Some(is_buy) = net_intent.is_buy() else {
+            // Nothing reached the venue, so the cross — if the cap allowed one
+            // — is final at this point and safe to seal into the chain.
+            self.record_cross(crossed, now, report);
             self.journal.record(
                 Decision::Refused {
                     gate: "internal_cross".to_string(),
@@ -970,6 +975,14 @@ impl Cell {
             price,
             now,
         )?;
+
+        // Only now, past the call that can fail. `gateway.place` propagates its
+        // error out of `work`, and the caller loses the report with it — so a
+        // cross sealed into the hash-chained journal before this line would
+        // assert that two strategies traded during a pass that produced
+        // nothing at all. The chain is the record; it may not carry a trade
+        // the pass did not make.
+        self.record_cross(crossed, now, report);
 
         // Utilisation is charged per contributor, pro-rata on what each
         // wanted, so a netted order still spends each strategy's own envelope
@@ -1021,8 +1034,12 @@ impl Cell {
         }))
     }
 
-    /// Book the offsetting part of a net as a cross between its own
-    /// contributors, or refuse it and say why (§27.1).
+    /// Work out the offsetting part of a net that should be crossed between its
+    /// own contributors, or refuse it and say why (§27.1).
+    ///
+    /// Returns the cross rather than recording it: the caller seals it into the
+    /// journal once the pass has an outcome, because a venue call can fail
+    /// afterwards and take the whole report with it.
     ///
     /// The matched size is the smaller of the buying and selling sides, which
     /// is exactly the quantity that never needed a venue. It is computed as a
@@ -1038,6 +1055,31 @@ impl Cell {
     /// netted as before: nothing extra reaches the venue, and nothing is
     /// booked between strategies.
     ///
+    /// # What this cap cannot do, stated because the arithmetic is not obvious
+    ///
+    /// The matched size is `min(buy, sell)` and the denominator is
+    /// `buy + sell`, so the ratio can never exceed one half, and it reaches one
+    /// half exactly when the two sides cancel completely. A forty percent cap
+    /// therefore fires only in the narrow band above two fifths — and **a net
+    /// that cancels to zero is always refused**, which is §27.1's own flagship
+    /// case: "strategies that disagree cost nothing to run together because
+    /// their disagreement never reaches a venue". Under this measure that
+    /// disagreement is never booked as a cross at all.
+    ///
+    /// That is a real divergence from the blueprint, left in place deliberately
+    /// rather than tuned away. §27.1 caps crossing at forty percent of gross
+    /// intent "per instrument **per interval**", and never says how long an
+    /// interval is. Measured per net, as here, the bound above is arithmetic.
+    /// Measured across an interval, a full cancellation could sit inside a
+    /// larger instrument-level gross and be admitted — but the window length
+    /// decides when a safety control fires, and choosing one here to make a
+    /// case reachable would be inventing the very parameter that governs it.
+    /// The interval belongs to whoever owns the cap, not to this function.
+    ///
+    /// The consequence, so nobody has to derive it: a perfectly offsetting pair
+    /// is netted, never reaches a venue, and is recorded as a cap refusal
+    /// rather than as a cross. Safe, and less than §27.1 asks for.
+    ///
     /// Crossing changes nothing about what is sent. It is a booking decision
     /// on top of netting, which has already decided what a venue sees.
     fn cross_internally(
@@ -1045,7 +1087,7 @@ impl Cell {
         net_intent: &NetIntent,
         now: Timestamp,
         report: &mut WorkReport,
-    ) {
+    ) -> Option<InternalCross> {
         let mut bought = Vec::new();
         let mut sold = Vec::new();
         let mut buy_size = Decimal::ZERO;
@@ -1061,9 +1103,22 @@ impl Cell {
         }
         // Nothing offset, so there is nothing to cross. The common case, and
         // not a refusal: a net every contributor agreed on has no internal
-        // trade in it to record.
+        // trade in it to record. It is journaled anyway, because a chain that
+        // explains a cross but is silent about its absence leaves a reader
+        // unable to tell "they agreed" from "the crossing step never ran".
         if buy_size.is_zero() || sell_size.is_zero() {
-            return;
+            self.journal.record(
+                Decision::CrossedInternally {
+                    object: net_intent.object_id.as_str().to_string(),
+                    venue: net_intent.venue.as_str().to_string(),
+                    quantity: Decimal::ZERO.to_string(),
+                    price: String::new(),
+                    bought: bought.iter().map(|id| id.as_str().to_string()).collect(),
+                    sold: sold.iter().map(|id| id.as_str().to_string()).collect(),
+                },
+                now,
+            );
+            return None;
         }
         let crossed = if buy_size < sell_size {
             buy_size
@@ -1097,7 +1152,7 @@ impl Cell {
                 ),
                 now,
             );
-            return;
+            return None;
         }
 
         // The prevailing mid at the netting instant, read from the book now
@@ -1118,28 +1173,52 @@ impl Cell {
                  side may choose",
                 now,
             );
-            return;
+            return None;
         };
 
-        self.journal.record(
-            Decision::CrossedInternally {
-                object: net_intent.object_id.as_str().to_string(),
-                venue: net_intent.venue.as_str().to_string(),
-                quantity: crossed.to_string(),
-                price: price.to_string(),
-                bought: bought.iter().map(|id| id.as_str().to_string()).collect(),
-                sold: sold.iter().map(|id| id.as_str().to_string()).collect(),
-            },
-            now,
-        );
-        report.crosses.push(InternalCross {
+        Some(InternalCross {
             object_id: net_intent.object_id.clone(),
             venue: net_intent.venue.clone(),
             quantity: crossed,
             price,
             bought,
             sold,
-        });
+        })
+    }
+
+    /// Seal a cross into the hash-chained journal and report it.
+    ///
+    /// Separate from working the cross out, so that the record is written only
+    /// once the pass it belongs to has actually produced its outcome.
+    fn record_cross(
+        &mut self,
+        crossed: Option<InternalCross>,
+        now: Timestamp,
+        report: &mut WorkReport,
+    ) {
+        let Some(cross) = crossed else {
+            return;
+        };
+        self.journal.record(
+            Decision::CrossedInternally {
+                object: cross.object_id.as_str().to_string(),
+                venue: cross.venue.as_str().to_string(),
+                quantity: cross.quantity.to_string(),
+                price: cross.price.to_string(),
+                bought: cross
+                    .bought
+                    .iter()
+                    .map(|id| id.as_str().to_string())
+                    .collect(),
+                sold: cross
+                    .sold
+                    .iter()
+                    .map(|id| id.as_str().to_string())
+                    .collect(),
+            },
+            now,
+        );
+        report.crosses.push(cross);
     }
 
     fn venue_for(&self, object: &ObjectId) -> Option<VenueId> {
@@ -1223,6 +1302,21 @@ impl Cell {
             refusals_omitted: 0,
             reconciliation_breaks: self.breaks.clone(),
             reconciliation_breaks_omitted: self.breaks_omitted,
+            crosses: report
+                .crosses
+                .iter()
+                .map(|cross| qip_contracts::wire::CrossRecord {
+                    object_id: cross.object_id.clone(),
+                    venue: cross.venue.clone(),
+                    quantity: cross.quantity,
+                    price: cross.price,
+                    bought: cross.bought.clone(),
+                    sold: cross.sold.clone(),
+                })
+                .collect(),
+            // Set by `bound_refusals` below, like the refusal counter: the
+            // caller does not get to claim a truncation that did not happen.
+            crosses_omitted: 0,
         };
         delta.bound_refusals();
         delta
@@ -1528,7 +1622,8 @@ mod crossing_tests {
         assert_ne!(mid, chosen, "the fixture cannot distinguish the two prices");
 
         let mut report = WorkReport::default();
-        cell.cross_internally(&net_intent, at(10), &mut report);
+        let crossed = cell.cross_internally(&net_intent, at(10), &mut report);
+        cell.record_cross(crossed, at(10), &mut report);
 
         assert_eq!(report.crosses.len(), 1, "nothing was crossed: {report:?}");
         assert_eq!(
@@ -1544,6 +1639,117 @@ mod crossing_tests {
             report.crosses[0].quantity,
             Decimal::parse("20").expect("a decimal literal"),
             "the matched size is the smaller side, not the net or the gross"
+        );
+        Ok(())
+    }
+
+    /// A venue that refuses everything, so `place_net` returns `Err` and the
+    /// caller loses the report.
+    #[derive(Debug)]
+    struct RefusingGateway;
+
+    impl Placer for RefusingGateway {
+        fn is_simulated(&self) -> bool {
+            true
+        }
+
+        fn place(
+            &mut self,
+            _order_id: &str,
+            _object_id: &ObjectId,
+            _venue: &VenueId,
+            _side: BookSide,
+            _quantity: Decimal,
+            _price: Decimal,
+            _at: Timestamp,
+        ) -> Result<()> {
+            Err(qip_core::error::Error::io("the venue refused the order"))
+        }
+    }
+
+    #[test]
+    fn a_venue_that_fails_leaves_no_cross_in_the_chain() -> Result<()> {
+        // The journal is hash-chained and is the record. `gateway.place`
+        // propagates its error out of `place_net` and out of `work`, and the
+        // caller loses the report with it — so a cross written before that call
+        // would leave the chain asserting that two strategies traded during a
+        // pass that produced nothing at all. Nobody can unwrite it afterwards.
+        let mut cell = cell_with_book()?;
+        let net_intent = offsetting_net(Decimal::parse("100").expect("a decimal literal"));
+        let mut report = WorkReport::default();
+
+        let before = cell.journal().entries().len();
+        let outcome = cell.place_net(&net_intent, at(10), &mut RefusingGateway, &mut report);
+
+        // Premise: the venue really did fail, so what follows is about the
+        // failure path and not about a quiet success.
+        assert!(
+            outcome.is_err(),
+            "the premise failed: the refusing gateway placed an order"
+        );
+        let crosses: Vec<_> = cell
+            .journal()
+            .entries()
+            .iter()
+            .skip(before)
+            .filter(|entry| entry.decision.kind() == "crossed_internally")
+            .collect();
+        assert!(
+            crosses.is_empty(),
+            "the chain records a cross for a pass that placed nothing: {crosses:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_fully_offsetting_net_is_out_of_cap_by_arithmetic_and_is_never_crossed() -> Result<()> {
+        // §27.1's flagship case, and the one this cap cannot admit. The matched
+        // size is `min(buy, sell)` over a denominator of `buy + sell`, so the
+        // ratio tops out at one half and hits it exactly when the two sides
+        // cancel — always above forty percent. The test exists so the
+        // divergence is asserted rather than merely described in a comment
+        // somebody may later delete as stale.
+        let mut cell = cell_with_book()?;
+        let opposed = NetIntent {
+            net_size: Decimal::ZERO,
+            gross_size: Decimal::parse("200").expect("a decimal literal"),
+            contributors: vec![
+                Contributor {
+                    strategy: StrategyId::new("alpha"),
+                    signed_size: Decimal::parse("100").expect("a decimal literal"),
+                    inputs: Vec::new(),
+                },
+                Contributor {
+                    strategy: StrategyId::new("beta"),
+                    signed_size: Decimal::parse("-100").expect("a decimal literal"),
+                    inputs: Vec::new(),
+                },
+            ],
+            ..offsetting_net(Decimal::parse("100").expect("a decimal literal"))
+        };
+        // Premise: the sides really do cancel, so this is the full-offset case
+        // and not merely a large partial one.
+        assert!(
+            opposed.net_size.is_zero(),
+            "the premise needs a total offset"
+        );
+
+        let mut report = WorkReport::default();
+        let crossed = cell.cross_internally(&opposed, at(10), &mut report);
+        cell.record_cross(crossed, at(10), &mut report);
+
+        assert!(
+            report.crosses.is_empty(),
+            "a fully offsetting net was crossed, so the cap arithmetic has \
+             changed and the comment explaining it is now wrong"
+        );
+        assert!(
+            report
+                .refusals
+                .iter()
+                .any(|(gate, _)| gate == "internal_cross_cap"),
+            "the full offset was neither crossed nor refused by the cap: {:?}",
+            report.refusals
         );
         Ok(())
     }
@@ -1568,11 +1774,12 @@ mod crossing_tests {
         );
 
         let mut report = WorkReport::default();
-        cell.cross_internally(
+        let crossed = cell.cross_internally(
             &offsetting_net(Decimal::parse("12345").expect("a decimal literal")),
             at(10),
             &mut report,
         );
+        cell.record_cross(crossed, at(10), &mut report);
 
         assert!(report.crosses.is_empty(), "a cross was priced with no mid");
         assert!(

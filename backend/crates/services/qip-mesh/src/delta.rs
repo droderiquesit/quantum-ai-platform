@@ -37,6 +37,7 @@ use qip_contracts::intent::Contributor;
 use qip_contracts::message::BookSide;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
+use qip_contracts::wire::CrossRecord;
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, ObjectId, Timestamp};
 use qip_events::{AnyEvent, EventBody, Topic};
@@ -116,6 +117,10 @@ struct WireDelta {
     reconciliation_breaks: Vec<String>,
     #[serde(default)]
     reconciliation_breaks_omitted: u32,
+    #[serde(default)]
+    crosses: Vec<CrossRecord>,
+    #[serde(default)]
+    crosses_omitted: u32,
 }
 
 impl EventBody for WireDelta {
@@ -179,6 +184,13 @@ pub struct CellInterval {
     /// Refusals that did not fit the wire bound. Counted so a truncation is
     /// visible; an accumulator adds this too or it undercounts.
     pub refusals_omitted: u32,
+    /// Every internal cross the cell booked in this interval (§27.1) — a trade
+    /// between two of the platform's own strategies. Shares its declaration
+    /// with the edge crate rather than mirroring it, so this half cannot drift
+    /// from the half that writes it.
+    pub crosses: Vec<CrossRecord>,
+    /// Crosses that did not fit the wire bound, counted for the same reason.
+    pub crosses_omitted: u32,
 }
 
 /// One decoded delta, halved by arithmetic.
@@ -223,6 +235,8 @@ pub fn decode_cell_delta(frame: &AnyEvent) -> Result<DecodedCellDelta> {
             orders: wire.orders,
             refusals: wire.refusals,
             refusals_omitted: wire.refusals_omitted,
+            crosses: wire.crosses,
+            crosses_omitted: wire.crosses_omitted,
         },
     })
 }

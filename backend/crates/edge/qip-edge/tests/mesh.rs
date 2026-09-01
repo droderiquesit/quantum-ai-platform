@@ -450,6 +450,18 @@ fn a_state_delta_a_cell_produced_arrives_at_the_centre_unchanged() -> Result<()>
             simulated: true,
         }],
         refusals: vec![("capital".to_string(), "the envelope refused it".to_string())],
+        // A booked cross, so the uplink is asked to carry the one record
+        // §27.1 calls a regulatory expectation. It went untested at first: a
+        // delta built by hand proved the wire shape and proved nothing about
+        // `state_delta`, which is the function that actually fills it in.
+        crosses: vec![qip_edge::cell::InternalCross {
+            object_id: object("ACME"),
+            venue: VenueId::new("XLON"),
+            quantity: dec!("2"),
+            price: dec!("100.25"),
+            bought: vec![StrategyId::new("mean-reversion-1")],
+            sold: vec![StrategyId::new("momentum-2")],
+        }],
         ..WorkReport::default()
     };
     let delta = cell.state_delta(&report, t(20));
@@ -481,6 +493,28 @@ fn a_state_delta_a_cell_produced_arrives_at_the_centre_unchanged() -> Result<()>
         "a paper fill that crossed the wire as real is the one bit that must not flip"
     );
     assert_eq!(received.orders[0].quantity, dec!("3"));
+    // The contributor vector, which the fixture above ships deliberately. It
+    // had no assertion for one commit: the fixture carried a real revision
+    // pair under a comment claiming that a wire dropping them would be caught,
+    // and zeroing `contributors` in `state_delta` left this suite green. A
+    // fixture is not a test.
+    assert_eq!(
+        received.orders[0].contributors.len(),
+        1,
+        "the order arrived naming no contributor, so a netted fill could not \
+         be traced to the strategies that caused it"
+    );
+    assert_eq!(
+        received.orders[0].contributors[0].strategy.as_str(),
+        "mean-reversion-1"
+    );
+    assert_eq!(received.orders[0].contributors[0].signed_size, dec!("-3"));
+    assert_eq!(
+        received.orders[0].contributors[0].inputs,
+        vec![("book_pressure{levels=5}".to_string(), 7)],
+        "the feature revisions did not survive the wire, so the fill cannot be \
+         attributed to the values that produced it"
+    );
     assert_eq!(
         received.refusals.len(),
         1,
@@ -495,6 +529,29 @@ fn a_state_delta_a_cell_produced_arrives_at_the_centre_unchanged() -> Result<()>
         received.utilisation[0].envelope_expires_at,
         t(3_600),
         "the centre cannot see which cells are about to run out of authority"
+    );
+    assert_eq!(
+        received.crosses.len(),
+        1,
+        "the cross stopped at the cell, so the centre cannot see a trade the \
+         platform made with itself"
+    );
+    assert_eq!(received.crosses[0].quantity, dec!("2"));
+    assert_eq!(
+        received.crosses[0].price,
+        dec!("100.25"),
+        "the crossing price did not survive, and a cross without its price is \
+         not a ledger entry"
+    );
+    assert_eq!(
+        received.crosses[0].bought[0].as_str(),
+        "mean-reversion-1",
+        "the buying side was not carried"
+    );
+    assert_eq!(
+        received.crosses[0].sold[0].as_str(),
+        "momentum-2",
+        "the selling side was not carried"
     );
     Ok(())
 }
