@@ -25,3 +25,5 @@ no stated reversal condition cannot be revisited honestly.
 | [0017](0017-gitops-delivery.md) | Delivery becomes GitOps: a Helm chart, Argo CD sync, Kargo promotion |
 | [0018](0018-the-console-reaches-the-platform-over-the-vpc.md) | The console reaches the platform over the VPC, on an internal load balancer, as viewer |
 | [0019](0019-identity-platform-is-the-only-identity-store.md) | Identity Platform is the only identity store, and the session is a sealed cookie |
+| [0020](0020-two-runtime-topologies-and-the-order-to-resolve-them.md) | Two runtime topologies exist; neither is deleted, and the order to resolve them is fixed |
+| [0021](0021-the-blueprint-expects-live-capital-and-this-platform-refuses-it.md) | The blueprint expects live capital; the paper-trading boundary wins and the structure is built without it |
