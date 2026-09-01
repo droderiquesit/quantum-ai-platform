@@ -4,6 +4,57 @@
 //! trail. Each record commits to its predecessor's hash, so removing or editing
 //! a record breaks the chain at that point and every point after it —
 //! [`EventLog::verify_chain`] finds exactly where.
+//!
+//! # Retention is a bound, and the bound has three tiers
+//!
+//! The in-memory index used to be capped only if a caller asked for a cap, and
+//! no production caller ever did: `qip-kernel` builds the log through
+//! `EventLog::open`, which left the capacity unset. An event log with no
+//! ceiling is a process that dies of memory during exactly the incident it
+//! exists to explain.
+//!
+//! So retention is now always bounded, and what happens at the ceiling depends
+//! on what the record is:
+//!
+//! 1. **Replaceable observations go first.** A record whose
+//!    [`Topic::is_lossy_tolerable`] is true — ticks, quotes, book snapshots,
+//!    computed features — is replaced by the next one within milliseconds.
+//!    These are evicted oldest-first and counted in
+//!    [`EventLog::evicted_replaceable`].
+//! 2. **Then other observations, reluctantly.** Trades, bars, corporate
+//!    actions, news and alternative data are not replaceable in the same
+//!    breath, but they are *observations of the outside world*: re-readable
+//!    from the source, and still on disk for a file-backed log, because the
+//!    file is the durable copy and this index is a working set. They are
+//!    evicted only after every replaceable record has already gone, and
+//!    counted separately in [`EventLog::evicted_observations`] — a non-zero
+//!    count is the signal that retention is too small for the traffic, which
+//!    the first counter alone would not distinguish.
+//! 3. **The audit trail is never evicted; the append is refused instead.**
+//!    A record whose [`Topic::requires_permanent_retention`] is true — reason,
+//!    decide, act, learn, the kill switch and autonomy changes — is why this
+//!    log exists. Dropping one to make room for the next would leave the
+//!    platform acting with no account of what it did, which is worse than
+//!    stopping. When nothing evictable remains, [`EventLog::append`] returns a
+//!    refusal naming the fix and writes nothing, in memory or to the file.
+//!
+//! # What this does not fix
+//!
+//! Two limits are stated here rather than papered over:
+//!
+//! * **Eviction breaks in-memory chain verification.** The chain is over what
+//!   was written; evicting a record from the middle of the retained span
+//!   leaves [`EventLog::verify_chain`] reporting the first link whose
+//!   predecessor is gone. That was already true of any capped log and is a
+//!   further reason the audit-class records are never evicted. For a
+//!   file-backed log the file still verifies end to end.
+//! * **The JSONL file is still append-only.** Nothing here truncates or rolls
+//!   it, so a file-backed log bounds memory but not disk. Segmenting the file
+//!   — sealing a segment, recording its final hash as the next segment's
+//!   genesis, and archiving it — is the remaining half of retention and is a
+//!   separate change; it needs an ADR because it changes what "the log" means
+//!   to a replay. Until then, disk is bounded only by the refusal above and by
+//!   whatever the deployment archives out of band.
 
 use qip_core::error::{Error, Result};
 use qip_core::hash::sha256_hex;
@@ -41,12 +92,32 @@ pub struct EventLog {
     by_topic: BTreeMap<Topic, Vec<usize>>,
     by_event_id: BTreeMap<String, usize>,
     path: Option<PathBuf>,
-    /// Cap on retained records; oldest lossy-tolerable events are dropped
-    /// first when it is reached.
-    capacity: Option<usize>,
+    /// Cap on retained records. Always set: an unbounded default is how this
+    /// grew without limit in every production construction.
+    capacity: usize,
     /// Whether an appended record is on the platter before `append` returns.
     durability: Durability,
+    evicted_replaceable: u64,
+    evicted_observations: u64,
+    appends_refused: u64,
+    /// The highest sequence ever indexed, and the hash of the record that
+    /// carried it. Held separately from `records` because eviction can empty
+    /// the tail: deriving either from the last retained record would restart
+    /// the sequence at 1 and re-anchor the chain at genesis, which would make
+    /// two different records share a sequence number and the break invisible.
+    last_sequence: u64,
+    last_hash: String,
 }
+
+/// Records retained by default.
+///
+/// Chosen to match the event bus's drain and queue ceilings, so a bus that
+/// will accept a million events meets a log that will retain them, and no
+/// deployment discovers a new limit merely by upgrading. It is a ceiling, not
+/// a target: a long-lived file-backed deployment should set a smaller one
+/// deliberately, because a million retained records is a gigabyte-scale
+/// working set.
+pub const DEFAULT_CAPACITY: usize = 1_000_000;
 
 /// Whether an appended record has reached the disk when `append` returns.
 ///
@@ -89,15 +160,31 @@ impl EventLog {
             by_topic: BTreeMap::new(),
             by_event_id: BTreeMap::new(),
             path: None,
-            capacity: None,
+            capacity: DEFAULT_CAPACITY,
             durability: Durability::Synchronous,
+            evicted_replaceable: 0,
+            evicted_observations: 0,
+            appends_refused: 0,
+            last_sequence: 0,
+            last_hash: GENESIS_HASH.to_string(),
         }
     }
 
-    /// Open a file-backed log, loading any existing records.
+    /// Open a file-backed log at the default capacity, loading any existing
+    /// records.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with_capacity(path, DEFAULT_CAPACITY)
+    }
+
+    /// Open a file-backed log with an explicit retention ceiling.
+    ///
+    /// The ceiling has to be given here rather than chained afterwards: a file
+    /// holding more audit records than the default retains cannot be loaded at
+    /// the default at all, and `EventLog::open(p)?.with_capacity(n)` would have
+    /// refused before the caller's larger ceiling was ever applied.
+    pub fn open_with_capacity(path: impl AsRef<Path>, capacity: usize) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let mut log = Self::in_memory();
+        let mut log = Self::in_memory().with_capacity(capacity)?;
         log.path = Some(path.clone());
         if path.exists() {
             let file = std::fs::File::open(&path)?;
@@ -112,6 +199,11 @@ impl EventLog {
                         line_number + 1
                     ))
                 })?;
+                // Make room before indexing, so loading a file larger than the
+                // ceiling never puts the whole file in memory first — which is
+                // the failure the ceiling exists to prevent, arriving at
+                // start-up instead of during the run.
+                log.make_room(record.event.topic)?;
                 log.index(record);
             }
         } else if let Some(parent) = path.parent() {
@@ -120,8 +212,6 @@ impl EventLog {
         Ok(log)
     }
 
-    /// Bound the log's memory. Only events whose topic tolerates loss are
-    /// evicted; an order fill is never dropped to save space.
     /// Trade the durability guarantee for throughput, deliberately.
     pub fn with_durability(mut self, durability: Durability) -> Self {
         self.durability = durability;
@@ -133,9 +223,50 @@ impl EventLog {
         self.durability
     }
 
-    pub fn with_capacity(mut self, capacity: usize) -> Self {
-        self.capacity = Some(capacity);
-        self
+    /// Bound the log's retained records.
+    ///
+    /// Zero is refused rather than read as one. A log retaining a single
+    /// record refuses the second audit record it is given, so the platform
+    /// would stop at its first decision — and a log silently promoted from
+    /// zero to one would do the same while claiming the operator asked for it.
+    /// Neither is a retention policy; both are configuration mistakes, and the
+    /// one that stops at construction is the one somebody can fix.
+    pub fn with_capacity(mut self, capacity: usize) -> Result<Self> {
+        if capacity == 0 {
+            return Err(Error::invalid(
+                "an event log with zero capacity retains nothing and refuses every audit record; \
+                 give with_capacity the number of records this deployment should hold in memory",
+            ));
+        }
+        self.capacity = capacity;
+        Ok(self)
+    }
+
+    /// The retention ceiling in force.
+    pub const fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Replaceable records — ticks, quotes, books, features — dropped to stay
+    /// inside the ceiling.
+    pub const fn evicted_replaceable(&self) -> u64 {
+        self.evicted_replaceable
+    }
+
+    /// Non-replaceable observations — trades, bars, news, alternative data —
+    /// dropped once no replaceable record was left to drop. Non-zero means
+    /// retention is too small for this traffic, and it is deliberately a
+    /// separate number from the replaceable evictions so that signal is not
+    /// buried under the routine one.
+    pub const fn evicted_observations(&self) -> u64 {
+        self.evicted_observations
+    }
+
+    /// Appends refused because the ceiling was reached and every retained
+    /// record requires permanent retention. Non-zero means the platform
+    /// stopped rather than acted without a record.
+    pub const fn appends_refused(&self) -> u64 {
+        self.appends_refused
     }
 
     pub fn len(&self) -> usize {
@@ -147,12 +278,15 @@ impl EventLog {
     }
 
     /// Append an event, assigning its sequence number and chain hash.
+    ///
+    /// Refuses when retention is full of records that may not be evicted. The
+    /// refusal comes before the file write, so a refused append leaves no
+    /// half-recorded event: nothing in memory, nothing on disk, and a caller
+    /// that knows its event was not recorded.
     pub fn append(&mut self, event: &AnyEvent) -> Result<u64> {
+        self.make_room(event.topic)?;
         let sequence = self.next_sequence();
-        let previous_hash = self
-            .records
-            .last()
-            .map_or_else(|| GENESIS_HASH.to_string(), |r| r.record_hash.clone());
+        let previous_hash = self.last_hash.clone();
 
         let mut stored = event.clone();
         stored.sequence = sequence;
@@ -181,16 +315,17 @@ impl EventLog {
             }
         }
         self.index(record);
-        self.enforce_capacity();
         Ok(sequence)
     }
 
     fn next_sequence(&self) -> u64 {
-        self.records.last().map_or(1, |r| r.sequence + 1)
+        self.last_sequence.saturating_add(1)
     }
 
     fn index(&mut self, record: LogRecord) {
         let position = self.records.len();
+        self.last_sequence = self.last_sequence.max(record.sequence);
+        self.last_hash = record.record_hash.clone();
         self.by_correlation
             .entry(record.event.lineage.correlation_id.as_str().to_string())
             .or_default()
@@ -204,31 +339,49 @@ impl EventLog {
         self.records.push(record);
     }
 
-    /// Drop the oldest evictable records once over capacity.
-    fn enforce_capacity(&mut self) {
-        let Some(capacity) = self.capacity else {
-            return;
-        };
-        if self.records.len() <= capacity {
-            return;
+    /// Make room for one more record, or refuse.
+    ///
+    /// Evicts the oldest replaceable record; failing that, the oldest
+    /// observation; failing that, refuses, because everything left is the audit
+    /// trail. Called *before* a record is written rather than after, so the log
+    /// never writes something it is about to drop and never drops something to
+    /// make room for what it then refuses.
+    fn make_room(&mut self, incoming: Topic) -> Result<()> {
+        while self.records.len() >= self.capacity {
+            // Two passes rather than one: every replaceable record must be gone
+            // before an observation is touched, so the counters mean what they
+            // say and the cheap loss is always taken first.
+            let victim = self
+                .records
+                .iter()
+                .position(|r| r.event.topic.is_lossy_tolerable())
+                .map(|index| (index, true))
+                .or_else(|| {
+                    self.records
+                        .iter()
+                        .position(|r| !r.event.topic.requires_permanent_retention())
+                        .map(|index| (index, false))
+                });
+            let Some((index, replaceable)) = victim else {
+                self.appends_refused = self.appends_refused.saturating_add(1);
+                return Err(Error::guard(format!(
+                    "event log is full at {} records and every retained record requires permanent \
+                     retention, so none may be dropped to admit a {} record; archive the log and \
+                     start a new one, or open it with a larger capacity — this log will not \
+                     discard an audit record to keep running",
+                    self.capacity,
+                    incoming.name()
+                )));
+            };
+            self.records.remove(index);
+            if replaceable {
+                self.evicted_replaceable = self.evicted_replaceable.saturating_add(1);
+            } else {
+                self.evicted_observations = self.evicted_observations.saturating_add(1);
+            }
+            self.rebuild_indexes();
         }
-        let overflow = self.records.len() - capacity;
-        let mut dropped = 0;
-        // Retain in order: evict lossy-tolerable records from the front only.
-        let retained: Vec<LogRecord> = self
-            .records
-            .drain(..)
-            .filter(|r| {
-                if dropped < overflow && r.event.topic.is_lossy_tolerable() {
-                    dropped += 1;
-                    false
-                } else {
-                    true
-                }
-            })
-            .collect();
-        self.records = retained;
-        self.rebuild_indexes();
+        Ok(())
     }
 
     fn rebuild_indexes(&mut self) {

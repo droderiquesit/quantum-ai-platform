@@ -2,7 +2,7 @@
 
 use qip_core::error::Result;
 use qip_core::{Context, CorrelationId, Duration, Lineage, Timestamp};
-use qip_events::bus::{HandlerOutcome, Publisher};
+use qip_events::bus::{DispatchFailure, HandlerOutcome, Publisher};
 use qip_events::envelope::canonical_json;
 use qip_events::topic::TopicGroup;
 use qip_events::{
@@ -359,7 +359,8 @@ fn a_failing_handler_does_not_stop_delivery_to_others() {
         "the healthy handler must still receive it"
     );
     assert_eq!(bus.failures().len(), 1);
-    assert_eq!(bus.failures()[0].handler, "broken");
+    let recorded: Vec<&DispatchFailure> = bus.failures().collect();
+    assert_eq!(recorded[0].handler, "broken");
 }
 
 #[test]
@@ -692,7 +693,7 @@ fn a_replayed_log_reproduces_the_original_run() {
         Ok(HandlerOutcome::Handled)
     });
     for event in original.borrow().events() {
-        replay_bus.publish_raw(event.clone());
+        replay_bus.publish_raw(event.clone()).unwrap();
     }
     replay_bus.drain(&ctx).unwrap();
 
@@ -738,7 +739,7 @@ fn a_file_backed_log_survives_a_restart() {
 #[test]
 fn capacity_eviction_never_drops_an_auditable_event() {
     let (ctx, now) = context();
-    let mut log = EventLog::in_memory().with_capacity(5);
+    let mut log = EventLog::in_memory().with_capacity(5).unwrap();
 
     // Interleave high-volume ticks with an order-relevant event.
     for i in 0..20 {
@@ -1004,4 +1005,480 @@ fn an_appended_record_is_on_the_platter_before_append_returns() {
     assert!(!Durability::OsBuffered.survives_power_loss());
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --- bounded runtime state --------------------------------------------------
+//
+// Every service publishes through this bus and records through this log, so a
+// collection here that grows without limit grows without limit in every
+// process the platform runs. These tests exist because four of them did.
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct Trade {
+    symbol: String,
+    size: u32,
+}
+
+impl EventBody for Trade {
+    const TOPIC: Topic = Topic::MarketTrade;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct Fill {
+    order: String,
+}
+
+impl EventBody for Fill {
+    const TOPIC: Topic = Topic::OrderFilled;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+fn erased<T: EventBody>(ctx: &Context, now: Timestamp, body: T) -> AnyEvent {
+    Envelope::new(
+        ctx.ids().generate(now),
+        now,
+        now,
+        root_lineage("test"),
+        body,
+    )
+    .erase()
+    .unwrap()
+}
+
+fn tick(symbol: &str) -> Tick {
+    Tick {
+        symbol: symbol.to_string(),
+        price: 1.0,
+    }
+}
+
+#[test]
+fn a_zero_capacity_is_refused_at_construction_rather_than_raised_to_one() {
+    // Silently promoting zero to one would let a configuration mistake run,
+    // and the bus would then look like a platform that had stopped producing
+    // events rather than one that had been misconfigured.
+    for (label, error) in [
+        (
+            "queue",
+            EventBus::new()
+                .max_queue_depth(0)
+                .err()
+                .map(|e| e.to_string()),
+        ),
+        (
+            "dedup",
+            EventBus::new()
+                .dedup_capacity(0)
+                .err()
+                .map(|e| e.to_string()),
+        ),
+        (
+            "failures",
+            EventBus::new()
+                .max_recorded_failures(0)
+                .err()
+                .map(|e| e.to_string()),
+        ),
+        (
+            "log",
+            EventLog::in_memory()
+                .with_capacity(0)
+                .err()
+                .map(|e| e.to_string()),
+        ),
+    ] {
+        let message = error.unwrap_or_else(|| panic!("zero {label} capacity was accepted"));
+        assert!(
+            message.contains("zero"),
+            "the {label} refusal must name the value it refused: {message}"
+        );
+    }
+
+    // And the same constructors admit a good value — a gate that refuses
+    // everything is not a gate.
+    assert!(EventBus::new().max_queue_depth(1).is_ok());
+    assert!(EventBus::new().dedup_capacity(1).is_ok());
+    assert!(EventBus::new().max_recorded_failures(1).is_ok());
+    assert!(EventLog::in_memory().with_capacity(1).is_ok());
+}
+
+#[test]
+fn publishing_into_a_full_queue_is_refused_and_the_refusal_is_counted() {
+    let (ctx, now) = context();
+    let mut bus = EventBus::new().max_queue_depth(2).unwrap();
+    for symbol in ["A", "B"] {
+        bus.publish(&ctx, root_lineage("feed"), now, tick(symbol))
+            .unwrap();
+    }
+    // Premise: the queue really is at capacity, so the next publish is the
+    // first one the bound could refuse.
+    assert_eq!(bus.queued(), 2);
+    assert_eq!(bus.publishes_refused(), 0);
+
+    let refusal = bus
+        .publish(&ctx, root_lineage("feed"), now, tick("C"))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refusal.contains("max_queue_depth"),
+        "the refusal must name what to change: {refusal}"
+    );
+    assert_eq!(bus.publishes_refused(), 1);
+    assert_eq!(bus.queued(), 2, "a refused publish must not enqueue");
+
+    // Refusing the newest keeps the oldest: nothing already accepted is lost.
+    let dispatched = bus.drain(&ctx).unwrap();
+    assert_eq!(dispatched, 2);
+}
+
+#[test]
+fn a_handler_cannot_publish_past_the_queue_capacity_either() {
+    // The most likely way to fill this queue is a handler publishing in
+    // response to what it is handling, so the handler's publisher is the last
+    // place that may be allowed to bypass the bound.
+    let (ctx, now) = context();
+    let mut bus = EventBus::new().max_queue_depth(1).unwrap();
+    let emitted = Rc::new(RefCell::new(0usize));
+    let counter = emitted.clone();
+    bus.on::<Tick, _>("twin", move |_, any, publisher| {
+        publisher.publish(
+            any,
+            "twin",
+            any.occurred_at,
+            Anomaly {
+                symbol: "A".into(),
+                z_score: 1.0,
+            },
+        )?;
+        *counter.borrow_mut() = publisher.emitted();
+        publisher.publish(
+            any,
+            "twin",
+            any.occurred_at,
+            Anomaly {
+                symbol: "A".into(),
+                z_score: 2.0,
+            },
+        )?;
+        Ok(HandlerOutcome::Handled)
+    });
+    bus.publish(&ctx, root_lineage("feed"), now, tick("A"))
+        .unwrap();
+    let dispatched = bus.drain(&ctx).unwrap();
+
+    // Premise: the first publish went through, so what follows is the bound
+    // firing and not the handler failing for some other reason.
+    assert_eq!(
+        *emitted.borrow(),
+        1,
+        "the first handler publish must succeed"
+    );
+    assert_eq!(dispatched, 2, "the tick and the one anomaly that fitted");
+    assert_eq!(bus.publishes_refused(), 1);
+    assert_eq!(bus.failure_count(), 1);
+    let failures: Vec<&DispatchFailure> = bus.failures().collect();
+    assert!(
+        failures[0].error.contains("event queue is full"),
+        "the handler must be told why: {}",
+        failures[0].error
+    );
+}
+
+#[test]
+fn the_deduplication_window_forgets_its_oldest_key_and_counts_the_loss() {
+    // Eviction here is a correctness event, not just memory: past the window a
+    // redelivery is dispatched a second time. That is tolerable only because
+    // it is counted, so an operator can see the window is too short.
+    let (ctx, now) = context();
+    let dispatched = Rc::new(RefCell::new(Vec::<String>::new()));
+    let mut bus = EventBus::new().dedup_capacity(2).unwrap();
+    let record = dispatched.clone();
+    bus.on::<Tick, _>("recorder", move |t, _, _| {
+        record.borrow_mut().push(t.body.symbol.clone());
+        Ok(HandlerOutcome::Handled)
+    });
+
+    for symbol in ["A", "B", "C"] {
+        bus.publish(&ctx, root_lineage("feed"), now, tick(symbol))
+            .unwrap();
+        bus.drain(&ctx).unwrap();
+    }
+    assert_eq!(*dispatched.borrow(), vec!["A", "B", "C"]);
+    assert_eq!(bus.dedup_evicted(), 1, "A must have left the window");
+
+    // Premise: a key still inside the window is still suppressed, so the
+    // window is working and only the evicted key comes back.
+    bus.publish(&ctx, root_lineage("feed"), now, tick("C"))
+        .unwrap();
+    bus.drain(&ctx).unwrap();
+    assert_eq!(
+        *dispatched.borrow(),
+        vec!["A", "B", "C"],
+        "a key inside the window must still suppress its duplicate"
+    );
+    assert_eq!(bus.duplicates_suppressed(), 1);
+
+    bus.publish(&ctx, root_lineage("feed"), now, tick("A"))
+        .unwrap();
+    bus.drain(&ctx).unwrap();
+    assert_eq!(
+        *dispatched.borrow(),
+        vec!["A", "B", "C", "A"],
+        "a key past the window is admitted again, which is what the counter warns about"
+    );
+    assert!(bus.dedup_evicted() >= 2);
+}
+
+#[test]
+fn a_drain_that_hits_its_ceiling_leaves_the_next_drain_no_worse_off() {
+    // This compounded once: the ceiling fired, the backlog stayed, and every
+    // following drain started deeper and dispatched less real work.
+    let (ctx, now) = context();
+    let mut bus = EventBus::new().max_events_per_drain(50);
+    bus.on::<Anomaly, _>("amplifier", |anomaly, any, publisher| {
+        publisher.publish(
+            any,
+            "amplifier",
+            any.occurred_at,
+            Anomaly {
+                symbol: anomaly.body.symbol.clone(),
+                z_score: anomaly.body.z_score + 1.0,
+            },
+        )?;
+        Ok(HandlerOutcome::Handled)
+    });
+    bus.publish(
+        &ctx,
+        root_lineage("feed"),
+        now,
+        Anomaly {
+            symbol: "A".into(),
+            z_score: 1.0,
+        },
+    )
+    .unwrap();
+    // Premise: there is work queued, so the drain has something to abandon.
+    assert_eq!(bus.queued(), 1);
+
+    let refusal = bus.drain(&ctx).unwrap_err().to_string();
+    assert!(
+        refusal.contains("publishing in a loop"),
+        "the diagnosis must survive: {refusal}"
+    );
+    assert!(
+        refusal.contains("1 queued events were abandoned"),
+        "the loss must be stated, not implied: {refusal}"
+    );
+    assert_eq!(bus.queued(), 0, "the backlog must not survive the refusal");
+    assert_eq!(bus.events_abandoned(), 1);
+    assert_eq!(
+        bus.drain(&ctx).unwrap(),
+        0,
+        "the next drain must start from nothing, not from the runaway's output"
+    );
+}
+
+#[test]
+fn the_failure_list_is_capped_and_says_how_much_it_dropped() {
+    // A handler that fails on every event used to grow this once per event.
+    let (ctx, now) = context();
+    let mut bus = EventBus::new().max_recorded_failures(2).unwrap();
+    bus.on::<Tick, _>("broken", |t, _, _| {
+        Err(qip_core::Error::io(format!("broke on {}", t.body.symbol)))
+    });
+    for symbol in ["A", "B", "C"] {
+        bus.publish(&ctx, root_lineage("feed"), now, tick(symbol))
+            .unwrap();
+    }
+    // Premise: all three were dispatched, so all three failed and the cap is
+    // what limits the list rather than the traffic.
+    assert_eq!(bus.drain(&ctx).unwrap(), 3);
+
+    assert_eq!(bus.failure_count(), 2, "the list must stop at its capacity");
+    assert_eq!(bus.failures_dropped(), 1, "the loss must be visible");
+    let errors: Vec<String> = bus.failures().map(|f| f.error.clone()).collect();
+    assert!(
+        errors[0].contains("broke on B") && errors[1].contains("broke on C"),
+        "the most recent failures describe the current state: {errors:?}"
+    );
+}
+
+#[test]
+fn log_retention_spends_replaceable_records_before_it_spends_observations() {
+    let (ctx, now) = context();
+    let mut log = EventLog::in_memory().with_capacity(3).unwrap();
+    log.append(&erased(&ctx, now, tick("T1"))).unwrap();
+    log.append(&erased(
+        &ctx,
+        now,
+        Trade {
+            symbol: "TR1".into(),
+            size: 1,
+        },
+    ))
+    .unwrap();
+    log.append(&erased(&ctx, now, tick("T2"))).unwrap();
+    // Premise: retention is full and holds both kinds, so the next append has
+    // a real choice to make.
+    assert_eq!(log.len(), 3);
+    assert_eq!(log.by_topic(Topic::MarketTick).len(), 2);
+
+    for index in 2..5 {
+        log.append(&erased(
+            &ctx,
+            now,
+            Trade {
+                symbol: format!("TR{index}"),
+                size: index,
+            },
+        ))
+        .unwrap();
+    }
+
+    assert_eq!(log.len(), 3, "retention must hold");
+    assert_eq!(
+        log.evicted_replaceable(),
+        2,
+        "both ticks go before any trade does"
+    );
+    assert_eq!(
+        log.evicted_observations(),
+        1,
+        "and only then is a trade dropped, counted separately so it is not \
+         buried under the routine loss"
+    );
+    assert!(
+        log.by_topic(Topic::MarketTick).is_empty(),
+        "the replaceable records should be the ones gone"
+    );
+}
+
+#[test]
+fn a_full_log_refuses_the_append_rather_than_dropping_an_audit_record() {
+    // Dropping a fill to make room for the next one would leave the platform
+    // acting with no account of what it did. Stopping is the lesser failure.
+    let (ctx, now) = context();
+    let mut log = EventLog::in_memory().with_capacity(2).unwrap();
+    for order in ["ORD-1", "ORD-2"] {
+        log.append(&erased(
+            &ctx,
+            now,
+            Fill {
+                order: order.to_string(),
+            },
+        ))
+        .unwrap();
+    }
+    // Premise: both audit records are retained and retention is full.
+    assert_eq!(log.len(), 2);
+    assert_eq!(log.by_topic(Topic::OrderFilled).len(), 2);
+
+    let refusal = log
+        .append(&erased(
+            &ctx,
+            now,
+            Fill {
+                order: "ORD-3".into(),
+            },
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refusal.contains("permanent retention"),
+        "the refusal must say why nothing could be dropped: {refusal}"
+    );
+    assert!(
+        refusal.contains("larger capacity"),
+        "and what to do instead: {refusal}"
+    );
+    assert_eq!(log.appends_refused(), 1);
+    assert_eq!(log.len(), 2, "a refused append must change nothing");
+    assert_eq!(log.evicted_replaceable() + log.evicted_observations(), 0);
+}
+
+#[test]
+fn a_refused_append_writes_nothing_to_the_file() {
+    // The file write used to happen before capacity was considered. A record
+    // on disk that the log then refused is a history nobody can reconcile.
+    let dir = std::env::temp_dir().join(format!("qip-log-refusal-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("events.jsonl");
+    let (ctx, now) = context();
+    {
+        let mut log = EventLog::open_with_capacity(&path, 2).unwrap();
+        for order in ["ORD-1", "ORD-2"] {
+            log.append(&erased(
+                &ctx,
+                now,
+                Fill {
+                    order: order.to_string(),
+                },
+            ))
+            .unwrap();
+        }
+        // Premise: the accepted appends did reach the file.
+        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 2);
+
+        assert!(
+            log.append(&erased(
+                &ctx,
+                now,
+                Fill {
+                    order: "ORD-3".into()
+                }
+            ))
+            .is_err()
+        );
+    }
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        written.lines().count(),
+        2,
+        "the refused record must not be on disk"
+    );
+    assert!(!written.contains("ORD-3"));
+
+    // And a log that cannot hold the file's audit records refuses to open it,
+    // rather than loading the whole file into the memory the ceiling exists to
+    // protect.
+    let refusal = EventLog::open_with_capacity(&path, 1)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refusal.contains("permanent retention"),
+        "opening must refuse for the same stated reason: {refusal}"
+    );
+    // Premise for that refusal: a large enough ceiling admits the same file.
+    assert_eq!(EventLog::open_with_capacity(&path, 2).unwrap().len(), 2);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn evicting_the_last_retained_record_restarts_neither_sequence_nor_chain() {
+    // Deriving the next sequence from the last retained record made eviction
+    // of the whole tail silently reissue sequence 1 and re-anchor the chain at
+    // genesis: two records with one sequence number, and a chain that still
+    // verifies while describing a history that never happened.
+    let (ctx, now) = context();
+    let mut log = EventLog::in_memory().with_capacity(1).unwrap();
+    log.append(&erased(&ctx, now, tick("T1"))).unwrap();
+    // Premise: exactly one record, which the next append must evict.
+    assert_eq!(log.len(), 1);
+    let first_hash = log.records()[0].record_hash.clone();
+    assert_eq!(log.records()[0].sequence, 1);
+
+    let sequence = log.append(&erased(&ctx, now, tick("T2"))).unwrap();
+    assert_eq!(log.len(), 1, "the tail was evicted to make room");
+    assert_eq!(sequence, 2, "sequence numbers must never be reissued");
+    assert_eq!(
+        log.records()[0].previous_hash,
+        first_hash,
+        "the chain must still name the record it followed"
+    );
+    assert_ne!(
+        log.records()[0].previous_hash,
+        qip_events::log::GENESIS_HASH
+    );
 }
