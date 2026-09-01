@@ -193,6 +193,8 @@ impl MeshSeries {
         ] {
             let by = now.saturating_sub(before);
             if by > 0 {
+                // `outcome` is one of the eight literals in the table above;
+                // the series count is fixed by this source file.
                 self.metrics
                     .increment(name, self.labelled("outcome", outcome), by);
             }
@@ -201,7 +203,8 @@ impl MeshSeries {
         // Every state is written, not only the one in force. A gauge set to 1
         // on `open` and never cleared would still say the circuit is open long
         // after it closed, which is the only fact on this link an operator is
-        // ever paged about.
+        // ever paged about. `state` is the three-variant `BreakerState`, so
+        // this is three series per cell.
         for state in [
             BreakerState::Closed,
             BreakerState::Open,
@@ -332,11 +335,7 @@ mod tests {
         metrics.count(names::EDGE_WORK_PASSES, labels([("cell", "cell-a")]));
 
         let health_body = r#"{"cell":"cell-a","halted":false}"#;
-        let (content_type, body) = respond(
-            b"GET /metrics HTTP/1.1\r\n\r\n",
-            &metrics,
-            health_body,
-        );
+        let (content_type, body) = respond(b"GET /metrics HTTP/1.1\r\n\r\n", &metrics, health_body);
         assert_eq!(
             content_type, "text/plain; version=0.0.4; charset=utf-8",
             "exposition served under a media type no scraper parses as exposition"
