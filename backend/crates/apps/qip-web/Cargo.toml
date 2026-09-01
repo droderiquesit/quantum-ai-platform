@@ -9,12 +9,6 @@ repository.workspace = true
 
 [dependencies]
 serde.workspace = true
-serde_json.workspace = true
-qip-core.workspace = true
-qip-financial.workspace = true
-qip-portfolio.workspace = true
-qip-risk.workspace = true
-qip-events.workspace = true
 
 [lints]
 workspace = true

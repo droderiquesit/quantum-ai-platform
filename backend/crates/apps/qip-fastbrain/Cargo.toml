@@ -19,14 +19,12 @@ path = "src/main.rs"
 serde.workspace = true
 serde_json.workspace = true
 qip-core.workspace = true
-qip-events.workspace = true
 qip-financial.workspace = true
 qip-observability.workspace = true
 qip-storage.workspace = true
 qip-agents.workspace = true
 qip-investment-agents.workspace = true
 qip-kernel.workspace = true
-qip-api.workspace = true
 # The risk limits the platform is assembled with. Held here rather than
 # defaulted inside the kernel so the node states the limits it runs under.
 qip-risk.workspace = true

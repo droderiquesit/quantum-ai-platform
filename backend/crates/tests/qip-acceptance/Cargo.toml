@@ -19,7 +19,6 @@ qip-ai.workspace = true
 qip-events.workspace = true
 qip-financial.workspace = true
 qip-market.workspace = true
-qip-portfolio.workspace = true
 qip-risk.workspace = true
 qip-investment-agents.workspace = true
 qip-reasoning-engine.workspace = true
@@ -39,7 +38,6 @@ qip-mesh.workspace = true
 qip-observability.workspace = true
 qip-kernel.workspace = true
 qip-api.workspace = true
-qip-web.workspace = true
 
 # The stress, chaos and performance suites reach the edge stack directly: the
 # cell and its journal, the books it prices from, the sequencer that decides a
@@ -48,13 +46,11 @@ qip-web.workspace = true
 # These are in-tree crates; the workspace's two-dependency rule is untouched.
 qip-numerics.workspace = true
 qip-quantum.workspace = true
-qip-protocols.workspace = true
 qip-sequencing.workspace = true
 qip-orderbook.workspace = true
 qip-feature-dag.workspace = true
 qip-strategy.workspace = true
 qip-arbitrage.workspace = true
-qip-routing.workspace = true
 qip-edge.workspace = true
 
 # The security suite additionally reaches the data finder, because the
@@ -81,8 +77,6 @@ qip-storage.workspace = true
 # crate needs them, and the demonstration is worth nothing without them.
 qip-capital.workspace = true
 qip-twin.workspace = true
-qip-capital-fabric.workspace = true
-qip-cost-router.workspace = true
 
 [lints]
 workspace = true

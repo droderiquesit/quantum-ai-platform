@@ -153,7 +153,6 @@ qip-evolution = { path = "crates/services/qip-evolution" }
 qip-investment-agents = { path = "crates/agents/qip-investment-agents" }
 qip-quant = { path = "crates/quant/qip-quant" }
 qip-kernel = { path = "crates/runtime/qip-kernel" }
-qip-acceptance = { path = "crates/tests/qip-acceptance" }
 qip-web = { path = "crates/apps/qip-web" }
 qip-api = { path = "crates/apps/qip-api" }
 

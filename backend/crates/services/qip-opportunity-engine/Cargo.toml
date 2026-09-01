@@ -14,9 +14,6 @@ qip-core.workspace = true
 qip-numerics.workspace = true
 qip-events.workspace = true
 qip-financial.workspace = true
-qip-market.workspace = true
-qip-world-model.workspace = true
-qip-quant.workspace = true
 
 [lints]
 workspace = true

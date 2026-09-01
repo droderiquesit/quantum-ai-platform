@@ -1005,25 +1005,22 @@ fn the_contract_layer_sits_at_the_bottom_of_everything_that_shares_it() {
     // service behind every crate that speaks the language.
     //
     // "At the bottom" is not "depends on nothing" — that is `qip-core`'s job
-    // and the test above. The contract layer legitimately borrows the exact
-    // types the vocabulary is made of, so what is pinned here is the precise
-    // set it declares today. Pinning the exact set rather than a forbidden
+    // and the test above. What is pinned here is the precise set the contract
+    // layer declares today. Pinning the exact set rather than a forbidden
     // list is the point: it makes any growth of the contract layer a decision
     // somebody takes deliberately rather than one that arrives with a commit
     // about something else.
+    //
+    // That set is `qip-core` alone. An earlier pin also named the financial,
+    // market, numerics, portfolio and risk libraries, because the manifest
+    // declared them; a sweep found no `qip_financial::`, `qip_market::`,
+    // `qip_numerics::`, `qip_portfolio::` or `qip_risk::` path anywhere in the
+    // crate, so those five were edges Cargo resolved and nothing used. A pin
+    // that names an unused edge protects a dependency nobody has, and would
+    // make removing it look like an architectural change.
     let graph = dependency_graph();
     let declared = graph.get("qip-contracts").expect("qip-contracts exists");
-    let expected: BTreeSet<String> = [
-        "qip-core",
-        "qip-financial",
-        "qip-market",
-        "qip-numerics",
-        "qip-portfolio",
-        "qip-risk",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect();
+    let expected: BTreeSet<String> = ["qip-core"].into_iter().map(str::to_string).collect();
     assert_eq!(
         *declared, expected,
         "the contract layer's dependencies have changed, so every crate that speaks the \
