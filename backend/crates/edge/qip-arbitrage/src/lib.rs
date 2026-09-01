@@ -27,6 +27,8 @@
 //!   has to be standing there beforehand, and refuses a plan whose residual
 //!   exposure exceeds its budget.
 //! * [`scan`] runs the lot and keeps the refusals.
+//! * [`legs`] turns a surviving opportunity into the no-net intents the
+//!   cell's netting seam accepts, by a type that cannot be built nettable.
 //!
 //! Two constraints shape all of it. Nothing reads a clock or an ambient random
 //! source: `now` is a parameter everywhere it matters, so a replay produces the
@@ -41,6 +43,7 @@
 mod arith;
 
 pub mod graph;
+pub mod legs;
 pub mod liquidity;
 pub mod netedge;
 pub mod plan;
