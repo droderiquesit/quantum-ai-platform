@@ -177,6 +177,51 @@ spec:
                 configMapKeyRef:
                   name: qip-config
                   key: autonomy_ceiling
+            # The live market-data connector, or nothing.
+            #
+            # `qip-fastbrain` has read these two names since the connector
+            # bridge landed — licensing gate, SDK runtime, health probe, dedup,
+            # real fetch — and no manifest and no template set either of them.
+            # So `connector_feed` took its `(None, None)` arm in every
+            # environment, every deployed Fast Brain ran the synthetic
+            # exchange, and the capability read as shipped while being
+            # reachable from nowhere. That is the mesh backbone's failure
+            # repeated: complete code, tested in process, configured by
+            # nothing.
+            #
+            # `optional: true` on both, and unset is the default rather than an
+            # oversight. With the ConfigMap keys absent neither variable is
+            # set, the parser returns no connector, and this node keeps the
+            # synthetic feed it has today: nothing begins fetching a vendor
+            # because a template changed. An operator selects a source by
+            # setting `marketDataConnector` in a values file, which is a
+            # reviewed diff against a named resource — which is the whole
+            # difference between a capability an operator can reach and one
+            # that requires hand-editing a manifest Argo CD will revert.
+            #
+            # Both or neither. The parser refuses half a configuration by name
+            # instead of falling back, because a fallback here is the synthetic
+            # exchange wearing a configured look; config.yaml refuses the same
+            # half at render time.
+            #
+            # The base URL is an `http://` address inside the cluster:
+            # `qip_transport::http` has no TLS stack and refuses `https` by
+            # name, so it points at the egress proxy in egress.yaml, which
+            # terminates TLS to the vendor. That proxy reaches only the hosts
+            # it names, so a vendor listener has to be added there in the same
+            # change — an address with no route behind it is a feed that hangs.
+            - name: QIP_CONNECTOR_SOURCE
+              valueFrom:
+                configMapKeyRef:
+                  name: qip-config
+                  key: connector_source
+                  optional: true
+            - name: QIP_CONNECTOR_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: qip-config
+                  key: connector_base_url
+                  optional: true
             # No QIP_LOG_LEVEL: nothing in this workspace reads one, so the
             # `log_level` key it came from was a dial connected to nothing.
             # deepbrain.yaml carries the full argument.
