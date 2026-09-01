@@ -1121,6 +1121,10 @@ impl Platform {
             names::PERMISSION_DENIALS,
             "agent attempts at something the agent's manifest does not grant",
         );
+        metrics.describe(
+            names::RESERVATION_SHORTFALL,
+            "resyncs that found capital holds exceeding equity, by reason",
+        );
     }
 
     pub fn config(&self) -> &PlatformConfig {
@@ -3028,7 +3032,7 @@ impl Platform {
             .is_err()
         {
             self.telemetry.metrics.count(
-                "qip_reservation_shortfall",
+                names::RESERVATION_SHORTFALL,
                 labels([("reason", "holds_exceed_equity")]),
             );
         }
@@ -5117,6 +5121,92 @@ mod decide_tests {
         assert!(
             platform.pending_theses.is_empty(),
             "an unsizeable thesis was requeued; it will not size better against the same history"
+        );
+    }
+
+    /// A drawdown that leaves the active holds above equity is counted where
+    /// the alerts look, under the name the registry exports.
+    ///
+    /// The site used to count a bare string literal. Nothing checked that the
+    /// literal matched `names::RESERVATION_SHORTFALL`, so a rename in either
+    /// place would have split one fact into two series, one of them empty and
+    /// alerted on. The test drives the real failure — equity reserved in full,
+    /// then a fill that realises a loss — and reads the counter back by the
+    /// constant, so the literal and the constant cannot drift apart unseen.
+    #[test]
+    fn a_reservation_shortfall_is_counted_under_the_registered_name() {
+        let mut platform = platform();
+        let now = Timestamp::from_secs(1_760_000_000);
+        let equity = platform.capital.equity();
+        assert!(equity.is_positive(), "the book starts with equity");
+
+        platform
+            .reservations
+            .resync_free(equity, now)
+            .expect("holds are zero, so free is the whole equity");
+        platform
+            .reservations
+            .reserve("hold-1", equity, now, Duration::from_hours(1))
+            .expect("the whole equity is free to hold");
+        assert_eq!(platform.reservations.reserved_total(), equity);
+
+        // Buy one lot at 100 and close it at 50: a realised loss of 50, so
+        // equity is now below the hold that was taken against it.
+        platform.capital.apply_fill(
+            "AAA",
+            Side::Buy,
+            Decimal::from_int(100),
+            Decimal::from_int(1),
+            Decimal::ZERO,
+        );
+        platform.capital.apply_fill(
+            "AAA",
+            Side::Sell,
+            Decimal::from_int(50),
+            Decimal::from_int(1),
+            Decimal::ZERO,
+        );
+        assert!(
+            platform.capital.equity() < equity,
+            "the loss must have reached the tracked equity"
+        );
+        let shortfall = labels([("reason", "holds_exceed_equity")]);
+        assert_eq!(
+            platform
+                .telemetry
+                .metrics
+                .snapshot()
+                .counter(names::RESERVATION_SHORTFALL, &shortfall),
+            0,
+            "nothing has been counted before the decide stage resyncs"
+        );
+
+        let _ = platform.stage_decide(now);
+
+        let snapshot = platform.telemetry.metrics.snapshot();
+        assert_eq!(
+            snapshot.counter(names::RESERVATION_SHORTFALL, &shortfall),
+            1,
+            "one resync found the holds above equity; series: {:?}",
+            snapshot.series.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            platform.reservations.free(now),
+            Decimal::ZERO,
+            "the free balance is floored, so no new reservation can be taken"
+        );
+        // The description is registered at assembly, not at the first count.
+        // Without it the series exports with an empty `# HELP`, which is
+        // valid exposition and unreadable documentation.
+        let help = snapshot
+            .series
+            .iter()
+            .find(|s| s.name == names::RESERVATION_SHORTFALL)
+            .map(|s| s.help.clone())
+            .unwrap_or_default();
+        assert!(
+            help.contains("holds exceeding equity"),
+            "the series exports without its description: {help:?}"
         );
     }
 }
