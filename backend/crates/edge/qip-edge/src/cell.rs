@@ -1657,30 +1657,45 @@ mod crossing_tests {
         Ok(cell)
     }
 
+    /// Net the given `(strategy, signed size)` pairs on the fixture instrument
+    /// through [`net`] itself, every intent stamped with `reference_price`.
+    ///
+    /// Not a literal. `NetIntent` is sealed to `net` so that nobody can
+    /// assemble a vector of contributors `net` would have refused, and these
+    /// tests were the one caller still forging one by hand — a fixture that
+    /// bypasses the seam it is meant to drive is a second construction path
+    /// with a friendlier name. Going through `net` also means the net's own
+    /// reference price is whatever `net` chose, which is what the crossing
+    /// test needs to be sure of before it can claim the mid was chosen over
+    /// it.
+    fn netted(sizes: &[(&str, &str)], reference_price: Decimal) -> NetIntent {
+        let intents = sizes
+            .iter()
+            .map(|(strategy, size)| {
+                Intent::new(
+                    StrategyId::new(*strategy),
+                    object(),
+                    venue(),
+                    Decimal::parse(size).expect("a decimal literal"),
+                    reference_price,
+                    at(60),
+                )
+                .expect("a fixture size is never zero")
+            })
+            .collect();
+        let mut nets = net(intents);
+        assert_eq!(
+            nets.len(),
+            1,
+            "directional intents on one instrument and venue net to one group"
+        );
+        nets.pop().expect("exactly one net was just asserted")
+    }
+
     /// A net of a 100 buy against a 20 sell: 20 crosses, which is a sixth of
     /// the 120 gross and so comfortably under the forty percent cap.
     fn offsetting_net(reference_price: Decimal) -> NetIntent {
-        NetIntent {
-            object_id: object(),
-            venue: venue(),
-            representation: qip_contracts::intent::Representation::Spot,
-            net_size: Decimal::parse("80").expect("a decimal literal"),
-            gross_size: Decimal::parse("120").expect("a decimal literal"),
-            contributors: vec![
-                Contributor {
-                    strategy: StrategyId::new("alpha"),
-                    signed_size: Decimal::parse("100").expect("a decimal literal"),
-                    inputs: Vec::new(),
-                },
-                Contributor {
-                    strategy: StrategyId::new("beta"),
-                    signed_size: Decimal::parse("-20").expect("a decimal literal"),
-                    inputs: Vec::new(),
-                },
-            ],
-            reference_price,
-            cycle_id: None,
-        }
+        netted(&[("alpha", "100"), ("beta", "-20")], reference_price)
     }
 
     #[test]
@@ -1692,8 +1707,15 @@ mod crossing_tests {
         // forbids by name.
         let chosen = Decimal::parse("12345").expect("a decimal literal");
         let net_intent = offsetting_net(chosen);
-        // The premise: the two candidate prices really do differ here, which
-        // is the whole reason this test exists rather than the behavioural one.
+        // The premise, in two halves: the net `net` built really carries the
+        // chosen price — otherwise the assertion below that the cross did not
+        // take it would be true of any implementation — and the two candidate
+        // prices really do differ here, which is the whole reason this test
+        // exists rather than the behavioural one.
+        assert_eq!(
+            net_intent.reference_price, chosen,
+            "the fixture net does not carry the price it was built from"
+        );
         let mid = cell
             .liquidity()
             .get(&venue(), &object())
@@ -1790,23 +1812,10 @@ mod crossing_tests {
         // divergence is asserted rather than merely described in a comment
         // somebody may later delete as stale.
         let mut cell = cell_with_book()?;
-        let opposed = NetIntent {
-            net_size: Decimal::ZERO,
-            gross_size: Decimal::parse("200").expect("a decimal literal"),
-            contributors: vec![
-                Contributor {
-                    strategy: StrategyId::new("alpha"),
-                    signed_size: Decimal::parse("100").expect("a decimal literal"),
-                    inputs: Vec::new(),
-                },
-                Contributor {
-                    strategy: StrategyId::new("beta"),
-                    signed_size: Decimal::parse("-100").expect("a decimal literal"),
-                    inputs: Vec::new(),
-                },
-            ],
-            ..offsetting_net(Decimal::parse("100").expect("a decimal literal"))
-        };
+        let opposed = netted(
+            &[("alpha", "100"), ("beta", "-100")],
+            Decimal::parse("100").expect("a decimal literal"),
+        );
         // Premise: the sides really do cancel, so this is the full-offset case
         // and not merely a large partial one.
         assert!(
