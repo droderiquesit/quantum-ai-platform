@@ -13,11 +13,11 @@
  */
 export {
   platform, request, isOk, describeOutcome, GATEWAY_PREFIX, GATEWAY_HEADER,
-  type ApiOutcome, type ApiResponse, type GatewayDisposition, type PaperOrderRequest,
-} from "../../../frontend/src/lib/api/client";
-export { REST, STREAM_CHANNELS, NOT_YET_SERVED, type EndpointSpec, type MissingEndpoint, type StreamChannel } from "../../../frontend/src/lib/api/endpoints";
-export { useResource, type Resource, type UseResourceOptions } from "../../../frontend/src/lib/hooks/useResource";
-export { useEventStream, backoffFor, type EventStream, type UseEventStreamOptions, type StreamGap } from "../../../frontend/src/lib/hooks/useEventStream";
-export { useSeries, describeWindow, type Series } from "../../../frontend/src/lib/hooks/useSeries";
-export { useNow } from "../../../frontend/src/lib/hooks/useNow";
-export { connections, useConnections, type FeedState } from "../../../frontend/src/lib/hooks/connections";
+  type ApiOutcome, type ApiResponse, type GatewayDisposition,
+} from "../../../portal/src/lib/api/client";
+export { REST, STREAM_CHANNELS, NOT_YET_SERVED, type EndpointSpec, type MissingEndpoint, type StreamChannel } from "../../../portal/src/lib/api/endpoints";
+export { useResource, type Resource, type UseResourceOptions } from "../../../portal/src/lib/hooks/useResource";
+export { useEventStream, backoffFor, type EventStream, type UseEventStreamOptions, type StreamGap } from "../../../portal/src/lib/hooks/useEventStream";
+export { useSeries, describeWindow, type Series } from "../../../portal/src/lib/hooks/useSeries";
+export { useNow } from "../../../portal/src/lib/hooks/useNow";
+export { connections, useConnections, type FeedState } from "../../../portal/src/lib/hooks/connections";

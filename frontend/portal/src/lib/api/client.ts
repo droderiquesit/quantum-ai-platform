@@ -210,34 +210,21 @@ export const platform = {
   openapi: (signal?: AbortSignal) =>
     request<T.OpenApiDocument>("/openapi.json", withSignal(signal)),
 
+  /**
+   * The three writes this console performs, and the only ones it may.
+   *
+   * Each is an operational control over the loop — advance it, stop it, start
+   * it again — and none of them names an instrument, a side or a quantity.
+   * There is deliberately no fourth: a function here that posted an order body
+   * would be an order-submitting control whatever the platform answered to it,
+   * and `POST /api/v1/orders` returning 405 today is the platform's fact, not
+   * this console's guarantee. See `tests/boundary.spec.ts`.
+   */
   runCycle: () => request<T.CycleReport>("/cycle", { method: "POST" }),
   tripKillSwitch: (reason: string) =>
     request<T.KillSwitchResponse>("/kill-switch", { method: "POST", query: { reason } }),
   clearKillSwitch: () => request<T.KillSwitchResponse>("/kill-switch", { method: "DELETE" }),
-
-  /**
-   * Submit a paper order.
-   *
-   * The platform serves no write path for orders today, so this call is
-   * expected to come back `missing`. It is issued for real anyway: the page
-   * reports what the platform actually said rather than asserting the absence
-   * from a hard-coded list.
-   */
-  submitPaperOrder: (order: PaperOrderRequest) =>
-    request<unknown>("/orders", { method: "POST", body: order }),
 } as const;
-
-export interface PaperOrderRequest {
-  readonly instrument: string;
-  readonly side: "buy" | "sell";
-  readonly quantity: string;
-  readonly order_type: "market" | "limit";
-  readonly limit_price: string | null;
-  readonly time_in_force: "day" | "ioc" | "gtc";
-  readonly venue: string;
-  readonly paper: true;
-  readonly reason: string;
-}
 
 function withSignal(signal: AbortSignal | undefined): RequestOptions {
   return signal ? { signal } : {};

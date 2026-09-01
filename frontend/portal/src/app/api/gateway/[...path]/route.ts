@@ -102,16 +102,20 @@ async function forward(request: NextRequest, context: RouteContext): Promise<Res
         "content-type": response.headers.get("content-type") ?? "application/json",
         "cache-control": "no-store",
         "x-qip-gateway": "upstream",
-        "x-qip-upstream-url": url,
       },
     });
   } catch (cause) {
+    // The path, never the resolved URL. `QIP_API_BASE_URL` names an in-cluster
+    // address the public may not see, and a gateway that echoes it into an
+    // error body has published its own topology to anyone who can make the
+    // platform time out. The path is what the operator needs to diagnose;
+    // where it was sent is in this process's logs, which are not the browser.
     const aborted = controller.signal.aborted;
     const detail = aborted
-      ? `the platform did not answer ${url} within ${target.timeoutMs}ms`
-      : `${url} could not be reached: ${cause instanceof Error ? cause.message : "unknown error"}`;
+      ? `the platform did not answer ${path} within ${target.timeoutMs}ms`
+      : `${path} could not be reached: ${cause instanceof Error ? cause.message : "unknown error"}`;
     return NextResponse.json(
-      { error: detail, gateway: aborted ? "timeout" : "unreachable", upstream: url },
+      { error: detail, gateway: aborted ? "timeout" : "unreachable", upstream: path },
       {
         status: aborted ? 504 : 502,
         headers: {

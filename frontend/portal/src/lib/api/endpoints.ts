@@ -66,13 +66,6 @@ export interface MissingEndpoint {
 }
 
 export const NOT_YET_SERVED: Record<string, MissingEndpoint> = {
-  submitPaperOrder: {
-    method: "POST",
-    path: "/api/v1/orders",
-    needed_for: "paper order entry",
-    note:
-      "the route table serves GET /orders only; there is no write path for an operator-entered paper order.",
-  },
   positions: {
     method: "GET",
     path: "/api/v1/positions",

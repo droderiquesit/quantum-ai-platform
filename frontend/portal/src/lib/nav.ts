@@ -24,6 +24,11 @@ export interface NavGroup {
  * labelled SIMULATED DATA and written against the typed contract the real
  * surface will have. Nothing here invents a live number, and nothing is a
  * dead link kept to make a section look finished.
+ *
+ * Trading & Execution reads the platform's execution record and nothing more.
+ * There is no ticket entry here and no entry point to one: this console is a
+ * capital control surface, not a trading terminal, and a section that offered
+ * to compose an order would imply a path that does not exist.
  */
 export const NAV: readonly NavGroup[] = [
   {
@@ -218,13 +223,6 @@ export const NAV: readonly NavGroup[] = [
         mark: "OB",
         description: "Order lifecycle, refusals and reconciliation",
         reads: ["/orders", "/fills", "/stream/orders"],
-      },
-      {
-        href: "/order-entry",
-        label: "Paper order ticket",
-        mark: "OE",
-        description: "Stage a simulated ticket and read the platform's pre-trade answer",
-        reads: ["/system/status", "/risk"],
       },
       {
         href: "/execution/fills",
