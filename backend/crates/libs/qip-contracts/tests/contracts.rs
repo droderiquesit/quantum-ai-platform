@@ -1589,3 +1589,133 @@ fn each_contributor_keeps_the_feature_revisions_its_own_strategy_reasoned_from()
     // and every attribution afterwards would credit both for one signal.
     assert_ne!(inputs_of("alpha"), inputs_of("beta"));
 }
+
+/// Build a net whose contributors have the given signed sizes.
+fn net_of(sizes: &[&str]) -> NetIntent {
+    let contributors: Vec<Contributor> = sizes
+        .iter()
+        .enumerate()
+        .map(|(index, size)| Contributor {
+            strategy: StrategyId::new(format!("s{index}")),
+            signed_size: Decimal::parse(size).expect("a decimal literal"),
+            inputs: Vec::new(),
+        })
+        .collect();
+    let gross = contributors
+        .iter()
+        .map(|c| c.signed_size.abs())
+        .fold(Decimal::ZERO, |a, b| a + b);
+    let net_size = contributors
+        .iter()
+        .map(|c| c.signed_size)
+        .fold(Decimal::ZERO, |a, b| a + b);
+    NetIntent {
+        object_id: ObjectId::from_string("ACME"),
+        venue: VenueId::new("XLON"),
+        representation: Representation::Spot,
+        net_size,
+        gross_size: gross,
+        contributors,
+        reference_price: dec!("100"),
+        cycle_id: None,
+    }
+}
+
+#[test]
+fn a_fill_whose_shares_round_up_is_still_split_to_exactly_the_fill() {
+    // The three cases a review probe found, and they are not dust: a
+    // `Decimal` holds nine places and rounds half away from zero at the ninth,
+    // while shares are floored at the eighth. Where the ninth-place rounding
+    // lifts every contributor's share to a value already exact at eight
+    // places, the floor takes nothing back and the shares sum to *more* than
+    // the fill. The function used to test only `remainder.is_positive()`, so
+    // the excess was dropped: envelopes charged for notional nobody traded,
+    // and a residual of exactly the sign attribution exists to forbid.
+    for (label, sizes, filled) in [
+        ("two equal contributors", &["1", "1"][..], "0.100000019"),
+        ("two equal, sub-unit fill", &["1", "1"][..], "0.000000019"),
+        ("two equal, odd gross", &["3", "3"][..], "0.100000019"),
+        (
+            "three equal contributors",
+            &["1", "1", "1"][..],
+            "0.100000019",
+        ),
+    ] {
+        let net_intent = net_of(sizes);
+        let fill = Decimal::parse(filled).expect("a decimal literal");
+        let split = net_intent.split_fill(fill);
+        // Premise: every contributor got a share, so the sum below is over the
+        // whole vector rather than over a silently emptied one.
+        assert_eq!(
+            split.len(),
+            sizes.len(),
+            "{label}: a contributor was dropped"
+        );
+        let summed = split
+            .iter()
+            .map(|(_, share)| *share)
+            .fold(Decimal::ZERO, |a, b| a + b);
+        assert_eq!(
+            summed,
+            fill,
+            "{label}: the shares sum to {summed} for a fill of {fill}, so \
+             {} of notional is attributed to nobody or to somebody twice",
+            summed - fill
+        );
+        // And nobody was handed a negative part of a fill they took part in.
+        for (strategy, share) in &split {
+            assert!(
+                !share.is_negative(),
+                "{label}: {} received a negative share {share}",
+                strategy.as_str()
+            );
+        }
+    }
+}
+
+#[test]
+fn taking_back_an_excess_is_as_deterministic_as_handing_out_a_shortfall() {
+    // The give-back direction needs its own tie-break or the same fill splits
+    // differently depending on the order contributors happened to arrive in —
+    // the identical hazard the hand-out direction already guards, and a replay
+    // that reorders is not a replay.
+    let fill = Decimal::parse("0.100000019").expect("a decimal literal");
+
+    let forward = net_of(&["1", "1", "1"]);
+    let mut reversed = forward.clone();
+    reversed.contributors.reverse();
+    // Premise: the two vectors really are in different orders, so agreement
+    // below is the tie-break working rather than the inputs being identical.
+    assert_ne!(
+        forward.contributors[0].strategy.as_str(),
+        reversed.contributors[0].strategy.as_str()
+    );
+    // Premise: this fill genuinely exercises the give-back path. Without it
+    // this test would assert determinism over the hand-out branch instead.
+    let floored_total = forward
+        .contributors
+        .iter()
+        .map(|c| {
+            c.signed_size
+                .abs()
+                .checked_mul(fill)
+                .and_then(|n| n.checked_div(forward.gross_size))
+                .expect("a representable share")
+        })
+        .fold(Decimal::ZERO, |a, b| a + b);
+    assert!(
+        floored_total > fill,
+        "this fill does not over-allocate, so it does not reach the give-back \
+         branch at all"
+    );
+
+    let mut left = forward.split_fill(fill);
+    let mut right = reversed.split_fill(fill);
+    left.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+    right.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+    assert_eq!(
+        left, right,
+        "the same fill split differently for the same contributors in a \
+         different order"
+    );
+}
