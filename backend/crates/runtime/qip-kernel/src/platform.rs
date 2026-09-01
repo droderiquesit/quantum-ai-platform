@@ -1123,6 +1123,14 @@ impl Platform {
     /// and the approval ladder, capital allocation across cells, aggregate
     /// exposure, and the six governance controls. See
     /// `docs/adr/0008-edge-cells-decide-alone.md`.
+    /// The configured risk limits, for the policy payload's envelope slot.
+    ///
+    /// The monitor owns them; this is a read, added so the centre can ship
+    /// what it actually enforces rather than a copy that could drift.
+    pub fn risk_limits(&self) -> &qip_risk::limits::LimitSet {
+        self.monitor.limits()
+    }
+
     pub fn central(&self) -> &CentralPlane {
         &self.central
     }

@@ -51,6 +51,7 @@ use std::collections::{BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use qip_contracts::capital::CapitalEnvelope;
+use qip_contracts::policy::{HaltCommand, PolicyPayload};
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, CorrelationId, Id, Lineage, Timestamp};
 use qip_events::envelope::canonical_json;
@@ -493,6 +494,191 @@ fn frame_for(envelope: &CapitalEnvelope, at: Timestamp) -> Result<AnyEvent> {
             "qip-mesh",
         ),
         CapitalGrantFrame(envelope.clone()),
+    )
+    .erase()
+}
+
+// --- down: policy payloads and halts -----------------------------------------
+
+/// A policy payload framed for the wire.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PolicyFrame(pub PolicyPayload);
+
+impl EventBody for PolicyFrame {
+    const TOPIC: Topic = Topic::PolicyDistributed;
+    const SCHEMA_VERSION: u32 = 1;
+
+    /// Cell and sequence: a redelivered payload is the same payload, and the
+    /// cell's own sequence discipline is what refuses an old one.
+    fn idempotency_key(&self) -> Option<String> {
+        Some(format!("policy|{}|{}", self.0.cell, self.0.sequence))
+    }
+}
+
+/// A halt command framed for the wire.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct HaltFrame(pub HaltCommand);
+
+impl EventBody for HaltFrame {
+    /// `KillSwitchEngaged` is exactly what this frame means, and its retention
+    /// is permanent by name.
+    const TOPIC: Topic = Topic::KillSwitchEngaged;
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn idempotency_key(&self) -> Option<String> {
+        Some(format!(
+            "halt|{}|{}|{}",
+            self.0.cell,
+            self.0.issued_at.as_secs(),
+            self.0.signature
+        ))
+    }
+}
+
+/// The centre's sender for policy payloads and halts, one per cell.
+///
+/// **Deliberately unspooled**, where [`CapitalDispatcher`] spools. A grant is
+/// an ordered instruction: skipping one delivers later capital ahead of an
+/// earlier narrowing. A policy payload is *state* — the newest wins, an old
+/// one is refused by the cell's sequence discipline, and a missed one is
+/// superseded by the next publish; a halt is idempotent and republished with
+/// every subsequent payload's flag besides. Durably spooling either would
+/// preserve exactly the staleness the payload's TTLs exist to expire.
+#[derive(Debug)]
+pub struct PolicyCourier {
+    cell: String,
+    peer: String,
+    publisher: MeshPublisher,
+    breaker: CircuitBreaker,
+}
+
+/// What became of one send.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PolicySend {
+    Delivered,
+    /// The circuit to this cell is open; nothing was attempted. The next
+    /// publish retries — policy is state, so there is nothing to spool.
+    CircuitOpen,
+}
+
+impl PolicyCourier {
+    pub fn open(
+        config: DispatcherConfig,
+        clock: Arc<dyn Clock>,
+        sleeper: Arc<dyn Sleeper>,
+        dead_letters: Box<dyn DeadLetterSink>,
+    ) -> Result<Self> {
+        let breaker =
+            CircuitBreaker::new(config.breaker, Arc::clone(&clock), config.breaker_seed, 4)?;
+        let peer = config.mesh.peer.clone();
+        let publisher = MeshPublisher::new(config.mesh, clock, sleeper, dead_letters)?;
+        Ok(Self {
+            cell: config.cell,
+            peer,
+            publisher,
+            breaker,
+        })
+    }
+
+    pub fn cell(&self) -> &str {
+        &self.cell
+    }
+
+    /// Send one signed payload.
+    ///
+    /// Refuses an unsigned one rather than sending it: the cell would refuse
+    /// it anyway, and refusing here names the defect at the seam that owns it.
+    pub fn send_payload(&mut self, payload: PolicyPayload, at: Timestamp) -> Result<PolicySend> {
+        if payload.signature.is_empty() {
+            return Err(Error::denied(
+                "an unsigned policy payload cannot be dispatched; sign it with the trust root",
+            ));
+        }
+        if payload.cell != self.cell {
+            return Err(Error::denied(format!(
+                "a payload for cell {} was handed to the courier for {}",
+                payload.cell, self.cell
+            )));
+        }
+        let frame = frame_for_policy(&payload, at)?;
+        self.send(frame, at)
+    }
+
+    /// Send one signed halt.
+    pub fn send_halt(&mut self, halt: HaltCommand, at: Timestamp) -> Result<PolicySend> {
+        if halt.signature.is_empty() {
+            return Err(Error::denied(
+                "an unsigned halt cannot be dispatched; sign it with the trust root",
+            ));
+        }
+        if halt.cell != self.cell {
+            return Err(Error::denied(format!(
+                "a halt for cell {} was handed to the courier for {}",
+                halt.cell, self.cell
+            )));
+        }
+        let frame = frame_for_halt(&halt, at)?;
+        self.send(frame, at)
+    }
+
+    fn send(&mut self, frame: AnyEvent, at: Timestamp) -> Result<PolicySend> {
+        let permit = match self.breaker.admit(&self.peer) {
+            BreakerDecision::Refused(_) => return Ok(PolicySend::CircuitOpen),
+            BreakerDecision::Admitted(permit) => permit,
+        };
+        match self.publisher.publish_frame(frame, at) {
+            Ok(_) => {
+                self.breaker.record(permit, Outcome::Success);
+                Ok(PolicySend::Delivered)
+            }
+            Err(error) => {
+                self.breaker.record(permit, Outcome::failed(&error));
+                Err(Error::from(error))
+            }
+        }
+    }
+}
+
+fn frame_for_policy(payload: &PolicyPayload, at: Timestamp) -> Result<AnyEvent> {
+    let key = format!("policy|{}|{}", payload.cell, payload.sequence);
+    Envelope::new(
+        Id::from_string(format!(
+            "EVTPOLICY{}",
+            qip_core::hash::sha256_hex(key.as_bytes())
+        )),
+        at,
+        at,
+        Lineage::root(
+            CorrelationId::from_string(format!(
+                "CORPOLICY{}",
+                qip_core::hash::sha256_hex(key.as_bytes())
+            )),
+            "qip-mesh",
+        ),
+        PolicyFrame(payload.clone()),
+    )
+    .erase()
+}
+
+fn frame_for_halt(halt: &HaltCommand, at: Timestamp) -> Result<AnyEvent> {
+    let key = format!("halt|{}|{}", halt.cell, halt.signature);
+    Envelope::new(
+        Id::from_string(format!(
+            "EVTHALT{}",
+            qip_core::hash::sha256_hex(key.as_bytes())
+        )),
+        at,
+        at,
+        Lineage::root(
+            CorrelationId::from_string(format!(
+                "CORHALT{}",
+                qip_core::hash::sha256_hex(key.as_bytes())
+            )),
+            "qip-mesh",
+        ),
+        HaltFrame(halt.clone()),
     )
     .erase()
 }

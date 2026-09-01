@@ -212,11 +212,13 @@ erode quietly:
   absence, so a later change that wants to halt has to come through it and
   explain itself. Halting belongs to the kill switch an operator holds.
 
-**Not yet wired.** The type has no production caller. It precedes its consumer
-on purpose: the consumer is the signed twelve-item payload (§41.5), whose
-stale-item narrowing is defined in exactly these terms, and that is the next
-slice. Until then this is UNVERIFIED at the platform level by this document's
-own rule, and is recorded as such rather than counted as a working control.
+**Now wired.** The consumer arrived with the payload slice: a cell derives its
+narrowing from the applied payload every pass (`qip-edge/src/cell.rs` —
+`narrowing()`, consumed in `work()`), the multiplier sizes real orders, the
+pause gate refuses by strategy class, and a cell with no payload sits at the
+conservative floor. Mutation-verified end to end — a policy-less cell reading
+as fully available, the pause gate removed, and the multiplier pinned to one
+each fail named tests.
 
 ## The seven layers (§40.5, §41, §45, §46, §47, §48)
 
