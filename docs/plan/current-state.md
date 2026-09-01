@@ -1,20 +1,21 @@
 # Current state, as measured
 
-Established by running the gates and reading the tree on the commit that closed
-the trading spine. Every number here came from a command whose output was read.
+Established by running the gates and reading the tree. Every number here came
+from a command whose output was read, and each row names the commit it was read
+at, because a number without a commit is a number nobody can re-measure.
 
 ## Shape
 
 | Fact | Value |
 |---|---|
 | Rust crates | 59, in 8 groups (`libs`, `services`, `apps`, `edge`, `agents`, `quant`, `runtime`, `tests`) |
-| Tests | 3,192 passing, 0 failing, 0 ignored, across 290 binaries (`cargo test --workspace --no-fail-fast`), measured on the commit that added the §6.2 degradation contract |
+| Tests | 3,308 workspace tests passing (`cargo test --workspace --no-fail-fast`), as recorded in the PR #5 body for `fef0c97` — the most recent full run with cited output. Not re-measured at `68b7da6`. The figure this row carried before, 3,192, was measured on the §6.2 degradation-contract commit and had been overtaken by three merges |
 | Clippy | 0 warnings, `--all-targets` |
 | Third-party crates | 11 packages, all permitted (`serde`, `serde_json` and their trees) |
 | Frontend | Next.js + TypeScript, 47 tracked files |
 | Cloud | GCP: GKE, Secret Manager CSI, KMS, Binary Authorization, WIF |
 | Pipelines | `ci.yml`, `deploy.yml`, `infra.yml` — all deriving identity from committed tfvars |
-| Decision records | 21 ADRs |
+| Decision records | 23 ADRs, `0001`–`0023`, every one listed in `docs/adr/README.md` |
 
 ## Against the canonical architecture
 
@@ -60,9 +61,12 @@ Each was invisible until the one before it was fixed:
 
 ## Known gaps, stated plainly
 
-Five gaps this document reported when it was written have since been closed,
+Seven gaps this document reported when it was written have since been closed,
 and are recorded below as closed rather than deleted — a plan that quietly
-drops what it once said was broken cannot be audited against.
+drops what it once said was broken cannot be audited against. One gap an
+earlier revision recorded as closed, the egress proxy, is reopened below: it
+was closed on the strength of a committed manifest, and the manifest deploys
+nothing.
 
 **Closed:**
 
@@ -70,10 +74,13 @@ drops what it once said was broken cannot be audited against.
   carries leg risk, deadlines and unwind, on the invariant that a group which
   cannot complete is unwound rather than abandoned.
 - ~~Champion/challenger and drift detection are unwired.~~ Both now have
-  production callers: `apps/qip-deepbrain/src/evolution.rs:426` runs the
-  contest against a policy constructed at `:228`, and `apps/qip-deepbrain/src/learning.rs:279` records a drift report
-  built at `:425` — both above the `#[cfg(test)]` boundary at line 516, which
-  is the check that distinguishes a wired control from a tested one.
+  production callers: `EvolutionEngine::contest` in
+  `apps/qip-deepbrain/src/evolution.rs` is called from the engine's production
+  round (`:447` at `68b7da6`) against the `SuccessionDesk` constructed at
+  `:228`, and `apps/qip-deepbrain/src/learning.rs:279` records a drift report
+  built at `:425` — all four above their files' `#[cfg(test)]` boundaries
+  (`learning.rs:516`, `evolution.rs:913`), which is the check that
+  distinguishes a wired control from a tested one.
 
 - ~~Nothing writes to `Telemetry`.~~ The kernel now records at the seams where
   facts become known, and a collector scrapes the brains. The deeper defect
@@ -88,17 +95,20 @@ drops what it once said was broken cannot be audited against.
   book with a tail and stay quiet on one without.
 - ~~The mesh is turned on in no manifest.~~ Wired, with a test asserting every
   variable a manifest sets is one its binary reads, and the converse.
-- ~~No TLS egress proxy is deployed.~~ The manifest is committed, with twelve
-  mutation-verified tests.
 - ~~Every stage reported `Duration::ZERO`.~~ `StageOutcome::with_elapsed` had
   existed since the loop was written and was never called.
+- ~~Capital reservation is unbuilt.~~ Closed by `0c6c17f`:
+  `qip_capital::ReservationLedger` is wired into the kernel, the decide stage
+  reserves what each sized proposal was granted and sizes the next against
+  equity minus active holds, and the act stage releases a refused proposal's
+  hold. Two concurrent proposals no longer pass against the same free balance.
 
 **Still open:**
 
 - **No live data source has been proven end to end.** The wiring is no longer
-  the gap: `feed.rs` now declares `Live(Box<RestMarketDataAdapter>)` at line 61
-  and constructs it at line 108 behind the licensing gate, alongside
-  `Synthetic` and `Replay`. What is still missing is evidence — no deployment
+  the gap: `apps/qip-fastbrain/src/feed.rs` declares a `Feed::Live` arm
+  alongside `Synthetic` and `Replay`, and `Feed::live` constructs it behind
+  the licensing gate. What is still missing is evidence — no deployment
   has been observed absorbing a cycle of real data through it, so the honest
   statement is that the path exists and has not been exercised, which is a
   different gap from the one this document used to describe.
@@ -107,10 +117,15 @@ drops what it once said was broken cannot be audited against.
   been observed to scrape. Flipping it requires that evidence.
 - **The Secret Manager CSI credential chain has never been exercised live.**
 - **`infra.yml down` has never been run against a live cluster.**
-- **Capital reservation is unbuilt.** A proposal that passes a capital check
-  does not hold the capital, so two concurrent proposals can each pass against
-  the same free balance. This is what remains of canonical area 5; leg risk,
-  deadlines and unwind landed with `qip-execution-engine/src/multileg.rs`.
+- **No TLS egress proxy is running.** The manifest is committed in two
+  byte-identical copies (`infrastructure/helm/qip/templates/egress.yaml`,
+  `infrastructure/kubernetes/base/egress.yaml`) with its `ServiceAccount` and
+  `Deployment` commented out, so Argo CD renders the chart and no proxy pod
+  exists; the Cloud Run module has no equivalent. Commit `64b765a` made the
+  egress suite distinguish a described proxy from a deployed one. Because the
+  in-tree HTTP client speaks plaintext HTTP/1.1 by design, a pod currently has
+  no outbound HTTPS path at all, which is what stands between the wired live
+  source above and any evidence of it.
 
 ## Latency
 

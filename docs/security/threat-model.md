@@ -162,9 +162,23 @@ tfvars and ops files they do not cover.
 until it expires. Tokens are bearer credentials with no proof of possession, no
 mTLS, no binding to a source address, and no revocation list — rotating means
 restarting the process with new environment variables, and `main.rs` mints them
-with a thirty-day life. Failure lockout is keyed by subject, and the subject is
-only known after a hash match, so an attacker guessing random tokens never
-trips it. The rate limiter also runs *after* authentication, so an
+with a thirty-day life. Brute-force protection is a single fixed-window budget
+of unrecognised tokens — `Authenticator` in `qip-api/src/auth.rs`, ten per
+minute, held as two scalars and keyed on nothing a caller controls, so a guess
+cannot allocate memory. It replaced a per-subject lockout that could never
+fire, because a subject was known only after a hash match. What it buys is
+narrow and should be read narrowly: once the budget is spent, an unrecognised
+token gets a distinct refusal until the window turns over, a valid token is
+unaffected — a budget that also refused valid tokens would let ten wrong
+guesses lock out the operator holding the halt route — and the count is a
+state the process can be asked for (`unrecognised_attempts`). It does not make
+guessing safe. Every presented token is still compared against every
+credential before the budget is consulted, so a *correct* guess inside an
+unspent window authenticates exactly as its owner would, and a spent budget
+does not reduce the comparison work an attacker can cause. Token entropy and
+rotation are the defence against the guess itself; the budget bounds how
+invisible a guessing flood can be, not whether one succeeds. The rate limiter
+also runs *after* authentication, so an
 unauthenticated request flood is bounded only by `ServerLimits::max_concurrent`.
 The in-tree HTTP server speaks no TLS; transport security is assumed to be
 terminated by a proxy this repository does not configure.

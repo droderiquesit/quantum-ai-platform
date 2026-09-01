@@ -21,6 +21,12 @@
 - Unbounded buffers or unbounded history.
 - A vendor call without a timeout, or one that assumes TLS — the HTTP client
   speaks plaintext HTTP/1.1 by design and needs the egress proxy in front.
+  That proxy exists only as a Kubernetes manifest whose `Deployment` is
+  committed commented out (`infrastructure/helm/qip/templates/egress.yaml`
+  and its identical copy under `kubernetes/base/`), so today on GKE, and on
+  any other runtime, a deployed process has no outbound HTTPS path; a
+  connector proven in a session behind a local bridge is not proven in a
+  deployment.
 - Using a source whose licensing posture has not been evaluated.
 
 ## Required evidence

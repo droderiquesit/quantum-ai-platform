@@ -33,14 +33,15 @@ What is in the tree, verified by reading it rather than inferred:
   environments. ADR 0017 is that decision, taken deliberately, and commits
   `e3c972c`, `69a6287` and `d8b3597` are the cut-over that finished it.
 - The frontends already run on Cloud Run. `infrastructure/docker/portal.Dockerfile`
-  opens "The portal on Cloud Run", and `modules/network/main.tf:143-150`
-  provisions the subnet Cloud Run attaches the console to for direct VPC
-  egress.
-- There is no Compute Engine instance anywhere. `grep -rln
-  google_compute_instance infrastructure/` returns nothing. The blueprint's
-  one permitted VM — the execution node, the piece the whole latency argument
-  rests on — does not exist as infrastructure; `edge-cell.yaml` runs that
-  workload as a Kubernetes Deployment instead.
+  opens "The portal on Cloud Run", and `google_compute_subnetwork.console_egress`
+  in `modules/network/main.tf` provisions the subnet Cloud Run attaches the
+  console to for direct VPC egress.
+- There is no Compute Engine instance anywhere. When this record was written,
+  `grep -rln google_compute_instance infrastructure/` returned nothing; the
+  correction below records what it returns now, and that the conclusion
+  holds. The blueprint's one permitted VM — the execution node, the piece the
+  whole latency argument rests on — does not exist as infrastructure;
+  `edge-cell.yaml` runs that workload as a Kubernetes Deployment instead.
 
 So the topology today is already hybrid, and it is hybrid in the opposite
 direction from the target: the part the blueprint says must be a bare VM is a
@@ -142,6 +143,50 @@ platform with neither.
 - **A second warm service being written for Cloud Run without step 2's
   evidence.** That is the drift this ordering exists to prevent: two
   permanent runtimes acquired one convenient exception at a time.
+
+### Corrections recorded after acceptance
+
+Two facts in this record have been overtaken by the tree, and one step of
+the sequence has a consequence the sequence did not state. None of them
+changes the decision, the direction or the authorisation rule; they are
+recorded here so that a reader who checks the record against the tree finds
+the difference explained rather than concluding the record is stale.
+
+- **The Compute Engine grep is no longer empty, and the conclusion still
+  holds.** Commit `6cde5d7` added `modules/execution-node/`, which declares a
+  `google_compute_instance_template` and a `google_compute_instance_group_manager`
+  for the §41.4 node. No `google_compute_instance` resource exists, and the
+  root module does not call that module — `infrastructure/terraform/main.tf`
+  wires neither `execution-node`, `cloudrun` nor `trust-zones` — so no plan
+  this repository can produce provisions a VM. The node exists as an unwired
+  module, which is a different fact from not existing and a different fact
+  from step 3 having begun; step 3 has not begun, and an unwired module is
+  not the evidence that row asks for.
+- **Step 5 as written removes the egress path of every migrated service.**
+  The platform's HTTP client speaks plaintext HTTP/1.1 by design and relies
+  on a TLS-terminating egress proxy in front of it. That proxy is described
+  only by the Helm chart (`infrastructure/helm/qip/templates/egress.yaml`, and
+  its byte-identical copy under `infrastructure/kubernetes/base/`). The Cloud
+  Run module routes all egress into the VPC and terminates TLS for nothing,
+  so a service moved off GKE has no outbound HTTPS unless an equivalent
+  exists off GKE — and retiring the chart at step 5 would then take the
+  proxy away from every service already migrated in steps 2 and 4. An egress
+  path that does not depend on the chart is therefore a precondition of step
+  5, and of step 2's evidence, that the table above does not name. What that
+  path is — a proxy on Cloud Run, a Cloud Run service reaching a vendor
+  directly, or something else — is an owner decision this correction
+  deliberately does not make.
+- **The second reversal condition above has occurred.** ADR 0022 adopted the
+  blueprint as the architecture of record after that bullet was written;
+  the status line and "What was open, and what still is" already say so,
+  and the bullet is kept as written so the condition and its outcome can
+  both be read.
+- **The proxy is not merely Kubernetes-only; it is not running.** In both
+  manifest copies the `ServiceAccount` and `Deployment` are committed
+  commented out, so Argo CD renders the chart and no proxy pod exists.
+  Commit `64b765a` made the egress suite say so rather than uncomment the
+  pod before reading it. Step 2's "egress path works off GKE" cannot be
+  proven by comparison with a GKE path until one exists to compare against.
 
 ## What was open, and what still is
 
