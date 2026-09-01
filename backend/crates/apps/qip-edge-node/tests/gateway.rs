@@ -643,3 +643,48 @@ fn a_halt_command_verifies_only_with_the_right_key_and_cell() {
          barrier can be moved by anyone on the path"
     );
 }
+
+#[test]
+fn a_replayed_halt_cannot_re_halt_a_released_cell_and_a_fresh_one_still_can() -> Result<()> {
+    // The bounded denial of service the review named: a captured signed halt,
+    // re-delivered after a legitimate release, re-halted the cell in the gaps
+    // between publishes. Both halves of the fix are asserted, because the
+    // guard must refuse exactly the replay and nothing else — a guard that
+    // also slowed a fresh halt would trade a nuisance for a safety property.
+    let mut cell = armed_cell()?;
+
+    // Halt, then legitimately release with a newer payload.
+    let original = verified_halt(t(17), "drop-copy disagreement");
+    cell.apply_halt(original.clone(), t(17));
+    assert!(
+        cell.is_halted(),
+        "the premise failed: the halt did not engage"
+    );
+    cell.apply_policy(verified_policy(2, false, true, t(19)), t(19))?;
+    assert!(
+        !cell.is_halted(),
+        "the premise failed: the release did not release"
+    );
+
+    // The captured frame comes back. It is genuinely signed and genuinely
+    // verified — the transport bought it nothing, and neither does replay.
+    cell.apply_halt(original, t(25));
+    assert!(
+        !cell.is_halted(),
+        "a replayed halt at the resolved barrier re-halted a released cell"
+    );
+
+    // A fresh halt — issued after the barrier — engages unconditionally.
+    cell.apply_halt(verified_halt(t(26), "a new decision"), t(26));
+    assert!(
+        cell.is_halted(),
+        "the replay guard also refused a fresh halt, which trades a nuisance \
+         for the safety property"
+    );
+
+    // And an engaged cell is never released by this path: an old halt
+    // arriving while halted changes nothing.
+    cell.apply_halt(verified_halt(t(18), "stale duplicate"), t(27));
+    assert!(cell.is_halted());
+    Ok(())
+}

@@ -254,6 +254,32 @@ impl Cell {
     /// issued after the barrier this records. Applying the same halt twice is
     /// one halt.
     pub fn apply_halt(&mut self, halt: VerifiedHalt, now: Timestamp) {
+        // A halt at or behind the barrier of one already resolved is a
+        // replay: a captured frame re-delivered after a legitimate release
+        // would otherwise re-halt the cell in the gaps between publishes — a
+        // bounded denial of service in the safe direction, but free to
+        // remove. The asymmetry is preserved with care: a *fresh* halt is
+        // accepted unconditionally, and an already-halted cell is never
+        // released by this path — refusing the replay below leaves it exactly
+        // as halted as it was.
+        if !self.policy_halted
+            && self
+                .policy_halt_barrier
+                .is_some_and(|barrier| halt.issued_at() <= barrier)
+        {
+            self.journal.record(
+                Decision::Refused {
+                    gate: "halt_replay".to_string(),
+                    reason: format!(
+                        "a halt issued at {} is at or behind the resolved barrier and does not \
+                         re-halt this cell",
+                        halt.issued_at()
+                    ),
+                },
+                now,
+            );
+            return;
+        }
         let barrier = match self.policy_halt_barrier {
             Some(existing) if existing >= halt.issued_at() => existing,
             _ => halt.issued_at(),

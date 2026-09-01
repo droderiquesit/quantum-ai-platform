@@ -593,6 +593,15 @@ pub fn pending_capital(platform: &Platform, now: Timestamp) -> Vec<PendingGrant>
 /// under a monotonic clock, and it survives a restart without persisted
 /// state. The assumption that the centre's clock does not step backwards is
 /// stated here rather than hidden; a cell refuses a regression either way.
+///
+/// What an operator sees if that assumption breaks: every payload issued
+/// after a backward step carries a sequence at or below the last applied,
+/// every cell refuses it, and the cells **narrow to their conservative floor**
+/// as their slots age out — smaller sizing, never larger. The failure costs
+/// availability and never safety, which is the direction every clock fault
+/// here is designed to fall. The symptom in the delta stream is policy
+/// refusals climbing with the narrowed set widening; the repair is a fresh
+/// payload once the clock is ahead of the last applied instant.
 pub fn pending_policy(
     platform: &Platform,
     cells: impl Iterator<Item = String>,

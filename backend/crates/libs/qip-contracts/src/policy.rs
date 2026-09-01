@@ -445,7 +445,12 @@ impl PolicyPayload {
     pub fn signing_payload(&self) -> Result<String> {
         let mut parts = vec![
             self.sequence.to_string(),
-            self.cell.clone(),
+            // Length-prefixed because it is the one free-text field in this
+            // string. See `length_prefixed` for the collision the prefix
+            // closes; every other part is numeric, boolean, or a fixed-length
+            // digest under a fixed enum name, none of which can absorb a
+            // delimiter.
+            length_prefixed(&self.cell),
             self.issued_at.as_secs().to_string(),
             self.valid_for.as_nanos().to_string(),
             self.halted.to_string(),
@@ -506,6 +511,24 @@ impl PolicyPayload {
     }
 }
 
+/// A free-text field, made safe to join with delimiters.
+///
+/// A signing string built by joining fields with `|` is not injective when a
+/// field can itself contain `|`: the pair `{cell: "a", reason: "100|b|c"}`
+/// and `{cell: "a|100", reason: "b|c"}` serialise to the same bytes and so
+/// share one MAC — two different commands wearing one signature. Not
+/// exploitable today, because every free-text field here is centre-controlled
+/// and the cell is independently re-checked at verification, but a signing
+/// scheme that is only injective while its inputs stay polite is a defect
+/// waiting for the field that makes it reachable.
+///
+/// The prefix is the field's byte length and a colon, so the parser of the
+/// string — and more importantly the signer of it — cannot be confused about
+/// where a field ends, whatever the field contains.
+fn length_prefixed(field: &str) -> String {
+    format!("{}:{}", field.len(), field)
+}
+
 /// A halt, as a command rather than as staleness.
 ///
 /// §6.2 is about decay: stale policy *narrows* a cell. A halt is not decay —
@@ -549,11 +572,14 @@ impl HaltCommand {
     /// be re-addressed to a different cell, re-dated past a release barrier,
     /// or re-worded would be a different command wearing this one's signature.
     pub fn signing_payload(&self) -> String {
+        // Both free-text fields are length-prefixed; see `length_prefixed`
+        // for the collision this closes. The instant between them is numeric
+        // and cannot absorb a delimiter, so it needs none.
         format!(
             "halt|{}|{}|{}",
-            self.cell,
+            length_prefixed(&self.cell),
             self.issued_at.as_secs(),
-            self.reason
+            length_prefixed(&self.reason)
         )
     }
 

@@ -1171,3 +1171,44 @@ fn the_policy_signature_covers_every_field_that_changes_what_a_cell_may_do() -> 
     assert!(base.clone().signed(&[]).is_err());
     Ok(())
 }
+
+#[test]
+fn two_different_halts_cannot_share_one_signing_string() {
+    // The reviewer's exact collision. With fields joined on a bare `|`, these
+    // two commands — different cells, different reasons — serialised to the
+    // same bytes and therefore shared one MAC: a signature over one was a
+    // signature over the other. Length-prefixing the free-text fields is what
+    // makes the string injective, and this is the pair that proves it.
+    use qip_contracts::policy::HaltCommand;
+
+    // Raw seconds, not the suite's epoch-offset helper: the collision needs
+    // the instant's decimal spelling to be exactly the token the hostile
+    // reason begins with, and the first version of this test used the helper,
+    // broke that alignment, and passed against the unfixed code — caught by
+    // its own mutation run.
+    let instant = Timestamp::from_secs(100);
+    let first = HaltCommand::new("a", instant, "100|b|c");
+    let second = HaltCommand::new("a|100", instant, "b|c");
+    // The premise: these are genuinely different commands.
+    assert_ne!(first.cell, second.cell);
+    assert_ne!(first.reason, second.reason);
+    assert_ne!(
+        first.signing_payload(),
+        second.signing_payload(),
+        "two different halt commands share one signing string, so one \
+         signature authorises both"
+    );
+
+    // The same property for the payload's one free-text field: a cell name
+    // that swallows the adjacent numeric field must not collide with the
+    // honest spelling.
+    let mut plain = PolicyPayload::unproduced(1, "a", t(100));
+    plain.sequence = 1;
+    let mut tricky = PolicyPayload::unproduced(1, "a|", t(100));
+    tricky.sequence = 1;
+    assert_ne!(
+        plain.signing_payload().expect("serialisable"),
+        tricky.signing_payload().expect("serialisable"),
+        "two different payload addresses share one signing string"
+    );
+}
