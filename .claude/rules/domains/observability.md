@@ -5,10 +5,13 @@ health surfaces in `backend/crates/apps/**`
 
 ## The state of this domain
 
-**The central plane emits and is scrapable. The edge plane cannot emit at
-all.** Read both halves before writing anything about this domain: an earlier
-version of this file said nothing wrote to `Telemetry`, which was false, and
-agents who believed it were told a closed gap was still open.
+**Both planes emit and both are scrapable. What is still missing is proof
+of ingestion, and the edge plane's recording sites in `Cell::work` reach no
+deployed process until the node runs passes.** Read all of this before
+writing anything about the domain: two earlier versions of this file were
+each false in one direction — one said nothing wrote to `Telemetry`, the next
+said the edge plane could not emit — and agents who believed either were told
+a closed gap was still open.
 
 `qip-kernel`'s `Platform` records at twenty-four sites in `platform.rs` —
 cycles and per-stage runs, durations and problems; the kill-switch gauge;
@@ -22,36 +25,73 @@ which is the honest answer rather than a gap. `qip-market-ingestion` also
 records, but `IngestionService` is constructed only in its own tests, so those
 three sites reach no deployed process.
 
-**The edge plane emits nothing and has no scrape surface.** `qip-edge-node`
-declares `qip-observability` in its `Cargo.toml` and never constructs a
-`Telemetry`; `qip-edge` has no telemetry dependency at all, so a cell
-physically cannot emit however much it knows. Its uplink and downlink counters
-exist only inside the JSON health body its health server writes, which nothing
-collects as a series.
+**The edge plane emits through `qip_edge::CellMetrics` and is scraped at
+`/metrics` on `qip-edge-node`'s health port.** `qip-edge` depends on
+`qip-observability` — a library holding a `BTreeMap` behind a mutex, no I/O —
+and a `Cell` records into a registry it is *given* by `Cell::with_metrics`,
+never one it reached for. `qip-edge-node` constructs one `Telemetry`, takes
+the registry handle first, hands it to the cell and to `MeshSeries`, and
+serves the same handle's snapshot as Prometheus exposition; every other path
+still answers the JSON health body. The series and what each is keyed on:
 
-**Several safety facts are computed and then discarded.** Policy freshness
-(`qip-contracts::policy::Freshness`) reaches `qip-edge`'s `Cell` and is
-formatted into a display string for the journal. Degradation narrowing and
-halt acceptance take the same route. A central-plane reconciliation break
-trips a scoped kill switch and raises an incident without recording anything.
-Two further facts have no production caller at all: `Platform::learn_from`,
-which produces the belief calibration, is called by nothing in the tree, and
-`Platform::evaluate_alternatives`, which scores counterfactuals, is called
-only by `qip-kernel`'s own tests. A fact a process knows and never records is
-a fact no operator can ever see.
+- `qip_edge_halted{source}` — a gauge per halt discipline (`kill_switch`,
+  `policy`), written wherever either halt can change and at wiring time, so a
+  cell halted before its first pass still reports halted.
+- `qip_edge_capability_freshness{capability}` and `qip_edge_sizing_multiplier`
+  — the §6.2 table as the pass actually sized against it, recorded per pass.
+  Only the three policy-fed capabilities are published; `ingestion` and
+  `counterfactual_scoring` are deliberately absent because the cell never
+  measures them and a permanent `unavailable` would be a number nobody
+  computed.
+- `qip_edge_policy_sequence` — the payload the cell has *applied*, for
+  correlation against what the centre believes it published.
+- `qip_edge_work_passes_total`, `qip_edge_refusals_total{gate}`,
+  `qip_edge_signals_raised_total{kind}`, `qip_edge_orders_placed_total{venue}`,
+  `qip_edge_intents_cancelled_total`, `qip_edge_internal_crosses_total{venue}`,
+  `qip_edge_netting_ratio` (histogram), `qip_edge_reconciliation_breaks_total`.
+- From the node: `qip_edge_mesh_{deltas,grants,policy_frames}_total{outcome}`
+  as deltas of the link's cumulative counters, and
+  `qip_edge_mesh_circuit{state}`.
+
+Every label is bounded by something fixed at deployment or by an enum or a
+source-file literal: `cell` and `region` are one value per process, `venue`
+is the configured venue list, `gate` is the set of string literals
+`Cell::refuse` is called with, and `source`, `capability`, `kind`, `outcome`
+and `state` are enums. Nothing is labelled by instrument, strategy or order
+id. Each recording site is proven by a test in
+`backend/crates/edge/qip-edge/tests/telemetry.rs` that drives the cell through
+the event and asserts the series moved, and each was mutation-verified.
+
+Two honest limits on the edge half. First, this build of `qip-edge-node`
+configures no venue feed and never calls `Cell::work`: the halt gauge, policy
+sequence and mesh series reach a deployed process, and the pass-time series
+(freshness, refusals, signals, orders, netting, crosses) will only once the
+node runs passes. Second, the edge-node health server is single-threaded, so
+a scrape's exposition is rendered on the thread that flushes the journal — the
+same thread that already renders the JSON body, and not the order path.
+
+**Some safety facts are still computed and then discarded, all on the central
+plane.** A central-plane reconciliation break trips a scoped kill switch and
+raises an incident without recording anything. Two facts have no production
+caller at all: `Platform::learn_from`, which produces the belief calibration,
+is called by nothing in the tree, and `Platform::evaluate_alternatives`, which
+scores counterfactuals, is called only by `qip-kernel`'s own tests. The edge
+plane's equivalents — policy freshness, degradation narrowing, halt
+acceptance, the cell's own reconciliation break — are now recorded, as above.
 
 `workload_metrics_exist` remains `false` everywhere — the default in
 `infrastructure/terraform/variables.tf` and in the observability module, and
 commented out in `environments/dev/terraform.tfvars` — and flipping it still
-requires evidence a pod actually scraped. But the reason is no longer that
-nothing emits. All four alert policies now name descriptors the kernel does
-record, and a collector selecting `qip-fastbrain` and `qip-deepbrain` on
-`/metrics` is declared; what is missing is proof of ingestion, not emission.
+requires evidence a pod actually scraped. All four alert policies name
+descriptors the kernel does record, and a collector selecting `qip-fastbrain`
+and `qip-deepbrain` on `/metrics` is declared; no collector yet selects
+`qip-edge-node`, and no alert policy names an edge descriptor. What is missing
+is proof of ingestion, not emission.
 
-Do not describe this platform as observable. That still holds, on the evidence
-above rather than the old one: a cell that cannot emit, a policy staleness
-nobody can chart, and a reconciliation break that pages no one. Closing the
-remainder is tracked work.
+Do not describe this platform as observable. That still holds, on today's
+evidence: nothing has been shown to scrape any pod, the edge series have no
+collector and no alert, and a central-plane reconciliation break pages no
+one. Closing the remainder is tracked work.
 
 ## Approved
 
