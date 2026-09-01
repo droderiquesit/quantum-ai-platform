@@ -2143,6 +2143,236 @@ fn the_pipeline_authenticates_without_a_long_lived_key() {
     );
 }
 
+// --- workflow step outputs --------------------------------------------------
+//
+// `the_pipeline_authenticates_without_a_long_lived_key` asks whether the string
+// `workload_identity_provider:` appears in deploy.yml. It does — and for a
+// while it appeared in a job where the value interpolated into it was empty.
+// deploy.yml's `gitops-update` read `steps.identity.outputs.provider` and
+// `.account` from a `derive the identity from the tfvars` step that wrote only
+// `project` and `region`, so the job's one GCP login was handed two empty
+// strings and the digest resolution behind it could never run. A substring
+// check cannot tell a populated value from an absent one; nothing else looked.
+//
+// GitHub does not error on this. An unwritten step output interpolates to the
+// empty string, so the failure surfaces as whatever the action does with a
+// blank argument — here, an authentication error naming neither the step that
+// should have written the value nor the job that read it.
+
+/// A line's leading-space count.
+fn indent_of(line: &str) -> usize {
+    line.len() - line.trim_start().len()
+}
+
+/// The jobs of a workflow, as `(name, body)`.
+///
+/// Hand-rolled rather than parsed: the workspace has two dependencies and
+/// neither reads YAML (ADR 0002, ADR 0009). It relies on the shape these four
+/// files actually have — `jobs:` at column zero, job names at indent two — and
+/// on the premise assertions below failing loudly if that shape changes,
+/// rather than on quietly finding nothing.
+fn workflow_jobs(workflow: &str) -> Vec<(String, String)> {
+    let mut jobs: Vec<(String, String)> = Vec::new();
+    let mut current: Option<(String, Vec<&str>)> = None;
+    let mut seen_jobs_key = false;
+
+    for line in workflow.lines() {
+        if !seen_jobs_key {
+            seen_jobs_key = line.trim_end() == "jobs:";
+            continue;
+        }
+        let trimmed = line.trim_start();
+        // A column-zero key ends the jobs map. Comments there are not keys.
+        if !trimmed.is_empty() && indent_of(line) == 0 && !trimmed.starts_with('#') {
+            break;
+        }
+        let starts_a_job = indent_of(line) == 2
+            && !trimmed.starts_with('#')
+            && !trimmed.starts_with('-')
+            && trimmed.ends_with(':');
+        if starts_a_job {
+            if let Some((name, body)) = current.take() {
+                jobs.push((name, body.join("\n")));
+            }
+            current = Some((trimmed.trim_end_matches(':').to_string(), Vec::new()));
+        } else if let Some((_, body)) = current.as_mut() {
+            body.push(line);
+        }
+    }
+    if let Some((name, body)) = current {
+        jobs.push((name, body.join("\n")));
+    }
+    jobs
+}
+
+/// The steps of one job body, each as its own text.
+fn job_steps(job: &str) -> Vec<String> {
+    let mut steps: Vec<Vec<&str>> = Vec::new();
+    let mut item_indent: Option<usize> = None;
+    let mut in_steps = false;
+
+    for line in job.lines() {
+        if !in_steps {
+            in_steps = line.trim_start() == "steps:";
+            continue;
+        }
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            if let Some(last) = steps.last_mut() {
+                last.push(line);
+            }
+            continue;
+        }
+        let ind = indent_of(line);
+        match item_indent {
+            None => {
+                if trimmed.starts_with("- ") {
+                    item_indent = Some(ind);
+                    steps.push(vec![line]);
+                }
+            }
+            Some(base) => {
+                if ind < base {
+                    break; // a key after the steps list; the list is over
+                }
+                if ind == base && trimmed.starts_with("- ") {
+                    steps.push(vec![line]);
+                } else if let Some(last) = steps.last_mut() {
+                    last.push(line);
+                }
+            }
+        }
+    }
+    steps.into_iter().map(|step| step.join("\n")).collect()
+}
+
+/// A step's `id`, if it declares one.
+fn step_id(step: &str) -> Option<String> {
+    step.lines().find_map(|line| {
+        // `id-token: write` must not match, so the colon is part of the prefix.
+        let value = line.trim_start().strip_prefix("id:")?;
+        Some(value.trim().to_string())
+    })
+}
+
+/// The output names a step writes with `echo "name=value" >> "$GITHUB_OUTPUT"`.
+///
+/// Anything written another way reads here as written by nobody, and the test
+/// fails rather than passes — which is the safe direction: a new way of writing
+/// an output makes this stop and be extended, instead of silently trusting it.
+fn step_outputs(step: &str) -> std::collections::BTreeSet<String> {
+    let mut names = std::collections::BTreeSet::new();
+    for line in step.lines() {
+        let Some(rest) = line.trim_start().strip_prefix("echo \"") else {
+            continue;
+        };
+        let Some((name, _)) = rest.split_once('=') else {
+            continue;
+        };
+        // `echo "deb [signed-by=..."` is not an output assignment.
+        if !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            names.insert(name.to_string());
+        }
+    }
+    names
+}
+
+/// Every `steps.<id>.outputs.<name>` a piece of workflow text reads.
+fn step_output_references(text: &str) -> std::collections::BTreeSet<(String, String)> {
+    fn token(text: &str) -> String {
+        text.chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+            .collect()
+    }
+
+    let mut references = std::collections::BTreeSet::new();
+    let mut rest = text;
+    while let Some(position) = rest.find("steps.") {
+        rest = &rest[position + "steps.".len()..];
+        let id = token(rest);
+        // Every character of `id` is ASCII, so this is a char boundary.
+        let Some(tail) = rest[id.len()..].strip_prefix(".outputs.") else {
+            continue;
+        };
+        let name = token(tail);
+        if !id.is_empty() && !name.is_empty() {
+            references.insert((id, name));
+        }
+    }
+    references
+}
+
+#[test]
+fn every_step_output_a_workflow_reads_is_one_that_job_writes() {
+    const WORKFLOWS: [&str; 4] = [
+        ".github/workflows/ci.yml",
+        ".github/workflows/deploy.yml",
+        ".github/workflows/infra.yml",
+        ".github/workflows/vendor.yml",
+    ];
+
+    /// The outputs each `id`-bearing step of one job writes.
+    type Written = std::collections::BTreeMap<String, std::collections::BTreeSet<String>>;
+
+    let mut references_checked = 0usize;
+    let mut jobs_read = 0usize;
+
+    for workflow_file in WORKFLOWS {
+        let workflow = read(workflow_file);
+        let jobs = workflow_jobs(&workflow);
+        assert!(
+            !jobs.is_empty(),
+            "{workflow_file} parsed to no jobs at all; this check stopped checking"
+        );
+        jobs_read += jobs.len();
+
+        for (job_name, body) in jobs {
+            let mut written = Written::new();
+            for step in job_steps(&body) {
+                if let Some(id) = step_id(&step) {
+                    written.entry(id).or_default().extend(step_outputs(&step));
+                }
+            }
+
+            for (id, name) in step_output_references(&body) {
+                references_checked += 1;
+                let Some(outputs) = written.get(&id) else {
+                    panic!(
+                        "{workflow_file}: job `{job_name}` reads \
+                         steps.{id}.outputs.{name}, but no step in that job \
+                         declares `id: {id}`. An unwritten step output \
+                         interpolates to the empty string rather than failing."
+                    );
+                };
+                assert!(
+                    outputs.contains(&name),
+                    "{workflow_file}: job `{job_name}` reads \
+                     steps.{id}.outputs.{name}, but that step writes only \
+                     {outputs:?}. The value interpolates to the empty string \
+                     and whatever consumes it fails without naming either."
+                );
+            }
+        }
+    }
+
+    // The premise. Both halves have been empty in this repository's history:
+    // a workflow whose jobs did not parse, and a job with no references, each
+    // satisfying every assertion above while proving nothing.
+    assert!(
+        jobs_read >= 4,
+        "only {jobs_read} jobs were read across four workflows"
+    );
+    assert!(
+        references_checked >= 6,
+        "only {references_checked} step-output references were checked; the \
+         deploy pipeline alone reads more than that"
+    );
+}
+
 // --- what deploys, and what deliberately does not ---------------------------
 //
 // Three lists have to agree: the binaries the workspace builds, the images the
