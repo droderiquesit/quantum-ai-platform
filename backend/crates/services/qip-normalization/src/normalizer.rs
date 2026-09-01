@@ -33,13 +33,23 @@ pub struct UnitConversion {
     pub reason: String,
 }
 
+/// Exactly 0.01, built from `Decimal`'s raw fixed-point representation.
+///
+/// Not parsed. A parsed constant carries a failure arm, and on a unit conversion
+/// every value that arm could supply is wrong in the dangerous direction: a
+/// fallback of `ONE` passes pence through untouched and every notional
+/// downstream is a hundred times too large, which no ratio-based contract can
+/// see (see [`ScaleGuard`]). `from_raw` is `const` and total, so the failure
+/// cannot occur and there is nothing to fall back to.
+const PENCE_PER_POUND: Decimal = Decimal::from_raw(qip_core::decimal::SCALE / 100);
+
 impl UnitConversion {
     /// Pence-quoted instruments on a pounds-denominated venue.
     pub fn pence_to_pounds(provider: impl Into<String>, object_id: ObjectId) -> Self {
         Self {
             provider: provider.into(),
             object_id: Some(object_id),
-            price_factor: Decimal::parse("0.01").unwrap_or(Decimal::ONE),
+            price_factor: PENCE_PER_POUND,
             quantity_factor: Decimal::ONE,
             reason: "provider quotes in pence against a GBP-denominated instrument".into(),
         }

@@ -234,7 +234,6 @@ impl PortfolioConstructor {
         // Build the legs. Anything below the minimum is dropped rather than
         // held: a 0.1% position costs the same in operational overhead as a 5%
         // one and contributes nothing.
-        let equity_value = equity.amount.to_f64();
         let mut legs = Vec::new();
         let mut turnover = 0.0;
         for (index, thesis) in theses.iter().enumerate() {
@@ -254,12 +253,36 @@ impl PortfolioConstructor {
                 continue;
             }
 
-            let price = thesis.price.to_f64();
-            let units = (change * equity_value / price).abs();
-            let Some(quantity) = Decimal::from_f64(units) else {
+            // The one f64/Decimal crossing in the sizing path, and it is here
+            // deliberately. The weight change is a statistic: the optimiser
+            // produces it in f64 and there is no exact form to preserve. Equity
+            // and the reference price are money and stay exact, so from this
+            // line down the notional and the quantity are computed in `Decimal`.
+            // Multiplying an exact balance by an exact price in binary floating
+            // point produced order quantities that reconciled with neither, and
+            // the old refusal below only fired on non-representability — never
+            // on the precision the arithmetic had already lost.
+            let Some(weight_change) = Decimal::from_f64(change.abs()) else {
                 return Err(Error::numeric(format!(
-                    "the quantity for {} is not representable",
+                    "the weight change {change} for {} is not a representable decimal; check the \
+                     optimiser bounds that produced it",
                     thesis.object_id.as_str()
+                )));
+            };
+            let Some(notional) = equity.amount.checked_mul(weight_change) else {
+                return Err(Error::numeric(format!(
+                    "sizing {} at weight {change} against equity of {} overflows the decimal \
+                     range; reduce the equity or the mandate's position cap",
+                    thesis.object_id.as_str(),
+                    equity.amount
+                )));
+            };
+            let Some(quantity) = notional.checked_div(thesis.price) else {
+                return Err(Error::numeric(format!(
+                    "a notional of {notional} for {} is not divisible by its reference price of \
+                     {}; supply a positive reference price on the thesis",
+                    thesis.object_id.as_str(),
+                    thesis.price
                 )));
             };
             if quantity <= Decimal::ZERO {

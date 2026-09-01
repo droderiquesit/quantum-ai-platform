@@ -83,6 +83,28 @@ pub trait PredictionAdapter: std::fmt::Debug {
     }
 }
 
+/// Exact construction of a price in thousandths of a unit.
+///
+/// `const` and total, so a malformed money constant is a compile error. The
+/// alternative in this file used to be `Decimal::parse("0.005").unwrap_or(ZERO)`,
+/// which is worse than a panic: a half-spread of zero quotes a book crossed at
+/// the fair price, and a price floor of zero admits a level at nothing. Both
+/// read downstream as free liquidity rather than as a build that failed.
+const fn thousandths(n: i128) -> Decimal {
+    Decimal::from_raw(n * (qip_core::decimal::SCALE / 1_000))
+}
+
+/// 0.005 — the demo half-spread quoted either side of an outcome's fair price.
+const DEMO_HALF_SPREAD: Decimal = thousandths(5);
+/// 0.03 — how far below its payoff a demo step prices the complete set.
+const DEMO_ARBITRAGE_DEPTH: Decimal = thousandths(30);
+/// 0.01 — the lowest ask an outcome is quoted at.
+const ASK_FLOOR: Decimal = thousandths(10);
+/// 0.005 — the lowest bid an outcome is quoted at.
+const BID_FLOOR: Decimal = thousandths(5);
+/// 0.002 — the distance between quoted levels.
+const LEVEL_TICK: Decimal = thousandths(2);
+
 /// How the synthetic venue behaves.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SyntheticVenueConfig {
@@ -105,9 +127,9 @@ impl SyntheticVenueConfig {
             venue: VenueId::new("SYNTH-PREDICT"),
             seed,
             step: Duration::from_mins(5),
-            half_spread: Decimal::parse("0.005").unwrap_or(Decimal::ZERO),
+            half_spread: DEMO_HALF_SPREAD,
             arbitrage_probability: 0.2,
-            arbitrage_depth: Decimal::parse("0.03").unwrap_or(Decimal::ZERO),
+            arbitrage_depth: DEMO_ARBITRAGE_DEPTH,
             levels: 3,
             fees: FeeSchedule::new(50, 0, 100)?,
         })
@@ -211,7 +233,12 @@ impl SyntheticPredictionVenue {
     }
 
     /// Fair probabilities for one step, normalised to sum to one.
-    fn fair_prices(&mut self) -> Vec<Decimal> {
+    ///
+    /// The f64/`Decimal` crossing for this venue happens here and only here: the
+    /// draw and its normalisation are statistics, the price that comes out of
+    /// them is money. A draw that will not cross is refused, because a fair
+    /// price silently defaulted to zero quotes an outcome as impossible.
+    fn fair_prices(&mut self) -> Result<Vec<Decimal>> {
         let count = self.market.outcomes().len();
         let weights: Vec<f64> = (0..count).map(|_| self.rng.uniform(0.2, 1.0)).collect();
         let total: f64 = weights.iter().sum();
@@ -219,14 +246,20 @@ impl SyntheticPredictionVenue {
             .iter()
             .map(|weight| {
                 Decimal::from_f64(weight / total)
-                    .unwrap_or(Decimal::ZERO)
-                    .round_dp(3)
+                    .map(|price| price.round_dp(3))
+                    .ok_or_else(|| {
+                        Error::numeric(format!(
+                            "the synthetic venue drew a weight of {weight} against a total of \
+                             {total}, which is not a representable price; reseed the venue rather \
+                             than quoting the outcome at zero"
+                        ))
+                    })
             })
             .collect()
     }
 
-    fn books_for(&mut self, at: Timestamp) -> Vec<PredictionUpdate> {
-        let prices = self.fair_prices();
+    fn books_for(&mut self, at: Timestamp) -> Result<Vec<PredictionUpdate>> {
+        let prices = self.fair_prices()?;
         // Occasionally the offers price the whole set below its payoff, which
         // is the state the arbitrage detector exists to find.
         let discount = if self.rng.bernoulli(self.config.arbitrage_probability) {
@@ -241,22 +274,33 @@ impl SyntheticPredictionVenue {
             .map(|outcome| (outcome.id.clone(), outcome.object_id.clone()))
             .collect();
 
+        // The discount spread across the legs. Refused rather than defaulted:
+        // a per-leg discount of zero prices the complete set at its payoff, so
+        // the arbitrage this step was drawn to contain would not be there and
+        // the detector would be tested against a market that does not hold one.
+        let leg_count = Decimal::from_int(prices.len() as i64);
+        let Some(per_leg) = discount.checked_div(leg_count) else {
+            return Err(Error::numeric(
+                "a step drew an arbitrage discount for a market with no priced outcomes; list \
+                 outcomes on the market before polling it",
+            ));
+        };
+
         let mut updates = Vec::with_capacity(outcomes.len());
         for (position, (outcome, object_id)) in outcomes.into_iter().enumerate() {
-            let fair = prices.get(position).copied().unwrap_or(Decimal::ZERO);
-            let per_leg = discount
-                .checked_div(Decimal::from_int(prices.len().max(1) as i64))
-                .unwrap_or(Decimal::ZERO);
-            let ask_touch = (fair + self.config.half_spread - per_leg)
-                .max(Decimal::parse("0.01").unwrap_or(Decimal::ZERO));
-            let bid_touch = (fair - self.config.half_spread - per_leg)
-                .max(Decimal::parse("0.005").unwrap_or(Decimal::ZERO));
+            let Some(fair) = prices.get(position).copied() else {
+                return Err(Error::numeric(format!(
+                    "outcome {position} of the market has no fair price for this step; the \
+                     venue must price every listed outcome rather than quote one at zero"
+                )));
+            };
+            let ask_touch = (fair + self.config.half_spread - per_leg).max(ASK_FLOOR);
+            let bid_touch = (fair - self.config.half_spread - per_leg).max(BID_FLOOR);
 
             let mut bids = Vec::new();
             let mut asks = Vec::new();
-            let tick = Decimal::parse("0.002").unwrap_or(Decimal::ZERO);
             for level in 0..self.config.levels {
-                let step = tick * Decimal::from_int(i64::from(level));
+                let step = LEVEL_TICK * Decimal::from_int(i64::from(level));
                 let size = Decimal::from_int(10 + self.rng.below(40) as i64);
                 asks.push(BookLevel::new(ask_touch + step, size));
                 let bid_price = bid_touch - step;
@@ -276,7 +320,7 @@ impl SyntheticPredictionVenue {
                 )),
             });
         }
-        updates
+        Ok(updates)
     }
 }
 
@@ -304,7 +348,7 @@ impl PredictionAdapter for SyntheticPredictionVenue {
         }
         while self.next_step_at <= until {
             let at = self.next_step_at;
-            updates.extend(self.books_for(at));
+            updates.extend(self.books_for(at)?);
             self.next_step_at = self.next_step_at.saturating_add(self.config.step);
         }
         if !self.reported && until >= self.market.proposition.resolves_at {
