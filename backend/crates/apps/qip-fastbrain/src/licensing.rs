@@ -120,7 +120,12 @@ pub fn admit_from(
     Ok(())
 }
 
+// The workspace denies `panic_in_result_fn` for production code, where an
+// assertion that aborts instead of returning an error is a bug. A test that
+// returns `Result` so it can use `?` on the gate it is exercising still has to
+// assert, and the abort is the reporting mechanism rather than a defect.
 #[cfg(test)]
+#[allow(clippy::panic_in_result_fn)]
 mod tests {
     use super::*;
     use qip_contracts::governance::Usage;
