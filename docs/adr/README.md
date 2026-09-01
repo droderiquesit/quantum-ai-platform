@@ -28,3 +28,4 @@ no stated reversal condition cannot be revisited honestly.
 | [0020](0020-two-runtime-topologies-and-the-order-to-resolve-them.md) | Two runtime topologies exist; neither is deleted, and the order to resolve them is fixed — *direction now decided by 0022; execution still unauthorised* |
 | [0021](0021-the-blueprint-expects-live-capital-and-this-platform-refuses-it.md) | The blueprint expects live capital; the paper-trading boundary wins and the structure is built without it |
 | [0022](0022-the-algorik-blueprint-is-the-architecture-of-record.md) | The Algorik blueprint is the architecture of record; Kubernetes and Next.js become transitional, and no live-capital path is authorised by that |
+| [0023](0023-real-trading-is-the-destination-and-the-opening-is-gated.md) | Real trading is the destination and paper trading the harness; the opening is a ten-step gated sequence that this record does not authorise |

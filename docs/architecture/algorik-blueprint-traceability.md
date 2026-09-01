@@ -190,49 +190,48 @@ ADR 0022 made the blueprint the architecture of record. That closed two of
 these, settled the direction of two more, and — importantly — made one of them
 sharper rather than resolving it.
 
-### C1 — the authoritative design specifies something this platform refuses
+### C1 — the destination is agreed; the opening is gated and unexecuted
 
-**Status: NOT settled. Requires an explicit, separate owner decision.**
+**Status: no longer a conflict. Sequenced work with a hard precondition.**
 
-This is the one to read carefully, because its status changed in a way that is
-easy to misread as resolution.
+The owner has decided that **real trading is the intended end state and paper
+trading is the correctness harness on the way there** (ADR 0023). That aligns
+the repository with the architecture of record rather than against it —
+blueprint §1.3 describes exactly this relationship, calling small capital "a
+correctness harness, not an engine — real money at risk to prove the plumbing,
+which is exactly what the Phase 3 gate exists for".
 
-The blueprint assumes real capital: live venues (§25), treasury transfers and
-MPC signing corridors (§37), custody (§37.4), a wallet with a signing path
-(§38), and a Phase 3 gate that is thirty days live. That specification is now
-the architecture of record.
+This row has now moved twice and the current position is the one that matters:
 
-It was previously a question of *which document is authoritative*. That
-question is answered. What remains is the sharper statement:
+| Was | Then | Now |
+|---|---|---|
+| "Which document is authoritative?" | "The authoritative design specifies something this platform deliberately refuses" | **"The destination is agreed; the opening is gated and unexecuted"** |
 
-> **The authoritative design specifies something this platform deliberately
-> refuses.**
-
-**Adopting the blueprint is not authorisation to build, enable or ease any
-live-order or live-transfer path.** The owner said the blueprint is the
-expected design; they did not say to weaken the paper-trading boundary, and
-the second does not follow from the first.
-`.claude/rules/01-security-and-safety.md` makes that boundary absolute and
-says it cannot be weakened by a task instruction — a blueprint revision is not
-an exception, and neither is an inference drawn from one.
-
-What would be required to change it, and nothing less: **an explicit and
-separate owner decision that supersedes ADR 0003 and amends
-`.claude/rules/01-security-and-safety.md`.** No agent may take it, and no
-amount of architectural adoption substitutes for it.
-
-Until then: ADR 0021 stands exactly as written; the three layers stay intact
-(Terraform at `infrastructure/terraform/variables.tf:105-116`,
-`AutonomyLevel::deployable` in all three composition roots, `Cell::new` taking
-no ceiling but paper trading); and
+**Nothing is open.** ADR 0023 records intent and a ten-step sequence and
+authorises no step of it. ADR 0003 and ADR 0021 both stand and are superseded
+only at step 5 of that sequence, explicitly and with recorded approval. All
+three layers are intact, and
 `security.rs::no_signing_or_withdrawal_path_exists_for_capital_to_leave_the_platform`
 stays.
 
-The standing consequence is unchanged and should be carried forward wherever
-the roadmap is discussed: the blueprint's Phase 3 gate is permanently
-unreachable here, and because it is upstream, so are Phase 6 and Phase 8 on
-the blueprint's own terms. That is a limit on what this repository can
-demonstrate, not a defect in it.
+**The precondition is the constraint, and it is the blueprint's own.** §51.1
+words the Phase 2 gate more strongly than any other in the document: *"Does a
+family survive holdout with honest significance after cumulative trial
+correction? If no: Stop. Do not build execution infrastructure. This is the
+most important gate in the document."* Zero of the four gates have passed, so
+the authoritative design itself defers live execution. The destination being
+agreed does not advance the sequence by one step.
+
+**What this makes critical.** `docs/plan/gap-matrix.md` ordered-work item 6 —
+proving one live market source — is now step 1 of the opening sequence and
+therefore on the critical path to live trading. It was a plan item; it is now
+the first thing between this platform and its stated destination.
+
+Steps 1 to 4 of ADR 0023's sequence touch no boundary and are buildable today.
+Steps 5 onward change the platform's safety properties and are deliberately
+last. Capital movement (step 10) is a separate boundary from order submission
+and stays closed under ADR 0021 regardless: a platform can trade live while
+capital movement is shut, and probably should, first.
 
 ### C2 — runtime topology · direction settled, execution NOT authorised
 
