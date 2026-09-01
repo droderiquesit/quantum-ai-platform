@@ -125,53 +125,285 @@ fn shipped_dependency_table(inner: &str) -> Option<Option<&str>> {
 fn parse_manifest_content(content: &str) -> (String, BTreeSet<String>) {
     let mut name = String::new();
     let mut dependencies = BTreeSet::new();
-    let mut section = String::new();
+    let mut in_package = false;
     let mut in_shipped_dependencies = false;
+    // A `[dependencies.foo]` table. The key, plus the `package = "..."` rename
+    // if the table declares one, resolved when the table ends — the rename can
+    // appear on any line inside it, so the name is not known at the header.
+    let mut pending: Option<(String, Option<String>)> = None;
+
     for line in content.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
         if line.starts_with('[') {
-            section = line.to_string();
-            let inner = line.trim_start_matches('[').trim_end_matches(']');
-            in_shipped_dependencies = match shipped_dependency_table(inner) {
-                // `[dependencies.qip-foo]` and
-                // `[target.'cfg(unix)'.dependencies.qip-foo]` are themselves
-                // the declaration. The keys that follow describe that one
-                // dependency, so they are not scanned as further names.
-                Some(Some(crate_name)) => {
-                    if crate_name.starts_with("qip-") {
-                        dependencies.insert(crate_name.to_string());
-                    }
-                    false
+            flush_pending(&mut pending, &mut dependencies);
+            let section = section_name(line);
+            in_package = section == Some("package");
+            in_shipped_dependencies = false;
+            if let Some(section) = section {
+                match shipped_dependency_table(section) {
+                    // `[dependencies.qip-foo]` is itself the declaration. The
+                    // keys that follow describe that one dependency, so they
+                    // are not scanned as further names.
+                    Some(Some(named)) => pending = Some((unquote(named).to_string(), None)),
+                    Some(None) => in_shipped_dependencies = true,
+                    None => {}
                 }
-                Some(None) => true,
-                None => false,
-            };
+            }
             continue;
         }
-        if section == "[package]"
+        if in_package
             && let Some(value) = line.strip_prefix("name")
             && let Some(quoted) = value.split('"').nth(1)
         {
             name = quoted.to_string();
         }
+        // Inside `[dependencies.foo]`, a `package = "bar"` line renames it.
+        if let Some((_, rename)) = pending.as_mut()
+            && let Some(renamed) = package_rename(line)
+        {
+            *rename = Some(renamed);
+        }
         if in_shipped_dependencies {
-            // Form one is `qip-foo.workspace = true`; form two is
-            // `qip-foo = { workspace = true }`. Taking the key before `=` and
-            // then before any `.` reduces both to the crate name.
-            let Some((key, _)) = line.split_once('=') else {
+            let Some((key, value)) = line.split_once('=') else {
                 continue;
             };
+            // `qip-foo.workspace = true` and `"qip-foo".workspace = true` both
+            // reduce to the key before the first `.`; `qip-foo = { ... }` has
+            // no `.` and is already the key.
             let key = key.trim();
-            let crate_name = key.split_once('.').map_or(key, |(left, _)| left.trim());
+            let key = key.split_once('.').map_or(key, |(left, _)| left.trim());
+            // A rename wins over the key: `alias = { package = "qip-foo" }`
+            // depends on `qip-foo`, whatever the alias is called.
+            let crate_name = package_rename(value).unwrap_or_else(|| unquote(key).to_string());
             if crate_name.starts_with("qip-") {
-                dependencies.insert(crate_name.to_string());
+                dependencies.insert(crate_name);
             }
         }
     }
+    flush_pending(&mut pending, &mut dependencies);
     (name, dependencies)
+}
+
+/// The table name in a section header, tolerating comments and inner spaces.
+///
+/// **This is where a whole section used to be silently dropped.** The header
+/// was previously reduced with `trim_start_matches('[').trim_end_matches(']')`,
+/// which works only when the `]` is the final character. `[dependencies] # in-tree only`
+/// ends in `y`, so nothing was trimmed, the table was not recognised, and every
+/// key under it was skipped — the entire crate's dependency list vanished and
+/// every absent-edge assertion about it passed vacuously. `[ dependencies ]`,
+/// which is legal TOML, failed the same way.
+///
+/// Taking the text between `[` and the *first* `]` and trimming it handles
+/// both, and `[[bin]]` yields `[bin`, which matches no dependency table.
+fn section_name(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix('[')?;
+    let end = rest.find(']')?;
+    Some(rest[..end].trim())
+}
+
+/// Strip the quotes TOML permits around a key or value.
+///
+/// `"qip-quantum".workspace = true` is a legal way to write a dependency, and
+/// an unquoted comparison against `qip-` does not match it.
+fn unquote(value: &str) -> &str {
+    value.trim().trim_matches('"').trim_matches('\'')
+}
+
+/// The crate a `package = "..."` rename points at.
+///
+/// Cargo lets a dependency be declared under any key and renamed to its real
+/// crate with `package`. Reading only the key means
+/// `qip-numerics-ext = { package = "qip-quantum" }` looks like a dependency on
+/// a crate that does not exist, and the real edge to `qip-quantum` is invisible
+/// — which is a boundary bypass written in one line of ordinary Cargo.
+///
+/// Matched on `package` followed by `=` so that `path = "../packages/x"` does
+/// not qualify.
+fn package_rename(fragment: &str) -> Option<String> {
+    let after = fragment.split_once("package")?.1;
+    let after = after.trim_start().strip_prefix('=')?;
+    after.split('"').nth(1).map(str::to_string)
+}
+
+/// Resolve a `[dependencies.foo]` table into the crate it actually names.
+fn flush_pending(pending: &mut Option<(String, Option<String>)>, into: &mut BTreeSet<String>) {
+    if let Some((key, rename)) = pending.take() {
+        let crate_name = rename.unwrap_or(key);
+        if crate_name.starts_with("qip-") {
+            into.insert(crate_name);
+        }
+    }
+}
+
+/// A manifest fragment and whether it declares a shipped edge to `qip-quantum`.
+///
+/// Table-driven because the parser's failures have all been *one shape it did
+/// not think of*, twice now, and a list is the only form in which the next
+/// shape is cheap to add.
+const MANIFEST_FORMS: &[(&str, &str, bool)] = &[
+    // --- the four table shapes ---
+    (
+        "dotted",
+        "[dependencies]\nqip-quantum.workspace = true\n",
+        true,
+    ),
+    (
+        "inline",
+        "[dependencies]\nqip-quantum = { workspace = true }\n",
+        true,
+    ),
+    (
+        "table",
+        "[dependencies.qip-quantum]\nworkspace = true\n",
+        true,
+    ),
+    (
+        "target-table",
+        "[target.'cfg(unix)'.dependencies]\nqip-quantum.workspace = true\n",
+        true,
+    ),
+    // --- target-conditional, both spellings ---
+    (
+        "target-named",
+        "[target.'cfg(unix)'.dependencies.qip-quantum]\nworkspace = true\n",
+        true,
+    ),
+    (
+        "target-double-quoted",
+        "[target.\"cfg(windows)\".dependencies]\nqip-quantum.workspace = true\n",
+        true,
+    ),
+    // --- exclusions: not shipped code ---
+    (
+        "dev",
+        "[dev-dependencies]\nqip-quantum.workspace = true\n",
+        false,
+    ),
+    (
+        "dev-table",
+        "[dev-dependencies.qip-quantum]\nworkspace = true\n",
+        false,
+    ),
+    (
+        "build",
+        "[build-dependencies]\nqip-quantum.workspace = true\n",
+        false,
+    ),
+    (
+        "commented-out",
+        "[dependencies]\n# qip-quantum.workspace = true\n",
+        false,
+    ),
+    // A feature named after a crate is not a dependency on it.
+    ("features", "[features]\nqip-quantum = []\n", false),
+    // --- P1: the section header itself ---
+    // A trailing comment used to delete the entire section: the header does
+    // not end in `]`, so nothing was trimmed and every key under it was
+    // skipped. Verified live — a real `qip-quantum` edge on the risk engine
+    // left the whole file green at 23 passed, 0 failed.
+    (
+        "trailing-comment",
+        "[dependencies] # in-tree only\nqip-quantum.workspace = true\n",
+        true,
+    ),
+    (
+        "spaces-in-brackets",
+        "[ dependencies ]\nqip-quantum.workspace = true\n",
+        true,
+    ),
+    (
+        "trailing-comment-on-table",
+        "[dependencies.qip-quantum] # the solver\nworkspace = true\n",
+        true,
+    ),
+    // --- P2: renames ---
+    // Cargo lets a dependency sit under any key and name its real crate with
+    // `package`. Reading only the key made the edge invisible.
+    (
+        "rename-inline",
+        "[dependencies]\nqip-numerics-ext = { package = \"qip-quantum\", version = \"0.1\" }\n",
+        true,
+    ),
+    (
+        "rename-table",
+        "[dependencies.qip-numerics-ext]\npackage = \"qip-quantum\"\nversion = \"0.1\"\n",
+        true,
+    ),
+    // A rename under a non-`qip` key is still the same edge.
+    (
+        "rename-under-foreign-key",
+        "[dependencies]\nsolver = { package = \"qip-quantum\", version = \"0.1\" }\n",
+        true,
+    ),
+    // And the converse: a `qip-*` key renamed to a third party is not an
+    // in-tree edge, so the rename must win over the key in both directions.
+    (
+        "rename-away-from-qip",
+        "[dependencies]\nqip-lookalike = { package = \"serde\", version = \"1\" }\n",
+        false,
+    ),
+    // `path = \"../packages/x\"` contains the substring `package` and must not
+    // be read as a rename.
+    (
+        "path-containing-package",
+        "[dependencies]\nqip-quantum = { path = \"../packages/qip-quantum\" }\n",
+        true,
+    ),
+    // --- P3: quoted keys ---
+    (
+        "quoted-key",
+        "[dependencies]\n\"qip-quantum\".workspace = true\n",
+        true,
+    ),
+    (
+        "quoted-table",
+        "[dependencies.\"qip-quantum\"]\nworkspace = true\n",
+        true,
+    ),
+    // --- third parties are not in-tree edges ---
+    (
+        "third-party",
+        "[dependencies]\nserde = { workspace = true }\n",
+        false,
+    ),
+];
+
+#[test]
+fn the_manifest_parser_sees_every_dependency_form_that_reaches_a_crate() {
+    // The regression suite for two rounds of the same defect. Every entry here
+    // was verified against the real tree by putting the form in a real
+    // manifest and running this file; each `true` row is a boundary bypass if
+    // the parser cannot see it, and each `false` row is a false edge if it can.
+    //
+    // The failure class is worth naming once more because it has recurred:
+    // every boundary test in this file asserts that some edge is *absent*, so
+    // a form the parser cannot read is an edge that does not exist as far as
+    // any of them are concerned, and the whole file goes green over a live
+    // violation.
+    for (label, fragment, expected) in MANIFEST_FORMS {
+        let manifest = format!("[package]\nname = \"probe\"\n{fragment}");
+        let (name, dependencies) = parse_manifest_content(&manifest);
+        assert_eq!(name, "probe", "{label}: the package name was not parsed");
+        assert_eq!(
+            dependencies.contains("qip-quantum"),
+            *expected,
+            "{label}: expected qip-quantum edge = {expected}, parsed {dependencies:?}"
+        );
+    }
+
+    // The premise, without which the loop above could pass on an empty table.
+    assert!(
+        MANIFEST_FORMS.iter().any(|(_, _, expected)| *expected),
+        "no form is expected to produce an edge"
+    );
+    assert!(
+        MANIFEST_FORMS.iter().any(|(_, _, expected)| !*expected),
+        "no form is expected to be excluded, so the exclusions are untested"
+    );
 }
 
 #[test]
@@ -654,6 +886,14 @@ fn every_service_crate_is_classified_for_money_authority() {
     // a property of what a crate does, not of where it sits — so the next best
     // thing is to make the omission fail loudly. Adding a service crate now
     // forces a decision about whether it can veto, execute, transfer or issue.
+    //
+    // **Known limit, stated rather than left to be discovered.** This walks
+    // `crates/services` only. A money-authority crate added under `libs` —
+    // which `qip-compliance` already shows is possible — would be covered by
+    // neither list and nothing here would say so. Widening the walk to `libs`
+    // would mean classifying sixteen crates that mostly hold no authority at
+    // all, so the honest position is that this catches the likely case and not
+    // every case.
     let services = crates_under("backend/crates/services");
     assert!(
         services.len() >= 25,
@@ -674,6 +914,15 @@ fn every_service_crate_is_classified_for_money_authority() {
 
     // Both directions. A name left behind after a crate is deleted would make
     // the check above pass while covering something that is not there.
+    // `qip-compliance` is classified but lives in `libs`, so it is excused
+    // from the service walk. Asserted to exist rather than hardcoded blindly:
+    // an excuse for a deleted crate is a phantom that outlives it.
+    let graph = dependency_graph();
+    assert!(
+        graph.contains_key("qip-compliance"),
+        "qip-compliance is excused from the service walk but is not a crate; \
+         the exemption now covers nothing"
+    );
     let stale: BTreeSet<&String> = classified
         .iter()
         .filter(|name| !services.contains(*name) && name.as_str() != "qip-compliance")
@@ -791,6 +1040,46 @@ fn a_quantum_solver_cannot_reach_anything_that_vetoes_executes_or_moves_money() 
     assert!(
         !reachable.is_empty(),
         "qip-quantum reaches nothing at all, so this test proves nothing"
+    );
+}
+
+#[test]
+fn no_crate_that_vetoes_or_executes_reaches_a_solver_through_its_dev_dependencies() {
+    // The gap review found in the exclusion above. Dev dependencies are left
+    // out of the graph because Cargo permits cycles among them and counting
+    // them would report boundary violations no deployed binary has — but that
+    // is a reason the *graph* must stay acyclic, not a reason the edge is
+    // harmless. Test code inside `qip-risk-engine` can construct a solver just
+    // as readily as its shipped code can, and a fixture that quietly starts
+    // asking an optimiser what the risk answer should be is a boundary
+    // bypass that happens to compile only under `cargo test`.
+    //
+    // Checked as a direct edge rather than transitively, on purpose. A
+    // transitive walk over dev edges is exactly the cyclic graph the main
+    // parser excludes them to avoid; the direct edge is the one somebody
+    // writes.
+    let mut offenders = Vec::new();
+    for crate_name in NO_SOLVER_AUTHORITY {
+        for directory in ["libs", "services", "edge", "runtime", "apps", "agents"] {
+            let manifest = repository_root().join(format!(
+                "backend/crates/{directory}/{crate_name}/Cargo.toml"
+            ));
+            let Ok(content) = std::fs::read_to_string(&manifest) else {
+                continue;
+            };
+            let Some(dev) = content.split("[dev-dependencies]").nth(1) else {
+                continue;
+            };
+            let dev = dev.split("\n[").next().unwrap_or(dev);
+            if dev.contains("qip-quantum") {
+                offenders.push(format!("{crate_name} (dev)"));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a crate that vetoes, executes, transfers or issues reaches a quantum \
+         solver through its dev dependencies: {offenders:?}"
     );
 }
 

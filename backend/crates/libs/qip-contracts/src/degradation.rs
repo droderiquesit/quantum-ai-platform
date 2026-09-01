@@ -1,11 +1,25 @@
 //! What the platform does when a cognitive capability is unavailable or stale.
 //!
-//! The rule this module exists to make structural is that **losing a
-//! capability narrows the platform; it never halts it**. That distinction is
-//! the whole point. A system that halts on a stale input is a system that
-//! stops trading every time a warm-path job is late, and the operational
-//! pressure to "just ignore the staleness" then becomes irresistible — which
-//! is how a safety property gets deleted by the people it protects.
+//! The rule this module states is that **losing a capability narrows the
+//! platform; it never halts it**. That distinction is the whole point. A
+//! system that halts on a stale input is a system that stops trading every
+//! time a warm-path job is late, and the operational pressure to "just ignore
+//! the staleness" then becomes irresistible — which is how a safety property
+//! gets deleted by the people it protects.
+//!
+//! **This is a typed contract awaiting its consumer, and it enforces nothing
+//! yet.** No engine calls it: `DegradationState` has no caller outside this
+//! crate and its tests. Saying otherwise would be the exact overclaim this
+//! module's own reasoning rejects elsewhere — the reason the self-model and
+//! valuation rows are omitted below is that a control which cannot fire reads
+//! as protection and is not, and that argument applies to the five rows here
+//! just as well while nothing consults them.
+//!
+//! It is built before its consumer deliberately. The consumer is the signed
+//! twelve-item payload of blueprint §41.5, whose stale-item narrowing is
+//! defined in exactly these terms, and having the vocabulary settled first is
+//! what stops that work from inventing a second one. Until it is wired, treat
+//! this as a specification with a compiler checking it, not as a control.
 //!
 //! This is *capability*-level degradation and it composes with, rather than
 //! replaces, the mechanism-level rules already in the tree: a stale book
@@ -42,6 +56,7 @@ use std::collections::BTreeMap;
 /// reports reaches an operator's screen and a replay that reorders is not a
 /// replay.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Capability {
     /// Observation of the world. Blueprint §6.2 row 1.
     Ingestion,
@@ -95,6 +110,7 @@ impl Capability {
 /// treat it that way — and collapsing them would lose the distinction the
 /// table draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Freshness {
     /// Current, within its TTL.
     Fresh,
@@ -148,6 +164,7 @@ impl Freshness {
 /// strategy does not consult the world model, so an ingestion stall is not its
 /// problem, and pausing it would be an outage the platform inflicted on itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum StrategyClass {
     /// Depends on prices and books alone.
     PriceOnly,
@@ -181,6 +198,7 @@ impl StrategyClass {
 
 /// How capital is spread across families.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AllocationMode {
     /// Conditioned on the detected regime — the full-capability mode.
     RegimeConditional,
@@ -249,6 +267,17 @@ impl DegradationState {
             .unwrap_or(Freshness::Unavailable)
     }
 
+    /// Whether analogical retrieval is available.
+    ///
+    /// §6.2 row 3 has two clauses — "analogical retrieval unavailable" and
+    /// "strategies depending on situational recognition pause" — and only the
+    /// second had an accessor. A caller that wants to know whether it may
+    /// *retrieve* an analogue, rather than whether it must stop, had to infer
+    /// it from a strategy class it may not have.
+    pub fn analogical_retrieval_available(&self) -> bool {
+        self.freshness(Capability::EpisodicMemory).is_fresh()
+    }
+
     /// Whether a strategy of this class pauses.
     ///
     /// Straight from §6.2, and the negative half matters as much as the
@@ -299,6 +328,22 @@ impl DegradationState {
         current.checked_mul(factor).unwrap_or(zero)
     }
 
+    /// `scaled`, reachable from a test.
+    ///
+    /// Both fallible branches above are unreachable through
+    /// [`Self::sizing_multiplier`], because the only constants it applies are
+    /// 0.75 and 0.5 against a starting 1 and neither can fail. That made the
+    /// module's central safety claim — that an unrepresentable state narrows
+    /// further and never less — an assertion in prose with nothing exercising
+    /// it: inverting `unwrap_or(zero)` to `unwrap_or(current)`, so that a
+    /// failed multiply *widens*, left the whole suite green.
+    ///
+    /// This exists so the claim is checked rather than merely made.
+    #[cfg(test)]
+    fn scaled_for_test(constant: (i128, u32), current: Decimal) -> Decimal {
+        Self::scaled(constant, current)
+    }
+
     /// How capital is spread, given what can still be reasoned about.
     pub fn allocation_mode(&self) -> AllocationMode {
         if self.freshness(Capability::CausalGraph).is_fresh() {
@@ -327,5 +372,61 @@ impl DegradationState {
             .map(|capability| (capability, self.freshness(capability)))
             .filter(|(_, freshness)| !freshness.is_fresh())
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_multiplier_that_cannot_be_represented_narrows_to_nothing() {
+        // The fail-closed arm, which no path through `sizing_multiplier` can
+        // reach. The asymmetry is the point: when a constant or a product
+        // cannot be represented we return zero, not the un-narrowed
+        // multiplier, because every branch here narrows further and never
+        // less.
+        let one = Decimal::from_int(1);
+
+        // Premise: a representable constant does *not* return zero, so the
+        // assertions below are about the failure and not about the function
+        // always returning zero.
+        let ordinary = DegradationState::scaled_for_test((75, 2), one);
+        assert!(
+            !ordinary.is_zero(),
+            "a representable constant returned zero"
+        );
+
+        // An exponent no decimal of this scale can carry.
+        let unrepresentable = DegradationState::scaled_for_test((1, u32::MAX), one);
+        assert!(
+            unrepresentable.is_zero(),
+            "an unrepresentable constant widened instead of narrowing: \
+             {unrepresentable:?}"
+        );
+
+        // And the multiply itself, driven past what the type can hold. Both
+        // operands must be *representable* or the `from_scaled` branch above
+        // catches it first and this arm stays untested — which is exactly what
+        // happened on the first attempt: `from_scaled(i128::MAX, 0)` overflows
+        // its own scaling and returns `None`, so the case was skipped and
+        // inverting `unwrap_or(zero)` to `unwrap_or(current)` left the suite
+        // green.
+        //
+        // `Decimal` scales by 10^9, so a mantissa near 10^28 is representable
+        // while the square of one is not.
+        let big = 10i128.pow(28);
+        let representable =
+            Decimal::from_scaled(big, 0).expect("10^28 is within the decimal's range");
+        assert!(
+            !representable.is_zero(),
+            "the premise failed: the operand is not representable, so the \
+             multiply below is not the thing being tested"
+        );
+        let overflowed = DegradationState::scaled_for_test((big, 0), representable);
+        assert!(
+            overflowed.is_zero(),
+            "an overflowing multiply widened instead of narrowing: {overflowed:?}"
+        );
     }
 }

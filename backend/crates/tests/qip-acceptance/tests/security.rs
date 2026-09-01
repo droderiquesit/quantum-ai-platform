@@ -1031,9 +1031,17 @@ fn no_signing_or_withdrawal_path_exists_for_capital_to_leave_the_platform() {
     for file in files_with_extension("backend/crates", "rs") {
         // This file names every refused token in order to search for them, so
         // scanning it would make the test permanently and self-referentially
-        // red. Excluded by exact file name rather than by a path fragment, so
-        // that a new file cannot opt itself out by where it sits.
-        if file.file_name().is_some_and(|name| name == "security.rs") {
+        // red.
+        //
+        // Excluded by **path suffix**, not by base name. The previous version
+        // matched any file called `security.rs` anywhere in the tree, and its
+        // comment claimed the opposite of what it did. `src/security.rs` is an
+        // entirely ordinary module name, so a signing path placed in one was
+        // exempt from the only test guarding the capital-movement refusal —
+        // verified: `sign_withdrawal` in `qip-brokers/src/security.rs` passed,
+        // the same function in `wire.rs` failed. Exactly one file is meant to
+        // be exempt and it is this one.
+        if file.ends_with("tests/security.rs") {
             continue;
         }
         let content = std::fs::read_to_string(&file).expect("readable source");

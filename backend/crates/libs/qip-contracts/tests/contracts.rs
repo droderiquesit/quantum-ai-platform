@@ -968,3 +968,47 @@ fn nothing_in_the_degradation_table_halts_the_platform() {
          trades on prices; pausing it would be halting by another name"
     );
 }
+
+#[test]
+fn a_freshness_survives_the_round_trip_through_its_own_wire_format() {
+    // Principle 6, caught by review: two independent claims about the same
+    // fact will disagree, and the louder one will be wrong. Serde's derive
+    // emitted `"Stale"` while `Freshness::parse` accepted only `"stale"` and
+    // deliberately refused the capitalised form — so a `DegradationState`
+    // written to the event log could not be read back through the documented
+    // entry point, and the test asserting that refusal locked the
+    // incompatibility in place.
+    //
+    // One fact, one spelling. Asserted in both directions, because a rename
+    // that fixed serialisation and broke `parse` would satisfy either half
+    // alone.
+    for freshness in [Freshness::Fresh, Freshness::Stale, Freshness::Unavailable] {
+        let json = serde_json::to_string(&freshness).expect("serialisable");
+        let token = json.trim_matches('"');
+        assert_eq!(
+            token,
+            freshness.as_str(),
+            "the wire spelling and as_str disagree for {freshness:?}"
+        );
+        assert_eq!(
+            Freshness::parse(token).expect("the wire spelling must parse"),
+            freshness,
+            "{freshness:?} does not survive its own wire format"
+        );
+        let decoded: Freshness = serde_json::from_str(&json).expect("deserialisable");
+        assert_eq!(decoded, freshness);
+    }
+
+    // The whole state, since that is what actually reaches the log.
+    let mut state = DegradationState::fully_available();
+    state.observe(Capability::CausalGraph, Freshness::Stale);
+    state.observe(Capability::EpisodicMemory, Freshness::Unavailable);
+    let json = serde_json::to_string(&state).expect("serialisable");
+    let decoded: DegradationState = serde_json::from_str(&json).expect("deserialisable");
+    assert_eq!(decoded, state);
+    // Premise: the state really was degraded, so the round trip carried
+    // something rather than trivially matching a default.
+    assert_eq!(decoded.narrowed().len(), 2);
+    assert_eq!(decoded.sizing_multiplier(), dec!("0.75"));
+    assert!(!decoded.analogical_retrieval_available());
+}
