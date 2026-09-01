@@ -253,3 +253,34 @@ impl ReservationLedger {
         Ok(reservation.amount)
     }
 }
+
+impl ReservationLedger {
+    /// Re-anchor the free balance to the book's tracked equity.
+    ///
+    /// The ledger holds capital *between* checks; the equity it holds against
+    /// moves with every fill. Two independent claims about one balance is the
+    /// standing failure, so the kernel calls this once per sizing pass and the
+    /// identity is explicit: free = equity − active holds. Committed capital
+    /// does not appear in the identity because a commit spends into the book —
+    /// the equity already carries what it became.
+    ///
+    /// A drawdown can leave the holds exceeding equity. The state that keeps
+    /// is the safe one — free goes to zero, so every new reservation is
+    /// refused — and the shortfall is returned as an error so the caller puts
+    /// it on the record rather than discovering it as a quiet run of refusals.
+    pub fn resync_free(&mut self, equity: Decimal, now: Timestamp) -> Result<()> {
+        self.expire_due(now);
+        let reserved = self.reserved_total();
+        let free = equity - reserved;
+        if free.is_negative() {
+            self.free = Decimal::ZERO;
+            return Err(Error::invalid(format!(
+                "the active holds ({reserved}) exceed tracked equity ({equity}); the free \
+                 balance is floored at zero and new reservations will be refused until holds \
+                 expire or release"
+            )));
+        }
+        self.free = free;
+        Ok(())
+    }
+}
