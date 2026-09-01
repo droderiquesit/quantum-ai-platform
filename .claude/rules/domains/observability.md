@@ -13,10 +13,14 @@ each false in one direction — one said nothing wrote to `Telemetry`, the next
 said the edge plane could not emit — and agents who believed either were told
 a closed gap was still open.
 
-`qip-kernel`'s `Platform` records at twenty-four sites in `platform.rs` —
-cycles and per-stage runs, durations and problems; the kill-switch gauge;
-limit breaches; permission denials; orders submitted, refused, filled and the
-live-fill alarm. All three central binaries construct the `Telemetry` the
+`qip-kernel`'s `Platform` records in `platform.rs` — at least sixteen sites
+as of `6fb5fed`, counted with
+`grep -c 'metrics\.\(count\|gauge\|increment\|observe[a-z_]*\)(' backend/crates/runtime/qip-kernel/src/platform.rs`;
+recount before quoting a number, because an earlier version of this file
+carried a count from a version of the file that no longer existed. What is
+recorded matters more than how many times: cycles and per-stage runs,
+durations and problems; the kill-switch gauge; limit breaches; permission
+denials; orders submitted, refused, filled and the live-fill alarm. All three central binaries construct the `Telemetry` the
 cycle writes to and serve its snapshot: `qip-api` from `routes.rs` (`scrape`),
 `qip-fastbrain` and `qip-deepbrain` from the registry handle their health
 servers hold, taken from the same `Telemetry` before it moves into the

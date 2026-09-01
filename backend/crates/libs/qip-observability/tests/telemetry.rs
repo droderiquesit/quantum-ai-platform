@@ -460,3 +460,57 @@ fn resetting_the_registry_discards_the_series_and_keeps_the_documentation() {
         "the documentation did not survive the reset"
     );
 }
+
+#[test]
+fn a_label_value_from_configuration_cannot_forge_or_break_an_exposition_line() {
+    // `cell` and `region` are the edge node's configuration strings as given,
+    // and `venue` is whatever the venue list said — the same ConfigMap the
+    // composition roots refuse a live ceiling from. The export used to escape
+    // only `"` on sample lines and nothing on `_bucket` lines, so a cell id
+    // carrying `"} 1\n…` closed the label set early and forged a
+    // `qip_edge_halted … 0` line for a halted cell, and a trailing `\` broke
+    // the quoting so the collector dropped the target whole. The exposition
+    // must be well-formed whatever upstream passed.
+    let hostile = "eu-1\\\"} 1\nqip_edge_halted{cell=\"eu-1\"} 0";
+    assert!(
+        hostile.contains('\\') && hostile.contains('"') && hostile.contains('\n'),
+        "the premise: the value carries all three characters the format escapes"
+    );
+
+    let metrics = Metrics::new("edge");
+    metrics.gauge(
+        names::EDGE_HALTED,
+        labels([("cell", hostile), ("source", "kill_switch")]),
+        1.0,
+    );
+    metrics.observe_unit(names::EDGE_NETTING_RATIO, labels([("cell", hostile)]), 0.05);
+    let text = metrics.snapshot().to_prometheus();
+
+    let expected_gauge = r#"qip_edge_halted{cell="eu-1\\\"} 1\nqip_edge_halted{cell=\"eu-1\"} 0",source="kill_switch"} 1"#;
+    assert!(
+        text.lines().any(|line| line == expected_gauge),
+        "the sample line is not the escaped form:\n{text}"
+    );
+    // Exactly one line names the halt series — the forged `… 0` sample never
+    // becomes a line of its own.
+    assert_eq!(
+        text.lines()
+            .filter(|line| line.starts_with("qip_edge_halted"))
+            .count(),
+        1,
+        "a label value forged a second sample line:\n{text}"
+    );
+
+    let expected_bucket = r#"qip_edge_netting_ratio_bucket{cell="eu-1\\\"} 1\nqip_edge_halted{cell=\"eu-1\"} 0",le="0.1"} 1"#;
+    assert!(
+        text.lines().any(|line| line == expected_bucket),
+        "the bucket line is not the escaped form:\n{text}"
+    );
+    assert_eq!(
+        text.lines()
+            .filter(|line| line.starts_with("qip_edge_netting_ratio_bucket"))
+            .count(),
+        Histogram::unit_interval().bounds.len(),
+        "a bucket label forged or split a line:\n{text}"
+    );
+}

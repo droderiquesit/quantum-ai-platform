@@ -224,12 +224,7 @@ impl Snapshot {
             let label_text = if series.labels.is_empty() {
                 String::new()
             } else {
-                let parts: Vec<String> = series
-                    .labels
-                    .iter()
-                    .map(|(k, v)| format!("{k}=\"{}\"", v.replace('"', "\\\"")))
-                    .collect();
-                format!("{{{}}}", parts.join(","))
+                format!("{{{}}}", render_labels(&series.labels))
             };
             match &series.value {
                 MetricValue::Counter(v) => {
@@ -244,14 +239,10 @@ impl Snapshot {
                         cumulative += h.counts[i];
                         let mut bucket_labels = series.labels.clone();
                         bucket_labels.insert("le".into(), bound.to_string());
-                        let parts: Vec<String> = bucket_labels
-                            .iter()
-                            .map(|(k, v)| format!("{k}=\"{v}\""))
-                            .collect();
                         out.push_str(&format!(
                             "{}_bucket{{{}}} {cumulative}\n",
                             series.name,
-                            parts.join(",")
+                            render_labels(&bucket_labels)
                         ));
                     }
                     out.push_str(&format!("{}_sum{label_text} {}\n", series.name, h.sum));
@@ -415,6 +406,43 @@ impl Metrics {
             .series
             .clear();
     }
+}
+
+/// One label set as exposition text, `k="v",k2="v2"`, every value escaped.
+///
+/// Both places that print labels — the plain sample line and the histogram
+/// `_bucket` lines — go through here, because they used to be two separate
+/// `format!` calls and the second escaped nothing at all.
+fn render_labels(labels: &Labels) -> String {
+    let parts: Vec<String> = labels
+        .iter()
+        .map(|(k, v)| format!("{k}=\"{}\"", escape_label_value(v)))
+        .collect();
+    parts.join(",")
+}
+
+/// The Prometheus text-format escaping for a label value: `\` → `\\`,
+/// `"` → `\"`, newline → `\n`.
+///
+/// Label values are not all literals. `cell` and `region` on the edge series
+/// are the process's configuration strings as given, and `venue` is whatever
+/// the venue list said — the same ConfigMap an operator with `kubectl edit`
+/// can rewrite, which is the actor the composition roots' start-up refusal
+/// exists to catch. This used to escape only `"`, and the bucket lines escaped
+/// nothing. A cell id of `eu-1"} 1\nqip_edge_halted{cell="eu-1"} 0\n#` then
+/// closed the label set early and forged a `qip_edge_halted … 0` line for a
+/// halted cell on every scrape; a trailing `\` broke the quoting so the
+/// collector rejected the target whole and the cell disappeared from every
+/// chart. Escaping at the exposition means the export is well-formed whatever
+/// upstream passed, rather than only when every caller remembered to validate.
+///
+/// The backslash goes first: doubling it after the other two would double the
+/// backslashes those two just introduced.
+fn escape_label_value(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
 }
 
 fn series_key(name: &str, labels: &Labels) -> String {
