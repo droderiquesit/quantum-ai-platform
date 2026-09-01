@@ -248,6 +248,43 @@ fn equity(symbol: &str, price: &str) -> FinancialObject {
         .expect("valid object")
 }
 
+/// A spot commodity, so the commodities analyst's asset-class gate admits
+/// the subject rather than deferring it as it does for ACME. Spot rather
+/// than a future because the curve the analyst reads is a set of store
+/// features keyed on the subject, not a property of the instrument, and a
+/// future would need an underlying and a maturity the test never reads.
+fn commodity(symbol: &str, price: &str) -> FinancialObject {
+    FinancialObject::builder(object(symbol), symbol, InstrumentType::CommoditySpot)
+        .venue("XNYM")
+        .sector(Sector::Energy)
+        .price(Decimal::parse(price).unwrap())
+        .provenance(Provenance::synthetic("test", now()))
+        .build(now())
+        .expect("valid object")
+}
+
+/// A spot currency pair for the carry analyst.
+fn fx_pair(symbol: &str, price: &str) -> FinancialObject {
+    FinancialObject::builder(object(symbol), symbol, InstrumentType::FxSpot)
+        .venue("FXALL")
+        .price(Decimal::parse(price).unwrap())
+        .provenance(Provenance::synthetic("test", now()))
+        .build(now())
+        .expect("valid object")
+}
+
+/// The instant the curve and carry readings describe, and the later instant
+/// they became knowable. They differ on purpose: a record id that carried
+/// only one of them, or the two swapped, would be indistinguishable from a
+/// correct one if both were `now()`.
+fn curve_valid_at() -> Timestamp {
+    now().saturating_sub(Duration::from_days(1))
+}
+
+fn curve_known_at() -> Timestamp {
+    now().saturating_sub(Duration::from_hours(12))
+}
+
 /// A price series with a mild uptrend and realistic daily noise.
 fn bars(symbol: &str, count: usize, drift: f64) -> Vec<Bar> {
     let mut bars = Vec::with_capacity(count);
@@ -301,6 +338,8 @@ fn book(symbol: &str) -> OrderBook {
 fn populated_desk() -> Arc<Desk> {
     let mut universe = Universe::new();
     universe.insert(equity("ACME", "100")).unwrap();
+    universe.insert(commodity("WTI", "80")).unwrap();
+    universe.insert(fx_pair("EURUSD", "1.08")).unwrap();
 
     let mut snapshot = MarketSnapshot::new(now());
     for bar in bars("ACME", 120, 0.0008) {
@@ -365,6 +404,47 @@ fn populated_desk() -> Arc<Desk> {
             object("ACME").as_str(),
             FeatureValue::new(0.35, now(), now()),
         );
+        // The curve points the commodities analyst reads, and the two legs
+        // and volatility the FX analyst reads. Until these existed both
+        // analysts returned no-data on every desk in this file, so their
+        // observed stamps compiled without ever being dispatched.
+        for (name, description) in [
+            ("front_month_price", "front-month settlement"),
+            ("deferred_month_price", "deferred-month settlement"),
+            ("deferred_tenor_months", "months from front to deferred"),
+        ] {
+            features.define(Feature::new(name, description, "curve-provider"));
+        }
+        // Backwardated: the deferred contract is below the front.
+        for (name, value) in [
+            ("front_month_price", 80.0),
+            ("deferred_month_price", 78.0),
+            ("deferred_tenor_months", 3.0),
+        ] {
+            features.record(
+                name,
+                object("WTI").as_str(),
+                FeatureValue::new(value, curve_valid_at(), curve_known_at()),
+            );
+        }
+        for (name, description) in [
+            ("base_rate", "base leg policy rate"),
+            ("quote_rate", "quote leg policy rate"),
+            ("realised_volatility", "annualised realised volatility"),
+        ] {
+            features.define(Feature::new(name, description, "rates-provider"));
+        }
+        for (name, value) in [
+            ("base_rate", 0.04),
+            ("quote_rate", 0.015),
+            ("realised_volatility", 0.08),
+        ] {
+            features.record(
+                name,
+                object("EURUSD").as_str(),
+                FeatureValue::new(value, curve_valid_at(), curve_known_at()),
+            );
+        }
     }
 
     let mut library = SearchIndex::new();
@@ -559,6 +639,163 @@ fn a_value_an_agent_reads_off_the_desk_is_recorded_as_observed_with_its_record()
         .filter(|f| matches!(f.provenance, NumericProvenance::Computed { .. }))
         .count();
     assert!(computed > 0, "no computed fact survived");
+    Ok(())
+}
+
+/// Asserts that `agent`, dispatched on a brief about `symbol`, produced a
+/// finding rather than a refusal, and that each of `labels` is stamped
+/// observed from `source` with a record id naming both bitemporal instants.
+///
+/// The premise comes first and is asserted against the status the analysts
+/// actually return when a feature is missing — `NoView`, via `no_data` — so a
+/// fixture that quietly stopped supplying a feature fails here with the
+/// analyst's own reason rather than as a missing fact three lines later.
+fn assert_read_off_the_store(
+    org: &mut Organisation,
+    symbol: &str,
+    agent: &str,
+    source: &str,
+    labels: &[&str],
+) {
+    let brief = AgentBrief::new(
+        format!("what does the curve or carry say about {symbol}"),
+        now(),
+        Duration::from_days(30),
+    )
+    .about_objects(vec![object(symbol)]);
+    let report = org.dispatch(&brief, now(), &lineage());
+    assert!(report.failed.is_empty(), "runs failed: {:?}", report.failed);
+
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == agent)
+        .unwrap_or_else(|| panic!("premise: {agent} produced a finding about {symbol}"));
+    assert_ne!(
+        finding.status,
+        FindingStatus::NoView,
+        "premise: {agent} returned no-data on {symbol}: {}",
+        finding.claim
+    );
+    assert_ne!(
+        finding.status,
+        FindingStatus::Deferred,
+        "premise: {agent} deferred {symbol}: {}",
+        finding.claim
+    );
+
+    let subject = object(symbol);
+    for label in labels {
+        let fact = finding
+            .fact(label)
+            .unwrap_or_else(|| panic!("premise: {agent} reported {label} for {symbol}"));
+        match &fact.provenance {
+            NumericProvenance::Observed {
+                source: recorded,
+                as_of,
+                record_id,
+            } => {
+                assert_eq!(recorded, source, "{agent}.{label} names the wrong source");
+                // The exact id `observed_feature` writes, rebuilt from the
+                // fixture's two instants: valid-at first, knowable-at second.
+                // Equality, not `contains`, so an id that dropped one instant
+                // or swapped them cannot pass.
+                assert_eq!(
+                    record_id,
+                    &format!(
+                        "feature:{label}@{}:valid={}:known={}",
+                        subject.as_str(),
+                        curve_valid_at(),
+                        curve_known_at()
+                    ),
+                    "{agent}.{label} does not carry both bitemporal instants"
+                );
+                assert_eq!(
+                    *as_of,
+                    curve_valid_at(),
+                    "{agent}.{label} is stamped as-of the wrong instant"
+                );
+                assert!(
+                    *as_of <= finding.as_of,
+                    "{agent}.{label} was observed after the as-of the agent reasoned at"
+                );
+            }
+            NumericProvenance::Computed { by, inputs } => panic!(
+                "{agent} read {label} off the store and recorded it as computed by {by} from {inputs:?}"
+            ),
+        }
+    }
+}
+
+#[test]
+fn the_commodities_analyst_stamps_each_curve_point_observed_from_the_store() -> Result<()> {
+    // Until the WTI fixture existed no test in this file gave the
+    // commodities analyst a front price, a deferred price and a tenor, so it
+    // returned no-data on every dispatch and its observed stamp was
+    // compile-only: a change reverting it to `computed` would have passed
+    // the whole suite. The roll yield is the one number the agent itself
+    // derives, and the split is checked both ways.
+    let mut org = organisation(populated_desk())?;
+    assert_read_off_the_store(
+        &mut org,
+        "WTI",
+        ids::COMMODITIES,
+        "feature-store:curve-provider",
+        &[
+            "front_month_price",
+            "deferred_month_price",
+            "deferred_tenor_months",
+        ],
+    );
+    let brief = AgentBrief::new("is WTI backwardated", now(), Duration::from_days(30))
+        .about_objects(vec![object("WTI")]);
+    let report = org.dispatch(&brief, now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::COMMODITIES)
+        .expect("premise: the commodities analyst reported");
+    let roll = finding
+        .fact("annualised_roll_yield")
+        .expect("premise: the roll yield was reported");
+    assert!(
+        matches!(&roll.provenance, NumericProvenance::Computed { by, .. } if by == ids::COMMODITIES),
+        "the roll yield is the agent's own arithmetic, not a reading: {:?}",
+        roll.provenance
+    );
+    Ok(())
+}
+
+#[test]
+fn the_fx_analyst_stamps_both_legs_and_the_volatility_observed_from_the_store() -> Result<()> {
+    // The same gap as the commodities analyst: no desk in this file carried
+    // `base_rate`, `quote_rate` or `realised_volatility`, so the carry path
+    // never ran past its no-data refusal and the three observed stamps on it
+    // were never asserted. The volatility-adjusted carry is the agent's.
+    let mut org = organisation(populated_desk())?;
+    assert_read_off_the_store(
+        &mut org,
+        "EURUSD",
+        ids::FX_RATES,
+        "feature-store:rates-provider",
+        &["base_rate", "quote_rate", "realised_volatility"],
+    );
+    let brief = AgentBrief::new("does EURUSD carry", now(), Duration::from_days(30))
+        .about_objects(vec![object("EURUSD")]);
+    let report = org.dispatch(&brief, now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::FX_RATES)
+        .expect("premise: the FX analyst reported");
+    let carry = finding
+        .fact("volatility_adjusted_carry")
+        .expect("premise: the carry was reported, so the volatility leg was present");
+    assert!(
+        matches!(&carry.provenance, NumericProvenance::Computed { by, .. } if by == ids::FX_RATES),
+        "the carry is the agent's own arithmetic, not a reading: {:?}",
+        carry.provenance
+    );
     Ok(())
 }
 

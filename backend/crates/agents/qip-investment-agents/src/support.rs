@@ -219,6 +219,21 @@ pub fn computed(
 /// stamp and recorded as computed by the producer from the record instead. A
 /// helper that stamped it observed because the caller asked for an observed
 /// fact would be the provenance lie this module exists to prevent.
+///
+/// **The imputed refusal is a control that cannot fire today, and it is
+/// recorded as such rather than presented as protection.** No production
+/// writer sets [`FeatureValue::imputed`]: every constructor in
+/// `qip-world-model`'s `world.rs` and the kernel's feature write in
+/// `platform.rs` store `imputed: false`, and the only caller of the
+/// `FeatureValue::imputed()` builder is this module's own test. The flag that
+/// *is* set in production lives one seam earlier — the alternative-data
+/// adapter in `qip-market-ingestion` marks a vendor reading
+/// `DataQuality::is_imputed` when the wire says the value was filled — and
+/// that flag is never carried across into the `FeatureValue` the store
+/// records. The refusal ships now because the stamp is the thing that would
+/// have to change later, and it becomes live the day that propagation lands:
+/// until `DataQuality::is_imputed` reaches `FeatureValue::imputed`, the
+/// `computed` arm below has nothing to refuse.
 pub fn observed_feature(
     features: &FeatureStore,
     name: &str,
