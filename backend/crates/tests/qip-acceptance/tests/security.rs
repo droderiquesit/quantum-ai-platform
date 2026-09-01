@@ -988,3 +988,102 @@ fn the_threat_model_names_every_threat_and_states_what_does_not_stop_it() {
          docs/security/credentials.md"
     );
 }
+
+/// The capital-movement machinery ADR 0021 refuses, as opposed to the half it
+/// permits.
+///
+/// Each token names signing or submission specifically. The registries,
+/// deterministic gates, typed intents, custody *policy* and reconciliation
+/// that ADR 0021 permits are all absent from this list on purpose — a gate
+/// that refuses is the half worth having, and banning the word "corridor"
+/// would forbid the thing the ADR sanctions.
+const REFUSED_CAPITAL_MOVEMENT: &[&str] = &[
+    "mpc_",
+    "multi_party_computation",
+    "sign_transaction",
+    "broadcast_transaction",
+    "sign_withdrawal",
+    "withdrawal_adapter",
+    "custody_signer",
+    "private_key_share",
+    "threshold_signature",
+    "signing_share",
+];
+
+#[test]
+fn no_signing_or_withdrawal_path_exists_for_capital_to_leave_the_platform() {
+    // The gap this closes: ADR 0021 draws a line through the blueprint's
+    // treasury design, permitting the deterministic half and refusing the
+    // signing half. Unlike the three paper-trading layers, the refused half
+    // had no enforcing artefact at all — it was a sentence in a document.
+    //
+    // A later change could therefore build the permitted corridor registry,
+    // which is sanctioned, and then a signing adapter "to make it useful",
+    // and nothing in CI would have failed. That is the whole failure mode:
+    // each step defensible, the destination forbidden.
+    //
+    // Blueprint §37 and §38 describe MPC signing corridors and withdrawal
+    // APIs as the mechanism by which capital autonomously leaves a venue.
+    // This platform is paper-trading only and no such path may exist, so the
+    // assertion is about absence rather than about correctness.
+    let exempt = repository_root().join("backend/crates/tests/qip-acceptance/tests/security.rs");
+    // The exemption must name a file that is really there, or it silently
+    // covers nothing and this test scans itself into permanent failure.
+    assert!(
+        exempt.is_file(),
+        "the exempt path {} does not exist; this test no longer knows which \
+         file it is",
+        exempt.display()
+    );
+    let mut scanned = 0usize;
+    let mut offenders = Vec::new();
+    for file in files_with_extension("backend/crates", "rs") {
+        // This file names every refused token in order to search for them, so
+        // scanning it would make the test permanently and self-referentially
+        // red.
+        //
+        // Excluded by **exact path**. Two weaker versions of this check have
+        // already shipped, each wider than it read:
+        //
+        // * matching the base name exempted every `security.rs` in the tree,
+        //   and `src/security.rs` is an ordinary module name — a signing path
+        //   in one was exempt from the only test guarding the capital-movement
+        //   refusal;
+        // * matching a trailing `tests/security.rs` was *wider still*, because
+        //   `Path::ends_with` compares whole trailing components. It exempted
+        //   `<crate>/src/tests/security.rs` — an ordinary module layout, and
+        //   reachable as shipped code through a `#[path]` attribute — and every
+        //   `<crate>/tests/security.rs`, which is an ordinary integration-test
+        //   name.
+        //
+        // Exactly one file is meant to be exempt, so the code now says exactly
+        // that file. An exemption that is easier to fall into than to notice is
+        // not an exemption, it is a hole.
+        if file == exempt {
+            continue;
+        }
+        let content = std::fs::read_to_string(&file).expect("readable source");
+        let lowered = content.to_lowercase();
+        scanned += 1;
+        for token in REFUSED_CAPITAL_MOVEMENT {
+            if lowered.contains(token) {
+                offenders.push(format!("{}: {token}", file.display()));
+            }
+        }
+    }
+    // The vacuity guard, and this test needs one badly: every assertion it
+    // makes is that a string is absent, so a walk that found no files would
+    // pass while reading nothing at all.
+    assert!(
+        scanned > 300,
+        "only {scanned} Rust files were scanned; the walk is not reaching the \
+         crates and this test proves nothing"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a signing or withdrawal path for capital leaving the platform has \
+         appeared. ADR 0021 refuses this outright — the deterministic gate, \
+         the registries and reconciliation are permitted, the signing is not: \
+         {offenders:?}"
+    );
+}

@@ -1,6 +1,13 @@
 # 0011 — Everything in Rust on Kubernetes; IBM Quantum is the only integration
 
-**Status:** accepted
+**Status:** accepted — **superseded in direction by ADR 0022**, which makes the
+Algorik blueprint the architecture of record and its no-Kubernetes target the
+intended end state. This record still governs: it describes what runs today,
+Kubernetes is the transitional runtime rather than a mistake, and none of it is
+removed until ADR 0020's sequence has both its evidence and its recorded human
+approval. The "on Kubernetes" half of the title is now a description with an
+expiry nobody has scheduled; the "everything in Rust" half is reinforced by the
+blueprint, not weakened by it.
 **Supersedes in part:** ADR 0009, which tiered the dependency policy to admit
 Google client libraries at the I/O edge. No such client is now permitted.
 

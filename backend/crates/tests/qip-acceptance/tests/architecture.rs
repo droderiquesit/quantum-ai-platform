@@ -6,8 +6,15 @@
 //! dependency edges say what everyone thinks they say, and a `Cargo.toml` is
 //! the easiest file in a repository to add one line to.
 //!
-//! These tests read the manifests and assert the edges directly, so adding the
-//! line fails here rather than three months later during an incident.
+//! These tests assert those edges directly, so adding the line fails here
+//! rather than three months later during an incident.
+//!
+//! The graph comes from `cargo metadata` — from Cargo's own resolution rather
+//! than from reading the manifests. Four rounds of review each found a live
+//! compiling edge that a hand-written TOML reader here could not see, and the
+//! reason is structural: every test below asserts an edge is *absent*, so any
+//! manifest form the reader could not parse was an edge that did not exist as
+//! far as all of them were concerned. See [`dependency_graph`].
 //!
 //! They are deliberately about *absent* edges. A present one is visible in the
 //! code that uses it; an absent one is invisible until someone adds it.
@@ -17,75 +24,336 @@
 
 use qip_acceptance::repository_root;
 use std::collections::{BTreeMap, BTreeSet};
-
-/// The in-tree dependencies each crate declares, by crate name.
+/// The workspace dependency graph, **as Cargo itself resolved it**.
 ///
-/// Parsed rather than taken from `cargo metadata`, because the point is to
-/// check the file a reviewer reads.
+/// # Why this asks Cargo instead of reading the manifests
 ///
-/// Development dependencies are excluded. They are what a crate's own tests
-/// link against, not what its shipped code can call, and Cargo deliberately
-/// permits cycles among them — `qip-reasoning-engine` and
-/// `qip-investment-agents` each test against the other. Counting them would
-/// mean reporting a boundary violation for a dependency no deployed binary
-/// has.
+/// Four rounds of independent review each found live, compiling
+/// `qip-risk-engine -> qip-quantum` edges that a hand-written TOML reader in
+/// this file could not see, and each round's fix was written for the shape in
+/// front of it. Round four's two criticals are the argument for abandoning the
+/// approach rather than patching it a fifth time:
+///
+/// * a package description ending `...'paper''''` — legal TOML, accepted by
+///   cargo, no escape character anywhere — desynchronised the string scanner,
+///   which glued the whole file into one buffer so that `[dependencies]` never
+///   began a line and **the entire dependency table disappeared**; and
+/// * `[target.'cfg(not(target_os = "dependencies"))'.dependencies]` defeated
+///   the section classifier by substring-matching, which is the precise trap
+///   `.claude/rules/architecture/01-testing-strategy.md` warns about, in the
+///   parser rather than in a test.
+///
+/// Every boundary test in this file asserts that some edge is *absent*, so a
+/// manifest form the reader cannot parse is an edge that does not exist as far
+/// as all of them are concerned, and the suite goes green over a live
+/// violation. Hand-parsing TOML made that failure mode a permanent feature of
+/// the file.
+///
+/// `cargo metadata` reports the graph after Cargo has resolved it, so renames,
+/// `[workspace.dependencies]` inheritance, target-conditional tables, quoted
+/// keys, every string form and every table shape are already correct. The four
+/// defects cease to exist by construction rather than by enumeration.
+///
+/// **The cost, stated honestly.** This no longer checks "the file a reviewer
+/// reads" — it checks what Cargo compiles. Those differ only where a reviewer
+/// misreads a manifest, and on the evidence of four rounds it is the reader
+/// that was wrong every time, not Cargo.
+///
+/// This adds no dependency. `serde_json` is already permitted and already a
+/// dependency of this crate, and cargo is required to build the workspace at
+/// all, so ADR 0002 and ADR 0009 are untouched — no crate enters
+/// `backend/Cargo.lock`, which is what `scripts/check-dependencies.sh` counts.
+///
+/// Development and build dependencies are excluded. Dev dependencies are what a
+/// crate's own tests link against, not what its shipped code can call, and
+/// Cargo deliberately permits cycles among them — `qip-reasoning-engine` and
+/// `qip-investment-agents` each test against the other. A build dependency is
+/// linked into a build script rather than into the crate.
 fn dependency_graph() -> BTreeMap<String, BTreeSet<String>> {
+    let metadata = workspace_metadata();
+    let members = workspace_member_names(&metadata);
     let mut graph = BTreeMap::new();
-    let mut stack = vec![repository_root().join("backend/crates")];
-    while let Some(directory) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&directory) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.file_name().is_some_and(|name| name == "Cargo.toml") {
-                let (name, dependencies) = parse_manifest(&path);
-                graph.insert(name, dependencies);
+    for package in packages(&metadata) {
+        let name = package_name(package);
+        let mut edges = BTreeSet::new();
+        for dependency in dependencies_of(package) {
+            if !is_shipped(dependency) {
+                continue;
+            }
+            // `name` is the crate actually depended on. An alias declared with
+            // `package = "…"`, or inherited from `[workspace.dependencies]`
+            // under a different key, appears here under its real name with the
+            // alias in `rename` — which is what made round three's and round
+            // four's rename bypasses possible against the text reader.
+            let depended = dependency_name(dependency);
+            if members.contains(&depended) {
+                edges.insert(depended);
             }
         }
+        graph.insert(name, edges);
     }
     assert!(
         graph.len() > 25,
-        "only {} manifests were found; the walk is not reaching the crates",
+        "cargo metadata reported only {} workspace members; the graph is not \
+         being read",
         graph.len()
     );
     graph
 }
 
-/// The crate's name and every `qip-*` dependency its shipped code can call.
-fn parse_manifest(path: &std::path::Path) -> (String, BTreeSet<String>) {
-    let content = std::fs::read_to_string(path)
-        .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
-    let mut name = String::new();
-    let mut dependencies = BTreeSet::new();
-    let mut section = String::new();
-    for line in content.lines() {
-        let line = line.trim();
-        if line.starts_with('[') {
-            section = line.to_string();
-            continue;
-        }
-        if section == "[package]"
-            && let Some(value) = line.strip_prefix("name")
-            && let Some(quoted) = value.split('"').nth(1)
-        {
-            name = quoted.to_string();
-        }
-        if section == "[dependencies]"
-            && let Some(crate_name) = line.split_once('.').map(|(left, _)| left.trim())
-            && crate_name.starts_with("qip-")
-        {
-            dependencies.insert(crate_name.to_string());
+/// Run `cargo metadata` against the backend workspace, or fail loudly.
+///
+/// **Fails closed, in the strongest terms available.** Every assertion built on
+/// this graph is an assertion that an edge is *absent*, so a silent error here
+/// is a green suite over a live violation — which is exactly how all four
+/// review rounds failed. A missing binary, a non-zero exit and unparseable
+/// output therefore all panic rather than yielding an empty or partial graph.
+fn workspace_metadata() -> serde_json::Value {
+    let manifest = repository_root().join("backend/Cargo.toml");
+    assert!(
+        manifest.is_file(),
+        "no workspace manifest at {}; this test cannot see the workspace",
+        manifest.display()
+    );
+    // `CARGO` is set by cargo for anything it runs, and is the toolchain that
+    // built this test. Falling back to the name on `PATH` keeps the test
+    // runnable outside cargo rather than making the fallback the normal case.
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let output = std::process::Command::new(&cargo)
+        .args([
+            "metadata",
+            "--format-version",
+            "1",
+            "--no-deps",
+            "--manifest-path",
+        ])
+        .arg(&manifest)
+        .output()
+        .unwrap_or_else(|error| {
+            panic!(
+                "could not run `{cargo} metadata`: {error}. This test refuses to \
+                 pass without it: every boundary assertion in this file is that \
+                 an edge is absent, and an empty graph would satisfy all of them"
+            )
+        });
+    assert!(
+        output.status.success(),
+        "`{cargo} metadata` exited with {}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+        panic!(
+            "`{cargo} metadata` produced JSON this test cannot parse: {error}. \
+             Failing rather than proceeding on a partial graph"
+        )
+    })
+}
+
+/// The `packages` array, or a panic naming what was missing.
+fn packages(metadata: &serde_json::Value) -> &Vec<serde_json::Value> {
+    metadata
+        .get("packages")
+        .and_then(serde_json::Value::as_array)
+        .expect("cargo metadata always reports a `packages` array")
+}
+
+fn package_name(package: &serde_json::Value) -> String {
+    package
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .expect("every package has a name")
+        .to_string()
+}
+
+fn dependencies_of(package: &serde_json::Value) -> &Vec<serde_json::Value> {
+    static EMPTY: std::sync::OnceLock<Vec<serde_json::Value>> = std::sync::OnceLock::new();
+    package
+        .get("dependencies")
+        .and_then(serde_json::Value::as_array)
+        .unwrap_or_else(|| EMPTY.get_or_init(Vec::new))
+}
+
+fn dependency_name(dependency: &serde_json::Value) -> String {
+    dependency
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .expect("every dependency has a name")
+        .to_string()
+}
+
+/// Whether a dependency is one the crate's shipped code can call.
+///
+/// `kind` is absent or null for a normal dependency and carries `"dev"` or
+/// `"build"` otherwise. A structured field, so the section-name guessing that
+/// round four defeated with a `cfg` string has nothing to defeat.
+fn is_shipped(dependency: &serde_json::Value) -> bool {
+    !matches!(
+        dependency.get("kind").and_then(serde_json::Value::as_str),
+        Some("dev") | Some("build")
+    )
+}
+
+/// Every crate in this workspace, by name.
+fn workspace_member_names(metadata: &serde_json::Value) -> BTreeSet<String> {
+    packages(metadata).iter().map(package_name).collect()
+}
+
+// --- the regression cases from four rounds of bypass -------------------------
+
+#[test]
+fn cargo_resolves_every_manifest_form_that_defeated_a_hand_written_parser() {
+    // Four rounds of review found bypasses in a hand-rolled TOML reader. Rather
+    // than delete that history, every form is kept here and expressed against
+    // the source of truth that replaced the reader.
+    //
+    // A real throwaway workspace is built and `cargo metadata` is run on it, so
+    // this asserts the actual tool's actual behaviour rather than a belief
+    // about it. It needs no network — every dependency is a path dependency —
+    // and a two-crate workspace resolves in milliseconds.
+    //
+    // Each alias below is a form that was, at some point, a live compiling edge
+    // this file could not see.
+    let root = std::env::temp_dir().join(format!(
+        "qip-manifest-forms-{}-{}",
+        std::process::id(),
+        line!()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("solver/src")).expect("temp workspace");
+    std::fs::create_dir_all(root.join("consumer/src")).expect("temp workspace");
+    std::fs::write(root.join("solver/src/lib.rs"), "").expect("write");
+    std::fs::write(root.join("consumer/src/lib.rs"), "").expect("write");
+
+    // Round four, F4: the alias lives in `[workspace.dependencies]` under a key
+    // that is not the crate's name, so a reader looking only at the member
+    // manifest sees a dependency on something that does not exist.
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nresolver = \"3\"\nmembers = [\"solver\", \"consumer\"]\n\n\
+         [workspace.dependencies]\n\
+         probe_alias = { path = \"solver\", package = \"probe-solver\" }\n",
+    )
+    .expect("write");
+    std::fs::write(
+        root.join("solver/Cargo.toml"),
+        "[package]\nname = \"probe-solver\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write");
+
+    // Round four, F1: a multi-line literal description ending in a quote
+    // immediately before its closing fence. Legal TOML, no escape character,
+    // and it desynchronised the scanner so completely that the entire
+    // dependency table below became invisible.
+    let consumer = concat!(
+        "[package]\n",
+        "name = \"probe-consumer\"\n",
+        "version = \"0.1.0\"\n",
+        "edition = \"2021\"\n",
+        "description = '''\n",
+        "A description ending in a quote. Strictly 'paper''''\n",
+        "\n",
+        "[dependencies]\n",
+        // Round four, F4.
+        "probe_alias.workspace = true\n",
+        // Round three: a rename in an inline table.
+        "inline_alias = { package = \"probe-solver\", path = \"../solver\" }\n",
+        // Round three: a quoted key.
+        "\"quoted_alias\" = { package = \"probe-solver\", path = \"../solver\" }\n",
+        // Round four, F3: an unknown key whose value contains a decoy rename.
+        // Cargo accepts unknown keys with a warning no gate reads.
+        "unknown_key = { package = \"probe-solver\", path = \"../solver\", \
+         notes = \"package = 'decoy'\" }\n",
+        "\n",
+        // Round two: a table named after one dependency.
+        "[dependencies.table_alias]\n",
+        "package = \"probe-solver\"\n",
+        "path = \"../solver\"\n",
+        "\n",
+        // Round four, F2: a target table whose cfg predicate contains the word
+        // the section classifier was searching for.
+        "[target.'cfg(not(target_os = \"dependencies\"))'.dependencies]\n",
+        "target_alias = { package = \"probe-solver\", path = \"../solver\" }\n",
+        "\n",
+        // Not shipped code, and must not be counted.
+        "[dev-dependencies]\n",
+        "dev_alias = { package = \"probe-solver\", path = \"../solver\" }\n",
+    );
+    std::fs::write(root.join("consumer/Cargo.toml"), consumer).expect("write");
+
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let output = std::process::Command::new(&cargo)
+        .args([
+            "metadata",
+            "--format-version",
+            "1",
+            "--no-deps",
+            "--manifest-path",
+        ])
+        .arg(root.join("Cargo.toml"))
+        .output()
+        .expect("cargo metadata runs");
+    assert!(
+        output.status.success(),
+        "the fixture workspace does not resolve, so none of these forms is \
+         being tested: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("cargo metadata emits JSON");
+
+    let consumer_package = packages(&metadata)
+        .iter()
+        .find(|package| package_name(package) == "probe-consumer")
+        .expect("the fixture consumer is a workspace member");
+
+    let mut shipped_aliases = BTreeSet::new();
+    let mut excluded_aliases = BTreeSet::new();
+    for dependency in dependencies_of(consumer_package) {
+        // The property that matters: whatever the key was called, Cargo reports
+        // the crate that is really depended on.
+        assert_eq!(
+            dependency_name(dependency),
+            "probe-solver",
+            "a fixture dependency resolved to something unexpected: {dependency:?}"
+        );
+        let alias = dependency
+            .get("rename")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("probe-solver")
+            .to_string();
+        if is_shipped(dependency) {
+            shipped_aliases.insert(alias);
+        } else {
+            excluded_aliases.insert(alias);
         }
     }
-    assert!(
-        !name.is_empty(),
-        "{} declares no package name",
-        path.display()
+
+    let expected_shipped: BTreeSet<String> = [
+        "probe_alias",
+        "inline_alias",
+        "quoted_alias",
+        "unknown_key",
+        "table_alias",
+        "target_alias",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    assert_eq!(
+        shipped_aliases, expected_shipped,
+        "a manifest form that once bypassed this file is not being resolved as \
+         a shipped dependency"
     );
-    (name, dependencies)
+    assert_eq!(
+        excluded_aliases,
+        ["dev_alias".to_string()]
+            .into_iter()
+            .collect::<BTreeSet<_>>(),
+        "the dev dependency was not excluded, or something else was"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// Everything `root` can reach, transitively.
@@ -434,6 +702,284 @@ fn no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy() {
     }
 }
 
+// --- the solvers ------------------------------------------------------------
+
+/// Every crate that **vetoes, executes, transfers or issues** — and
+/// deliberately not every crate that touches money.
+///
+/// The distinction is the whole of this list and an earlier version of this
+/// comment got it wrong, claiming "holds a veto, places an order, or issues
+/// capital" while omitting `qip-portfolio-engine`, which sizes positions and
+/// reaches the solver transitively. Read literally, the old comment described
+/// a property this list did not enforce, which is worse than a narrow rule
+/// honestly stated.
+///
+/// The narrower rule is the correct one, and it is the blueprint's own. §39
+/// puts the optimiser at layer 7 with authority to set "allocation, cycle
+/// selection, path assignment inside the envelope", and the strategy engine
+/// at layer 8 proposing against it. Optimiser output *exists to be consumed*
+/// as policy — grants, budgets, targets, whitelists. A portfolio engine that
+/// turns approved hypotheses into constrained targets is that consumption
+/// working as designed, so forbidding it would outlaw the intended path
+/// rather than protect anything.
+///
+/// What must never reach a solver is the machinery that says **no**, that
+/// places the order, that moves the money, or that mints the authority to do
+/// either: layers 5, 6, 11, 12 and 13. Those are the crates below. The
+/// deliberate exemption for `qip-portfolio-engine` is recorded in
+/// `docs/architecture/algorik-blueprint-traceability.md` rather than left as
+/// an absence somebody has to notice.
+///
+/// Named rather than derived from a directory, because authority is not
+/// inferable from layout — `qip-lifecycle` gates whether a strategy may trade
+/// at all and `qip-compliance` is a lib, and neither lives beside the risk
+/// gate. `every_service_crate_is_classified_for_money_authority` is what stops
+/// that hand-maintenance from silently failing to cover a new crate.
+const NO_SOLVER_AUTHORITY: &[&str] = &[
+    "qip-risk-engine",
+    "qip-execution-engine",
+    "qip-compliance",
+    "qip-brokers",
+    "qip-capital",
+    "qip-capital-fabric",
+    "qip-lifecycle",
+];
+
+/// The service crates that hold none of those four authorities.
+///
+/// Exists so that the union of the two lists can be checked against the tree.
+/// A new service crate belongs in one of them, and the test below is what
+/// makes that a decision somebody takes rather than an omission nobody sees.
+const NO_MONEY_AUTHORITY: &[&str] = &[
+    "qip-chain",
+    "qip-cost-router",
+    "qip-data-finder",
+    "qip-entity-resolution",
+    "qip-evolution",
+    "qip-learning-engine",
+    "qip-market-ingestion",
+    "qip-mesh",
+    "qip-normalization",
+    "qip-opportunity-engine",
+    "qip-optimization-engine",
+    "qip-portfolio-engine",
+    "qip-prediction",
+    "qip-reasoning-engine",
+    "qip-simulation-engine",
+    "qip-streaming",
+    "qip-training",
+    "qip-twin",
+    "qip-world-model",
+];
+
+#[test]
+fn every_service_crate_is_classified_for_money_authority() {
+    // The silence this removes: `NO_SOLVER_AUTHORITY` is hand-maintained, so
+    // its existence check catches a rename but never an *addition*. A future
+    // `qip-treasury` or `qip-settlement-engine` would get no coverage from
+    // either solver test and nothing whatever would say so.
+    //
+    // Deriving the set from the directory is not available here — authority is
+    // a property of what a crate does, not of where it sits — so the next best
+    // thing is to make the omission fail loudly. Adding a service crate now
+    // forces a decision about whether it can veto, execute, transfer or issue.
+    //
+    // **Known limit, stated rather than left to be discovered.** This walks
+    // `crates/services` only. A money-authority crate added under `libs` —
+    // which `qip-compliance` already shows is possible — would be covered by
+    // neither list and nothing here would say so. Widening the walk to `libs`
+    // would mean classifying sixteen crates that mostly hold no authority at
+    // all, so the honest position is that this catches the likely case and not
+    // every case.
+    let services = crates_under("backend/crates/services");
+    assert!(
+        services.len() >= 25,
+        "only {} service crates were found; the walk is not reaching them",
+        services.len()
+    );
+    let mut classified: BTreeSet<String> = BTreeSet::new();
+    classified.extend(NO_SOLVER_AUTHORITY.iter().map(|name| name.to_string()));
+    classified.extend(NO_MONEY_AUTHORITY.iter().map(|name| name.to_string()));
+
+    let unclassified: BTreeSet<&String> = services.difference(&classified).collect();
+    assert!(
+        unclassified.is_empty(),
+        "these service crates are classified neither as holding money \
+         authority nor as lacking it, so no solver-boundary test covers them: \
+         {unclassified:?}"
+    );
+
+    // Both directions. A name left behind after a crate is deleted would make
+    // the check above pass while covering something that is not there.
+    // `qip-compliance` is classified but lives in `libs`, so it is excused
+    // from the service walk. Asserted to exist rather than hardcoded blindly:
+    // an excuse for a deleted crate is a phantom that outlives it.
+    let graph = dependency_graph();
+    assert!(
+        graph.contains_key("qip-compliance"),
+        "qip-compliance is excused from the service walk but is not a crate; \
+         the exemption now covers nothing"
+    );
+    let stale: BTreeSet<&String> = classified
+        .iter()
+        .filter(|name| !services.contains(*name) && name.as_str() != "qip-compliance")
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "these names are classified but are not service crates: {stale:?}"
+    );
+
+    // The two lists must be disjoint, or a crate could be asserted to both
+    // hold and lack authority and the contradiction would never surface.
+    for name in NO_SOLVER_AUTHORITY {
+        assert!(
+            !NO_MONEY_AUTHORITY.contains(name),
+            "{name} appears in both authority lists"
+        );
+    }
+}
+
+#[test]
+fn nothing_that_vetoes_executes_or_moves_money_can_reach_a_quantum_solver() {
+    // The companion to `no_safety_critical_engine_can_reach_a_language_model`,
+    // for the other kind of model. A solver's output is policy — a budget, a
+    // whitelist, a target — and policy is an input to a decision somebody else
+    // makes deterministically. The moment a risk gate, an order manager or the
+    // capital issuer can call a solver directly, an optimiser's answer becomes
+    // the answer, and the thing that was supposed to constrain it is the thing
+    // asking it.
+    //
+    // Enforced by absence and transitively, for the same reason the
+    // language-model rule is: a boundary one intermediate crate can defeat is
+    // not a boundary. The route back in here would not be a direct edge to
+    // `qip-quantum`, which a reviewer would question, but an edge to
+    // `qip-optimization-engine`, which looks entirely reasonable on a risk
+    // crate until you notice what it drags behind it.
+    let graph = dependency_graph();
+    for crate_name in NO_SOLVER_AUTHORITY {
+        assert!(
+            graph.contains_key(*crate_name),
+            "{crate_name} is not a crate in this workspace; this test is naming \
+             something that no longer exists and constrains nothing"
+        );
+        let reachable = reachable_from(&graph, crate_name);
+        assert!(
+            !reachable.contains("qip-quantum"),
+            "{crate_name} holds a veto or moves money and can reach a quantum \
+             solver: {reachable:?}"
+        );
+    }
+    // The vacuity guard. Every assertion above is about an absent edge, so if
+    // the solver crate were renamed or deleted the loop would pass while
+    // proving nothing. The optimiser is the one place the edge is supposed to
+    // exist, and its presence is what makes the absences above meaningful.
+    assert!(
+        reachable_from(&graph, "qip-optimization-engine").contains("qip-quantum"),
+        "the optimisation engine no longer reaches a quantum solver, so the \
+         absences this test asserts elsewhere prove nothing"
+    );
+}
+
+#[test]
+fn no_edge_cell_can_reach_a_quantum_solver() {
+    // Stated separately from the rule above because it fails for a different
+    // reason, and a reader needs to know which.
+    //
+    // A region receives a solved answer; it never solves. That is not a
+    // performance argument — although a QPU round trip inside a microsecond
+    // budget is its own absurdity — it is ADR 0008's argument. A cell is safe
+    // while partitioned precisely because everything it is allowed to do was
+    // decided in advance and shipped to it. A cell that could solve could
+    // reach a conclusion the centre never approved, at exactly the moment
+    // nobody can see it.
+    let graph = dependency_graph();
+    for crate_name in edge_crates() {
+        let reachable = reachable_from(&graph, &crate_name);
+        assert!(
+            !reachable.contains("qip-quantum"),
+            "the edge crate {crate_name} can reach a quantum solver: {reachable:?}"
+        );
+    }
+    // The vacuity anchor, which this test needed and did not have. Every
+    // assertion above is an absence, so renaming or splitting `qip-quantum`
+    // would make all of them trivially true and this test would go on passing
+    // while checking nothing. Its sibling above carries the same guard; tests
+    // are separate functions and one test's anchor protects only itself.
+    assert!(
+        graph.contains_key("qip-quantum"),
+        "there is no crate called qip-quantum, so every absence asserted here \
+         is trivially true and this test constrains nothing"
+    );
+}
+
+#[test]
+fn a_quantum_solver_cannot_reach_anything_that_vetoes_executes_or_moves_money() {
+    // The other direction, and arguably the more literal reading of "no model
+    // has decision authority": the two tests above stop authority reaching the
+    // solver, and this one stops the solver acquiring authority.
+    //
+    // They are not the same property and neither implies the other. A
+    // dependency from `qip-quantum` to `qip-execution-engine` would leave both
+    // of the above passing, and would mean a solver crate that can construct
+    // an order manager — which is precisely what "quantum output is policy,
+    // never a live instruction" forbids.
+    let graph = dependency_graph();
+    let reachable = reachable_from(&graph, "qip-quantum");
+    for crate_name in NO_SOLVER_AUTHORITY {
+        assert!(
+            !reachable.contains(*crate_name),
+            "the quantum solver can reach {crate_name}, so a solver holds \
+             authority it must never have: {reachable:?}"
+        );
+    }
+    // Anchor: the solver does depend on something, so an empty reachable set
+    // is not what is making the loop pass.
+    assert!(
+        !reachable.is_empty(),
+        "qip-quantum reaches nothing at all, so this test proves nothing"
+    );
+}
+
+#[test]
+fn no_crate_that_vetoes_or_executes_reaches_a_solver_through_its_dev_dependencies() {
+    // The gap review found in the exclusion above. Dev dependencies are left
+    // out of the graph because Cargo permits cycles among them and counting
+    // them would report boundary violations no deployed binary has — but that
+    // is a reason the *graph* must stay acyclic, not a reason the edge is
+    // harmless. Test code inside `qip-risk-engine` can construct a solver just
+    // as readily as its shipped code can, and a fixture that quietly starts
+    // asking an optimiser what the risk answer should be is a boundary
+    // bypass that happens to compile only under `cargo test`.
+    //
+    // Checked as a direct edge rather than transitively, on purpose. A
+    // transitive walk over dev edges is exactly the cyclic graph the main
+    // parser excludes them to avoid; the direct edge is the one somebody
+    // writes.
+    let mut offenders = Vec::new();
+    for crate_name in NO_SOLVER_AUTHORITY {
+        for directory in ["libs", "services", "edge", "runtime", "apps", "agents"] {
+            let manifest = repository_root().join(format!(
+                "backend/crates/{directory}/{crate_name}/Cargo.toml"
+            ));
+            let Ok(content) = std::fs::read_to_string(&manifest) else {
+                continue;
+            };
+            let Some(dev) = content.split("[dev-dependencies]").nth(1) else {
+                continue;
+            };
+            let dev = dev.split("\n[").next().unwrap_or(dev);
+            if dev.contains("qip-quantum") {
+                offenders.push(format!("{crate_name} (dev)"));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a crate that vetoes, executes, transfers or issues reaches a quantum \
+         solver through its dev dependencies: {offenders:?}"
+    );
+}
+
 // --- layering ---------------------------------------------------------------
 
 #[test]
@@ -604,45 +1150,43 @@ fn no_crate_declares_a_third_party_dependency_beyond_the_two_permitted() {
     // The lockfile check in `scripts/check-dependencies.sh` catches what was
     // resolved. This catches what was *asked for*, which is the line a
     // reviewer sees in the diff.
+    //
+    // Served by `cargo metadata` like every other check in this file. It used
+    // to run its own, weaker manifest reader — one that classified a section by
+    // `contains("dependencies")` and split keys on `['.', ' ', '=']` — so the
+    // two disagreed about quoted keys, tables named after one dependency, and
+    // which sections counted. Three review rounds were decided by which of the
+    // two happened to fire on a given manifest, which is not a property a
+    // boundary check should have. There is now one reader.
+    //
+    // Unlike the boundary graph this counts **every** kind, including dev and
+    // build dependencies: the rule is that the workspace declares two
+    // third-party crates, and a test-only dependency is still a supply chain.
     let permitted: BTreeSet<&str> = ["serde", "serde_json"].into_iter().collect();
+    let metadata = workspace_metadata();
+    let members = workspace_member_names(&metadata);
     let mut offenders = Vec::new();
 
-    let mut stack = vec![repository_root().join("backend/crates")];
-    while let Some(directory) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&directory) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
+    for package in packages(&metadata) {
+        let crate_name = package_name(package);
+        for dependency in dependencies_of(package) {
+            let depended = dependency_name(dependency);
+            if members.contains(&depended) || permitted.contains(depended.as_str()) {
                 continue;
             }
-            if path.file_name().is_none_or(|name| name != "Cargo.toml") {
-                continue;
-            }
-            let content = std::fs::read_to_string(&path).expect("readable manifest");
-            let mut section = String::new();
-            for line in content.lines() {
-                let line = line.trim();
-                if line.starts_with('[') {
-                    section = line.to_string();
-                    continue;
-                }
-                if !section.contains("dependencies") || line.is_empty() || line.starts_with('#') {
-                    continue;
-                }
-                let Some(name) = line.split(['.', ' ', '=']).next() else {
-                    continue;
-                };
-                if name.is_empty() || name.starts_with("qip-") || permitted.contains(name) {
-                    continue;
-                }
-                offenders.push(format!("{}: {name}", path.display()));
-            }
+            offenders.push(format!("{crate_name}: {depended}"));
         }
     }
 
+    // The premise. If the walk found no dependencies at all the loop above
+    // would report nothing while checking nothing, which is the shape of every
+    // failure this file has had.
+    assert!(
+        packages(&metadata)
+            .iter()
+            .any(|package| !dependencies_of(package).is_empty()),
+        "no package reports any dependency, so this test constrains nothing"
+    );
     assert!(
         offenders.is_empty(),
         "third-party dependencies were declared: {offenders:?}"
@@ -832,16 +1376,29 @@ fn crate_directories() -> BTreeSet<String> {
 }
 
 /// Crate names declared under a workspace directory.
+///
+/// Taken from `cargo metadata` rather than by reading manifests, so that this
+/// file has exactly one idea of what a crate is called. Two readers that
+/// disagreed about that is what let three review rounds turn on which of them
+/// happened to fire.
 fn crates_under(relative: &str) -> BTreeSet<String> {
     let root = repository_root().join(relative);
+    assert!(root.is_dir(), "cannot read {}", root.display());
+    let metadata = workspace_metadata();
     let mut names = BTreeSet::new();
-    let Ok(entries) = std::fs::read_dir(&root) else {
-        panic!("cannot read {}", root.display());
-    };
-    for entry in entries.flatten() {
-        let manifest = entry.path().join("Cargo.toml");
-        if manifest.is_file() {
-            names.insert(parse_manifest(&manifest).0);
+    for package in packages(&metadata) {
+        let manifest = package
+            .get("manifest_path")
+            .and_then(serde_json::Value::as_str)
+            .expect("every package has a manifest path");
+        // The crate directory is the manifest's parent; membership of
+        // `relative` is a direct-child test, matching the previous behaviour.
+        if std::path::Path::new(manifest)
+            .parent()
+            .and_then(std::path::Path::parent)
+            .is_some_and(|parent| parent == root)
+        {
+            names.insert(package_name(package));
         }
     }
     assert!(!names.is_empty(), "no crates found under {relative}");

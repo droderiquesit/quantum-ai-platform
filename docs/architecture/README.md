@@ -118,17 +118,38 @@ simulating the circuit costs more than solving the problem it encodes.
 
 ## Reading order, and where the rest lives
 
-This document is the shape of the system. Three companions carry the detail:
+This document is the shape of the system. Six companions carry the detail:
 
-1. `docs/adr/` — twelve numbered decisions. The reasoning is the point, and
+1. `docs/adr/` — twenty-two numbered decisions. The reasoning is the point, and
    several of them are settled: reopening one takes a new ADR, not an argument.
-2. `docs/architecture/canonical-platform.md` — the target architecture as 104
-   addressable component ids.
-3. `docs/architecture/diagram-reconciliation.md` — each id scored against the
-   tree, with implementation path, runtime evidence, named test and gap. A row
-   counts as complete only where both an implementation and a *named passing
-   test* exist, and any component no deployable binary composes is capped at
-   "implemented but unverified" however good its own tests are.
+2. **`docs/architecture/algorik-blueprint-traceability.md` — the live
+   scorecard.** ADR 0022 makes the Algorik Master Blueprint v10.1-4 and its
+   companion diagram the architecture of record, so this is the document that
+   says how far the tree is from where it is meant to be. Score new work here.
+3. `docs/architecture/canonical-platform.md` — **superseded.** The earlier
+   diagram as 104 addressable component ids.
+4. `docs/architecture/diagram-reconciliation.md` — **superseded.** Each of
+   those ids scored against the tree, with implementation path, runtime
+   evidence, named test and gap.
+
+   Items 3 and 4 score the "World's Smartest Multi-Regional AI + Quant Trading
+   Platform" diagram, which is no longer the reference. They are retained for
+   history rather than deleted: they are the only written record of several
+   defects this platform has already fixed — controls that could not fire,
+   crates no binary composed — and the reasoning survives the picture that
+   prompted it. Do not merge them into item 2, and do not read a status in
+   them as current: a component aligned against the old diagram can be missing
+   against the blueprint, and collapsing that loses the finding.
+5. `docs/architecture/integration-truth-pass.md` — the seven end-to-end flows
+   traced through actual code, each link marked measured, tested, configured,
+   implemented-but-unverified, planned or missing, and each break named at its
+   seam. Where the scorecard says whether a component exists, this says whether
+   the things connect.
+6. `docs/architecture/blueprint-diagram-reconciliation.md` — the two
+   authoritative references compared. ADR 0022 makes both the blueprint and its
+   companion diagram the architecture of record, and two authoritative
+   documents will disagree; this records where, with both locations, rather
+   than picking one.
 
 The rules an agent must follow when changing this architecture are in
 `.claude/rules/architecture/`; the per-area constraints are in

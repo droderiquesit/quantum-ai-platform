@@ -1,6 +1,12 @@
 # 0017 — Delivery becomes GitOps: a Helm chart, Argo CD, and Kargo
 
-**Status:** accepted
+**Status:** accepted — **superseded in direction by ADR 0022.** The Algorik
+blueprint is now the architecture of record and its target contains no Argo CD
+and no Kargo. This delivery mechanism is therefore transitional, and it remains
+in force in the meantime: it is what currently gets a signed artefact into a
+cluster, it is maintained rather than merely tolerated, and it is retired only
+at step 5 of ADR 0020's sequence, on that step's evidence and with recorded
+human approval. Nothing here is removed by the direction being decided.
 
 ## Decision
 

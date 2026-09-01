@@ -351,3 +351,66 @@ fn a_dataset_the_catalogue_licenses_for_research_is_refused_a_trade_by_the_named
     report.require_fully_enforced()?;
     Ok(())
 }
+
+#[test]
+fn the_two_credential_windows_that_claim_to_be_the_same_window_agree_on_the_same_credential() {
+    // Found by tracing the halt flow end to end. Two crates each police "how
+    // stale a credential may be when a human authorises something", each uses
+    // fifteen minutes, and each says in its own doc comment that it matches the
+    // other. `qip_compliance::approval` opens "The same window
+    // `qip_risk_engine::autonomy` uses".
+    //
+    // **Nothing holds them together.** `qip-compliance` does not depend on
+    // `qip-risk-engine` — its manifest lists six `qip-*` crates and that is not
+    // one of them — so the crate documenting the agreement cannot see the thing
+    // it claims to agree with. Two independent claims about one fact will
+    // eventually disagree, and the failure here is silent and asymmetric: widen
+    // one and the control it guards weakens while the other still reads as
+    // fifteen minutes and both doc comments still say they match.
+    //
+    // Asserted behaviourally rather than by comparing constants, because the
+    // risk engine's window is a private field with no accessor. Driving
+    // `request_change` exercises the value actually in force.
+    //
+    // This is the first place in the workspace that can see both, which is why
+    // the assertion lives here rather than in either crate's own tests.
+    use qip_compliance::approval::{MAXIMUM_CREDENTIAL_AGE, OperatorCredential};
+    use qip_risk_engine::autonomy::{AutonomyController, AutonomyLevel, OperatorIdentity};
+
+    let authenticated_at = now();
+    let inside = authenticated_at.saturating_add(Duration::from_mins(14));
+    let outside = authenticated_at.saturating_add(Duration::from_mins(16));
+
+    for (label, at, expected_fresh) in [("inside", inside, true), ("outside", outside, false)] {
+        let compliance = OperatorCredential::verified("op", "hardware-key", authenticated_at)
+            .expect("a well-formed credential");
+        let compliance_fresh = compliance.is_fresh(at, MAXIMUM_CREDENTIAL_AGE);
+
+        let mut controller = AutonomyController::new();
+        let identity = OperatorIdentity::verified("op", "hardware-key", authenticated_at);
+        let risk_accepted = controller
+            .request_change(
+                AutonomyLevel::Advisory,
+                &identity,
+                "exercising the credential window",
+                at,
+            )
+            .is_ok();
+
+        assert_eq!(
+            compliance_fresh, expected_fresh,
+            "{label}: the compliance window no longer treats a credential this \
+             old as {expected_fresh}"
+        );
+        assert_eq!(
+            risk_accepted,
+            compliance_fresh,
+            "{label}: at {at} the risk engine {} the credential while compliance \
+             called it {}. Both crates document this as the same fifteen-minute \
+             window; whichever is now wider is weakening a control while reading \
+             as unchanged",
+            if risk_accepted { "accepted" } else { "refused" },
+            if compliance_fresh { "fresh" } else { "stale" }
+        );
+    }
+}
