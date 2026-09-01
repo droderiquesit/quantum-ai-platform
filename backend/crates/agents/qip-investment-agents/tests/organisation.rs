@@ -483,6 +483,86 @@ fn every_number_in_every_finding_carries_a_provenance() -> Result<()> {
 }
 
 #[test]
+fn a_value_an_agent_reads_off_the_desk_is_recorded_as_observed_with_its_record() -> Result<()> {
+    // Premise, then property. Until this test existed every number the
+    // eighteen agents reported was stamped computed by the agent — a spread
+    // read straight from the feature store was "computed by credit-analyst
+    // from [credit_spread_bps]" — so no finding ever named a source, an as-of
+    // instant or a record id, and the observed/computed split the security
+    // suite protects was, in production, a constant. The support module
+    // offered only `computed`, which is why the defect held across all
+    // eighteen agents at once.
+    let mut org = organisation(populated_desk())?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    assert!(report.failed.is_empty(), "runs failed: {:?}", report.failed);
+
+    let expected = [
+        (
+            ids::CREDIT,
+            "credit_spread_bps",
+            "feature-store:credit-provider",
+        ),
+        (
+            ids::CREDIT,
+            "effective_duration",
+            "feature-store:credit-provider",
+        ),
+        (
+            ids::DERIVATIVES,
+            "implied_volatility",
+            "feature-store:options-provider",
+        ),
+        (ids::MICROSTRUCTURE, "best_bid", "book:XNYS"),
+        (ids::MICROSTRUCTURE, "best_ask", "book:XNYS"),
+    ];
+    for (agent, label, source) in expected {
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.agent_id == agent)
+            .unwrap_or_else(|| panic!("premise: {agent} produced an informative finding"));
+        let fact = finding
+            .fact(label)
+            .unwrap_or_else(|| panic!("premise: {agent} reported {label}"));
+        match &fact.provenance {
+            NumericProvenance::Observed {
+                source: recorded,
+                as_of,
+                record_id,
+            } => {
+                assert_eq!(recorded, source, "{agent}.{label} names the wrong source");
+                assert!(
+                    !record_id.trim().is_empty(),
+                    "{agent}.{label} names no record to re-fetch"
+                );
+                // The knowable-instant guard at the reporting boundary: a
+                // fact observed after the as-of the agent reasoned at is a
+                // fact the agent could not have had.
+                assert!(
+                    *as_of <= finding.as_of,
+                    "{agent}.{label} was observed at {as_of}, after the as-of {} the agent reasoned at",
+                    finding.as_of
+                );
+            }
+            NumericProvenance::Computed { by, inputs } => panic!(
+                "{agent} read {label} off the desk and recorded it as computed by {by} from {inputs:?}"
+            ),
+        }
+    }
+
+    // The split is a split, not a constant the other way: derived numbers
+    // are still computed, alongside the observed ones.
+    let computed = report
+        .findings
+        .iter()
+        .flat_map(|f| &f.facts)
+        .filter(|f| matches!(f.provenance, NumericProvenance::Computed { .. }))
+        .count();
+    assert!(computed > 0, "no computed fact survived");
+    Ok(())
+}
+
+#[test]
 fn every_directional_finding_states_what_would_falsify_it() -> Result<()> {
     let mut org = organisation(populated_desk())?;
     let report = org.dispatch(&brief(), now(), &lineage());

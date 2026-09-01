@@ -8,7 +8,7 @@
 //! Everything here is arithmetic on the current book and recent tape.
 
 use crate::desk::Desk;
-use crate::support::{FindingBuilder, computed, no_data, out_of_scope};
+use crate::support::{FindingBuilder, computed, no_data, observed_book, out_of_scope};
 use qip_agents::finding::{AgentBrief, AgentFinding, Direction};
 use qip_agents::manifest::AgentManifest;
 use qip_agents::runtime::{Agent, AgentContext};
@@ -104,6 +104,15 @@ impl Agent for MicrostructureAnalyst {
             ));
         }
 
+        // The touch is what this agent reads; everything below is what it
+        // derives from it. Both sides exist here — `mid` needed them — and
+        // are recorded as observed from the venue so the derived numbers
+        // name a real record as their input.
+        let touch = [
+            observed_book("best_bid", "price", book, |b| b.best_bid().map(|l| l.price)),
+            observed_book("best_ask", "price", book, |b| b.best_ask().map(|l| l.price)),
+        ];
+
         let spread_bps = book
             .spread()
             .map(|s| s.to_f64() / mid_f * 10_000.0)
@@ -142,10 +151,22 @@ impl Agent for MicrostructureAnalyst {
         // not the next month, and this agent's job is to say what trading
         // costs — not whether to trade.
         .direction(Direction::Neutral, 0.0)
-        .fact(computed(ctx, "quoted_spread_bps", spread_bps, "bps", &["book"]))
+        .fact(computed(
+            ctx,
+            "mid_price",
+            mid_f,
+            "price",
+            &["best_bid", "best_ask"],
+        ))
+        .fact(computed(
+            ctx,
+            "quoted_spread_bps",
+            spread_bps,
+            "bps",
+            &["best_bid", "best_ask", "mid_price"],
+        ))
         .fact(computed(ctx, "depth_imbalance", imbalance, "ratio", &["book"]))
         .fact(computed(ctx, "total_depth", depth, "units", &["book"]))
-        .fact(computed(ctx, "mid_price", mid_f, "price", &["book"]))
         .evidence(vec![format!("book:{}@{}", subject.as_str(), brief.as_of)])
         .falsifiers(vec![
             "the book is replaced within the next tick, which it usually is".to_string(),
@@ -154,6 +175,9 @@ impl Agent for MicrostructureAnalyst {
             "a book snapshot is a statement about this instant only".to_string(),
         ]);
 
+        for fact in touch.into_iter().flatten() {
+            builder = builder.fact(fact);
+        }
         if let Some(cost) = buy_cost_bps {
             builder = builder.fact(computed(
                 ctx,
