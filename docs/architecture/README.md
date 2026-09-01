@@ -118,7 +118,7 @@ simulating the circuit costs more than solving the problem it encodes.
 
 ## Reading order, and where the rest lives
 
-This document is the shape of the system. Four companions carry the detail:
+This document is the shape of the system. Five companions carry the detail:
 
 1. `docs/adr/` — twenty-two numbered decisions. The reasoning is the point, and
    several of them are settled: reopening one takes a new ADR, not an argument.
@@ -140,6 +140,11 @@ This document is the shape of the system. Four companions carry the detail:
    prompted it. Do not merge them into item 2, and do not read a status in
    them as current: a component aligned against the old diagram can be missing
    against the blueprint, and collapsing that loses the finding.
+5. `docs/architecture/integration-truth-pass.md` — the seven end-to-end flows
+   traced through actual code, each link marked measured, tested, configured,
+   implemented-but-unverified, planned or missing, and each break named at its
+   seam. Where the scorecard says whether a component exists, this says whether
+   the things connect.
 
 The rules an agent must follow when changing this architecture are in
 `.claude/rules/architecture/`; the per-area constraints are in
