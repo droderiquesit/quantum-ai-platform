@@ -121,8 +121,18 @@ pub struct Intent {
     pub reference_price: Decimal,
     pub representation: Representation,
     pub netting: NettingPolicy,
-    /// The hypotheses this intent expresses, so a fill can be explained.
-    pub hypotheses: Vec<String>,
+    /// The feature revisions this intent was reasoned from, carried straight
+    /// off the signal so a fill can be attributed to exactly the values that
+    /// produced it rather than to whatever those features say by the time
+    /// somebody looks.
+    ///
+    /// Not "hypotheses". The central plane has a hypothesis vocabulary —
+    /// `Order::hypotheses`, set from a proposal leg — and the edge has none: a
+    /// cell's strategies emit `Signal`s, which name their inputs and no claim.
+    /// This field carried the name `hypotheses` for exactly one commit and
+    /// nothing could ever populate it, which is the shape of a control that
+    /// cannot fire.
+    pub inputs: Vec<(String, u64)>,
     pub valid_until: Timestamp,
 }
 
@@ -151,7 +161,7 @@ impl Intent {
             reference_price,
             representation: Representation::Spot,
             netting: NettingPolicy::Nettable,
-            hypotheses: Vec::new(),
+            inputs: Vec::new(),
             valid_until,
         })
     }
@@ -169,8 +179,9 @@ impl Intent {
         self
     }
 
-    pub fn with_hypotheses(mut self, hypotheses: Vec<String>) -> Self {
-        self.hypotheses = hypotheses;
+    /// Carry the signal's feature revisions onto the intent.
+    pub fn with_inputs(mut self, inputs: Vec<(String, u64)>) -> Self {
+        self.inputs = inputs;
         self
     }
 
@@ -187,7 +198,10 @@ pub struct Contributor {
     pub strategy: StrategyId,
     /// Signed, so the vector sums to the net rather than to the gross.
     pub signed_size: Decimal,
-    pub hypotheses: Vec<String>,
+    /// The feature revisions behind this contributor's share, from its own
+    /// signal. Attribution after the fact needs the inputs *this* strategy
+    /// reasoned from, not the union across the net.
+    pub inputs: Vec<(String, u64)>,
 }
 
 /// The key intents are grouped on.
@@ -405,7 +419,7 @@ pub fn net(intents: Vec<Intent>) -> Vec<NetIntent> {
                 .map(|intent| Contributor {
                     strategy: intent.strategy,
                     signed_size: intent.signed_size,
-                    hypotheses: intent.hypotheses,
+                    inputs: intent.inputs,
                 })
                 .collect();
             NetIntent {

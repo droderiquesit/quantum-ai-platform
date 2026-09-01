@@ -403,6 +403,19 @@ fn centre_publisher(peer: &str) -> Result<MeshPublisher> {
 
 // --- up: state deltas -------------------------------------------------------
 
+/// The cell's half of the same agreement. Both ends assert it, because either
+/// one reacquiring a literal of its own is the failure, and a test that lives
+/// only at the other end cannot see it happen here.
+#[test]
+fn the_cell_states_its_delta_schema_from_the_shared_constant() {
+    assert_eq!(
+        <CellStateDelta as qip_events::EventBody>::SCHEMA_VERSION,
+        qip_contracts::wire::CELL_DELTA_SCHEMA_VERSION,
+        "the cell's delta schema version is no longer the shared one, so it \
+         can drift from the centre's"
+    );
+}
+
 #[test]
 fn a_state_delta_a_cell_produced_arrives_at_the_centre_unchanged() -> Result<()> {
     let inbox = MeshInbox::new("central", 64, 256)?;
@@ -424,7 +437,10 @@ fn a_state_delta_a_cell_produced_arrives_at_the_centre_unchanged() -> Result<()>
             contributors: vec![qip_contracts::intent::Contributor {
                 strategy: StrategyId::new("mean-reversion-1"),
                 signed_size: dec!("-3"),
-                hypotheses: Vec::new(),
+                // A real revision pair rather than an empty vector: the delta
+                // now carries these, and a fixture that ships nothing would
+                // let a wire that dropped them still pass.
+                inputs: vec![("book_pressure{levels=5}".to_string(), 7)],
             }],
             object_id: object("ACME"),
             venue: VenueId::new("XLON"),

@@ -970,6 +970,55 @@ fn a_strategy_its_own_envelope_refuses_never_reaches_the_netting_set() -> Result
 }
 
 #[test]
+fn the_delta_the_centre_receives_names_every_strategy_behind_a_netted_order() -> Result<()> {
+    // Attribution is a central-plane job and netting is an edge-plane fact, so
+    // the contributor vector has to cross the uplink or the centre attributes
+    // a netted fill to `strategy` alone — the largest contributor — and credits
+    // one strategy with another's trade.
+    let mut cell = cell_with_two_strategies(SignalKind::Enter, "100")?;
+    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
+
+    let report = cell.work(t(20), &mut gateway)?;
+    assert_eq!(
+        report.signals.len(),
+        2,
+        "the premise needs two firing strategies"
+    );
+    assert_eq!(report.orders.len(), 1, "the premise needs one netted order");
+
+    let delta = cell.state_delta(&report, t(20));
+    assert_eq!(delta.orders.len(), 1);
+    let sent = &delta.orders[0];
+    assert_eq!(
+        sent.contributors.len(),
+        2,
+        "the delta named {} contributor(s) for an order two strategies caused",
+        sent.contributors.len()
+    );
+    // The signed shares sum to what the order actually was, so the centre can
+    // check the decomposition rather than trust it.
+    let summed: Decimal = sent
+        .contributors
+        .iter()
+        .map(|contributor| contributor.signed_size)
+        .fold(Decimal::ZERO, |a, b| a + b);
+    assert_eq!(summed.abs(), sent.quantity);
+    // And each contributor carries the revisions its own strategy read. The
+    // strategies here share a feature, so the assertion is that the list is
+    // populated at all — an empty one would make the field unattributable.
+    for contributor in &sent.contributors {
+        assert!(
+            !contributor.inputs.is_empty(),
+            "{} contributed with no feature revisions, so its share of a fill \
+             cannot be traced to the values that caused it",
+            contributor.strategy.as_str()
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn a_netted_order_spends_every_contributing_strategy_s_own_envelope() -> Result<()> {
     // Netting collapses two strategies into one order, and the capital that
     // order commits has to come out of both envelopes in proportion to what

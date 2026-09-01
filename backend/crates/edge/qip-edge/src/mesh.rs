@@ -64,6 +64,7 @@ use std::collections::{BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use qip_contracts::capital::{CapitalEnvelope, Utilisation};
+use qip_contracts::intent::Contributor;
 use qip_contracts::message::BookSide;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
@@ -120,6 +121,21 @@ pub struct DeltaOrder {
     /// the order. A paper fill counted as real is the single most consequential
     /// bit in the execution path, and it stays that way on the wire.
     pub simulated: bool,
+    /// Every strategy whose intent went into this order, with its signed share
+    /// and the feature revisions it reasoned from.
+    ///
+    /// `strategy` above is the largest contributor, kept so every existing
+    /// reader still resolves one strategy. It stopped being the whole truth the
+    /// moment netting collapsed several intents into one order, and a centre
+    /// that attributes a netted fill to the largest contributor alone credits
+    /// one strategy with another's trade.
+    ///
+    /// `#[serde(default)]` so a delta written before this field existed still
+    /// decodes: the event log is sealed and hash-chained, and a replay that
+    /// refused its own history would be worse than one that reads an older
+    /// record as having named no contributors — which is exactly what it did.
+    #[serde(default)]
+    pub contributors: Vec<Contributor>,
 }
 
 /// What one strategy has committed against its envelope, absolute.
@@ -197,7 +213,13 @@ impl EventBody for CellStateDelta {
     /// has committed — and it is in the `Act` group, which
     /// `Topic::requires_permanent_retention` already keeps forever.
     const TOPIC: Topic = Topic::PositionUpdated;
-    const SCHEMA_VERSION: u32 = 1;
+    /// Declared once in `qip-contracts`, which both ends of the uplink already
+    /// depend on, so this end and the centre's cannot drift apart. The bump to
+    /// two is what makes an old centre refuse a new cell's delta outright
+    /// instead of decoding it and silently attributing every netted fill to one
+    /// strategy — `contributors` is defaulted for replay of sealed records, and
+    /// a default a live peer could reach would be a silent wrong answer.
+    const SCHEMA_VERSION: u32 = qip_contracts::wire::CELL_DELTA_SCHEMA_VERSION;
 
     /// Cell and sequence, so a retry that the peer already accepted is
     /// recognised rather than counted twice.

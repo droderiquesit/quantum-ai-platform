@@ -33,6 +33,7 @@
 //! without naming the wrong type.
 
 use qip_contracts::capital::Utilisation;
+use qip_contracts::intent::Contributor;
 use qip_contracts::message::BookSide;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
@@ -59,6 +60,15 @@ pub struct DeltaOrder {
     pub quantity: Decimal,
     pub price: Decimal,
     pub simulated: bool,
+    /// Every strategy whose intent went into this order. `strategy` above is
+    /// the largest contributor; attributing a netted fill to it alone credits
+    /// one strategy with another's trade.
+    ///
+    /// Defaulted for the same reason the edge defaults it: a delta written
+    /// before the field existed still replays out of the sealed log, reading
+    /// as having named no contributors, which is what it did.
+    #[serde(default)]
+    pub contributors: Vec<Contributor>,
 }
 
 /// What one strategy has committed against its envelope, absolute.
@@ -112,12 +122,17 @@ impl EventBody for WireDelta {
     /// The topic the edge crate publishes under; see [`CELL_DELTA_TOPIC`] for
     /// why the two ends agree on a constant rather than a shared declaration.
     const TOPIC: Topic = CELL_DELTA_TOPIC;
-    /// Held equal to the edge crate's by the round-trip tests. Decoding
-    /// through [`AnyEvent::decode`] means a payload written by a *newer*
-    /// schema is refused rather than partially understood — and the fields a
-    /// partial read would drop are the ones a newer cell added because the
-    /// centre needed them.
-    const SCHEMA_VERSION: u32 = 1;
+    /// Declared once in `qip-contracts` and read by both ends, so the centre
+    /// cannot fall behind a cell by a number somebody forgot to change in two
+    /// places. It previously said it was "held equal to the edge crate's by the
+    /// round-trip tests"; nothing compared the two, and this type is private,
+    /// so nothing could.
+    ///
+    /// Decoding through [`AnyEvent::decode`] means a payload written by a
+    /// *newer* schema is refused rather than partially understood — and the
+    /// fields a partial read would drop are the ones a newer cell added because
+    /// the centre needed them.
+    const SCHEMA_VERSION: u32 = qip_contracts::wire::CELL_DELTA_SCHEMA_VERSION;
 
     /// Cell and sequence — the same key the cell stamps, so identity survives
     /// the decode.
@@ -336,6 +351,94 @@ mod tests {
             "the refusal does not say the schema is newer: {}",
             error.message()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn the_contributors_behind_a_netted_order_survive_the_decode_intact() -> Result<()> {
+        // The centre attributes fills. Since the cell nets, one order can carry
+        // several strategies' shares, and `strategy` names only the largest —
+        // so a decode that dropped the contributor vector would credit one
+        // strategy with another's trade and nothing downstream could tell.
+        let mut payload = wire_payload();
+        payload["orders"][0]["contributors"] = serde_json::json!([
+            {
+                "strategy": "mean-reversion-1",
+                "signed_size": "60",
+                "inputs": [["book_pressure{levels=5}", 11]]
+            },
+            {
+                "strategy": "momentum-2",
+                "signed_size": "40",
+                "inputs": [["momentum{}", 9]]
+            }
+        ]);
+
+        let decoded = decode_cell_delta(&frame_with(payload)?)?;
+        let order = &decoded.interval.orders[0];
+        assert_eq!(
+            order.contributors.len(),
+            2,
+            "the contributor vector did not cross the wire"
+        );
+        // Signed sizes, not absolute: they must sum to the net rather than to
+        // the gross, and a decode that took the magnitude would break that.
+        assert_eq!(
+            order.contributors[0].signed_size,
+            Decimal::parse("60").expect("a decimal literal")
+        );
+        assert_eq!(order.contributors[1].strategy.as_str(), "momentum-2");
+        // Each keeps its own revisions. The union, or one copied onto both,
+        // would leave the centre unable to say which values produced which
+        // share.
+        assert_eq!(
+            order.contributors[0].inputs,
+            vec![("book_pressure{levels=5}".to_string(), 11)]
+        );
+        assert_eq!(
+            order.contributors[1].inputs,
+            vec![("momentum{}".to_string(), 9)]
+        );
+        assert_ne!(order.contributors[0].inputs, order.contributors[1].inputs);
+        Ok(())
+    }
+
+    #[test]
+    fn the_two_ends_of_the_uplink_read_the_same_schema_version() {
+        // The edge crate cannot be named from a service, so the agreement is
+        // made of constants. This one used to be written twice under a comment
+        // claiming the round-trip tests held the pair equal; nothing compared
+        // them, and this type is private, so nothing could. Declaring it once
+        // in the crate both ends already depend on is what makes the drift
+        // unreachable — and the assertion is that this end still reads it from
+        // there rather than having quietly reacquired a literal of its own.
+        assert_eq!(
+            WireDelta::SCHEMA_VERSION,
+            qip_contracts::wire::CELL_DELTA_SCHEMA_VERSION,
+            "the centre's delta schema version is no longer the shared one, so \
+             it can drift from the cell's"
+        );
+    }
+
+    #[test]
+    fn an_order_from_a_cell_that_predates_contributors_decodes_as_naming_none() -> Result<()> {
+        // The event log is sealed and hash-chained. A record written before
+        // the field existed has to replay, and it did name no contributors —
+        // so an empty vector is the true reading rather than a convenient one.
+        // The premise is that the fixture genuinely lacks the field; without
+        // it this would assert the default over a payload that set it empty.
+        let payload = wire_payload();
+        assert!(
+            payload["orders"][0].get("contributors").is_none(),
+            "the fixture already carries contributors, so this proves nothing"
+        );
+
+        let decoded = decode_cell_delta(&frame_with(payload)?)?;
+        assert!(decoded.interval.orders[0].contributors.is_empty());
+        // And the rest of the order still arrived, so the default did not come
+        // from the whole decode quietly failing.
+        assert_eq!(decoded.interval.orders[0].order_id, "ord-1");
+        assert!(decoded.interval.orders[0].simulated);
         Ok(())
     }
 

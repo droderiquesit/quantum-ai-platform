@@ -1462,17 +1462,17 @@ fn the_same_fill_splits_identically_however_the_intents_arrived() -> Result<()> 
             Contributor {
                 strategy: StrategyId::new("gamma"),
                 signed_size: dec!("1"),
-                hypotheses: Vec::new(),
+                inputs: Vec::new(),
             },
             Contributor {
                 strategy: StrategyId::new("alpha"),
                 signed_size: dec!("1"),
-                hypotheses: Vec::new(),
+                inputs: Vec::new(),
             },
             Contributor {
                 strategy: StrategyId::new("beta"),
                 signed_size: dec!("1"),
-                hypotheses: Vec::new(),
+                inputs: Vec::new(),
             },
         ],
         reference_price: dec!("100"),
@@ -1539,4 +1539,53 @@ fn an_intent_to_trade_nothing_is_refused_rather_than_carried() {
         .is_err(),
         "a zero-size intent was admitted into a contributor vector that must sum"
     );
+}
+
+#[test]
+fn each_contributor_keeps_the_feature_revisions_its_own_strategy_reasoned_from() {
+    // Netting is where attribution is most easily lost. Two strategies read
+    // different features at different revisions, agree on direction, and
+    // become one order; if the net carried the union — or the first
+    // contributor's inputs, or none — a later reader could not say which
+    // values produced which share of the fill, which is the whole reason
+    // `Signal::inputs` exists.
+    let first = intent("alpha", "ACME", "XLON", "60").with_inputs(vec![
+        ("book_pressure{levels=5}".to_string(), 11),
+        ("spread{}".to_string(), 4),
+    ]);
+    let second =
+        intent("beta", "ACME", "XLON", "40").with_inputs(vec![("momentum{}".to_string(), 9)]);
+
+    // The premise: the two really do differ, so a net that copied one onto
+    // both would be visible rather than indistinguishable.
+    assert_ne!(first.inputs, second.inputs);
+
+    let nets = net(vec![first, second]);
+    assert_eq!(nets.len(), 1, "the premise needs the two to have netted");
+    let contributors = &nets[0].contributors;
+    assert_eq!(contributors.len(), 2);
+
+    let inputs_of = |strategy: &str| -> Vec<(String, u64)> {
+        contributors
+            .iter()
+            .find(|c| c.strategy.as_str() == strategy)
+            .map(|c| c.inputs.clone())
+            .expect("both strategies contributed")
+    };
+    assert_eq!(
+        inputs_of("alpha"),
+        vec![
+            ("book_pressure{levels=5}".to_string(), 11),
+            ("spread{}".to_string(), 4),
+        ],
+        "alpha's revisions did not survive netting intact"
+    );
+    assert_eq!(
+        inputs_of("beta"),
+        vec![("momentum{}".to_string(), 9)],
+        "beta's revisions did not survive netting intact"
+    );
+    // And neither inherited the other's: a union would make both lists equal
+    // and every attribution afterwards would credit both for one signal.
+    assert_ne!(inputs_of("alpha"), inputs_of("beta"));
 }

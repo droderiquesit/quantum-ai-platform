@@ -216,6 +216,58 @@ fn an_order_travels_the_control_path_and_produces_an_exact_attribution() -> Resu
     Ok(())
 }
 
+#[test]
+fn a_fill_is_attributed_to_the_hypothesis_the_order_was_released_for() -> Result<()> {
+    // The join that makes learning possible. `Order::hypotheses` documents
+    // itself as required — "an untraceable order is one nobody can explain
+    // after the fact" — and LEARN used to hand the attributor an empty vector
+    // for every fill, so `by_hypothesis` returned nothing for everything the
+    // platform traded. The stage still reported fills attributed, which is why
+    // it went unnoticed: the number that was wrong was the one nobody printed.
+    let mut platform = platform(PlatformConfig::default())?;
+    platform.observe(market_history("ACME", 90, None));
+
+    let order = platform.order_from(
+        object("ACME"),
+        Side::Buy,
+        dec!("5000"),
+        dec!("100"),
+        "prop-attribution",
+        vec!["hyp-carried-through".to_string()],
+        start(),
+    );
+    // The premise, in two parts: the order really does name a hypothesis, and
+    // it really does fill. Without both, the assertion below would pass on a
+    // platform that attributed nothing because there was nothing to attribute.
+    assert_eq!(
+        order.hypotheses,
+        vec!["hyp-carried-through".to_string()],
+        "the fixture order names no hypothesis, so nothing could be carried"
+    );
+    platform.submit_order(order, start())?;
+    assert!(
+        !platform.orders().fills().is_empty(),
+        "the premise failed: the order did not fill"
+    );
+
+    let report = platform.run_cycle(start());
+    let learn = report.stage(Stage::Learn).expect("learn ran");
+    assert!(
+        learn.produced > 0,
+        "nothing was attributed at all: {}",
+        learn.detail
+    );
+    // One hypothesis, by count. `across 0 hypothesis(es)` is exactly what the
+    // defect printed once the count was reported, so this is the assertion
+    // that distinguishes the two.
+    assert!(
+        learn.detail.contains("across 1 hypothesis(es)"),
+        "the fill was not attributed to the hypothesis its order named: {}",
+        learn.detail
+    );
+    Ok(())
+}
+
 // --- properties that only exist once assembled ------------------------------
 
 #[test]

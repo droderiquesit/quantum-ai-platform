@@ -885,7 +885,12 @@ impl Cell {
             signed,
             price,
             signal.valid_until,
-        )?;
+        )?
+        // The revisions travel with the intent because this is the last point
+        // that has them: after netting, several strategies' shares share one
+        // order, and a fill can only be traced back to the values that caused
+        // it if each contributor kept its own.
+        .with_inputs(signal.inputs.clone());
         Ok(Some(intent))
     }
 
@@ -1051,6 +1056,7 @@ impl Cell {
                     quantity: order.quantity,
                     price: order.price,
                     simulated: order.simulated,
+                    contributors: order.contributors.clone(),
                 })
                 .collect(),
             refusals: report
