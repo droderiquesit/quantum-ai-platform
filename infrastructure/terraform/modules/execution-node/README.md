@@ -34,9 +34,13 @@ route, which makes taking venue sessions a reviewed diff rather than a value
 somebody edits in a config map.
 
 The venue credential needs three things to be readable: an environment whose
-autonomy ceiling permits live trading (the root computes that exactly as
-`modules/secrets` does), `shadow_mode = false`, and a secret actually named. The
-module **does not accept an autonomy ceiling**. The ceiling is decided in three
+autonomy ceiling permits live trading (the root computes one predicate and hands
+the same value to this module and to `modules/secrets`), `shadow_mode = false`,
+and a secret actually named. The first of those is unsatisfiable today, because
+the plan-time refusal in `infrastructure/terraform/variables.tf` rejects every
+ceiling that permits live trading — so no environment that can be applied binds
+this credential at all. That is the intended state, not a gap. The module
+**does not accept an autonomy ceiling**. The ceiling is decided in three
 places already and a fourth would weaken all three.
 
 ## What this module cannot enforce
@@ -165,13 +169,25 @@ module "execution_node" {
   capital_envelope_secret_id = module.secrets.secret_ids["qip-capital-envelope-key"]
   venue_credential_secret_id = module.secrets.secret_ids["qip-venue-credential"]
 
-  # The same condition modules/secrets applies, and this module then requires
-  # shadow mode to be off as well.
-  venue_credential_readable = var.autonomy_ceiling != "paper_trading"
+  # The root's own predicate, passed through unchanged. This module then
+  # requires shadow mode to be off as well.
+  venue_credential_readable = contains(["supervised_live", "limited_autonomous_live", "autonomous_live"], var.autonomy_ceiling)
 
   evidence_bucket = module.evidence.bucket_name
 }
 ```
+
+Copy that predicate as it stands. It is a membership test over the three live
+rungs rather than the shorter-looking `!= "paper_trading"` because the ceiling
+has six values, not two: `variables.tf` refuses the three live ones at plan
+time, so the reachable set is `{observation, advisory, paper_trading}` and the
+negation is true for exactly the two rungs *below* paper trading — lowering the
+ceiling would have granted the venue credential instead of withholding it. That
+inversion shipped once, in this very block. The membership test names the
+property the security rules state — the credential is readable only where the
+ceiling could use it — instead of a complement that happens to agree with it in
+some configurations, and it is false in every configuration a plan can carry.
+Do not simplify it back.
 
 It also needs a root `execution_nodes` variable — an empty map by default, so
 that the wiring alone provisions nothing — and a per-environment entry in

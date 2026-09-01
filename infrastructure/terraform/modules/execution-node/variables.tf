@@ -322,9 +322,14 @@ variable "venue_credential_readable" {
   description = <<-EOT
     Whether the venue credential may be read at all in this environment.
 
-    False by default. The root module computes this the way
-    `modules/secrets` already does — `var.autonomy_ceiling != "paper_trading"` —
-    and this module deliberately does not accept the ceiling itself: an
+    True only where the environment's ceiling could actually use the
+    credential. False by default, and the root module computes it as a
+    membership test over the three live rungs — never as a negation of
+    `paper_trading`, which is true for `observation` and `advisory` too and so
+    grants the credential to precisely the ceilings that are furthest from
+    needing it. The root passes the same value to `modules/secrets`.
+
+    This module deliberately does not accept the ceiling itself: an
     execution node that could name its own autonomy level would be a fourth
     place the paper-trading boundary is decided, and the boundary is worth more
     with three places than with four.
