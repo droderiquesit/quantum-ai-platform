@@ -25,7 +25,8 @@
 //! admitted the size against a capital envelope. And it is not a leg group:
 //! a leg group exists so that legs complete **together**, while netting exists
 //! so that intents **collapse**. The two are opposites, which is exactly why
-//! §27.2 says a cycle leg is never netted — see [`NettingPolicy::NoNet`].
+//! §27.2 says a cycle leg is never netted — see [`CycleLeg`], which is the
+//! only thing that can produce a no-net intent, and [`NettingPolicy::NoNet`].
 
 use crate::signal::StrategyId;
 use crate::venue::VenueId;
@@ -71,46 +72,37 @@ impl Representation {
 /// §27.2: an arbitrage cycle leg is part of an atomic set, and netting it
 /// against a directional intent silently breaks the cycle's economics — the
 /// cycle still executes, at sizes that no longer close. [`net`] gives every
-/// no-net intent its own group, so no leg that *declares itself one* can join
-/// a directional net.
+/// no-net intent its own group, so no leg can join a directional net.
 ///
-/// **That is a property of [`net`], not of this type**, and an earlier version
-/// of this comment called the refusal "structural rather than advisory"
-/// without saying which. [`NetIntent`] and [`Intent`] have public fields and
-/// are built by literal elsewhere — including in this crate's own tests — so
-/// nothing stops a caller constructing a leg that never says it is one. The
-/// obligation to call [`Intent::as_cycle_leg`] rests on whatever builds legs,
-/// and it is unenforced.
+/// **What holds this, precisely.** The policy is a private field of
+/// [`Intent`] with no setter. [`Intent::new`] always yields [`Self::Nettable`]
+/// and is the only way to build a directional intent; [`CycleLeg::new`]
+/// always yields [`Self::NoNet`] and, through `From<CycleLeg>`, is the only
+/// way to obtain an [`Intent`] carrying one. There is no builder method that
+/// flips one into the other, so the failure an earlier version of this type
+/// permitted — a leg producer that forgot to call a marking method and had
+/// its leg netted against directional flow into an order that was well-formed,
+/// plausibly sized and wrong, with nothing in the journal to notice — is not
+/// expressible. A producer of legs returns `Vec<CycleLeg>`, and the type of
+/// its return value says so.
 ///
-/// The consequence is worth naming precisely, because it is silent: a leg that
-/// forgets is netted against directional flow, and the order that results is
-/// well-formed, plausibly sized and wrong. There is no error and nothing in
-/// the journal to notice.
+/// The one path that bypasses the constructors is `Deserialize` on
+/// [`Intent`], which will read whatever policy the wire carries. Nothing in
+/// the tree deserialises an intent today; intents are made in-process, netted
+/// in-process, and only the resulting [`NetIntent`] is recorded. That is the
+/// boundary of the guarantee, and it is stated here so that the first thing to
+/// read an intent off a wire knows it has to check.
 ///
-/// **Nothing produces a cycle leg today, and the honest statement is stronger
-/// than "not wired yet".** A placement audit of the node's composition roots
-/// found that `qip-arbitrage` — the executable graph, the cycle scanner, the
-/// path router — is referenced from the node tree exactly once, and only for
-/// a trait import in `qip-edge`'s liquidity seam; `Cell::work` runs compiled
-/// strategy programs and never calls the scanner. The leg coordinator that
-/// would execute a cycle, `qip_execution_engine::multileg::LegGroup`, has
-/// **zero call sites anywhere in the workspace, including tests**. So this
-/// refusal currently guards a path nothing walks.
-///
-/// It ships anyway, and the reason is the ordering rather than the coverage: a
-/// guard that refuses has to already be true on the day the producer arrives,
-/// because the alternative is adding it afterwards to a netting engine that
-/// has been quietly combining legs with directional intents in the meantime.
-/// That is a guard, not scaffolding — but it is not protection of a live path
-/// either, and it must not be read as one.
-///
-/// **Precondition on the work that adds a leg producer, not a note for
-/// afterwards.** Because the obligation is unenforced and its failure is
-/// silent, the brief that introduces the arbitrage scanner or the leg
-/// coordinator has to make declaring a leg impossible to omit — a constructor
-/// that only yields no-net intents, or a leg type that cannot become an
-/// [`Intent`] without carrying its cycle. Adding the producer first and the
-/// enforcement afterwards inverts the ordering this comment exists to defend.
+/// **What produces a leg today.** `qip_arbitrage::Opportunity::cycle_legs`
+/// turns a planned cycle into `Vec<CycleLeg>`. It is called by that crate's
+/// tests and by nothing deployed: a placement audit found the scanner is
+/// constructed by no composition root, and the leg coordinator that would
+/// execute a cycle, `qip_execution_engine::multileg::LegGroup`, has zero call
+/// sites. Wiring the scanner into the cell's intent seam is the next slice.
+/// This refusal therefore guards a path the type system closes and nothing
+/// yet walks — which is the right order: the guard has to be true on the day
+/// the producer is wired, not added to a netting engine that has been quietly
+/// combining legs with directional intents in the meantime.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "policy", rename_all = "snake_case")]
 pub enum NettingPolicy {
@@ -141,7 +133,8 @@ pub struct Intent {
     /// for slippage measurement afterwards.
     pub reference_price: Decimal,
     pub representation: Representation,
-    pub netting: NettingPolicy,
+    /// Private, with no setter: see [`NettingPolicy`] for what that holds.
+    netting: NettingPolicy,
     /// The feature revisions this intent was reasoned from, carried straight
     /// off the signal so a fill can be attributed to exactly the values that
     /// produced it rather than to whatever those features say by the time
@@ -158,7 +151,11 @@ pub struct Intent {
 }
 
 impl Intent {
-    /// Build an intent, refusing a size of zero.
+    /// Build a **directional** intent, refusing a size of zero.
+    ///
+    /// Always [`NettingPolicy::Nettable`]. A cycle leg is not built here; it
+    /// is built by [`CycleLeg::new`], which is the only constructor that
+    /// yields a no-net intent.
     pub fn new(
         strategy: StrategyId,
         object_id: ObjectId,
@@ -192,23 +189,154 @@ impl Intent {
         self
     }
 
-    /// Mark this intent as a leg of the named cycle, never to be netted.
-    pub fn as_cycle_leg(mut self, cycle_id: impl Into<String>) -> Self {
-        self.netting = NettingPolicy::NoNet {
-            cycle_id: cycle_id.into(),
-        };
-        self
-    }
-
     /// Carry the signal's feature revisions onto the intent.
     pub fn with_inputs(mut self, inputs: Vec<(String, u64)>) -> Self {
         self.inputs = inputs;
         self
     }
 
+    /// Whether this intent may be netted, and with which cycle it travels if
+    /// not. Read-only: the policy is fixed by whichever constructor made it.
+    pub const fn netting(&self) -> &NettingPolicy {
+        &self.netting
+    }
+
+    /// The cycle this intent is a leg of, or `None` for a directional intent.
+    pub fn cycle_id(&self) -> Option<&str> {
+        match &self.netting {
+            NettingPolicy::Nettable => None,
+            NettingPolicy::NoNet { cycle_id } => Some(cycle_id),
+        }
+    }
+
     /// The absolute size, for the gross total.
     pub fn gross(&self) -> Decimal {
         self.signed_size.abs()
+    }
+}
+
+/// One leg of an arbitrage cycle, which cannot be built nettable.
+///
+/// This is a distinct type rather than a flag on [`Intent`] because the
+/// guarantee §27.2 asks for is about what a *producer* hands back, and a
+/// producer's promise lives in its return type. A scanner that returns
+/// `Vec<CycleLeg>` cannot return a leg that forgot to say it was one: there is
+/// no way to spell such a value. The conversion into [`Intent`] — the one
+/// shape the cell's netting seam accepts — is `From<CycleLeg>`, and it hands
+/// over the intent this type has been holding since construction, whose
+/// policy was fixed at [`NettingPolicy::NoNet`] by [`Self::new`] and has no
+/// setter anywhere.
+///
+/// The two things this makes inexpressible, each a `compile_fail` doctest so
+/// the claim is checked rather than asserted:
+///
+/// ```compile_fail
+/// # use qip_contracts::intent::{CycleLeg, Intent, NettingPolicy};
+/// # use qip_contracts::signal::StrategyId;
+/// # use qip_contracts::venue::VenueId;
+/// # use qip_core::{ObjectId, Timestamp, dec};
+/// // A leg's intent cannot be reached to have its policy changed: the field
+/// // is private and `CycleLeg` exposes it read-only.
+/// let mut leg = CycleLeg::new(
+///     "cycle-7", StrategyId::new("arb"), ObjectId::from_string("ACME"),
+///     VenueId::new("XLON"), dec!("50"), dec!("100"), Timestamp::from_secs(1),
+/// ).unwrap();
+/// let intent: &mut Intent = &mut leg.intent;
+/// intent.netting = NettingPolicy::Nettable;
+/// ```
+///
+/// ```compile_fail
+/// # use qip_contracts::intent::{Intent, NettingPolicy};
+/// # use qip_contracts::signal::StrategyId;
+/// # use qip_contracts::venue::VenueId;
+/// # use qip_core::{ObjectId, Timestamp, dec};
+/// // And a directional intent cannot be flipped the other way either: the
+/// // policy is not assignable after construction.
+/// let mut intent = Intent::new(
+///     StrategyId::new("arb"), ObjectId::from_string("ACME"), VenueId::new("XLON"),
+///     dec!("50"), dec!("100"), Timestamp::from_secs(1),
+/// ).unwrap();
+/// intent.netting = NettingPolicy::NoNet { cycle_id: "cycle-7".to_string() };
+/// ```
+///
+/// Not `Deserialize`: a leg read off a wire could carry any policy, and the
+/// point of the type is that it cannot. Legs are made in-process by the
+/// scanner and become intents before anything is recorded.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CycleLeg {
+    intent: Intent,
+}
+
+impl CycleLeg {
+    /// Build a leg of the named cycle, refusing an unnamed cycle and a size of
+    /// zero.
+    ///
+    /// The cycle id is refused when empty because it is what [`net`] isolates
+    /// on and what the journal identifies the atomic set by; a leg of the
+    /// cycle called `""` is a leg of nothing anyone can find afterwards.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        cycle_id: impl Into<String>,
+        strategy: StrategyId,
+        object_id: ObjectId,
+        venue: VenueId,
+        signed_size: Decimal,
+        reference_price: Decimal,
+        valid_until: Timestamp,
+    ) -> qip_core::error::Result<Self> {
+        let cycle_id = cycle_id.into();
+        if cycle_id.trim().is_empty() {
+            return Err(qip_core::error::Error::invalid(
+                "a cycle leg must name its cycle: the id is what keeps the leg out of every \
+                 directional net and what the journal identifies the atomic set by, and an \
+                 empty one names nothing",
+            ));
+        }
+        let mut intent = Intent::new(
+            strategy,
+            object_id,
+            venue,
+            signed_size,
+            reference_price,
+            valid_until,
+        )?;
+        intent.netting = NettingPolicy::NoNet { cycle_id };
+        Ok(Self { intent })
+    }
+
+    pub fn with_representation(mut self, representation: Representation) -> Self {
+        self.intent.representation = representation;
+        self
+    }
+
+    /// Carry the scan's inputs onto the leg, as a signal's revisions are
+    /// carried onto a directional intent.
+    pub fn with_inputs(mut self, inputs: Vec<(String, u64)>) -> Self {
+        self.intent.inputs = inputs;
+        self
+    }
+
+    /// The cycle this leg belongs to. Never empty.
+    pub fn cycle_id(&self) -> &str {
+        match &self.intent.netting {
+            NettingPolicy::NoNet { cycle_id } => cycle_id,
+            // Unreachable by construction — `new` is the only constructor and
+            // it sets `NoNet` — but the match is exhaustive rather than a
+            // panic, so a future constructor that broke the invariant would
+            // fail a test on this value rather than abort a cell.
+            NettingPolicy::Nettable => "",
+        }
+    }
+
+    /// The intent this leg will become, read-only.
+    pub const fn intent(&self) -> &Intent {
+        &self.intent
+    }
+}
+
+impl From<CycleLeg> for Intent {
+    fn from(leg: CycleLeg) -> Self {
+        leg.intent
     }
 }
 
@@ -244,8 +372,46 @@ struct NettingKey {
 }
 
 /// N intents collapsed into the one order that will be sent.
+///
+/// **Built by [`net`] and by nothing else.** The `sealed` field is private and
+/// its type is not nameable outside this module, so a struct literal and
+/// struct-update syntax both fail to compile anywhere else — which is what
+/// makes "a cycle leg is never netted with a directional intent" a property
+/// of the type rather than of one function: the only vector of contributors
+/// that can exist under a `cycle_id` is the one [`net`] assembled, and [`net`]
+/// gives every leg a group of its own.
+///
+/// ```compile_fail
+/// # use qip_contracts::intent::{NetIntent, Representation};
+/// # use qip_contracts::venue::VenueId;
+/// # use qip_core::{ObjectId, dec};
+/// // No literal: `sealed` is private. A caller cannot assemble a net that
+/// // mixes a cycle leg with directional contributors without going through
+/// // `net`, which will not.
+/// let forged = NetIntent {
+///     object_id: ObjectId::from_string("ACME"),
+///     venue: VenueId::new("XLON"),
+///     representation: Representation::Spot,
+///     net_size: dec!("1"),
+///     gross_size: dec!("1"),
+///     contributors: Vec::new(),
+///     reference_price: dec!("100"),
+///     cycle_id: Some("cycle-7".to_string()),
+/// };
+/// ```
+///
+/// What this does **not** hold, stated so nobody reads more into it: the
+/// remaining fields are public because the cell reads them directly, and a
+/// caller that owns a `NetIntent` can still assign to them. Closing that means
+/// private fields with accessors, which touches every read in `qip-edge`'s
+/// cell and belongs to that crate's owner; the seal on construction is the
+/// half that the netting review found open. `Deserialize` is the other path,
+/// and `sealed` is skipped on the wire, so a net read back from a journal is a
+/// record of one `net` built and not a fresh one.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NetIntent {
+    #[serde(skip)]
+    sealed: Sealed,
     pub object_id: ObjectId,
     pub venue: VenueId,
     pub representation: Representation,
@@ -266,6 +432,13 @@ pub struct NetIntent {
     /// identifiable all the way to the order.
     pub cycle_id: Option<String>,
 }
+
+/// The token that makes [`NetIntent`] constructible only in this module.
+///
+/// Zero-sized and private: it costs nothing at runtime and cannot be named
+/// from outside, so it cannot be supplied to a literal from outside.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Sealed;
 
 impl NetIntent {
     /// Whether this net produces an order at all.
@@ -318,6 +491,13 @@ impl NetIntent {
     /// remainders first, ties by strategy id descending — the mirror image, so
     /// that whichever way the rounding went the same fill splits the same way
     /// on every machine and in every replay.
+    ///
+    /// Since construction was sealed to [`net`], every vector this sees is one
+    /// [`net`] sorted by strategy id, and the sorts here are stable — so the
+    /// tie-breaks below can no longer produce a different answer from arrival
+    /// order, and a mutation that deletes them is invisible to every test.
+    /// They stay because the rule is stated here and the cost is nil, but the
+    /// ordering [`net`] applies is what holds it now.
     pub fn split_fill(&self, filled: Decimal) -> Vec<(StrategyId, Decimal)> {
         let denominator = self.gross_size;
         if self.contributors.is_empty() || denominator.is_zero() || filled.is_zero() {
@@ -496,6 +676,7 @@ pub fn net(intents: Vec<Intent>) -> Vec<NetIntent> {
                 })
                 .collect();
             NetIntent {
+                sealed: Sealed,
                 object_id: key.object_id,
                 venue: key.venue,
                 representation: key.representation,
