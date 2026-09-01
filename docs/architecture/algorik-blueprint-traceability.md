@@ -3,14 +3,17 @@
 **Scored against the working tree on branch
 `claude/algorik-architecture-refactor-pmp0zy`, from commit `d8b3597`.**
 
-This is the one matrix for the blueprint. It does not replace
-[`diagram-reconciliation.md`](diagram-reconciliation.md), which scores a
-*different* reference — the "World's Smartest Multi-Regional AI + Quant
-Trading Platform" diagram transcribed in
-[`canonical-platform.md`](canonical-platform.md). Those two describe the same
-repository against an earlier picture of it. Read them together; do not merge
-them, because a row that is ALIGNED against one can be MISSING against the
-other and collapsing that loses the finding.
+**This is the live scorecard.** ADR 0022 makes the Algorik Master Blueprint
+v10.1-4 and its companion diagram the architecture of record, so every row
+below is scored against the blueprint and nothing else.
+
+[`diagram-reconciliation.md`](diagram-reconciliation.md) and
+[`canonical-platform.md`](canonical-platform.md) score the **superseded**
+reference — the "World's Smartest Multi-Regional AI + Quant Trading Platform"
+diagram. They are retained for history and are not merged into this file: a
+component ALIGNED against the old diagram can be MISSING against the
+blueprint, and collapsing that loses the finding. Do not score new work
+against them.
 
 **Method.** Every row was derived by reading the source or the manifest named
 in its evidence column. A row is ALIGNED only where an implementation path and
@@ -50,7 +53,7 @@ nothing in it reads as a gate that was cleared.
 
 | Blueprint element | Required invariant | Implementation | Status | Evidence | Minimal action | Risk / blast radius | Phase | Validation |
 |---|---|---|---|---|---|---|---|---|
-| §2.1 | Every application is Rust | Backend is 59 Rust crates; `frontend/portal` and `frontend/landing` are Next.js/TypeScript | CONTRADICTS | `frontend/portal/package.json`; ADR 0001 permits the browser layer as the sole exception | None now. Define the replacement boundary before any translation; do not mass-translate | High — a rewrite of the whole customer surface | 13 | Playwright + contract tests before any slice |
+| §2.1, §40 | Every application is Rust; one Leptos codebase for the experience layer | Backend is 59 Rust crates; `frontend/portal` and `frontend/landing` are Next.js/TypeScript — now **transitional**, not a sanctioned exception (ADR 0022) | CONTRADICTS | `frontend/portal/package.json`; ADR 0001's browser exception is superseded in direction by ADR 0022 | None now, and none authorised. Identify contracts and Playwright coverage, then define the Leptos replacement boundary. Do not mass-translate; a vertical slice only if it adds no dependency | High — a rewrite of the whole customer surface, and it is the only customer-facing thing there is | 13 | Playwright + contract tests before any slice |
 | §2.1 | Managed services are Google Cloud or IBM only | GCP + IBM Quantum; no third-party SaaS at runtime | ALIGNED | `infrastructure/terraform/modules/`; `libs/qip-quantum/src/provider.rs` | None | — | 0 | `infrastructure` suite |
 | §2.2 | No strategy sends an order | Strategies produce theses/proposals; only a composition root holds an order manager | ALIGNED | `architecture.rs::nothing_outside_a_composition_root_holds_an_order_manager`, `::only_the_edge_cell_itself_holds_an_order_manager` | None | — | 3 | `architecture` suite |
 | §2.2, §39 | No language model touches a trade, cycle or transfer | Enforced by absent dependency edges, transitively | ALIGNED | `architecture.rs::no_safety_critical_engine_can_reach_a_language_model`, `::nothing_that_decides_or_executes_names_the_language_model_interface`, `::an_agent_that_holds_a_language_model_cannot_touch_the_market` | None | — | 0 | `architecture` suite |
@@ -156,12 +159,12 @@ own rule, and is recorded as such rather than counted as a working control.
 
 `[LAYER n/7 — Name] Current | Keep | Change | Remove | Defer | Verification`
 
-- **[LAYER 1/7 — Experience]** *Current:* Next.js portal and landing on Cloud Run; blueprint wants one Leptos codebase. *Keep:* the whole surface — it works and it is the only customer-facing thing there is. *Change:* nothing this pass. *Remove:* nothing. *Defer:* the Rust replacement boundary — identify contracts and Playwright coverage first; a vertical slice only if it adds no dependency. *Verification:* `npm run lint`, `npm run build`, Playwright.
+- **[LAYER 1/7 — Experience]** *Current:* Next.js portal and landing on Cloud Run; blueprint wants one Leptos codebase. *Keep:* the whole surface, maintained — it works, it is the only customer-facing thing there is, and ADR 0022 makes it transitional rather than disposable. *Change:* nothing this pass. *Remove:* nothing. *Defer:* the Leptos replacement boundary, direction settled and execution unauthorised — identify contracts and Playwright coverage first; a vertical slice only if it adds no dependency. *Verification:* `npm run lint`, `npm run build`, Playwright.
 - **[LAYER 2/7 — Public edge and identity]** *Current:* Identity Platform is the only identity store (ADR 0019); sealed-cookie sessions; console reaches the platform over the VPC as viewer (ADR 0018). *Keep:* all of it — it matches §46.1's "Application and identity" zone, including "never a node, a venue, a QPU or a key". *Change:* none. *Remove:* none. *Defer:* passkeys (§51 Phase 0) — not present. *Verification:* `console_route.rs`, `security.rs`.
 - **[LAYER 3/7 — Application and API]** *Current:* `qip-api` composes reads and holds no independent financial state. *Keep.* *Change:* none. *Remove:* none. *Defer:* the typed-intent surface (§40.9) — there is no `Intent` type anywhere, so application APIs raise no intents; they read. *Verification:* `documentation.rs::every_documented_endpoint_exists`.
 - **[LAYER 4/7 — Domain contracts and control fabric]** *Current:* `qip-contracts` sits at the bottom of everything sharing it; `qip-transport`/`qip-mesh` carry the fabric. *Keep.* *Change:* none this pass. *Remove:* none. *Defer:* the **signed twelve-item payload (§41.5)** — the fabric ships deltas, not a twelve-item verified-then-atomically-swapped payload, and stale-item narrowing per §6.2 is not implemented. This is the largest single structural gap against the blueprint that is *not* future-phase. *Verification:* `spine.rs`, `mesh.rs`, `manifest_wiring.rs`.
 - **[LAYER 5/7 — Data and state]** *Current:* bitemporal records; bounded retention; event log hash-chained; `qip-data-finder` evaluates licensing before use. *Keep.* *Change:* none. *Remove:* none. *Defer:* BigQuery derived series and content-hash manifests for external history. *Verification:* `absorption.rs`, `resilience.rs`, `truth_loop.rs`.
-- **[LAYER 6/7 — Cloud and network]** *Current:* GKE + Argo CD + Kargo + Helm + KEDA; frontends on Cloud Run; no GCE instance. Blueprint wants Cloud Run plus one bare C3 and no Kubernetes. *Keep:* everything — it is three commits old and it works. *Change:* nothing. *Remove:* **nothing, and not until step 5 of ADR 0020's sequence has its evidence.** *Defer:* the whole migration, sequenced in ADR 0020. *Verification:* `terraform fmt -check` and `validate` **NOT RUN — terraform is not installed in this environment**; `infrastructure.rs` suite passed.
+- **[LAYER 6/7 — Cloud and network]** *Current:* GKE + Argo CD + Kargo + Helm + KEDA; frontends on Cloud Run; no GCE instance. The blueprint's target — Cloud Run plus one bare C3, no Kubernetes — is now the architecture of record (ADR 0022), so this layer is a **transitional runtime with a decided direction**. *Keep:* all of it, and maintained rather than merely tolerated — it is what carries the traffic, and transitional does not mean abandoned. *Change:* nothing. *Remove:* **nothing, and not until step 5 of ADR 0020's sequence has both its evidence and recorded human approval.** *Defer:* the entire migration. Direction is settled; **execution is not authorised**, and no step may begin without step-named approval. *Verification:* `terraform fmt -check` and `validate` **NOT RUN — terraform is not installed in this environment**; `infrastructure.rs` suite passed.
 - **[LAYER 7/7 — Security, observability, delivery, reliability]** *Current:* three paper layers intact and re-verified by path this pass; WIF only; CSI-projected secrets; Binary Authorization; telemetry emitted at the seams. *Keep.* *Change:* none. *Remove:* none. *Defer:* OpenTelemetry spans with cross-plane correlation (§47) — the current surface is a Prometheus-style metric registry, not spans; and policy-freshness, belief-calibration and reconciliation signals have nothing to emit yet. *Verification:* `security.rs`, `compliance_proof.rs`, `egress.rs`, `infrastructure.rs`.
 
 ## Corrections this pass makes to existing documents
@@ -181,26 +184,93 @@ configuration and correcting it is an owner's decision, not an agent's, even
 when the correction is a plain matter of fact. It is listed instead as
 requiring a decision.
 
-## Settled, recorded for completeness
+## Conflicts, and where each now stands
 
-**S1 — real capital at risk.** The blueprint assumes it (§1.3, §25, §37, §38,
-and its Phase 3 gate); this platform refuses it. **This is not an open
-question.** `.claude/rules/00-enterprise-governance.md` calls paper trading
-absolute, ADR 0003 settles it, ADR 0021 records the consequence, and three
-independent layers enforce it. Listing it as a decision awaiting an owner
-would misrepresent a governing rule as negotiable, which is how such rules
-erode.
+ADR 0022 made the blueprint the architecture of record. That closed two of
+these, settled the direction of two more, and — importantly — made one of them
+sharper rather than resolving it.
 
-The consequence is what should be carried forward rather than the question:
-the blueprint's Phase 3 gate is permanently unreachable here, and because it
-is upstream, so are Phase 6 and Phase 8 on the blueprint's own terms. That is
-a limit on what this repository can demonstrate, not a gap in it.
+### C1 — the authoritative design specifies something this platform refuses
 
-## Residual conflicts requiring an owner decision
+**Status: NOT settled. Requires an explicit, separate owner decision.**
 
-| # | Conflict | Blueprint location | Repository position | Decision required |
-|---|---|---|---|---|
-| C2 | Runtime topology | §41.4, §41.6, §45.1 — Cloud Run + one bare C3, no Kubernetes | GKE + Argo CD + Kargo, three commits old; ADR 0011, ADR 0017, ADR 0020 | Adopt the blueprint topology and supersede 0011/0017, or record that §41.4/§41.6 describe a system this one deliberately is not |
-| C3 | Experience layer language | §40 — one Leptos codebase in Rust | Next.js portal and landing; ADR 0001 permits the browser exception | Whether the browser exception survives; a translation is a Phase 13 programme, not a refactor |
-| C4 | Stale factual claim in an instruction file | — | `.claude/rules/domains/observability.md` says nothing writes to `Telemetry`; the code does | Owner to correct the rule file, or to state the rule means something narrower than it reads |
-| C5 | Two canonical diagrams | Blueprint §4 vs `canonical-platform.md` | The repository scores itself against a diagram the blueprint does not describe | Which picture is the architecture of record |
+This is the one to read carefully, because its status changed in a way that is
+easy to misread as resolution.
+
+The blueprint assumes real capital: live venues (§25), treasury transfers and
+MPC signing corridors (§37), custody (§37.4), a wallet with a signing path
+(§38), and a Phase 3 gate that is thirty days live. That specification is now
+the architecture of record.
+
+It was previously a question of *which document is authoritative*. That
+question is answered. What remains is the sharper statement:
+
+> **The authoritative design specifies something this platform deliberately
+> refuses.**
+
+**Adopting the blueprint is not authorisation to build, enable or ease any
+live-order or live-transfer path.** The owner said the blueprint is the
+expected design; they did not say to weaken the paper-trading boundary, and
+the second does not follow from the first.
+`.claude/rules/01-security-and-safety.md` makes that boundary absolute and
+says it cannot be weakened by a task instruction — a blueprint revision is not
+an exception, and neither is an inference drawn from one.
+
+What would be required to change it, and nothing less: **an explicit and
+separate owner decision that supersedes ADR 0003 and amends
+`.claude/rules/01-security-and-safety.md`.** No agent may take it, and no
+amount of architectural adoption substitutes for it.
+
+Until then: ADR 0021 stands exactly as written; the three layers stay intact
+(Terraform at `infrastructure/terraform/variables.tf:105-116`,
+`AutonomyLevel::deployable` in all three composition roots, `Cell::new` taking
+no ceiling but paper trading); and
+`security.rs::no_signing_or_withdrawal_path_exists_for_capital_to_leave_the_platform`
+stays.
+
+The standing consequence is unchanged and should be carried forward wherever
+the roadmap is discussed: the blueprint's Phase 3 gate is permanently
+unreachable here, and because it is upstream, so are Phase 6 and Phase 8 on
+the blueprint's own terms. That is a limit on what this repository can
+demonstrate, not a defect in it.
+
+### C2 — runtime topology · direction settled, execution NOT authorised
+
+The blueprint's no-Kubernetes target (§41.4, §41.6, §45.1) is the intended end
+state. GKE, Argo CD, Kargo, Helm and KEDA are a **transitional runtime**, not a
+competing permanent architecture. ADR 0011 and ADR 0017 are superseded in
+direction and still govern what runs today.
+
+**No step is authorised.** ADR 0020's sequence is the route, every step of it
+requires recorded human approval naming that step, and nothing is migrated,
+decommissioned or provisioned. Direction and authorisation are different
+decisions.
+
+### C3 — experience layer · direction settled, execution NOT authorised
+
+Leptos over shared types (§40) is the target. `frontend/portal` and
+`frontend/landing` are transitional and are **maintained**, not abandoned —
+they are the only customer-facing surface there is. ADR 0001's browser
+exception is superseded in direction.
+
+No migration now. The sequencing stays in the backlog: identify contracts and
+Playwright coverage, define the replacement boundary, and only then consider a
+vertical slice — and only if it adds no dependency without an ADR.
+
+### C4 — a stale factual claim in an instruction file · still open
+
+`.claude/rules/domains/observability.md` states that nothing writes to
+`Telemetry`. The code contradicts it: `qip-kernel/src/platform.rs:1668` counts
+cycles and `:1728-1755` records stage runs, latencies and gauges, served at
+`apps/qip-api/src/routes.rs:910-912`.
+
+**Still the owner's, not an agent's.** `.claude/rules/` is instruction
+configuration, and correcting it is an owner's decision even when the
+correction is a plain matter of fact. Left untouched and flagged.
+
+### C5 — which diagram is authoritative · CLOSED
+
+Closed by ADR 0022. The Algorik blueprint and its companion diagram are the
+architecture of record; this file is the live scorecard.
+`canonical-platform.md` and `diagram-reconciliation.md` score the superseded
+reference and are retained for history, each carrying a banner saying so.

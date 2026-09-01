@@ -118,22 +118,28 @@ simulating the circuit costs more than solving the problem it encodes.
 
 ## Reading order, and where the rest lives
 
-This document is the shape of the system. Three companions carry the detail:
+This document is the shape of the system. Four companions carry the detail:
 
-1. `docs/adr/` — twenty-one numbered decisions. The reasoning is the point, and
+1. `docs/adr/` — twenty-two numbered decisions. The reasoning is the point, and
    several of them are settled: reopening one takes a new ADR, not an argument.
-2. `docs/architecture/canonical-platform.md` — the target architecture as 104
-   addressable component ids.
-3. `docs/architecture/diagram-reconciliation.md` — each id scored against the
-   tree, with implementation path, runtime evidence, named test and gap. A row
-   counts as complete only where both an implementation and a *named passing
-   test* exist, and any component no deployable binary composes is capped at
-   "implemented but unverified" however good its own tests are.
-4. `docs/architecture/algorik-blueprint-traceability.md` — the same tree scored
-   against a *different* reference, the Algorik Master Blueprint v10.1-4. It is
-   kept separate from 2 and 3 on purpose: the two references disagree, and a
-   row that is aligned against one can be missing against the other. Merging
-   them would lose exactly the findings worth having.
+2. **`docs/architecture/algorik-blueprint-traceability.md` — the live
+   scorecard.** ADR 0022 makes the Algorik Master Blueprint v10.1-4 and its
+   companion diagram the architecture of record, so this is the document that
+   says how far the tree is from where it is meant to be. Score new work here.
+3. `docs/architecture/canonical-platform.md` — **superseded.** The earlier
+   diagram as 104 addressable component ids.
+4. `docs/architecture/diagram-reconciliation.md` — **superseded.** Each of
+   those ids scored against the tree, with implementation path, runtime
+   evidence, named test and gap.
+
+   Items 3 and 4 score the "World's Smartest Multi-Regional AI + Quant Trading
+   Platform" diagram, which is no longer the reference. They are retained for
+   history rather than deleted: they are the only written record of several
+   defects this platform has already fixed — controls that could not fire,
+   crates no binary composed — and the reasoning survives the picture that
+   prompted it. Do not merge them into item 2, and do not read a status in
+   them as current: a component aligned against the old diagram can be missing
+   against the blueprint, and collapsing that loses the finding.
 
 The rules an agent must follow when changing this architecture are in
 `.claude/rules/architecture/`; the per-area constraints are in

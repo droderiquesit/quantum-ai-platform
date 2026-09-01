@@ -1,8 +1,24 @@
-# Canonical platform — the diagram as a manifest
+# Superseded reference — the earlier diagram as a manifest
 
-Transcribed from the canonical architecture diagram ("World's Smartest
+> **This is not the architecture of record.** ADR 0022 makes the Algorik
+> Master Blueprint v10.1-4 and its companion diagram the expected design. The
+> live scorecard is
+> [`algorik-blueprint-traceability.md`](algorik-blueprint-traceability.md).
+>
+> This file transcribes the *earlier* reference — the "World's Smartest
+> Multi-Regional AI + Quant Trading Platform" diagram — and is **retained for
+> history, not deleted.** It is the only written record of what several parts
+> of this platform were built to satisfy, and the reasoning behind a component
+> is worth keeping after the picture that prompted it has been replaced.
+> Nothing here is removed on the strength of an assertion that it is obsolete.
+>
+> Read it as: what the platform was aiming at before the blueprint was
+> adopted. Do not score new work against it, and do not treat a gap named here
+> as current work without checking it against the live scorecard first.
+
+Transcribed from the earlier architecture diagram ("World's Smartest
 Multi-Regional AI + Quant Trading Platform"). This file is the machine-readable
-source of truth that `diagram-reconciliation.md` scores the repository against.
+reference that `diagram-reconciliation.md` scores the repository against.
 Component ids are stable; do not renumber them.
 
 ## Layer 1 — Autonomous Data Mesh (`L1`)

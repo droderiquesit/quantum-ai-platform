@@ -1,4 +1,21 @@
-# Diagram reconciliation — every canonical id scored against the tree
+# Superseded reconciliation — every earlier-diagram id scored against the tree
+
+> **This scores a superseded reference.** ADR 0022 makes the Algorik Master
+> Blueprint v10.1-4 the architecture of record; the live scorecard is
+> [`algorik-blueprint-traceability.md`](algorik-blueprint-traceability.md).
+>
+> The 104 component ids below belong to
+> [`canonical-platform.md`](canonical-platform.md), the earlier diagram.
+> **Retained for history, not deleted:** this is a real scoring pass whose
+> findings — which controls could not fire, which crates no binary composed —
+> are still the only written record of several defects and of why they were
+> fixed. Deleting it would destroy evidence in order to tidy a directory.
+>
+> A status in this file describes alignment with the *old* picture. It neither
+> confirms nor contradicts a row in the live scorecard, and the two must not be
+> merged: a component ALIGNED here can be MISSING against the blueprint, and
+> collapsing that loses the finding.
+
 
 Scored against the working tree at `9854ec7` (branch `claude/autonomous-investment-platform-76gt4y`).
 Every row was re-derived by grep/read of the current source; the prior audits were used only as leads.

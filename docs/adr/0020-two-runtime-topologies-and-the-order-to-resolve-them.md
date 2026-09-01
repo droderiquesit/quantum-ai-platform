@@ -1,7 +1,14 @@
 # 0020 — Two runtime topologies exist, and the order in which they are resolved
 
-**Status:** accepted — records a conflict and the sequence for resolving it.
-The resolution itself is not yet decided; see "What is still open".
+**Status:** accepted — **the direction is now decided** by ADR 0022, which
+makes the Algorik blueprint the architecture of record. The sequence below is
+therefore the order the migration takes rather than the order it would take.
+
+**Execution remains unauthorised.** A decision about direction is not approval
+to execute any step. Every step still requires recorded human approval naming
+that step before it begins, exactly as written below; nothing in the direction
+being settled changes that, and nothing has been migrated, decommissioned or
+provisioned.
 
 ## Context
 
@@ -52,11 +59,16 @@ Three things follow, and they are the whole decision:
    only where the software runs. No step below changes the former, and a
    migration is never a reason to reopen it.
 
-1. **ADR 0011 and ADR 0017 stand.** They are not superseded by a document that
-   arrived later, because a blueprint is not an ADR and this repository's
-   architecture is what its decision records say it is. A reader who finds the
-   blueprint and the cluster disagreeing should find this file rather than
-   guess which one is stale.
+1. **ADR 0011 and ADR 0017 stand as descriptions of what runs, and are
+   superseded in direction by ADR 0022.** When this record was written they
+   stood entirely, on the argument that a blueprint is not an ADR and this
+   repository's architecture is what its decision records say it is. That
+   argument was right and has now been answered the only way it could be: an
+   owner turned the blueprint into a decision record. What has not changed is
+   that a reader who finds the blueprint and the cluster disagreeing should
+   find this file rather than guess which one is stale — the difference is that
+   the answer is now "the cluster is transitional" rather than "nobody has
+   decided".
 
 2. **The resolution order is fixed even though the resolution is not.** If the
    platform does migrate, it migrates in this sequence, because each step's
@@ -131,20 +143,30 @@ platform with neither.
   evidence.** That is the drift this ordering exists to prevent: two
   permanent runtimes acquired one convenient exception at a time.
 
-## What is still open
+## What was open, and what still is
 
-**This requires an owner decision that no agent may take.** The question is
-whether the platform adopts the blueprint's Cloud Run and bare-metal topology,
-or keeps GKE and treats §41.4 and §41.6 as describing a system this one is
-deliberately not. Both are defensible; they are not both true; and the cost of
-choosing is far smaller than the cost of drifting.
+**The direction was open and is now closed.** The question was whether the
+platform adopts the blueprint's Cloud Run and bare-metal topology or keeps GKE
+and treats §41.4 and §41.6 as describing a system this one deliberately is not.
+The owner has adopted the blueprint (ADR 0022). GKE, Argo CD, Kargo, Helm and
+KEDA are the transitional runtime; the sequence above is the route.
 
-Until that decision is recorded here, **no step of the sequence above may be
-started.** The sequence fixes the order migration would take *if* it is
-approved; it authorises nothing on its own, and "the only permitted direction
-of travel" describes the shape of a future decision rather than granting it.
+**What is still open is every single step of it.** Direction and authorisation
+are different decisions and this record deliberately keeps them apart, because
+conflating them is how a settled destination becomes an agent provisioning
+compute nobody asked for. Concretely:
 
-An agent asked to "make progress on ADR 0020" has, at this moment, exactly one
-correct action available: gather step 1's evidence — which GKE workloads have
-ever actually run — and bring it to an owner. Everything after that needs a
-person, and the paper-trading boundary is untouched by all of it.
+- No step below may be started without recorded human approval naming that
+  step. The evidence in each row is what makes it reasonable to *ask*; it is
+  never the answer.
+- Nothing is removed. ADR 0011 and ADR 0017 still govern what runs, and the
+  Helm chart is retired at step 5 and not before — on that step's evidence,
+  with approval, after two consecutive weeks of no traffic on the GKE path.
+- The paper-trading boundary is untouched by all of it. Step 3's "holding
+  venue sessions" means the simulated broker or a provider sandbox, as it does
+  everywhere else in this repository.
+
+An agent asked to "make progress on ADR 0020" still has exactly one correct
+action available: gather step 1's evidence — which GKE workloads have ever
+actually run — and bring it to an owner. That has not changed, and the
+direction being decided is not a reason for it to.
