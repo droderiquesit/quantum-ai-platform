@@ -6,8 +6,15 @@
 //! dependency edges say what everyone thinks they say, and a `Cargo.toml` is
 //! the easiest file in a repository to add one line to.
 //!
-//! These tests read the manifests and assert the edges directly, so adding the
-//! line fails here rather than three months later during an incident.
+//! These tests assert those edges directly, so adding the line fails here
+//! rather than three months later during an incident.
+//!
+//! The graph comes from `cargo metadata` — from Cargo's own resolution rather
+//! than from reading the manifests. Four rounds of review each found a live
+//! compiling edge that a hand-written TOML reader here could not see, and the
+//! reason is structural: every test below asserts an edge is *absent*, so any
+//! manifest form the reader could not parse was an edge that did not exist as
+//! far as all of them were concerned. See [`dependency_graph`].
 //!
 //! They are deliberately about *absent* edges. A present one is visible in the
 //! code that uses it; an absent one is invisible until someone adds it.
@@ -17,672 +24,336 @@
 
 use qip_acceptance::repository_root;
 use std::collections::{BTreeMap, BTreeSet};
-
-/// The in-tree dependencies each crate declares, by crate name.
+/// The workspace dependency graph, **as Cargo itself resolved it**.
 ///
-/// Parsed rather than taken from `cargo metadata`, because the point is to
-/// check the file a reviewer reads.
+/// # Why this asks Cargo instead of reading the manifests
 ///
-/// Development dependencies are excluded. They are what a crate's own tests
-/// link against, not what its shipped code can call, and Cargo deliberately
-/// permits cycles among them — `qip-reasoning-engine` and
-/// `qip-investment-agents` each test against the other. Counting them would
-/// mean reporting a boundary violation for a dependency no deployed binary
-/// has.
+/// Four rounds of independent review each found live, compiling
+/// `qip-risk-engine -> qip-quantum` edges that a hand-written TOML reader in
+/// this file could not see, and each round's fix was written for the shape in
+/// front of it. Round four's two criticals are the argument for abandoning the
+/// approach rather than patching it a fifth time:
+///
+/// * a package description ending `...'paper''''` — legal TOML, accepted by
+///   cargo, no escape character anywhere — desynchronised the string scanner,
+///   which glued the whole file into one buffer so that `[dependencies]` never
+///   began a line and **the entire dependency table disappeared**; and
+/// * `[target.'cfg(not(target_os = "dependencies"))'.dependencies]` defeated
+///   the section classifier by substring-matching, which is the precise trap
+///   `.claude/rules/architecture/01-testing-strategy.md` warns about, in the
+///   parser rather than in a test.
+///
+/// Every boundary test in this file asserts that some edge is *absent*, so a
+/// manifest form the reader cannot parse is an edge that does not exist as far
+/// as all of them are concerned, and the suite goes green over a live
+/// violation. Hand-parsing TOML made that failure mode a permanent feature of
+/// the file.
+///
+/// `cargo metadata` reports the graph after Cargo has resolved it, so renames,
+/// `[workspace.dependencies]` inheritance, target-conditional tables, quoted
+/// keys, every string form and every table shape are already correct. The four
+/// defects cease to exist by construction rather than by enumeration.
+///
+/// **The cost, stated honestly.** This no longer checks "the file a reviewer
+/// reads" — it checks what Cargo compiles. Those differ only where a reviewer
+/// misreads a manifest, and on the evidence of four rounds it is the reader
+/// that was wrong every time, not Cargo.
+///
+/// This adds no dependency. `serde_json` is already permitted and already a
+/// dependency of this crate, and cargo is required to build the workspace at
+/// all, so ADR 0002 and ADR 0009 are untouched — no crate enters
+/// `backend/Cargo.lock`, which is what `scripts/check-dependencies.sh` counts.
+///
+/// Development and build dependencies are excluded. Dev dependencies are what a
+/// crate's own tests link against, not what its shipped code can call, and
+/// Cargo deliberately permits cycles among them — `qip-reasoning-engine` and
+/// `qip-investment-agents` each test against the other. A build dependency is
+/// linked into a build script rather than into the crate.
 fn dependency_graph() -> BTreeMap<String, BTreeSet<String>> {
+    let metadata = workspace_metadata();
+    let members = workspace_member_names(&metadata);
     let mut graph = BTreeMap::new();
-    let mut stack = vec![repository_root().join("backend/crates")];
-    while let Some(directory) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&directory) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.file_name().is_some_and(|name| name == "Cargo.toml") {
-                let (name, dependencies) = parse_manifest(&path);
-                graph.insert(name, dependencies);
+    for package in packages(&metadata) {
+        let name = package_name(package);
+        let mut edges = BTreeSet::new();
+        for dependency in dependencies_of(package) {
+            if !is_shipped(dependency) {
+                continue;
+            }
+            // `name` is the crate actually depended on. An alias declared with
+            // `package = "…"`, or inherited from `[workspace.dependencies]`
+            // under a different key, appears here under its real name with the
+            // alias in `rename` — which is what made round three's and round
+            // four's rename bypasses possible against the text reader.
+            let depended = dependency_name(dependency);
+            if members.contains(&depended) {
+                edges.insert(depended);
             }
         }
+        graph.insert(name, edges);
     }
     assert!(
         graph.len() > 25,
-        "only {} manifests were found; the walk is not reaching the crates",
+        "cargo metadata reported only {} workspace members; the graph is not \
+         being read",
         graph.len()
     );
     graph
 }
 
-/// The crate's name and every `qip-*` dependency its shipped code can call.
-fn parse_manifest(path: &std::path::Path) -> (String, BTreeSet<String>) {
-    let content = std::fs::read_to_string(path)
-        .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
-    let (name, dependencies) = parse_manifest_content(&content);
+/// Run `cargo metadata` against the backend workspace, or fail loudly.
+///
+/// **Fails closed, in the strongest terms available.** Every assertion built on
+/// this graph is an assertion that an edge is *absent*, so a silent error here
+/// is a green suite over a live violation — which is exactly how all four
+/// review rounds failed. A missing binary, a non-zero exit and unparseable
+/// output therefore all panic rather than yielding an empty or partial graph.
+fn workspace_metadata() -> serde_json::Value {
+    let manifest = repository_root().join("backend/Cargo.toml");
     assert!(
-        !name.is_empty(),
-        "{} declares no package name",
-        path.display()
+        manifest.is_file(),
+        "no workspace manifest at {}; this test cannot see the workspace",
+        manifest.display()
     );
-    (name, dependencies)
+    // `CARGO` is set by cargo for anything it runs, and is the toolchain that
+    // built this test. Falling back to the name on `PATH` keeps the test
+    // runnable outside cargo rather than making the fallback the normal case.
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let output = std::process::Command::new(&cargo)
+        .args([
+            "metadata",
+            "--format-version",
+            "1",
+            "--no-deps",
+            "--manifest-path",
+        ])
+        .arg(&manifest)
+        .output()
+        .unwrap_or_else(|error| {
+            panic!(
+                "could not run `{cargo} metadata`: {error}. This test refuses to \
+                 pass without it: every boundary assertion in this file is that \
+                 an edge is absent, and an empty graph would satisfy all of them"
+            )
+        });
+    assert!(
+        output.status.success(),
+        "`{cargo} metadata` exited with {}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+        panic!(
+            "`{cargo} metadata` produced JSON this test cannot parse: {error}. \
+             Failing rather than proceeding on a partial graph"
+        )
+    })
 }
 
-/// Whether a TOML table introduces dependencies the crate's *shipped* code can
-/// call, and the crate name where the header names one directly.
-///
-/// `Some(None)` is a table of dependency keys; `Some(Some(name))` is a table
-/// describing one named dependency; `None` is a table this file must ignore.
-///
-/// Four shapes this recognises: `[dependencies]`, `[dependencies.qip-foo]`,
-/// `[target.'cfg(unix)'.dependencies]` and
-/// `[target.'cfg(unix)'.dependencies.qip-foo]`. Cargo accepts more table forms
-/// than four in general; these are the ones that introduce a dependency edge.
-/// A target-conditional dependency is shipped code — the condition selects a
-/// platform, not a build stage — so it counts, and missing it would have been a
-/// boundary anyone could step over by adding a `cfg` nobody reads.
-///
-/// Dev and build dependencies are excluded wherever they appear. Dev
-/// dependencies are what a crate's own tests link against and Cargo
-/// deliberately permits cycles among them; a build dependency is linked into a
-/// build script rather than into the crate, so neither is something the shipped
-/// code can call.
-fn shipped_dependency_table(inner: &str) -> Option<Option<&str>> {
-    if inner.contains("dev-dependencies") || inner.contains("build-dependencies") {
-        return None;
-    }
-    let index = inner.find("dependencies")?;
-    let rest = &inner[index + "dependencies".len()..];
-    match rest.strip_prefix('.') {
-        Some(named) => Some(Some(named)),
-        None if rest.is_empty() => Some(None),
-        None => None,
-    }
+/// The `packages` array, or a panic naming what was missing.
+fn packages(metadata: &serde_json::Value) -> &Vec<serde_json::Value> {
+    metadata
+        .get("packages")
+        .and_then(serde_json::Value::as_array)
+        .expect("cargo metadata always reports a `packages` array")
 }
 
-// --- a TOML string scanner ---------------------------------------------------
-//
-// Three rounds of review each found another manifest shape that slipped past a
-// hand-written match, and each fix was written for the shape in front of it:
-// first the dotted key, then the inline table, then quoting, then renames.
-// Every one of those patched a *feature*, and the next hole was always in the
-// grammar underneath — a single-quoted rename, a multi-line rename, an ordinary
-// trailing comment that ate the whole line.
-//
-// So the shape-by-shape approach is abandoned here. What follows is one
-// definition of "what is a TOML string", used by every caller, plus a scanner
-// that knows where a string starts and ends. Comments are stripped by that
-// scanner rather than by splitting on `#`, because a `#` inside a string is not
-// a comment; and a value spanning lines is joined into one logical line before
-// anything reads it, because looking for the second quote character of a
-// half-open multi-line string returns the empty string and looks like success.
-
-/// Where a scan currently sits relative to TOML's four string forms.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum StringState {
-    Outside,
-    /// A basic string, delimited by one double quote.
-    Basic,
-    /// A literal string, delimited by one single quote.
-    Literal,
-    /// A multi-line basic string, delimited by three double quotes.
-    MultiBasic,
-    /// A multi-line literal string, delimited by three single quotes.
-    MultiLiteral,
+fn package_name(package: &serde_json::Value) -> String {
+    package
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .expect("every package has a name")
+        .to_string()
 }
 
-/// The three-character fences, named once so the scanner and the reader cannot
-/// disagree about them.
-const MULTI_BASIC_FENCE: &str = "\"\"\"";
-const MULTI_LITERAL_FENCE: &str = "'''";
-
-fn starts_with_at(chars: &[char], index: usize, pattern: &str) -> bool {
-    pattern
-        .chars()
-        .enumerate()
-        .all(|(offset, expected)| chars.get(index + offset) == Some(&expected))
+fn dependencies_of(package: &serde_json::Value) -> &Vec<serde_json::Value> {
+    static EMPTY: std::sync::OnceLock<Vec<serde_json::Value>> = std::sync::OnceLock::new();
+    package
+        .get("dependencies")
+        .and_then(serde_json::Value::as_array)
+        .unwrap_or_else(|| EMPTY.get_or_init(Vec::new))
 }
 
-/// Strip the comment from one physical line and report where the scan ended.
+fn dependency_name(dependency: &serde_json::Value) -> String {
+    dependency
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .expect("every dependency has a name")
+        .to_string()
+}
+
+/// Whether a dependency is one the crate's shipped code can call.
 ///
-/// Returns the code with any comment removed, the string state at end of line,
-/// and the inline-table brace depth. The two carried values are what let a
-/// value spanning several lines be reassembled correctly.
-fn scan_line(line: &str, state_in: StringState, depth_in: i32) -> (String, StringState, i32) {
-    let chars: Vec<char> = line.chars().collect();
-    let mut state = state_in;
-    let mut depth = depth_in;
-    let mut code = String::new();
-    let mut index = 0;
-    while index < chars.len() {
-        let current = chars[index];
-        match state {
-            StringState::Outside => {
-                // The whole of the worst defect this scanner replaces: an
-                // ordinary explanatory comment that happened to contain the
-                // word `package` was read as a rename, which discarded the real
-                // dependency key on the same line and left the suite green over
-                // a live violation.
-                if current == '#' {
-                    break;
-                }
-                if starts_with_at(&chars, index, MULTI_BASIC_FENCE) {
-                    state = StringState::MultiBasic;
-                    code.push_str(MULTI_BASIC_FENCE);
-                    index += 3;
-                    continue;
-                }
-                if starts_with_at(&chars, index, MULTI_LITERAL_FENCE) {
-                    state = StringState::MultiLiteral;
-                    code.push_str(MULTI_LITERAL_FENCE);
-                    index += 3;
-                    continue;
-                }
-                match current {
-                    '"' => state = StringState::Basic,
-                    '\'' => state = StringState::Literal,
-                    '{' => depth += 1,
-                    '}' => depth -= 1,
-                    _ => {}
-                }
-                code.push(current);
-                index += 1;
-            }
-            StringState::Basic => {
-                if current == '\\' && index + 1 < chars.len() {
-                    code.push(current);
-                    code.push(chars[index + 1]);
-                    index += 2;
-                    continue;
-                }
-                if current == '"' {
-                    state = StringState::Outside;
-                }
-                code.push(current);
-                index += 1;
-            }
-            StringState::Literal => {
-                if current == '\'' {
-                    state = StringState::Outside;
-                }
-                code.push(current);
-                index += 1;
-            }
-            StringState::MultiBasic => {
-                if starts_with_at(&chars, index, MULTI_BASIC_FENCE) {
-                    state = StringState::Outside;
-                    code.push_str(MULTI_BASIC_FENCE);
-                    index += 3;
-                    continue;
-                }
-                code.push(current);
-                index += 1;
-            }
-            StringState::MultiLiteral => {
-                if starts_with_at(&chars, index, MULTI_LITERAL_FENCE) {
-                    state = StringState::Outside;
-                    code.push_str(MULTI_LITERAL_FENCE);
-                    index += 3;
-                    continue;
-                }
-                code.push(current);
-                index += 1;
-            }
-        }
-    }
-    (code, state, depth)
+/// `kind` is absent or null for a normal dependency and carries `"dev"` or
+/// `"build"` otherwise. A structured field, so the section-name guessing that
+/// round four defeated with a `cfg` string has nothing to defeat.
+fn is_shipped(dependency: &serde_json::Value) -> bool {
+    !matches!(
+        dependency.get("kind").and_then(serde_json::Value::as_str),
+        Some("dev") | Some("build")
+    )
 }
 
-/// Split a manifest into logical lines, comments removed.
-///
-/// A logical line is one that closes every string and inline table it opened.
-/// Multi-line inline tables and multi-line strings therefore reach the parser as
-/// a single unit, which is what stops a continuation line from being read as a
-/// fresh key — or, worse, from being skipped in silence because it contains no
-/// `=` at all.
-fn logical_lines(content: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut buffer = String::new();
-    let mut state = StringState::Outside;
-    let mut depth = 0;
-    for raw in content.lines() {
-        let (code, next_state, next_depth) = scan_line(raw, state, depth);
-        if buffer.is_empty() {
-            buffer.push_str(code.trim());
-        } else {
-            buffer.push('\n');
-            buffer.push_str(&code);
-        }
-        state = next_state;
-        depth = next_depth;
-        if state == StringState::Outside && depth <= 0 {
-            depth = 0;
-            let line = std::mem::take(&mut buffer);
-            if !line.trim().is_empty() {
-                out.push(line);
-            }
-        }
-    }
-    if !buffer.trim().is_empty() {
-        out.push(buffer);
-    }
-    out
+/// Every crate in this workspace, by name.
+fn workspace_member_names(metadata: &serde_json::Value) -> BTreeSet<String> {
+    packages(metadata).iter().map(package_name).collect()
 }
 
-/// Read one TOML string value from the start of `input`, in any of its four
-/// forms.
-///
-/// The single definition. `unquote` and `package_rename` both go through here,
-/// because when each had its own idea of what a string was they disagreed —
-/// one handled single quotes and the other did not, and a single-quoted rename
-/// was therefore invisible to the boundary tests while being perfectly ordinary
-/// TOML.
-fn read_toml_string(input: &str) -> Option<String> {
-    let text = input.trim_start();
-    // Multi-line fences first. A three-quote fence also starts with one quote,
-    // and checking the short form first matches the empty string between the
-    // first two characters of the fence — which reads as a successful parse of
-    // nothing.
-    for fence in [MULTI_BASIC_FENCE, MULTI_LITERAL_FENCE] {
-        if let Some(rest) = text.strip_prefix(fence) {
-            let end = rest.find(fence)?;
-            let value = &rest[..end];
-            // TOML drops a newline immediately following the opening fence.
-            let value = value
-                .strip_prefix("\r\n")
-                .or_else(|| value.strip_prefix('\n'))
-                .unwrap_or(value);
-            return Some(value.trim().to_string());
-        }
-    }
-    for delimiter in ['"', '\''] {
-        if let Some(rest) = text.strip_prefix(delimiter) {
-            let end = rest.find(delimiter)?;
-            return Some(rest[..end].to_string());
-        }
-    }
-    None
-}
-
-/// A key or table name with its quoting removed, in any form TOML permits.
-fn unquote(value: &str) -> String {
-    let trimmed = value.trim();
-    read_toml_string(trimmed).unwrap_or_else(|| trimmed.to_string())
-}
-
-/// The crate a `package` rename points at.
-///
-/// Cargo lets a dependency be declared under any key and renamed to its real
-/// crate with `package`. Reading only the key means a dependency aliased to
-/// `qip-quantum` looks like a dependency on whatever the alias is called, and
-/// the real edge is invisible to every absent-edge test in this file.
-///
-/// Scans forward for a `package` that is actually followed by `=`, so that a
-/// path containing the substring does not qualify. The value is read by
-/// [`read_toml_string`], so every string form is handled by construction rather
-/// than by enumeration.
-fn package_rename(fragment: &str) -> Option<String> {
-    let mut search = fragment;
-    loop {
-        let index = search.find("package")?;
-        let after = &search[index + "package".len()..];
-        if let Some(value) = after.trim_start().strip_prefix('=')
-            && let Some(name) = read_toml_string(value)
-        {
-            return Some(name);
-        }
-        search = after;
-    }
-}
-
-/// The parser itself, split from the file handling so it can be tested against
-/// the grammar rather than against the manifests this repository happens to
-/// contain today.
-fn parse_manifest_content(content: &str) -> (String, BTreeSet<String>) {
-    let mut name = String::new();
-    let mut dependencies = BTreeSet::new();
-    let mut in_package = false;
-    let mut in_shipped_dependencies = false;
-    // A `[dependencies.foo]` table. The key, plus the rename if the table
-    // declares one, resolved when the table ends — a rename can appear on any
-    // line inside it, so the name is not known at the header.
-    let mut pending: Option<(String, Option<String>)> = None;
-
-    for line in logical_lines(content) {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if line.starts_with('[') {
-            flush_pending(&mut pending, &mut dependencies);
-            let section = section_name(line);
-            in_package = section.as_deref() == Some("package");
-            in_shipped_dependencies = false;
-            if let Some(section) = section.as_deref() {
-                match shipped_dependency_table(section) {
-                    // A table named after one dependency is itself the
-                    // declaration. The keys that follow describe that one
-                    // dependency, so they are not scanned as further names.
-                    Some(Some(named)) => pending = Some((unquote(named), None)),
-                    Some(None) => in_shipped_dependencies = true,
-                    None => {}
-                }
-            }
-            continue;
-        }
-        if in_package
-            && let Some(value) = line.strip_prefix("name")
-            && let Some(quoted) = read_toml_string(value.trim_start().trim_start_matches('='))
-        {
-            name = quoted;
-        }
-        // Inside a table named after one dependency, a `package` key renames it.
-        if let Some((_, rename)) = pending.as_mut()
-            && let Some(renamed) = package_rename(line)
-        {
-            *rename = Some(renamed);
-        }
-        if in_shipped_dependencies {
-            let Some((key, value)) = line.split_once('=') else {
-                continue;
-            };
-            // A dotted key and a quoted dotted key both reduce to the text
-            // before the first `.`; a plain assignment has no `.` and is
-            // already the key.
-            let key = key.trim();
-            let key = key.split_once('.').map_or(key, |(left, _)| left.trim());
-            // A rename wins over the key, in both directions: an alias pointing
-            // at an in-tree crate is an edge, and an in-tree-looking key
-            // pointing at a third party is not.
-            let crate_name = package_rename(value).unwrap_or_else(|| unquote(key));
-            if crate_name.starts_with("qip-") {
-                dependencies.insert(crate_name);
-            }
-        }
-    }
-    flush_pending(&mut pending, &mut dependencies);
-    (name, dependencies)
-}
-
-/// The table name in a section header, tolerating comments and inner spaces.
-///
-/// **This is where a whole section used to be silently dropped.** The header was
-/// once reduced by trimming brackets off each end, which works only when the
-/// `]` is the final character. A trailing comment ends the line in something
-/// else, so nothing was trimmed, the table was not recognised, and every key
-/// under it was skipped — the crate's entire dependency list vanished and every
-/// absent-edge assertion about it passed vacuously. A header written with
-/// spaces inside the brackets, which is legal TOML, failed the same way.
-///
-/// Taking the text between `[` and the *first* `]` handles both, and a
-/// double-bracketed array-of-tables header yields a name matching no dependency
-/// table.
-fn section_name(line: &str) -> Option<String> {
-    let rest = line.strip_prefix('[')?;
-    let end = rest.find(']')?;
-    Some(rest[..end].trim().to_string())
-}
-
-/// Resolve a table named after one dependency into the crate it actually names.
-fn flush_pending(pending: &mut Option<(String, Option<String>)>, into: &mut BTreeSet<String>) {
-    if let Some((key, rename)) = pending.take() {
-        let crate_name = rename.unwrap_or(key);
-        if crate_name.starts_with("qip-") {
-            into.insert(crate_name);
-        }
-    }
-}
-
-/// A manifest fragment and whether it declares a shipped edge to `qip-quantum`.
-///
-/// **Organised by TOML grammar, not by feature.** The previous version had rows
-/// for "rename" and "quoting", and three review rounds each found a hole
-/// *between* those rows — a single-quoted rename, a multi-line rename, a
-/// comment containing the word `package`. Grouping by feature meant the reader
-/// could see which features were covered and not which grammar was, and the
-/// grammar was where the holes lived.
-///
-/// The axes below are the ones the parser actually has to get right: how a
-/// section header is written, how a key is written, how a string value is
-/// written, where a comment may appear, which tables count, and whether a
-/// value spans lines. A form that is not on one of these axes is a form nobody
-/// has thought about, which is the honest state of the last three rounds.
-const MANIFEST_FORMS: &[(&str, &str, bool)] = &[
-    // --- axis 1: how the section header is written ---------------------------
-    (
-        "header/plain",
-        "[dependencies]\nqip-quantum.workspace = true\n",
-        true,
-    ),
-    (
-        "header/inner-spaces",
-        "[ dependencies ]\nqip-quantum.workspace = true\n",
-        true,
-    ),
-    // Verified live: this exact line left the suite green over a compiling
-    // `qip-risk-engine -> qip-quantum` edge.
-    (
-        "header/trailing-comment",
-        "[dependencies] # in-tree only\nqip-quantum.workspace = true\n",
-        true,
-    ),
-    (
-        "header/named-table",
-        "[dependencies.qip-quantum]\nworkspace = true\n",
-        true,
-    ),
-    (
-        "header/named-table-trailing-comment",
-        "[dependencies.qip-quantum] # the solver\nworkspace = true\n",
-        true,
-    ),
-    (
-        "header/target-literal-quoted",
-        "[target.'cfg(unix)'.dependencies]\nqip-quantum.workspace = true\n",
-        true,
-    ),
-    (
-        "header/target-basic-quoted",
-        "[target.\"cfg(windows)\".dependencies]\nqip-quantum.workspace = true\n",
-        true,
-    ),
-    (
-        "header/target-named-table",
-        "[target.'cfg(unix)'.dependencies.qip-quantum]\nworkspace = true\n",
-        true,
-    ),
-    // --- axis 2: how the key is written --------------------------------------
-    (
-        "key/bare-dotted",
-        "[dependencies]\nqip-quantum.workspace = true\n",
-        true,
-    ),
-    (
-        "key/bare-assignment",
-        "[dependencies]\nqip-quantum = { workspace = true }\n",
-        true,
-    ),
-    (
-        "key/basic-quoted",
-        "[dependencies]\n\"qip-quantum\".workspace = true\n",
-        true,
-    ),
-    (
-        "key/literal-quoted",
-        "[dependencies]\n'qip-quantum'.workspace = true\n",
-        true,
-    ),
-    (
-        "key/basic-quoted-table",
-        "[dependencies.\"qip-quantum\"]\nworkspace = true\n",
-        true,
-    ),
-    // --- axis 3: how a rename's string value is written -----------------------
-    // All four TOML string forms. Each of these was, at some point, a live
-    // bypass: the first was found in round two, the second and third in round
-    // three, and the fourth is here because the grammar has four forms and
-    // enumerating three of them is how the third round went wrong.
-    (
-        "string/basic",
-        "[dependencies]\nqip-numerics-ext = { package = \"qip-quantum\", version = \"0.1\" }\n",
-        true,
-    ),
-    (
-        "string/literal",
-        "[dependencies]\nqip-numerics-ext = { path = \"../../libs/qip-quantum\", package = 'qip-quantum' }\n",
-        true,
-    ),
-    (
-        "string/multi-line-basic",
-        "[dependencies]\nqip-numerics-ext = { path = \"../x\", package = \"\"\"\nqip-quantum\"\"\" }\n",
-        true,
-    ),
-    (
-        "string/multi-line-literal",
-        "[dependencies]\nqip-numerics-ext = { path = \"../x\", package = '''\nqip-quantum''' }\n",
-        true,
-    ),
-    (
-        "string/rename-in-named-table",
-        "[dependencies.qip-numerics-ext]\npackage = \"qip-quantum\"\nversion = \"0.1\"\n",
-        true,
-    ),
-    (
-        "string/rename-in-named-table-literal",
-        "[dependencies.qip-numerics-ext]\npackage = 'qip-quantum'\n",
-        true,
-    ),
-    // A rename under a key that looks nothing like an in-tree crate.
-    (
-        "string/rename-under-foreign-key",
-        "[dependencies]\nsolver = { package = \"qip-quantum\", version = \"0.1\" }\n",
-        true,
-    ),
-    // And the converse, so the rename wins in both directions rather than only
-    // in the direction that adds an edge.
-    (
-        "string/rename-away-from-in-tree",
-        "[dependencies]\nqip-lookalike = { package = \"serde\", version = \"1\" }\n",
-        false,
-    ),
-    // --- axis 4: where a comment may appear ----------------------------------
-    (
-        "comment/whole-line",
-        "[dependencies]\n# qip-quantum.workspace = true\n",
-        false,
-    ),
-    // The critical one. An ordinary explanatory comment mentioning a package
-    // name was parsed as a rename, which discarded the real key beside it.
-    (
-        "comment/trailing-mentions-package",
-        "[dependencies]\nqip-quantum.workspace = true # not the vendored package = \"quantum-sim\" shim\n",
-        true,
-    ),
-    (
-        "comment/trailing-plain",
-        "[dependencies]\nqip-quantum.workspace = true # the solver\n",
-        true,
-    ),
-    // A `#` inside a string is not a comment, and a scanner that splits on `#`
-    // truncates the value instead of reading it.
-    (
-        "comment/hash-inside-string",
-        "[dependencies]\nsolver = { package = \"qip-quantum\", version = \"0.1#beta\" }\n",
-        true,
-    ),
-    // --- axis 5: which tables count ------------------------------------------
-    (
-        "table/dev",
-        "[dev-dependencies]\nqip-quantum.workspace = true\n",
-        false,
-    ),
-    (
-        "table/dev-named",
-        "[dev-dependencies.qip-quantum]\nworkspace = true\n",
-        false,
-    ),
-    (
-        "table/build",
-        "[build-dependencies]\nqip-quantum.workspace = true\n",
-        false,
-    ),
-    ("table/features", "[features]\nqip-quantum = []\n", false),
-    (
-        "table/third-party",
-        "[dependencies]\nserde = { workspace = true }\n",
-        false,
-    ),
-    // --- axis 6: whether a value spans lines ---------------------------------
-    // Previously caught only by an unrelated test reporting `}` as a crate,
-    // which was an accident rather than a control: anyone tightening that
-    // tokeniser would have reopened this in silence.
-    (
-        "layout/multi-line-inline-table",
-        "[dependencies]\nqip-quantum = {\n    workspace = true,\n}\n",
-        true,
-    ),
-    (
-        "layout/multi-line-inline-table-with-rename",
-        "[dependencies]\nsolver = {\n    package = \"qip-quantum\",\n    version = \"0.1\",\n}\n",
-        true,
-    ),
-    (
-        "layout/path-containing-the-word-package",
-        "[dependencies]\nqip-quantum = { path = \"../packages/qip-quantum\" }\n",
-        true,
-    ),
-];
+// --- the regression cases from four rounds of bypass -------------------------
 
 #[test]
-fn the_manifest_parser_sees_every_dependency_form_that_reaches_a_crate() {
-    // The regression suite for three rounds of the same defect. Every `true`
-    // row is a boundary bypass if the parser cannot read it, and every `false`
-    // row is a false edge if it can. Several rows were verified as live bypasses
-    // against a real manifest — the trailing-comment header and the
-    // trailing-comment-mentioning-package rows each left this whole file green
-    // while `qip-risk-engine` genuinely compiled against `qip-quantum`.
+fn cargo_resolves_every_manifest_form_that_defeated_a_hand_written_parser() {
+    // Four rounds of review found bypasses in a hand-rolled TOML reader. Rather
+    // than delete that history, every form is kept here and expressed against
+    // the source of truth that replaced the reader.
     //
-    // Deliberately no test count here. A previous comment cited one as
-    // evidence, the file grew, and the number became a false claim inside the
-    // argument for the test that was supposed to prevent false claims.
+    // A real throwaway workspace is built and `cargo metadata` is run on it, so
+    // this asserts the actual tool's actual behaviour rather than a belief
+    // about it. It needs no network — every dependency is a path dependency —
+    // and a two-crate workspace resolves in milliseconds.
     //
-    // The failure class, once more, because it has now recurred three times:
-    // every boundary test in this file asserts that some edge is *absent*, so a
-    // form the parser cannot read is an edge that does not exist as far as any
-    // of them are concerned, and the whole file goes green over a live
-    // violation.
-    for (label, fragment, expected) in MANIFEST_FORMS {
-        let manifest = format!("[package]\nname = \"probe\"\n{fragment}");
-        let (name, dependencies) = parse_manifest_content(&manifest);
-        assert_eq!(name, "probe", "{label}: the package name was not parsed");
+    // Each alias below is a form that was, at some point, a live compiling edge
+    // this file could not see.
+    let root = std::env::temp_dir().join(format!(
+        "qip-manifest-forms-{}-{}",
+        std::process::id(),
+        line!()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("solver/src")).expect("temp workspace");
+    std::fs::create_dir_all(root.join("consumer/src")).expect("temp workspace");
+    std::fs::write(root.join("solver/src/lib.rs"), "").expect("write");
+    std::fs::write(root.join("consumer/src/lib.rs"), "").expect("write");
+
+    // Round four, F4: the alias lives in `[workspace.dependencies]` under a key
+    // that is not the crate's name, so a reader looking only at the member
+    // manifest sees a dependency on something that does not exist.
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nresolver = \"3\"\nmembers = [\"solver\", \"consumer\"]\n\n\
+         [workspace.dependencies]\n\
+         probe_alias = { path = \"solver\", package = \"probe-solver\" }\n",
+    )
+    .expect("write");
+    std::fs::write(
+        root.join("solver/Cargo.toml"),
+        "[package]\nname = \"probe-solver\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write");
+
+    // Round four, F1: a multi-line literal description ending in a quote
+    // immediately before its closing fence. Legal TOML, no escape character,
+    // and it desynchronised the scanner so completely that the entire
+    // dependency table below became invisible.
+    let consumer = concat!(
+        "[package]\n",
+        "name = \"probe-consumer\"\n",
+        "version = \"0.1.0\"\n",
+        "edition = \"2021\"\n",
+        "description = '''\n",
+        "A description ending in a quote. Strictly 'paper''''\n",
+        "\n",
+        "[dependencies]\n",
+        // Round four, F4.
+        "probe_alias.workspace = true\n",
+        // Round three: a rename in an inline table.
+        "inline_alias = { package = \"probe-solver\", path = \"../solver\" }\n",
+        // Round three: a quoted key.
+        "\"quoted_alias\" = { package = \"probe-solver\", path = \"../solver\" }\n",
+        // Round four, F3: an unknown key whose value contains a decoy rename.
+        // Cargo accepts unknown keys with a warning no gate reads.
+        "unknown_key = { package = \"probe-solver\", path = \"../solver\", \
+         notes = \"package = 'decoy'\" }\n",
+        "\n",
+        // Round two: a table named after one dependency.
+        "[dependencies.table_alias]\n",
+        "package = \"probe-solver\"\n",
+        "path = \"../solver\"\n",
+        "\n",
+        // Round four, F2: a target table whose cfg predicate contains the word
+        // the section classifier was searching for.
+        "[target.'cfg(not(target_os = \"dependencies\"))'.dependencies]\n",
+        "target_alias = { package = \"probe-solver\", path = \"../solver\" }\n",
+        "\n",
+        // Not shipped code, and must not be counted.
+        "[dev-dependencies]\n",
+        "dev_alias = { package = \"probe-solver\", path = \"../solver\" }\n",
+    );
+    std::fs::write(root.join("consumer/Cargo.toml"), consumer).expect("write");
+
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let output = std::process::Command::new(&cargo)
+        .args([
+            "metadata",
+            "--format-version",
+            "1",
+            "--no-deps",
+            "--manifest-path",
+        ])
+        .arg(root.join("Cargo.toml"))
+        .output()
+        .expect("cargo metadata runs");
+    assert!(
+        output.status.success(),
+        "the fixture workspace does not resolve, so none of these forms is \
+         being tested: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("cargo metadata emits JSON");
+
+    let consumer_package = packages(&metadata)
+        .iter()
+        .find(|package| package_name(package) == "probe-consumer")
+        .expect("the fixture consumer is a workspace member");
+
+    let mut shipped_aliases = BTreeSet::new();
+    let mut excluded_aliases = BTreeSet::new();
+    for dependency in dependencies_of(consumer_package) {
+        // The property that matters: whatever the key was called, Cargo reports
+        // the crate that is really depended on.
         assert_eq!(
-            dependencies.contains("qip-quantum"),
-            *expected,
-            "{label}: expected qip-quantum edge = {expected}, parsed {dependencies:?}"
+            dependency_name(dependency),
+            "probe-solver",
+            "a fixture dependency resolved to something unexpected: {dependency:?}"
         );
+        let alias = dependency
+            .get("rename")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("probe-solver")
+            .to_string();
+        if is_shipped(dependency) {
+            shipped_aliases.insert(alias);
+        } else {
+            excluded_aliases.insert(alias);
+        }
     }
 
-    // The premise, without which the loop could pass on an empty table.
-    assert!(
-        MANIFEST_FORMS.iter().any(|(_, _, expected)| *expected),
-        "no form is expected to produce an edge"
+    let expected_shipped: BTreeSet<String> = [
+        "probe_alias",
+        "inline_alias",
+        "quoted_alias",
+        "unknown_key",
+        "table_alias",
+        "target_alias",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    assert_eq!(
+        shipped_aliases, expected_shipped,
+        "a manifest form that once bypassed this file is not being resolved as \
+         a shipped dependency"
     );
-    assert!(
-        MANIFEST_FORMS.iter().any(|(_, _, expected)| !*expected),
-        "no form is expected to be excluded, so the exclusions are untested"
+    assert_eq!(
+        excluded_aliases,
+        ["dev_alias".to_string()]
+            .into_iter()
+            .collect::<BTreeSet<_>>(),
+        "the dev dependency was not excluded, or something else was"
     );
-    // Every axis named in the doc comment is actually populated. A row deleted
-    // during a refactor would otherwise leave the comment describing coverage
-    // that is no longer there.
-    for axis in [
-        "header/", "key/", "string/", "comment/", "table/", "layout/",
-    ] {
-        assert!(
-            MANIFEST_FORMS
-                .iter()
-                .any(|(label, _, _)| label.starts_with(axis)),
-            "the {axis} axis has no rows, so the grammar it covers is untested"
-        );
-    }
+
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// Everything `root` can reach, transitively.
@@ -1479,45 +1150,43 @@ fn no_crate_declares_a_third_party_dependency_beyond_the_two_permitted() {
     // The lockfile check in `scripts/check-dependencies.sh` catches what was
     // resolved. This catches what was *asked for*, which is the line a
     // reviewer sees in the diff.
+    //
+    // Served by `cargo metadata` like every other check in this file. It used
+    // to run its own, weaker manifest reader — one that classified a section by
+    // `contains("dependencies")` and split keys on `['.', ' ', '=']` — so the
+    // two disagreed about quoted keys, tables named after one dependency, and
+    // which sections counted. Three review rounds were decided by which of the
+    // two happened to fire on a given manifest, which is not a property a
+    // boundary check should have. There is now one reader.
+    //
+    // Unlike the boundary graph this counts **every** kind, including dev and
+    // build dependencies: the rule is that the workspace declares two
+    // third-party crates, and a test-only dependency is still a supply chain.
     let permitted: BTreeSet<&str> = ["serde", "serde_json"].into_iter().collect();
+    let metadata = workspace_metadata();
+    let members = workspace_member_names(&metadata);
     let mut offenders = Vec::new();
 
-    let mut stack = vec![repository_root().join("backend/crates")];
-    while let Some(directory) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&directory) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
+    for package in packages(&metadata) {
+        let crate_name = package_name(package);
+        for dependency in dependencies_of(package) {
+            let depended = dependency_name(dependency);
+            if members.contains(&depended) || permitted.contains(depended.as_str()) {
                 continue;
             }
-            if path.file_name().is_none_or(|name| name != "Cargo.toml") {
-                continue;
-            }
-            let content = std::fs::read_to_string(&path).expect("readable manifest");
-            let mut section = String::new();
-            for line in content.lines() {
-                let line = line.trim();
-                if line.starts_with('[') {
-                    section = line.to_string();
-                    continue;
-                }
-                if !section.contains("dependencies") || line.is_empty() || line.starts_with('#') {
-                    continue;
-                }
-                let Some(name) = line.split(['.', ' ', '=']).next() else {
-                    continue;
-                };
-                if name.is_empty() || name.starts_with("qip-") || permitted.contains(name) {
-                    continue;
-                }
-                offenders.push(format!("{}: {name}", path.display()));
-            }
+            offenders.push(format!("{crate_name}: {depended}"));
         }
     }
 
+    // The premise. If the walk found no dependencies at all the loop above
+    // would report nothing while checking nothing, which is the shape of every
+    // failure this file has had.
+    assert!(
+        packages(&metadata)
+            .iter()
+            .any(|package| !dependencies_of(package).is_empty()),
+        "no package reports any dependency, so this test constrains nothing"
+    );
     assert!(
         offenders.is_empty(),
         "third-party dependencies were declared: {offenders:?}"
@@ -1707,16 +1376,29 @@ fn crate_directories() -> BTreeSet<String> {
 }
 
 /// Crate names declared under a workspace directory.
+///
+/// Taken from `cargo metadata` rather than by reading manifests, so that this
+/// file has exactly one idea of what a crate is called. Two readers that
+/// disagreed about that is what let three review rounds turn on which of them
+/// happened to fire.
 fn crates_under(relative: &str) -> BTreeSet<String> {
     let root = repository_root().join(relative);
+    assert!(root.is_dir(), "cannot read {}", root.display());
+    let metadata = workspace_metadata();
     let mut names = BTreeSet::new();
-    let Ok(entries) = std::fs::read_dir(&root) else {
-        panic!("cannot read {}", root.display());
-    };
-    for entry in entries.flatten() {
-        let manifest = entry.path().join("Cargo.toml");
-        if manifest.is_file() {
-            names.insert(parse_manifest(&manifest).0);
+    for package in packages(&metadata) {
+        let manifest = package
+            .get("manifest_path")
+            .and_then(serde_json::Value::as_str)
+            .expect("every package has a manifest path");
+        // The crate directory is the manifest's parent; membership of
+        // `relative` is a direct-child test, matching the previous behaviour.
+        if std::path::Path::new(manifest)
+            .parent()
+            .and_then(std::path::Path::parent)
+            .is_some_and(|parent| parent == root)
+        {
+            names.insert(package_name(package));
         }
     }
     assert!(!names.is_empty(), "no crates found under {relative}");
