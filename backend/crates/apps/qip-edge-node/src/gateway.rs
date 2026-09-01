@@ -170,6 +170,16 @@ impl SimulatedGateway {
         std::mem::take(&mut self.pending)
     }
 
+    /// Orders the venue holds open, from the venue's own book.
+    ///
+    /// The one observation that tells a buy from a sell at the matching
+    /// engine without reading the order back: a buy rests against bids and
+    /// fills against offers, and a test that only counts fills against the
+    /// liquidity it happened to seed cannot tell the two apart.
+    pub fn resting_count(&self) -> usize {
+        self.exchange.resting_count()
+    }
+
     fn ensure_listed(
         &mut self,
         object_id: &ObjectId,

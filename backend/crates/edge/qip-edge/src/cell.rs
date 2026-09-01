@@ -130,6 +130,10 @@ pub struct PlacedOrder {
     pub contributors: Vec<Contributor>,
     pub object_id: ObjectId,
     pub venue: VenueId,
+    /// The side of the book the order takes: `Ask` is a buy, `Bid` is a sell.
+    /// Every gateway reads it this way, and so does the sign on each
+    /// contributor below — a positive share bought. Stated here because the
+    /// enum's own names do not say which reading an *order* carries.
     pub side: BookSide,
     pub quantity: Decimal,
     pub price: Decimal,
@@ -961,7 +965,19 @@ impl Cell {
         // Signed, because netting is addition: a buy is positive, a sell is
         // negative, and two opposing intents of equal size sum to nothing
         // without anybody writing a conditional that could be got backwards.
-        let signed = if matches!(side, BookSide::Bid) {
+        //
+        // `side` names the side of the book the order *takes* — the one
+        // convention every seam past this point shares (`Placer`, the node's
+        // gateways, `sweep_cost`) — so taking the ask is the buy and is the
+        // positive one. This line once read the other way round, and
+        // `place_net` read `is_buy` the other way round to match, so an
+        // `Enter` still reached the venue as a buy while every fact computed
+        // from the sign in between — the cross ledger's `bought` and `sold`,
+        // the contributor shares shipped to the centre, `NetIntent::is_buy`
+        // itself — named the buyer as the seller. Two inversions that cancel
+        // at the venue are not a convention; they are a defect the venue
+        // happens not to see.
+        let signed = if matches!(side, BookSide::Ask) {
             quantity
         } else {
             -quantity
@@ -1022,7 +1038,9 @@ impl Cell {
             report.cancelled.push(net_intent.clone());
             return Ok(None);
         };
-        let side = if is_buy { BookSide::Bid } else { BookSide::Ask };
+        // A buy takes the ask. See `intent_for` for why this must agree with
+        // the sign there rather than compensate for it.
+        let side = if is_buy { BookSide::Ask } else { BookSide::Bid };
         let quantity = net_intent.order_quantity();
         let price = net_intent.reference_price;
         let venue = net_intent.venue.clone();
