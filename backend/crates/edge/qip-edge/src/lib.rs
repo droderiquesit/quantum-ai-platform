@@ -30,6 +30,7 @@ pub mod dropcopy;
 pub mod envelope;
 pub mod journal;
 pub mod mesh;
+pub mod policy;
 pub mod seam;
 
 pub use cell::{Cell, CellConfig, PlacedOrder, Placer, WorkReport};
@@ -41,4 +42,5 @@ pub use mesh::{
     Dispatch, DownlinkBatch, DownlinkConfig, DownlinkStats, RefusedGrant, StrategyUtilisation,
     UplinkConfig, UplinkStats,
 };
+pub use policy::VerifiedPolicy;
 pub use seam::{CellLiquidity, value_kind, value_type};

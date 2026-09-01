@@ -711,3 +711,45 @@ fn trivial_strategy() -> Result<(
     let compiled = compiler.compile(&spec)?;
     Ok((compiled, compiler.into_program()))
 }
+
+// --- verified policy: the only route into a cell's policy state --------------
+
+use qip_contracts::policy::PolicyPayload;
+use qip_edge::VerifiedPolicy;
+
+#[test]
+fn a_policy_payload_verifies_only_with_the_right_key_cell_and_bytes() -> Result<()> {
+    // The same three refusals `VerifiedEnvelope` earns, for the other thing
+    // the centre ships. Arriving well-typed proves nothing: the constructor
+    // recomputes the MAC, matches the address, and there is no other way in.
+    let key = b"cell-policy-test-key";
+    let signed = PolicyPayload::unproduced(1, "cell-a", t(0)).signed(key)?;
+
+    // Premise: the genuine article verifies.
+    assert!(VerifiedPolicy::verify(signed.clone(), key, "cell-a", t(1)).is_ok());
+
+    // A different key refuses.
+    assert!(
+        VerifiedPolicy::verify(signed.clone(), b"another-key", "cell-a", t(1)).is_err(),
+        "a payload verified against a key that did not sign it"
+    );
+    // An empty key refuses rather than verifying nothing.
+    assert!(VerifiedPolicy::verify(signed.clone(), b"", "cell-a", t(1)).is_err());
+
+    // The right key, the wrong cell: a genuine signature is not an address.
+    assert!(
+        VerifiedPolicy::verify(signed.clone(), key, "cell-b", t(1)).is_err(),
+        "a payload for cell-a was accepted by cell-b"
+    );
+
+    // Tampered content: flip the halt flag after signing. The signature covers
+    // it, so the edited payload must refuse — this is the un-halt forgery.
+    let mut tampered = signed;
+    tampered.halted = true;
+    assert!(
+        VerifiedPolicy::verify(tampered, key, "cell-a", t(1)).is_err(),
+        "a payload edited after signing still verified, so anyone on the \
+         path can halt or un-halt a cell"
+    );
+    Ok(())
+}

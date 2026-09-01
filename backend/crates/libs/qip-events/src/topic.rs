@@ -112,6 +112,11 @@ pub enum Topic {
     PortfolioProposed,
     RiskEvaluated,
     RiskApproved,
+    /// The centre distributed a signed policy payload to a region — the
+    /// twelve-item shipment of blueprint §41.5. Policy is a decision about
+    /// what a region may do, so it sits in the Decide group and is retained
+    /// permanently with the rest of that group.
+    PolicyDistributed,
     RiskRejected,
     ComplianceEvaluated,
 
@@ -148,7 +153,7 @@ pub enum Topic {
 impl Topic {
     /// Every topic, in declaration order. Used by the registry, the
     /// documentation-drift test and the observability bootstrap.
-    pub const ALL: [Self; 65] = [
+    pub const ALL: [Self; 66] = [
         Self::MarketTick,
         Self::MarketQuote,
         Self::MarketTrade,
@@ -189,6 +194,7 @@ impl Topic {
         Self::PortfolioProposed,
         Self::RiskEvaluated,
         Self::RiskApproved,
+        Self::PolicyDistributed,
         Self::RiskRejected,
         Self::ComplianceEvaluated,
         Self::OrderProposed,
@@ -260,6 +266,7 @@ impl Topic {
             Self::PortfolioProposed => "portfolio.proposed",
             Self::RiskEvaluated => "risk.evaluated",
             Self::RiskApproved => "risk.approved",
+            Self::PolicyDistributed => "policy.distributed",
             Self::RiskRejected => "risk.rejected",
             Self::ComplianceEvaluated => "compliance.evaluated",
             Self::OrderProposed => "order.proposed",
@@ -340,6 +347,7 @@ impl Topic {
             | Self::PortfolioProposed
             | Self::RiskEvaluated
             | Self::RiskApproved
+            | Self::PolicyDistributed
             | Self::RiskRejected
             | Self::ComplianceEvaluated => TopicGroup::Decide,
 
