@@ -47,7 +47,8 @@ use qip_core::error::{Error, Result};
 use qip_core::{Clock, Timestamp};
 use qip_edge::cell::{Cell, WorkReport};
 use qip_edge::mesh::{
-    CapitalDownlink, CellUplink, Dispatch, DownlinkConfig, DownlinkStats, UplinkConfig, UplinkStats,
+    CapitalDownlink, CellUplink, Dispatch, DownlinkConfig, DownlinkStats, PolicyDownlink,
+    PolicyDownlinkStats, UplinkConfig, UplinkStats,
 };
 use qip_transport::breaker::BreakerState;
 use qip_transport::retry::{Sleeper, ThreadSleeper};
@@ -144,6 +145,12 @@ pub struct MeshTick {
     pub duplicates: usize,
     /// Set when the poll itself failed, rather than any grant in it.
     pub poll_error: Option<String>,
+    /// Policy sequences applied this tick, in application order.
+    pub policies: Vec<u64>,
+    /// Halt commands applied this tick.
+    pub halts: usize,
+    /// Set when the policy poll itself failed.
+    pub policy_poll_error: Option<String>,
 }
 
 impl MeshTick {
@@ -160,6 +167,7 @@ impl MeshTick {
 pub struct MeshHealth {
     pub uplink: UplinkStats,
     pub downlink: DownlinkStats,
+    pub policy: PolicyDownlinkStats,
     /// The circuit to the central plane, as the uplink sees it. Published
     /// because "this cell has stopped talking to the centre" is invisible from
     /// a counter that merely stopped increasing.
@@ -172,6 +180,9 @@ pub struct MeshLink {
     peer: String,
     uplink: CellUplink,
     downlink: CapitalDownlink,
+    /// The policy half. Same inbox as capital — each downlink ignores the
+    /// other's topics — so one deployment variable serves both.
+    policy: PolicyDownlink,
 }
 
 impl MeshLink {
@@ -219,6 +230,17 @@ impl MeshLink {
                 settings.seed.wrapping_add(1),
             ),
             envelope_key,
+            Arc::clone(&clock),
+            Arc::clone(&sleeper),
+        )?;
+        let policy = PolicyDownlink::connect(
+            DownlinkConfig::new(&settings.cell, settings.mesh_config("downlink")).with_breaker(
+                qip_transport::breaker::BreakerPolicy::default(),
+                // A third offset for the third consumer of the same peer, for
+                // the same reason the second got one.
+                settings.seed.wrapping_add(2),
+            ),
+            envelope_key,
             clock,
             sleeper,
         )?;
@@ -226,6 +248,7 @@ impl MeshLink {
             peer: settings.peer.clone(),
             uplink,
             downlink,
+            policy,
         })
     }
 
@@ -237,6 +260,7 @@ impl MeshLink {
         MeshHealth {
             uplink: self.uplink.stats(),
             downlink: self.downlink.stats(),
+            policy: self.policy.stats(),
             circuit: self.uplink.circuit(),
         }
     }
@@ -273,6 +297,38 @@ impl MeshLink {
                 }
             }
             Err(error) => tick.poll_error = Some(error.message().to_string()),
+        }
+
+        // Policy after capital, halts before payloads. Halts first because a
+        // halt is never improved by waiting, and a batch that carried both an
+        // engage and a releasing payload must end halted only if the release
+        // predates the halt — which the cell's barrier decides, not arrival
+        // order.
+        match self.policy.poll(now) {
+            Ok(batch) => {
+                for halt in batch.halts {
+                    cell.apply_halt(halt, now);
+                    tick.halts += 1;
+                }
+                for payload in batch.verified {
+                    let sequence = payload.sequence();
+                    match cell.apply_policy(payload, now) {
+                        Ok(()) => tick.policies.push(sequence),
+                        // A sequence the cell refuses is a disagreement about
+                        // ordering, reported and never resolved by forcing it.
+                        Err(error) => tick
+                            .refused
+                            .push(format!("policy {sequence}: {}", error.message())),
+                    }
+                }
+                for refusal in batch.refused {
+                    tick.refused
+                        .push(format!("{}: {}", refusal.event_id, refusal.reason));
+                }
+            }
+            Err(error) => {
+                tick.policy_poll_error = Some(error.message().to_string());
+            }
         }
 
         let delta = cell.state_delta(report, now);

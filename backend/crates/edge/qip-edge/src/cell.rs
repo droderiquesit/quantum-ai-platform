@@ -14,7 +14,7 @@ use crate::dropcopy::{CellFill, Discrepancy, DropCopyFill, DropCopyReconciler};
 use crate::envelope::VerifiedEnvelope;
 use crate::journal::{Decision, Journal, Mirror};
 use crate::mesh::{CellStateDelta, DeltaOrder, DeltaRefusal, StrategyUtilisation};
-use crate::policy::VerifiedPolicy;
+use crate::policy::{VerifiedHalt, VerifiedPolicy};
 use crate::seam::CellLiquidity;
 use qip_contracts::capital::{CapitalGrant, Utilisation};
 use qip_contracts::degradation::{DegradationState, StrategyClass};
@@ -138,6 +138,10 @@ pub struct Cell {
     /// payload saying it is over. Two halts, two release disciplines, and
     /// neither can release the other.
     policy_halted: bool,
+    /// The instant of the newest halt applied. A payload releases the policy
+    /// halt only if it was issued *after* this, so a pre-halt payload still in
+    /// flight cannot un-halt the cell it was racing.
+    policy_halt_barrier: Option<Timestamp>,
     dropcopy: DropCopyReconciler,
     journal: Journal,
     fills: Vec<CellFill>,
@@ -175,6 +179,7 @@ impl Cell {
             autonomy: AutonomyController::new(),
             policy: None,
             policy_halted: false,
+            policy_halt_barrier: None,
             dropcopy: DropCopyReconciler::new(),
             journal: Journal::new(),
             fills: Vec::new(),
@@ -242,6 +247,30 @@ impl Cell {
         self.policy.as_ref().map(VerifiedPolicy::sequence)
     }
 
+    /// Apply a verified halt command.
+    ///
+    /// Engage-only and idempotent: there is no release command, because
+    /// release is a fresh policy decision and rides a newer signed payload
+    /// issued after the barrier this records. Applying the same halt twice is
+    /// one halt.
+    pub fn apply_halt(&mut self, halt: VerifiedHalt, now: Timestamp) {
+        let barrier = match self.policy_halt_barrier {
+            Some(existing) if existing >= halt.issued_at() => existing,
+            _ => halt.issued_at(),
+        };
+        self.policy_halt_barrier = Some(barrier);
+        if !self.policy_halted {
+            self.journal.record(
+                Decision::HaltChanged {
+                    halted: true,
+                    reason: format!("central halt: {}", halt.reason()),
+                },
+                now,
+            );
+        }
+        self.policy_halted = true;
+    }
+
     /// Apply a verified policy payload by atomic swap.
     ///
     /// "Atomic" in a single-threaded cell means one assignment and never a
@@ -272,7 +301,15 @@ impl Cell {
             )));
         }
 
-        let halting = verified.halted();
+        // A payload that would release the halt must postdate the halt it
+        // releases. `halting` is what the cell will actually do, which may be
+        // stricter than what the payload says.
+        let releasing_too_early = !verified.halted()
+            && self.policy_halted
+            && self
+                .policy_halt_barrier
+                .is_some_and(|barrier| verified.payload().issued_at <= barrier);
+        let halting = verified.halted() || releasing_too_early;
         let was_halted = self.policy_halted;
         let narrowed: Vec<String> = verified
             .payload()
@@ -292,6 +329,19 @@ impl Cell {
             },
             now,
         );
+        if releasing_too_early {
+            self.journal.record(
+                Decision::Refused {
+                    gate: "halt_release".to_string(),
+                    reason: format!(
+                        "policy sequence {} was issued at or before the halt barrier and cannot \
+                         release it",
+                        verified.sequence()
+                    ),
+                },
+                now,
+            );
+        }
         if halting != was_halted {
             self.journal.record(
                 Decision::HaltChanged {
@@ -307,6 +357,15 @@ impl Cell {
                 },
                 now,
             );
+        }
+        if verified.halted() {
+            // A halt carried by policy is a halt decision like any other, and
+            // it raises the same release barrier: whatever releases it must
+            // postdate it, whatever its sequence says.
+            self.policy_halt_barrier = Some(match self.policy_halt_barrier {
+                Some(existing) if existing >= verified.payload().issued_at => existing,
+                _ => verified.payload().issued_at,
+            });
         }
         self.policy_halted = halting;
         self.policy = Some(verified);

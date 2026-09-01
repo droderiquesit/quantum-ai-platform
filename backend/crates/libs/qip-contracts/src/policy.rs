@@ -505,3 +505,70 @@ impl PolicyPayload {
         Ok(self)
     }
 }
+
+/// A halt, as a command rather than as staleness.
+///
+/// §6.2 is about decay: stale policy *narrows* a cell. A halt is not decay —
+/// it is a decision, and a decision must not be expressible only as the
+/// absence of something else. This command travels the same fabric as the
+/// payload on its own topic, engage-only: there is deliberately no
+/// release command, because release is a fresh policy decision and rides a
+/// newer signed payload. Stopping is one small frame; resuming requires the
+/// centre to affirmatively republish policy — the same asymmetry the operator
+/// kill switch keeps.
+///
+/// Idempotent by construction: applying the same halt twice is one halt, so
+/// no sequence is needed and a redelivered frame is harmless.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HaltCommand {
+    /// The one cell this halt is for.
+    pub cell: String,
+    /// When the centre decided. Doubles as the release barrier: a payload can
+    /// only release a halt if it was issued *after* this instant, so a
+    /// pre-halt payload still in flight cannot un-halt the cell it was racing.
+    pub issued_at: Timestamp,
+    /// Why, for the journal. An unexplained halt is cleared with less care
+    /// than an explained one.
+    pub reason: String,
+    /// Hex MAC over [`Self::signing_payload`]. Empty until signed.
+    pub signature: String,
+}
+
+impl HaltCommand {
+    pub fn new(cell: impl Into<String>, issued_at: Timestamp, reason: impl Into<String>) -> Self {
+        Self {
+            cell: cell.into(),
+            issued_at,
+            reason: reason.into(),
+            signature: String::new(),
+        }
+    }
+
+    /// The bytes the signature is taken over: every field. A halt that could
+    /// be re-addressed to a different cell, re-dated past a release barrier,
+    /// or re-worded would be a different command wearing this one's signature.
+    pub fn signing_payload(&self) -> String {
+        format!(
+            "halt|{}|{}|{}",
+            self.cell,
+            self.issued_at.as_secs(),
+            self.reason
+        )
+    }
+
+    /// Sign with the shared trust root — verified, because the failure
+    /// directions were weighed: accepting a forged halt stops trading (safe,
+    /// but a denial-of-service lever for anyone who can inject frames), and an
+    /// unauthenticated stop-lever on a polled inbox is the worse trade. Lost
+    /// connectivity is covered separately, by payload TTLs narrowing the cell.
+    pub fn signed(mut self, key: &[u8]) -> Result<Self> {
+        if key.is_empty() {
+            return Err(Error::denied(
+                "a halt cannot be signed with an empty key; the trust root is missing",
+            ));
+        }
+        self.signature = to_hex(&hmac_sha256(key, self.signing_payload().as_bytes()));
+        Ok(self)
+    }
+}

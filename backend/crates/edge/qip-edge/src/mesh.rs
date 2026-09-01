@@ -81,8 +81,8 @@ use qip_transport::{DeadLetterSink, Delivery, MeshConfig, MeshPublisher, RemoteS
 use serde::{Deserialize, Serialize};
 
 use crate::envelope::VerifiedEnvelope;
-use crate::policy::VerifiedPolicy;
-use qip_contracts::policy::PolicyPayload;
+use crate::policy::{VerifiedHalt, VerifiedPolicy};
+use qip_contracts::policy::{HaltCommand, PolicyPayload};
 
 /// How many refusals one delta carries before it starts counting instead.
 ///
@@ -835,6 +835,24 @@ impl PolicyPayloadTopic {
     pub const SCHEMA_VERSION: u32 = 1;
 }
 
+/// The topic a halt command travels on. `Topic::KillSwitchEngaged` is
+/// exactly what the frame means, and its retention is permanent by name — a
+/// halt somebody sent is an audit fact whether or not it arrived.
+///
+/// A separate topic from the payload on purpose: a halt is a command, not
+/// staleness, and it must be deliverable when the payload pipeline is exactly
+/// the thing a bad deploy has wedged. Same fabric, same key, different code
+/// path — mechanism independence, honestly short of the blueprint's two
+/// independent *wires*, which needs a managed-store path and is recorded as
+/// backlog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HaltTopic;
+
+impl HaltTopic {
+    pub const TOPIC: Topic = Topic::KillSwitchEngaged;
+    pub const SCHEMA_VERSION: u32 = 1;
+}
+
 /// A policy payload the downlink could not deliver, and why.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RefusedPolicy {
@@ -850,6 +868,11 @@ pub struct PolicyBatch {
     /// downlink's: the downlink proves authenticity and address, and the cell
     /// owns what it last applied.
     pub verified: Vec<VerifiedPolicy>,
+    /// Halt commands this cell verified, in arrival order. Delivered beside
+    /// the payloads rather than instead of them: a poll that found both must
+    /// hand the caller both, and the caller applies halts first because a
+    /// halt is never improved by waiting.
+    pub halts: Vec<VerifiedHalt>,
     pub refused: Vec<RefusedPolicy>,
     /// Set when the circuit to the peer is open, in which case no poll was
     /// made. Distinct from an empty batch, which means the peer had nothing.
@@ -858,7 +881,7 @@ pub struct PolicyBatch {
 
 impl PolicyBatch {
     pub fn is_empty(&self) -> bool {
-        self.verified.is_empty() && self.refused.is_empty()
+        self.verified.is_empty() && self.halts.is_empty() && self.refused.is_empty()
     }
 }
 
@@ -967,6 +990,10 @@ impl PolicyDownlink {
 
     /// Take one frame through every check, or refuse it.
     fn absorb(&mut self, frame: &AnyEvent, now: Timestamp, batch: &mut PolicyBatch) {
+        if frame.topic == HaltTopic::TOPIC {
+            self.absorb_halt(frame, now, batch);
+            return;
+        }
         if frame.topic != PolicyPayloadTopic::TOPIC {
             self.stats.ignored += 1;
             return;
@@ -1016,6 +1043,51 @@ impl PolicyDownlink {
             Ok(verified) => {
                 self.stats.verified += 1;
                 batch.verified.push(verified);
+            }
+            Err(error) => self.refuse(batch, event_id, error.message()),
+        }
+    }
+
+    /// A halt frame, through the same checks a payload gets.
+    fn absorb_halt(&mut self, frame: &AnyEvent, now: Timestamp, batch: &mut PolicyBatch) {
+        let event_id = frame.event_id.as_str().to_string();
+        if frame.schema_version > HaltTopic::SCHEMA_VERSION {
+            self.refuse(
+                batch,
+                event_id,
+                &format!(
+                    "the halt was written by schema version {} and this cell understands {}",
+                    frame.schema_version,
+                    HaltTopic::SCHEMA_VERSION
+                ),
+            );
+            return;
+        }
+        if qip_core::hash::sha256_hex(canonical_json(&frame.payload).as_bytes())
+            != frame.payload_hash
+        {
+            self.refuse(
+                batch,
+                event_id,
+                "the halt no longer matches the hash the sender computed",
+            );
+            return;
+        }
+        let command: HaltCommand = match serde_json::from_value(frame.payload.clone()) {
+            Ok(command) => command,
+            Err(error) => {
+                self.refuse(
+                    batch,
+                    event_id,
+                    &format!("the frame does not carry a halt command: {error}"),
+                );
+                return;
+            }
+        };
+        match VerifiedHalt::verify(command, &self.key, &self.cell, now) {
+            Ok(verified) => {
+                self.stats.verified += 1;
+                batch.halts.push(verified);
             }
             Err(error) => self.refuse(batch, event_id, error.message()),
         }

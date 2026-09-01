@@ -558,3 +558,88 @@ fn a_strategy_that_recognises_situations_pauses_when_episodic_memory_goes_stale(
     );
     Ok(())
 }
+
+use qip_contracts::policy::HaltCommand;
+use qip_edge::VerifiedHalt;
+
+fn verified_halt(issued_at: Timestamp, reason: &str) -> VerifiedHalt {
+    let signed = HaltCommand::new(CELL, issued_at, reason)
+        .signed(ENVELOPE_KEY)
+        .expect("the test key is not empty");
+    VerifiedHalt::verify(signed, ENVELOPE_KEY, CELL, issued_at).expect("signed for this cell")
+}
+
+#[test]
+fn a_halt_command_stops_the_cell_and_a_payload_racing_it_cannot_release_it() -> Result<()> {
+    // The in-flight race the release barrier exists for. A releasing payload
+    // issued *before* the halt was decided is a decision made in ignorance of
+    // it, and applying it would let ordinary delivery jitter un-halt a cell
+    // the centre just stopped. Only a payload issued after the halt releases.
+    let mut cell = armed_cell()?;
+    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("100"), t(15))?;
+
+    // Premise: trading before the halt.
+    assert!(!cell.work(t(16), &mut gateway)?.orders.is_empty());
+
+    cell.apply_halt(
+        verified_halt(t(17), "drop-copy disagreement at the centre"),
+        t(17),
+    );
+    assert!(
+        cell.is_halted(),
+        "a verified halt command did not halt the cell"
+    );
+    // Idempotent: the same halt again is one halt, not an error.
+    cell.apply_halt(
+        verified_halt(t(17), "drop-copy disagreement at the centre"),
+        t(17),
+    );
+    assert!(cell.is_halted());
+
+    // A releasing payload issued at the barrier instant does not release; the
+    // payload's other content still applies. The sequence is fresh, so only
+    // the barrier can be what refuses the release.
+    cell.apply_policy(verified_policy(10, false, true, t(17)), t(18))?;
+    assert!(
+        cell.is_halted(),
+        "a payload issued at the halt instant released it, so delivery \
+         jitter can un-halt a cell"
+    );
+    assert_eq!(
+        cell.policy_sequence(),
+        Some(10),
+        "the racing payload's policy content was discarded along with its \
+         release, which conflates the two"
+    );
+
+    // A payload issued after the halt releases it.
+    cell.apply_policy(verified_policy(11, false, true, t(19)), t(19))?;
+    assert!(
+        !cell.is_halted(),
+        "a post-halt releasing payload did not release"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_halt_command_verifies_only_with_the_right_key_and_cell() {
+    // The forged-halt trade-off, tested from the refusing side: an
+    // unauthenticated stop-lever on a polled inbox would let anyone who can
+    // inject frames stop a region at will.
+    let signed = HaltCommand::new(CELL, t(5), "reason")
+        .signed(ENVELOPE_KEY)
+        .expect("signable");
+    assert!(VerifiedHalt::verify(signed.clone(), b"other-key", CELL, t(5)).is_err());
+    assert!(VerifiedHalt::verify(signed.clone(), ENVELOPE_KEY, "other-cell", t(5)).is_err());
+
+    // Re-dating a signed halt would move the release barrier; the signature
+    // covers the instant, so the edit must refuse.
+    let mut redated = signed;
+    redated.issued_at = t(50);
+    assert!(
+        VerifiedHalt::verify(redated, ENVELOPE_KEY, CELL, t(50)).is_err(),
+        "a halt re-dated after signing still verified, so the release \
+         barrier can be moved by anyone on the path"
+    );
+}

@@ -83,3 +83,58 @@ impl VerifiedPolicy {
         self.inner.halted
     }
 }
+
+/// A halt command whose signature this cell has checked against its own key.
+///
+/// The same discipline as [`VerifiedPolicy`], and the same reason there is no
+/// other way to obtain one: [`crate::Cell::apply_halt`] takes this, so a cell
+/// cannot be stopped — or, through the release barrier, kept stopped — by an
+/// unsigned frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VerifiedHalt {
+    inner: qip_contracts::policy::HaltCommand,
+    verified_at: Timestamp,
+}
+
+impl VerifiedHalt {
+    pub fn verify(
+        command: qip_contracts::policy::HaltCommand,
+        key: &[u8],
+        expected_cell: &str,
+        now: Timestamp,
+    ) -> Result<Self> {
+        if key.is_empty() {
+            return Err(Error::denied(
+                "a cell with no policy key cannot verify a halt and must not apply one",
+            ));
+        }
+        let expected = to_hex(&hmac_sha256(key, command.signing_payload().as_bytes()));
+        if !crate::envelope::constant_time_eq(expected.as_bytes(), command.signature.as_bytes()) {
+            return Err(Error::denied(
+                "the halt command does not verify against this cell's key".to_string(),
+            ));
+        }
+        if command.cell != expected_cell {
+            return Err(Error::denied(format!(
+                "a halt for cell {} was presented to cell {expected_cell}",
+                command.cell
+            )));
+        }
+        Ok(Self {
+            inner: command,
+            verified_at: now,
+        })
+    }
+
+    pub fn issued_at(&self) -> Timestamp {
+        self.inner.issued_at
+    }
+
+    pub fn reason(&self) -> &str {
+        &self.inner.reason
+    }
+
+    pub const fn verified_at(&self) -> Timestamp {
+        self.verified_at
+    }
+}
