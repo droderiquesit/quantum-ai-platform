@@ -560,9 +560,6 @@ pub mod names {
     ///     "resyncs that found capital holds exceeding equity, by reason",
     /// );
     /// ```
-    ///
-    /// Until that lands the series exports with an empty `# HELP`, which is
-    /// valid exposition and unreadable documentation.
     pub const RESERVATION_SHORTFALL: &str = "qip_reservation_shortfall";
 
     /// The four names the Cloud Monitoring alert policies in

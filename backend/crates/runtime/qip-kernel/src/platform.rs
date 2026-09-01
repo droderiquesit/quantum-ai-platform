@@ -34,10 +34,7 @@
 //!   [`qip_contracts::edge::DeductionKind::ComputeCost`] has always had a slot
 //!   for and nothing was filling.
 
-use crate::central::{
-    BreakDirection, CellIngestion, CellOutcome, CellReport, CentralPlane, LearningReport,
-    ReconciliationBreak,
-};
+use crate::central::{CellIngestion, CellOutcome, CellReport, CentralPlane, LearningReport};
 use crate::config::PlatformConfig;
 use crate::cycle::{CycleReport, Stage, StageOutcome};
 use qip_agents::Budget;
@@ -1220,6 +1217,12 @@ impl Platform {
     /// The halt is scoped to the reporting cell — the other cells' books still
     /// reconcile, and stopping them would turn one cell's bookkeeping failure
     /// into the platform's outage.
+    ///
+    /// The break and halt series are recorded by the plane itself, at the
+    /// line after the switch is tripped, and deliberately not here on the
+    /// returned ingestion: `ingest` can still refuse after the trip, and a
+    /// count that waited for `Ok` was un-counted by that refusal — a cell
+    /// halted, an incident raised, and no series moved.
     pub fn ingest_cell_report(
         &mut self,
         report: CellReport,
@@ -1228,38 +1231,10 @@ impl Platform {
         // Two disjoint fields, borrowed as fields rather than through
         // accessors, which is what lets the central plane trip the platform's
         // own switch instead of keeping one of its own.
-        // Read before the report moves: the directions are what the series is
-        // keyed on, and the plane consumes the report to build the book.
-        let directions: Vec<BreakDirection> = report
-            .reconciliation_breaks
-            .iter()
-            .map(ReconciliationBreak::direction)
-            .collect();
         let Self {
-            central,
-            autonomy,
-            telemetry,
-            ..
+            central, autonomy, ..
         } = self;
-        let ingestion = central.ingest(report, autonomy.kill_switch_mut(), now)?;
-        // Recorded on the outcome rather than on the report: a report the plane
-        // refused halted nothing, and counting its breaks would chart a halt
-        // that never happened. A halt here is scoped to the reporting cell and
-        // has one cause; the cell is not a label because a fleet is a
-        // dimension an operator can grow.
-        if ingestion.halted.is_some() {
-            for direction in directions {
-                telemetry.metrics.count(
-                    names::CENTRAL_RECONCILIATION_BREAKS,
-                    labels([("direction", direction.as_str())]),
-                );
-            }
-            telemetry.metrics.count(
-                names::CENTRAL_CELL_HALTS,
-                labels([("cause", "reconciliation")]),
-            );
-        }
-        Ok(ingestion)
+        central.ingest(report, autonomy.kill_switch_mut(), now)
     }
 
     /// Feed realised cell outcomes back into the ladder and the allocator.
