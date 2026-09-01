@@ -212,11 +212,13 @@ erode quietly:
   absence, so a later change that wants to halt has to come through it and
   explain itself. Halting belongs to the kill switch an operator holds.
 
-**Not yet wired.** The type has no production caller. It precedes its consumer
-on purpose: the consumer is the signed twelve-item payload (§41.5), whose
-stale-item narrowing is defined in exactly these terms, and that is the next
-slice. Until then this is UNVERIFIED at the platform level by this document's
-own rule, and is recorded as such rather than counted as a working control.
+**Now wired.** The consumer arrived with the payload slice: a cell derives its
+narrowing from the applied payload every pass (`qip-edge/src/cell.rs` —
+`narrowing()`, consumed in `work()`), the multiplier sizes real orders, the
+pause gate refuses by strategy class, and a cell with no payload sits at the
+conservative floor. Mutation-verified end to end — a policy-less cell reading
+as fully available, the pause gate removed, and the multiplier pinned to one
+each fail named tests.
 
 ## The seven layers (§40.5, §41, §45, §46, §47, §48)
 
@@ -336,3 +338,25 @@ Closed by ADR 0022. The Algorik blueprint and its companion diagram are the
 architecture of record; this file is the live scorecard.
 `canonical-platform.md` and `diagram-reconciliation.md` score the superseded
 reference and are retained for history, each carrying a banner saying so.
+
+### F3 — in-tree cryptography, and the slice that widened its blast radius
+
+**Status: standing matter for the owner. Recorded, not acted on.**
+
+`qip-core/src/hash.rs` carries hand-written SHA-256 and HMAC-SHA-256. It
+predates this programme, and ADR 0009 forbids in-tree cryptography — the
+primitive has lived in the gap between that rule and the two-dependency rule
+that leaves no room for a vetted crypto crate without an ADR.
+
+The payload slice **consciously extended its blast radius**. What that MAC
+guarded before was the capital-envelope channel; it now also guards the
+centre-to-region command channel — every policy payload, and the halt itself.
+Security review of the slice found the *usage* sound (constant-time compare,
+one trust root, injective signing strings after the H1 hardening), which is a
+statement about how the primitive is called and not about the primitive.
+
+The decision this queues is the owner's, twice over: admitting a vetted
+cryptographic dependency is an ADR-level change to ADR 0002/0009, and the
+blueprint's own §46.2 ambitions (real signatures, post-quantum for corridor
+material) require one anyway. Until that ADR exists, nothing further should be
+built onto the in-tree primitive without restating this note in the diff.

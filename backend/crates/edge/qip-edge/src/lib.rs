@@ -30,6 +30,7 @@ pub mod dropcopy;
 pub mod envelope;
 pub mod journal;
 pub mod mesh;
+pub mod policy;
 pub mod seam;
 
 pub use cell::{Cell, CellConfig, PlacedOrder, Placer, WorkReport};
@@ -38,7 +39,9 @@ pub use envelope::{VerifiedEnvelope, sign_payload};
 pub use journal::{Decision, FileMirror, Journal, JournalEntry, MemoryMirror, Mirror, MirrorBatch};
 pub use mesh::{
     CapitalDownlink, CapitalGrantTopic, CellStateDelta, CellUplink, DeltaOrder, DeltaRefusal,
-    Dispatch, DownlinkBatch, DownlinkConfig, DownlinkStats, RefusedGrant, StrategyUtilisation,
+    Dispatch, DownlinkBatch, DownlinkConfig, DownlinkStats, HaltTopic, PolicyBatch, PolicyDownlink,
+    PolicyDownlinkStats, PolicyPayloadTopic, RefusedGrant, RefusedPolicy, StrategyUtilisation,
     UplinkConfig, UplinkStats,
 };
+pub use policy::{VerifiedHalt, VerifiedPolicy};
 pub use seam::{CellLiquidity, value_kind, value_type};

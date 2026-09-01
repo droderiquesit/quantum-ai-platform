@@ -623,9 +623,16 @@ impl Api {
                     };
                     let drained = mesh.drain_into(&mut platform, self.cells.as_ref(), now);
                     let pending = crate::mesh::pending_capital(&platform, now);
+                    // Policy is built under the same lock so its grant
+                    // manifest and the dispatched grants describe one instant,
+                    // and sent after it for the same reason capital is.
+                    let cells: Vec<String> = mesh.cells().collect();
+                    let policy_pending =
+                        crate::mesh::pending_policy(&platform, cells.into_iter(), now);
                     drop(platform);
                     let dispatched = mesh.dispatch(pending, now);
-                    crate::mesh::exchange_json(&drained, &dispatched)
+                    let policy = mesh.dispatch_policy(policy_pending, now);
+                    crate::mesh::exchange_json(&drained, &dispatched, &policy)
                 });
                 Response::json(
                     202,
@@ -641,12 +648,27 @@ impl Api {
                     format!("api:{}", principal.subject),
                     reason,
                 );
+                // The central switch is tripped either way; the broadcast is
+                // what makes the same action reach the regions, closing the
+                // gap where an operator's halt stopped the centre and left
+                // every cell trading. Best effort, and the counts say what
+                // happened — the payload's own halted flag re-carries the
+                // state for a cell that missed it.
+                drop(platform);
+                let broadcast = self.mesh.as_ref().and_then(|mesh| {
+                    let mut mesh = mesh.lock().ok()?;
+                    Some(mesh.broadcast_halt(reason, now))
+                });
+                let broadcast_json = broadcast
+                    .and_then(|summary| serde_json::to_string(&summary).ok())
+                    .unwrap_or_else(|| "null".to_string());
                 Response::json(
                     200,
                     format!(
-                        r#"{{"halted":true,"by":{},"reason":{}}}"#,
+                        r#"{{"halted":true,"by":{},"reason":{},"broadcast":{}}}"#,
                         json::string(&principal.subject),
-                        json::string(reason)
+                        json::string(reason),
+                        broadcast_json
                     ),
                 )
             }

@@ -79,7 +79,18 @@ down as blueprint §41.5 requires is flow 3, and flow 3 is missing.
 
 ## Flow 3 — policy generation → signed twelve-item payload → regional verification and atomic swap → outcome return
 
-**Verdict: MISSING, with one genuine precursor.**
+**Verdict at the original trace: MISSING, with one genuine precursor. Since
+closed to PARTIAL by the payload slice** — `qip_contracts::policy` carries
+typed slots for all twelve items, the centre builds, signs and ships one per
+cell each cycle (`qip-api/src/mesh.rs::pending_policy`, `::dispatch_policy`),
+the cell verifies into `VerifiedPolicy` and applies by one-assignment swap
+with sequence discipline (`qip-edge/src/cell.rs::apply_policy`), and §6.2
+narrowing runs through `DegradationState` at last. Two of twelve slots have
+real producers (the grant manifest and the risk envelope as the enforced
+`LimitSet`); the other ten ship unproduced and read as unavailable, which
+narrows the cell — fail-closed, not omission. End-to-end over real sockets:
+`qip-api/tests/mesh.rs::a_cycle_ships_a_signed_payload_the_cell_verifies_and_a_trip_reaches_it`.
+The table below records the state as originally found.
 
 | Link | Status | Evidence |
 |---|---|---|
@@ -137,9 +148,17 @@ enforces the refusal.
 
 ## Flow 6 — halt/kill switch through both independent paths
 
-**Verdict: the halt works where it is checked. There are NOT two independent
-paths, and a central halt does not stop a regional cell.** This is the most
-consequential finding in the pass.
+**Verdict at the original trace: the halt worked where checked, there were
+not two independent paths, and a central halt could not stop a regional cell.
+Since partially closed:** `POST /api/v1/kill-switch` now also broadcasts a
+signed engage-only `HaltCommand` to every cell inbox, a cell that hears it
+halts, and release requires a strictly newer signed payload issued after the
+halt's barrier — stopping easy, resuming a fresh decision. What remains open,
+honestly: both paths share `qip-transport`, so this is mechanism independence
+rather than the blueprint's two independent *wires*; the managed-store second
+wire stays backlogged. ADR 0008 is intact — an unreachable cell keeps trading
+its envelope, and the guarantee added is only that a reachable one obeys. The
+sections below record the state as originally found.
 
 ### What works
 

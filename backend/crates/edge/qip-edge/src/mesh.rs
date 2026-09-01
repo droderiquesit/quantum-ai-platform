@@ -81,6 +81,8 @@ use qip_transport::{DeadLetterSink, Delivery, MeshConfig, MeshPublisher, RemoteS
 use serde::{Deserialize, Serialize};
 
 use crate::envelope::VerifiedEnvelope;
+use crate::policy::{VerifiedHalt, VerifiedPolicy};
+use qip_contracts::policy::{HaltCommand, PolicyPayload};
 
 /// How many refusals one delta carries before it starts counting instead.
 ///
@@ -812,6 +814,292 @@ fn grant_key(envelope: &CapitalEnvelope) -> String {
         envelope.strategy().as_str(),
         envelope.signature()
     )
+}
+
+/// The topic a policy payload travels on, named once — the same zero-sized
+/// carrier pattern as [`CapitalGrantTopic`], for the same reason: the two ends
+/// of the mesh agree through a shared constant rather than a shared frame
+/// type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PolicyPayloadTopic;
+
+impl PolicyPayloadTopic {
+    /// `Topic::PolicyDistributed` exists for exactly this: the twelve-item
+    /// shipment of blueprint §41.5. It sits in the Decide group, so every
+    /// payload is retained permanently — a policy a cell acted under is an
+    /// audit fact.
+    pub const TOPIC: Topic = Topic::PolicyDistributed;
+    /// Bumped when the wire shape of a payload changes; the downlink refuses a
+    /// payload written by a newer schema than it understands, because the
+    /// fields it would not understand are the ones that narrow it.
+    pub const SCHEMA_VERSION: u32 = 1;
+}
+
+/// The topic a halt command travels on. `Topic::KillSwitchEngaged` is
+/// exactly what the frame means, and its retention is permanent by name — a
+/// halt somebody sent is an audit fact whether or not it arrived.
+///
+/// A separate topic from the payload on purpose: a halt is a command, not
+/// staleness, and it must be deliverable when the payload pipeline is exactly
+/// the thing a bad deploy has wedged. Same fabric, same key, different code
+/// path — mechanism independence, honestly short of the blueprint's two
+/// independent *wires*, which needs a managed-store path and is recorded as
+/// backlog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HaltTopic;
+
+impl HaltTopic {
+    pub const TOPIC: Topic = Topic::KillSwitchEngaged;
+    pub const SCHEMA_VERSION: u32 = 1;
+}
+
+/// A policy payload the downlink could not deliver, and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RefusedPolicy {
+    pub event_id: String,
+    pub reason: String,
+}
+
+/// What one policy poll brought back.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PolicyBatch {
+    /// Payloads this cell verified against its own key, in arrival order.
+    /// Sequence discipline is the *cell's* job at application, not the
+    /// downlink's: the downlink proves authenticity and address, and the cell
+    /// owns what it last applied.
+    pub verified: Vec<VerifiedPolicy>,
+    /// Halt commands this cell verified, in arrival order. Delivered beside
+    /// the payloads rather than instead of them: a poll that found both must
+    /// hand the caller both, and the caller applies halts first because a
+    /// halt is never improved by waiting.
+    pub halts: Vec<VerifiedHalt>,
+    pub refused: Vec<RefusedPolicy>,
+    /// Set when the circuit to the peer is open, in which case no poll was
+    /// made. Distinct from an empty batch, which means the peer had nothing.
+    pub circuit_open: Option<Refusal>,
+}
+
+impl PolicyBatch {
+    pub fn is_empty(&self) -> bool {
+        self.verified.is_empty() && self.halts.is_empty() && self.refused.is_empty()
+    }
+}
+
+/// Statistics the policy downlink keeps about itself.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PolicyDownlinkStats {
+    pub polls: u64,
+    pub frames: u64,
+    pub verified: u64,
+    pub refused: u64,
+    pub ignored: u64,
+}
+
+/// The cell's inbound half for policy: signed twelve-item payloads from the
+/// central plane.
+///
+/// A deliberate mirror of [`CapitalDownlink`] — poll, topic filter, schema
+/// ceiling, integrity hash, decode, verify, refuse-and-record — because the
+/// payload deserves exactly the guard capital has and a second, different
+/// discipline would be a second thing to get wrong.
+#[derive(Debug)]
+pub struct PolicyDownlink {
+    cell: String,
+    peer: String,
+    key: Vec<u8>,
+    subscriber: RemoteSubscriber,
+    breaker: CircuitBreaker,
+    stats: PolicyDownlinkStats,
+}
+
+impl PolicyDownlink {
+    pub fn connect(
+        config: DownlinkConfig,
+        key: &[u8],
+        clock: Arc<dyn Clock>,
+        sleeper: Arc<dyn Sleeper>,
+    ) -> Result<Self> {
+        if key.is_empty() {
+            return Err(Error::denied(
+                "a downlink with no policy key cannot verify a payload, so every payload it \
+                 delivered would be one nobody checked",
+            ));
+        }
+        let breaker =
+            CircuitBreaker::new(config.breaker, Arc::clone(&clock), config.breaker_seed, 4)?;
+        let peer = config.mesh.peer.clone();
+        let subscriber = RemoteSubscriber::new(config.mesh, sleeper)?;
+        Ok(Self {
+            cell: config.cell,
+            peer,
+            key: key.to_vec(),
+            subscriber,
+            breaker,
+            stats: PolicyDownlinkStats::default(),
+        })
+    }
+
+    pub fn cell(&self) -> &str {
+        &self.cell
+    }
+
+    pub const fn stats(&self) -> PolicyDownlinkStats {
+        self.stats
+    }
+
+    pub fn circuit(&self) -> BreakerState {
+        self.breaker.state(&self.peer)
+    }
+
+    /// Pull everything the centre knew by `now`, verifying each payload.
+    ///
+    /// One unverifiable payload does not fail the poll, for the same reason
+    /// one bad grant does not: a centre that sent one bad payload has not
+    /// revoked the good ones, and an `Err` would leave the caller unable to
+    /// say which was which.
+    pub fn poll(&mut self, now: Timestamp) -> Result<PolicyBatch> {
+        let permit = match self.breaker.admit(&self.peer) {
+            BreakerDecision::Refused(refusal) => {
+                return Ok(PolicyBatch {
+                    circuit_open: Some(refusal),
+                    ..PolicyBatch::default()
+                });
+            }
+            BreakerDecision::Admitted(permit) => permit,
+        };
+
+        self.stats.polls += 1;
+        let frames = match self.subscriber.poll(now) {
+            Ok(frames) => {
+                self.breaker.record(permit, Outcome::Success);
+                frames
+            }
+            Err(error) => {
+                self.breaker.record(permit, Outcome::failed(&error));
+                return Err(Error::from(error));
+            }
+        };
+
+        let mut batch = PolicyBatch::default();
+        for frame in &frames {
+            self.stats.frames += 1;
+            self.absorb(frame, now, &mut batch);
+        }
+        Ok(batch)
+    }
+
+    /// Take one frame through every check, or refuse it.
+    fn absorb(&mut self, frame: &AnyEvent, now: Timestamp, batch: &mut PolicyBatch) {
+        if frame.topic == HaltTopic::TOPIC {
+            self.absorb_halt(frame, now, batch);
+            return;
+        }
+        if frame.topic != PolicyPayloadTopic::TOPIC {
+            self.stats.ignored += 1;
+            return;
+        }
+        let event_id = frame.event_id.as_str().to_string();
+
+        if frame.schema_version > PolicyPayloadTopic::SCHEMA_VERSION {
+            self.refuse(
+                batch,
+                event_id,
+                &format!(
+                    "the payload was written by schema version {} and this cell understands {}",
+                    frame.schema_version,
+                    PolicyPayloadTopic::SCHEMA_VERSION
+                ),
+            );
+            return;
+        }
+
+        if qip_core::hash::sha256_hex(canonical_json(&frame.payload).as_bytes())
+            != frame.payload_hash
+        {
+            self.refuse(
+                batch,
+                event_id,
+                "the payload no longer matches the hash the sender computed, so it was corrupted \
+                 or edited between the centre and this cell",
+            );
+            return;
+        }
+
+        let payload: PolicyPayload = match serde_json::from_value(frame.payload.clone()) {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.refuse(
+                    batch,
+                    event_id,
+                    &format!("the frame does not carry a policy payload: {error}"),
+                );
+                return;
+            }
+        };
+
+        // Arriving over the mesh has bought this payload nothing; it is
+        // verified here exactly as one handed over by any other route would be.
+        match VerifiedPolicy::verify(payload, &self.key, &self.cell, now) {
+            Ok(verified) => {
+                self.stats.verified += 1;
+                batch.verified.push(verified);
+            }
+            Err(error) => self.refuse(batch, event_id, error.message()),
+        }
+    }
+
+    /// A halt frame, through the same checks a payload gets.
+    fn absorb_halt(&mut self, frame: &AnyEvent, now: Timestamp, batch: &mut PolicyBatch) {
+        let event_id = frame.event_id.as_str().to_string();
+        if frame.schema_version > HaltTopic::SCHEMA_VERSION {
+            self.refuse(
+                batch,
+                event_id,
+                &format!(
+                    "the halt was written by schema version {} and this cell understands {}",
+                    frame.schema_version,
+                    HaltTopic::SCHEMA_VERSION
+                ),
+            );
+            return;
+        }
+        if qip_core::hash::sha256_hex(canonical_json(&frame.payload).as_bytes())
+            != frame.payload_hash
+        {
+            self.refuse(
+                batch,
+                event_id,
+                "the halt no longer matches the hash the sender computed",
+            );
+            return;
+        }
+        let command: HaltCommand = match serde_json::from_value(frame.payload.clone()) {
+            Ok(command) => command,
+            Err(error) => {
+                self.refuse(
+                    batch,
+                    event_id,
+                    &format!("the frame does not carry a halt command: {error}"),
+                );
+                return;
+            }
+        };
+        match VerifiedHalt::verify(command, &self.key, &self.cell, now) {
+            Ok(verified) => {
+                self.stats.verified += 1;
+                batch.halts.push(verified);
+            }
+            Err(error) => self.refuse(batch, event_id, error.message()),
+        }
+    }
+
+    fn refuse(&mut self, batch: &mut PolicyBatch, event_id: String, reason: &str) {
+        self.stats.refused += 1;
+        batch.refused.push(RefusedPolicy {
+            event_id,
+            reason: reason.to_string(),
+        });
+    }
 }
 
 /// The topic a capital grant travels on, named once.

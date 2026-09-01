@@ -65,6 +65,6 @@ pub use ports::{
 pub use provider::{MeshPort, MeshProvider, MeshTarget};
 pub use spine::{
     CELL_DELTA_TOPIC, CapitalDispatch, CapitalDispatcher, CapitalGrantFrame, CellDeltaReceiver,
-    CellDeltaSink, DispatcherConfig, DrainHalt, DrainReport, HeldReason, ReceiverStats,
-    RecoveryReport, grant_key,
+    CellDeltaSink, DispatcherConfig, DrainHalt, DrainReport, HaltFrame, HeldReason, PolicyCourier,
+    PolicyFrame, PolicySend, ReceiverStats, RecoveryReport, grant_key,
 };

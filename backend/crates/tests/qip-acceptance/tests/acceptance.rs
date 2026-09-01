@@ -548,3 +548,49 @@ fn a_proposal_cannot_reach_execution_without_both_controls() -> Result<()> {
     proposal.release(start())?;
     Ok(())
 }
+
+#[test]
+fn the_reservation_ledger_stays_anchored_to_equity_across_full_cycles() -> Result<()> {
+    // The consistency half of gap-matrix item 10, at the acceptance seam. The
+    // headline property — a second proposal sized against what the first
+    // still holds, and commit-versus-release at the act stage — lives beside
+    // the decide stage's own tests in the kernel, where theses can be staged
+    // directly; the default synthetic history here does not clear the action
+    // bar (the panel rejects at confidence 0.22), so no hold is exercised in
+    // this run and this test does not claim one is.
+    //
+    // What full cycles must nonetheless keep true, and what this pins: the
+    // ledger stays anchored to the book on every pass including quiet ones —
+    // free plus active holds equals tracked equity, one claim about one
+    // balance — and nothing stays held across a completed cycle.
+    let mut platform = platform(PlatformConfig::default())?;
+    platform.observe(market_history("ACME", 120, Some(80)));
+    platform.observe(market_history("BOREAS", 120, None));
+    platform.observe(market_history("CERES", 120, None));
+
+    let mut cycles = 0;
+    for i in 0..4i32 {
+        let now = start().saturating_add(Duration::from_mins(i64::from(i) * 5));
+        platform.run_cycle(now);
+        cycles += 1;
+        assert_eq!(
+            platform.reservations().reserved_total(),
+            Decimal::ZERO,
+            "a hold survived the cycle that took it"
+        );
+        let free = platform
+            .reservations()
+            .clone()
+            .free(now.saturating_add(Duration::from_secs(1)));
+        assert_eq!(
+            free,
+            platform.equity(),
+            "the reservation ledger's free balance drifted from tracked equity"
+        );
+    }
+    assert_eq!(
+        cycles, 4,
+        "the loop did not run, so nothing above was tested"
+    );
+    Ok(())
+}

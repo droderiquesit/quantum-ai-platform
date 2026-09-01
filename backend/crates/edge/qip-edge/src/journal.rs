@@ -57,6 +57,16 @@ pub enum Decision {
     ReconciliationBreak { detail: String },
     /// The cell halted or resumed.
     HaltChanged { halted: bool, reason: String },
+    /// A verified policy payload was applied by atomic swap.
+    ///
+    /// `narrowed` names the capabilities the payload leaves less than fresh,
+    /// in order, so the reason a cell sized small is reconstructable from the
+    /// journal alone.
+    PolicyApplied {
+        sequence: u64,
+        halted: bool,
+        narrowed: Vec<String>,
+    },
     /// A capital envelope the centre issued was verified and installed.
     ///
     /// Recorded like a decision because it is one: it is the moment the cell's
@@ -83,6 +93,7 @@ impl Decision {
             Self::Refused { .. } => "refused",
             Self::ReconciliationBreak { .. } => "reconciliation_break",
             Self::HaltChanged { .. } => "halt_changed",
+            Self::PolicyApplied { .. } => "policy_applied",
             Self::CapitalRenewed { .. } => "capital_renewed",
         }
     }

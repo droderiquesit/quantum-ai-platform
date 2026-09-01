@@ -14,8 +14,10 @@ use crate::dropcopy::{CellFill, Discrepancy, DropCopyFill, DropCopyReconciler};
 use crate::envelope::VerifiedEnvelope;
 use crate::journal::{Decision, Journal, Mirror};
 use crate::mesh::{CellStateDelta, DeltaOrder, DeltaRefusal, StrategyUtilisation};
+use crate::policy::{VerifiedHalt, VerifiedPolicy};
 use crate::seam::CellLiquidity;
 use qip_contracts::capital::{CapitalGrant, Utilisation};
+use qip_contracts::degradation::{DegradationState, StrategyClass};
 use qip_contracts::message::{BookSide, MarketMessage};
 use qip_contracts::signal::{Signal, SignalKind, StrategyId};
 use qip_contracts::venue::{VenueId, VenueStatus};
@@ -106,6 +108,12 @@ struct Deployed {
     runtime: StrategyRuntime,
     envelope: VerifiedEnvelope,
     utilisation: Utilisation,
+    /// Which of the degradation table's pause rules apply to this strategy.
+    /// Everything deployed through [`Cell::deploy`] is `PriceOnly`, which is
+    /// true of every strategy this platform ships today: nothing at the edge
+    /// consumes world events, so an ingestion or episodic loss must not pause
+    /// it.
+    class: StrategyClass,
 }
 
 /// One edge cell.
@@ -118,6 +126,22 @@ pub struct Cell {
     features: FeatureEngine,
     deployed: BTreeMap<String, Deployed>,
     autonomy: AutonomyController,
+    /// The last verified policy payload applied, if any ever was.
+    ///
+    /// `None` is not a neutral state: with no payload every payload-fed
+    /// capability reads as unavailable and the cell sizes at its conservative
+    /// floor. A cell nobody ships policy to trades small, not blind.
+    policy: Option<VerifiedPolicy>,
+    /// Whether the centre has halted this cell through policy. Separate from
+    /// the local kill switch on purpose: the switch clears only with an
+    /// operator credential, while this clears only with a newer verified
+    /// payload saying it is over. Two halts, two release disciplines, and
+    /// neither can release the other.
+    policy_halted: bool,
+    /// The instant of the newest halt applied. A payload releases the policy
+    /// halt only if it was issued *after* this, so a pre-halt payload still in
+    /// flight cannot un-halt the cell it was racing.
+    policy_halt_barrier: Option<Timestamp>,
     dropcopy: DropCopyReconciler,
     journal: Journal,
     fills: Vec<CellFill>,
@@ -153,6 +177,9 @@ impl Cell {
             features,
             deployed: BTreeMap::new(),
             autonomy: AutonomyController::new(),
+            policy: None,
+            policy_halted: false,
+            policy_halt_barrier: None,
             dropcopy: DropCopyReconciler::new(),
             journal: Journal::new(),
             fills: Vec::new(),
@@ -197,7 +224,178 @@ impl Cell {
 
     /// Whether the cell is stopped.
     pub fn is_halted(&self) -> bool {
-        self.autonomy.kill_switch().is_globally_tripped()
+        self.autonomy.kill_switch().is_globally_tripped() || self.policy_halted
+    }
+
+    /// The degradation narrowing currently in force, derived from the applied
+    /// policy payload.
+    ///
+    /// With no policy this is [`DegradationState::nothing_known`], which reads
+    /// every payload-fed capability as unavailable — the fail-closed floor.
+    /// Ingestion is deliberately not observed here: the cell's book-staleness
+    /// seam already refuses to route on a stale book, per book, which is
+    /// stricter than the capability-level pause would be.
+    pub fn narrowing(&self, now: Timestamp) -> DegradationState {
+        match &self.policy {
+            Some(policy) => policy.payload().narrowing(now),
+            None => DegradationState::nothing_known(),
+        }
+    }
+
+    /// The sequence of the applied policy, if any.
+    pub fn policy_sequence(&self) -> Option<u64> {
+        self.policy.as_ref().map(VerifiedPolicy::sequence)
+    }
+
+    /// Apply a verified halt command.
+    ///
+    /// Engage-only and idempotent: there is no release command, because
+    /// release is a fresh policy decision and rides a newer signed payload
+    /// issued after the barrier this records. Applying the same halt twice is
+    /// one halt.
+    pub fn apply_halt(&mut self, halt: VerifiedHalt, now: Timestamp) {
+        // A halt at or behind the barrier of one already resolved is a
+        // replay: a captured frame re-delivered after a legitimate release
+        // would otherwise re-halt the cell in the gaps between publishes — a
+        // bounded denial of service in the safe direction, but free to
+        // remove. The asymmetry is preserved with care: a *fresh* halt is
+        // accepted unconditionally, and an already-halted cell is never
+        // released by this path — refusing the replay below leaves it exactly
+        // as halted as it was.
+        if !self.policy_halted
+            && self
+                .policy_halt_barrier
+                .is_some_and(|barrier| halt.issued_at() <= barrier)
+        {
+            self.journal.record(
+                Decision::Refused {
+                    gate: "halt_replay".to_string(),
+                    reason: format!(
+                        "a halt issued at {} is at or behind the resolved barrier and does not \
+                         re-halt this cell",
+                        halt.issued_at()
+                    ),
+                },
+                now,
+            );
+            return;
+        }
+        let barrier = match self.policy_halt_barrier {
+            Some(existing) if existing >= halt.issued_at() => existing,
+            _ => halt.issued_at(),
+        };
+        self.policy_halt_barrier = Some(barrier);
+        if !self.policy_halted {
+            self.journal.record(
+                Decision::HaltChanged {
+                    halted: true,
+                    reason: format!("central halt: {}", halt.reason()),
+                },
+                now,
+            );
+        }
+        self.policy_halted = true;
+    }
+
+    /// Apply a verified policy payload by atomic swap.
+    ///
+    /// "Atomic" in a single-threaded cell means one assignment and never a
+    /// partial application: the payload was verified whole before this became
+    /// callable — [`VerifiedPolicy`]'s only constructor recomputes the
+    /// signature — and nothing below reads a slot before the swap. Trading is
+    /// never paused; the previous policy serves until the assignment.
+    ///
+    /// Sequence discipline lives here because this is where "last applied" is
+    /// a fact: a payload at or below the applied sequence is refused, which is
+    /// what stops a replayed old payload from un-halting or re-widening the
+    /// cell.
+    pub fn apply_policy(&mut self, verified: VerifiedPolicy, now: Timestamp) -> Result<()> {
+        if verified.payload().cell != self.config.cell_id {
+            return Err(Error::denied(format!(
+                "a policy payload for cell {} cannot apply to {}",
+                verified.payload().cell,
+                self.config.cell_id
+            )));
+        }
+        if let Some(applied) = self.policy_sequence()
+            && verified.sequence() <= applied
+        {
+            return Err(Error::denied(format!(
+                "policy sequence {} is not newer than the applied {applied}; an old payload \
+                 cannot re-widen or un-halt this cell",
+                verified.sequence()
+            )));
+        }
+
+        // A payload that would release the halt must postdate the halt it
+        // releases. `halting` is what the cell will actually do, which may be
+        // stricter than what the payload says.
+        let releasing_too_early = !verified.halted()
+            && self.policy_halted
+            && self
+                .policy_halt_barrier
+                .is_some_and(|barrier| verified.payload().issued_at <= barrier);
+        let halting = verified.halted() || releasing_too_early;
+        let was_halted = self.policy_halted;
+        let narrowed: Vec<String> = verified
+            .payload()
+            .narrowing(now)
+            .narrowed()
+            .iter()
+            .map(|(capability, freshness)| {
+                format!("{}:{}", capability.as_str(), freshness.as_str())
+            })
+            .collect();
+
+        self.journal.record(
+            Decision::PolicyApplied {
+                sequence: verified.sequence(),
+                halted: halting,
+                narrowed,
+            },
+            now,
+        );
+        if releasing_too_early {
+            self.journal.record(
+                Decision::Refused {
+                    gate: "halt_release".to_string(),
+                    reason: format!(
+                        "policy sequence {} was issued at or before the halt barrier and cannot \
+                         release it",
+                        verified.sequence()
+                    ),
+                },
+                now,
+            );
+        }
+        if halting != was_halted {
+            self.journal.record(
+                Decision::HaltChanged {
+                    halted: halting,
+                    reason: if halting {
+                        "the centre halted this cell through policy".to_string()
+                    } else {
+                        format!(
+                            "policy sequence {} released the central halt",
+                            verified.sequence()
+                        )
+                    },
+                },
+                now,
+            );
+        }
+        if verified.halted() {
+            // A halt carried by policy is a halt decision like any other, and
+            // it raises the same release barrier: whatever releases it must
+            // postdate it, whatever its sequence says.
+            self.policy_halt_barrier = Some(match self.policy_halt_barrier {
+                Some(existing) if existing >= verified.payload().issued_at => existing,
+                _ => verified.payload().issued_at,
+            });
+        }
+        self.policy_halted = halting;
+        self.policy = Some(verified);
+        Ok(())
     }
 
     /// Track an instrument at a venue.
@@ -289,9 +487,30 @@ impl Cell {
                 runtime,
                 envelope,
                 utilisation: Utilisation::default(),
+                class: StrategyClass::PriceOnly,
             },
         );
         Ok(())
+    }
+
+    /// Declare which pause rules govern an already-deployed strategy.
+    ///
+    /// Separate from [`Self::deploy`] so that classification is an explicit
+    /// act rather than a defaulted parameter nobody reads. `PriceOnly` is the
+    /// deploy-time default because it is true of everything shipped today; a
+    /// strategy that consumes world events must say so, and saying so is what
+    /// makes the degradation table able to pause it.
+    pub fn classify(&mut self, strategy: &str, class: StrategyClass) -> Result<()> {
+        match self.deployed.get_mut(strategy) {
+            Some(deployed) => {
+                deployed.class = class;
+                Ok(())
+            }
+            None => Err(Error::invalid(format!(
+                "no strategy named {strategy} is deployed in this cell, so there is nothing to \
+                 classify"
+            ))),
+        }
     }
 
     pub fn deployed_strategies(&self) -> Vec<&str> {
@@ -368,15 +587,44 @@ impl Cell {
         if report.halted {
             // Books keep absorbing and the journal keeps recording while
             // halted. A cell that stops seeing the market cannot tell whether
-            // it is safe to resume.
-            self.refuse(&mut report, "kill_switch", "the cell is halted", now);
+            // it is safe to resume. The gate names which halt is in force,
+            // because the two release disciplines are different and an
+            // operator staring at a quiet cell needs to know which door to
+            // knock on.
+            let gate = if self.autonomy.kill_switch().is_globally_tripped() {
+                "kill_switch"
+            } else {
+                "policy_halt"
+            };
+            self.refuse(&mut report, gate, "the cell is halted", now);
             return Ok(report);
         }
+
+        // The degradation table, consulted once per pass. Everything below
+        // reads the same narrowing, so a payload applied mid-pass changes the
+        // next pass, never half of this one.
+        let narrowing = self.narrowing(now);
+        let multiplier = narrowing.sizing_multiplier();
 
         let vector = self.features.evaluate(now)?;
         let strategy_ids: Vec<String> = self.deployed.keys().cloned().collect();
 
         for id in strategy_ids {
+            // A paused strategy does not evaluate at all. Refusing before the
+            // run rather than after keeps the journal honest about why the
+            // cell was quiet: no signal existed, because the capability the
+            // strategy depends on is gone.
+            if let Some(deployed) = self.deployed.get(&id)
+                && narrowing.pauses(deployed.class)
+            {
+                self.refuse(
+                    &mut report,
+                    "degradation_pause",
+                    &format!("strategy {id} pauses while its capability is degraded"),
+                    now,
+                );
+                continue;
+            }
             // Each deployment evaluates against the arena it was compiled
             // with. `runtime` and `strategy` are disjoint fields of the same
             // deployment, so the borrow ends with the call and the refusal
@@ -405,7 +653,7 @@ impl Cell {
             );
             report.signals.push(signal.clone());
 
-            if let Some(order) = self.place(&signal, now, gateway, &mut report)? {
+            if let Some(order) = self.place(&signal, multiplier, now, gateway, &mut report)? {
                 report.orders.push(order);
             }
         }
@@ -417,6 +665,7 @@ impl Cell {
     fn place(
         &mut self,
         signal: &Signal,
+        multiplier: Decimal,
         now: Timestamp,
         gateway: &mut dyn Placer,
         report: &mut WorkReport,
@@ -488,7 +737,26 @@ impl Cell {
             }
         };
 
-        let notional = signal.desired_quantity * price;
+        // Confidence-weighted sizing, §6.2's consumer. The multiplier narrows
+        // the *ask* before the envelope bounds it, so utilisation accounting
+        // sees the quantity that will actually be requested. It is exact
+        // arithmetic — this scales a position — and a multiply that cannot be
+        // represented narrows to nothing rather than widening, the same
+        // asymmetry the degradation table itself keeps.
+        let desired = signal
+            .desired_quantity
+            .checked_mul(multiplier)
+            .unwrap_or(Decimal::ZERO);
+        if !desired.is_positive() {
+            self.refuse(
+                report,
+                "degradation_sizing",
+                "the degradation multiplier narrowed the size to nothing",
+                now,
+            );
+            return Ok(None);
+        }
+        let notional = desired * price;
         let key = signal.strategy.as_str().to_string();
         let Some(deployed) = self.deployed.get(&key) else {
             self.refuse(
@@ -517,7 +785,7 @@ impl Cell {
             .envelope
             .admit(&venue, notional, &deployed.utilisation, now)
         {
-            CapitalGrant::Full => signal.desired_quantity,
+            CapitalGrant::Full => desired,
             CapitalGrant::Reduced(cap) => {
                 let reduced = cap.checked_div(price).unwrap_or(Decimal::ZERO);
                 self.refuse(

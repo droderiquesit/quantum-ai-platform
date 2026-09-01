@@ -235,12 +235,17 @@ fn a_partial_fill_at_the_venue_is_a_break_rather_than_a_rounding_up() -> Result<
     let mut cell = armed_cell()?;
     let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
 
-    // Only half the size rests on the contra side, so the venue can honestly
-    // fill only half. The rest of the order rests; the cell's belief (100)
-    // and the venue's account (50) now differ, and that difference must
-    // surface as a break — a reconciler that assumes the rest invents a
-    // position nobody holds.
-    gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("50"), t(15))?;
+    // Less than the order's size rests on the contra side, so the venue can
+    // honestly fill only part of it. The cell's belief and the venue's account
+    // now differ, and that difference must surface as a break — a reconciler
+    // that assumes the rest invents a position nobody holds.
+    //
+    // The contra is 20 against a desired 100 because a cell with no policy
+    // payload sizes at its conservative floor (the degradation table's 0.375),
+    // so the order that reaches the venue is 37.5 — and the fixture's premise
+    // below asserts the fill really was partial, which is what caught this
+    // number when the floor landed.
+    gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("20"), t(15))?;
 
     let report = cell.work(t(20), &mut gateway)?;
     let order = report.orders.first().expect("an order was sent");
@@ -388,5 +393,298 @@ fn a_synthetic_listing_refuses_nonsense_and_records_its_provenance() -> Result<(
         "the provenance does not name what invented it: {}",
         listing.provenance.source
     );
+    Ok(())
+}
+
+// --- the twelve-item payload, consumed where it changes behaviour ------------
+
+use qip_contracts::degradation::StrategyClass;
+use qip_contracts::policy::{BeliefPriors, CausalDigest, EpisodicDigest, PolicyPayload, Slot};
+use qip_edge::VerifiedPolicy;
+
+/// A signed, verified payload for this cell. `fresh` fills the three
+/// capability slots at `now`, so the cell narrows nothing; otherwise every
+/// slot is unproduced and the cell sits at its conservative floor.
+fn verified_policy(sequence: u64, halted: bool, fresh: bool, now: Timestamp) -> VerifiedPolicy {
+    let mut payload = PolicyPayload::unproduced(sequence, CELL, now);
+    payload.halted = halted;
+    if fresh {
+        payload.belief_priors = Slot::produced(
+            BeliefPriors {
+                priors: std::collections::BTreeMap::from([("ACME".to_string(), 0.8)]),
+            },
+            now,
+        );
+        payload.causal_digest = Slot::produced(
+            CausalDigest {
+                active_edges: vec!["rates->ACME".to_string()],
+            },
+            now,
+        );
+        payload.episodic_digest = Slot::produced(
+            EpisodicDigest {
+                digest: "abc".to_string(),
+                episodes: 3,
+            },
+            now,
+        );
+    }
+    let signed = payload
+        .signed(ENVELOPE_KEY)
+        .expect("the test key is not empty");
+    VerifiedPolicy::verify(signed, ENVELOPE_KEY, CELL, now).expect("signed for this cell")
+}
+
+#[test]
+fn a_cell_with_no_policy_sizes_at_the_conservative_floor_and_a_fresh_payload_restores_it()
+-> Result<()> {
+    // §6.2 through its real consumer. A cell nobody ever shipped policy to has
+    // no belief priors and no causal digest, so it must size as if both are
+    // stale — 0.75 × 0.5 of the ask — because full-confidence sizing without a
+    // belief state was an overclaim, not a default.
+    let mut cell = armed_cell()?;
+    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("100"), t(15))?;
+
+    let report = cell.work(t(20), &mut gateway)?;
+    let order = report.orders.first().expect("an order was sent");
+    // The strategy asks for 100 (the harness's compiled strategy); the floor
+    // multiplier is 0.375.
+    assert_eq!(
+        order.quantity,
+        dec!("37.5"),
+        "a policy-less cell did not size at the conservative floor"
+    );
+
+    // A fresh payload restores full-confidence sizing.
+    let mut fresh_cell = armed_cell()?;
+    fresh_cell.apply_policy(verified_policy(1, false, true, t(18)), t(18))?;
+    let mut fresh_gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    fresh_gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("100"), t(15))?;
+    let fresh_report = fresh_cell.work(t(20), &mut fresh_gateway)?;
+    let fresh_order = fresh_report.orders.first().expect("an order was sent");
+    assert_eq!(
+        fresh_order.quantity,
+        dec!("100"),
+        "a cell with fresh belief and causal policy still narrowed"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_central_policy_halt_stops_the_cell_and_only_a_newer_payload_releases_it() -> Result<()> {
+    // The flow-6 gap, closed at the cell: the centre can now stop a region.
+    // Release is deliberately harder than engage — a halted cell resumes only
+    // from a *newer* signed payload that says so, never from a replay of the
+    // one before the halt.
+    let mut cell = armed_cell()?;
+    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("100"), t(15))?;
+
+    // Premise: the cell trades before the halt.
+    let before = cell.work(t(16), &mut gateway)?;
+    assert!(
+        !before.orders.is_empty(),
+        "the cell did not trade before the halt, so the halt below stops nothing"
+    );
+
+    cell.apply_policy(verified_policy(2, true, true, t(17)), t(17))?;
+    assert!(cell.is_halted(), "a policy halt did not halt the cell");
+    let halted = cell.work(t(18), &mut gateway)?;
+    assert!(halted.orders.is_empty(), "a halted cell placed an order");
+    assert!(
+        halted
+            .refusals
+            .iter()
+            .any(|(gate, _)| gate == "policy_halt"),
+        "the refusal does not name the policy halt, so an operator cannot \
+         tell which release discipline applies: {:?}",
+        halted.refusals
+    );
+
+    // A replay of the pre-halt payload must not release it.
+    let replay = verified_policy(2, false, true, t(17));
+    assert!(
+        cell.apply_policy(replay, t(19)).is_err(),
+        "a payload at the halted sequence was accepted, so a replay can \
+         un-halt a cell the centre stopped"
+    );
+    assert!(cell.is_halted());
+
+    // A genuinely newer payload releases it.
+    cell.apply_policy(verified_policy(3, false, true, t(20)), t(20))?;
+    assert!(
+        !cell.is_halted(),
+        "a newer releasing payload did not release"
+    );
+    let after = cell.work(t(21), &mut gateway)?;
+    assert!(
+        !after.orders.is_empty(),
+        "the released cell did not resume trading"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_strategy_that_recognises_situations_pauses_when_episodic_memory_goes_stale() -> Result<()> {
+    // §6.2 row 3 through the pause gate, with the premise asserted both ways:
+    // the same cell, same market, trades when the strategy is price-only and
+    // refuses when it is reclassified — so the pause is the classification's
+    // doing, not the fixture's.
+    let mut cell = armed_cell()?;
+    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("100"), t(15))?;
+    // No policy has ever arrived, so episodic memory reads unavailable — and a
+    // price-only strategy must trade through that regardless.
+    let priced = cell.work(t(16), &mut gateway)?;
+    assert!(
+        !priced.orders.is_empty(),
+        "a price-only strategy paused on an episodic loss it does not depend on"
+    );
+
+    cell.classify(STRATEGY, StrategyClass::SituationalRecognition)?;
+    let paused = cell.work(t(17), &mut gateway)?;
+    assert!(
+        paused.orders.is_empty(),
+        "a situational-recognition strategy traded without episodic memory"
+    );
+    assert!(
+        paused
+            .refusals
+            .iter()
+            .any(|(gate, _)| gate == "degradation_pause"),
+        "the pause is not journaled under its own gate: {:?}",
+        paused.refusals
+    );
+    Ok(())
+}
+
+use qip_contracts::policy::HaltCommand;
+use qip_edge::VerifiedHalt;
+
+fn verified_halt(issued_at: Timestamp, reason: &str) -> VerifiedHalt {
+    let signed = HaltCommand::new(CELL, issued_at, reason)
+        .signed(ENVELOPE_KEY)
+        .expect("the test key is not empty");
+    VerifiedHalt::verify(signed, ENVELOPE_KEY, CELL, issued_at).expect("signed for this cell")
+}
+
+#[test]
+fn a_halt_command_stops_the_cell_and_a_payload_racing_it_cannot_release_it() -> Result<()> {
+    // The in-flight race the release barrier exists for. A releasing payload
+    // issued *before* the halt was decided is a decision made in ignorance of
+    // it, and applying it would let ordinary delivery jitter un-halt a cell
+    // the centre just stopped. Only a payload issued after the halt releases.
+    let mut cell = armed_cell()?;
+    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("100"), t(15))?;
+
+    // Premise: trading before the halt.
+    assert!(!cell.work(t(16), &mut gateway)?.orders.is_empty());
+
+    cell.apply_halt(
+        verified_halt(t(17), "drop-copy disagreement at the centre"),
+        t(17),
+    );
+    assert!(
+        cell.is_halted(),
+        "a verified halt command did not halt the cell"
+    );
+    // Idempotent: the same halt again is one halt, not an error.
+    cell.apply_halt(
+        verified_halt(t(17), "drop-copy disagreement at the centre"),
+        t(17),
+    );
+    assert!(cell.is_halted());
+
+    // A releasing payload issued at the barrier instant does not release; the
+    // payload's other content still applies. The sequence is fresh, so only
+    // the barrier can be what refuses the release.
+    cell.apply_policy(verified_policy(10, false, true, t(17)), t(18))?;
+    assert!(
+        cell.is_halted(),
+        "a payload issued at the halt instant released it, so delivery \
+         jitter can un-halt a cell"
+    );
+    assert_eq!(
+        cell.policy_sequence(),
+        Some(10),
+        "the racing payload's policy content was discarded along with its \
+         release, which conflates the two"
+    );
+
+    // A payload issued after the halt releases it.
+    cell.apply_policy(verified_policy(11, false, true, t(19)), t(19))?;
+    assert!(
+        !cell.is_halted(),
+        "a post-halt releasing payload did not release"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_halt_command_verifies_only_with_the_right_key_and_cell() {
+    // The forged-halt trade-off, tested from the refusing side: an
+    // unauthenticated stop-lever on a polled inbox would let anyone who can
+    // inject frames stop a region at will.
+    let signed = HaltCommand::new(CELL, t(5), "reason")
+        .signed(ENVELOPE_KEY)
+        .expect("signable");
+    assert!(VerifiedHalt::verify(signed.clone(), b"other-key", CELL, t(5)).is_err());
+    assert!(VerifiedHalt::verify(signed.clone(), ENVELOPE_KEY, "other-cell", t(5)).is_err());
+
+    // Re-dating a signed halt would move the release barrier; the signature
+    // covers the instant, so the edit must refuse.
+    let mut redated = signed;
+    redated.issued_at = t(50);
+    assert!(
+        VerifiedHalt::verify(redated, ENVELOPE_KEY, CELL, t(50)).is_err(),
+        "a halt re-dated after signing still verified, so the release \
+         barrier can be moved by anyone on the path"
+    );
+}
+
+#[test]
+fn a_replayed_halt_cannot_re_halt_a_released_cell_and_a_fresh_one_still_can() -> Result<()> {
+    // The bounded denial of service the review named: a captured signed halt,
+    // re-delivered after a legitimate release, re-halted the cell in the gaps
+    // between publishes. Both halves of the fix are asserted, because the
+    // guard must refuse exactly the replay and nothing else — a guard that
+    // also slowed a fresh halt would trade a nuisance for a safety property.
+    let mut cell = armed_cell()?;
+
+    // Halt, then legitimately release with a newer payload.
+    let original = verified_halt(t(17), "drop-copy disagreement");
+    cell.apply_halt(original.clone(), t(17));
+    assert!(
+        cell.is_halted(),
+        "the premise failed: the halt did not engage"
+    );
+    cell.apply_policy(verified_policy(2, false, true, t(19)), t(19))?;
+    assert!(
+        !cell.is_halted(),
+        "the premise failed: the release did not release"
+    );
+
+    // The captured frame comes back. It is genuinely signed and genuinely
+    // verified — the transport bought it nothing, and neither does replay.
+    cell.apply_halt(original, t(25));
+    assert!(
+        !cell.is_halted(),
+        "a replayed halt at the resolved barrier re-halted a released cell"
+    );
+
+    // A fresh halt — issued after the barrier — engages unconditionally.
+    cell.apply_halt(verified_halt(t(26), "a new decision"), t(26));
+    assert!(
+        cell.is_halted(),
+        "the replay guard also refused a fresh halt, which trades a nuisance \
+         for the safety property"
+    );
+
+    // And an engaged cell is never released by this path: an old halt
+    // arriving while halted changes nothing.
+    cell.apply_halt(verified_halt(t(18), "stale duplicate"), t(27));
+    assert!(cell.is_halted());
     Ok(())
 }

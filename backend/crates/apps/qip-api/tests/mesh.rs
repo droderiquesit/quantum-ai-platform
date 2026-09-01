@@ -123,6 +123,10 @@ fn rig(inbox_capacity: usize) -> Result<Rig> {
         &settings,
         Arc::new(MemoryKeyValueStore::new()),
         clock.clone() as Arc<dyn Clock>,
+        // The same trust root the plane was hardened with above — one key,
+        // one rotation, and the downlinks in these tests verify policy and
+        // capital against the same secret, exactly as a deployment does.
+        Some(ENVELOPE_KEY.as_bytes().to_vec()),
     )?;
     let cell_peer = mesh
         .cell_address(CELL)
@@ -545,5 +549,78 @@ fn an_api_without_mesh_configuration_serves_no_mesh_and_says_so() -> Result<()> 
         body.get("mesh").is_none(),
         "an unconfigured mesh appeared in the cycle report: {body}"
     );
+    Ok(())
+}
+
+// --- policy and halt, end to end over real sockets ---------------------------
+
+use qip_edge::mesh::PolicyDownlink;
+
+fn policy_downlink(rig: &Rig, name: &str) -> Result<PolicyDownlink> {
+    PolicyDownlink::connect(
+        DownlinkConfig::new(
+            CELL,
+            mesh_config(name, &format!("http://{}", rig.cell_peer)),
+        ),
+        ENVELOPE_KEY.as_bytes(),
+        Arc::new(ManualClock::new(start())) as Arc<dyn Clock>,
+        sleeper(),
+    )
+}
+
+#[test]
+fn a_cycle_ships_a_signed_payload_the_cell_verifies_and_a_trip_reaches_it() -> Result<()> {
+    // The whole loop the integration pass reported broken: policy travelling
+    // down, and an operator's one action stopping the regions. Real sockets,
+    // real signatures, the same key on both ends.
+    let rig = rig(64)?;
+    let mut downlink = policy_downlink(&rig, "policy-e2e")?;
+
+    run_cycle(&rig)?;
+    let batch = downlink.poll(at(Duration::from_secs(5)))?;
+    assert!(
+        batch.refused.is_empty(),
+        "the cycle shipped something this cell refused: {:?}",
+        batch.refused
+    );
+    let payload = batch
+        .verified
+        .first()
+        .expect("the cycle shipped a payload this cell verified");
+    assert!(!payload.halted(), "nothing tripped, yet the payload halts");
+    // The grant manifest slot is produced — the platform really fills it —
+    // and the cognition slots are unproduced, because nothing produces them.
+    // Both halves are the design: what exists ships, what does not narrows.
+    assert!(
+        payload.payload().capital_grants.value().is_some(),
+        "the grant manifest slot shipped unproduced"
+    );
+    assert!(
+        payload.payload().risk_envelope.value().is_some(),
+        "the risk envelope slot shipped unproduced"
+    );
+    assert!(
+        payload.payload().belief_priors.value().is_none(),
+        "a belief slot shipped produced, and nothing here produces beliefs"
+    );
+
+    // The operator trips the switch; the same action must reach the region.
+    let response = rig
+        .api
+        .handle(&request(Method::Post, "/api/v1/kill-switch"));
+    assert_eq!(response.status, 200);
+    let body: serde_json::Value = serde_json::from_slice(&response.body)?;
+    assert_eq!(
+        body["broadcast"]["sent"].as_u64(),
+        Some(1),
+        "the trip was not broadcast to the one configured cell: {body}"
+    );
+
+    let batch = downlink.poll(at(Duration::from_secs(10)))?;
+    let halt = batch
+        .halts
+        .first()
+        .expect("the broadcast halt arrived and verified");
+    assert!(!halt.reason().is_empty());
     Ok(())
 }

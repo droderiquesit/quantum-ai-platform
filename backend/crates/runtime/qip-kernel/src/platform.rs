@@ -41,6 +41,7 @@ use qip_agents::Budget;
 use qip_agents::memory::ResearchMemory;
 use qip_ai::language::DeterministicModel;
 use qip_ai::retrieval::SearchIndex;
+use qip_capital::reservation::ReservationLedger;
 use qip_capital::{AllocationLimits, CapitalAllocator, DrawdownSchedule};
 use qip_capital_fabric::{
     CapitalLocation, DemandForecast, DemandForecaster, DemandKind, DemandObservation, FundingCurve,
@@ -144,6 +145,11 @@ pub struct Platform {
     broker: Box<dyn Broker>,
     autonomy: AutonomyController,
     monitor: RiskMonitor,
+    /// Holds between a capital check and its resolution. A proposal that
+    /// passes a check reserves what it was sized for, so a second proposal in
+    /// the same window cannot pass against the same free balance — gap-matrix
+    /// item 10, wired.
+    reservations: ReservationLedger,
     attributor: Attributor,
     evaluator: ThesisEvaluator,
     feedback: FeedbackEngine,
@@ -990,6 +996,10 @@ impl Platform {
             )),
             autonomy: AutonomyController::with_live_ceiling(config.autonomy_ceiling),
             monitor: RiskMonitor::new(limits, config.monitor),
+            // Opened empty and re-anchored to tracked equity at every sizing
+            // pass; zero here is one honest cycle of refusals at worst.
+            reservations: ReservationLedger::new(Decimal::ZERO)
+                .unwrap_or_else(|_| unreachable!("zero is not negative")),
             attributor: Attributor::new(),
             evaluator: ThesisEvaluator::default(),
             feedback: FeedbackEngine::default(),
@@ -1123,6 +1133,14 @@ impl Platform {
     /// and the approval ladder, capital allocation across cells, aggregate
     /// exposure, and the six governance controls. See
     /// `docs/adr/0008-edge-cells-decide-alone.md`.
+    /// The configured risk limits, for the policy payload's envelope slot.
+    ///
+    /// The monitor owns them; this is a read, added so the centre can ship
+    /// what it actually enforces rather than a copy that could drift.
+    pub fn risk_limits(&self) -> &qip_risk::limits::LimitSet {
+        self.monitor.limits()
+    }
+
     pub fn central(&self) -> &CentralPlane {
         &self.central
     }
@@ -1246,6 +1264,13 @@ impl Platform {
     ///
     /// Bounded by [`PROPOSAL_HISTORY`]. Use [`Platform::proposals_made`] to
     /// tell "none were produced" from "the older ones have aged out".
+    /// The capital holds between a check and its resolution — read-only, for
+    /// the consistency the wiring owes: free plus active holds must equal the
+    /// tracked equity it was last anchored to.
+    pub fn reservations(&self) -> &ReservationLedger {
+        &self.reservations
+    }
+
     pub fn proposals(&self) -> &[Proposal] {
         &self.proposals
     }
@@ -2662,7 +2687,7 @@ impl Platform {
     /// is a number wearing the costume of an estimate, and the mandate's risk
     /// bound would be enforced against the costume.
     fn construct_from(
-        &self,
+        &mut self,
         theses: &[qip_portfolio_engine::construction::ApprovedThesis],
         now: Timestamp,
     ) -> Result<qip_portfolio_engine::construction::ConstructionOutcome> {
@@ -2713,15 +2738,41 @@ impl Platform {
         let current: std::collections::BTreeMap<String, f64> =
             self.capital.position_weights(equity).into_iter().collect();
 
-        self.constructor.construct(
+        // The budget is what is actually free, not the raw equity: equity
+        // minus every active hold, as `stage_decide` anchored it this pass.
+        // This is the line that makes a second proposal unable to pass
+        // against capital a first one already claimed.
+        let free = self.reservations.free(now);
+
+        let outcome = self.constructor.construct(
             theses,
             &covariance,
             &current,
-            Money::new(equity, Currency::USD),
+            Money::new(free, Currency::USD),
             now,
             now,
             ProposalId::from_string(format!("prop-{}", self.cycle)),
-        )
+        )?;
+
+        // Hold what the proposal was sized for, keyed by its id, until the
+        // act stage commits or releases it. A proposal whose capital cannot
+        // be held must not enter the pipeline: refusing here is the control
+        // working, not an error to route around. Zero-notional proposals —
+        // nothing-to-do cycles — hold nothing.
+        let notional = outcome.proposal.traded_notional();
+        if notional.is_positive() {
+            self.reservations.reserve(
+                outcome.proposal.proposal_id.as_str().to_string(),
+                notional,
+                now,
+                // One day bounds an abandoned proposal's hold; the act stage
+                // resolves a live one within the same cycle, so the expiry
+                // only matters when a proposal is constructed and never
+                // offered — the exact leak `expire_due` exists to drain.
+                Duration::from_hours(24),
+            )?;
+        }
+        Ok(outcome)
     }
 
     fn thesis_from(
@@ -2966,6 +3017,21 @@ impl Platform {
     }
 
     fn stage_decide(&mut self, now: Timestamp) -> StageOutcome {
+        // Anchor the reservation ledger to the book before anything is sized,
+        // on every pass including quiet ones: free = equity minus active
+        // holds, one claim about one balance. The failure mode — holds
+        // exceeding equity after a drawdown — floors free at zero, which
+        // refuses new reservations, and is counted where the alerts look.
+        if self
+            .reservations
+            .resync_free(self.capital.equity(), now)
+            .is_err()
+        {
+            self.telemetry.metrics.count(
+                "qip_reservation_shortfall",
+                labels([("reason", "holds_exceed_equity")]),
+            );
+        }
         // Construction expresses approved theses. With none pending there is
         // nothing to size, and that is a normal state. The equity is the
         // tracked number — the same one the risk monitor watches — so a
@@ -3245,6 +3311,11 @@ impl Platform {
             .cloned()
             .collect();
 
+        // Which proposals actually put an order on the book, so the capital
+        // held for each can be committed or returned below. BTreeMap because
+        // the resolution order reaches the journal.
+        let mut placed_by_proposal: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
         for proposal in &approved {
             for (index, leg) in proposal.legs.iter().enumerate() {
                 // A leg that would trade nothing is not an order. Submitting a
@@ -3283,7 +3354,12 @@ impl Platform {
                 );
 
                 match self.submit_order(order, now) {
-                    Ok(()) => released += 1,
+                    Ok(()) => {
+                        released += 1;
+                        *placed_by_proposal
+                            .entry(proposal.proposal_id.as_str().to_string())
+                            .or_insert(0) += 1;
+                    }
                     // A refusal is an outcome, not an error to abort on. The
                     // control said no and `submit_order` has already put that
                     // on the record; stopping the loop here would let one
@@ -3316,6 +3392,40 @@ impl Platform {
             .iter()
             .map(|proposal| proposal.proposal_id.as_str().to_string())
             .collect();
+
+        // Resolve each offered proposal's capital hold: committed where at
+        // least one leg became an order — that capital is now in the book and
+        // does not return to free — and released where every leg was refused
+        // or empty, because a control saying no must hand the capital back.
+        // A hold that is simply missing is recorded rather than invented:
+        // proposals sized before this wiring existed have none, and a
+        // problem line beats a phantom balance. Lapsed holds are swept on the
+        // same clock so an abandoned proposal's capital returns at expiry.
+        for (proposal_id, amount) in self.reservations.expire_due(now) {
+            problems.push(format!(
+                "the hold for {proposal_id} ({amount}) lapsed unresolved and was swept"
+            ));
+        }
+        for proposal in &approved {
+            // A proposal that held nothing has nothing to resolve — the
+            // nothing-to-do proposal a quiet cycle records is the common case,
+            // and a problem line for it every cycle would bury the real ones.
+            if !proposal.traded_notional().is_positive() {
+                continue;
+            }
+            let proposal_id = proposal.proposal_id.as_str();
+            let resolved = if placed_by_proposal.contains_key(proposal_id) {
+                self.reservations.commit(proposal_id, now).map(|_| ())
+            } else {
+                self.reservations.release(proposal_id, now).map(|_| ())
+            };
+            if let Err(error) = resolved {
+                problems.push(format!(
+                    "the hold for {proposal_id} could not be resolved: {}",
+                    error.message()
+                ));
+            }
+        }
         for proposal in &mut self.proposals {
             if offered.contains(&proposal.proposal_id.as_str().to_string()) {
                 if let Err(error) = proposal.release(now) {
@@ -4776,6 +4886,125 @@ mod decide_tests {
         // Refused, not lost: nothing filled, and the platform is still paper.
         assert!(platform.orders.fills().is_empty());
         assert!(!platform.orders.has_live_fills());
+    }
+
+    #[test]
+    fn a_second_proposal_is_sized_against_what_the_first_still_holds() {
+        // Gap-matrix item 10's headline, at the seam it lives on. Before the
+        // reservation wiring, `construct_from` handed every proposal the full
+        // tracked equity: two proposals sized before either resolved each
+        // passed against the same free balance, and the second was a
+        // double-spend wearing a passing capital check.
+        let mut platform = small_book_platform();
+        feed_history(&mut platform, "AAPL", 30);
+        feed_history(&mut platform, "MSFT", 30);
+        platform.pending_theses.push(thesis("AAPL", 0.6));
+        platform.pending_theses.push(thesis("MSFT", -0.4));
+
+        let now = Timestamp::from_secs(1_760_000_100);
+        platform.stage_decide(now);
+        let first = platform
+            .proposals
+            .last()
+            .cloned()
+            .expect("the first proposal is recorded");
+        // The premise: the first proposal holds real capital, or the second
+        // one's budget below is trivially the whole book.
+        assert!(
+            first.traded_notional().is_positive(),
+            "the premise failed: the first proposal holds nothing"
+        );
+        let equity = platform.capital.equity();
+
+        // A second decision arrives before the first resolves — no act stage
+        // has run, so the first proposal's hold is still active. The cycle
+        // counter advances as `run_cycle` would advance it, because the
+        // proposal id is derived from it and the reservation is keyed by the
+        // proposal id.
+        platform.cycle += 1;
+        platform.pending_theses.push(thesis("AAPL", 0.6));
+        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.stage_decide(Timestamp::from_secs(1_760_000_160));
+        let second = platform
+            .proposals
+            .last()
+            .cloned()
+            .expect("the second proposal is recorded");
+
+        // The exact property: the second proposal was budgeted the equity
+        // minus the first one's hold, not the equity. `proposal.equity` is
+        // the budget `construct` was handed, so the assertion reads the seam
+        // directly rather than inferring it from sizes.
+        assert_eq!(
+            second.equity.amount,
+            equity - first.traded_notional(),
+            "the second proposal was sized against capital the first still \
+             holds — the double-spend the reservation ledger exists to refuse"
+        );
+    }
+
+    #[test]
+    fn a_released_proposal_commits_its_hold_and_a_refused_one_returns_it() {
+        // The resolution half of item 10. Committed capital does not return
+        // to free — it is in the book now — while a refusal hands the hold
+        // back, because a control saying no must not strand the capital it
+        // said no to.
+        let now = Timestamp::from_secs(1_760_000_100);
+        let correlation = CorrelationId::from_string("corr-reserve");
+
+        // Released: every leg placed, the hold commits.
+        let mut placed = small_book_platform();
+        feed_history(&mut placed, "AAPL", 30);
+        feed_history(&mut placed, "MSFT", 30);
+        placed.pending_theses.push(thesis("AAPL", 0.6));
+        placed.pending_theses.push(thesis("MSFT", -0.4));
+        placed.stage_decide(now);
+        let notional = placed
+            .proposals
+            .last()
+            .expect("a proposal")
+            .traded_notional();
+        assert!(notional.is_positive(), "the premise failed: nothing sized");
+        placed.stage_act(now, &correlation);
+        assert_eq!(
+            placed.reservations.reserved_total(),
+            Decimal::ZERO,
+            "a hold survived the act stage that resolved its proposal"
+        );
+        assert_eq!(
+            placed.reservations.committed_total(),
+            notional,
+            "the released proposal's hold did not commit"
+        );
+
+        // Refused: the over-limit book, every leg refused, the hold releases.
+        let mut refused = platform();
+        feed_history(&mut refused, "AAPL", 30);
+        feed_history(&mut refused, "MSFT", 30);
+        refused.pending_theses.push(thesis("AAPL", 0.6));
+        refused.pending_theses.push(thesis("MSFT", -0.4));
+        refused.stage_decide(now);
+        assert!(
+            refused
+                .proposals
+                .last()
+                .expect("a proposal")
+                .traded_notional()
+                .is_positive(),
+            "the premise failed: nothing sized, so nothing could be refused"
+        );
+        let outcome = refused.stage_act(now, &correlation);
+        assert_eq!(outcome.produced, 0, "the over-limit book placed an order");
+        assert_eq!(
+            refused.reservations.reserved_total(),
+            Decimal::ZERO,
+            "a refused proposal left its hold in place, stranding the capital"
+        );
+        assert_eq!(
+            refused.reservations.committed_total(),
+            Decimal::ZERO,
+            "a refused proposal committed capital nothing spent"
+        );
     }
 
     #[test]

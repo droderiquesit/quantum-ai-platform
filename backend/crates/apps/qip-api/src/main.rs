@@ -102,6 +102,12 @@ fn run() -> Result<()> {
             settings,
             storage.key_value("mesh")?,
             clock.clone(),
+            // The same trust root the plane signs envelopes with, so a cell
+            // verifies policy and capital against one key and a rotation is
+            // one secret rolled in one place. Absent here means policy
+            // distribution is off and the backbone counts it, rather than
+            // signing with something nobody verifies.
+            envelope_key.as_ref().map(|key| key.as_bytes().to_vec()),
         )?))),
         None => None,
     };

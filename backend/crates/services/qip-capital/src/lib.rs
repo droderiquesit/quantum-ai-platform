@@ -5,7 +5,7 @@
 //! this crate decides what envelopes to issue, watches what the cells have
 //! collectively done with them, and takes capital back.
 //!
-//! Six things live here.
+//! Seven things live here.
 //!
 //! * [`allocation`] splits a risk budget across strategies and cells, subject
 //!   to per-strategy, per-cell, per-venue and total limits at once. Strategies
@@ -31,6 +31,11 @@
 //!   long the book would take to exit at a stated participation rate. A
 //!   position that takes three weeks to leave is a different animal from one
 //!   that takes an hour at the same notional.
+//! * [`reservation`] holds capital between the check and the trade. A
+//!   proposal that passes a capital check without holding the capital is one
+//!   half of a double-spend — the second proposal against the same free
+//!   balance also passes — so [`reservation::ReservationLedger`] makes
+//!   passing and holding the same operation, and the second is refused.
 //! * [`recall`] withdraws capital mid-flight, and is explicit that a recall is
 //!   a request. The reliable bound on a cell nobody can reach is the envelope
 //!   expiry, which the cell enforces locally against its own clock.
@@ -102,6 +107,7 @@ pub mod envelope;
 pub mod exposure;
 pub mod margin;
 pub mod recall;
+pub mod reservation;
 
 pub use allocation::{
     Allocation, AllocationLimits, AllocationPlan, CapitalAllocator, DrawdownSchedule,
@@ -116,3 +122,4 @@ pub use margin::{
     LiquidationHorizon, LiquidityAssessment, MarginModel, MarginRequirement, assess_liquidity,
 };
 pub use recall::{RecallOrder, RecallReason, RecallRegister, RecallState};
+pub use reservation::{Reservation, ReservationLedger};

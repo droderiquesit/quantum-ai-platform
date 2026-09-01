@@ -1012,3 +1012,203 @@ fn a_freshness_survives_the_round_trip_through_its_own_wire_format() {
     assert_eq!(decoded.sizing_multiplier(), dec!("0.75"));
     assert!(!decoded.analogical_retrieval_available());
 }
+
+// --- the twelve-item policy payload: blueprint §41.5 -------------------------
+
+use qip_contracts::policy::{BeliefPriors, PolicyItem, PolicyPayload, Slot};
+
+fn payload_key() -> Vec<u8> {
+    b"a-test-trust-root-of-decent-length".to_vec()
+}
+
+#[test]
+fn a_policy_payload_round_trips_and_an_unknown_field_is_refused() -> Result<()> {
+    // The second half is the structural guarantee that matters: the payload
+    // cannot carry an autonomy ceiling. The layering already means no type
+    // here can *name* one; this asserts a ceiling cannot ride in as an extra
+    // key either. The injected field below is exactly the attack — a live
+    // level smuggled into policy — and it must fail deserialisation, not be
+    // ignored.
+    let payload = PolicyPayload::unproduced(1, "cell-1", t(0)).signed(&payload_key())?;
+    let json = serde_json::to_string(&payload).expect("serialisable");
+    let decoded: PolicyPayload = serde_json::from_str(&json).expect("own wire form decodes");
+    assert_eq!(decoded, payload);
+
+    // Premise: the injection point exists and the json was an object.
+    assert!(json.ends_with('}'), "the wire form is not a JSON object");
+    let smuggled = format!(
+        "{},\"autonomy_ceiling\":\"autonomous_live\"}}",
+        &json[..json.len() - 1]
+    );
+    let refused: std::result::Result<PolicyPayload, _> = serde_json::from_str(&smuggled);
+    assert!(
+        refused.is_err(),
+        "a policy payload accepted an unknown field, so an autonomy ceiling \
+         could ride into a cell as policy"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_unproduced_slot_is_stale_from_birth_and_narrows_like_staleness() -> Result<()> {
+    // The design's central fail-closed claim: a capability the platform does
+    // not have behaves exactly like one that went stale. A cell that has never
+    // received belief priors sizes at the fixed conservative multiplier — the
+    // platform's sizing was never belief-weighted, and this makes that fact
+    // load-bearing instead of implicit.
+    let payload = PolicyPayload::unproduced(1, "cell-1", t(0)).signed(&payload_key())?;
+    for item in PolicyItem::all() {
+        assert_eq!(
+            payload.freshness(item, t(1)),
+            Freshness::Unavailable,
+            "{} was produced by nothing and does not read as unavailable",
+            item.as_str()
+        );
+    }
+    let narrowing = payload.narrowing(t(1));
+    // Premise: the mapping actually observed something, or the assertions
+    // below describe `nothing_known` rather than the payload.
+    assert!(
+        !narrowing.narrowed().is_empty(),
+        "no capability was observed from the payload, so narrowing tested nothing"
+    );
+    assert_eq!(narrowing.sizing_multiplier(), dec!("0.375"));
+    assert_eq!(narrowing.allocation_mode(), AllocationMode::Unconditional);
+    assert!(!narrowing.halts());
+    Ok(())
+}
+
+#[test]
+fn a_produced_slot_is_fresh_within_its_ttl_and_stale_beyond_it() -> Result<()> {
+    // Freshness comes from the producer's instant against the item's own TTL,
+    // and the payload's overall validity caps it: an old envelope carrying a
+    // "fresh" fact is how a replayed payload would smuggle confidence.
+    let produced = Slot::produced(
+        BeliefPriors {
+            priors: std::collections::BTreeMap::from([("subject".to_string(), 0.7)]),
+        },
+        t(0),
+    );
+    let mut payload = PolicyPayload::unproduced(2, "cell-1", t(0));
+    payload.belief_priors = produced;
+    payload.valid_for = Duration::from_secs(10_000);
+    let payload = payload.signed(&payload_key())?;
+
+    // Belief priors carry a 300-second TTL, the conservative end of §41.5's
+    // "seconds to minutes".
+    assert_eq!(
+        payload.freshness(PolicyItem::BeliefPriors, t(299)),
+        Freshness::Fresh
+    );
+    assert_eq!(
+        payload.freshness(PolicyItem::BeliefPriors, t(301)),
+        Freshness::Stale
+    );
+    // Fresh belief widens the multiplier back to the causal-only narrowing.
+    assert_eq!(payload.narrowing(t(299)).sizing_multiplier(), dec!("0.75"));
+
+    // And the payload's own expiry caps the slot, whatever its instant says.
+    let mut short = PolicyPayload::unproduced(3, "cell-1", t(0));
+    short.belief_priors = Slot::produced(
+        BeliefPriors {
+            priors: std::collections::BTreeMap::from([("subject".to_string(), 0.7)]),
+        },
+        t(0),
+    );
+    short.valid_for = Duration::from_secs(5);
+    let short = short.signed(&payload_key())?;
+    assert_eq!(
+        short.freshness(PolicyItem::BeliefPriors, t(6)),
+        Freshness::Stale,
+        "an expired payload still reported a fresh slot, which is the replay \
+         that smuggles confidence"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_policy_signature_covers_every_field_that_changes_what_a_cell_may_do() -> Result<()> {
+    // The `CapitalEnvelope` rule, generalised: a signature that does not cover
+    // a bound is a signature over the wrong thing. Every mutation below
+    // changes what the cell would do, so every one must change the signing
+    // payload — including the halt flag, or a replayed payload could un-halt
+    // a cell the centre stopped.
+    let base = PolicyPayload::unproduced(5, "cell-1", t(100));
+    let reference = base.signing_payload()?;
+
+    let mut resequenced = base.clone();
+    resequenced.sequence = 6;
+    let mut readdressed = base.clone();
+    readdressed.cell = "cell-2".to_string();
+    let mut unhalted = base.clone();
+    unhalted.halted = true;
+    let mut reslotted = base.clone();
+    reslotted.belief_priors = Slot::produced(
+        BeliefPriors {
+            priors: std::collections::BTreeMap::new(),
+        },
+        t(100),
+    );
+    let mut rewindowed = base.clone();
+    rewindowed.valid_for = Duration::from_secs(999_999);
+
+    for (label, mutated) in [
+        ("sequence", &resequenced),
+        ("cell", &readdressed),
+        ("halt flag", &unhalted),
+        ("a slot's content", &reslotted),
+        ("validity window", &rewindowed),
+    ] {
+        assert_ne!(
+            mutated.signing_payload()?,
+            reference,
+            "changing the {label} does not change the signing payload, so a \
+             signature over one payload authorises the other"
+        );
+    }
+
+    // An empty key is refused, as it is for capital envelopes.
+    assert!(base.clone().signed(&[]).is_err());
+    Ok(())
+}
+
+#[test]
+fn two_different_halts_cannot_share_one_signing_string() {
+    // The reviewer's exact collision. With fields joined on a bare `|`, these
+    // two commands — different cells, different reasons — serialised to the
+    // same bytes and therefore shared one MAC: a signature over one was a
+    // signature over the other. Length-prefixing the free-text fields is what
+    // makes the string injective, and this is the pair that proves it.
+    use qip_contracts::policy::HaltCommand;
+
+    // Raw seconds, not the suite's epoch-offset helper: the collision needs
+    // the instant's decimal spelling to be exactly the token the hostile
+    // reason begins with, and the first version of this test used the helper,
+    // broke that alignment, and passed against the unfixed code — caught by
+    // its own mutation run.
+    let instant = Timestamp::from_secs(100);
+    let first = HaltCommand::new("a", instant, "100|b|c");
+    let second = HaltCommand::new("a|100", instant, "b|c");
+    // The premise: these are genuinely different commands.
+    assert_ne!(first.cell, second.cell);
+    assert_ne!(first.reason, second.reason);
+    assert_ne!(
+        first.signing_payload(),
+        second.signing_payload(),
+        "two different halt commands share one signing string, so one \
+         signature authorises both"
+    );
+
+    // The same property for the payload's one free-text field: a cell name
+    // that swallows the adjacent numeric field must not collide with the
+    // honest spelling.
+    let mut plain = PolicyPayload::unproduced(1, "a", t(100));
+    plain.sequence = 1;
+    let mut tricky = PolicyPayload::unproduced(1, "a|", t(100));
+    tricky.sequence = 1;
+    assert_ne!(
+        plain.signing_payload().expect("serialisable"),
+        tricky.signing_payload().expect("serialisable"),
+        "two different payload addresses share one signing string"
+    );
+}

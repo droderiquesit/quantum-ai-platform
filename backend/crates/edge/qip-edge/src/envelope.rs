@@ -116,7 +116,7 @@ impl VerifiedEnvelope {
 /// A signature check that returns early on the first mismatch tells an
 /// attacker how much of a forgery was correct, which turns forging one into a
 /// linear search rather than an exhaustive one.
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+pub(crate) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     if left.len() != right.len() {
         return false;
     }

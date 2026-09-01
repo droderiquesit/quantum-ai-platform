@@ -60,6 +60,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration as StdDuration;
 
 use qip_contracts::capital::CapitalEnvelope;
+use qip_contracts::policy::{
+    GrantManifest, HaltCommand, PolicyPayload, RiskEnvelopeSnapshot, Slot,
+};
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use qip_core::time::{Duration, Timestamp};
@@ -70,7 +73,7 @@ use qip_kernel::central::{CellReport, ReconciliationBreak};
 use qip_mesh::delta::{CellStanding, decode_cell_delta};
 use qip_mesh::spine::{
     CapitalDispatch, CapitalDispatcher, CellDeltaReceiver, CellDeltaSink, DispatcherConfig,
-    ReceiverStats, grant_key,
+    PolicyCourier, PolicySend, ReceiverStats, grant_key,
 };
 use qip_storage::kv::KeyValueStore;
 use qip_transport::mesh::{HEALTH_PATH, POLL_PATH, PUBLISH_PATH};
@@ -415,6 +418,10 @@ struct CapitalLane {
     /// for exactly this split.
     capital: MeshEndpoint,
     dispatcher: CapitalDispatcher,
+    /// The policy sender for this cell. Unspooled where the dispatcher
+    /// spools, because policy is state and the newest wins; the courier's own
+    /// doc comment carries the argument.
+    courier: PolicyCourier,
     /// Grant identities already handed to the dispatcher, so a cycle that
     /// sees the same live envelope again does not push it into the spool
     /// again. Bounded; see [`DISPATCH_MEMORY`].
@@ -571,10 +578,70 @@ pub fn pending_capital(platform: &Platform, now: Timestamp) -> Vec<PendingGrant>
         .collect()
 }
 
+/// The policy payloads one cycle should ship, one per configured cell.
+///
+/// Built from what the platform actually has, which today is two of the
+/// twelve items: the grant manifest — the signatures of every live envelope
+/// for the cell, so a dropped grant becomes visible — and the risk envelope,
+/// as the limit set the monitor really enforces. Every other slot ships
+/// unproduced and reads as unavailable at the cell, which narrows it; that is
+/// the fail-closed design, not an omission. The halted flag mirrors the
+/// central kill switch, so a cell that missed the halt broadcast converges at
+/// the next payload.
+///
+/// The sequence is the issue instant in nanoseconds: strictly increasing
+/// under a monotonic clock, and it survives a restart without persisted
+/// state. The assumption that the centre's clock does not step backwards is
+/// stated here rather than hidden; a cell refuses a regression either way.
+///
+/// What an operator sees if that assumption breaks: every payload issued
+/// after a backward step carries a sequence at or below the last applied,
+/// every cell refuses it, and the cells **narrow to their conservative floor**
+/// as their slots age out — smaller sizing, never larger. The failure costs
+/// availability and never safety, which is the direction every clock fault
+/// here is designed to fall. The symptom in the delta stream is policy
+/// refusals climbing with the narrowed set widening; the repair is a fresh
+/// payload once the clock is ahead of the last applied instant.
+pub fn pending_policy(
+    platform: &Platform,
+    cells: impl Iterator<Item = String>,
+    now: Timestamp,
+) -> Vec<(String, PolicyPayload)> {
+    let halted = platform.autonomy().kill_switch().is_globally_tripped();
+    let limits = serde_json::to_value(platform.risk_limits()).ok();
+    let central = platform.central();
+    cells
+        .map(|cell| {
+            let sequence = now.as_nanos().max(0) as u64;
+            let mut payload = PolicyPayload::unproduced(sequence, &cell, now);
+            payload.halted = halted;
+            let live_grants: Vec<String> = central
+                .factory()
+                .candidates()
+                .filter(|candidate| candidate.cell() == cell)
+                .filter_map(|candidate| central.envelope(candidate.cell(), candidate.strategy()))
+                .filter(|envelope| envelope.is_live(now))
+                .map(|envelope| envelope.signature().to_string())
+                .collect();
+            payload.capital_grants = Slot::produced(GrantManifest { live_grants }, now);
+            if let Some(limits) = limits.clone() {
+                payload.risk_envelope = Slot::produced(RiskEnvelopeSnapshot { limits }, now);
+            }
+            (cell, payload)
+        })
+        .collect()
+}
+
 /// The centre's half of the mesh, assembled and serving.
 #[derive(Debug)]
 pub struct MeshBackbone {
     receiver: CellDeltaReceiver,
+    /// The trust root policy payloads and halts are signed with — the same
+    /// key the cells verify grants against. `None` means policy distribution
+    /// is off and counted, never silently unsigned: an unsigned payload would
+    /// be refused by every cell anyway, and signing with a made-up key would
+    /// manufacture a second trust root.
+    policy_key: Option<Vec<u8>>,
     lanes: BTreeMap<String, CapitalLane>,
     listeners: Vec<MeshListener>,
     counters: BackboneCounters,
@@ -594,6 +661,7 @@ impl MeshBackbone {
         settings: &MeshSettings,
         store: Arc<dyn KeyValueStore>,
         clock: Arc<dyn Clock>,
+        policy_key: Option<Vec<u8>>,
     ) -> Result<Self> {
         let receiver = CellDeltaReceiver::with_defaults("central", settings.inbox_capacity)?;
         let mut lanes = BTreeMap::new();
@@ -653,12 +721,32 @@ impl MeshBackbone {
                 )?),
             )?;
 
+            let courier = PolicyCourier::open(
+                DispatcherConfig::new(
+                    &cell.cell,
+                    MeshConfig::new(
+                        format!("policy:{}", cell.cell),
+                        format!("http://{}", feed.address),
+                    )
+                    .with_retry(dispatch_retry())
+                    .with_limits(dispatch_limits())
+                    .with_seed(seed_from(&cell.cell).wrapping_add(1)),
+                ),
+                Arc::clone(&clock),
+                Arc::new(ThreadSleeper),
+                Box::new(DurableDeadLetters::open(
+                    Arc::clone(&store),
+                    format!("policy:{}", cell.cell),
+                )?),
+            )?;
+
             lanes.insert(
                 cell.cell.clone(),
                 CapitalLane {
                     address: facing.address.clone(),
                     capital,
                     dispatcher,
+                    courier,
                     dispatched: BTreeSet::new(),
                     dispatched_order: VecDeque::new(),
                 },
@@ -669,12 +757,82 @@ impl MeshBackbone {
 
         Ok(Self {
             receiver,
+            policy_key,
             lanes,
             listeners,
             counters: BackboneCounters::default(),
             standings: BTreeMap::new(),
             last_undecodable: None,
         })
+    }
+
+    /// The cells this backbone serves, for building payloads.
+    pub fn cells(&self) -> impl Iterator<Item = String> + '_ {
+        self.lanes.keys().cloned()
+    }
+
+    /// Sign and send one cycle's policy payloads.
+    ///
+    /// With no trust root configured nothing is sent and the count says so —
+    /// an unsigned payload would be refused by every cell, and signing with a
+    /// manufactured key would mint a second trust root.
+    pub fn dispatch_policy(
+        &mut self,
+        pending: Vec<(String, PolicyPayload)>,
+        now: Timestamp,
+    ) -> PolicySummary {
+        let mut summary = PolicySummary::default();
+        let Some(key) = self.policy_key.clone() else {
+            summary.unsigned = pending.len();
+            return summary;
+        };
+        for (cell, payload) in pending {
+            let Some(lane) = self.lanes.get_mut(&cell) else {
+                summary.unserved += 1;
+                continue;
+            };
+            let signed = match payload.signed(&key) {
+                Ok(signed) => signed,
+                Err(error) => {
+                    summary.errors.push(format!("{cell}: {}", error.message()));
+                    continue;
+                }
+            };
+            match lane.courier.send_payload(signed, now) {
+                Ok(PolicySend::Delivered) => summary.sent += 1,
+                Ok(PolicySend::CircuitOpen) => summary.circuit_open += 1,
+                Err(error) => summary.errors.push(format!("{cell}: {}", error.message())),
+            }
+        }
+        summary
+    }
+
+    /// Sign and broadcast a halt to every cell.
+    ///
+    /// Best-effort by design and honest about it: the guarantee is that a
+    /// cell which can hear the centre halts within one poll, and the payload's
+    /// own halted flag re-carries the state for any cell that missed this.
+    pub fn broadcast_halt(&mut self, reason: &str, now: Timestamp) -> PolicySummary {
+        let mut summary = PolicySummary::default();
+        let Some(key) = self.policy_key.clone() else {
+            summary.unsigned = self.lanes.len();
+            return summary;
+        };
+        for (cell, lane) in &mut self.lanes {
+            let command = match HaltCommand::new(cell.clone(), now, reason).signed(&key) {
+                Ok(signed) => signed,
+                Err(error) => {
+                    summary.errors.push(format!("{cell}: {}", error.message()));
+                    continue;
+                }
+            };
+            match lane.courier.send_halt(command, now) {
+                Ok(PolicySend::Delivered) => summary.sent += 1,
+                Ok(PolicySend::CircuitOpen) => summary.circuit_open += 1,
+                Err(error) => summary.errors.push(format!("{cell}: {}", error.message())),
+            }
+        }
+        summary
     }
 
     /// The bound listeners, for the banner.
@@ -870,13 +1028,31 @@ impl MeshBackbone {
 /// A drain error is rendered rather than propagated: the cycle it rode on
 /// already ran, so the response reports what the exchange did and did not
 /// manage, exactly as the archive failure on the same route is reported.
-pub fn exchange_json(drained: &Result<DrainSummary>, dispatched: &DispatchSummary) -> String {
+/// What became of one cycle's policy sends, or one halt broadcast.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct PolicySummary {
+    pub sent: usize,
+    pub circuit_open: usize,
+    /// Payloads not sent because no trust root is configured. Counted loudly:
+    /// a deployment that thinks it is shipping policy and is not should read
+    /// it here rather than infer it from a narrowed cell.
+    pub unsigned: usize,
+    pub unserved: usize,
+    pub errors: Vec<String>,
+}
+
+pub fn exchange_json(
+    drained: &Result<DrainSummary>,
+    dispatched: &DispatchSummary,
+    policy: &PolicySummary,
+) -> String {
     let drained = match drained {
         Ok(summary) => serde_json::to_string(summary).unwrap_or_else(|_| "null".to_string()),
         Err(error) => format!(r#"{{"error":{}}}"#, crate::json::string(error.message())),
     };
     let dispatched = serde_json::to_string(dispatched).unwrap_or_else(|_| "null".to_string());
-    format!(r#"{{"drained":{drained},"dispatched":{dispatched}}}"#)
+    let policy = serde_json::to_string(policy).unwrap_or_else(|_| "null".to_string());
+    format!(r#"{{"drained":{drained},"dispatched":{dispatched},"policy":{policy}}}"#)
 }
 
 // --- delta to report ----------------------------------------------------
