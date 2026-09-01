@@ -1088,3 +1088,194 @@ fn no_workload_in_the_namespace_has_an_egress_rule_that_bypasses_the_proxy() {
          something other than the egress rules"
     );
 }
+
+/// The second copy of the manifest, converted template-for-template.
+///
+/// Checked alongside `MANIFEST` because a property asserted about one copy and
+/// not the other is a property that holds in whichever copy nobody deploys.
+const HELM_MANIFEST: &str = "infrastructure/helm/qip/templates/egress.yaml";
+
+/// The workload resources that would have to exist for the proxy to run at all.
+///
+/// A Service with no Deployment behind it is a name with no endpoints, so these
+/// three are what separate a described proxy from a running one.
+const WORKLOAD_KINDS: [&str; 3] = ["ServiceAccount", "Deployment", "PodDisruptionBudget"];
+
+/// The resources that are live in the committed state, and are the premise for
+/// reading anything about the ones that are not.
+const LIVE_KINDS: [&str; 3] = ["ConfigMap", "Service", "NetworkPolicy"];
+
+/// Whether a Kubernetes resource kind is applied, described, or missing.
+///
+/// Three states rather than two, because the interesting one is the middle:
+/// `Commented` is a resource written out in full, reviewed, and inert.
+#[derive(Debug, PartialEq, Eq)]
+enum Declared {
+    /// The line would be applied by `kubectl apply -f`.
+    Live,
+    /// The line exists, behind a `#`, and applies nothing.
+    Commented,
+    /// The kind is not in the file at all.
+    Absent,
+}
+
+/// How a manifest declares a resource kind, treating a leading `#` as decisive.
+///
+/// Deliberately *not* `declares_key`, and this is the whole point of the test
+/// below. `declares_key` and `proxy_image` above strip `['#', ' ']` from every
+/// line before matching, which is correct for what they assert — the content of
+/// a pod that is committed commented out, so that its digest and its absent
+/// credentials are reviewed now rather than on the day somebody uncomments it.
+/// But it means those checks return the same answer whether the pod is applied
+/// or not, and so does every check built on them.
+///
+/// Here the `#` is the fact. A line is matched by whole-line equality after its
+/// indent is removed, not by `contains`: `kind: Service` is a prefix of
+/// `kind: ServiceAccount`, so a substring match would report the Service's own
+/// live declaration as a live ServiceAccount and this test would assert the
+/// opposite of the truth while passing.
+fn how_the_kind_is_declared(manifest: &str, kind: &str) -> Declared {
+    let mapping = format!("kind: {kind}");
+    let mut seen = Declared::Absent;
+    for line in manifest.lines() {
+        let indented = line.trim_start();
+        if let Some(uncommented) = indented.strip_prefix('#') {
+            if uncommented.trim_start_matches(['#', ' ']).trim_end() == mapping {
+                seen = Declared::Commented;
+            }
+        } else if indented.trim_end() == mapping {
+            // A live declaration outranks a commented one: the same kind may
+            // appear both ways, and what deploys is the one without the `#`.
+            return Declared::Live;
+        }
+    }
+    seen
+}
+
+#[test]
+fn the_proxys_workload_resources_are_committed_commented_out_and_therefore_deploy_nothing() {
+    // What this test records, and why it is separate from the twelve above.
+    //
+    // The other checks in this file assert what the proxy's configuration
+    // *says*. None of them can tell whether any of it is applied, because
+    // `declares_key` and `proxy_image` strip `#` from every line before
+    // matching — deliberately, and correctly for their purpose. The
+    // consequence found by review is that uncommenting the Deployment at the
+    // foot of `egress.yaml` changes the outcome of no test in this file, and
+    // neither does commenting it back out. A green run was evidence about a
+    // design document.
+    //
+    // That is the shape this repository names as its standing risk: a control
+    // that reads as protection and cannot fire. This test is the one assertion
+    // here that fires when the deployment state changes, in either direction.
+    //
+    // It asserts the committed truth — the proxy is *not* deployed — rather
+    // than the intended one. Whoever lands the four out-of-band edits the
+    // manifest's own comment enumerates will see this fail, and the failure is
+    // the instruction: update this expectation, and re-read the other twelve,
+    // which have been asserting an unapplied document all along.
+    let base = read(MANIFEST);
+    let helm = read(HELM_MANIFEST);
+
+    // Premise, first: both files were found and both hold a whole manifest.
+    // `read` panics on a missing file, but an empty or truncated one would
+    // classify every kind as `Absent`, and this test would then conclude "not
+    // deployed" from a file with nothing in it.
+    for (path, manifest) in [(MANIFEST, &base), (HELM_MANIFEST, &helm)] {
+        assert!(
+            manifest.lines().count() > 500,
+            "{path} is {} lines; the manifest has been split or truncated and \
+             every classification below is reading a fragment",
+            manifest.lines().count()
+        );
+
+        // Premise, second: every kind this test reasons about is in the file
+        // in *some* form. A file that never mentioned the Deployment would
+        // classify as `Absent` too, and "the proxy is not deployed because its
+        // manifest was deleted" is a different finding needing a different fix.
+        for kind in WORKLOAD_KINDS.iter().chain(LIVE_KINDS.iter()) {
+            assert_ne!(
+                how_the_kind_is_declared(manifest, kind),
+                Declared::Absent,
+                "{path} no longer contains a {kind} in any form, live or \
+                 commented. Everything below would then be asserting the \
+                 contents of nothing."
+            );
+        }
+    }
+
+    // The two copies agree, kind by kind. Asserted before the state itself, so
+    // that a divergence fails with the message that names it: uncommenting one
+    // copy and not the other is its own defect, and reading it as "the proxy
+    // was switched on" would send the reader to the wrong file. Whichever copy
+    // the cluster is deployed from decides, and a reviewer reading the other
+    // one is reading fiction.
+    for kind in WORKLOAD_KINDS.iter().chain(LIVE_KINDS.iter()) {
+        assert_eq!(
+            how_the_kind_is_declared(&base, kind),
+            how_the_kind_is_declared(&helm, kind),
+            "{MANIFEST} and {HELM_MANIFEST} disagree about whether {kind} is \
+             applied. They are a template-for-template conversion of one \
+             another; one of them is what the cluster runs and the other is \
+             what somebody will read."
+        );
+    }
+
+    // Premise, third: the classifier can actually see a live resource. Without
+    // this, a bug that made `how_the_kind_is_declared` never return `Live`
+    // would satisfy the conclusion below forever — which is the failure mode
+    // this whole test exists to remove, so it is asserted rather than assumed.
+    for kind in LIVE_KINDS {
+        assert_eq!(
+            how_the_kind_is_declared(&base, kind),
+            Declared::Live,
+            "{MANIFEST} declares no live {kind}. Either this file has been \
+             reshaped, or the check that tells a live resource from a \
+             commented one has stopped telling them apart — and in that state \
+             the conclusion below passes whatever the file says."
+        );
+    }
+
+    // The conclusion. Expected state: commented out, therefore inert. Checked
+    // on both copies, because the agreement above is what makes one stand for
+    // the other and an assertion that relies on another assertion is one edit
+    // from being vacuous.
+    for (path, manifest) in [(MANIFEST, &base), (HELM_MANIFEST, &helm)] {
+        for kind in WORKLOAD_KINDS {
+            assert_eq!(
+                how_the_kind_is_declared(manifest, kind),
+                Declared::Commented,
+                "{path} now declares a live {kind} for the egress proxy. If \
+                 that was deliberate — the four out-of-band edits named in the \
+                 manifest's own comment have landed — this expectation is what \
+                 needs updating, and the other twelve checks in this file need \
+                 re-reading, because until now they have been asserting an \
+                 unapplied document.\n\
+                 If it was not deliberate, the rollout has changed: the \
+                 pipeline waits on workloads it lists by name, and a proxy \
+                 that appears without joining that list reports success before \
+                 admission has ruled on a third-party image nothing here signed."
+            );
+        }
+    }
+
+    // The consequence, stated where it can be checked rather than only in
+    // prose: the Service and the policies that select the proxy are live, and
+    // they select a workload that does not exist. `qip-egress` therefore
+    // resolves to a name with no endpoints, the NetworkPolicies naming
+    // `app: qip-egress` constrain nothing, and every adapter configured
+    // through the proxy authority is inert — a connection that hangs rather
+    // than an error anybody sees.
+    let selecting_policies = base
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .filter(|line| line.trim().trim_start_matches("- ") == "app: qip-egress")
+        .count();
+    assert!(
+        selecting_policies >= 4,
+        "only {selecting_policies} live lines select `app: qip-egress`; the \
+         Service and the policies that point at the absent pod have been \
+         reshaped, and the consequence this test documents no longer follows \
+         from the file it documents"
+    );
+}
