@@ -14,6 +14,7 @@
 pub mod config;
 pub mod feed;
 pub mod health;
+pub mod licensing;
 pub mod node;
 pub mod roster;
 pub mod status;

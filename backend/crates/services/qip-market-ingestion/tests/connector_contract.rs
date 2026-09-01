@@ -307,3 +307,79 @@ impl SourceConnector for BrokenManifest<'_> {
         self.inner.map(event, ingest_time)
     }
 }
+
+// --- the connector as a feed: the bridge into the decision loop --------------
+
+use qip_financial::quality::LicensingClass;
+use qip_market_ingestion::adapter::DataAdapter;
+use qip_market_ingestion::connector_feed::{ConnectorFeed, KNOWN_SOURCES, shipped_class};
+
+#[test]
+fn the_connector_feed_polls_a_recorded_source_into_sensed_records() -> Result<()> {
+    // The bridge, end to end with no socket: the same runtime path a
+    // deployment takes, over the recorded emulator instead of the egress
+    // proxy. What this pins is that a connector's admitted envelopes really
+    // do come out of the adapter contract as records the loop can absorb —
+    // the seam gap-matrix item 6 named.
+    let manifest = CoinbaseTickerConnector::shipped_manifest()?;
+    let mut manifest = manifest;
+    manifest.endpoint.base_url = Some("http://egress.test:8080".to_string());
+    let connector = CoinbaseTickerConnector::new(
+        manifest.clone(),
+        "BTC-USD",
+        ObjectId::from_string("BTC-USD"),
+        "COINBASE",
+    )?;
+    let emulator = SourceEmulator::from_json(coinbase_ticker::FIXTURE)?;
+
+    let mut feed = ConnectorFeed::over_transport(
+        Box::new(connector),
+        manifest,
+        Box::new(emulator),
+        11,
+        coinbase_horizon(),
+    )?;
+
+    // The descriptor carries the manifest's own identity and licensing, so
+    // every record's provenance says what its source's terms were.
+    let descriptor = feed.descriptor();
+    assert_eq!(descriptor.name, "coinbase-spot-ticker");
+    assert_eq!(descriptor.licensing, LicensingClass::Internal);
+    assert!(
+        descriptor.is_production_grade(),
+        "an internal-licensed live source must be admissible for decisions"
+    );
+
+    let records = feed.poll(coinbase_horizon())?;
+    assert!(
+        !records.is_empty(),
+        "the recorded fixture produced no records through the bridge"
+    );
+    for record in &records {
+        assert!(
+            record.validate().is_empty(),
+            "the bridge produced a record the loop would reject: {record:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn the_shipped_class_and_the_known_sources_agree_with_the_manifests() -> Result<()> {
+    // `shipped_class` is what the licensing gate reads before anything opens,
+    // so it must be the manifest's own claim and not a copy that can drift.
+    assert_eq!(
+        shipped_class("coinbase-spot-ticker")?,
+        CoinbaseTickerConnector::shipped_manifest()?.licensing
+    );
+    assert_eq!(
+        shipped_class("coinbase-spot-ticker")?,
+        LicensingClass::Internal,
+        "the Coinbase evaluation concluded internal — no redistribution — and \
+         the manifest must say so"
+    );
+    assert!(shipped_class("unknown-source").is_err());
+    // Premise for every list-driven check: the list is not empty.
+    assert!(!KNOWN_SOURCES.is_empty());
+    Ok(())
+}

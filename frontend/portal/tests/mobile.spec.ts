@@ -63,7 +63,6 @@ test.describe("the phone layout", () => {
       "/data-sources",
       "/portfolio",
       "/orders",
-      "/order-entry",
       "/risk",
       "/capital",
       "/strategies",

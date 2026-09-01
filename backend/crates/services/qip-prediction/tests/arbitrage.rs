@@ -635,6 +635,126 @@ fn the_synthetic_venue_eventually_lists_a_set_that_can_be_bought_below_its_payof
     );
 }
 
+/// Every book the demo venue publishes over `hours`, in order.
+fn demo_books(config: SyntheticVenueConfig, hours: i64) -> Vec<OrderBook> {
+    let mut venue = SyntheticPredictionVenue::new(config, now()).expect("venue");
+    venue
+        .poll(now().saturating_add(Duration::from_hours(hours)))
+        .expect("poll")
+        .into_iter()
+        .filter_map(|update| match update {
+            PredictionUpdate::Book { book, .. } => Some(*book),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_demo_venue_quotes_a_real_spread_around_a_real_fair_price() {
+    // The failure this prevents: the half-spread, the price floors and the
+    // level tick were `Decimal::parse(..).unwrap_or(Decimal::ZERO)` on literal
+    // constants. Every one of those fallbacks is silent and every one produces
+    // a book that reads as free liquidity — a zero half-spread quotes bid and
+    // ask at the same price, a zero tick stacks every level on the touch, and a
+    // fair price that fell back to zero pins the quote to the floor. Asserting
+    // the constants parse would prove nothing, because they always parse; these
+    // are the observable consequences of each one being wrong.
+    //
+    // Every expected value below is a literal. Deriving one from
+    // `config.half_spread` would compare the quote against the same constant
+    // that produced it, and a mutation setting that constant to zero passed the
+    // first draft of this test unharmed.
+    let config = SyntheticVenueConfig::demo(11).expect("config");
+    assert_eq!(
+        config.half_spread,
+        price("0.005"),
+        "the demo venue quotes half a cent either side of fair"
+    );
+    let books = demo_books(config, 6);
+    assert!(
+        books.len() >= 6,
+        "premise: the venue must publish books before any of them can be checked, got {}",
+        books.len()
+    );
+
+    for book in &books {
+        let bid = book.best_bid().expect("a two-sided book has a bid").price;
+        let ask = book.best_ask().expect("a two-sided book has an ask").price;
+
+        assert_eq!(
+            ask - bid,
+            price("0.01"),
+            "the touch must be exactly the half-spread either side of fair; a zero half-spread \
+             quotes a crossed book at the fair price"
+        );
+        assert!(
+            bid > price("0.005") && ask > price("0.01"),
+            "a fair price defaulted to zero pins the quote to its floor: bid {bid}, ask {ask}"
+        );
+
+        let asks: Vec<Decimal> = book.asks.iter().map(|level| level.price).collect();
+        assert!(
+            asks.len() >= 2,
+            "premise: the tick needs two levels to show"
+        );
+        assert_eq!(
+            asks[1] - asks[0],
+            price("0.002"),
+            "a zero tick stacks every level on the touch and overstates depth at the best price"
+        );
+    }
+}
+
+#[test]
+fn the_arbitrage_discount_is_spread_across_the_legs_rather_than_dropped() {
+    // The failure this prevents: the per-leg discount was
+    // `discount.checked_div(..).unwrap_or(Decimal::ZERO)`, so a division that
+    // failed priced the complete set at its payoff and the arbitrage the step
+    // was drawn to contain would simply not be there. Holding the seed fixed
+    // and setting the depth to zero isolates the discount: the same steps draw
+    // the same fair prices, so any difference between the two runs is the
+    // discount and nothing else.
+    let with_depth = SyntheticVenueConfig::demo(4).expect("config");
+    let without_depth = SyntheticVenueConfig {
+        arbitrage_depth: Decimal::ZERO,
+        ..with_depth.clone()
+    };
+    assert_eq!(
+        with_depth.arbitrage_depth,
+        price("0.03"),
+        "premise: the depth is a literal here rather than read back from the config, so a depth \
+         mutated to zero cannot agree with itself"
+    );
+    // Three outcomes share 0.03.
+    let per_leg = price("0.01");
+
+    let discounted = demo_books(with_depth, 6);
+    let undiscounted = demo_books(without_depth, 6);
+    assert_eq!(
+        discounted.len(),
+        undiscounted.len(),
+        "the same seed must draw the same number of steps"
+    );
+
+    let mut discounted_steps = 0;
+    for (a, b) in discounted.iter().zip(undiscounted.iter()) {
+        let moved = b.best_ask().expect("ask").price - a.best_ask().expect("ask").price;
+        if moved.is_zero() {
+            continue;
+        }
+        assert_eq!(
+            moved, per_leg,
+            "a discounted leg is cheaper by exactly the depth divided across the legs"
+        );
+        discounted_steps += 1;
+    }
+    assert!(
+        discounted_steps > 0,
+        "premise: this seed must draw at least one arbitrage step, or the comparison above never \
+         runs and the test guards nothing"
+    );
+}
+
 #[test]
 fn the_venue_api_adapter_names_the_endpoints_and_credential_it_is_missing() {
     let mut adapter = VenueApiAdapter::new(

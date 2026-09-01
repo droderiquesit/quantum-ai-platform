@@ -93,6 +93,7 @@ fn run() -> Result<()> {
 
     let mut feed = Feed::open(
         config.live_feed.as_ref(),
+        config.connector_feed.as_ref(),
         config.replay_path.as_deref(),
         config.seed,
         config.cycle_interval,

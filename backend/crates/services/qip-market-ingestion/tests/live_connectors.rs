@@ -209,3 +209,39 @@ fn a_source_that_cannot_be_reached_is_refused_and_dead_lettered_rather_than_hang
     );
     Ok(())
 }
+
+// --- the connector feed, live: the whole bridge the loop will use ------------
+
+use qip_market_ingestion::adapter::DataAdapter;
+use qip_market_ingestion::connector_feed::ConnectorFeed;
+
+#[test]
+fn the_connector_feed_fetches_a_live_tick_through_the_same_egress() -> Result<()> {
+    // The path a deployment actually takes, minus only the licensing gate,
+    // which lives in the composition root above this crate: source selection
+    // by name, the manifest's own transport, the runtime's probe and gates,
+    // and the adapter contract the decision loop polls. A tick that arrives
+    // here is a tick `Platform::observe` would absorb.
+    let Some(base_url) = egress(COINBASE_BASE_URL) else {
+        return Ok(());
+    };
+    let mut feed = ConnectorFeed::open("coinbase-spot-ticker", &base_url, 7, horizon())?;
+    let records = feed.poll(horizon())?;
+    assert!(
+        !records.is_empty(),
+        "the live source answered and the bridge delivered no record"
+    );
+    for record in &records {
+        assert!(
+            record.validate().is_empty(),
+            "the live path produced a record the loop would reject: {record:?}"
+        );
+    }
+    eprintln!(
+        "live evidence: {} record(s) from {} ({:?})",
+        records.len(),
+        feed.descriptor().name,
+        feed.descriptor().licensing
+    );
+    Ok(())
+}

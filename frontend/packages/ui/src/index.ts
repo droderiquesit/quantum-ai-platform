@@ -15,17 +15,17 @@
 export {
   Chip, StatusChip, Metric, MetricRow, KeyValue, Freshness, StreamControls,
   FEED_TONE, FEED_LABEL, type Tone,
-} from "../../../frontend/src/components/data/Bits";
-export { Panel, PanelHead, PanelBody, TableWell } from "../../../frontend/src/components/data/Panel";
-export { Kpi, KpiRow, type KpiProps } from "../../../frontend/src/components/data/Kpi";
+} from "../../../portal/src/components/data/Bits";
+export { Panel, PanelHead, PanelBody, TableWell } from "../../../portal/src/components/data/Panel";
+export { Kpi, KpiRow, type KpiProps } from "../../../portal/src/components/data/Kpi";
 export {
   StateBlock, LoadingBlock, EmptyBlock, UnavailableBlock, MissingEndpointBlock,
   RouteMissingBlock, UnreachableBlock, DeniedBlock, ErrorBlock, ResourceView,
-} from "../../../frontend/src/components/data/States";
-export { SimulatedBanner, SimChip } from "../../../frontend/src/components/data/Simulated";
-export { EventFeed } from "../../../frontend/src/components/data/EventFeed";
+} from "../../../portal/src/components/data/States";
+export { SimulatedBanner, SimChip } from "../../../portal/src/components/data/Simulated";
+export { EventFeed } from "../../../portal/src/components/data/EventFeed";
 export {
   formatCount, formatPercent, formatMicros, formatDecimal, formatDurationMs,
   formatAgo, formatClock, formatUtcDate, formatTimestamp, truncate, directionOf,
   type Direction,
-} from "../../../frontend/src/lib/format";
+} from "../../../portal/src/lib/format";

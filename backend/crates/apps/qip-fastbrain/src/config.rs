@@ -78,6 +78,9 @@ pub struct FastBrainConfig {
     /// A licensed vendor to poll instead of either. `None` is the shipped
     /// state and the only state any environment in this repository configures.
     pub live_feed: Option<LiveFeedSettings>,
+    /// A catalogued connector source, when the deployment names one. Mutually
+    /// exclusive with `live_feed`; `Feed::open` refuses the contradiction.
+    pub connector_feed: Option<ConnectorFeedSettings>,
     /// The synthetic exchange's seed, so a session is reproducible.
     pub seed: u64,
     /// How long the shutdown flush may take before the node gives up on it.
@@ -123,6 +126,26 @@ pub struct LiveFeedSettings {
     pub api_key_header: String,
 }
 
+/// A catalogued connector source and the egress address to reach it through.
+///
+/// Two fields and no credential, because the sources this build carries are
+/// unauthenticated by their manifests — `auth.scheme` is `none` — and the
+/// licensing catalogue in [`crate::licensing`] is what decides whether the
+/// source may be used at all. A future keyed source adds its credential to
+/// the manifest's own auth scheme and resolves it through `qip_core::secret`,
+/// not here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConnectorFeedSettings {
+    /// The manifest's `source_id`, e.g. `coinbase-spot-ticker`. Must be
+    /// catalogued or the feed refuses to open.
+    pub source_id: String,
+    /// `http://host[:port]` of the **egress proxy**, never of the vendor —
+    /// the same rule, for the same plaintext transport, as the vendor path.
+    pub base_url: String,
+    /// Seed for the runtime's own jitter, from the platform seed.
+    pub seed: u64,
+}
+
 impl Default for FastBrainConfig {
     fn default() -> Self {
         Self {
@@ -136,6 +159,7 @@ impl Default for FastBrainConfig {
             storage: StorageSettings::in_memory(),
             replay_path: None,
             live_feed: None,
+            connector_feed: None,
             seed: 20_260_822,
             shutdown_budget: DEFAULT_SHUTDOWN_BUDGET,
         }
@@ -222,6 +246,10 @@ impl FastBrainConfig {
             .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?,
             replay_path: text(vars, "QIP_FASTBRAIN_REPLAY_PATH"),
             live_feed: live_feed(vars)?,
+            connector_feed: connector_feed(
+                vars,
+                number(vars, "QIP_FASTBRAIN_SEED")?.unwrap_or(defaults.seed),
+            )?,
             seed: number(vars, "QIP_FASTBRAIN_SEED")?.unwrap_or(defaults.seed),
             shutdown_budget,
         })
@@ -254,6 +282,45 @@ impl FastBrainConfig {
 /// The credential is read through `qip_core::secret`, which accepts the
 /// `_FILE` indirection the Secret Manager CSI driver projects, so a deployment
 /// never has to put a key in the environment.
+fn connector_feed(
+    vars: &BTreeMap<String, String>,
+    seed: u64,
+) -> Result<Option<ConnectorFeedSettings>> {
+    const SOURCE: &str = "QIP_CONNECTOR_SOURCE";
+    const BASE_URL: &str = "QIP_CONNECTOR_BASE_URL";
+
+    let source = text(vars, SOURCE);
+    let base_url = text(vars, BASE_URL);
+    match (source, base_url) {
+        (None, None) => Ok(None),
+        // Half a configuration is refused for the same reason half a vendor
+        // is: the silent alternative is the synthetic exchange wearing a
+        // configured look.
+        (Some(_), None) => Err(Error::invalid(format!(
+            "{SOURCE} is set and {BASE_URL} is not. A connector source needs the egress \
+             proxy's address; set both, or neither"
+        ))),
+        (None, Some(_)) => Err(Error::invalid(format!(
+            "{BASE_URL} is set and {SOURCE} is not. An egress address with no source names \
+             nothing to fetch; set both, or neither"
+        ))),
+        (Some(source_id), Some(base_url)) => {
+            if base_url.starts_with("https://") {
+                return Err(Error::invalid(format!(
+                    "{BASE_URL} is {base_url}. `qip_transport::http` speaks plaintext \
+                     HTTP/1.1 and has no TLS stack: point this at the egress proxy, which \
+                     terminates TLS to the vendor, never at the vendor itself"
+                )));
+            }
+            Ok(Some(ConnectorFeedSettings {
+                source_id,
+                base_url,
+                seed,
+            }))
+        }
+    }
+}
+
 fn live_feed(vars: &BTreeMap<String, String>) -> Result<Option<LiveFeedSettings>> {
     const BASE_URL: &str = "QIP_MARKET_DATA_BASE_URL";
     const PATH: &str = "QIP_MARKET_DATA_PATH";

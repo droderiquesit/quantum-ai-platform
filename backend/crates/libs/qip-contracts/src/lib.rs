@@ -33,6 +33,7 @@ pub mod edge;
 pub mod feature;
 pub mod gate;
 pub mod governance;
+pub mod intent;
 pub mod message;
 pub mod policy;
 pub mod signal;
@@ -45,6 +46,9 @@ pub use edge::{Deduction, DeductionKind, LegPlan, LegStep, NetEdge};
 pub use feature::{FeatureKey, FeatureValue, FeatureVector, Revision};
 pub use gate::{GateOutcome, GateStage, Promotion};
 pub use governance::{Approval, Control, Entitlement, Provenance, Severity, Usage};
+pub use intent::{
+    Contributor, Intent, NetIntent, NettingPolicy, Representation, net, netting_ratio,
+};
 pub use message::{BookSide, MarketMessage, MessageBody, TradeCondition};
 pub use policy::{PolicyItem, PolicyPayload, Slot};
 pub use signal::{Conviction, Signal, SignalKind, StrategyId};

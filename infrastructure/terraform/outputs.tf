@@ -32,8 +32,17 @@ output "autonomy_ceiling" {
 }
 
 output "live_capable" {
-  description = "Whether this environment is permitted to reach a real venue at all."
-  value       = var.autonomy_ceiling != "paper_trading"
+  description = <<-EOT
+    Whether this environment is permitted to reach a real venue at all.
+
+    False for every ceiling a plan can carry, because `variables.tf` refuses
+    the three that are not. It was `var.autonomy_ceiling != "paper_trading"`,
+    which is that sentence backwards: it answered true for `observation` and
+    `advisory` — the two rungs below paper trading, and the ones an operator
+    reaches for when hardening an environment. See `ceiling_reaches_a_venue` in
+    main.tf, which is now the only expression that answers this question.
+  EOT
+  value       = local.ceiling_reaches_a_venue
 }
 
 output "image_prefix" {

@@ -100,3 +100,36 @@ cell:
 # consoleRoute:
 #   apiInternalAddress: "10.0.15.250"   # = api_internal_address in tfvars
 #   egressCidr: "10.0.16.0/26"          # = console_egress_cidr in tfvars
+
+# The live market-data connector qip-fastbrain selects.
+#
+# Absent by default, and absent is the correct default: unset, config.yaml
+# renders neither ConfigMap key, fastbrain.yaml's two `optional: true`
+# references leave both variables unset, and `connector_feed` in
+# qip-fastbrain/src/config.rs returns no connector — the node runs the
+# synthetic exchange, which is what every environment does today. Nothing
+# starts fetching a vendor because this chart was deployed.
+#
+# What changes by being here is reachability. The connector path has existed
+# and been tested since the bridge landed, and until these keys no template
+# set either variable, so no operator could select it without hand-editing a
+# manifest Argo CD would revert on the next sync. A capability configured by
+# nothing is a capability nobody has.
+#
+# Both keys or neither: config.yaml `required`s each when the block is
+# present, so half a configuration stops the render rather than reaching a pod
+# that would refuse it at start-up.
+#
+# `baseUrl` must be an `http://` address inside the cluster, and that is not a
+# preference. `qip_transport::http` speaks plaintext HTTP/1.1 — the dependency
+# policy permits `serde` and `serde_json`, so there is no TLS stack — and it
+# refuses the `https` scheme by name rather than downgrading it. The address is
+# therefore the TLS-terminating egress proxy in templates/egress.yaml, never
+# the vendor. That proxy is a reverse proxy with one listener per upstream and
+# reaches only the hosts it names, so selecting a source means adding its
+# listener there in the same change; an address with no route behind it is a
+# feed that 404s at a proxy the operator will not think to suspect.
+#
+# marketDataConnector:
+#   source: "coinbase-spot-ticker"
+#   baseUrl: "http://qip-egress.qip.svc.cluster.local:9105"

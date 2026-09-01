@@ -15,7 +15,6 @@ const ROUTES = [
   "/risk",
   "/markets",
   "/data-sources",
-  "/order-entry",
   "/system",
   // One from each of the sections added for the PEOS eight-section map, so a
   // new section cannot ship a route the declaration is missing from.

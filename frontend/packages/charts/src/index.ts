@@ -9,4 +9,4 @@
 export {
   Sparkline, AreaChart, Gauge, Bars, Heatmap,
   type SparklineProps, type AreaChartProps, type GaugeProps, type BarsProps, type HeatCell,
-} from "../../../frontend/src/components/viz/primitives";
+} from "../../../portal/src/components/viz/primitives";

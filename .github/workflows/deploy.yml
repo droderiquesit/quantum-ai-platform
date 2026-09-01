@@ -385,9 +385,19 @@ jobs:
             echo "environment '${TARGET_ENVIRONMENT}' is not provisioned." >&2
             exit 1
           fi
+          # The provider and the account are what the next step authenticates
+          # with, and this step is the only thing that can supply them. They
+          # were absent: `authenticate without a key` interpolated two empty
+          # strings, so the one GCP login in this job could never succeed and
+          # the digest resolution below it could never run. The `images` job
+          # writes all six and works; this one wrote two and did not. Derived
+          # identically, from the same committed tfvars, for the same reason —
+          # nothing here may depend on a repository variable.
           {
             echo "project=$project"
             echo "region=$region"
+            echo "provider=projects/$number/locations/global/workloadIdentityPools/qip-github-${TARGET_ENVIRONMENT}/providers/github"
+            echo "account=qip-ci-${TARGET_ENVIRONMENT}@$project.iam.gserviceaccount.com"
           } >> "$GITHUB_OUTPUT"
 
       - name: authenticate without a key

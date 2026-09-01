@@ -431,7 +431,9 @@ version = "0.1.0"
 dependencies = [
  "qip-agents",
  "qip-api",
+ "qip-contracts",
  "qip-core",
+ "qip-data-finder",
  "qip-events",
  "qip-financial",
  "qip-investment-agents",

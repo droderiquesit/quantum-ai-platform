@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useMemo, useState } from "react";
 import { Chip, Freshness, Metric, MetricRow, StreamControls } from "@/components/data/Bits";
 import { EventFeed } from "@/components/data/EventFeed";
@@ -24,6 +23,14 @@ const TERMINAL = new Set(["filled", "cancelled", "canceled", "rejected", "expire
  * the reader has to work out which fills were real is a blotter that will be
  * misread, and this deployment is paper-only precisely so that column can be
  * checked at a glance.
+ *
+ * Read-only, and marked as such in the header. This page once carried a "New
+ * paper order" button into a ticket that composed an order body and posted it
+ * to `/api/v1/orders`. The platform answers 405 there, so nothing was ever
+ * submitted — but the console's rule is that no control may submit an order,
+ * not that no control currently succeeds at it, and a ticket whose author
+ * wrote that it "starts working without a change here the day the route
+ * exists" is precisely the control the rule names.
  */
 export default function OrderBlotter() {
   const orders = useResource<Orders>(platform.orders, {
@@ -67,9 +74,7 @@ export default function OrderBlotter() {
           title="Blotter summary"
           meta={<Freshness resource={orders} name="orders" />}
           actions={
-            <Link className="btn" data-variant="primary" href="/order-entry">
-              New paper order
-            </Link>
+            <Chip tone="info">read-only</Chip>
           }
         />
         <PanelBody>

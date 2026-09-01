@@ -219,22 +219,327 @@ fn no_secret_value_appears_in_the_terraform() {
     }
 }
 
+/// A line's whitespace collapsed to single spaces.
+///
+/// So a `terraform fmt` that realigns an equals sign does not change what
+/// these evaluators read. A check that fails on formatting is a check people
+/// learn to edit rather than read.
+fn collapsed(line: &str) -> String {
+    line.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The one right-hand side of `key = ...` in a Terraform file, comments gone.
+///
+/// Exactly one: a second assignment of the same key is the shape this whole
+/// area of the configuration is being kept out of. The live-capability
+/// question was answered in three spellings and two of them were backwards,
+/// so a duplicate is a finding rather than an inconvenience.
+fn sole_assignment(path: &str, key: &str) -> String {
+    let text = without_comments(&read(path));
+    let matches: Vec<String> = text
+        .lines()
+        .filter_map(|line| {
+            collapsed(line)
+                .strip_prefix(&format!("{key} = "))
+                .map(str::to_string)
+        })
+        .collect();
+    assert_eq!(
+        matches.len(),
+        1,
+        "{path} assigns `{key}` {} times; expected exactly one",
+        matches.len()
+    );
+    matches.into_iter().next().unwrap_or_default()
+}
+
+/// The `value` expression of a named output.
+fn output_value(name: &str) -> String {
+    let text = without_comments(&read("infrastructure/terraform/outputs.tf"));
+    let start = text
+        .find(&format!("output \"{name}\" {{"))
+        .unwrap_or_else(|| panic!("outputs.tf declares no output named `{name}`"));
+    text[start..]
+        .lines()
+        .skip(1)
+        .take_while(|line| !line.starts_with('}'))
+        .find_map(|line| collapsed(line).strip_prefix("value = ").map(str::to_string))
+        .unwrap_or_else(|| panic!("the `{name}` output has no value expression"))
+}
+
+/// A boolean expression from the root module, evaluated at one autonomy
+/// ceiling.
+///
+/// Evaluating the predicate rather than matching its text is the whole point.
+/// The previous version of the venue-credential test asserted the literal
+/// source line `venue_credential_readable = var.autonomy_ceiling !=
+/// "paper_trading"`, and that predicate was inverted: with the three live
+/// rungs refused at plan time, `!= "paper_trading"` is true for exactly
+/// `observation` and `advisory` and false for every ceiling that could use a
+/// venue credential. A test that pins source text certifies whatever is
+/// written there, including the bug it was written to prevent — it passed for
+/// as long as the defect existed and would have failed on the fix.
+///
+/// Deliberately a small evaluator over the forms this question has been asked
+/// in rather than a general HCL one: an unrecognised form panics naming
+/// itself, so a rewrite makes this check fail loudly instead of quietly
+/// stopping.
+fn evaluate_at(expression: &str, ceiling: &str) -> bool {
+    // The single definition every consumer now indirects through. Resolved
+    // rather than trusted, so the tests below are asserting about the value
+    // the configuration actually computes and not about a name.
+    if expression == "local.ceiling_reaches_a_venue" {
+        let definition = sole_assignment(
+            "infrastructure/terraform/main.tf",
+            "ceiling_reaches_a_venue",
+        );
+        assert_ne!(
+            definition, expression,
+            "`ceiling_reaches_a_venue` is defined as itself"
+        );
+        return evaluate_at(&definition, ceiling);
+    }
+    if let Some(rest) = expression.strip_prefix("contains([") {
+        let (list, tail) = rest
+            .split_once("],")
+            .unwrap_or_else(|| panic!("`{expression}` is a contains() whose list does not close"));
+        assert_eq!(
+            tail.trim(),
+            "var.autonomy_ceiling)",
+            "`{expression}` tests membership of something other than the ceiling"
+        );
+        return list
+            .split(',')
+            .map(|entry| entry.trim().trim_matches('"'))
+            .any(|entry| entry == ceiling);
+    }
+    if let Some(rest) = expression.strip_prefix("var.autonomy_ceiling ") {
+        if let Some(value) = rest.strip_prefix("== ") {
+            return value.trim().trim_matches('"') == ceiling;
+        }
+        if let Some(value) = rest.strip_prefix("!= ") {
+            return value.trim().trim_matches('"') != ceiling;
+        }
+    }
+    panic!(
+        "`{expression}` is a form this check cannot evaluate. Teach it the new \
+         form — deleting the check leaves the venue credential's IAM grant and \
+         the live-capability indicators with nothing asserting which ceilings \
+         they appear at."
+    )
+}
+
+/// A string-valued expression from the root module, evaluated at one ceiling.
+///
+/// Two forms, and the second is here because it is the one that was wrong: a
+/// ternary over two string literals is a shape whose arms can be swapped by a
+/// one-character edit that still reads as correct. Evaluating it means the
+/// mutation is caught by a rung-by-rung assertion rather than by a panic about
+/// an unfamiliar syntax.
+fn evaluate_string_at(expression: &str, ceiling: &str) -> String {
+    if let Some(inner) = expression
+        .strip_prefix("tostring(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        return evaluate_at(inner.trim(), ceiling).to_string();
+    }
+    if let Some((condition, arms)) = expression.split_once(" ? ") {
+        let (taken, otherwise) = arms.split_once(" : ").unwrap_or_else(|| {
+            panic!("`{expression}` is a conditional with no alternative branch")
+        });
+        let chosen = if evaluate_at(condition.trim(), ceiling) {
+            taken
+        } else {
+            otherwise
+        };
+        return chosen.trim().trim_matches('"').to_string();
+    }
+    panic!("`{expression}` is a string form this check cannot evaluate")
+}
+
+/// Whether the root module's `venue_credential_readable` is true at a ceiling.
+fn venue_credential_readable_at(ceiling: &str) -> bool {
+    evaluate_at(
+        &sole_assignment(
+            "infrastructure/terraform/main.tf",
+            "venue_credential_readable",
+        ),
+        ceiling,
+    )
+}
+
+/// Whether the `live_capable` output is true at a ceiling.
+fn live_capable_output_at(ceiling: &str) -> bool {
+    evaluate_at(&output_value("live_capable"), ceiling)
+}
+
+/// What the `live_capable` resource label reads at a ceiling.
+///
+/// A string, and it stays a string: the consumer is a `gcloud ... --filter`
+/// expression comparing against `false`, not a Terraform boolean.
+fn live_capable_label_at(ceiling: &str) -> String {
+    evaluate_string_at(
+        &sole_assignment("infrastructure/terraform/main.tf", "live_capable"),
+        ceiling,
+    )
+}
+
+/// The rungs a plan can carry, and the rungs it cannot.
+///
+/// Taken from the code's own ladder rather than a literal list, so a seventh
+/// rung is one these tests start covering rather than one they silently miss.
+fn reachable_and_live_rungs() -> (
+    Vec<qip_risk_engine::autonomy::AutonomyLevel>,
+    Vec<qip_risk_engine::autonomy::AutonomyLevel>,
+) {
+    let ladder = qip_risk_engine::autonomy::AutonomyLevel::all();
+    let (live, reachable): (Vec<_>, Vec<_>) = ladder.into_iter().partition(|level| level.is_live());
+    assert_eq!(
+        (live.len(), reachable.len()),
+        (3, 3),
+        "the ladder's live rungs changed; these tests' premise needs rewriting"
+    );
+    (reachable, live)
+}
+
 #[test]
 fn the_venue_credential_is_unreadable_where_live_trading_is_impossible() {
     // The infrastructure half of the live-trading control. The application
     // refuses a live order below a live autonomy level; this makes the
     // credential unreadable in an environment that could not use it anyway.
+    //
+    // Asserted per rung, because the failure this exists to catch is a
+    // predicate that is the right shape and the wrong way round.
     let secrets = read("infrastructure/terraform/modules/secrets/main.tf");
     assert!(
         secrets.contains("count = var.venue_credential_readable ? 1 : 0"),
         "the venue credential's IAM binding must be conditional"
     );
 
-    let root = read("infrastructure/terraform/main.tf");
-    assert!(
-        root.contains(r#"venue_credential_readable = var.autonomy_ceiling != "paper_trading""#),
-        "the condition must be the autonomy ceiling"
-    );
+    // The premise: which rungs a plan can actually carry. `variables.tf`
+    // refuses the three live ones, so the reachable set is the ladder minus
+    // them.
+    let (reachable, live) = reachable_and_live_rungs();
+
+    // No ceiling a plan can carry creates the grant. `observation` is the one
+    // that mattered: an operator hardening dev to it got a plan that *added*
+    // secretAccessor on the venue credential for the fast brain, because the
+    // predicate was `!= "paper_trading"`. Lowering autonomy handed out the
+    // credential.
+    for level in &reachable {
+        assert!(
+            !venue_credential_readable_at(level.as_str()),
+            "at the `{}` ceiling the venue credential's IAM grant is created. \
+             No order can reach a venue at that rung, and a plan cannot carry \
+             any other kind, so this grant should not exist in any applyable \
+             configuration.",
+            level.as_str()
+        );
+    }
+
+    // And the predicate is keyed to live capability rather than merely switched
+    // off. A bare `false` would satisfy every assertion above while recording
+    // the answer and losing the question, and the next reader would delete the
+    // variable along with the reason the resource exists. None of these three
+    // ceilings can reach a plan — `variables.tf` refuses all of them, which is
+    // exactly why the grant is unreachable — so this asserts what the
+    // expression *means*, not that anything is permitted to trade live.
+    for level in &live {
+        assert!(
+            venue_credential_readable_at(level.as_str()),
+            "the venue credential's grant is not conditioned on the ceiling \
+             being able to use it: `{}` is a live rung and the predicate is \
+             false for it, so the predicate no longer says why the resource is \
+             guarded at all",
+            level.as_str()
+        );
+    }
+}
+
+#[test]
+fn no_ceiling_a_plan_can_carry_is_reported_as_live_capable() {
+    // `live_capable` is a safety indicator, and an inverted one is worse than
+    // an absent one. The output is what an operator reads to answer "could
+    // this cluster trade"; the label is what a fleet-wide query reads to
+    // answer it across every project. Both were `!= "paper_trading"` in one
+    // spelling or another, which is true for exactly the two rungs *below*
+    // paper trading — so setting an environment to `observation`, the safest
+    // rung and the one `variables.tf`'s error message invites an operator to
+    // choose, reported the environment as able to reach a real venue.
+    //
+    // Asserted per rung rather than against source text, because the failure
+    // this exists to catch is a predicate of the right shape and the wrong way
+    // round, and a text match certifies that shape either way.
+    let (reachable, live) = reachable_and_live_rungs();
+
+    for level in &reachable {
+        assert!(
+            !live_capable_output_at(level.as_str()),
+            "the `live_capable` output is true at the `{}` ceiling. No order \
+             can reach a venue at that rung and a plan cannot carry any other \
+             kind, so the output an operator reads says this cluster can trade \
+             when nothing it can apply ever could.",
+            level.as_str()
+        );
+        assert_eq!(
+            live_capable_label_at(level.as_str()),
+            "false",
+            "every resource is labelled `live_capable = true` at the `{}` \
+             ceiling, so a query asking which clusters can trade returns one \
+             that cannot",
+            level.as_str()
+        );
+    }
+
+    // And both say the property rather than merely being switched off. A bare
+    // `false` would satisfy everything above while recording the answer and
+    // losing the question. None of these three ceilings can reach a plan —
+    // `variables.tf` refuses all of them — so this asserts what the expression
+    // *means*, not that anything is permitted to trade live.
+    for level in &live {
+        assert!(
+            live_capable_output_at(level.as_str()),
+            "the `live_capable` output is false at `{}`, a live rung, so it no \
+             longer reports live capability at all",
+            level.as_str()
+        );
+        assert_eq!(
+            live_capable_label_at(level.as_str()),
+            "true",
+            "the `live_capable` label is not `true` at `{}`, a live rung, so \
+             the label no longer answers the question it is named for",
+            level.as_str()
+        );
+    }
+}
+
+#[test]
+fn the_label_the_output_and_the_credential_predicate_agree_at_every_rung() {
+    // Three expressions answered "could this reach a venue" in three
+    // spellings, and that is how the inversion spread: the credential
+    // predicate was corrected and the label and the output were not, because
+    // nothing connected them. They now indirect through one local, and this is
+    // what makes a future divergence a failing test rather than a discovery.
+    //
+    // Every rung, including the three no plan can carry — a divergence that
+    // only appears at a ceiling `variables.tf` refuses is still a
+    // configuration whose three answers disagree, and still the thing a reader
+    // deleting that refusal would inherit.
+    let (reachable, live) = reachable_and_live_rungs();
+
+    for level in reachable.iter().chain(live.iter()) {
+        let ceiling = level.as_str();
+        let output = live_capable_output_at(ceiling);
+        let label = live_capable_label_at(ceiling);
+        let credential = venue_credential_readable_at(ceiling);
+        assert_eq!(
+            (output, label.as_str()),
+            (credential, if credential { "true" } else { "false" }),
+            "at the `{ceiling}` ceiling the configuration gives three answers \
+             to one question: output={output}, label={label}, \
+             venue_credential_readable={credential}"
+        );
+    }
 }
 
 #[test]
@@ -2140,6 +2445,361 @@ fn the_pipeline_authenticates_without_a_long_lived_key() {
     assert!(
         gaps.contains("GCP_WORKLOAD_IDENTITY_PROVIDER"),
         "the variables the pipeline needs are not documented anywhere"
+    );
+}
+
+/// The pool provider's attribute condition, as the CEL expression it is.
+fn wif_attribute_condition() -> String {
+    let cicd = without_comments(&read("infrastructure/terraform/modules/cicd/main.tf"));
+    cicd.lines()
+        .find_map(|line| line.trim().strip_prefix("attribute_condition ="))
+        .map(|value| value.trim().trim_matches('"').to_string())
+        .expect("the pool provider declares an attribute_condition")
+}
+
+/// Whether that condition would admit a token minted for a git ref.
+///
+/// Only the ref terms are evaluated; the repository term is asserted
+/// separately, and a term naming neither is not this function's business. An
+/// unrecognised ref term panics rather than being read as permissive, because
+/// the failure this whole check exists to prevent is a condition that looks
+/// like it binds something and does not.
+fn wif_condition_admits(condition: &str, git_ref: &str) -> bool {
+    let mut admitted = true;
+    let mut ref_terms = 0usize;
+    for term in condition.split("&&").map(str::trim) {
+        if !term.contains("attribute.ref") {
+            continue;
+        }
+        ref_terms += 1;
+        if let Some(rest) = term.strip_prefix("attribute.ref.startsWith(") {
+            admitted &= git_ref.starts_with(rest.trim_end_matches(')').trim_matches('\''));
+        } else if let Some(rest) = term.strip_prefix("attribute.ref == ") {
+            admitted &= git_ref == rest.trim_matches('\'');
+        } else if let Some(rest) = term.strip_prefix("attribute.ref in [") {
+            admitted &= rest
+                .trim_end_matches(']')
+                .split(',')
+                .map(|entry| entry.trim().trim_matches('\''))
+                .any(|entry| entry == git_ref);
+        } else {
+            panic!(
+                "`{term}` is a ref term this check cannot evaluate. Teach it the \
+                 new form rather than deleting the check."
+            );
+        }
+    }
+    assert!(
+        ref_terms > 0,
+        "the pool's attribute condition has no ref term at all: `{condition}`"
+    );
+    admitted
+}
+
+/// The branches deploy.yml's automatic path fires on, read from the workflow.
+fn deploy_workflow_run_branches() -> Vec<String> {
+    let deploy = read(".github/workflows/deploy.yml");
+    let branches: Vec<String> = block_under(&deploy, "branches:")
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("- "))
+        .map(|value| value.trim().trim_matches('"').to_string())
+        .collect();
+    assert!(
+        !branches.is_empty(),
+        "deploy.yml's workflow_run names no branches; this test's premise needs \
+         rewriting"
+    );
+    branches
+}
+
+#[test]
+fn the_pool_admits_only_branches_of_this_repository_and_says_so_truthfully() {
+    // The condition used to be `attribute.repository == '…'` and nothing else,
+    // under a comment claiming "only on a branch the deployment is allowed
+    // from". There was no ref term and `attribute_mapping` bound the ref to
+    // nothing, so any ref of this repository — a pull request's merge ref, a
+    // tag anyone who can push one controls — could exchange a token for an
+    // account holding compute.admin, container.admin, projectIamAdmin,
+    // cloudkms.admin and secretmanager.admin. A comment asserting a control
+    // that does not exist is worse than no comment: it is the reason the next
+    // reader does not check.
+    let condition = wif_attribute_condition();
+    assert!(
+        condition.contains("attribute.repository == '${var.github_repository}'"),
+        "the pool's condition no longer pins the repository: `{condition}`"
+    );
+
+    // The condition may only name attributes the provider maps. One that names
+    // an unmapped attribute is rejected at apply time, so this is the half that
+    // keeps the fix from being a broken apply.
+    let cicd = read("infrastructure/terraform/modules/cicd/main.tf");
+    assert!(
+        sets(&cicd, "\"attribute.ref\"", "\"assertion.ref\""),
+        "the condition constrains attribute.ref and attribute_mapping does not \
+         map it; the provider refuses that at apply time"
+    );
+
+    // Every branch the automatic path fires on is still admitted — read from
+    // deploy.yml so a rename there fails here rather than in GCP.
+    for branch in deploy_workflow_run_branches() {
+        let git_ref = format!("refs/heads/{branch}");
+        assert!(
+            wif_condition_admits(&condition, &git_ref),
+            "the pool refuses `{git_ref}`, which deploy.yml's workflow_run \
+             fires on; the pipeline cannot authenticate to GCP at all"
+        );
+    }
+
+    // And so is a branch nothing has heard of. infra.yml is workflow_dispatch
+    // only, dispatched against the branch carrying the change being applied, so
+    // an allowlist of the two branches above would refuse every real infra run
+    // with an audience error naming neither the branch nor the list.
+    assert!(
+        wif_condition_admits(&condition, "refs/heads/claude/some-working-branch"),
+        "the pool admits only named branches, so infra.yml — dispatched against \
+         whatever branch the change lives on — can never authenticate"
+    );
+
+    // What the ref term is actually for: the ref classes nothing here
+    // authenticates from. A pull request runs in *this* repository's context,
+    // so the repository claim does not distinguish it; the ref does.
+    for refused in ["refs/pull/42/merge", "refs/tags/v1.4.0"] {
+        assert!(
+            !wif_condition_admits(&condition, refused),
+            "the pool admits `{refused}`. Nothing in this repository \
+             authenticates from that ref class, and the account it can \
+             impersonate administers IAM, KMS and Secret Manager."
+        );
+    }
+}
+
+// --- workflow step outputs --------------------------------------------------
+//
+// `the_pipeline_authenticates_without_a_long_lived_key` asks whether the string
+// `workload_identity_provider:` appears in deploy.yml. It does — and for a
+// while it appeared in a job where the value interpolated into it was empty.
+// deploy.yml's `gitops-update` read `steps.identity.outputs.provider` and
+// `.account` from a `derive the identity from the tfvars` step that wrote only
+// `project` and `region`, so the job's one GCP login was handed two empty
+// strings and the digest resolution behind it could never run. A substring
+// check cannot tell a populated value from an absent one; nothing else looked.
+//
+// GitHub does not error on this. An unwritten step output interpolates to the
+// empty string, so the failure surfaces as whatever the action does with a
+// blank argument — here, an authentication error naming neither the step that
+// should have written the value nor the job that read it.
+
+/// A line's leading-space count.
+fn indent_of(line: &str) -> usize {
+    line.len() - line.trim_start().len()
+}
+
+/// The jobs of a workflow, as `(name, body)`.
+///
+/// Hand-rolled rather than parsed: the workspace has two dependencies and
+/// neither reads YAML (ADR 0002, ADR 0009). It relies on the shape these four
+/// files actually have — `jobs:` at column zero, job names at indent two — and
+/// on the premise assertions below failing loudly if that shape changes,
+/// rather than on quietly finding nothing.
+fn workflow_jobs(workflow: &str) -> Vec<(String, String)> {
+    let mut jobs: Vec<(String, String)> = Vec::new();
+    let mut current: Option<(String, Vec<&str>)> = None;
+    let mut seen_jobs_key = false;
+
+    for line in workflow.lines() {
+        if !seen_jobs_key {
+            seen_jobs_key = line.trim_end() == "jobs:";
+            continue;
+        }
+        let trimmed = line.trim_start();
+        // A column-zero key ends the jobs map. Comments there are not keys.
+        if !trimmed.is_empty() && indent_of(line) == 0 && !trimmed.starts_with('#') {
+            break;
+        }
+        let starts_a_job = indent_of(line) == 2
+            && !trimmed.starts_with('#')
+            && !trimmed.starts_with('-')
+            && trimmed.ends_with(':');
+        if starts_a_job {
+            if let Some((name, body)) = current.take() {
+                jobs.push((name, body.join("\n")));
+            }
+            current = Some((trimmed.trim_end_matches(':').to_string(), Vec::new()));
+        } else if let Some((_, body)) = current.as_mut() {
+            body.push(line);
+        }
+    }
+    if let Some((name, body)) = current {
+        jobs.push((name, body.join("\n")));
+    }
+    jobs
+}
+
+/// The steps of one job body, each as its own text.
+fn job_steps(job: &str) -> Vec<String> {
+    let mut steps: Vec<Vec<&str>> = Vec::new();
+    let mut item_indent: Option<usize> = None;
+    let mut in_steps = false;
+
+    for line in job.lines() {
+        if !in_steps {
+            in_steps = line.trim_start() == "steps:";
+            continue;
+        }
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            if let Some(last) = steps.last_mut() {
+                last.push(line);
+            }
+            continue;
+        }
+        let ind = indent_of(line);
+        match item_indent {
+            None => {
+                if trimmed.starts_with("- ") {
+                    item_indent = Some(ind);
+                    steps.push(vec![line]);
+                }
+            }
+            Some(base) => {
+                if ind < base {
+                    break; // a key after the steps list; the list is over
+                }
+                if ind == base && trimmed.starts_with("- ") {
+                    steps.push(vec![line]);
+                } else if let Some(last) = steps.last_mut() {
+                    last.push(line);
+                }
+            }
+        }
+    }
+    steps.into_iter().map(|step| step.join("\n")).collect()
+}
+
+/// A step's `id`, if it declares one.
+fn step_id(step: &str) -> Option<String> {
+    step.lines().find_map(|line| {
+        // `id-token: write` must not match, so the colon is part of the prefix.
+        let value = line.trim_start().strip_prefix("id:")?;
+        Some(value.trim().to_string())
+    })
+}
+
+/// The output names a step writes with `echo "name=value" >> "$GITHUB_OUTPUT"`.
+///
+/// Anything written another way reads here as written by nobody, and the test
+/// fails rather than passes — which is the safe direction: a new way of writing
+/// an output makes this stop and be extended, instead of silently trusting it.
+fn step_outputs(step: &str) -> std::collections::BTreeSet<String> {
+    let mut names = std::collections::BTreeSet::new();
+    for line in step.lines() {
+        let Some(rest) = line.trim_start().strip_prefix("echo \"") else {
+            continue;
+        };
+        let Some((name, _)) = rest.split_once('=') else {
+            continue;
+        };
+        // `echo "deb [signed-by=..."` is not an output assignment.
+        if !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            names.insert(name.to_string());
+        }
+    }
+    names
+}
+
+/// Every `steps.<id>.outputs.<name>` a piece of workflow text reads.
+fn step_output_references(text: &str) -> std::collections::BTreeSet<(String, String)> {
+    fn token(text: &str) -> String {
+        text.chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+            .collect()
+    }
+
+    let mut references = std::collections::BTreeSet::new();
+    let mut rest = text;
+    while let Some(position) = rest.find("steps.") {
+        rest = &rest[position + "steps.".len()..];
+        let id = token(rest);
+        // Every character of `id` is ASCII, so this is a char boundary.
+        let Some(tail) = rest[id.len()..].strip_prefix(".outputs.") else {
+            continue;
+        };
+        let name = token(tail);
+        if !id.is_empty() && !name.is_empty() {
+            references.insert((id, name));
+        }
+    }
+    references
+}
+
+#[test]
+fn every_step_output_a_workflow_reads_is_one_that_job_writes() {
+    const WORKFLOWS: [&str; 4] = [
+        ".github/workflows/ci.yml",
+        ".github/workflows/deploy.yml",
+        ".github/workflows/infra.yml",
+        ".github/workflows/vendor.yml",
+    ];
+
+    /// The outputs each `id`-bearing step of one job writes.
+    type Written = std::collections::BTreeMap<String, std::collections::BTreeSet<String>>;
+
+    let mut references_checked = 0usize;
+    let mut jobs_read = 0usize;
+
+    for workflow_file in WORKFLOWS {
+        let workflow = read(workflow_file);
+        let jobs = workflow_jobs(&workflow);
+        assert!(
+            !jobs.is_empty(),
+            "{workflow_file} parsed to no jobs at all; this check stopped checking"
+        );
+        jobs_read += jobs.len();
+
+        for (job_name, body) in jobs {
+            let mut written = Written::new();
+            for step in job_steps(&body) {
+                if let Some(id) = step_id(&step) {
+                    written.entry(id).or_default().extend(step_outputs(&step));
+                }
+            }
+
+            for (id, name) in step_output_references(&body) {
+                references_checked += 1;
+                let Some(outputs) = written.get(&id) else {
+                    panic!(
+                        "{workflow_file}: job `{job_name}` reads \
+                         steps.{id}.outputs.{name}, but no step in that job \
+                         declares `id: {id}`. An unwritten step output \
+                         interpolates to the empty string rather than failing."
+                    );
+                };
+                assert!(
+                    outputs.contains(&name),
+                    "{workflow_file}: job `{job_name}` reads \
+                     steps.{id}.outputs.{name}, but that step writes only \
+                     {outputs:?}. The value interpolates to the empty string \
+                     and whatever consumes it fails without naming either."
+                );
+            }
+        }
+    }
+
+    // The premise. Both halves have been empty in this repository's history:
+    // a workflow whose jobs did not parse, and a job with no references, each
+    // satisfying every assertion above while proving nothing.
+    assert!(
+        jobs_read >= 4,
+        "only {jobs_read} jobs were read across four workflows"
+    );
+    assert!(
+        references_checked >= 6,
+        "only {references_checked} step-output references were checked; the \
+         deploy pipeline alone reads more than that"
     );
 }
 

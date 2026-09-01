@@ -35,6 +35,8 @@ qip-risk-engine.workspace = true
 # times a second fed minute bars is blind between minutes, so the cadence is
 # chosen from the cycle interval rather than left at the environment's default.
 qip-market.workspace = true
+qip-data-finder.workspace = true
+qip-contracts.workspace = true
 # Where records come from in this build. The node polls a `DataAdapter`, so the
 # synthetic exchange and a recorded replay are the same seam, and a licensed
 # feed would be a third implementation rather than a rewrite of the loop.

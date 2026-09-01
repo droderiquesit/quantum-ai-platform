@@ -64,7 +64,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
-      - run: cargo test --workspace --all-features
+      # `--no-fail-fast` because without it cargo stops at the first failing
+      # test binary and the totals then describe a fraction of the suite: a run
+      # reporting 64 passed out of 3,000-odd reads as a small suite rather than
+      # an aborted one. Every other gate's evidence depends on this one being
+      # complete — a financial limit whose vetoing fixture regressed is invisible
+      # if an earlier binary aborted the run before reaching it.
+      - run: cargo test --workspace --all-features --no-fail-fast
 
   # The build that would actually be deployed. Run separately from the tests
   # because a release build catches optimisation-dependent problems the debug

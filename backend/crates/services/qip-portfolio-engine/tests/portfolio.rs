@@ -233,6 +233,92 @@ fn a_legs_side_always_agrees_with_its_weight_change() -> Result<()> {
 }
 
 #[test]
+fn a_legs_quantity_is_the_exact_decimal_notional_divided_by_the_exact_price() -> Result<()> {
+    // The failure this prevents: the quantity was computed as
+    // `change * equity.to_f64() / price.to_f64()` and converted back. Equity
+    // and the reference price are exact; running them through binary floating
+    // point produced an order quantity that reconciles with neither, and the
+    // refusal guarding it fired only on non-representability, never on the
+    // precision already lost. The weight is a statistic and still crosses to
+    // `Decimal` — that crossing is the point — but nothing after it does.
+    //
+    // The price is deliberately one that has no exact binary form, so the two
+    // routes genuinely disagree; the premise assertion below proves they do,
+    // because against a price of 100 they would agree and this test would pass
+    // whichever arithmetic ran.
+    let price = dec!("0.07");
+    let theses = vec![
+        ApprovedThesis {
+            price,
+            ..thesis("AAA", 0.9, 0.08)
+        },
+        ApprovedThesis {
+            price,
+            ..thesis("BBB", 0.6, 0.05)
+        },
+    ];
+    let proposal = build(&theses, Mandate::default(), &BTreeMap::new())?;
+    assert!(
+        !proposal.legs.is_empty(),
+        "premise: there must be a leg to size before its quantity can be checked"
+    );
+
+    let mut disagreements = 0;
+    for leg in &proposal.legs {
+        let change = leg.weight_change();
+        let weight = Decimal::from_f64(change.abs()).expect("a representable weight");
+        let exact = equity()
+            .amount
+            .checked_mul(weight)
+            .expect("the notional fits")
+            .checked_div(price)
+            .expect("a positive price divides");
+        let through_f64 =
+            Decimal::from_f64((change * equity().amount.to_f64() / price.to_f64()).abs())
+                .expect("the f64 route is representable");
+
+        assert_eq!(
+            leg.quantity,
+            exact,
+            "{} was sized off the exact notional, not off a float",
+            leg.object_id.as_str()
+        );
+        if through_f64 != exact {
+            disagreements += 1;
+        }
+    }
+    assert!(
+        disagreements > 0,
+        "premise: this equity and price must be a case where the float route gives a different \
+         answer, or the assertion above holds for either arithmetic and guards nothing"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_priceless_thesis_is_refused_before_sizing_rather_than_inside_the_division() -> Result<()> {
+    // Sizing now divides in `Decimal`, and `checked_div` returns `None` on a
+    // zero price. That arm is a backstop and must stay one: the caller has to
+    // hear "this thesis has no usable price", which names what to fix, and not
+    // a numeric complaint from three steps further in. This test pins the
+    // ordering — validation first, division second — so the backstop cannot
+    // quietly become the primary control.
+    let bad = ApprovedThesis {
+        price: Decimal::ZERO,
+        ..thesis("AAA", 0.9, 0.08)
+    };
+    let error = build(&[bad], Mandate::default(), &BTreeMap::new())
+        .expect_err("a thesis with no price cannot be sized");
+    assert_eq!(error.code(), "invalid");
+    assert!(
+        error.message().contains("no usable price"),
+        "the refusal must name the price: {}",
+        error.message()
+    );
+    Ok(())
+}
+
+#[test]
 fn construction_refuses_a_time_it_has_not_reached() -> Result<()> {
     let error = constructor(Mandate::default())?
         .construct(

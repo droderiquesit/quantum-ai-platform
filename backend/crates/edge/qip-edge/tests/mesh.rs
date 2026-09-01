@@ -418,6 +418,14 @@ fn a_state_delta_a_cell_produced_arrives_at_the_centre_unchanged() -> Result<()>
         orders: vec![PlacedOrder {
             order_id: "london-1-1".to_string(),
             strategy: StrategyId::new("mean-reversion-1"),
+            // One contributor: this fixture is a single strategy's order, and
+            // the vector says so rather than being left empty, which would
+            // describe an order nobody asked for.
+            contributors: vec![qip_contracts::intent::Contributor {
+                strategy: StrategyId::new("mean-reversion-1"),
+                signed_size: dec!("-3"),
+                hypotheses: Vec::new(),
+            }],
             object_id: object("ACME"),
             venue: VenueId::new("XLON"),
             side: BookSide::Ask,

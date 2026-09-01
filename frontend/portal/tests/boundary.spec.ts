@@ -1,70 +1,53 @@
 /**
  * The paper-trading boundary, from the browser's side.
  *
- * The boundary itself is held by the platform, not by this console: `qip-api`
- * serves no write route for an order and answers `POST /api/v1/orders` with
- * 405. That is the right place for it — a boundary the UI holds is a boundary
- * that moves when somebody edits the UI.
+ * `qip-api` serves no write route for an order and answers `POST
+ * /api/v1/orders` with 405, and that is the right place for the boundary — one
+ * the UI holds is one that moves when somebody edits the UI.
  *
- * What these tests pin is the console's half of the contract: that it sends
- * paper on every ticket, that it shows the platform's refusal rather than
- * reporting a success, and that it cannot clear a halt it did not cause.
+ * The console's own obligation is narrower and absolute: it offers no control
+ * that submits an order at all. It used to. `/order-entry` composed an
+ * instrument, a side, a quantity and a price into a body and posted it, on the
+ * stated expectation that "the day the route exists, this page starts working
+ * without a change here" — which is the order-submitting control the rule
+ * names, one backend commit away from being live. These tests pin its absence,
+ * and pin that the halt control it sat beside is still asymmetric.
  */
 import { expect, test } from "@playwright/test";
 import { RISK_BODY, healthy, servePlatform } from "./support/platform";
 
-const HEADER = "x-qip-gateway";
-
 const RISK = { "/risk": RISK_BODY };
 
-test("a ticket is sent as paper, and the platform's refusal is what the operator sees", async ({
-  page,
-}) => {
-  const sent: Array<Record<string, unknown>> = [];
-
-  await servePlatform(page, { ...healthy(), ...RISK });
-  // Intercepted ahead of the general stub so the write path is observed rather
-  // than answered by the catch-all 404.
-  await page.route("**/api/gateway/orders", async (route) => {
-    if (route.request().method() !== "POST") {
-      await route.fulfill({
-        status: 200,
-        headers: { [HEADER]: "upstream", "content-type": "application/json" },
-        body: JSON.stringify({ orders: [], refusals: 0, reconciliation_breaks: [] }),
-      });
-      return;
+test("no surface in this console composes or submits an order", async ({ page }) => {
+  const writes: string[] = [];
+  page.on("request", (request) => {
+    const url = request.url();
+    if (request.method() !== "GET" && url.includes("/api/gateway/")) {
+      writes.push(`${request.method()} ${new URL(url).pathname}`);
     }
-    sent.push(route.request().postDataJSON() as Record<string, unknown>);
-    // Exactly what the running platform answers, checked against it directly.
-    await route.fulfill({
-      status: 405,
-      headers: { [HEADER]: "upstream", "content-type": "application/json" },
-      body: JSON.stringify({ error: "that method is not allowed here" }),
-    });
   });
 
-  await page.goto("/order-entry");
-  await page.locator("#instrument").fill("ACME");
-  await page.locator("#quantity").fill("10");
-  await page.locator("#limitPrice").fill("100");
-  // `#reason` and not a label match: the kill switch in the chrome also has a
-  // field labelled "Reason", and it sits inside a closed dialog.
-  await page.locator("#reason").fill("boundary specification test");
-  await page.getByTestId("submit-paper-order").click();
+  await servePlatform(page, { ...healthy(), ...RISK });
 
-  // The premise: a request was actually issued. Without this, the assertions
-  // below would hold just as well for a button wired to nothing.
-  await expect
-    .poll(() => sent.length, { message: "the ticket was never sent" })
-    .toBeGreaterThan(0);
+  // The blotter is where an order ticket belongs and where the entry point to
+  // one lived, so it is where a reintroduced one would appear first.
+  await page.goto("/orders");
+  // The premise. Without it the absences below would hold just as well for a
+  // page that failed to render at all.
+  await expect(page.getByText("Blotter summary")).toBeVisible();
+  await expect(page.getByText("read-only")).toBeVisible();
+  await expect(page.getByRole("link", { name: /new .*order/i })).toHaveCount(0);
 
-  // Every ticket carries paper: true. Not a default the platform applies — a
-  // fact the console states on the wire, so a platform that ever grew a write
-  // route would receive an explicitly paper order from this console.
-  expect(sent[0]?.paper).toBe(true);
+  // Gone from the map, so the palette and the sidebar cannot reach it either.
+  await expect(page.getByText("Paper order ticket")).toHaveCount(0);
 
-  // And the refusal is surfaced, not swallowed into a success.
-  await expect(page.locator("body")).toContainText(/not allowed/i);
+  // And gone as a route, not merely unlinked: a page still built is a page a
+  // typed URL still reaches.
+  const direct = await page.goto("/order-entry");
+  expect(direct?.status()).toBe(404);
+
+  // Nothing the console did along the way was a write to the order surface.
+  expect(writes.filter((write) => write.endsWith("/orders"))).toEqual([]);
 });
 
 test("the console can halt the platform and offers no way to clear a halt it did not cause", async ({

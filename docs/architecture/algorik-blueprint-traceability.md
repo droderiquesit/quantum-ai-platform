@@ -161,9 +161,13 @@ at current scale, and process proliferation was rejected.
   nothing; venue health in `qip-routing/src/health.rs`; the cell self-halts when
   its fills disagree with the venue drop-copy (`cell.rs:774-786`). *Tests:*
   `e2e.rs`, `resilience.rs`, `chaos.rs`, `apps/qip-edge-node/tests/mesh.rs`.
-  *Gaps:* no intent netting, no feasibility gate, no inventory reservation; and
-  **a central halt cannot reach a cell** — the downlink accepts only
-  `CapitalGrantTopic` frames.
+  *Gaps:* no feasibility gate, no inventory reservation. Two earlier gaps are
+  now closed and are recorded here rather than deleted, because the fix is what
+  the row is evidence of: the halt reaches a cell (`VerifiedHalt`, the policy
+  downlink), and **intent netting exists** — `Cell::work` builds one `Intent`
+  per firing strategy, nets them on instrument, venue and representation, and
+  places what survives (`libs/qip-contracts/src/intent.rs`,
+  `edge/qip-edge/src/cell.rs`, `apps/qip-edge-node/tests/gateway.rs`).
 
 - **[PLANE 7/7 — Ledger, wallet and treasury]** *Ownership:* `qip-capital`
   (allocation, envelope, exposure), `qip-capital-fabric` (internal placement),
@@ -226,7 +230,7 @@ each fail named tests.
 
 - **[LAYER 1/7 — Experience]** *Current:* Next.js portal and landing on Cloud Run; blueprint wants one Leptos codebase. *Keep:* the whole surface, maintained — it works, it is the only customer-facing thing there is, and ADR 0022 makes it transitional rather than disposable. *Change:* nothing this pass. *Remove:* nothing. *Defer:* the Leptos replacement boundary, direction settled and execution unauthorised — identify contracts and Playwright coverage first; a vertical slice only if it adds no dependency. *Verification:* `npm run lint`, `npm run build`, Playwright.
 - **[LAYER 2/7 — Public edge and identity]** *Current:* Identity Platform is the only identity store (ADR 0019); sealed-cookie sessions; console reaches the platform over the VPC as viewer (ADR 0018). *Keep:* all of it — it matches §46.1's "Application and identity" zone, including "never a node, a venue, a QPU or a key". *Change:* none. *Remove:* none. *Defer:* passkeys (§51 Phase 0) — not present. *Verification:* `console_route.rs`, `security.rs`.
-- **[LAYER 3/7 — Application and API]** *Current:* `qip-api` composes reads and holds no independent financial state. *Keep.* *Change:* none. *Remove:* none. *Defer:* the typed-intent surface (§40.9) — there is no `Intent` type anywhere, so application APIs raise no intents; they read. *Verification:* `documentation.rs::every_documented_endpoint_exists`.
+- **[LAYER 3/7 — Application and API]** *Current:* `qip-api` composes reads and holds no independent financial state. *Keep.* *Change:* none. *Remove:* none. *Defer:* the typed-intent surface (§40.9). An `Intent` type now exists (`libs/qip-contracts/src/intent.rs`) but it is the *execution* vocabulary, produced and consumed inside one cell; application APIs still raise no intents, they read. The gap is the API surface, not the type. *Verification:* `documentation.rs::every_documented_endpoint_exists`.
 - **[LAYER 4/7 — Domain contracts and control fabric]** *Current:* `qip-contracts` sits at the bottom of everything sharing it; `qip-transport`/`qip-mesh` carry the fabric. *Keep.* *Change:* none this pass. *Remove:* none. *Defer:* the **signed twelve-item payload (§41.5)** — the fabric ships deltas, not a twelve-item verified-then-atomically-swapped payload, and stale-item narrowing per §6.2 is not implemented. This is the largest single structural gap against the blueprint that is *not* future-phase. *Verification:* `spine.rs`, `mesh.rs`, `manifest_wiring.rs`.
 - **[LAYER 5/7 — Data and state]** *Current:* bitemporal records; bounded retention; event log hash-chained; `qip-data-finder` evaluates licensing before use. *Keep.* *Change:* none. *Remove:* none. *Defer:* BigQuery derived series and content-hash manifests for external history. *Verification:* `absorption.rs`, `resilience.rs`, `truth_loop.rs`.
 - **[LAYER 6/7 — Cloud and network]** *Current:* GKE + Argo CD + Kargo + Helm + KEDA; frontends on Cloud Run; no GCE instance. The blueprint's target — Cloud Run plus one bare C3, no Kubernetes — is now the architecture of record (ADR 0022), so this layer is a **transitional runtime with a decided direction**. *Keep:* all of it, and maintained rather than merely tolerated — it is what carries the traffic, and transitional does not mean abandoned. *Change:* nothing. *Remove:* **nothing, and not until step 5 of ADR 0020's sequence has both its evidence and recorded human approval.** *Defer:* the entire migration. Direction is settled; **execution is not authorised**, and no step may begin without step-named approval. *Verification:* `terraform fmt -check` and `validate` **NOT RUN — terraform is not installed in this environment**; `infrastructure.rs` suite passed.
@@ -360,3 +364,50 @@ cryptographic dependency is an ADR-level change to ADR 0002/0009, and the
 blueprint's own §46.2 ambitions (real signatures, post-quantum for corridor
 material) require one anyway. Until that ADR exists, nothing further should be
 built onto the in-tree primitive without restating this note in the diff.
+
+### F5 — §27.2's venue consolidation · NOT-APPLICABLE, and why that is not "done"
+
+The blueprint asks that intents for one instrument reachable at several venues
+consolidate before routing, so the platform picks one venue with the whole size
+rather than splitting it across venues by accident of which strategy fired.
+
+**This repository cannot express the situation.** `Cell::venue_for` resolves a
+venue from the cell's own configured list *before* an intent is constructed, by
+finding the first venue whose book is reachable. Every intent in a cell
+therefore already names a venue that the cell chose, not one a strategy asked
+for, and two intents on one instrument in one cell always name the same venue.
+Netting on `(instrument, venue, representation)` consolidates them for the same
+reason §27.2 wants consolidation, but it does so by construction rather than by
+a consolidation step.
+
+Scored NOT-APPLICABLE rather than ALIGNED, because the row becomes live the
+moment either of two things changes: a strategy gains a venue-agnostic intent,
+or `venue_for` starts returning a set instead of the first reachable venue.
+Recording it as satisfied would hide that trigger. There is no test, because a
+test would assert a property of a situation that cannot arise — which is the
+control-that-cannot-fire pattern this document exists to avoid.
+
+### F6 — reservation is central-only where the blueprint puts it per-region
+
+**Status: CONTRADICTS. Recorded, not acted on.**
+
+Found by the placement audit of the node's composition roots.
+`qip-capital-fabric`'s `ReservationLedger` — the thing that holds capital a
+passing check approved, so a second concurrent proposal is refused against a
+balance the first already spent — is composed in the kernel and exists once,
+centrally. The blueprint's §26/§33 shape is a **per-region reservation table**
+consulted at the cell, because that is the only placement at which a
+disconnected cell can still refuse its own second proposal.
+
+The consequence is precise and worth stating rather than generalising: a cell
+that has lost contact with the centre spends against its capital envelope,
+which bounds it correctly, but nothing at the edge reserves within that
+envelope. Two strategies in one cell are now netted, which removes the case
+that motivated this note most sharply; two *cells* under one grant are not, and
+the centre is the only thing that can see both.
+
+Not fixed here, and deliberately: moving reservation to the edge is a
+placement change to the capital path, it interacts with envelope accounting,
+and it needs its own slice and its own review. The row is recorded so the next
+reader does not infer from a working central ledger that the property holds
+regionally.

@@ -97,7 +97,6 @@ export const ITEM_ICON: Record<string, IconName> = {
   "/risk/limits": "shield-check",
   "/risk/audit": "scan-line",
   "/orders": "table-2",
-  "/order-entry": "scan-line",
   "/execution/fills": "activity",
   "/execution/venues": "plug",
   "/execution/arbitrage": "waypoints",

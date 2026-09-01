@@ -14,12 +14,13 @@
 //! is counted and reported rather than dropped: bad data must never silently
 //! become an investment input, and a rejection nobody counts is a silent one.
 
-use crate::config::LiveFeedSettings;
+use crate::config::{ConnectorFeedSettings, LiveFeedSettings};
 use qip_core::error::{Error, Result};
 use qip_core::{Duration, ObjectId, Timestamp};
 use qip_financial::quality::LicensingClass;
 use qip_market::bar::Interval;
 use qip_market_ingestion::adapter::{DataAdapter, SensedRecord, SourceDescriptor};
+use qip_market_ingestion::connector_feed::ConnectorFeed;
 use qip_market_ingestion::replay::ReplayAdapter;
 use qip_market_ingestion::rest::{RestFeedConfig, RestInstrument, RestMarketDataAdapter};
 use qip_market_ingestion::synthetic::{EnvironmentConfig, SyntheticEnvironment};
@@ -59,6 +60,11 @@ pub enum Feed {
     /// `LiveFeedSettings` for why the licence, the host and the credential are
     /// decisions this code deliberately does not make.
     Live(Box<RestMarketDataAdapter>),
+    /// A worked connector from the ingestion SDK, opened through the egress
+    /// proxy after the licensing catalogue admitted it. See
+    /// [`crate::licensing::admit`] — the gate runs before construction, and
+    /// [`Self::open`] is shaped so there is no path to this arm around it.
+    Connector(Box<ConnectorFeed>),
 }
 
 impl Feed {
@@ -131,6 +137,23 @@ impl Feed {
         )?)))
     }
 
+    /// Open a catalogued connector source through the egress proxy.
+    ///
+    /// The licensing gate runs here, before anything is constructed and
+    /// before any socket is touched: the rule is evaluation *then* use, and
+    /// putting the call inside the constructor makes the ordering a property
+    /// of the code path rather than of the caller's memory.
+    pub fn connector(settings: &ConnectorFeedSettings, at: Timestamp) -> Result<Self> {
+        let class = qip_market_ingestion::connector_feed::shipped_class(&settings.source_id)?;
+        crate::licensing::admit(&settings.source_id, class, at)?;
+        Ok(Self::Connector(Box::new(ConnectorFeed::open(
+            &settings.source_id,
+            &settings.base_url,
+            settings.seed,
+            at,
+        )?)))
+    }
+
     /// Choose a source from the configuration.
     ///
     /// Ordered by how much a wrong choice costs. A configured vendor wins
@@ -140,18 +163,28 @@ impl Feed {
     /// records look the same.
     pub fn open(
         live: Option<&LiveFeedSettings>,
+        connector: Option<&ConnectorFeedSettings>,
         replay_path: Option<&str>,
         seed: u64,
         step: Duration,
         start: Timestamp,
     ) -> Result<Self> {
-        match (live, replay_path) {
-            (Some(settings), _) => {
+        match (live, connector, replay_path) {
+            // Two live sources at once is not a precedence question, it is a
+            // configuration contradiction: whichever this code preferred, the
+            // operator meant the other one somewhere. Refused outright.
+            (Some(_), Some(_), _) => Err(Error::invalid(
+                "both a live vendor (QIP_MARKET_DATA_*) and a connector source \
+                 (QIP_CONNECTOR_*) are configured. One node reads one live source; \
+                 unset one of them",
+            )),
+            (Some(settings), None, _) => {
                 let venue = settings.venue.clone();
                 Self::live(settings, &venue)
             }
-            (None, Some(path)) => Self::replay(path),
-            (None, None) => Ok(Self::synthetic(seed, step, start)),
+            (None, Some(settings), _) => Self::connector(settings, start),
+            (None, None, Some(path)) => Self::replay(path),
+            (None, None, None) => Ok(Self::synthetic(seed, step, start)),
         }
     }
 
@@ -160,6 +193,7 @@ impl Feed {
             Self::Synthetic(environment) => environment.as_mut(),
             Self::Replay(adapter) => adapter.as_mut(),
             Self::Live(adapter) => adapter.as_mut(),
+            Self::Connector(adapter) => adapter.as_mut(),
         }
     }
 
@@ -168,6 +202,7 @@ impl Feed {
             Self::Synthetic(environment) => environment.descriptor(),
             Self::Replay(adapter) => adapter.descriptor(),
             Self::Live(adapter) => adapter.descriptor(),
+            Self::Connector(adapter) => adapter.descriptor(),
         }
     }
 
@@ -190,7 +225,7 @@ impl Feed {
             Self::Synthetic(_) => false,
             Self::Replay(adapter) => adapter.remaining() == 0,
             // A vendor stops answering; it does not run out.
-            Self::Live(_) => false,
+            Self::Live(_) | Self::Connector(_) => false,
         }
     }
 
@@ -386,6 +421,7 @@ mod source_choice_tests {
         let live = settings();
         let feed = Feed::open(
             Some(&live),
+            None,
             Some("/tmp/some-recorded-session.jsonl"),
             7,
             Duration::from_secs(1),
@@ -421,7 +457,7 @@ mod source_choice_tests {
         // source were production-grade, that test would pass without checking
         // anything — and the synthetic exchange must never be mistaken for a
         // tape, which is the whole reason the descriptor carries the class.
-        let feed = Feed::open(None, None, 7, Duration::from_secs(1), start())
+        let feed = Feed::open(None, None, None, 7, Duration::from_secs(1), start())
             .expect("the synthetic exchange opens");
         assert!(matches!(feed, Feed::Synthetic(_)));
         assert!(
@@ -432,6 +468,76 @@ mod source_choice_tests {
             feed.production_requirement().is_some(),
             "the synthetic exchange does not say what a production deployment \
              would still have to supply"
+        );
+    }
+}
+
+#[cfg(test)]
+mod connector_feed_tests {
+    use super::*;
+    use crate::config::ConnectorFeedSettings;
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    fn connector_settings() -> ConnectorFeedSettings {
+        ConnectorFeedSettings {
+            source_id: "coinbase-spot-ticker".to_string(),
+            base_url: "http://egress.test:8080".to_string(),
+            seed: 7,
+        }
+    }
+
+    fn live_settings() -> LiveFeedSettings {
+        LiveFeedSettings {
+            base_url: "http://egress.test:8080".to_string(),
+            path: "/v1/market-data".to_string(),
+            symbols: vec!["ACME".to_string()],
+            venue: "XLON".to_string(),
+            api_key: "a-key".to_string(),
+            api_key_header: "x-api-key".to_string(),
+        }
+    }
+
+    #[test]
+    fn two_live_sources_at_once_are_a_contradiction_and_not_a_precedence_question() {
+        // Whichever source this code preferred, the operator meant the other
+        // one somewhere. The refusal is the only answer that cannot be wrong.
+        let refused = Feed::open(
+            Some(&live_settings()),
+            Some(&connector_settings()),
+            None,
+            7,
+            Duration::from_secs(1),
+            start(),
+        );
+        assert!(
+            refused.is_err(),
+            "a node configured with two live sources opened one of them anyway"
+        );
+    }
+
+    #[test]
+    fn an_uncatalogued_connector_source_is_refused_before_any_socket_is_touched() {
+        // The licensing gate runs inside the constructor, so there is no path
+        // to the connector arm around it. An unknown source has no evaluation
+        // on file, and the refusal arrives without a network in the test
+        // environment — which is itself the evidence that the gate runs
+        // before the transport.
+        let mut settings = connector_settings();
+        settings.source_id = "some-unevaluated-endpoint".to_string();
+        let refused = Feed::open(
+            None,
+            Some(&settings),
+            None,
+            7,
+            Duration::from_secs(1),
+            start(),
+        );
+        assert!(
+            refused.is_err(),
+            "an unevaluated source was opened, so its terms were never read"
         );
     }
 }

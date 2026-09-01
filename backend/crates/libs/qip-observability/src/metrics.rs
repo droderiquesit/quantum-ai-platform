@@ -510,6 +510,33 @@ pub mod names {
     pub const CYCLE_COMPUTE_COST: &str = "qip_cycle_compute_cost_units";
     pub const COMPUTE_SPEND: &str = "qip_compute_spend_units";
 
+    /// Resyncs of the capital reservation ledger that found holds exceeding
+    /// equity — the book claiming more capital is reserved than exists.
+    ///
+    /// Spelled here rather than at the recording site because it was spelled
+    /// at the recording site: `qip-kernel` records this name as a bare string
+    /// literal, so it is the one series the platform emits that this list does
+    /// not know about. A name only the call site knows is a name a dashboard
+    /// query, an alert policy and this module can each spell differently
+    /// without anything noticing — and a metric nobody can find is a metric
+    /// nobody reads. Recorded with a `reason` label naming which invariant
+    /// failed.
+    ///
+    /// Registering the help text is the kernel's to do, in
+    /// `Platform::describe_metrics`, which is where every other description in
+    /// this list is registered:
+    ///
+    /// ```text
+    /// metrics.describe(
+    ///     names::RESERVATION_SHORTFALL,
+    ///     "resyncs that found capital holds exceeding equity, by reason",
+    /// );
+    /// ```
+    ///
+    /// Until that lands the series exports with an empty `# HELP`, which is
+    /// valid exposition and unreadable documentation.
+    pub const RESERVATION_SHORTFALL: &str = "qip_reservation_shortfall";
+
     /// The four names the Cloud Monitoring alert policies in
     /// `infrastructure/terraform/modules/observability/main.tf` query.
     ///

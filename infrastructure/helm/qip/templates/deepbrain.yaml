@@ -137,6 +137,30 @@ spec:
                 configMapKeyRef:
                   name: qip-config
                   key: autonomy_ceiling
+            # Which store this node uses, from the same key its two siblings
+            # take it from.
+            #
+            # Nothing about today's behaviour changes: the key says `memory`
+            # and `DeepBrainConfig`'s default is `StorageSettings::in_memory`,
+            # so the value and the default already agree. What changes is what
+            # happens when they stop agreeing. Until this line existed,
+            # `storage_target` reached qip-api and qip-fastbrain and not this
+            # workload, so an operator raising durability in the one named
+            # resource moved two of the three central brains and left the third
+            # in memory without saying so — and the third is the one whose
+            # event log is the record. A control that reaches some of the
+            # workloads it names is worse than one that reaches none, because
+            # the diff and the audit entry look identical either way.
+            #
+            # This pod has no volume, so a durable target here fails at
+            # `StorageSettings::preflight` rather than at the first archive
+            # write. That is the intended direction: fail at boot, loudly,
+            # instead of running with a store that cannot keep anything.
+            - name: QIP_STORAGE_TARGET
+              valueFrom:
+                configMapKeyRef:
+                  name: qip-config
+                  key: storage_target
             - name: QIP_CYCLE_INTERVAL_SECONDS
               valueFrom:
                 configMapKeyRef:

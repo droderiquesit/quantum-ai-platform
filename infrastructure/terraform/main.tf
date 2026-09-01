@@ -69,6 +69,28 @@ locals {
   # every consumer of it declares a `number`.
   project_number = var.project_number != null ? var.project_number : tonumber(one(data.google_project.this[*].number))
 
+  # Whether this environment's ceiling could reach a real venue at all.
+  #
+  # The one definition. Three places answered this question in three
+  # spellings — the resource label below, the `live_capable` output, and the
+  # `venue_credential_readable` predicate the secrets module is given — and two
+  # of the three were the same sentence read backwards. The ladder has six
+  # rungs; `variables.tf` refuses the three live ones at plan time, so the only
+  # values that reach here are `observation`, `advisory` and `paper_trading`,
+  # and `!= "paper_trading"` is true for exactly the two rungs *below* the
+  # paper one. An operator hardening an environment to `observation` — the move
+  # `variables.tf`'s own error message invites — was labelled live-capable and
+  # got a `live_capable = true` output. The safest rung produced the loudest
+  # alarm, and the console renders that alarm as "investigate before trusting
+  # anything else on screen".
+  #
+  # Naming the live rungs states the property instead of its complement, and it
+  # is false for every configuration that can pass validation. Having one
+  # expression rather than three is the other half of the fix: the inversion
+  # spread because a reader who corrected one spelling had no way to know about
+  # the other two.
+  ceiling_reaches_a_venue = contains(["supervised_live", "limited_autonomous_live", "autonomous_live"], var.autonomy_ceiling)
+
   # Every resource carries these, so an unlabelled resource is visibly an
   # unmanaged one.
   labels = {
@@ -78,7 +100,13 @@ locals {
     # Whether this environment is permitted to reach a real venue. Labelled so
     # a query can answer "which of our clusters can trade" without reading
     # application configuration.
-    live_capable = var.autonomy_ceiling == "paper_trading" ? "false" : "true"
+    #
+    # A label value is a string, and it stays one — a query filtering on
+    # `live_capable=false` is the consumer, not a Terraform expression. But it
+    # is `tostring` of the local rather than a ternary over two string
+    # literals, because a ternary is exactly the shape the inversion hid in
+    # once: swapping its arms is a one-character edit that reads as correct.
+    live_capable = tostring(local.ceiling_reaches_a_venue)
   }
 
   # The service accounts, one per deployable, so a compromised component has
@@ -282,9 +310,34 @@ module "secrets" {
     "qip-market-data-key",
   ]
 
-  # The venue credential is readable only by an environment that could use it.
-  # An environment that cannot trade live has no business holding one.
-  venue_credential_readable = var.autonomy_ceiling != "paper_trading"
+  # The venue credential is readable only by an environment that could use it,
+  # and the only ceilings that could use it are the three live ones.
+  #
+  # This was written `!= "paper_trading"` — see `ceiling_reaches_a_venue` above
+  # for why that is the same sentence read backwards. The concrete failure here
+  # was the worst of the three: an operator hardening dev to `observation` —
+  # the move `variables.tf` explicitly invites — got a plan that *added*
+  # `roles/secretmanager.secretAccessor` on the venue credential to the fast
+  # brain. Lowering autonomy handed out the credential.
+  #
+  # The local is false for every configuration that can pass validation, so no
+  # plan this repository can produce creates the grant at all. That is the
+  # intended state, not an accident of the list: the platform is paper-trading
+  # only and nothing here should hold a venue credential.
+  #
+  # A reference to the membership test rather than a bare `false`, because
+  # `false` records the current answer and loses the question — the next reader
+  # deletes the variable and with it the reason the resource exists. The cost
+  # of saying it this way is stated rather than discovered: anyone who ever
+  # deletes the plan-time refusal in `variables.tf` re-enables this grant as a
+  # side effect, so that change must revisit the local. Three acceptance tests
+  # stand in the way of it happening quietly —
+  # `no_environment_can_be_applied_at_a_ceiling_that_reaches_a_real_venue`,
+  # `the_venue_credential_is_unreadable_where_live_trading_is_impossible` and
+  # `the_label_the_output_and_the_credential_predicate_agree_at_every_rung`,
+  # the last two of which evaluate this predicate for every rung a plan can
+  # carry.
+  venue_credential_readable = local.ceiling_reaches_a_venue
 
   # The console's identity and its one grant, created only where the console
   # has a route to the platform at all (ADR 0018).

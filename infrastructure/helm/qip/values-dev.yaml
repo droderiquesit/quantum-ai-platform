@@ -21,3 +21,12 @@ imagePrefix: us-east4-docker.pkg.dev/algorik-dev/qip-dev
 consoleRoute:
   apiInternalAddress: "10.0.15.250"
   egressCidr: "10.0.16.0/26"
+
+# No `marketDataConnector`, deliberately. dev runs the synthetic exchange.
+#
+# Selecting a source here is not a values edit on its own: templates/egress.yaml
+# must first gain a listener for that vendor's host, because the base URL has to
+# be the TLS-terminating proxy's `http://` address and that proxy reaches only
+# the five hosts it names. Committing the two keys without the listener gives
+# the Fast Brain an address that answers 404 to every poll — a feed that is
+# configured, healthy-looking and empty. See values.yaml for the full argument.

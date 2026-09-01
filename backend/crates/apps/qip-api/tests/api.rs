@@ -196,6 +196,216 @@ fn a_principal_below_the_required_role_is_refused_without_naming_its_own() {
     assert!(error.message().contains("operator"));
     assert!(!error.message().contains("viewer"));
 }
+// --- the brute-force budget -------------------------------------------------
+//
+// These guard a defect that was real in this file, not a hypothetical one: the
+// failure counter used to be keyed by subject, a subject was only known after
+// a hash match, and so guessing random tokens incremented nothing. The threat
+// model documented the hole. The property below is the one that was missing —
+// unattributable failures are counted, and counted together.
+
+/// The refusal a spent budget produces, matched as a whole phrase.
+///
+/// `contains("unrecognised")` would also be true of "the credential was not
+/// recognised" under a careless edit, which is exactly the substring trap this
+/// suite has been bitten by before.
+const BUDGET_SPENT: &str = "too many unrecognised credentials have been presented";
+
+#[test]
+fn repeated_unrecognised_tokens_reach_the_budget_and_are_then_refused_as_a_flood() {
+    let authenticator = Authenticator::new(credentials());
+    let threshold = authenticator.lockout_threshold();
+    assert!(threshold >= 2, "a threshold of {threshold} proves nothing");
+
+    // The premise: every attempt short of the threshold is an ordinary
+    // refusal, so the assertion below is about the threshold and not about the
+    // authenticator refusing everything from the start.
+    for attempt in 1..threshold {
+        let error = authenticator
+            .authenticate(Some(&format!("Bearer guess-{attempt}")), now())
+            .unwrap_err();
+        assert_eq!(
+            error.message(),
+            "the credential was not recognised",
+            "attempt {attempt} of {threshold} was refused early"
+        );
+        assert_eq!(authenticator.unrecognised_attempts(now()), attempt);
+    }
+
+    let error = authenticator
+        .authenticate(Some("Bearer guess-at-the-threshold"), now())
+        .unwrap_err();
+    assert!(
+        error.message().contains(BUDGET_SPENT),
+        "the budget did not fire: {}",
+        error.message()
+    );
+    assert_eq!(authenticator.unrecognised_attempts(now()), threshold);
+}
+
+#[test]
+fn a_valid_credential_authenticates_while_another_callers_budget_is_spent() -> Result<()> {
+    // The asymmetry is the design. A budget that also refused valid tokens
+    // would let any anonymous caller lock the desk out of the halt and
+    // kill-switch routes with ten wrong guesses.
+    let authenticator = Authenticator::new(credentials());
+    for attempt in 0..authenticator.lockout_threshold() + 5 {
+        assert!(
+            authenticator
+                .authenticate(Some(&format!("Bearer guess-{attempt}")), now())
+                .is_err()
+        );
+    }
+    assert_eq!(
+        authenticator.unrecognised_attempts(now()),
+        authenticator.lockout_threshold(),
+        "the premise: the budget is spent before the operator calls"
+    );
+
+    let principal = authenticator.authenticate(Some("Bearer operator-token"), now())?;
+    assert_eq!(principal.subject, "operator@example.com");
+    assert_eq!(principal.role, Role::Operator);
+    Ok(())
+}
+
+#[test]
+fn distinct_random_tokens_share_one_budget_and_leave_no_state_behind() {
+    // Keying the counter on the presented token would make every guess its own
+    // first offence — the control would never fire — and would let an
+    // anonymous caller allocate a map entry per guess. Both failures show up
+    // here: five thousand distinct tokens must still be refused as a flood,
+    // and the recorded count must stay at the threshold rather than climbing
+    // with the traffic.
+    let authenticator = Authenticator::new(credentials());
+    let threshold = authenticator.lockout_threshold();
+    let mut flooded = 0_u32;
+    for attempt in 0..5_000_u32 {
+        // Distinct and spread across the token space rather than sequential,
+        // so a per-token map could not coincidentally collide them together.
+        let token = qip_core::hash::to_hex(&qip_core::hash::sha256(
+            format!("random-guess-{attempt}").as_bytes(),
+        ));
+        let error = authenticator
+            .authenticate(Some(&format!("Bearer {token}")), now())
+            .unwrap_err();
+        if error.message().contains(BUDGET_SPENT) {
+            flooded += 1;
+        }
+    }
+    assert_eq!(
+        flooded,
+        5_000 - (threshold - 1),
+        "every attempt from the threshold onwards must be refused as a flood"
+    );
+    assert_eq!(
+        authenticator.unrecognised_attempts(now()),
+        threshold,
+        "the counter grew with the traffic instead of saturating"
+    );
+}
+
+#[test]
+fn a_successful_authentication_does_not_clear_the_budget() -> Result<()> {
+    // Clearing on success is the wrong answer and was worth writing down: an
+    // attacker holding any low-privilege token could reset the budget between
+    // guesses, and an ordinary monitoring poll every second would reset it
+    // forever, so the control could never fire. Only time clears it.
+    let authenticator = Authenticator::new(credentials());
+    for attempt in 0..3 {
+        assert!(
+            authenticator
+                .authenticate(Some(&format!("Bearer guess-{attempt}")), now())
+                .is_err()
+        );
+    }
+    assert_eq!(
+        authenticator.unrecognised_attempts(now()),
+        3,
+        "the premise: three failures are on the books"
+    );
+
+    authenticator.authenticate(Some("Bearer monitor-token"), now())?;
+    assert_eq!(
+        authenticator.unrecognised_attempts(now()),
+        3,
+        "a successful authentication wiped the guessing pressure"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_budget_starts_again_in_the_next_window() {
+    // A refusal that never lifts is an outage. The window is what keeps a
+    // brute-force burst from permanently refusing a caller who mistypes a
+    // token afterwards.
+    let authenticator = Authenticator::new(credentials());
+    for attempt in 0..authenticator.lockout_threshold() {
+        assert!(
+            authenticator
+                .authenticate(Some(&format!("Bearer guess-{attempt}")), now())
+                .is_err()
+        );
+    }
+    assert!(
+        authenticator
+            .authenticate(Some("Bearer another-guess"), now())
+            .unwrap_err()
+            .message()
+            .contains(BUDGET_SPENT),
+        "the premise: the budget is spent in this window"
+    );
+
+    let later = now().saturating_add(Duration::from_mins(1));
+    assert_eq!(authenticator.unrecognised_attempts(later), 0);
+    let error = authenticator
+        .authenticate(Some("Bearer another-guess"), later)
+        .unwrap_err();
+    assert_eq!(error.message(), "the credential was not recognised");
+}
+
+#[test]
+fn an_expired_credential_does_not_spend_the_unrecognised_budget() {
+    // The two failure paths are not the same fact. An expired credential is
+    // attributable and its holder has already lost access; counting it here
+    // would let one stale poller keep the budget permanently spent, which is
+    // an attacker disarming the control by looking like a tired client.
+    let authenticator = Authenticator::new(credentials());
+    for _ in 0..authenticator.lockout_threshold() + 5 {
+        let error = authenticator
+            .authenticate(Some("Bearer expired-token"), now())
+            .unwrap_err();
+        assert!(error.message().contains("expired"), "{}", error.message());
+        assert!(
+            !error.message().contains(BUDGET_SPENT),
+            "an expired credential was treated as a guess: {}",
+            error.message()
+        );
+    }
+    assert_eq!(authenticator.unrecognised_attempts(now()), 0);
+}
+
+#[test]
+fn only_a_caller_holding_a_real_token_can_tell_the_two_refusals_apart() {
+    // An attacker who can distinguish "unrecognised" from "expired" learns
+    // which tokens exist. The expired refusal names its subject on purpose,
+    // but reaching it requires presenting a token that matched a stored hash —
+    // possession of the secret itself. Nothing on the unattributable path may
+    // name a subject or an expiry.
+    let authenticator = Authenticator::new(credentials());
+    for attempt in 0..authenticator.lockout_threshold() + 2 {
+        let message = authenticator
+            .authenticate(Some(&format!("Bearer guess-{attempt}")), now())
+            .unwrap_err()
+            .message()
+            .to_string();
+        for leak in ["expired", "@example.com", "monitor", "operator", "viewer"] {
+            assert!(
+                !message.contains(leak),
+                "the refusal for an unrecognised token leaked {leak}: {message}"
+            );
+        }
+    }
+}
 
 // --- rate limiting ----------------------------------------------------------
 

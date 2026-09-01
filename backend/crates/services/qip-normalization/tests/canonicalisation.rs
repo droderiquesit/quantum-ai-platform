@@ -70,6 +70,50 @@ fn records_are_rewritten_onto_canonical_venues() {
 // --- unit conversion --------------------------------------------------------
 
 #[test]
+fn the_pence_factor_is_a_hundredth_and_never_the_identity() {
+    // The failure this prevents: the factor used to be
+    // `Decimal::parse("0.01").unwrap_or(Decimal::ONE)`, and the fallback arm is
+    // the identity. An identity factor does not merely leave the price alone —
+    // `apply_conversion` returns false for it, so the record passes through
+    // unconverted *and* unreported, and every downstream notional on a London
+    // name is a hundred times too large with nothing in the report to say so.
+    // The premise is asserted first: the factor is not the identity. Without
+    // that, the conversion assertions below hold trivially for a no-op.
+    let conversion = UnitConversion::pence_to_pounds("lse-feed", object());
+    assert_ne!(
+        conversion.price_factor,
+        Decimal::ONE,
+        "premise: a pence-to-pounds conversion that is the identity converts nothing"
+    );
+    assert_eq!(
+        conversion.price_factor * Decimal::from_int(100),
+        Decimal::ONE,
+        "one pound is a hundred pence, exactly"
+    );
+    assert_eq!(
+        conversion.quantity_factor,
+        Decimal::ONE,
+        "the re-denomination is of price alone; a share count is a share count"
+    );
+
+    let mut normalizer = Normalizer::new();
+    normalizer.add_conversion(conversion);
+    let (records, report) =
+        normalizer.normalise("lse-feed", vec![quote("XLON", "1234", "1236")], now());
+    assert_eq!(
+        report.units_converted, 1,
+        "the conversion must be counted; an identity factor is reported as no conversion at all"
+    );
+    match &records[0] {
+        SensedRecord::Quote(q) => {
+            assert_eq!(q.bid, dec!("12.34"));
+            assert_eq!(q.ask, dec!("12.36"));
+        }
+        other => panic!("expected a quote, got {other:?}"),
+    }
+}
+
+#[test]
 fn pence_quotes_are_converted_to_pounds() {
     // The bug this prevents: a London equity quoted at 1234 pence becoming a
     // 1234-pound notional, inflating every position by a hundred times.

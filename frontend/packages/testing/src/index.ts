@@ -6,4 +6,4 @@
  * imported something named `testing`, which is one more chance for a reviewer
  * to ask whether the label is on the screen.
  */
-export { seeded, simWalk, simPick, simBetween } from "../../../frontend/src/lib/sim";
+export { seeded, simWalk, simPick, simBetween } from "../../../portal/src/lib/sim";

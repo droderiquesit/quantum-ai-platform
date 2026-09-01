@@ -90,3 +90,41 @@ data:
   # refuses the scheme by name rather than downgrading it, and this hop does
   # not leave the cluster network.
   mesh_peer_london-1: "http://qip-api-mesh.qip.svc.cluster.local:9110"
+
+  # --- the live market-data connector ---------------------------------------
+  #
+  # Absent by default, and absent is the shipped state rather than an omission:
+  # with both keys missing, `optional: true` in fastbrain.yaml leaves both
+  # variables unset, `connector_feed` in qip-fastbrain/src/config.rs takes its
+  # `(None, None)` arm, and the node runs the synthetic exchange exactly as it
+  # does today. Selecting a vendor is an edit to a values file, reviewed in a
+  # diff, never a side effect of deploying the chart.
+  #
+  # Until these keys existed neither variable appeared in any manifest or any
+  # template, so the connector path — the licensing gate, the SDK runtime, the
+  # bridge into the loop's own `DataAdapter`, the real fetch — was selectable
+  # by nothing and every deployed Fast Brain ran synthetic data while the gap
+  # matrix recorded the capability as done. That is the mesh backbone's failure
+  # repeated one file above: code complete, tested, and reachable from no
+  # environment.
+  #
+  # Both keys or neither. The binary refuses half a configuration by name
+  # rather than falling back, because the silent alternative is the synthetic
+  # exchange wearing a configured look — a node reporting itself healthy and
+  # producing decisions from generated prices while its dashboard says the feed
+  # is live. `required` below refuses the same half at render time, so the half
+  # never reaches a cluster to be refused at start-up.
+  #
+  # The address is the egress proxy's, never the vendor's: `qip_transport::http`
+  # has no TLS stack and refuses the `https` scheme by name rather than
+  # downgrading it, so `https://` is rejected here too — at render, where the
+  # operator is still looking, rather than in a pod's exit code.
+{{- if .Values.marketDataConnector }}
+{{- $source := required "marketDataConnector.source is required when marketDataConnector is set: an egress address with no source names nothing to fetch" .Values.marketDataConnector.source }}
+{{- $baseUrl := required "marketDataConnector.baseUrl is required when marketDataConnector is set: a connector source needs the egress proxy's address" .Values.marketDataConnector.baseUrl }}
+{{- if hasPrefix "https://" $baseUrl }}
+{{- fail "marketDataConnector.baseUrl is https://. `qip_transport::http` speaks plaintext HTTP/1.1 and has no TLS stack: point this at the egress proxy, which terminates TLS to the vendor, never at the vendor itself" }}
+{{- end }}
+  connector_source: {{ $source | quote }}
+  connector_base_url: {{ $baseUrl | quote }}
+{{- end }}
