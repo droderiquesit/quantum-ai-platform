@@ -66,10 +66,7 @@ pattern.
 | `base/egress-policies.yaml` | The egress each component is permitted — the ADR's boundary |
 | `overlays/<env>/kustomization.yaml` | Vendored image digests for that environment's registry |
 | `apps/project.yaml` | The `qip` AppProject — source, destination, kind allowlists |
-| `apps/dev.yaml` | Dev Application — automated sync, prune, self-heal |
-| `apps/test.yaml` | Test Application — automated sync, prune, self-heal |
-| `apps/stage.yaml` | Stage Application — automated sync, prune, self-heal |
-| `apps/prod.yaml` | Prod Application — automated sync, prune, self-heal |
+| `apps/dev.yaml` | Dev Application — automated sync, prune, self-heal; the only central-plane Application |
 | `apps/edge.yaml` | Edge cell template — manual sync, applied by runbook |
 
 Applying dev, from the repository root, with cluster credentials already
@@ -86,20 +83,57 @@ remaining kubectl.
 
 ## The Applications
 
-Each environment has an Argo CD Application in `apps/` that reads the Helm
-chart at `infrastructure/helm/qip/` with environment-specific values files.
-All central-plane Applications (dev, test, stage, prod) use automated sync
+One central-plane Application exists: `apps/dev.yaml`, which reads the Helm
+chart at `infrastructure/helm/qip/` with `values-dev.yaml` and the
+`values-dev-images.yaml` that `deploy.yml` writes. It uses automated sync
 with `prune: true` and `selfHeal: true`:
 
 - **prune**: resources removed from the chart are deleted from the cluster.
 - **selfHeal**: manual `kubectl edit` changes are reverted on the next sync.
 
-The prod Application is gated by the `prod` GitHub environment's required
-reviewers — a person must approve the workflow run before the digests commit
-lands. Argo CD itself is unattended once the commit is on the branch.
-
 Edge cells use manual sync. ADR 0008: bringing a cell up is a deliberate act
 with a runbook, not something a pipeline does unattended.
+
+### test, stage and prod have never been deployable through GitOps
+
+Applications named `qip-test`, `qip-stage` and `qip-prod` were committed
+alongside the cut-over and removed later, because none of them could ever
+have synced and leaving them in the tree promised otherwise:
+
+- Each named `values-<env>.yaml` as its first values file, and no such file
+  has ever existed for those environments. `deploy.yml` generates only
+  `values-<env>-images.yaml`; the base file is hand-written and committed for
+  dev alone. Helm refuses a missing `valueFiles` entry, so the Application
+  would have sat on `Unknown` from its first reconcile.
+- Nothing could have produced even the images file: all three environments
+  carry `project_id = "unprovisioned"` in their tfvars, which `deploy.yml`
+  refuses before it authenticates.
+- No `overlays/<env>` exists for any GitOps component but dev, so
+  `scripts/bootstrap-gitops.sh` exits before it applies anything, and it
+  applies only `project.yaml` and `dev.yaml` in any case.
+- Every one of them pointed its destination at `https://kubernetes.default.svc`
+  — the cluster Argo CD itself runs in — with prune and self-heal on, into the
+  same `qip` namespace as `qip-dev`. Applying one by hand, as the table above
+  used to invite, would not have deployed prod; it would have installed a
+  second unattended writer arguing with the first over the dev namespace.
+
+Bringing one of those environments up through this path would need its
+project provisioned, an `overlays/<env>` for each of the four components, a
+committed `values-<env>.yaml`, and a fresh Application whose destination is
+that environment's own cluster. ADR 0020 makes GKE, Argo CD and Kargo the
+transitional runtime with a decided direction away from them, so that work is
+not planned; the Cloud Run path is where those environments will first exist.
+A promotion gate for prod (required reviewers on the `prod` GitHub
+environment) still belongs to `deploy.yml`, not to an Application.
+
+## Verifying the reconciler
+
+`scripts/verify-argocd.sh [application]` (default `qip-dev`) is read-only and
+prints what Argo CD is doing about one Application — controller readiness,
+repository access, sync and health, and every resource the AppProject forbids
+— with the fix for each failure it has already seen on this platform. Run it
+after bootstrapping, after a promotion that does not appear, and before
+suspecting the chart.
 
 ## Upgrading
 

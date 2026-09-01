@@ -49,7 +49,9 @@ echo "repository access"
 repo="$(kubectl get application "$app" -n argocd -o jsonpath='{.spec.source.repoURL}' 2>/dev/null)"
 if [ -z "$repo" ]; then
   note "no Application named ${app} in the argocd namespace."
-  note "FIX: kubectl apply --server-side -f infrastructure/gitops/argocd/apps/"
+  note "FIX: kubectl apply --server-side -f infrastructure/gitops/argocd/apps/project.yaml \\"
+  note "       -f infrastructure/gitops/argocd/apps/dev.yaml   (what bootstrap-gitops.sh does;"
+  note "     never -f apps/ — edge.yaml is a template with __PLACEHOLDERS__ and does not apply)"
   exit 1
 fi
 note "repoURL: ${repo}"
@@ -84,8 +86,8 @@ if [ -n "$automated" ]; then
   note "automated sync is enabled (prune + self-heal)"
 else
   note "automated sync is NOT enabled — sync is manual"
-  note "NOTE: central-plane Applications (dev, test, stage, prod) should have"
-  note "      automated sync enabled. Only edge cells use manual sync."
+  note "NOTE: the central-plane Application (qip-dev) should have automated"
+  note "      sync enabled. Only edge cells use manual sync."
 fi
 
 case "$sync" in

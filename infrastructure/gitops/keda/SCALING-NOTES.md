@@ -7,7 +7,7 @@ problem belonging to the fourth.
 
 | Layer | What it changes | Where it lives |
 |---|---|---|
-| KEDA `ScaledObject` | replica count of `qip-api` | `infrastructure/kubernetes/base/api.yaml` |
+| KEDA `ScaledObject` | replica count of `qip-api` | `infrastructure/helm/qip/templates/api.yaml` (the retired copy in `infrastructure/kubernetes/base/api.yaml` is a test fixture, not what deploys) |
 | Node pool autoscaler | nodes inside the committed pool | `modules/cluster`, per-zone min/max |
 | Node auto-provisioning + `ComputeClass` | new node pools when no existing pool fits | `modules/cluster`, `base/autoscaling.yaml` |
 | VPA recommenders | nothing — they measure and report | `base/autoscaling.yaml`, `updateMode: "Off"` |
@@ -35,9 +35,14 @@ rather than a second scaling system arguing with the first.
 
 Those prerequisites have not moved:
 
-1. **The platform must emit the metric.** Nothing currently writes to
-   `Telemetry` (`.claude/rules/domains/observability.md` says so in bold), so
-   there is no queue-depth or connection-count series for any scaler to read.
+1. **The platform must emit the metric, and something must scrape it.**
+   The kernel now records cycle, stage, order and kill-switch facts to
+   `Telemetry`, and the three central binaries serve them on `/metrics`
+   (`.claude/rules/domains/observability.md` has the current state; an
+   earlier draft of this note said nothing wrote, which is no longer true).
+   What is still missing is any queue-depth or connection-count series and
+   any proof a collector ingested one — `workload_metrics_exist` is still
+   `false` — so there is still nothing for a KEDA trigger to read.
 2. **The route must be granted.** `base/policies.yaml` gives the keda
    namespace egress to the control plane only. A scaler polling a pod's
    metrics endpoint needs an explicit egress rule to that pod and port, added
