@@ -5,6 +5,39 @@
 # addresses at all: a node that cannot be reached from the internet cannot be
 # reached from the internet, which is a stronger statement than any firewall
 # rule.
+#
+# # Against the blueprint's target (ADR 0022, §45)
+#
+# The VPC is the part the blueprint and the running platform already agree
+# about, and the agreement is worth writing down because the gap reads larger
+# than it is. §45 asks for one global VPC, regional subnets, no inter-region
+# peering and no overlay. A Google Cloud VPC is a global resource and subnets
+# in different regions share it natively, so there is no peering layer here to
+# remove — there has never been one. `routing_mode = "REGIONAL"` above is not a
+# second VPC and does not partition it; it scopes which Cloud Router BGP routes
+# propagate between regions, which matters only to the interconnect in
+# `modules/connectivity`.
+#
+# What this module is *not*, deliberately:
+#
+#   * It is not where the trust zones live. §45's thirteen zones, their
+#     default-deny egress and the rule that only Optimisation may reach IBM are
+#     `modules/trust-zones`, which owns a zone's subnet, tag and rules together.
+#     A second zone implementation here would be a second set of subnets in the
+#     same VPC and a second answer to the same question, and the wiring pass
+#     would have to pick one.
+#   * It does not create a Private Service Connect endpoint for Google APIs.
+#     `modules/connectivity` already has one, gated off. Two endpoints
+#     answering for the same APIs is two things to keep a resolver pointed at.
+#
+# Two things here are still the transitional shape rather than the target, and
+# both are cutover work rather than an omission: the primary subnet carries
+# secondary ranges for pods and services, which exist for a scheduler the
+# target does not have, and the NAT above is
+# `ALL_SUBNETWORKS_ALL_IP_RANGES`, which gives a way out to whatever subnet is
+# added next. Narrowing either one changes the path the GKE cluster of ADR 0011
+# is serving traffic on today, and ADR 0020 fixes the order: not before the
+# evidence in its step 5.
 
 resource "google_compute_network" "vpc" {
   project = var.project_id
