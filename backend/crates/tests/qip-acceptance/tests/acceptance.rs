@@ -675,7 +675,8 @@ fn the_centre_decodes_a_contributor_vector_out_of_bytes_the_edge_crate_produced(
             strategy: qip_contracts::signal::StrategyId::new("alpha"),
             object_id: ObjectId::from_string("ACME"),
             venue: qip_contracts::venue::VenueId::new("XLON"),
-            side: qip_contracts::message::BookSide::Bid,
+            // Net +60 is a buy, and a buy takes the ask.
+            side: qip_contracts::message::BookSide::Ask,
             quantity: dec!("60"),
             price: dec!("100"),
             simulated: true,

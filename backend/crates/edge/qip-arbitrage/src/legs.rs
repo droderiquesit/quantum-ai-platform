@@ -19,17 +19,19 @@
 //! prefunded inventory, so they never appear in `steps()` and never become an
 //! order, which is correct: a transfer is not something a venue can fill.
 //!
-//! # The sign, stated once because it inverts
+//! # The sign, stated once because it once inverted
 //!
 //! A leg's `side` is **the side of the book consumed**
 //! ([`crate::graph::EdgeKind::Trade`]): consuming offers *buys*, consuming bids
-//! *sells*. The cell's own intents are built from an order's side, where `Bid`
-//! *is* a buy. The two conventions are opposite, and an adapter that copied
-//! the leg's side into a signed size by the cell's rule would emit every leg
-//! backwards — a cycle that sells what it meant to buy at each step still
-//! closes, so nothing downstream would notice. The mapping lives in
-//! [`signed_size`] and nowhere else, and a test holds it against the fixture
-//! whose sides are known.
+//! *sells*. The cell now signs its own intents by the same rule — taking the
+//! ask is positive, hitting the bid is negative — but it did not always: until
+//! the sign was corrected at the seam where an intent is made, `Bid` was a buy
+//! in the cell and the two conventions were opposite, and an adapter that
+//! copied the leg's side into a signed size by that old rule would have
+//! emitted every leg backwards. A cycle that sells what it meant to buy at
+//! each step still closes, so nothing downstream would notice. The mapping
+//! therefore lives in [`signed_size`] and nowhere else, and a test holds it
+//! against the fixture whose sides are known rather than against the cell.
 //!
 //! # What this is not yet
 //!
@@ -141,8 +143,8 @@ impl Opportunity {
 
 /// The signed size the netting seam expects, from the side of the book the
 /// leg consumes: offers consumed is a buy and positive, bids consumed is a
-/// sell and negative. See the module comment for why this is the inverse of
-/// the cell's own rule and must not be copied from it.
+/// sell and negative. See the module comment for why this is stated here
+/// rather than copied from the cell's rule, which once inverted it.
 fn signed_size(step: &LegStep) -> Decimal {
     match step.side {
         BookSide::Ask => step.quantity,
