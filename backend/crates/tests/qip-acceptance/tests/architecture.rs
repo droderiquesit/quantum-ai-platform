@@ -434,6 +434,86 @@ fn no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy() {
     }
 }
 
+// --- the solvers ------------------------------------------------------------
+
+/// Every crate that holds a veto, places an order, or issues capital.
+///
+/// Named rather than derived from a directory, because the property is about
+/// authority and not about layout: `qip-lifecycle` decides whether a strategy
+/// may trade at all and `qip-capital` decides how much it may spend, and
+/// neither of them lives beside the risk gate.
+const NO_SOLVER_AUTHORITY: &[&str] = &[
+    "qip-risk-engine",
+    "qip-execution-engine",
+    "qip-compliance",
+    "qip-brokers",
+    "qip-capital",
+    "qip-lifecycle",
+];
+
+#[test]
+fn nothing_that_vetoes_executes_or_moves_money_can_reach_a_quantum_solver() {
+    // The companion to `no_safety_critical_engine_can_reach_a_language_model`,
+    // for the other kind of model. A solver's output is policy — a budget, a
+    // whitelist, a target — and policy is an input to a decision somebody else
+    // makes deterministically. The moment a risk gate, an order manager or the
+    // capital issuer can call a solver directly, an optimiser's answer becomes
+    // the answer, and the thing that was supposed to constrain it is the thing
+    // asking it.
+    //
+    // Enforced by absence and transitively, for the same reason the
+    // language-model rule is: a boundary one intermediate crate can defeat is
+    // not a boundary. The route back in here would not be a direct edge to
+    // `qip-quantum`, which a reviewer would question, but an edge to
+    // `qip-optimization-engine`, which looks entirely reasonable on a risk
+    // crate until you notice what it drags behind it.
+    let graph = dependency_graph();
+    for crate_name in NO_SOLVER_AUTHORITY {
+        assert!(
+            graph.contains_key(*crate_name),
+            "{crate_name} is not a crate in this workspace; this test is naming \
+             something that no longer exists and constrains nothing"
+        );
+        let reachable = reachable_from(&graph, crate_name);
+        assert!(
+            !reachable.contains("qip-quantum"),
+            "{crate_name} holds a veto or moves money and can reach a quantum \
+             solver: {reachable:?}"
+        );
+    }
+    // The vacuity guard. Every assertion above is about an absent edge, so if
+    // the solver crate were renamed or deleted the loop would pass while
+    // proving nothing. The optimiser is the one place the edge is supposed to
+    // exist, and its presence is what makes the absences above meaningful.
+    assert!(
+        reachable_from(&graph, "qip-optimization-engine").contains("qip-quantum"),
+        "the optimisation engine no longer reaches a quantum solver, so the \
+         absences this test asserts elsewhere prove nothing"
+    );
+}
+
+#[test]
+fn no_edge_cell_can_reach_a_quantum_solver() {
+    // Stated separately from the rule above because it fails for a different
+    // reason, and a reader needs to know which.
+    //
+    // A region receives a solved answer; it never solves. That is not a
+    // performance argument — although a QPU round trip inside a microsecond
+    // budget is its own absurdity — it is ADR 0008's argument. A cell is safe
+    // while partitioned precisely because everything it is allowed to do was
+    // decided in advance and shipped to it. A cell that could solve could
+    // reach a conclusion the centre never approved, at exactly the moment
+    // nobody can see it.
+    let graph = dependency_graph();
+    for crate_name in edge_crates() {
+        let reachable = reachable_from(&graph, &crate_name);
+        assert!(
+            !reachable.contains("qip-quantum"),
+            "the edge crate {crate_name} can reach a quantum solver: {reachable:?}"
+        );
+    }
+}
+
 // --- layering ---------------------------------------------------------------
 
 #[test]
