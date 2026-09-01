@@ -228,15 +228,23 @@ impl Intent {
 /// setter anywhere.
 ///
 /// The two things this makes inexpressible, each a `compile_fail` doctest so
-/// the claim is checked rather than asserted:
+/// the claim is checked rather than asserted. Each names the one field it
+/// guards, because a `compile_fail` block passes on *any* error: the first
+/// stops at `leg.intent` — `CycleLeg::intent` is private and the accessor is
+/// read-only — and never reaches `netting`, so it proves nothing about
+/// `netting` and does not claim to. The second reaches `netting` directly on
+/// a directional intent and is the one that holds that field private. An
+/// earlier version of this comment described the first block as guarding
+/// `netting`; it never did.
 ///
-/// ```compile_fail
+/// ```compile_fail,E0616
 /// # use qip_contracts::intent::{CycleLeg, Intent, NettingPolicy};
 /// # use qip_contracts::signal::StrategyId;
 /// # use qip_contracts::venue::VenueId;
 /// # use qip_core::{ObjectId, Timestamp, dec};
-/// // A leg's intent cannot be reached to have its policy changed: the field
-/// // is private and `CycleLeg` exposes it read-only.
+/// // A leg's intent cannot be reached to be changed at all: `CycleLeg::intent`
+/// // is private and `CycleLeg::intent()` hands out a shared reference. This
+/// // fails on `leg.intent`, before `netting` is ever looked at.
 /// let mut leg = CycleLeg::new(
 ///     "cycle-7", StrategyId::new("arb"), ObjectId::from_string("ACME"),
 ///     VenueId::new("XLON"), dec!("50"), dec!("100"), Timestamp::from_secs(1),
@@ -245,13 +253,14 @@ impl Intent {
 /// intent.netting = NettingPolicy::Nettable;
 /// ```
 ///
-/// ```compile_fail
+/// ```compile_fail,E0616
 /// # use qip_contracts::intent::{Intent, NettingPolicy};
 /// # use qip_contracts::signal::StrategyId;
 /// # use qip_contracts::venue::VenueId;
 /// # use qip_core::{ObjectId, Timestamp, dec};
-/// // And a directional intent cannot be flipped the other way either: the
-/// // policy is not assignable after construction.
+/// // And a directional intent cannot be flipped the other way either:
+/// // `Intent::netting` is private, so it is not assignable after
+/// // construction. This is the block that guards `netting`.
 /// let mut intent = Intent::new(
 ///     StrategyId::new("arb"), ObjectId::from_string("ACME"), VenueId::new("XLON"),
 ///     dec!("50"), dec!("100"), Timestamp::from_secs(1),
@@ -381,14 +390,28 @@ struct NettingKey {
 /// that can exist under a `cycle_id` is the one [`net`] assembled, and [`net`]
 /// gives every leg a group of its own.
 ///
-/// ```compile_fail
-/// # use qip_contracts::intent::{NetIntent, Representation};
+/// Two `compile_fail` doctests hold this, and each spells out the `sealed`
+/// field rather than omitting it. An earlier version left `sealed:` out of
+/// the literal, so it failed on "missing field" whatever the field's
+/// visibility — a security review made both `sealed` and `Sealed` `pub` and
+/// the doctest kept passing. A `compile_fail` block passes on any error, so
+/// it guards only what its one error is about; these two are written so the
+/// only error left is the privacy of the seal, and they compile — and fire —
+/// the moment it is opened.
+///
+/// The literal, which needs both the field and its type to be reachable:
+///
+/// ```compile_fail,E0603
+/// # use qip_contracts::intent::{NetIntent, Representation, Sealed};
 /// # use qip_contracts::venue::VenueId;
 /// # use qip_core::{ObjectId, dec};
-/// // No literal: `sealed` is private. A caller cannot assemble a net that
-/// // mixes a cycle leg with directional contributors without going through
+/// // Every field is supplied, `sealed` included. The only thing wrong with
+/// // this literal is that `Sealed` cannot be named from here and `sealed`
+/// // cannot be written from here: a caller cannot assemble a net that puts
+/// // directional contributors under a `cycle_id` without going through
 /// // `net`, which will not.
 /// let forged = NetIntent {
+///     sealed: Sealed,
 ///     object_id: ObjectId::from_string("ACME"),
 ///     venue: VenueId::new("XLON"),
 ///     representation: Representation::Spot,
@@ -398,6 +421,25 @@ struct NettingKey {
 ///     reference_price: dec!("100"),
 ///     cycle_id: Some("cycle-7".to_string()),
 /// };
+/// ```
+///
+/// And struct-update from a net that [`net`] really built, which never names
+/// the type at all — so a `pub sealed: Sealed` with `Sealed` left private
+/// would still open this route, and this block is what fires on it:
+///
+/// ```compile_fail,E0451
+/// # use qip_contracts::intent::{Intent, NetIntent, net};
+/// # use qip_contracts::signal::StrategyId;
+/// # use qip_contracts::venue::VenueId;
+/// # use qip_core::{ObjectId, Timestamp, dec};
+/// let genuine = net(vec![Intent::new(
+///     StrategyId::new("alpha"), ObjectId::from_string("ACME"), VenueId::new("XLON"),
+///     dec!("50"), dec!("100"), Timestamp::from_secs(1),
+/// ).unwrap()]).pop().unwrap();
+/// // A directional net re-labelled as a cycle: the seal is copied across by
+/// // `..genuine`, and copying a private field out of another module is
+/// // refused.
+/// let forged = NetIntent { cycle_id: Some("cycle-7".to_string()), ..genuine };
 /// ```
 ///
 /// What this does **not** hold, stated so nobody reads more into it: the
@@ -492,12 +534,25 @@ impl NetIntent {
     /// that whichever way the rounding went the same fill splits the same way
     /// on every machine and in every replay.
     ///
-    /// Since construction was sealed to [`net`], every vector this sees is one
-    /// [`net`] sorted by strategy id, and the sorts here are stable — so the
-    /// tie-breaks below can no longer produce a different answer from arrival
-    /// order, and a mutation that deletes them is invisible to every test.
-    /// They stay because the rule is stated here and the cost is nil, but the
-    /// ordering [`net`] applies is what holds it now.
+    /// [`net`] pre-sorts contributors by strategy id, so a vector that came
+    /// straight from it reaches the tie-breaks already in the order they
+    /// would impose. That is not every vector this sees. `contributors` is a
+    /// public field a caller can reorder, and [`NetIntent`] derives
+    /// `Deserialize` with only `sealed` skipped, so a net read off a journal
+    /// or a wire arrives in whatever order the bytes carry — a code review
+    /// deserialised one from a JSON literal, contributors reversed, without
+    /// complaint. For those callers the tie-breaks below are the only thing
+    /// standing between equal remainders and arrival order, and each is held
+    /// by a test that reorders the vector first. An earlier version of this
+    /// comment said the seal made every vector a sorted one and the tie-breaks
+    /// therefore untestable; the give-back tie-break was in fact already held
+    /// by such a test, and the hand-out one was not held by any.
+    ///
+    /// The open item is `Deserialize` itself: a net read back from bytes is
+    /// a net whose contributor vector nobody in-process assembled, and whether
+    /// `NetIntent` should be readable from the wire at all is a design
+    /// question, not something a comment or a tie-break closes. Nothing in the
+    /// tree deserialises one today.
     pub fn split_fill(&self, filled: Decimal) -> Vec<(StrategyId, Decimal)> {
         let denominator = self.gross_size;
         if self.contributors.is_empty() || denominator.is_zero() || filled.is_zero() {

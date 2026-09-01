@@ -1800,3 +1800,68 @@ fn taking_back_an_excess_is_as_deterministic_as_handing_out_a_shortfall() {
          different order"
     );
 }
+
+#[test]
+fn a_shortfall_goes_to_the_lowest_strategy_id_however_the_contributors_arrived() {
+    // The hand-out tie-break in `split_fill` was, until this test, held by
+    // nothing: every earlier test reached it through `net`, which pre-sorts
+    // contributors by strategy id, so a stable sort with the tie-break deleted
+    // gave the same answer and the deletion was invisible — as the comment
+    // above the function disclosed and a code review then demonstrated. But
+    // `net` is not the only way a vector reaches `split_fill`: `contributors`
+    // is a public field, and `NetIntent` derives `Deserialize` with only the
+    // seal skipped, so a net read back from a journal or a wire carries
+    // whatever order the bytes do. Both routes are taken here, so the test
+    // fails on the deletion rather than on the fixture happening to be sorted.
+    let forward = net_of(&["1", "1", "1"]);
+    let mut reordered = forward.clone();
+    reordered.contributors.reverse();
+    // Premise: the reordered vector really is in a different order, so a
+    // correct answer below is the tie-break working rather than the sort in
+    // `net` having done its job already.
+    assert_eq!(forward.contributors[0].strategy.as_str(), "s0");
+    assert_eq!(reordered.contributors[0].strategy.as_str(), "s2");
+
+    // The wire route: the reversed order survives a round trip, so a reader of
+    // the journal sees exactly this vector and no sort in between.
+    let json = serde_json::to_string(&reordered).expect("serialisable");
+    let off_the_wire: NetIntent = serde_json::from_str(&json).expect("deserialisable");
+    assert_eq!(
+        off_the_wire.contributors[0].strategy.as_str(),
+        "s2",
+        "the round trip re-sorted the contributors, so the wire route is not \
+         the unsorted one this test exists to exercise"
+    );
+
+    // Premise: 100 over three equal contributors leaves exactly one unit at
+    // the eighth place to hand out, and the three remainders are equal, so
+    // only the tie-break decides who receives it.
+    let fill = dec!("100");
+    let split = off_the_wire.split_fill(fill);
+    assert_eq!(split.len(), 3);
+    let distinct: std::collections::BTreeSet<Decimal> =
+        split.iter().map(|(_, share)| *share).collect();
+    assert_eq!(
+        distinct.len(),
+        2,
+        "the shares were not two values, so either no unit was handed out or \
+         more than one was, and the tie-break was not what decided the split"
+    );
+    let leader = split
+        .iter()
+        .max_by(|left, right| left.1.cmp(&right.1))
+        .expect("a split");
+    assert_eq!(
+        leader.0.as_str(),
+        "s0",
+        "the leftover unit went to {} rather than to the lowest strategy id: \
+         with the contributors reversed, that is arrival order deciding the \
+         split, and the same fill would attribute differently on replay",
+        leader.0.as_str()
+    );
+    let summed = split
+        .iter()
+        .map(|(_, share)| *share)
+        .fold(Decimal::ZERO, |a, b| a + b);
+    assert_eq!(summed, fill);
+}
