@@ -240,6 +240,27 @@ impl EvolutionEngine {
         })
     }
 
+    /// Build the crank over the synthetic exchange, with the exchange's own
+    /// instruments as the reference universe.
+    ///
+    /// The composition root's constructor for the default deployment path.
+    /// Before it, `main.rs` passed `Universe::new()` with a comment saying the
+    /// node had no reference-data source yet — and against an empty universe
+    /// the backtester rejects every order as an unknown instrument, the
+    /// no-fill refusal discards every candidate, and the loop is off. Taking
+    /// the environment by value here, before it is boxed behind
+    /// `dyn DataAdapter`, is what lets the reference data and the bars come
+    /// from the one instrument list; after boxing, the list is unreachable.
+    pub fn over_synthetic(
+        config: EvolutionConfig,
+        environment: qip_market_ingestion::synthetic::SyntheticEnvironment,
+        seed: u64,
+        at: Timestamp,
+    ) -> Result<Self> {
+        let universe = crate::reference::synthetic_universe(&environment, at)?;
+        Self::new(config, Box::new(environment), seed, universe)
+    }
+
     /// What the succession desk has done across the node's lifetime.
     pub const fn succession_stats(&self) -> SuccessionStats {
         self.desk.stats()
@@ -897,9 +918,6 @@ mod tests {
     use qip_contracts::SignalKind;
     use qip_core::{Context, Duration};
     use qip_evolution::cost_model::NetReturns;
-    use qip_financial::asset_class::InstrumentType;
-    use qip_financial::extensions::{BondDetails, CouponFrequency, DayCount, Extension, Seniority};
-    use qip_financial::object::FinancialObject;
     use qip_financial::universe::Universe;
     use qip_kernel::config::PlatformConfig;
     use qip_lifecycle::ledger::LifecycleLedger;
@@ -938,76 +956,16 @@ mod tests {
             step,
             ..EnvironmentConfig::default()
         };
-        let adapter = Box::new(SyntheticEnvironment::demo(start(), synthetic));
-        EvolutionEngine::new(config, adapter, 7, synthetic_universe())
-            .expect("the default challenge round is non-empty")
-    }
-
-    /// A universe holding the synthetic exchange's own instruments.
-    ///
-    /// Built from `SyntheticEnvironment::demo`'s instrument list -- the same
-    /// source that produces the bars -- rather than invented, so the backtest
-    /// prices and the reference data describe one instrument each. The
-    /// instrument type comes from the venue, which is how the demo
-    /// distinguishes its four exchange-listed equities from its one
-    /// over-the-counter government bond; it is a fixture decision, stated here
-    /// because the contract multiplier it implies reaches the P&L.
-    fn synthetic_universe() -> Universe {
-        let environment = SyntheticEnvironment::demo(start(), EnvironmentConfig::default());
-        let mut universe = Universe::new();
-        for instrument in environment.instruments() {
-            let bond = instrument.venue == "OTC";
-            let kind = if bond {
-                InstrumentType::GovernmentBond
-            } else {
-                InstrumentType::CommonStock
-            };
-            let mut builder = FinancialObject::builder(
-                instrument.object_id.clone(),
-                instrument.symbol.clone(),
-                kind,
-            )
-            .venue(instrument.venue.clone())
-            .price(
-                qip_core::Decimal::from_f64(instrument.state.price)
-                    .unwrap_or(qip_core::Decimal::ONE),
-            )
-            .provenance(qip_financial::Provenance::synthetic(
-                "qip-deepbrain-evolution-test",
-                start(),
-            ));
-            if bond {
-                // The object model refuses a bond with no maturity, which is
-                // correct: a fixed-income instrument without one has no
-                // duration and no price. The terms below are the fixture's,
-                // stated rather than defaulted.
-                builder = builder.extension(Extension::Bond(BondDetails {
-                    issuer: "synthetic sovereign".into(),
-                    coupon_rate: 0.0425,
-                    coupon_frequency: CouponFrequency::SemiAnnual,
-                    maturity: start().saturating_add(Duration::from_days(3653)),
-                    issue_date: start(),
-                    face_value: qip_core::Decimal::from_int(100),
-                    day_count: DayCount::ActualActual,
-                    seniority: Seniority::SeniorUnsecured,
-                    credit_rating: None,
-                    yield_to_maturity: 0.0431,
-                    modified_duration: 8.2,
-                    convexity: 58.0,
-                    option_adjusted_spread_bps: 0.0,
-                    callable: false,
-                    puttable: false,
-                    inflation_index: None,
-                }));
-            }
-            let object = builder
-                .build(start())
-                .expect("the synthetic exchange's own instrument is a valid object");
-            universe
-                .insert(object)
-                .expect("each synthetic instrument is distinct");
-        }
-        universe
+        // The production constructor, deliberately: every round test in this
+        // module then runs against the reference universe a deployment gets,
+        // not a fixture that could quietly diverge from it.
+        EvolutionEngine::over_synthetic(
+            config,
+            SyntheticEnvironment::demo(start(), synthetic),
+            7,
+            start(),
+        )
+        .expect("the demo environment yields a reference universe")
     }
 
     /// Sense enough minutes that a subject crosses the minimum-history bar,
@@ -1031,6 +989,83 @@ mod tests {
             }
         }
         Ok((platform, engine, summaries))
+    }
+
+    #[test]
+    fn a_round_registers_only_when_the_reference_universe_is_populated() -> Result<()> {
+        // The reference-data gap, driven end to end. The composition root
+        // assembled this engine with `Universe::new()` because the node had no
+        // reference-data source: the backtester then rejected every order as
+        // an unknown instrument, the no-fill refusal discarded every
+        // candidate, and the loop was visibly off. The same feed is run
+        // through both assemblies below, so the universe is the only
+        // difference between the round that registers and the round that
+        // cannot.
+        let step = Duration::from_mins(1);
+        let synthetic = EnvironmentConfig {
+            seed: 7,
+            step,
+            ..EnvironmentConfig::default()
+        };
+        let environment = SyntheticEnvironment::demo(start(), synthetic.clone());
+        let universe = crate::reference::synthetic_universe(&environment, start())?;
+        // The premise, part one: the derived universe is populated, and by
+        // exactly the instruments the feed stamps its bars with.
+        assert!(
+            !universe.is_empty(),
+            "the derived universe is empty, which is the defect itself"
+        );
+        assert_eq!(
+            universe.len(),
+            environment.instruments().len(),
+            "the universe does not cover the feed's instrument list"
+        );
+
+        let round = |universe: Universe| -> Result<RoundSummary> {
+            let mut platform = platform()?;
+            let mut engine = EvolutionEngine::new(
+                EvolutionConfig {
+                    every_cycles: 1,
+                    ..EvolutionConfig::default()
+                },
+                Box::new(SyntheticEnvironment::demo(start(), synthetic.clone())),
+                7,
+                universe,
+            )?;
+            let mut now = start();
+            for _ in 0..((engine.config.minimum_bars as i64 + 30) * 2) {
+                now = now.saturating_add(Duration::from_mins(1));
+                engine.sense(&mut platform, now)?;
+            }
+            engine
+                .maybe_turn(&mut platform, 1, now)?
+                .ok_or_else(|| Error::not_found("a round on a cadence of every cycle"))
+        };
+
+        // The premise, part two: over an empty universe the same search
+        // proposes candidates and registers none of them. Without this half,
+        // "registered >= 1" below could be true of a gate that admits
+        // everything regardless of whether anything filled.
+        let starved = round(Universe::new())?;
+        assert!(
+            starved.proposed >= 1,
+            "the search proposed nothing, so the contrast is about the search: {starved:?}"
+        );
+        assert_eq!(
+            starved.registered, 0,
+            "a candidate registered against an empty universe; no order can have filled,              so its evidence is a flat line: {starved:?}"
+        );
+        assert!(
+            starved.discarded >= 1,
+            "nothing was discarded over the empty universe: {starved:?}"
+        );
+
+        let fed = round(universe)?;
+        assert!(
+            fed.registered >= 1,
+            "no candidate registered against the populated universe: {fed:?}. Registration              requires `evaluate` to return evidence, and `evaluate` refuses a run with no              fills -- so this also asserts the backtests actually traded"
+        );
+        Ok(())
     }
 
     #[test]
