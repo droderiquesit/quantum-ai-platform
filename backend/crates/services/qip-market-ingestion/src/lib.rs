@@ -58,6 +58,7 @@
 pub mod adapter;
 pub mod alternative;
 pub mod connector;
+pub mod connector_feed;
 pub mod connectors;
 pub mod depth;
 pub mod narrative;

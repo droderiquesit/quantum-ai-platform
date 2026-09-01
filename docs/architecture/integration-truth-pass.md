@@ -52,7 +52,7 @@ The loop runs and closes; it is not the blueprint's loop at two points.
 | Link | Status | Evidence |
 |---|---|---|
 | source → facts | TESTED | `platform.rs:1380 observe()`; news at `:1129-1138` → `WorldModel::absorb_news` + `MarketEvent::from_news`; fundamentals `:1140-1153`; macro `:1154-1158`; corporate actions `:1159-1180`; alt `:1181-1203`; reference `:1204-1243`. `absorption.rs` covers most arms |
-| live source | IMPLEMENTED-UNVERIFIED | `apps/qip-fastbrain/src/feed.rs:61` declares `Live(Box<RestMarketDataAdapter>)`, constructed `:108` behind the licensing gate. **No deployment observed running on it** |
+| live source | PARTIAL — exercised once, not yet sustained | Two paths now: the vendor path (`feed.rs` `Live` arm, needs a keyed aggregator) and the connector path (`Feed::Connector` → `connector_feed.rs`), the latter **exercised against the real Coinbase endpoint in-session** through the full runtime with the licensing catalogue evaluated first. Sustained deployment streaming still unobserved |
 | → entity resolution | TESTED | `stage_understand` (`platform.rs:2009`), `qip-entity-resolution` |
 | → world event | TESTED | `qip-world-model/src/world.rs`; causal graph is real — `world.rs:41 causal: CausalGraph`, `:192 claim_causal`, `:495` shock propagation, `causal.rs:234` |
 | → **belief** | **SUBSTITUTED** | **No belief stage exists.** `grep -n belief runtime/qip-kernel/src/platform.rs` returns one doc-comment line and no code. What runs is `stage_reason` (`platform.rs:2387`) producing *theses*, with Bayesian machinery in `qip-reasoning-engine/src/bayes.rs` (`BeliefUpdate`, `EvidenceStrength`, `attenuate`). Confidence-weighted sizing per blueprint §11.2 is not the mechanism here |

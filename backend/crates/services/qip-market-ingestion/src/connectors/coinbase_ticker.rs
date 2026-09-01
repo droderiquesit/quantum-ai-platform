@@ -65,6 +65,11 @@ impl CoinbaseTickerConnector {
     /// The venue code every record carries. Coinbase Exchange's MIC.
     pub const VENUE: &'static str = "CBSE";
 
+    /// The stable source identity, matching the manifest's `source_id`.
+    /// Named once here so the catalogue, the configuration and the manifest
+    /// cannot drift apart silently.
+    pub const SOURCE_ID: &str = "coinbase-spot-ticker";
+
     /// The manifest as shipped, before a deployment sets its egress address.
     pub fn shipped_manifest() -> Result<SourceManifest> {
         SourceManifest::from_json(MANIFEST)
