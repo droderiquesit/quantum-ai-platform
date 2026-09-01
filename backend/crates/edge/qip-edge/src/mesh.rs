@@ -64,9 +64,11 @@ use std::collections::{BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use qip_contracts::capital::{CapitalEnvelope, Utilisation};
+use qip_contracts::intent::Contributor;
 use qip_contracts::message::BookSide;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
+use qip_contracts::wire::{CrossRecord, MAX_CROSSES_PER_DELTA};
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, CorrelationId, Decimal, Id, Lineage, ObjectId, Timestamp};
 use qip_events::envelope::canonical_json;
@@ -120,6 +122,21 @@ pub struct DeltaOrder {
     /// the order. A paper fill counted as real is the single most consequential
     /// bit in the execution path, and it stays that way on the wire.
     pub simulated: bool,
+    /// Every strategy whose intent went into this order, with its signed share
+    /// and the feature revisions it reasoned from.
+    ///
+    /// `strategy` above is the largest contributor, kept so every existing
+    /// reader still resolves one strategy. It stopped being the whole truth the
+    /// moment netting collapsed several intents into one order, and a centre
+    /// that attributes a netted fill to the largest contributor alone credits
+    /// one strategy with another's trade.
+    ///
+    /// `#[serde(default)]` so a delta written before this field existed still
+    /// decodes: the event log is sealed and hash-chained, and a replay that
+    /// refused its own history would be worse than one that reads an older
+    /// record as having named no contributors — which is exactly what it did.
+    #[serde(default)]
+    pub contributors: Vec<Contributor>,
 }
 
 /// What one strategy has committed against its envelope, absolute.
@@ -188,6 +205,20 @@ pub struct CellStateDelta {
     /// than left to infer from a suspiciously round number.
     #[serde(default)]
     pub reconciliation_breaks_omitted: u32,
+    /// Every internal cross the cell booked in this interval (§27.1).
+    ///
+    /// Incremental, like `orders` and `refusals`: a receiver adds these rather
+    /// than replacing what it holds. Until this existed the centre heard a
+    /// cross *refusal* — refusals travel — and never the cross itself, so the
+    /// one thing §27.1 calls a ledger entry and a regulatory expectation was
+    /// the only part of the story that stopped at the cell. In a plane whose
+    /// whole design is that a region keeps working while cut off from the
+    /// centre, that is exactly the record that has to survive the partition.
+    #[serde(default)]
+    pub crosses: Vec<CrossRecord>,
+    /// Crosses that did not fit in [`MAX_CROSSES_PER_DELTA`].
+    #[serde(default)]
+    pub crosses_omitted: u32,
 }
 
 impl EventBody for CellStateDelta {
@@ -197,7 +228,13 @@ impl EventBody for CellStateDelta {
     /// has committed — and it is in the `Act` group, which
     /// `Topic::requires_permanent_retention` already keeps forever.
     const TOPIC: Topic = Topic::PositionUpdated;
-    const SCHEMA_VERSION: u32 = 1;
+    /// Declared once in `qip-contracts`, which both ends of the uplink already
+    /// depend on, so this end and the centre's cannot drift apart. The bump to
+    /// two is what makes an old centre refuse a new cell's delta outright
+    /// instead of decoding it and silently attributing every netted fill to one
+    /// strategy — `contributors` is defaulted for replay of sealed records, and
+    /// a default a live peer could reach would be a silent wrong answer.
+    const SCHEMA_VERSION: u32 = qip_contracts::wire::CELL_DELTA_SCHEMA_VERSION;
 
     /// Cell and sequence, so a retry that the peer already accepted is
     /// recognised rather than counted twice.
@@ -234,6 +271,15 @@ impl CellStateDelta {
             let omitted = self.refusals.len() - MAX_REFUSALS_PER_DELTA;
             self.refusals.truncate(MAX_REFUSALS_PER_DELTA);
             self.refusals_omitted = u32::try_from(omitted).unwrap_or(u32::MAX);
+        }
+        // Crosses are bounded on the same principle and counted separately.
+        // Sharing the refusal budget would let a noisy gate silently evict a
+        // ledger entry, which is the one record here that an examiner asks for
+        // by name.
+        if self.crosses.len() > MAX_CROSSES_PER_DELTA {
+            let omitted = self.crosses.len() - MAX_CROSSES_PER_DELTA;
+            self.crosses.truncate(MAX_CROSSES_PER_DELTA);
+            self.crosses_omitted = u32::try_from(omitted).unwrap_or(u32::MAX);
         }
     }
 }
@@ -1175,12 +1221,33 @@ mod tests {
             refusals_omitted: 0,
             reconciliation_breaks: Vec::new(),
             reconciliation_breaks_omitted: 0,
+            // Over the cross bound as well, and by a different amount, so the
+            // two counters cannot be confused for one another. Crosses are
+            // bounded on their own budget: sharing the refusals' would let a
+            // noisy gate evict a ledger entry.
+            crosses: (0..MAX_CROSSES_PER_DELTA + 3)
+                .map(|_| CrossRecord {
+                    object_id: ObjectId::from_string("ACME"),
+                    venue: VenueId::new("XLON"),
+                    quantity: Decimal::from_int(1),
+                    price: Decimal::from_int(100),
+                    bought: vec![StrategyId::new("alpha")],
+                    sold: vec![StrategyId::new("beta")],
+                })
+                .collect(),
+            crosses_omitted: 0,
         };
         delta.bound_refusals();
         assert_eq!(delta.refusals.len(), MAX_REFUSALS_PER_DELTA);
         assert_eq!(
             delta.refusals_omitted, 7,
             "a truncated list that does not say it was truncated is a lie about a quiet cell"
+        );
+        assert_eq!(delta.crosses.len(), MAX_CROSSES_PER_DELTA);
+        assert_eq!(
+            delta.crosses_omitted, 3,
+            "a dropped ledger entry the centre is never told about is the one \
+             omission an examiner asks about"
         );
     }
 }

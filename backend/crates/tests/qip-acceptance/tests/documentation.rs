@@ -548,3 +548,132 @@ fn the_final_report_counts_the_crates_that_are_actually_there() {
         "the final report does not say there are {manifests} crates, and there are"
     );
 }
+
+/// A document that says a type does not exist must be right about that.
+///
+/// The scored architecture documents make existence claims — "there is no
+/// `Ledger` type", and once "no `Intent` type exists anywhere" — and those are
+/// the sentences a reader trusts instead of grepping. They are also the
+/// sentences that rot silently: the `Intent` claim was false for four commits
+/// on the same branch that built the type, inside the document scored against
+/// the same blueprint, and nothing anywhere could notice.
+///
+/// So every such claim is checked against the tree. This is deliberately a
+/// narrow pattern rather than prose analysis: it catches the exact class that
+/// has already happened once, and it fails loudly when a claim outlives its
+/// subject.
+#[test]
+fn no_scored_document_denies_the_existence_of_a_type_the_workspace_defines() {
+    let documents = [
+        "docs/architecture/algorik-blueprint-traceability.md",
+        "docs/architecture/integration-truth-pass.md",
+        "docs/architecture/blueprint-diagram-reconciliation.md",
+    ];
+
+    // Every source file once, so the claims below are checked against the
+    // whole workspace rather than a guessed subset — but comment lines are
+    // dropped first. Without that the scan finds its own explanatory comment
+    // below, which quotes `pub struct Ledger` to describe the prefix rule, and
+    // reports the still-true statement that no `Ledger` type exists as a
+    // falsehood. A test whose own prose is part of its input measures itself.
+    let mut sources = String::new();
+    for path in qip_acceptance::files_with_extension("backend/crates", "rs") {
+        let file = std::fs::read_to_string(&path).unwrap_or_default();
+        for line in file.lines() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            sources.push_str(line);
+            sources.push('\n');
+        }
+    }
+
+    /// Does the workspace declare a type by exactly this name?
+    fn declares(sources: &str, name: &str) -> bool {
+        ["pub struct ", "pub enum ", "pub type ", "pub trait "]
+            .iter()
+            .any(|keyword| {
+                let needle = format!("{keyword}{name}");
+                sources.match_indices(&needle).any(|(at, _)| {
+                    // Reject a prefix match: `pub struct Ledger` must not be
+                    // satisfied by `pub struct LedgerEntry`.
+                    sources[at + needle.len()..]
+                        .chars()
+                        .next()
+                        .is_none_or(|next| !next.is_alphanumeric() && next != '_')
+                })
+            })
+    }
+
+    let mut claims = 0usize;
+    let mut wrong = Vec::new();
+    for document in documents {
+        let text = qip_acceptance::read(document);
+        for (index, line) in text.lines().enumerate() {
+            // Walk the backtick-delimited spans of the *original* line, so the
+            // name keeps its casing. An earlier version searched a lowercased
+            // copy and then looked the name up again by substring, which found
+            // the first match rather than this one — on a row beginning
+            // "strategy intent" it recovered the lowercase word and asked
+            // whether `pub struct intent` existed, so the claim it was written
+            // to catch sailed through.
+            let bytes: Vec<char> = line.chars().collect();
+            let ticks: Vec<usize> = bytes
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| **c == '`')
+                .map(|(at, _)| at)
+                .collect();
+            for pair in ticks.chunks_exact(2) {
+                let (open, close) = (pair[0], pair[1]);
+                let name: String = bytes[open + 1..close].iter().collect();
+                if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    continue;
+                }
+                // The claim shape: "no `X` type", allowing the emphasis these
+                // documents use around either part.
+                let before: String = bytes[..open].iter().collect::<String>().to_lowercase();
+                let trimmed = before.trim_end();
+                // Ends with the word "no", whatever emphasis precedes it —
+                // `**No \`Intent\`` is the shape these documents actually use,
+                // and trimming trailing asterisks does nothing for it because
+                // the asterisks come *before* the word.
+                let Some(head) = trimmed.strip_suffix("no") else {
+                    continue;
+                };
+                if head
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_')
+                {
+                    continue;
+                }
+                let after: String = bytes[close + 1..].iter().collect::<String>().to_lowercase();
+                if !after
+                    .trim_start()
+                    .trim_start_matches('*')
+                    .starts_with("type")
+                {
+                    continue;
+                }
+                claims += 1;
+                if declares(&sources, &name) {
+                    wrong.push(format!("{document}:{}: `{name}`", index + 1));
+                }
+            }
+        }
+    }
+
+    // The vacuity guard, and it is load-bearing: if the phrasing changes and no
+    // claim matches, this test passes while checking nothing.
+    assert!(
+        claims > 0,
+        "no existence claims were found in the scored documents, so this test \
+         is no longer reading the sentences it was written for"
+    );
+    assert!(
+        wrong.is_empty(),
+        "these documents deny the existence of a type the workspace defines: \
+         {wrong:?}"
+    );
+}

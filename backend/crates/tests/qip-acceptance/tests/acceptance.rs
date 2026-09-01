@@ -216,6 +216,58 @@ fn an_order_travels_the_control_path_and_produces_an_exact_attribution() -> Resu
     Ok(())
 }
 
+#[test]
+fn a_fill_is_attributed_to_the_hypothesis_the_order_was_released_for() -> Result<()> {
+    // The join that makes learning possible. `Order::hypotheses` documents
+    // itself as required — "an untraceable order is one nobody can explain
+    // after the fact" — and LEARN used to hand the attributor an empty vector
+    // for every fill, so `by_hypothesis` returned nothing for everything the
+    // platform traded. The stage still reported fills attributed, which is why
+    // it went unnoticed: the number that was wrong was the one nobody printed.
+    let mut platform = platform(PlatformConfig::default())?;
+    platform.observe(market_history("ACME", 90, None));
+
+    let order = platform.order_from(
+        object("ACME"),
+        Side::Buy,
+        dec!("5000"),
+        dec!("100"),
+        "prop-attribution",
+        vec!["hyp-carried-through".to_string()],
+        start(),
+    );
+    // The premise, in two parts: the order really does name a hypothesis, and
+    // it really does fill. Without both, the assertion below would pass on a
+    // platform that attributed nothing because there was nothing to attribute.
+    assert_eq!(
+        order.hypotheses,
+        vec!["hyp-carried-through".to_string()],
+        "the fixture order names no hypothesis, so nothing could be carried"
+    );
+    platform.submit_order(order, start())?;
+    assert!(
+        !platform.orders().fills().is_empty(),
+        "the premise failed: the order did not fill"
+    );
+
+    let report = platform.run_cycle(start());
+    let learn = report.stage(Stage::Learn).expect("learn ran");
+    assert!(
+        learn.produced > 0,
+        "nothing was attributed at all: {}",
+        learn.detail
+    );
+    // One hypothesis, by count. `across 0 hypothesis(es)` is exactly what the
+    // defect printed once the count was reported, so this is the assertion
+    // that distinguishes the two.
+    assert!(
+        learn.detail.contains("across 1 hypothesis(es)"),
+        "the fill was not attributed to the hypothesis its order named: {}",
+        learn.detail
+    );
+    Ok(())
+}
+
 // --- properties that only exist once assembled ------------------------------
 
 #[test]
@@ -592,5 +644,144 @@ fn the_reservation_ledger_stays_anchored_to_equity_across_full_cycles() -> Resul
         cycles, 4,
         "the loop did not run, so nothing above was tested"
     );
+    Ok(())
+}
+
+#[test]
+fn the_centre_decodes_a_contributor_vector_out_of_bytes_the_edge_crate_produced() -> Result<()> {
+    // `qip_mesh::delta::DeltaOrder` mirrors `qip_edge::mesh::DeltaOrder`; the
+    // dependency direction forbids sharing the declaration, so the two are
+    // held together by nothing but agreement. Every existing test of the
+    // decode feeds it JSON `qip-mesh` wrote itself, which cannot detect a
+    // disagreement — a `#[serde(rename)]` on either side empties
+    // `contributors` at the centre with the whole workspace green, and the
+    // centre then attributes a netted fill to `strategy` alone, crediting one
+    // strategy with another's trade.
+    //
+    // This drives the edge type's own serializer and the centre's own decoder,
+    // which is the only arrangement in which the mirror can be wrong and be
+    // caught.
+    use qip_edge::mesh::{CellStateDelta, DeltaOrder as EdgeOrder};
+
+    let delta = CellStateDelta {
+        cell: "london-1".to_string(),
+        region: "europe-west2".to_string(),
+        sequence: 4,
+        at: Timestamp::from_secs(1_700_000_000),
+        halted: false,
+        utilisation: Vec::new(),
+        orders: vec![EdgeOrder {
+            order_id: "london-1-1".to_string(),
+            strategy: qip_contracts::signal::StrategyId::new("alpha"),
+            object_id: ObjectId::from_string("ACME"),
+            venue: qip_contracts::venue::VenueId::new("XLON"),
+            side: qip_contracts::message::BookSide::Bid,
+            quantity: dec!("60"),
+            price: dec!("100"),
+            simulated: true,
+            contributors: vec![
+                qip_contracts::intent::Contributor {
+                    strategy: qip_contracts::signal::StrategyId::new("alpha"),
+                    signed_size: dec!("100"),
+                    inputs: vec![("book_pressure{levels=5}".to_string(), 11)],
+                },
+                qip_contracts::intent::Contributor {
+                    strategy: qip_contracts::signal::StrategyId::new("beta"),
+                    signed_size: dec!("-40"),
+                    inputs: vec![("momentum{}".to_string(), 9)],
+                },
+            ],
+        }],
+        refusals: Vec::new(),
+        refusals_omitted: 0,
+        reconciliation_breaks: Vec::new(),
+        reconciliation_breaks_omitted: 0,
+        crosses: Vec::new(),
+        crosses_omitted: 0,
+    };
+
+    // The premise: these are the edge crate's own bytes, not a fixture written
+    // to match the decoder.
+    let frame = delta.to_frame()?;
+    let decoded = qip_mesh::delta::decode_cell_delta(&frame)?;
+
+    assert_eq!(
+        decoded.interval.orders.len(),
+        1,
+        "the order did not survive"
+    );
+    let order = &decoded.interval.orders[0];
+    assert_eq!(
+        order.contributors.len(),
+        2,
+        "the centre decoded {} contributor(s) from an order the edge sent with \
+         two, so the two declarations have drifted",
+        order.contributors.len()
+    );
+    // Signed, so they sum to the net rather than the gross.
+    assert_eq!(order.contributors[0].signed_size, dec!("100"));
+    assert_eq!(order.contributors[1].signed_size, dec!("-40"));
+    assert_eq!(order.contributors[1].strategy.as_str(), "beta");
+    // Each keeps its own revisions across the mirror.
+    assert_eq!(
+        order.contributors[0].inputs,
+        vec![("book_pressure{levels=5}".to_string(), 11)]
+    );
+    assert_eq!(
+        order.contributors[1].inputs,
+        vec![("momentum{}".to_string(), 9)]
+    );
+    // And the one bit that must never flip on the way.
+    assert!(order.simulated, "a paper order decoded as real");
+    Ok(())
+}
+
+#[test]
+fn an_internal_cross_reaches_the_centre_rather_than_stopping_at_the_cell() -> Result<()> {
+    // §27.1 calls a cross a ledger entry and a regulatory expectation. Until
+    // the delta carried them, a cross *refusal* reached the centre — refusals
+    // travel — and the cross itself did not, so the only part of the story
+    // that stopped at the cell was the part naming a trade between two of the
+    // platform's own strategies. In a plane whose design is that a region
+    // keeps working while cut off, that is the record that has to survive.
+    use qip_contracts::wire::CrossRecord;
+    use qip_edge::mesh::CellStateDelta;
+
+    let delta = CellStateDelta {
+        cell: "london-1".to_string(),
+        region: "europe-west2".to_string(),
+        sequence: 5,
+        at: Timestamp::from_secs(1_700_000_000),
+        halted: false,
+        utilisation: Vec::new(),
+        orders: Vec::new(),
+        refusals: Vec::new(),
+        refusals_omitted: 0,
+        reconciliation_breaks: Vec::new(),
+        reconciliation_breaks_omitted: 0,
+        crosses: vec![CrossRecord {
+            object_id: ObjectId::from_string("ACME"),
+            venue: qip_contracts::venue::VenueId::new("XLON"),
+            quantity: dec!("40"),
+            price: dec!("100"),
+            bought: vec![qip_contracts::signal::StrategyId::new("alpha")],
+            sold: vec![qip_contracts::signal::StrategyId::new("beta")],
+        }],
+        crosses_omitted: 0,
+    };
+
+    let decoded = qip_mesh::delta::decode_cell_delta(&delta.to_frame()?)?;
+    assert_eq!(
+        decoded.interval.crosses.len(),
+        1,
+        "the cross did not survive the uplink, so the centre cannot see a \
+         trade the platform made with itself"
+    );
+    let cross = &decoded.interval.crosses[0];
+    // Both sides and the price, which is what makes it checkable at all.
+    assert_eq!(cross.bought[0].as_str(), "alpha");
+    assert_eq!(cross.sold[0].as_str(), "beta");
+    assert_eq!(cross.price, dec!("100"));
+    assert_eq!(cross.quantity, dec!("40"));
     Ok(())
 }

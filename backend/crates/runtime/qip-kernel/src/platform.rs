@@ -3515,7 +3515,21 @@ impl Platform {
             .iter()
             .map(|fill| qip_learning_engine::attribution::PositionPeriod {
                 object_id: fill.order_id.as_str().to_string(),
-                hypotheses: Vec::new(),
+                // The order behind the fill already carries its hypotheses —
+                // `Order::hypotheses` is set from the proposal leg at release
+                // and documents itself as required, "an untraceable order is
+                // one nobody can explain after the fact". This site used to
+                // pass an empty vector, so `by_hypothesis` skipped every
+                // position and returned nothing for everything the platform
+                // traded: the join that makes learning possible was empty on a
+                // platform whose whole purpose is saying why it did what it
+                // did. An order that cannot be found contributes no hypothesis
+                // rather than a guessed one.
+                hypotheses: self
+                    .orders
+                    .order(&fill.order_id)
+                    .map(|order| order.hypotheses.clone())
+                    .unwrap_or_default(),
                 opening_quantity: Decimal::ZERO,
                 opening_price: fill.price,
                 closing_quantity: fill.quantity,
@@ -3543,16 +3557,27 @@ impl Platform {
             .attributor
             .attribute(&periods, total, self.capital.equity(), now, now)
         {
-            Ok(attribution) => StageOutcome::ran(
-                Stage::Learn,
-                attribution.positions.len(),
-                format!(
-                    "{} fill(s) attributed, {} of implementation cost, residual {}",
+            Ok(attribution) => {
+                // The hypothesis count is reported because it is the join that
+                // makes learning possible, and because it was silently zero:
+                // this stage said "N fill(s) attributed" every cycle while
+                // `by_hypothesis` returned an empty map, so the number that
+                // was wrong was the one nobody printed. An operator reading
+                // fills attributed across no hypotheses now sees the gap.
+                let hypotheses = attribution.by_hypothesis().len();
+                StageOutcome::ran(
+                    Stage::Learn,
                     attribution.positions.len(),
-                    attribution.implementation_cost(),
-                    attribution.residual()
-                ),
-            ),
+                    format!(
+                        "{} fill(s) attributed across {} hypothesis(es), {} of implementation \
+                         cost, residual {}",
+                        attribution.positions.len(),
+                        hypotheses,
+                        attribution.implementation_cost(),
+                        attribution.residual()
+                    ),
+                )
+            }
             Err(error) => StageOutcome::ran(Stage::Learn, 0, "attribution failed")
                 .with_problem(error.message().to_string()),
         }

@@ -70,9 +70,22 @@ impl Representation {
 ///
 /// §27.2: an arbitrage cycle leg is part of an atomic set, and netting it
 /// against a directional intent silently breaks the cycle's economics — the
-/// cycle still executes, at sizes that no longer close. The refusal is
-/// structural rather than advisory: [`net`] gives every no-net intent its own
-/// group, so there is no code path on which a leg joins a directional net.
+/// cycle still executes, at sizes that no longer close. [`net`] gives every
+/// no-net intent its own group, so no leg that *declares itself one* can join
+/// a directional net.
+///
+/// **That is a property of [`net`], not of this type**, and an earlier version
+/// of this comment called the refusal "structural rather than advisory"
+/// without saying which. [`NetIntent`] and [`Intent`] have public fields and
+/// are built by literal elsewhere — including in this crate's own tests — so
+/// nothing stops a caller constructing a leg that never says it is one. The
+/// obligation to call [`Intent::as_cycle_leg`] rests on whatever builds legs,
+/// and it is unenforced.
+///
+/// The consequence is worth naming precisely, because it is silent: a leg that
+/// forgets is netted against directional flow, and the order that results is
+/// well-formed, plausibly sized and wrong. There is no error and nothing in
+/// the journal to notice.
 ///
 /// **Nothing produces a cycle leg today, and the honest statement is stronger
 /// than "not wired yet".** A placement audit of the node's composition roots
@@ -90,6 +103,14 @@ impl Representation {
 /// has been quietly combining legs with directional intents in the meantime.
 /// That is a guard, not scaffolding — but it is not protection of a live path
 /// either, and it must not be read as one.
+///
+/// **Precondition on the work that adds a leg producer, not a note for
+/// afterwards.** Because the obligation is unenforced and its failure is
+/// silent, the brief that introduces the arbitrage scanner or the leg
+/// coordinator has to make declaring a leg impossible to omit — a constructor
+/// that only yields no-net intents, or a leg type that cannot become an
+/// [`Intent`] without carrying its cycle. Adding the producer first and the
+/// enforcement afterwards inverts the ordering this comment exists to defend.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "policy", rename_all = "snake_case")]
 pub enum NettingPolicy {
@@ -121,8 +142,18 @@ pub struct Intent {
     pub reference_price: Decimal,
     pub representation: Representation,
     pub netting: NettingPolicy,
-    /// The hypotheses this intent expresses, so a fill can be explained.
-    pub hypotheses: Vec<String>,
+    /// The feature revisions this intent was reasoned from, carried straight
+    /// off the signal so a fill can be attributed to exactly the values that
+    /// produced it rather than to whatever those features say by the time
+    /// somebody looks.
+    ///
+    /// Not "hypotheses". The central plane has a hypothesis vocabulary —
+    /// `Order::hypotheses`, set from a proposal leg — and the edge has none: a
+    /// cell's strategies emit `Signal`s, which name their inputs and no claim.
+    /// This field carried the name `hypotheses` for exactly one commit and
+    /// nothing could ever populate it, which is the shape of a control that
+    /// cannot fire.
+    pub inputs: Vec<(String, u64)>,
     pub valid_until: Timestamp,
 }
 
@@ -151,7 +182,7 @@ impl Intent {
             reference_price,
             representation: Representation::Spot,
             netting: NettingPolicy::Nettable,
-            hypotheses: Vec::new(),
+            inputs: Vec::new(),
             valid_until,
         })
     }
@@ -169,8 +200,9 @@ impl Intent {
         self
     }
 
-    pub fn with_hypotheses(mut self, hypotheses: Vec<String>) -> Self {
-        self.hypotheses = hypotheses;
+    /// Carry the signal's feature revisions onto the intent.
+    pub fn with_inputs(mut self, inputs: Vec<(String, u64)>) -> Self {
+        self.inputs = inputs;
         self
     }
 
@@ -187,7 +219,10 @@ pub struct Contributor {
     pub strategy: StrategyId,
     /// Signed, so the vector sums to the net rather than to the gross.
     pub signed_size: Decimal,
-    pub hypotheses: Vec<String>,
+    /// The feature revisions behind this contributor's share, from its own
+    /// signal. Attribution after the fact needs the inputs *this* strategy
+    /// reasoned from, not the union across the net.
+    pub inputs: Vec<(String, u64)>,
 }
 
 /// The key intents are grouped on.
@@ -264,9 +299,25 @@ impl NetIntent {
     /// shares stop summing to what was actually traded, and unexplained P&L is
     /// precisely what exact attribution exists to make impossible.
     ///
-    /// The remainder goes to the largest remainders first, ties broken by
-    /// strategy id ascending — so the same fill splits the same way on every
-    /// machine and in every replay.
+    /// The remainder is settled in both directions, and the second direction
+    /// is not hypothetical. `Decimal` holds nine decimal places and its
+    /// multiply and divide round half away from zero at the ninth, while the
+    /// shares here are floored at the eighth. When that rounding lifts a share
+    /// to a value already exact at eight places, the floor takes nothing back
+    /// — and if it does so for every contributor, the shares sum to *more*
+    /// than the fill. Splitting `0.100000019` between two equal contributors
+    /// does exactly that, and `0.100000019` is an ordinary crypto quantity
+    /// rather than contrived dust. This function previously tested only
+    /// `remainder.is_positive()`, so the excess was silently dropped: envelopes
+    /// were charged for notional nobody traded, and attribution carried a
+    /// residual of the precise sign [`Attribution::reconciles`] exists to
+    /// forbid.
+    ///
+    /// A shortfall is handed out to the largest remainders first, ties broken
+    /// by strategy id ascending. An excess is taken back from the smallest
+    /// remainders first, ties by strategy id descending — the mirror image, so
+    /// that whichever way the rounding went the same fill splits the same way
+    /// on every machine and in every replay.
     pub fn split_fill(&self, filled: Decimal) -> Vec<(StrategyId, Decimal)> {
         let denominator = self.gross_size;
         if self.contributors.is_empty() || denominator.is_zero() || filled.is_zero() {
@@ -308,6 +359,42 @@ impl NetIntent {
                 let step = if remainder < unit { remainder } else { unit };
                 shares[index].1 += step;
                 remainder -= step;
+            }
+        } else if remainder.is_negative() {
+            // The mirror: ascending remainder, then strategy id descending, so
+            // the contributor that gained least from the flooring is the first
+            // to give the excess back.
+            //
+            // One pass is enough, and the bound is worth stating because a
+            // second pass would be unreachable code pretending to be a
+            // safeguard. Only a share the ninth-place rounding lifted can
+            // contribute to an excess, and it can contribute less than one
+            // unit at the eighth place; any such share is itself at least one
+            // unit at the eighth place, because it survived the floor as
+            // non-zero. So each non-zero share can absorb a full step, and
+            // there are at least as many of them as there are steps to take.
+            let mut order: Vec<usize> = (0..shares.len()).collect();
+            order.sort_by(|left, right| {
+                shares[*left]
+                    .2
+                    .cmp(&shares[*right].2)
+                    .then_with(|| shares[*right].0.as_str().cmp(shares[*left].0.as_str()))
+            });
+            let unit = UNIT;
+            let mut owed = Decimal::ZERO - remainder;
+            for index in order {
+                if !owed.is_positive() {
+                    break;
+                }
+                // A share of nothing cannot give anything back, and taking
+                // from it would hand a contributor a negative share of a fill
+                // it never received.
+                if !shares[index].1.is_positive() {
+                    continue;
+                }
+                let step = if owed < unit { owed } else { unit };
+                shares[index].1 -= step;
+                owed -= step;
             }
         }
         shares
@@ -405,7 +492,7 @@ pub fn net(intents: Vec<Intent>) -> Vec<NetIntent> {
                 .map(|intent| Contributor {
                     strategy: intent.strategy,
                     signed_size: intent.signed_size,
-                    hypotheses: intent.hypotheses,
+                    inputs: intent.inputs,
                 })
                 .collect();
             NetIntent {

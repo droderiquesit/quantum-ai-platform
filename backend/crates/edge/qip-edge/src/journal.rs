@@ -79,6 +79,32 @@ pub enum Decision {
         approver: String,
         expires_at: Timestamp,
     },
+    /// Two or more strategies' intents offset and the offsetting part was
+    /// crossed inside the cell instead of reaching a venue (§27.1).
+    ///
+    /// The blueprint calls this a ledger entry rather than an optimisation
+    /// detail, and a regulatory expectation: an internal cross is a trade
+    /// between two of the platform's own strategies, and a trade nobody can
+    /// point at afterwards is the thing an examiner asks about. Both sides and
+    /// the price are named for that reason — "who traded with whom, at what
+    /// price, and who decided the price" has to be answerable from the chain
+    /// alone.
+    ///
+    /// `price` is the prevailing mid at the netting instant, which is a price
+    /// neither side chose. Decimals are carried as strings for the same reason
+    /// the rest of this enum does: the journal is a record, and a record that
+    /// reformats a number is a record of a different number.
+    CrossedInternally {
+        object: String,
+        venue: String,
+        quantity: String,
+        price: String,
+        /// The strategies on the buying side, and on the selling side. Both,
+        /// because a cross with one named side is not a cross anybody can
+        /// check.
+        bought: Vec<String>,
+        sold: Vec<String>,
+    },
 }
 
 impl Decision {
@@ -95,6 +121,7 @@ impl Decision {
             Self::HaltChanged { .. } => "halt_changed",
             Self::PolicyApplied { .. } => "policy_applied",
             Self::CapitalRenewed { .. } => "capital_renewed",
+            Self::CrossedInternally { .. } => "crossed_internally",
         }
     }
 }

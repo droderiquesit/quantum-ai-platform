@@ -1404,3 +1404,75 @@ fn crates_under(relative: &str) -> BTreeSet<String> {
     assert!(!names.is_empty(), "no crates found under {relative}");
     names
 }
+
+/// Neither end of the cell uplink may re-declare its delta schema version as a
+/// literal.
+///
+/// The obvious test — assert each end equals
+/// `qip_contracts::wire::CELL_DELTA_SCHEMA_VERSION` — cannot fail while both
+/// ends read that constant, because expected and actual are then the same
+/// number from the same source. Replacing either declaration with a literal
+/// `2` leaves both crates' suites green, and the assertion only starts working
+/// one bump later, which is exactly when the old two-literal arrangement would
+/// have caught it too. That is the same blindness that let a crossing priced
+/// from `reference_price` pass a suite that priced everything off one mid.
+///
+/// So this asserts about the source instead: inside the two `EventBody` impls
+/// that carry a cell delta, the schema version must be the shared constant and
+/// must not be a number. The other topics on the same wire keep their own
+/// versions and are deliberately out of scope — they are declared once each.
+#[test]
+fn neither_end_of_the_cell_uplink_declares_its_schema_version_as_a_literal() {
+    const SHARED: &str = "CELL_DELTA_SCHEMA_VERSION";
+    let ends = [
+        (
+            "backend/crates/edge/qip-edge/src/mesh.rs",
+            "impl EventBody for CellStateDelta {",
+        ),
+        (
+            "backend/crates/services/qip-mesh/src/delta.rs",
+            "impl EventBody for WireDelta {",
+        ),
+    ];
+
+    let mut checked = 0usize;
+    for (file, header) in ends {
+        let source = qip_acceptance::read(file);
+        let Some(offset) = source.find(header) else {
+            panic!("{file} no longer contains `{header}`, so this test is looking at nothing");
+        };
+        // The impl body ends at the first line that closes it at column zero.
+        let body = &source[offset..];
+        let end = body.find("\n}").unwrap_or(body.len());
+        for line in body[..end].lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("//") || !trimmed.contains("SCHEMA_VERSION: u32 =") {
+                continue;
+            }
+            checked += 1;
+            let Some((_, value)) = trimmed.split_once('=') else {
+                panic!("{file}: a schema-version line with no assignment: {trimmed}");
+            };
+            assert!(
+                value.contains(SHARED),
+                "{file} declares its delta schema version without naming the \
+                 shared constant, so the two ends can drift: {trimmed}"
+            );
+            assert!(
+                !value.chars().any(|c| c.is_ascii_digit()),
+                "{file} declares its delta schema version as a numeric \
+                 literal, which is what having one declaration exists to \
+                 prevent: {trimmed}"
+            );
+        }
+    }
+
+    // The vacuity guard, and it is the whole test: if neither impl has such a
+    // line — renamed type, moved declaration, changed spelling — the loop
+    // above asserts nothing at all and passes.
+    assert_eq!(
+        checked, 2,
+        "expected one schema-version declaration in each cell-delta impl, \
+         found {checked}; this test is no longer looking at the right lines"
+    );
+}

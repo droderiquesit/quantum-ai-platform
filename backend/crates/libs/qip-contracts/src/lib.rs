@@ -39,6 +39,7 @@ pub mod policy;
 pub mod signal;
 pub mod time;
 pub mod venue;
+pub mod wire;
 
 pub use capital::{CapitalEnvelope, CapitalGrant, Utilisation};
 pub use degradation::{AllocationMode, Capability, DegradationState, Freshness, StrategyClass};

@@ -18,6 +18,7 @@ use qip_core::time::{Duration, Timestamp};
 use qip_core::{Decimal, dec};
 use qip_edge::cell::{Cell, CellConfig, Placer};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
+use qip_edge::journal::Decision;
 use qip_edge_node::gateway::SimulatedGateway;
 use qip_execution_engine::order::Side;
 use qip_feature_dag::engine::FeatureEngine;
@@ -965,6 +966,237 @@ fn a_strategy_its_own_envelope_refuses_never_reaches_the_netting_set() -> Result
     assert!(
         report.cancelled.is_empty(),
         "a refused strategy still cancelled something"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_delta_the_centre_receives_names_every_strategy_behind_a_netted_order() -> Result<()> {
+    // Attribution is a central-plane job and netting is an edge-plane fact, so
+    // the contributor vector has to cross the uplink or the centre attributes
+    // a netted fill to `strategy` alone — the largest contributor — and credits
+    // one strategy with another's trade.
+    let mut cell = cell_with_two_strategies(SignalKind::Enter, "100")?;
+    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
+
+    let report = cell.work(t(20), &mut gateway)?;
+    assert_eq!(
+        report.signals.len(),
+        2,
+        "the premise needs two firing strategies"
+    );
+    assert_eq!(report.orders.len(), 1, "the premise needs one netted order");
+
+    let delta = cell.state_delta(&report, t(20));
+    assert_eq!(delta.orders.len(), 1);
+    let sent = &delta.orders[0];
+    assert_eq!(
+        sent.contributors.len(),
+        2,
+        "the delta named {} contributor(s) for an order two strategies caused",
+        sent.contributors.len()
+    );
+    // The signed shares sum to what the order actually was, so the centre can
+    // check the decomposition rather than trust it.
+    let summed: Decimal = sent
+        .contributors
+        .iter()
+        .map(|contributor| contributor.signed_size)
+        .fold(Decimal::ZERO, |a, b| a + b);
+    assert_eq!(summed.abs(), sent.quantity);
+    // And each contributor carries the revisions its own strategy read. The
+    // strategies here share a feature, so the assertion is that the list is
+    // populated at all — an empty one would make the field unattributable.
+    for contributor in &sent.contributors {
+        assert!(
+            !contributor.inputs.is_empty(),
+            "{} contributed with no feature revisions, so its share of a fill \
+             cannot be traced to the values that caused it",
+            contributor.strategy.as_str()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_partial_offset_is_crossed_internally_at_the_mid_and_booked_to_both_sides() -> Result<()> {
+    // §27.1. Where two strategies partly disagree, the overlapping part is a
+    // trade between them: it never needs a venue, and the blueprint calls the
+    // record of it a ledger entry and a regulatory expectation rather than an
+    // optimisation detail. A cross nobody can point at afterwards is the thing
+    // an examiner asks about.
+    let mut cell = cell_with_two_strategies(SignalKind::Exit, "40")?;
+    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
+    gateway.seed_touch(&object("ACME"), Side::Buy, dec!("100"), dec!("500"), t(15))?;
+
+    let report = cell.work(t(20), &mut gateway)?;
+    // Premise: they fired, they disagreed, and a remainder survived — so the
+    // cross below is a genuine partial offset rather than a total one.
+    assert_eq!(
+        report.signals.len(),
+        2,
+        "the fixture needs two firing strategies"
+    );
+    assert_eq!(
+        report.orders.len(),
+        1,
+        "the premise needs a surviving remainder"
+    );
+
+    assert_eq!(
+        report.crosses.len(),
+        1,
+        "the offsetting part was not booked as a cross, so a trade between two \
+         of the platform's own strategies happened with no ledger entry"
+    );
+    let cross = &report.crosses[0];
+    // Both sides named. One-sided is not a cross anybody can check.
+    assert_eq!(cross.bought.len(), 1, "the buying side was not named");
+    assert_eq!(cross.sold.len(), 1, "the selling side was not named");
+    assert_ne!(
+        cross.bought[0].as_str(),
+        cross.sold[0].as_str(),
+        "a strategy was recorded as crossing with itself"
+    );
+
+    // The matched size is what never needed a venue: gross intent less what
+    // was actually sent, halved. Read off the order rather than restated.
+    let order = &report.orders[0];
+    let gross: Decimal = order
+        .contributors
+        .iter()
+        .map(|contributor| contributor.signed_size.abs())
+        .fold(Decimal::ZERO, |a, b| a + b);
+    assert!(gross > order.quantity, "the premise failed: nothing offset");
+    assert_eq!(
+        cross.quantity + cross.quantity + order.quantity,
+        gross,
+        "the cross and the order do not account for the gross intent"
+    );
+
+    // The price is the book's mid, which is a price neither side chose. The
+    // book is seeded symmetrically at 100, so the mid is 100.
+    //
+    // This literal is weaker than it looks, and knowingly so: every intent in a
+    // pass is priced off the same mid, so here the mid and
+    // `NetIntent::reference_price` are the same number and this assertion
+    // cannot tell them apart. A mutation pricing crosses from the reference
+    // price — the thing §27.1 forbids by name — passes this whole file. What
+    // actually holds the rule is
+    // `qip_edge::cell::crossing_tests::a_cross_is_priced_at_the_book_mid_and_not_at_a_price_either_side_chose`,
+    // which drives the private seam with a reference price nothing in the book
+    // could produce. Do not delete that test on the strength of this one.
+    assert_eq!(
+        cross.price,
+        dec!("100"),
+        "the cross was not priced at the mid"
+    );
+
+    // And it is in the hash-chained journal, which is the ledger the blueprint
+    // means, naming both sides and the price.
+    let entry = cell
+        .journal()
+        .entries()
+        .iter()
+        .find(|entry| entry.decision.kind() == "crossed_internally")
+        .expect("the cross was reported but never journaled, so it is not auditable");
+    match &entry.decision {
+        Decision::CrossedInternally {
+            bought,
+            sold,
+            price,
+            ..
+        } => {
+            assert_eq!(bought.len(), 1);
+            assert_eq!(sold.len(), 1);
+            assert_eq!(price, "100");
+        }
+        other => panic!("the journal recorded {other:?} rather than a cross"),
+    }
+    Ok(())
+}
+
+#[test]
+fn a_cross_above_the_forty_percent_cap_is_refused_whole_rather_than_trimmed() -> Result<()> {
+    // Two strategies in exact opposition cross one hundred percent of one
+    // side and fifty percent of gross intent, which is over the cap. The
+    // blueprint's objection is that a persistent internal market forms whose
+    // marks drift from reality — and crossing the permitted forty percent and
+    // abandoning the rest would build that market anyway, just more slowly.
+    // So the cap refuses the whole cross rather than trimming to it.
+    let mut cell = cell_with_two_strategies(SignalKind::Exit, "100")?;
+    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
+    gateway.seed_touch(&object("ACME"), Side::Buy, dec!("100"), dec!("500"), t(15))?;
+
+    let report = cell.work(t(20), &mut gateway)?;
+    assert_eq!(
+        report.signals.len(),
+        2,
+        "the fixture needs two firing strategies"
+    );
+    assert_eq!(
+        report.cancelled.len(),
+        1,
+        "the premise needs a net that fully offset"
+    );
+
+    // Refused whole: no cross at any size. A clamp would leave one here.
+    assert!(
+        report.crosses.is_empty(),
+        "the cross was trimmed to the cap rather than refused: {:?}",
+        report.crosses
+    );
+    let refusal = report
+        .refusals
+        .iter()
+        .find(|(gate, _)| gate == "internal_cross_cap")
+        .expect("the cap refused nothing, so it is a control that cannot fire");
+    assert!(
+        refusal.1.contains("forty percent"),
+        "the refusal does not name the cap it applied: {}",
+        refusal.1
+    );
+    // Netting still holds: nothing opposing reached the venue either way.
+    assert_eq!(gateway.submitted_count(), 0);
+    Ok(())
+}
+
+#[test]
+fn two_strategies_that_agree_are_not_crossed_against_each_other() -> Result<()> {
+    // The vacuity guard for the two tests above. Crossing must fire only where
+    // intents genuinely offset; a cell that booked a cross for every netted
+    // order would pass an assertion that merely counts them.
+    let mut cell = cell_with_two_strategies(SignalKind::Enter, "100")?;
+    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
+
+    let report = cell.work(t(20), &mut gateway)?;
+    assert_eq!(
+        report.signals.len(),
+        2,
+        "the fixture needs two firing strategies"
+    );
+    assert_eq!(report.orders.len(), 1, "the premise needs one netted order");
+    assert_eq!(
+        report.orders[0].contributors.len(),
+        2,
+        "the premise needs both strategies in one net"
+    );
+
+    assert!(
+        report.crosses.is_empty(),
+        "two strategies that agree were crossed against each other, which \
+         books a trade that did not happen"
+    );
+    assert!(
+        !report
+            .refusals
+            .iter()
+            .any(|(gate, _)| gate.starts_with("internal_cross")),
+        "crossing refused something where there was nothing to cross"
     );
     Ok(())
 }

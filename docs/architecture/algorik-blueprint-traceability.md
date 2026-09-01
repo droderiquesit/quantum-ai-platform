@@ -161,13 +161,19 @@ at current scale, and process proliferation was rejected.
   nothing; venue health in `qip-routing/src/health.rs`; the cell self-halts when
   its fills disagree with the venue drop-copy (`cell.rs:774-786`). *Tests:*
   `e2e.rs`, `resilience.rs`, `chaos.rs`, `apps/qip-edge-node/tests/mesh.rs`.
-  *Gaps:* no feasibility gate, no inventory reservation. Two earlier gaps are
+  *Gaps:* no feasibility gate, no inventory reservation. Three earlier gaps are
   now closed and are recorded here rather than deleted, because the fix is what
   the row is evidence of: the halt reaches a cell (`VerifiedHalt`, the policy
-  downlink), and **intent netting exists** — `Cell::work` builds one `Intent`
-  per firing strategy, nets them on instrument, venue and representation, and
-  places what survives (`libs/qip-contracts/src/intent.rs`,
-  `edge/qip-edge/src/cell.rs`, `apps/qip-edge-node/tests/gateway.rs`).
+  downlink); **intent netting exists** — `Cell::work` builds one `Intent` per
+  firing strategy, nets them on instrument, venue and representation, and places
+  what survives; and **internal crossing exists** (§27.1) — the matched part of
+  an offsetting net is booked between its own contributors at the book's mid at
+  the netting instant, capped at forty percent of gross intent and refused whole
+  above it, with a hash-chained journal entry naming both sides and the price.
+  Contributor vectors reach the centre on the uplink at delta schema version 2
+  (`libs/qip-contracts/src/intent.rs`, `libs/qip-contracts/src/wire.rs`,
+  `edge/qip-edge/src/cell.rs`, `edge/qip-edge/src/journal.rs`,
+  `services/qip-mesh/src/delta.rs`, `apps/qip-edge-node/tests/gateway.rs`).
 
 - **[PLANE 7/7 — Ledger, wallet and treasury]** *Ownership:* `qip-capital`
   (allocation, envelope, exposure), `qip-capital-fabric` (internal placement),
@@ -411,3 +417,78 @@ placement change to the capital path, it interacts with envelope accounting,
 and it needs its own slice and its own review. The row is recorded so the next
 reader does not infer from a working central ledger that the property holds
 regionally.
+
+### F7 — what the netting slice closed, and the two things it did not
+
+**Status: recorded for the next reader, not a gap of its own.**
+
+§27 and §27.1 are now implemented at the cell: intents, netting, contributor
+attribution, self-trade prevention, internal crossing, the crossing cap and the
+netting ratio.
+
+The capability the blueprint numbers **31 in its capability list** — "Intent
+Netting: aggregation, internal crossing, contributor attribution, self-trade
+prevention" — is ALIGNED at the edge and absent at the centre. An earlier
+version of this paragraph called that "§31 in the capability table", which was
+wrong twice: the capability list is numbered independently of the sections, and
+**§31 is "The Eight Execution Paths"**, as
+[`blueprint-diagram-reconciliation.md`](blueprint-diagram-reconciliation.md)
+correctly has it. Two documents on this branch used the same token for
+different things. The sections that govern netting are §27, §27.1 and §27.2.
+
+Two things it deliberately did not do, so that nobody reads the above as
+covering them.
+
+**Contributors reach the centre; nothing at the centre reads them yet.** The
+uplink carries the vector and the schema bump refuses an old reader, but the
+kernel does not consume cell deltas at all — `Platform::attribute` works from
+its own `OrderManager`, and the two order paths never meet. Restoring
+`Order::hypotheses` fixed the central plane's own attribution, which was
+discarding a fact it already held; it did not join the edge's contributors to
+it. That join is a real piece of work and it is not done.
+
+**A full cancellation is never crossed, by arithmetic.** The matched size is
+`min(buy, sell)` over a denominator of `buy + sell`, so the ratio cannot exceed
+one half and reaches it exactly when two strategies cancel completely. The
+forty percent cap therefore refuses §27.1's flagship case — "strategies that
+disagree cost nothing to run together" — every time. It is left that way
+deliberately: §27.1 caps crossing "per instrument **per interval**" and never
+defines the interval, and choosing one here to make the case reachable would be
+inventing the parameter that decides when a safety control fires. The behaviour
+is safe (nothing reaches a venue either way) and less than the blueprint asks
+for. Setting the interval is an owner decision.
+
+**Crossing is booked, not settled.** A cross is recorded as having happened —
+journal entry, both sides, price, size — and no position, cash balance or
+utilisation moves as a result. Utilisation is charged pro-rata on what reached
+the venue, which is correct for the venue-facing order and says nothing about
+the crossed portion. §27.1's "both strategies receive their full intended fill
+at the crossing price" is therefore **half implemented**: the price and the
+record exist, the fills do not. Naming this here rather than in a comment
+because a reader who sees `CrossedInternally` in the journal will otherwise
+reasonably assume the books moved.
+
+### F8 — the follow-on this slice makes easier, and the one footgun it adds
+
+`Cell::work` now has a named seam between what the strategies want
+(`Vec<Intent>`) and what is sent. The arbitrage scanner, the leg coordinator and
+the path router all produce something an intent already is, so they append to
+that vector rather than needing a second order path beside the netting one.
+`NettingPolicy::NoNet { cycle_id }` already gives each leg its own group, so
+legs cannot be silently combined with directional intents before a producer for
+them exists.
+
+The footgun is a **blocking precondition on that brief, not a note attached to
+it.** A leg that forgets `as_cycle_leg` is netted against directional flow, and
+the resulting order is well-formed, plausibly sized and wrong — no error, and
+nothing in the journal to notice. `net()` refuses to combine a leg that
+declares itself one, but `Intent` and `NetIntent` have public fields and are
+built by literal, so the declaring is unenforced. Review judged this acceptable
+only because `LegGroup` has zero call sites anywhere, including tests: the
+guard currently protects a path nothing walks.
+
+So the work that adds a leg producer must make the declaration impossible to
+omit — a constructor that only yields no-net intents, or a leg type that cannot
+become an `Intent` without carrying its cycle — **in the same change that adds
+the producer**. Adding the producer first and the enforcement afterwards is the
+ordering the guard exists to prevent.
