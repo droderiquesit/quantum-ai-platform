@@ -291,6 +291,16 @@ impl Cell {
         &self.journal
     }
 
+    /// The registry every series this cell records lands in.
+    ///
+    /// Exposed so a composition root's test can prove, by pointer identity,
+    /// that it is the same registry the scrape surface serves. A cell that
+    /// records into one registry while the health thread serves another
+    /// answers every scrape empty forever, and nothing at runtime reports it.
+    pub fn metrics_registry(&self) -> &std::sync::Arc<qip_observability::Metrics> {
+        self.metrics.registry()
+    }
+
     pub fn autonomy(&self) -> &AutonomyController {
         &self.autonomy
     }

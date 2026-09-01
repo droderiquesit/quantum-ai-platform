@@ -114,6 +114,13 @@ impl MeshSeries {
         }
     }
 
+    /// The registry this series is written into, for the same proof
+    /// `Cell::metrics_registry` exists for: that it is the one the scrape
+    /// serves, and not a second one built beside it.
+    pub fn registry(&self) -> &Arc<Metrics> {
+        &self.metrics
+    }
+
     fn labelled(&self, key: &str, value: &str) -> Labels {
         let mut labels = self.base.clone();
         labels.insert(key.to_string(), value.to_string());

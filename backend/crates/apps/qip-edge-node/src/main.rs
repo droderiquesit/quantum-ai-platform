@@ -47,9 +47,9 @@ use qip_edge_node::mesh::{MeshLink, MeshSettings, PEER_VARIABLE};
 use qip_edge_node::mirror::StoreMirror;
 use qip_edge_node::telemetry::{MeshSeries, respond};
 use qip_edge_node::venue::{ACKNOWLEDGEMENT_VARIABLE, ADAPTER_VARIABLE, VenueChoice};
+use qip_edge_node::{NodeAssembly, assemble};
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
-use qip_observability::Telemetry;
 use qip_observability::metrics::Metrics;
 use qip_storage::settings::{ROOT_VARIABLE, StorageSettings, TARGET_VARIABLE};
 use std::io::{Read, Write};
@@ -211,20 +211,16 @@ fn run() -> Result<()> {
     }
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
 
-    // The registry handle is taken before the telemetry is used anywhere else,
-    // exactly as `qip-fastbrain` and `qip-deepbrain` take theirs: the surface a
-    // scrape reads has to be the registry the cell writes to. A second registry
-    // built for the health thread would answer every scrape empty forever while
-    // the cell recorded diligently into one nothing could reach.
-    //
-    // Only the metric half has a consumer at the edge. The tracer and the
-    // logger this constructs reach nothing in this node, and that is named
-    // rather than hidden behind a narrower constructor: the seam is here when a
-    // span or a structured log has somewhere to go, and until then those two
-    // halves are unwired.
-    let telemetry = Telemetry::new("qip-edge-node", Arc::clone(&clock));
-    let metrics: Arc<Metrics> = Arc::clone(&telemetry.metrics);
-    let mut cell = Cell::new(cell_config, features)?.with_metrics(Arc::clone(&metrics));
+    // The cell, the mesh series and the registry the scrape serves are wired
+    // together in the library, where a test can prove they are one registry.
+    // Assembled piecewise here, that property was held by a source check on
+    // this file, which a second `Telemetry` inserted between the lines passed.
+    let NodeAssembly {
+        telemetry,
+        mut cell,
+        mesh_series,
+    } = assemble(cell_config, features, Arc::clone(&clock))?;
+    let metrics: &Arc<Metrics> = &telemetry.metrics;
 
     // The venue seam, and the one decision in this binary that is not
     // recoverable if it is wrong. Read before anything is opened and announced
@@ -317,8 +313,6 @@ fn run() -> Result<()> {
         println!("qip-edge-node: awaiting {requirement}");
     }
 
-    let mesh_series = MeshSeries::new(Arc::clone(&metrics), &config.cell_id, &config.region);
-
     serve(
         &config,
         &mut cell,
@@ -327,7 +321,7 @@ fn run() -> Result<()> {
         link.as_mut(),
         &clock,
         started,
-        &metrics,
+        metrics,
         mesh_series,
     )
 }
