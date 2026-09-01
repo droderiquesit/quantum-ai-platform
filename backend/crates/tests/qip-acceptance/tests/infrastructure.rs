@@ -219,32 +219,86 @@ fn no_secret_value_appears_in_the_terraform() {
     }
 }
 
-/// The expression the root module passes as `venue_credential_readable`,
-/// evaluated at one autonomy ceiling.
+/// A line's whitespace collapsed to single spaces.
 ///
-/// Evaluating the predicate rather than matching its text is the whole point
-/// of this pair of functions. The previous version of the test below asserted
-/// the literal source line `venue_credential_readable =
-/// var.autonomy_ceiling != "paper_trading"`, and that predicate was inverted:
-/// with the three live rungs refused at plan time, `!= "paper_trading"` is
-/// true for exactly `observation` and `advisory` and false for every ceiling
-/// that could use a venue credential. A test that pins source text certifies
-/// whatever is written there, including the bug it was written to prevent —
-/// it passed for as long as the defect existed and would have failed on the
-/// fix.
-///
-/// Deliberately a small evaluator over the two forms this predicate has taken
-/// rather than a general HCL one: an unrecognised form panics naming itself,
-/// so a rewrite makes this check fail loudly instead of quietly stopping.
-fn venue_credential_readable_at(ceiling: &str) -> bool {
-    let root = without_comments(&read("infrastructure/terraform/main.tf"));
-    let expression = root
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("venue_credential_readable ="))
-        .map(str::trim)
-        .expect("the root module passes venue_credential_readable to the secrets module")
-        .to_string();
+/// So a `terraform fmt` that realigns an equals sign does not change what
+/// these evaluators read. A check that fails on formatting is a check people
+/// learn to edit rather than read.
+fn collapsed(line: &str) -> String {
+    line.split_whitespace().collect::<Vec<_>>().join(" ")
+}
 
+/// The one right-hand side of `key = ...` in a Terraform file, comments gone.
+///
+/// Exactly one: a second assignment of the same key is the shape this whole
+/// area of the configuration is being kept out of. The live-capability
+/// question was answered in three spellings and two of them were backwards,
+/// so a duplicate is a finding rather than an inconvenience.
+fn sole_assignment(path: &str, key: &str) -> String {
+    let text = without_comments(&read(path));
+    let matches: Vec<String> = text
+        .lines()
+        .filter_map(|line| {
+            collapsed(line)
+                .strip_prefix(&format!("{key} = "))
+                .map(str::to_string)
+        })
+        .collect();
+    assert_eq!(
+        matches.len(),
+        1,
+        "{path} assigns `{key}` {} times; expected exactly one",
+        matches.len()
+    );
+    matches.into_iter().next().unwrap_or_default()
+}
+
+/// The `value` expression of a named output.
+fn output_value(name: &str) -> String {
+    let text = without_comments(&read("infrastructure/terraform/outputs.tf"));
+    let start = text
+        .find(&format!("output \"{name}\" {{"))
+        .unwrap_or_else(|| panic!("outputs.tf declares no output named `{name}`"));
+    text[start..]
+        .lines()
+        .skip(1)
+        .take_while(|line| !line.starts_with('}'))
+        .find_map(|line| collapsed(line).strip_prefix("value = ").map(str::to_string))
+        .unwrap_or_else(|| panic!("the `{name}` output has no value expression"))
+}
+
+/// A boolean expression from the root module, evaluated at one autonomy
+/// ceiling.
+///
+/// Evaluating the predicate rather than matching its text is the whole point.
+/// The previous version of the venue-credential test asserted the literal
+/// source line `venue_credential_readable = var.autonomy_ceiling !=
+/// "paper_trading"`, and that predicate was inverted: with the three live
+/// rungs refused at plan time, `!= "paper_trading"` is true for exactly
+/// `observation` and `advisory` and false for every ceiling that could use a
+/// venue credential. A test that pins source text certifies whatever is
+/// written there, including the bug it was written to prevent — it passed for
+/// as long as the defect existed and would have failed on the fix.
+///
+/// Deliberately a small evaluator over the forms this question has been asked
+/// in rather than a general HCL one: an unrecognised form panics naming
+/// itself, so a rewrite makes this check fail loudly instead of quietly
+/// stopping.
+fn evaluate_at(expression: &str, ceiling: &str) -> bool {
+    // The single definition every consumer now indirects through. Resolved
+    // rather than trusted, so the tests below are asserting about the value
+    // the configuration actually computes and not about a name.
+    if expression == "local.ceiling_reaches_a_venue" {
+        let definition = sole_assignment(
+            "infrastructure/terraform/main.tf",
+            "ceiling_reaches_a_venue",
+        );
+        assert_ne!(
+            definition, expression,
+            "`ceiling_reaches_a_venue` is defined as itself"
+        );
+        return evaluate_at(&definition, ceiling);
+    }
     if let Some(rest) = expression.strip_prefix("contains([") {
         let (list, tail) = rest
             .split_once("],")
@@ -269,9 +323,83 @@ fn venue_credential_readable_at(ceiling: &str) -> bool {
     }
     panic!(
         "`{expression}` is a form this check cannot evaluate. Teach it the new \
-         form — deleting the check leaves the venue credential's IAM grant with \
-         nothing asserting which ceilings it appears at."
+         form — deleting the check leaves the venue credential's IAM grant and \
+         the live-capability indicators with nothing asserting which ceilings \
+         they appear at."
     )
+}
+
+/// A string-valued expression from the root module, evaluated at one ceiling.
+///
+/// Two forms, and the second is here because it is the one that was wrong: a
+/// ternary over two string literals is a shape whose arms can be swapped by a
+/// one-character edit that still reads as correct. Evaluating it means the
+/// mutation is caught by a rung-by-rung assertion rather than by a panic about
+/// an unfamiliar syntax.
+fn evaluate_string_at(expression: &str, ceiling: &str) -> String {
+    if let Some(inner) = expression
+        .strip_prefix("tostring(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        return evaluate_at(inner.trim(), ceiling).to_string();
+    }
+    if let Some((condition, arms)) = expression.split_once(" ? ") {
+        let (taken, otherwise) = arms.split_once(" : ").unwrap_or_else(|| {
+            panic!("`{expression}` is a conditional with no alternative branch")
+        });
+        let chosen = if evaluate_at(condition.trim(), ceiling) {
+            taken
+        } else {
+            otherwise
+        };
+        return chosen.trim().trim_matches('"').to_string();
+    }
+    panic!("`{expression}` is a string form this check cannot evaluate")
+}
+
+/// Whether the root module's `venue_credential_readable` is true at a ceiling.
+fn venue_credential_readable_at(ceiling: &str) -> bool {
+    evaluate_at(
+        &sole_assignment(
+            "infrastructure/terraform/main.tf",
+            "venue_credential_readable",
+        ),
+        ceiling,
+    )
+}
+
+/// Whether the `live_capable` output is true at a ceiling.
+fn live_capable_output_at(ceiling: &str) -> bool {
+    evaluate_at(&output_value("live_capable"), ceiling)
+}
+
+/// What the `live_capable` resource label reads at a ceiling.
+///
+/// A string, and it stays a string: the consumer is a `gcloud ... --filter`
+/// expression comparing against `false`, not a Terraform boolean.
+fn live_capable_label_at(ceiling: &str) -> String {
+    evaluate_string_at(
+        &sole_assignment("infrastructure/terraform/main.tf", "live_capable"),
+        ceiling,
+    )
+}
+
+/// The rungs a plan can carry, and the rungs it cannot.
+///
+/// Taken from the code's own ladder rather than a literal list, so a seventh
+/// rung is one these tests start covering rather than one they silently miss.
+fn reachable_and_live_rungs() -> (
+    Vec<qip_risk_engine::autonomy::AutonomyLevel>,
+    Vec<qip_risk_engine::autonomy::AutonomyLevel>,
+) {
+    let ladder = qip_risk_engine::autonomy::AutonomyLevel::all();
+    let (live, reachable): (Vec<_>, Vec<_>) = ladder.into_iter().partition(|level| level.is_live());
+    assert_eq!(
+        (live.len(), reachable.len()),
+        (3, 3),
+        "the ladder's live rungs changed; these tests' premise needs rewriting"
+    );
+    (reachable, live)
 }
 
 #[test]
@@ -290,15 +418,8 @@ fn the_venue_credential_is_unreadable_where_live_trading_is_impossible() {
 
     // The premise: which rungs a plan can actually carry. `variables.tf`
     // refuses the three live ones, so the reachable set is the ladder minus
-    // them — taken from the code's own ladder rather than a literal list here,
-    // so a seventh rung is one this test starts covering.
-    let ladder = qip_risk_engine::autonomy::AutonomyLevel::all();
-    let (live, reachable): (Vec<_>, Vec<_>) = ladder.into_iter().partition(|level| level.is_live());
-    assert_eq!(
-        (live.len(), reachable.len()),
-        (3, 3),
-        "the ladder's live rungs changed; this test's premise needs rewriting"
-    );
+    // them.
+    let (reachable, live) = reachable_and_live_rungs();
 
     // No ceiling a plan can carry creates the grant. `observation` is the one
     // that mattered: an operator hardening dev to it got a plan that *added*
@@ -331,6 +452,92 @@ fn the_venue_credential_is_unreadable_where_live_trading_is_impossible() {
              false for it, so the predicate no longer says why the resource is \
              guarded at all",
             level.as_str()
+        );
+    }
+}
+
+#[test]
+fn no_ceiling_a_plan_can_carry_is_reported_as_live_capable() {
+    // `live_capable` is a safety indicator, and an inverted one is worse than
+    // an absent one. The output is what an operator reads to answer "could
+    // this cluster trade"; the label is what a fleet-wide query reads to
+    // answer it across every project. Both were `!= "paper_trading"` in one
+    // spelling or another, which is true for exactly the two rungs *below*
+    // paper trading — so setting an environment to `observation`, the safest
+    // rung and the one `variables.tf`'s error message invites an operator to
+    // choose, reported the environment as able to reach a real venue.
+    //
+    // Asserted per rung rather than against source text, because the failure
+    // this exists to catch is a predicate of the right shape and the wrong way
+    // round, and a text match certifies that shape either way.
+    let (reachable, live) = reachable_and_live_rungs();
+
+    for level in &reachable {
+        assert!(
+            !live_capable_output_at(level.as_str()),
+            "the `live_capable` output is true at the `{}` ceiling. No order \
+             can reach a venue at that rung and a plan cannot carry any other \
+             kind, so the output an operator reads says this cluster can trade \
+             when nothing it can apply ever could.",
+            level.as_str()
+        );
+        assert_eq!(
+            live_capable_label_at(level.as_str()),
+            "false",
+            "every resource is labelled `live_capable = true` at the `{}` \
+             ceiling, so a query asking which clusters can trade returns one \
+             that cannot",
+            level.as_str()
+        );
+    }
+
+    // And both say the property rather than merely being switched off. A bare
+    // `false` would satisfy everything above while recording the answer and
+    // losing the question. None of these three ceilings can reach a plan —
+    // `variables.tf` refuses all of them — so this asserts what the expression
+    // *means*, not that anything is permitted to trade live.
+    for level in &live {
+        assert!(
+            live_capable_output_at(level.as_str()),
+            "the `live_capable` output is false at `{}`, a live rung, so it no \
+             longer reports live capability at all",
+            level.as_str()
+        );
+        assert_eq!(
+            live_capable_label_at(level.as_str()),
+            "true",
+            "the `live_capable` label is not `true` at `{}`, a live rung, so \
+             the label no longer answers the question it is named for",
+            level.as_str()
+        );
+    }
+}
+
+#[test]
+fn the_label_the_output_and_the_credential_predicate_agree_at_every_rung() {
+    // Three expressions answered "could this reach a venue" in three
+    // spellings, and that is how the inversion spread: the credential
+    // predicate was corrected and the label and the output were not, because
+    // nothing connected them. They now indirect through one local, and this is
+    // what makes a future divergence a failing test rather than a discovery.
+    //
+    // Every rung, including the three no plan can carry — a divergence that
+    // only appears at a ceiling `variables.tf` refuses is still a
+    // configuration whose three answers disagree, and still the thing a reader
+    // deleting that refusal would inherit.
+    let (reachable, live) = reachable_and_live_rungs();
+
+    for level in reachable.iter().chain(live.iter()) {
+        let ceiling = level.as_str();
+        let output = live_capable_output_at(ceiling);
+        let label = live_capable_label_at(ceiling);
+        let credential = venue_credential_readable_at(ceiling);
+        assert_eq!(
+            (output, label.as_str()),
+            (credential, if credential { "true" } else { "false" }),
+            "at the `{ceiling}` ceiling the configuration gives three answers \
+             to one question: output={output}, label={label}, \
+             venue_credential_readable={credential}"
         );
     }
 }
