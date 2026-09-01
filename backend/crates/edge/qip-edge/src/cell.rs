@@ -16,6 +16,7 @@ use crate::journal::{Decision, Journal, Mirror};
 use crate::mesh::{CellStateDelta, DeltaOrder, DeltaRefusal, StrategyUtilisation};
 use crate::policy::{VerifiedHalt, VerifiedPolicy};
 use crate::seam::CellLiquidity;
+use crate::telemetry::CellMetrics;
 use qip_contracts::capital::{CapitalGrant, Utilisation};
 use qip_contracts::degradation::{DegradationState, StrategyClass};
 use qip_contracts::intent::{Contributor, Intent, NetIntent, net, netting_ratio};
@@ -202,6 +203,12 @@ pub struct Cell {
     breaks: Vec<String>,
     breaks_omitted: u32,
     order_sequence: u64,
+    /// Where the cell's facts go.
+    ///
+    /// Given, never reached for: a cell assembled without one records into a
+    /// registry nobody reads, which is what every test in the tree does. See
+    /// [`crate::telemetry`] for why nothing here can block or fail the pass.
+    metrics: CellMetrics,
 }
 
 /// How many reconciliation breaks a cell keeps for reporting.
@@ -232,12 +239,44 @@ impl Cell {
             breaks: Vec::new(),
             breaks_omitted: 0,
             order_sequence: 0,
+            metrics: CellMetrics::silent(),
             config,
         })
     }
 
     pub fn config(&self) -> &CellConfig {
         &self.config
+    }
+
+    /// Record into the composition root's registry rather than the silent one
+    /// this cell was built with.
+    ///
+    /// Called once, in `qip-edge-node`, with the handle taken from the
+    /// telemetry before it is used anywhere else — exactly as `qip-fastbrain`
+    /// and `qip-deepbrain` install theirs. Taking a second registry here would
+    /// produce a scrape surface that answers empty forever while the cell
+    /// records diligently into one nothing can reach, which is the defect this
+    /// seam exists to close rebuilt one level up.
+    ///
+    /// The halt gauge is written immediately so a cell that starts halted, and
+    /// is scraped before its first pass, does not read as running.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: std::sync::Arc<qip_observability::Metrics>) -> Self {
+        self.metrics = CellMetrics::new(metrics, &self.config.cell_id, &self.config.region);
+        self.record_halt();
+        self
+    }
+
+    /// Publish the halt state as it now stands.
+    ///
+    /// Called wherever either halt can change, rather than once per pass: a
+    /// cell halted by a reconciliation break stops running passes, so a gauge
+    /// written only inside `work` would never report the halt that stopped it.
+    fn record_halt(&self) {
+        self.metrics.halt(
+            self.autonomy.kill_switch().is_globally_tripped(),
+            self.policy_halted,
+        );
     }
 
     pub fn protocols_mut(&mut self) -> &mut ProtocolRegistry {
@@ -341,6 +380,7 @@ impl Cell {
             );
         }
         self.policy_halted = true;
+        self.record_halt();
     }
 
     /// Apply a verified policy payload by atomic swap.
@@ -382,6 +422,7 @@ impl Cell {
                 .policy_halt_barrier
                 .is_some_and(|barrier| verified.payload().issued_at <= barrier);
         let halting = verified.halted() || releasing_too_early;
+        let sequence = verified.sequence();
         let was_halted = self.policy_halted;
         let narrowed: Vec<String> = verified
             .payload()
@@ -441,6 +482,11 @@ impl Cell {
         }
         self.policy_halted = halting;
         self.policy = Some(verified);
+        self.record_halt();
+        // The sequence the cell has *applied*, recorded once the swap has
+        // happened. Recording it before would publish a payload the cell might
+        // still have refused.
+        self.metrics.policy_applied(sequence);
         Ok(())
     }
 
@@ -629,6 +675,11 @@ impl Cell {
             halted: self.is_halted(),
             ..WorkReport::default()
         };
+        // Recorded before the halt check, so a halted cell still counts its
+        // passes. A refusal count with no pass count underneath it cannot tell
+        // "nothing was refused" from "the cell never ran".
+        self.metrics.work_pass();
+        self.record_halt();
 
         if report.halted {
             // Books keep absorbing and the journal keeps recording while
@@ -651,6 +702,11 @@ impl Cell {
         // next pass, never half of this one.
         let narrowing = self.narrowing(now);
         let multiplier = narrowing.sizing_multiplier();
+        // Freshness is a function of `now`, so this is the instant it becomes
+        // known and the only instant at which the recorded value is what the
+        // cell actually sized against. Before this the whole table was
+        // formatted into a journal string and discarded.
+        self.metrics.narrowing(&narrowing);
 
         let vector = self.features.evaluate(now)?;
         let strategy_ids: Vec<String> = self.deployed.keys().cloned().collect();
@@ -701,6 +757,7 @@ impl Cell {
                 },
                 now,
             );
+            self.metrics.signal(signal.kind);
             report.signals.push(signal.clone());
 
             if let Some(intent) = self.intent_for(&signal, multiplier, now, &mut report)? {
@@ -717,6 +774,12 @@ impl Cell {
         // and a pure loss at the same time.
         let nets = net(intents);
         report.netting_ratio = netting_ratio(&nets);
+        // `None` when everything cancelled: the ratio is unbounded there, and
+        // observing a sentinel would put a number nobody computed into the
+        // distribution. The cancellation is counted in `place_net` instead.
+        if let Some(ratio) = report.netting_ratio {
+            self.metrics.netting_ratio(ratio);
+        }
         for net_intent in &nets {
             if let Some(order) = self.place_net(net_intent, now, gateway, &mut report)? {
                 report.orders.push(order);
@@ -955,6 +1018,7 @@ impl Cell {
                 },
                 now,
             );
+            self.metrics.intent_cancelled();
             report.cancelled.push(net_intent.clone());
             return Ok(None);
         };
@@ -1009,6 +1073,7 @@ impl Cell {
             },
             now,
         );
+        self.metrics.order_placed(&venue);
 
         let largest = net_intent
             .contributors
@@ -1218,6 +1283,7 @@ impl Cell {
             },
             now,
         );
+        self.metrics.internal_cross(&cross.venue);
         report.crosses.push(cross);
     }
 
@@ -1234,6 +1300,10 @@ impl Cell {
     }
 
     fn refuse(&mut self, report: &mut WorkReport, gate: &str, reason: &str, now: Timestamp) {
+        // Every refusal in the cell funnels through here, so one recording
+        // site covers every gate. `gate` is a string literal at each call, and
+        // that is what bounds this series' cardinality.
+        self.metrics.refusal(gate);
         report.refusals.push((gate.to_string(), reason.to_string()));
         self.journal.record(
             Decision::Refused {
@@ -1407,6 +1477,7 @@ impl Cell {
             } else {
                 self.breaks_omitted = self.breaks_omitted.saturating_add(1);
             }
+            self.metrics.reconciliation_break();
             self.journal
                 .record(Decision::ReconciliationBreak { detail }, now);
         }
@@ -1423,6 +1494,10 @@ impl Cell {
                 },
                 now,
             );
+            // A break halts the cell, which stops it running passes. Without
+            // this the gauge would keep reporting the state of the last pass
+            // that ran, which is the one before the break.
+            self.record_halt();
         }
         breaks
     }

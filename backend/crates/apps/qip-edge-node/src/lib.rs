@@ -18,4 +18,6 @@
 pub mod gateway;
 pub mod mesh;
 pub mod mirror;
+/// The node's own metric seam: the mesh link, rendered as a series.
+pub mod telemetry;
 pub mod venue;

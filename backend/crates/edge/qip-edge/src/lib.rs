@@ -32,6 +32,7 @@ pub mod journal;
 pub mod mesh;
 pub mod policy;
 pub mod seam;
+pub mod telemetry;
 
 pub use cell::{Cell, CellConfig, PlacedOrder, Placer, WorkReport};
 pub use dropcopy::{CellFill, Discrepancy, DropCopyFill, DropCopyReconciler};
@@ -45,3 +46,4 @@ pub use mesh::{
 };
 pub use policy::{VerifiedHalt, VerifiedPolicy};
 pub use seam::{CellLiquidity, value_kind, value_type};
+pub use telemetry::CellMetrics;

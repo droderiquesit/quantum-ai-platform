@@ -34,6 +34,13 @@ qip-events.workspace = true
 # transport as a `Publisher` is a service and therefore cannot be used from
 # here, which is why this reaches for `MeshPublisher` directly.
 qip-transport.workspace = true
+# The metric registry the cell records into. A library holding an in-memory
+# `BTreeMap` behind a mutex — it exports nothing and opens nothing — so the
+# `libs <- edge` edge this adds is the permitted direction and adds no I/O to a
+# crate whose hot path must not do any. The cell records into a handle it is
+# *given*; where those numbers are served from stays a decision for
+# `qip-edge-node`.
+qip-observability.workspace = true
 
 [lints]
 workspace = true
