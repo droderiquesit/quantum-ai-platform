@@ -1,0 +1,131 @@
+# Algorik Master Blueprint v10.1-4 — traceability against this repository
+
+**Scored against the working tree on branch
+`claude/algorik-architecture-refactor-pmp0zy`, from commit `d8b3597`.**
+
+This is the one matrix for the blueprint. It does not replace
+[`diagram-reconciliation.md`](diagram-reconciliation.md), which scores a
+*different* reference — the "World's Smartest Multi-Regional AI + Quant
+Trading Platform" diagram transcribed in
+[`canonical-platform.md`](canonical-platform.md). Those two describe the same
+repository against an earlier picture of it. Read them together; do not merge
+them, because a row that is ALIGNED against one can be MISSING against the
+other and collapsing that loses the finding.
+
+**Method.** Every row was derived by reading the source or the manifest named
+in its evidence column. A row is ALIGNED only where an implementation path and
+a passing named test both exist. Where a type exists but no deployable binary
+composes it, the ceiling is UNVERIFIED, whatever its own tests say.
+
+**Status vocabulary.** ALIGNED · PARTIAL · CONTRADICTS · MISSING-CURRENT (the
+blueprint requires it at or before the phase this repository has reached) ·
+PLANNED-FUTURE (the blueprint puts it in a later phase; it is backlog, not a
+gap) · UNVERIFIED · NOT-APPLICABLE.
+
+## Where the platform actually sits on the blueprint's roadmap
+
+The honest answer is that capability and phase have come apart, and the four
+gates are the reason it matters.
+
+| Gate | Blueprint question | Status | Evidence |
+|---|---|---|---|
+| End of Phase 2 | Does a family survive holdout with honest significance after cumulative trial correction? | **NOT PASSED** | The machinery exists — `qip-simulation-engine/src/validation.rs`, `qip-lifecycle/src/gates.rs`, `qip-lifecycle/src/evidence.rs`. The gate is an empirical question about real market data, and every deployment's data is synthetic or replayed. A family surviving a holdout of data the platform generated is not the gate |
+| End of Phase 3 | Does it survive contact with a live venue, inside its holdout band? | **CANNOT PASS** | Structurally unreachable: paper trading is absolute. See ADR 0021 |
+| End of Phase 6 | Is calibrated probability better than the market's implied on prediction contracts? | **NOT PASSED** | `qip-prediction` has `market.rs`, `oracle.rs`, `pricing.rs`, `resolution.rs`; no Brier comparison against a live venue's implied probability exists |
+| End of Phase 8 | Does regime-conditional allocation beat unconditional out of sample? | **NOT PASSED** | Regime detection exists (`qip-cost-router/src/context.rs`, `qip-simulation-engine/src/conditions.rs`); no out-of-sample comparison against an unconditional baseline is computed |
+
+**No gate has passed.** Every one of the four is an empirical claim about real
+data or real venues, and this repository has neither. Code existing is not a
+gate passing, and the distance between the two is the single most important
+fact in this document.
+
+Capability, meanwhile, is spread from Phase 1 to roughly Phase 15: the
+research loop, multi-leg execution, champion/challenger, the cost router, the
+quantum adapter with its mandatory classical baseline and a three-region
+topology all exist. That is ahead-of-phase work in the blueprint's terms. It
+is not deleted — it is useful research — but it is labelled here so that
+nothing in it reads as a gate that was cleared.
+
+## Constraints and architectural rules (§2, §3, §39)
+
+| Blueprint element | Required invariant | Implementation | Status | Evidence | Minimal action | Risk / blast radius | Phase | Validation |
+|---|---|---|---|---|---|---|---|---|
+| §2.1 | Every application is Rust | Backend is 59 Rust crates; `frontend/portal` and `frontend/landing` are Next.js/TypeScript | CONTRADICTS | `frontend/portal/package.json`; ADR 0001 permits the browser layer as the sole exception | None now. Define the replacement boundary before any translation; do not mass-translate | High — a rewrite of the whole customer surface | 13 | Playwright + contract tests before any slice |
+| §2.1 | Managed services are Google Cloud or IBM only | GCP + IBM Quantum; no third-party SaaS at runtime | ALIGNED | `infrastructure/terraform/modules/`; `libs/qip-quantum/src/provider.rs` | None | — | 0 | `infrastructure` suite |
+| §2.2 | No strategy sends an order | Strategies produce theses/proposals; only a composition root holds an order manager | ALIGNED | `architecture.rs::nothing_outside_a_composition_root_holds_an_order_manager`, `::only_the_edge_cell_itself_holds_an_order_manager` | None | — | 3 | `architecture` suite |
+| §2.2, §39 | No language model touches a trade, cycle or transfer | Enforced by absent dependency edges, transitively | ALIGNED | `architecture.rs::no_safety_critical_engine_can_reach_a_language_model`, `::nothing_that_decides_or_executes_names_the_language_model_interface`, `::an_agent_that_holds_a_language_model_cannot_touch_the_market` | None | — | 0 | `architecture` suite |
+| §2.2, §39 | Quantum output is policy, never a live instruction | No crate that vetoes, executes or issues capital reaches `qip-quantum`; no edge crate does either | ALIGNED | `architecture.rs::nothing_that_vetoes_executes_or_moves_money_can_reach_a_quantum_solver`, `::no_edge_cell_can_reach_a_quantum_solver` — added this pass, three mutations fired | None | — | 15 | `architecture` suite |
+| §2.2, ADR 0006 | A classical baseline runs every time | Computed on every quantum path | ALIGNED | ADR 0006; `services/qip-optimization-engine/src/router.rs` | None | — | 15 | `optimization` tests |
+| §2.2 | Deterministic pre-trade checks never route to a model | `Determinism::Required` returns a type that cannot name a model rung | ALIGNED | `services/qip-cost-router/src/router.rs:404`; `context.rs:27` | None | — | 3 | `cost_router` tests |
+| §2.2 | Risk reads aggregates, never strategy lists | Risk state is aggregate counters | PARTIAL | `libs/qip-risk/src/limits.rs`; `services/qip-risk-engine/` | Assert the O(1)-in-strategy-count property with a test | Low | 10 | A test at two strategy counts |
+| §2.2 | Feasibility precedes profitability | No feasibility gate exists as a named stage | MISSING-CURRENT | `grep -rln "[Ff]easibilit"` returns only `qip-numerics` (LP feasibility) and the optimiser's router — not an execution gate | Backlog. The gate belongs beside the pre-trade path in `qip-execution-engine` | Medium — a control that does not exist cannot fire | 3 | Passing-and-vetoing fixtures |
+| §2.2 | Strategies are compiled, not interpreted | `qip-strategy` evaluates; no shared compiled plan with CSE | PARTIAL | `edge/qip-strategy/` | Backlog | Low at current strategy counts | 10 | Netting-ratio measurement |
+| §2.2 | After-tax return is the only return | No tax engine, no lot selection | MISSING-CURRENT | No `taxlot`/`tax_engine` in the tree | Backlog | Low while paper-only | 3 | — |
+
+## The seven planes (§1.2, §5, §4.2)
+
+Planes are bounded investment responsibilities and are deliberately **not**
+the same axis as the seven layers below. Do not rename one as the other, and
+do not fold Cognition into Intelligence — §4.1 argues the split and the
+argument still holds here.
+
+| Plane | Blueprint responsibility | Implementation | Status | Evidence | Minimal action | Phase |
+|---|---|---|---|---|---|---|
+| 1 Ingestion | Observe world + prices; resolve to entities; pass-through, not accumulation | `qip-market-ingestion`, `qip-normalization`, `qip-entity-resolution`, `qip-data-finder` (licensing posture before use) | PARTIAL | `platform.rs` absorbs 11 record kinds; `Feed::Live` exists at `apps/qip-fastbrain/src/feed.rs:61` and `::live` at `:108` | Prove one live source end to end; no deep-web tier exists | 1, 5 |
+| 2 Cognition | World model, causal graph, episodic memory, belief, counterfactual, self-model, hypotheses | `qip-world-model`, `qip-agents/src/memory.rs`, `qip-twin`, `qip-reasoning-engine/src/hypothesis.rs` | PARTIAL | World model and hypotheses present; counterfactuals in `qip-twin` | **No self-model exists** (`grep -rln "SelfModel"` empty); no dedicated causal graph over drivers; belief is scattered rather than a plane | 7, 8, 9 |
+| 3 Valuation | Price what has no price: term structure, credit, vol surface, illiquid, cashflow, corporate actions | Corporate actions absorbed in `platform.rs`; `qip-financial/src/extensions.rs` carries illiquid-adjacent types | MISSING-CURRENT | No term-structure, credit or vol-surface engine | Backlog — Phase 14 | 14 |
+| 4 Intelligence | Train, generate and statistically gate strategies, set risk and corridor policy | `qip-training`, `qip-lifecycle`, `qip-evolution`, `qip-simulation-engine/src/validation.rs` | PARTIAL | Statistical gate, champion/challenger and promotion exist | Corridor policy has no owner because corridors do not exist | 2, 10 |
+| 5 Optimisation | Allocation across families/regimes/horizons; quantum + classical; policy only | `qip-optimization-engine`, `qip-quantum` | PARTIAL | Routing gate and classical baseline present; authority boundary now structural | Family clustering and multi-horizon reconciliation absent | 15 |
+| 6 Execution | Regional nodes, shipped policy, microseconds, local decisions | `qip-edge` (structurally paper-only), `qip-edge-node`, `qip-orderbook`, `qip-routing`, `qip-execution-engine` | PARTIAL | `cell.rs:143-148` — no constructor takes a non-paper ceiling | Runs as a pod, not the blueprint's bare C3. See ADR 0020. No intent netting, no inventory reservation | 3, 16 |
+| 7 Ledger, wallet, treasury | Authoritative money state per user and per strategy; reconcile every holding; move capital in signed corridors | `qip-capital`, `qip-capital-fabric` (`transfer.rs`, `settlement.rs`), hash-chained event log | PARTIAL | Capital allocation, envelopes and exposure exist | **No wallet, no corridor, no transfer gate, no destination registry, no custody engine** — `grep` for each returns nothing. Phase 12, and bounded by ADR 0021 | 12 |
+
+### Plane detail — the format the programme asks for
+
+`[PLANE n/7 — Name] Ownership | Placement | Inputs/outputs | State | Authority | Degradation | Tests`
+
+- **[PLANE 1/7 — Ingestion]** Ownership: `qip-market-ingestion`. Placement: global, once. I/O: sources → normalised bitemporal records. State: bounded working set. Authority: none — observes only. Degradation: world model ages; price-only strategies continue (§6.2 row 1) — *not implemented as an ordered narrowing*. Tests: `absorption.rs`, `sense.rs`.
+- **[PLANE 2/7 — Cognition]** Ownership: split across `qip-world-model`, `qip-twin`, `qip-reasoning-engine`. Placement: global. I/O: events → beliefs/hypotheses. State: bitemporal. Authority: **none — informs only**, which matches §39 rows 3. Degradation: undefined. Tests: `understanding.rs`, `reasoning.rs`.
+- **[PLANE 3/7 — Valuation]** Ownership: none. Placement: n/a. Authority: would be informs-only. Status MISSING-CURRENT; Phase 14.
+- **[PLANE 4/7 — Intelligence]** Ownership: `qip-lifecycle` (gates), `qip-training`, `qip-evolution`. Placement: global. Authority: promotes within approved families (§39 layer 2) — matches. Degradation: undefined. Tests: `lifecycle.rs`, `evolution.rs`.
+- **[PLANE 5/7 — Optimisation]** Ownership: `qip-optimization-engine`. Placement: global. Authority: sets budgets inside the envelope (§39 layer 7) — matches, and is now the *only* zone reaching the solver. Degradation: classical baseline always runs, so a QPU outage narrows nothing. Tests: `optimization.rs`, `architecture.rs`.
+- **[PLANE 6/7 — Execution]** Ownership: `qip-edge`. Placement: regional. Authority: veto-only gates plus order placement inside a granted envelope (§39 layers 9–12). Degradation: stale book supplies nothing (`seam.rs:53`), venue health in `qip-routing/src/health.rs` — mechanism-level, not §6.2's capability-level order. Tests: `e2e.rs`, `resilience.rs`, `chaos.rs`.
+- **[PLANE 7/7 — Ledger/wallet/treasury]** Ownership: `qip-capital` + the event log. Placement: global. Authority: records (§39 layer 14). Degradation: undefined. Tests: `truth_loop.rs`, `compliance_proof.rs`. Wallet and treasury do not exist.
+
+## The seven layers (§40.5, §41, §45, §46, §47, §48)
+
+`[LAYER n/7 — Name] Current | Keep | Change | Remove | Defer | Verification`
+
+- **[LAYER 1/7 — Experience]** *Current:* Next.js portal and landing on Cloud Run; blueprint wants one Leptos codebase. *Keep:* the whole surface — it works and it is the only customer-facing thing there is. *Change:* nothing this pass. *Remove:* nothing. *Defer:* the Rust replacement boundary — identify contracts and Playwright coverage first; a vertical slice only if it adds no dependency. *Verification:* `npm run lint`, `npm run build`, Playwright.
+- **[LAYER 2/7 — Public edge and identity]** *Current:* Identity Platform is the only identity store (ADR 0019); sealed-cookie sessions; console reaches the platform over the VPC as viewer (ADR 0018). *Keep:* all of it — it matches §46.1's "Application and identity" zone, including "never a node, a venue, a QPU or a key". *Change:* none. *Remove:* none. *Defer:* passkeys (§51 Phase 0) — not present. *Verification:* `console_route.rs`, `security.rs`.
+- **[LAYER 3/7 — Application and API]** *Current:* `qip-api` composes reads and holds no independent financial state. *Keep.* *Change:* none. *Remove:* none. *Defer:* the typed-intent surface (§40.9) — there is no `Intent` type anywhere, so application APIs raise no intents; they read. *Verification:* `documentation.rs::every_documented_endpoint_exists`.
+- **[LAYER 4/7 — Domain contracts and control fabric]** *Current:* `qip-contracts` sits at the bottom of everything sharing it; `qip-transport`/`qip-mesh` carry the fabric. *Keep.* *Change:* none this pass. *Remove:* none. *Defer:* the **signed twelve-item payload (§41.5)** — the fabric ships deltas, not a twelve-item verified-then-atomically-swapped payload, and stale-item narrowing per §6.2 is not implemented. This is the largest single structural gap against the blueprint that is *not* future-phase. *Verification:* `spine.rs`, `mesh.rs`, `manifest_wiring.rs`.
+- **[LAYER 5/7 — Data and state]** *Current:* bitemporal records; bounded retention; event log hash-chained; `qip-data-finder` evaluates licensing before use. *Keep.* *Change:* none. *Remove:* none. *Defer:* BigQuery derived series and content-hash manifests for external history. *Verification:* `absorption.rs`, `resilience.rs`, `truth_loop.rs`.
+- **[LAYER 6/7 — Cloud and network]** *Current:* GKE + Argo CD + Kargo + Helm + KEDA; frontends on Cloud Run; no GCE instance. Blueprint wants Cloud Run plus one bare C3 and no Kubernetes. *Keep:* everything — it is three commits old and it works. *Change:* nothing. *Remove:* **nothing, and not until step 5 of ADR 0020's sequence has its evidence.** *Defer:* the whole migration, sequenced in ADR 0020. *Verification:* `terraform fmt -check` and `validate` **NOT RUN — terraform is not installed in this environment**; `infrastructure.rs` suite passed.
+- **[LAYER 7/7 — Security, observability, delivery, reliability]** *Current:* three paper layers intact and re-verified by path this pass; WIF only; CSI-projected secrets; Binary Authorization; telemetry emitted at the seams. *Keep.* *Change:* none. *Remove:* none. *Defer:* OpenTelemetry spans with cross-plane correlation (§47) — the current surface is a Prometheus-style metric registry, not spans; and policy-freshness, belief-calibration and reconciliation signals have nothing to emit yet. *Verification:* `security.rs`, `compliance_proof.rs`, `egress.rs`, `infrastructure.rs`.
+
+## Corrections this pass makes to existing documents
+
+Two governed documents disagreed about the same fact, and the disagreement was
+resolved by reading the code rather than by preferring the newer document.
+
+| Claim | Where | Verdict | Evidence |
+|---|---|---|---|
+| "Nothing currently writes to `Telemetry`" | `.claude/rules/domains/observability.md` | **Stale — the code contradicts it** | `runtime/qip-kernel/src/platform.rs:1668` counts cycles, `:1728-1755` records stage runs, latencies and gauges; `services/qip-market-ingestion/src/service.rs:153,174,191` records at its own seams |
+| "Telemetry emission was closed" | `docs/plan/gap-matrix.md` item 2 | **Correct** | Same evidence |
+| "Live data sources are unwired; `feed.rs` can open `Synthetic` or `Replay` and nothing else" | `docs/plan/current-state.md` | **Stale** | `apps/qip-fastbrain/src/feed.rs:61` declares `Live(Box<RestMarketDataAdapter>)` and `:108` constructs it behind the licensing gate |
+| "3,078 tests passing" | `docs/plan/current-state.md` | **Stale** | Measured this pass: 3177 passed, 0 failed, 0 ignored across 290 binaries |
+
+The rule file is **not edited here.** `.claude/rules/` is instruction
+configuration and correcting it is an owner's decision, not an agent's, even
+when the correction is a plain matter of fact. It is listed instead as
+requiring a decision.
+
+## Residual conflicts requiring an owner decision
+
+| # | Conflict | Blueprint location | Repository position | Decision required |
+|---|---|---|---|---|
+| C1 | Real capital at risk | §1.3, §25, §37, §38, Phase 3 gate | Paper trading absolute under three layers; ADR 0003, ADR 0021 | Confirm the platform is permanently paper-only, accepting that the blueprint's Phase 3, 6 and 8 gates are unreachable |
+| C2 | Runtime topology | §41.4, §41.6, §45.1 — Cloud Run + one bare C3, no Kubernetes | GKE + Argo CD + Kargo, three commits old; ADR 0011, ADR 0017, ADR 0020 | Adopt the blueprint topology and supersede 0011/0017, or record that §41.4/§41.6 describe a system this one deliberately is not |
+| C3 | Experience layer language | §40 — one Leptos codebase in Rust | Next.js portal and landing; ADR 0001 permits the browser exception | Whether the browser exception survives; a translation is a Phase 13 programme, not a refactor |
+| C4 | Stale factual claim in an instruction file | — | `.claude/rules/domains/observability.md` says nothing writes to `Telemetry`; the code does | Owner to correct the rule file, or to state the rule means something narrower than it reads |
+| C5 | Two canonical diagrams | Blueprint §4 vs `canonical-platform.md` | The repository scores itself against a diagram the blueprint does not describe | Which picture is the architecture of record |

@@ -120,7 +120,7 @@ simulating the circuit costs more than solving the problem it encodes.
 
 This document is the shape of the system. Three companions carry the detail:
 
-1. `docs/adr/` — twelve numbered decisions. The reasoning is the point, and
+1. `docs/adr/` — twenty-one numbered decisions. The reasoning is the point, and
    several of them are settled: reopening one takes a new ADR, not an argument.
 2. `docs/architecture/canonical-platform.md` — the target architecture as 104
    addressable component ids.
@@ -129,6 +129,11 @@ This document is the shape of the system. Three companions carry the detail:
    counts as complete only where both an implementation and a *named passing
    test* exist, and any component no deployable binary composes is capped at
    "implemented but unverified" however good its own tests are.
+4. `docs/architecture/algorik-blueprint-traceability.md` — the same tree scored
+   against a *different* reference, the Algorik Master Blueprint v10.1-4. It is
+   kept separate from 2 and 3 on purpose: the two references disagree, and a
+   row that is aligned against one can be missing against the other. Merging
+   them would lose exactly the findings worth having.
 
 The rules an agent must follow when changing this architecture are in
 `.claude/rules/architecture/`; the per-area constraints are in

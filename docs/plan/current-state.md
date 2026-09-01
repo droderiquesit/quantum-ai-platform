@@ -8,13 +8,13 @@ the trading spine. Every number here came from a command whose output was read.
 | Fact | Value |
 |---|---|
 | Rust crates | 59, in 8 groups (`libs`, `services`, `apps`, `edge`, `agents`, `quant`, `runtime`, `tests`) |
-| Tests | 3,078 passing, 0 failing (`cargo test --workspace --no-fail-fast`) |
+| Tests | 3,177 passing, 0 failing, 0 ignored, across 290 binaries (`cargo test --workspace --no-fail-fast`) |
 | Clippy | 0 warnings, `--all-targets` |
 | Third-party crates | 11 packages, all permitted (`serde`, `serde_json` and their trees) |
 | Frontend | Next.js + TypeScript, 47 tracked files |
 | Cloud | GCP: GKE, Secret Manager CSI, KMS, Binary Authorization, WIF |
 | Pipelines | `ci.yml`, `deploy.yml`, `infra.yml` — all deriving identity from committed tfvars |
-| Decision records | 12 ADRs |
+| Decision records | 21 ADRs |
 
 ## Against the canonical architecture
 
@@ -39,7 +39,7 @@ composes is a crate the platform does not run.
 
 | Stage | State |
 |---|---|
-| SENSE | Absorbs 11 record kinds. Works. Every deployment's data is synthetic or replayed — the live REST adapter is reached only from tests |
+| SENSE | Absorbs 11 record kinds. Works. `feed.rs` can now open `Live` as well as `Synthetic` and `Replay`, but no deployment has been observed running on it |
 | UNDERSTAND | Entity resolution and the bitemporal world model. Works |
 | DISCOVER | Detectors run; opportunities queue newest-highest-value first. Works |
 | REASON | **Now routed.** Prices the decision, asks the cost router where it belongs, convenes the panel when it is affordable, records the rationale either way |
@@ -66,6 +66,15 @@ drops what it once said was broken cannot be audited against.
 
 **Closed:**
 
+- ~~Multi-leg execution is unbuilt.~~ `services/qip-execution-engine/src/multileg.rs`
+  carries leg risk, deadlines and unwind, on the invariant that a group which
+  cannot complete is unwound rather than abandoned.
+- ~~Champion/challenger and drift detection are unwired.~~ Both now have
+  production callers: `apps/qip-deepbrain/src/evolution.rs:41` runs the
+  contest, and `apps/qip-deepbrain/src/learning.rs:279` records a drift report
+  built at `:425` — both above the `#[cfg(test)]` boundary at line 516, which
+  is the check that distinguishes a wired control from a tested one.
+
 - ~~Nothing writes to `Telemetry`.~~ The kernel now records at the seams where
   facts become known, and a collector scrapes the brains. The deeper defect
   this uncovered: the four Cloud Monitoring alert policies queried metric names
@@ -86,20 +95,22 @@ drops what it once said was broken cannot be audited against.
 
 **Still open:**
 
-- **Live data sources are unwired.** `qip-fastbrain`'s `feed.rs` can open
-  `Synthetic` or `Replay` and nothing else, so every deployment's data is
-  generated or replayed. The live REST adapter exists and is reached only from
-  tests. This is the largest remaining gap in canonical area 1, and the egress
-  proxy landing is what unblocks it.
+- **No live data source has been proven end to end.** The wiring is no longer
+  the gap: `feed.rs` now declares `Live(Box<RestMarketDataAdapter>)` at line 61
+  and constructs it at line 108 behind the licensing gate, alongside
+  `Synthetic` and `Replay`. What is still missing is evidence — no deployment
+  has been observed absorbing a cycle of real data through it, so the honest
+  statement is that the path exists and has not been exercised, which is a
+  different gap from the one this document used to describe.
 - **`workload_metrics_exist` is still `false`** in every environment, and
   correctly so: the endpoints exist and a collector is declared, but no pod has
   been observed to scrape. Flipping it requires that evidence.
 - **The Secret Manager CSI credential chain has never been exercised live.**
 - **`infra.yml down` has never been run against a live cluster.**
-- **Multi-leg execution is unbuilt** — reservation, deadlines, leg risk and
-  unwind. Canonical area 5's remaining half.
-- **Champion/challenger and drift detection are unwired**, so the Evolution
-  Brain has no promotion path.
+- **Capital reservation is unbuilt.** A proposal that passes a capital check
+  does not hold the capital, so two concurrent proposals can each pass against
+  the same free balance. This is what remains of canonical area 5; leg risk,
+  deadlines and unwind landed with `qip-execution-engine/src/multileg.rs`.
 
 ## Latency
 
