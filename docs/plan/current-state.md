@@ -8,7 +8,7 @@ the trading spine. Every number here came from a command whose output was read.
 | Fact | Value |
 |---|---|
 | Rust crates | 59, in 8 groups (`libs`, `services`, `apps`, `edge`, `agents`, `quant`, `runtime`, `tests`) |
-| Tests | 3,177 passing, 0 failing, 0 ignored, across 290 binaries (`cargo test --workspace --no-fail-fast`) |
+| Tests | 3,192 passing, 0 failing, 0 ignored, across 290 binaries (`cargo test --workspace --no-fail-fast`), measured on the commit that added the §6.2 degradation contract |
 | Clippy | 0 warnings, `--all-targets` |
 | Third-party crates | 11 packages, all permitted (`serde`, `serde_json` and their trees) |
 | Frontend | Next.js + TypeScript, 47 tracked files |
@@ -70,8 +70,8 @@ drops what it once said was broken cannot be audited against.
   carries leg risk, deadlines and unwind, on the invariant that a group which
   cannot complete is unwound rather than abandoned.
 - ~~Champion/challenger and drift detection are unwired.~~ Both now have
-  production callers: `apps/qip-deepbrain/src/evolution.rs:41` runs the
-  contest, and `apps/qip-deepbrain/src/learning.rs:279` records a drift report
+  production callers: `apps/qip-deepbrain/src/evolution.rs:426` runs the
+  contest against a policy constructed at `:228`, and `apps/qip-deepbrain/src/learning.rs:279` records a drift report
   built at `:425` — both above the `#[cfg(test)]` boundary at line 516, which
   is the check that distinguishes a wired control from a tested one.
 

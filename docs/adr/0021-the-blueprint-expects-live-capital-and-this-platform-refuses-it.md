@@ -16,7 +16,7 @@ This repository forbids all of it. `.claude/rules/01-security-and-safety.md`
 makes paper trading absolute, ADR 0003 makes it the default and the ceiling,
 and three independent layers hold the line: Terraform refuses the three live
 autonomy levels at plan time
-(`infrastructure/terraform/variables.tf:95-112`), the composition roots refuse
+(`infrastructure/terraform/variables.tf:105-116`), the composition roots refuse
 them at start-up (`AutonomyLevel::deployable`, called at
 `backend/crates/apps/qip-api/src/main.rs:60`,
 `qip-fastbrain/src/main.rs:114` and `qip-deepbrain/src/main.rs:138`), and

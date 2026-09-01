@@ -58,13 +58,97 @@ fn dependency_graph() -> BTreeMap<String, BTreeSet<String>> {
 fn parse_manifest(path: &std::path::Path) -> (String, BTreeSet<String>) {
     let content = std::fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+    let (name, dependencies) = parse_manifest_content(&content);
+    assert!(
+        !name.is_empty(),
+        "{} declares no package name",
+        path.display()
+    );
+    (name, dependencies)
+}
+
+/// Whether a TOML table introduces dependencies the crate's *shipped* code can
+/// call, and the crate name where the header names one directly.
+///
+/// `Some(None)` is a table of dependency keys; `Some(Some(name))` is a table
+/// describing one named dependency; `None` is a table this file must ignore.
+///
+/// Four shapes reach here, because Cargo accepts four:
+/// `[dependencies]`, `[dependencies.qip-foo]`,
+/// `[target.'cfg(unix)'.dependencies]` and
+/// `[target.'cfg(unix)'.dependencies.qip-foo]`. A target-conditional
+/// dependency is shipped code — the condition selects a platform, not a
+/// build stage — so it counts, and missing it would have been a boundary
+/// anyone could step over by adding a `cfg` nobody reads.
+///
+/// Dev and build dependencies are excluded wherever they appear. Dev
+/// dependencies are what a crate's own tests link against and Cargo
+/// deliberately permits cycles among them; a build dependency is linked into
+/// a build script rather than into the crate, so neither is something the
+/// shipped code can call.
+fn shipped_dependency_table(inner: &str) -> Option<Option<&str>> {
+    if inner.contains("dev-dependencies") || inner.contains("build-dependencies") {
+        return None;
+    }
+    let index = inner.find("dependencies")?;
+    let rest = &inner[index + "dependencies".len()..];
+    match rest.strip_prefix('.') {
+        Some(named) => Some(Some(named)),
+        None if rest.is_empty() => Some(None),
+        None => None,
+    }
+}
+
+/// The parser itself, split from the file handling so it can be tested against
+/// the shapes Cargo accepts rather than only against the shapes this
+/// repository happens to use today.
+///
+/// **Three forms, because Cargo accepts three.** This used to recognise only
+/// the dotted key `qip-quantum.workspace = true`, which is what every manifest
+/// in the tree is written in. A dependency written
+/// `qip-quantum = { workspace = true }` contains no `.` in its key and was
+/// therefore invisible to the entire dependency graph — and so was
+/// `[dependencies.qip-quantum]`, because the section header never equalled
+/// `[dependencies]`.
+///
+/// That is the failure this function exists to prevent, and it is worth being
+/// precise about how bad it was: every boundary test in this file is an
+/// assertion that some edge is *absent*, so an edge the parser could not see
+/// was an edge that did not exist as far as any of them were concerned.
+/// Someone adding `qip-ai = { workspace = true }` to the risk engine — a form
+/// cargo accepts and a reviewer would not blink at — would have kept the whole
+/// file green.
+///
+/// No style is mandated in exchange. Enforcing the dotted form everywhere
+/// would work, and would make the guarantee depend on a convention nothing
+/// checks rather than on the parser.
+fn parse_manifest_content(content: &str) -> (String, BTreeSet<String>) {
     let mut name = String::new();
     let mut dependencies = BTreeSet::new();
     let mut section = String::new();
+    let mut in_shipped_dependencies = false;
     for line in content.lines() {
         let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
         if line.starts_with('[') {
             section = line.to_string();
+            let inner = line.trim_start_matches('[').trim_end_matches(']');
+            in_shipped_dependencies = match shipped_dependency_table(inner) {
+                // `[dependencies.qip-foo]` and
+                // `[target.'cfg(unix)'.dependencies.qip-foo]` are themselves
+                // the declaration. The keys that follow describe that one
+                // dependency, so they are not scanned as further names.
+                Some(Some(crate_name)) => {
+                    if crate_name.starts_with("qip-") {
+                        dependencies.insert(crate_name.to_string());
+                    }
+                    false
+                }
+                Some(None) => true,
+                None => false,
+            };
             continue;
         }
         if section == "[package]"
@@ -73,19 +157,74 @@ fn parse_manifest(path: &std::path::Path) -> (String, BTreeSet<String>) {
         {
             name = quoted.to_string();
         }
-        if section == "[dependencies]"
-            && let Some(crate_name) = line.split_once('.').map(|(left, _)| left.trim())
-            && crate_name.starts_with("qip-")
-        {
-            dependencies.insert(crate_name.to_string());
+        if in_shipped_dependencies {
+            // Form one is `qip-foo.workspace = true`; form two is
+            // `qip-foo = { workspace = true }`. Taking the key before `=` and
+            // then before any `.` reduces both to the crate name.
+            let Some((key, _)) = line.split_once('=') else {
+                continue;
+            };
+            let key = key.trim();
+            let crate_name = key.split_once('.').map_or(key, |(left, _)| left.trim());
+            if crate_name.starts_with("qip-") {
+                dependencies.insert(crate_name.to_string());
+            }
         }
     }
-    assert!(
-        !name.is_empty(),
-        "{} declares no package name",
-        path.display()
-    );
     (name, dependencies)
+}
+
+#[test]
+fn the_manifest_parser_sees_every_dependency_form_cargo_accepts() {
+    // The regression test for the hole described above. Each of these three
+    // manifests declares exactly one in-tree dependency, in a different one of
+    // the three shapes Cargo permits, and all three must be seen.
+    let dotted = "[package]\nname = \"a\"\n[dependencies]\nqip-quantum.workspace = true\n";
+    let inline = "[package]\nname = \"b\"\n[dependencies]\nqip-quantum = { workspace = true }\n";
+    let table = "[package]\nname = \"c\"\n[dependencies.qip-quantum]\nworkspace = true\n";
+
+    for (label, manifest) in [("dotted", dotted), ("inline", inline), ("table", table)] {
+        let (name, dependencies) = parse_manifest_content(manifest);
+        assert!(!name.is_empty(), "{label}: no package name parsed");
+        assert!(
+            dependencies.contains("qip-quantum"),
+            "{label}: the dependency was invisible to the parser, so every \
+             absent-edge test in this file would pass without checking it"
+        );
+    }
+
+    // And the exclusions still hold, or the parser would be seeing edges that
+    // are not there — which fails in the opposite, noisier direction.
+    let dev = "[package]\nname = \"d\"\n[dev-dependencies]\nqip-quantum.workspace = true\n";
+    let dev_table = "[package]\nname = \"e\"\n[dev-dependencies.qip-quantum]\nworkspace = true\n";
+    for (label, manifest) in [("dev", dev), ("dev-table", dev_table)] {
+        let (_, dependencies) = parse_manifest_content(manifest);
+        assert!(
+            !dependencies.contains("qip-quantum"),
+            "{label}: a dev dependency was counted as a shipped one"
+        );
+    }
+
+    // Third parties are not in-tree edges and must not be collected.
+    let third = "[package]\nname = \"f\"\n[dependencies]\nserde = { workspace = true }\n";
+    assert!(parse_manifest_content(third).1.is_empty());
+
+    // Target-conditional dependencies are shipped code — the condition selects
+    // a platform, not a build stage — so they count. Missing them would leave
+    // a boundary anyone could step over by adding a `cfg` nobody reads.
+    let target_table = "[package]\nname = \"g\"\n[target.'cfg(unix)'.dependencies]\nqip-quantum.workspace = true\n";
+    let target_named = "[package]\nname = \"h\"\n[target.'cfg(unix)'.dependencies.qip-quantum]\nworkspace = true\n";
+    for (label, manifest) in [("target", target_table), ("target-named", target_named)] {
+        assert!(
+            parse_manifest_content(manifest).1.contains("qip-quantum"),
+            "{label}: a target-conditional dependency was invisible"
+        );
+    }
+
+    // Build dependencies are linked into a build script rather than into the
+    // crate, so they are not something the shipped code can call.
+    let build = "[package]\nname = \"i\"\n[build-dependencies]\nqip-quantum.workspace = true\n";
+    assert!(!parse_manifest_content(build).1.contains("qip-quantum"));
 }
 
 /// Everything `root` can reach, transitively.
@@ -436,20 +575,123 @@ fn no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy() {
 
 // --- the solvers ------------------------------------------------------------
 
-/// Every crate that holds a veto, places an order, or issues capital.
+/// Every crate that **vetoes, executes, transfers or issues** — and
+/// deliberately not every crate that touches money.
 ///
-/// Named rather than derived from a directory, because the property is about
-/// authority and not about layout: `qip-lifecycle` decides whether a strategy
-/// may trade at all and `qip-capital` decides how much it may spend, and
-/// neither of them lives beside the risk gate.
+/// The distinction is the whole of this list and an earlier version of this
+/// comment got it wrong, claiming "holds a veto, places an order, or issues
+/// capital" while omitting `qip-portfolio-engine`, which sizes positions and
+/// reaches the solver transitively. Read literally, the old comment described
+/// a property this list did not enforce, which is worse than a narrow rule
+/// honestly stated.
+///
+/// The narrower rule is the correct one, and it is the blueprint's own. §39
+/// puts the optimiser at layer 7 with authority to set "allocation, cycle
+/// selection, path assignment inside the envelope", and the strategy engine
+/// at layer 8 proposing against it. Optimiser output *exists to be consumed*
+/// as policy — grants, budgets, targets, whitelists. A portfolio engine that
+/// turns approved hypotheses into constrained targets is that consumption
+/// working as designed, so forbidding it would outlaw the intended path
+/// rather than protect anything.
+///
+/// What must never reach a solver is the machinery that says **no**, that
+/// places the order, that moves the money, or that mints the authority to do
+/// either: layers 5, 6, 11, 12 and 13. Those are the crates below. The
+/// deliberate exemption for `qip-portfolio-engine` is recorded in
+/// `docs/architecture/algorik-blueprint-traceability.md` rather than left as
+/// an absence somebody has to notice.
+///
+/// Named rather than derived from a directory, because authority is not
+/// inferable from layout — `qip-lifecycle` gates whether a strategy may trade
+/// at all and `qip-compliance` is a lib, and neither lives beside the risk
+/// gate. `every_service_crate_is_classified_for_money_authority` is what stops
+/// that hand-maintenance from silently failing to cover a new crate.
 const NO_SOLVER_AUTHORITY: &[&str] = &[
     "qip-risk-engine",
     "qip-execution-engine",
     "qip-compliance",
     "qip-brokers",
     "qip-capital",
+    "qip-capital-fabric",
     "qip-lifecycle",
 ];
+
+/// The service crates that hold none of those four authorities.
+///
+/// Exists so that the union of the two lists can be checked against the tree.
+/// A new service crate belongs in one of them, and the test below is what
+/// makes that a decision somebody takes rather than an omission nobody sees.
+const NO_MONEY_AUTHORITY: &[&str] = &[
+    "qip-chain",
+    "qip-cost-router",
+    "qip-data-finder",
+    "qip-entity-resolution",
+    "qip-evolution",
+    "qip-learning-engine",
+    "qip-market-ingestion",
+    "qip-mesh",
+    "qip-normalization",
+    "qip-opportunity-engine",
+    "qip-optimization-engine",
+    "qip-portfolio-engine",
+    "qip-prediction",
+    "qip-reasoning-engine",
+    "qip-simulation-engine",
+    "qip-streaming",
+    "qip-training",
+    "qip-twin",
+    "qip-world-model",
+];
+
+#[test]
+fn every_service_crate_is_classified_for_money_authority() {
+    // The silence this removes: `NO_SOLVER_AUTHORITY` is hand-maintained, so
+    // its existence check catches a rename but never an *addition*. A future
+    // `qip-treasury` or `qip-settlement-engine` would get no coverage from
+    // either solver test and nothing whatever would say so.
+    //
+    // Deriving the set from the directory is not available here — authority is
+    // a property of what a crate does, not of where it sits — so the next best
+    // thing is to make the omission fail loudly. Adding a service crate now
+    // forces a decision about whether it can veto, execute, transfer or issue.
+    let services = crates_under("backend/crates/services");
+    assert!(
+        services.len() >= 25,
+        "only {} service crates were found; the walk is not reaching them",
+        services.len()
+    );
+    let mut classified: BTreeSet<String> = BTreeSet::new();
+    classified.extend(NO_SOLVER_AUTHORITY.iter().map(|name| name.to_string()));
+    classified.extend(NO_MONEY_AUTHORITY.iter().map(|name| name.to_string()));
+
+    let unclassified: BTreeSet<&String> = services.difference(&classified).collect();
+    assert!(
+        unclassified.is_empty(),
+        "these service crates are classified neither as holding money \
+         authority nor as lacking it, so no solver-boundary test covers them: \
+         {unclassified:?}"
+    );
+
+    // Both directions. A name left behind after a crate is deleted would make
+    // the check above pass while covering something that is not there.
+    let stale: BTreeSet<&String> = classified
+        .iter()
+        .filter(|name| !services.contains(*name) && name.as_str() != "qip-compliance")
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "these names are classified but are not service crates: {stale:?}"
+    );
+
+    // The two lists must be disjoint, or a crate could be asserted to both
+    // hold and lack authority and the contradiction would never surface.
+    for name in NO_SOLVER_AUTHORITY {
+        assert!(
+            !NO_MONEY_AUTHORITY.contains(name),
+            "{name} appears in both authority lists"
+        );
+    }
+}
 
 #[test]
 fn nothing_that_vetoes_executes_or_moves_money_can_reach_a_quantum_solver() {
@@ -512,6 +754,44 @@ fn no_edge_cell_can_reach_a_quantum_solver() {
             "the edge crate {crate_name} can reach a quantum solver: {reachable:?}"
         );
     }
+    // The vacuity anchor, which this test needed and did not have. Every
+    // assertion above is an absence, so renaming or splitting `qip-quantum`
+    // would make all of them trivially true and this test would go on passing
+    // while checking nothing. Its sibling above carries the same guard; tests
+    // are separate functions and one test's anchor protects only itself.
+    assert!(
+        graph.contains_key("qip-quantum"),
+        "there is no crate called qip-quantum, so every absence asserted here \
+         is trivially true and this test constrains nothing"
+    );
+}
+
+#[test]
+fn a_quantum_solver_cannot_reach_anything_that_vetoes_executes_or_moves_money() {
+    // The other direction, and arguably the more literal reading of "no model
+    // has decision authority": the two tests above stop authority reaching the
+    // solver, and this one stops the solver acquiring authority.
+    //
+    // They are not the same property and neither implies the other. A
+    // dependency from `qip-quantum` to `qip-execution-engine` would leave both
+    // of the above passing, and would mean a solver crate that can construct
+    // an order manager — which is precisely what "quantum output is policy,
+    // never a live instruction" forbids.
+    let graph = dependency_graph();
+    let reachable = reachable_from(&graph, "qip-quantum");
+    for crate_name in NO_SOLVER_AUTHORITY {
+        assert!(
+            !reachable.contains(*crate_name),
+            "the quantum solver can reach {crate_name}, so a solver holds \
+             authority it must never have: {reachable:?}"
+        );
+    }
+    // Anchor: the solver does depend on something, so an empty reachable set
+    // is not what is making the loop pass.
+    assert!(
+        !reachable.is_empty(),
+        "qip-quantum reaches nothing at all, so this test proves nothing"
+    );
 }
 
 // --- layering ---------------------------------------------------------------

@@ -54,7 +54,7 @@ nothing in it reads as a gate that was cleared.
 | §2.1 | Managed services are Google Cloud or IBM only | GCP + IBM Quantum; no third-party SaaS at runtime | ALIGNED | `infrastructure/terraform/modules/`; `libs/qip-quantum/src/provider.rs` | None | — | 0 | `infrastructure` suite |
 | §2.2 | No strategy sends an order | Strategies produce theses/proposals; only a composition root holds an order manager | ALIGNED | `architecture.rs::nothing_outside_a_composition_root_holds_an_order_manager`, `::only_the_edge_cell_itself_holds_an_order_manager` | None | — | 3 | `architecture` suite |
 | §2.2, §39 | No language model touches a trade, cycle or transfer | Enforced by absent dependency edges, transitively | ALIGNED | `architecture.rs::no_safety_critical_engine_can_reach_a_language_model`, `::nothing_that_decides_or_executes_names_the_language_model_interface`, `::an_agent_that_holds_a_language_model_cannot_touch_the_market` | None | — | 0 | `architecture` suite |
-| §2.2, §39 | Quantum output is policy, never a live instruction | No crate that vetoes, executes or issues capital reaches `qip-quantum`; no edge crate does either | ALIGNED | `architecture.rs::nothing_that_vetoes_executes_or_moves_money_can_reach_a_quantum_solver`, `::no_edge_cell_can_reach_a_quantum_solver` — added this pass, three mutations fired | None | — | 15 | `architecture` suite |
+| §2.2, §39 | Quantum output is policy, never a live instruction | No crate that **vetoes, executes, transfers or issues** reaches `qip-quantum`, in either direction; no edge crate does either | PARTIAL | `architecture.rs::nothing_that_vetoes_executes_or_moves_money_can_reach_a_quantum_solver`, `::no_edge_cell_can_reach_a_quantum_solver`, `::a_quantum_solver_cannot_reach_anything_that_vetoes_executes_or_moves_money` | Residual, and deliberate: `qip-portfolio-engine -> qip-optimization-engine -> qip-quantum` is uncovered. See the argued exemption below | Low — sizing from policy is the intended consumption path, not a veto | 15 | `architecture` suite |
 | §2.2, ADR 0006 | A classical baseline runs every time | Computed on every quantum path | ALIGNED | ADR 0006; `services/qip-optimization-engine/src/router.rs` | None | — | 15 | `optimization` tests |
 | §2.2 | Deterministic pre-trade checks never route to a model | `Determinism::Required` returns a type that cannot name a model rung | ALIGNED | `services/qip-cost-router/src/router.rs:404`; `context.rs:27` | None | — | 3 | `cost_router` tests |
 | §2.2 | Risk reads aggregates, never strategy lists | Risk state is aggregate counters | PARTIAL | `libs/qip-risk/src/limits.rs`; `services/qip-risk-engine/` | Assert the O(1)-in-strategy-count property with a test | Low | 10 | A test at two strategy counts |
@@ -91,6 +91,67 @@ argument still holds here.
 - **[PLANE 6/7 — Execution]** Ownership: `qip-edge`. Placement: regional. Authority: veto-only gates plus order placement inside a granted envelope (§39 layers 9–12). Degradation: stale book supplies nothing (`seam.rs:53`), venue health in `qip-routing/src/health.rs` — mechanism-level, not §6.2's capability-level order. Tests: `e2e.rs`, `resilience.rs`, `chaos.rs`.
 - **[PLANE 7/7 — Ledger/wallet/treasury]** Ownership: `qip-capital` + the event log. Placement: global. Authority: records (§39 layer 14). Degradation: undefined. Tests: `truth_loop.rs`, `compliance_proof.rs`. Wallet and treasury do not exist.
 
+### The argued exemption: `qip-portfolio-engine`
+
+Independent review found that `qip-portfolio-engine` reaches the solver
+transitively and is not covered by the boundary test, while the test's own
+comment claimed to cover "every crate that holds a veto, places an order, or
+issues capital". The comment was wrong and has been rewritten; the omission
+was right and is kept, for a reason worth stating.
+
+Blueprint §39 puts the optimiser at layer 7 with authority over "allocation,
+cycle selection, path assignment inside the envelope", and the strategy engine
+at layer 8 proposing against it. Optimiser output *exists in order to be
+consumed* as policy — grants, budgets, targets, whitelists, limits. A
+portfolio engine that turns approved hypotheses into constrained target
+portfolios is that consumption working exactly as designed. Forbidding the
+edge would outlaw the intended path and protect nothing.
+
+So the enforced property is narrower than "touches money" and is now stated as
+what it is: **nothing that vetoes, executes, transfers or issues may reach a
+solver, and no solver may reach any of them.** `qip-portfolio-engine` sizes
+from policy and does none of those four. It is exempt on that argument, not by
+oversight, and `every_service_crate_is_classified_for_money_authority` is what
+stops a future crate from being exempt by oversight.
+
+## §6.2 — the degradation order
+
+Implemented as a capability-level type in
+`backend/crates/libs/qip-contracts/src/degradation.rs`. It composes with, and
+does not replace, the mechanism-level rules already in the tree — a stale book
+supplying nothing (`edge/qip-edge/src/seam.rs:53`) and venue health
+(`edge/qip-routing/src/health.rs`) answer a different question from "the causal
+graph has not been re-estimated, so how large may we size?".
+
+Rows exist only for capabilities this repository actually has. A row for a
+capability that can never be unavailable is a control that cannot fire, and
+this repository has already been bitten by that nine times.
+
+| §6.2 row | Required behaviour | Status | Where |
+|---|---|---|---|
+| Ingestion stalls | Event-driven and prediction-market strategies pause; price-only continue unaffected | ALIGNED | `DegradationState::pauses`; `contracts.rs::an_ingestion_stall_pauses_the_strategies_that_need_the_world_and_no_others` |
+| Causal graph stale | Regime-conditional allocation reverts to unconditional; sizing more conservative | ALIGNED | `allocation_mode`, `sizing_multiplier`; `::a_stale_causal_graph_reverts_to_unconditional_allocation_and_sizes_smaller` |
+| Episodic memory unavailable | Situational-recognition strategies pause; the rest continue | ALIGNED | `::episodic_loss_pauses_only_the_strategies_that_recognise_situations` |
+| Belief state stale beyond TTL | Fixed conservative multiplier; nothing halts | ALIGNED | `::a_belief_state_stale_beyond_its_ttl_falls_back_to_a_fixed_multiplier_and_halts_nothing` |
+| Counterfactual scoring down | No trading impact whatsoever | ALIGNED | `::losing_counterfactual_scoring_changes_no_trading_decision_whatsoever` |
+| Self-model stale | Exploration budget reverts to flat | PLANNED-FUTURE — Phase 9 | No self-model exists (`grep -rln "SelfModel"` returns nothing). Deliberately not represented |
+| Valuation engine down | Illiquid assets frozen at last mark and flagged | PLANNED-FUTURE — Phase 14 | No term-structure, credit or vol-surface engine exists. Deliberately not represented |
+
+Two properties are held beyond the table itself, because both are the kind that
+erode quietly:
+
+- **Absence fails closed.** A capability nobody has reported on reads as
+  `Unavailable`, so a dead reporter cannot be mistaken for a healthy subsystem.
+- **Nothing halts.** `halts()` is a method returning false rather than an
+  absence, so a later change that wants to halt has to come through it and
+  explain itself. Halting belongs to the kill switch an operator holds.
+
+**Not yet wired.** The type has no production caller. It precedes its consumer
+on purpose: the consumer is the signed twelve-item payload (§41.5), whose
+stale-item narrowing is defined in exactly these terms, and that is the next
+slice. Until then this is UNVERIFIED at the platform level by this document's
+own rule, and is recorded as such rather than counted as a working control.
+
 ## The seven layers (§40.5, §41, §45, §46, §47, §48)
 
 `[LAYER n/7 — Name] Current | Keep | Change | Remove | Defer | Verification`
@@ -110,7 +171,7 @@ resolved by reading the code rather than by preferring the newer document.
 
 | Claim | Where | Verdict | Evidence |
 |---|---|---|---|
-| "Nothing currently writes to `Telemetry`" | `.claude/rules/domains/observability.md` | **Stale — the code contradicts it** | `runtime/qip-kernel/src/platform.rs:1668` counts cycles, `:1728-1755` records stage runs, latencies and gauges; `services/qip-market-ingestion/src/service.rs:153,174,191` records at its own seams |
+| "Nothing currently writes to `Telemetry`" | `.claude/rules/domains/observability.md` | **Stale — the code contradicts it** | `runtime/qip-kernel/src/platform.rs:1668` counts cycles and `:1728-1755` records stage runs, latencies and gauges; that registry is served at `apps/qip-api/src/routes.rs:910-912`, so it is a live path and not merely a constructed type. (`qip-market-ingestion/src/service.rs:153,174,191` also records, but `IngestionService` is composed by nothing — `e2e_live.rs:81-85` — so by this document's own rule it is UNVERIFIED and carries no weight here.) |
 | "Telemetry emission was closed" | `docs/plan/gap-matrix.md` item 2 | **Correct** | Same evidence |
 | "Live data sources are unwired; `feed.rs` can open `Synthetic` or `Replay` and nothing else" | `docs/plan/current-state.md` | **Stale** | `apps/qip-fastbrain/src/feed.rs:61` declares `Live(Box<RestMarketDataAdapter>)` and `:108` constructs it behind the licensing gate |
 | "3,078 tests passing" | `docs/plan/current-state.md` | **Stale** | Measured this pass: 3177 passed, 0 failed, 0 ignored across 290 binaries |
@@ -120,11 +181,25 @@ configuration and correcting it is an owner's decision, not an agent's, even
 when the correction is a plain matter of fact. It is listed instead as
 requiring a decision.
 
+## Settled, recorded for completeness
+
+**S1 — real capital at risk.** The blueprint assumes it (§1.3, §25, §37, §38,
+and its Phase 3 gate); this platform refuses it. **This is not an open
+question.** `.claude/rules/00-enterprise-governance.md` calls paper trading
+absolute, ADR 0003 settles it, ADR 0021 records the consequence, and three
+independent layers enforce it. Listing it as a decision awaiting an owner
+would misrepresent a governing rule as negotiable, which is how such rules
+erode.
+
+The consequence is what should be carried forward rather than the question:
+the blueprint's Phase 3 gate is permanently unreachable here, and because it
+is upstream, so are Phase 6 and Phase 8 on the blueprint's own terms. That is
+a limit on what this repository can demonstrate, not a gap in it.
+
 ## Residual conflicts requiring an owner decision
 
 | # | Conflict | Blueprint location | Repository position | Decision required |
 |---|---|---|---|---|
-| C1 | Real capital at risk | §1.3, §25, §37, §38, Phase 3 gate | Paper trading absolute under three layers; ADR 0003, ADR 0021 | Confirm the platform is permanently paper-only, accepting that the blueprint's Phase 3, 6 and 8 gates are unreachable |
 | C2 | Runtime topology | §41.4, §41.6, §45.1 — Cloud Run + one bare C3, no Kubernetes | GKE + Argo CD + Kargo, three commits old; ADR 0011, ADR 0017, ADR 0020 | Adopt the blueprint topology and supersede 0011/0017, or record that §41.4/§41.6 describe a system this one deliberately is not |
 | C3 | Experience layer language | §40 — one Leptos codebase in Rust | Next.js portal and landing; ADR 0001 permits the browser exception | Whether the browser exception survives; a translation is a Phase 13 programme, not a refactor |
 | C4 | Stale factual claim in an instruction file | — | `.claude/rules/domains/observability.md` says nothing writes to `Telemetry`; the code does | Owner to correct the rule file, or to state the rule means something narrower than it reads |

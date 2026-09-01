@@ -28,6 +28,7 @@
 //!   parts do not sum to.
 
 pub mod capital;
+pub mod degradation;
 pub mod edge;
 pub mod feature;
 pub mod gate;
@@ -38,6 +39,7 @@ pub mod time;
 pub mod venue;
 
 pub use capital::{CapitalEnvelope, CapitalGrant, Utilisation};
+pub use degradation::{AllocationMode, Capability, DegradationState, Freshness, StrategyClass};
 pub use edge::{Deduction, DeductionKind, LegPlan, LegStep, NetEdge};
 pub use feature::{FeatureKey, FeatureValue, FeatureVector, Revision};
 pub use gate::{GateOutcome, GateStage, Promotion};

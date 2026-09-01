@@ -766,3 +766,205 @@ fn a_stamped_value_keeps_both_times_through_a_transformation() {
     assert_eq!(doubled.known_at(), t(12));
     assert_eq!(doubled.latency(), Duration::from_secs(2));
 }
+
+// --- degradation: blueprint §6.2 -------------------------------------------
+
+use qip_contracts::degradation::{
+    AllocationMode, Capability, DegradationState, Freshness, StrategyClass,
+};
+
+#[test]
+fn an_ingestion_stall_pauses_the_strategies_that_need_the_world_and_no_others() {
+    // §6.2 row 1. The negative half is the half worth asserting: "price-only
+    // strategies continue unaffected" is a promise the platform makes about an
+    // outage it is *not* going to inflict on itself.
+    let healthy = DegradationState::fully_available();
+    // Premise first. If these already paused, the assertions below would pass
+    // while proving that the stall did nothing.
+    for class in StrategyClass::all() {
+        assert!(
+            !healthy.pauses(class),
+            "{} pauses with every capability fresh, so this test cannot show \
+             that an ingestion stall is what pauses it",
+            class.as_str()
+        );
+    }
+
+    let mut stalled = DegradationState::fully_available();
+    stalled.observe(Capability::Ingestion, Freshness::Unavailable);
+
+    assert!(stalled.pauses(StrategyClass::EventDriven));
+    assert!(stalled.pauses(StrategyClass::PredictionMarket));
+    assert!(
+        !stalled.pauses(StrategyClass::PriceOnly),
+        "a price-only strategy was paused by an ingestion stall it does not \
+         depend on; that is an outage the platform inflicted on itself"
+    );
+    assert!(!stalled.pauses(StrategyClass::SituationalRecognition));
+}
+
+#[test]
+fn a_stale_causal_graph_reverts_to_unconditional_allocation_and_sizes_smaller() {
+    // §6.2 row 2, both halves: the allocation mode changes *and* size becomes
+    // more conservative, because relationships can no longer be reasoned
+    // about.
+    let healthy = DegradationState::fully_available();
+    assert_eq!(healthy.allocation_mode(), AllocationMode::RegimeConditional);
+    assert_eq!(healthy.sizing_multiplier(), dec!("1"));
+
+    let mut stale = DegradationState::fully_available();
+    stale.observe(Capability::CausalGraph, Freshness::Stale);
+
+    assert_eq!(stale.allocation_mode(), AllocationMode::Unconditional);
+    assert!(
+        stale.sizing_multiplier() < healthy.sizing_multiplier(),
+        "a stale causal graph did not size more conservatively"
+    );
+    assert_eq!(stale.sizing_multiplier(), dec!("0.75"));
+}
+
+#[test]
+fn a_belief_state_stale_beyond_its_ttl_falls_back_to_a_fixed_multiplier_and_halts_nothing() {
+    // §6.2 row 4. "Nothing halts" is the operative phrase and is asserted
+    // rather than assumed.
+    let mut stale = DegradationState::fully_available();
+    stale.observe(Capability::BeliefState, Freshness::Stale);
+
+    assert_eq!(stale.sizing_multiplier(), dec!("0.5"));
+    assert!(!stale.halts());
+    for class in StrategyClass::all() {
+        assert!(
+            !stale.pauses(class),
+            "{} paused on a stale belief state; §6.2 says sizing falls back \
+             and nothing halts",
+            class.as_str()
+        );
+    }
+}
+
+#[test]
+fn losing_counterfactual_scoring_changes_no_trading_decision_whatsoever() {
+    // §6.2 row 5, stated in the blueprint as strongly as it is stated here:
+    // counterfactual scoring is entirely a warm-path function, so its loss
+    // slows learning and touches nothing else. This is the test that stops the
+    // learning path from acquiring a veto over the trading path by accident.
+    let healthy = DegradationState::fully_available();
+    let mut lost = DegradationState::fully_available();
+    lost.observe(Capability::CounterfactualScoring, Freshness::Unavailable);
+
+    // The premise: something really did change state.
+    assert_eq!(
+        lost.freshness(Capability::CounterfactualScoring),
+        Freshness::Unavailable
+    );
+    assert!(!lost.narrowed().is_empty());
+
+    assert_eq!(lost.sizing_multiplier(), healthy.sizing_multiplier());
+    assert_eq!(lost.allocation_mode(), healthy.allocation_mode());
+    assert!(!lost.halts());
+    for class in StrategyClass::all() {
+        assert_eq!(
+            lost.pauses(class),
+            healthy.pauses(class),
+            "{} changed behaviour when counterfactual scoring was lost",
+            class.as_str()
+        );
+    }
+    assert!(!Capability::CounterfactualScoring.affects_trading());
+}
+
+#[test]
+fn episodic_loss_pauses_only_the_strategies_that_recognise_situations() {
+    // §6.2 row 3: "the rest continue".
+    let mut lost = DegradationState::fully_available();
+    lost.observe(Capability::EpisodicMemory, Freshness::Unavailable);
+
+    assert!(lost.pauses(StrategyClass::SituationalRecognition));
+    assert!(!lost.pauses(StrategyClass::PriceOnly));
+    assert!(!lost.pauses(StrategyClass::EventDriven));
+    assert!(!lost.pauses(StrategyClass::PredictionMarket));
+}
+
+#[test]
+fn two_degradations_narrow_further_than_either_one_alone() {
+    // Compounding rather than competing. A scheme that took the most
+    // conservative single rule would let the second independent loss of
+    // confidence cost nothing at all.
+    let mut causal = DegradationState::fully_available();
+    causal.observe(Capability::CausalGraph, Freshness::Stale);
+    let mut belief = DegradationState::fully_available();
+    belief.observe(Capability::BeliefState, Freshness::Stale);
+    let mut both = DegradationState::fully_available();
+    both.observe(Capability::CausalGraph, Freshness::Stale);
+    both.observe(Capability::BeliefState, Freshness::Stale);
+
+    // Premise: the two single-loss multipliers differ, so "smaller than both"
+    // is a real constraint rather than a restatement of one of them.
+    assert_ne!(causal.sizing_multiplier(), belief.sizing_multiplier());
+    assert!(both.sizing_multiplier() < causal.sizing_multiplier());
+    assert!(both.sizing_multiplier() < belief.sizing_multiplier());
+    assert_eq!(both.sizing_multiplier(), dec!("0.375"));
+}
+
+#[test]
+fn a_capability_nobody_has_reported_on_reads_as_unavailable() {
+    // Failing closed. A dead reporter must not be indistinguishable from a
+    // healthy subsystem — otherwise the platform sizes as though it still knew
+    // something it had merely stopped being told.
+    let silent = DegradationState::nothing_known();
+    for capability in Capability::all() {
+        assert_eq!(
+            silent.freshness(capability),
+            Freshness::Unavailable,
+            "{} read as something other than unavailable when nothing had \
+             been reported about it",
+            capability.as_str()
+        );
+    }
+    // And the consequence, not merely the reading: silence narrows.
+    assert!(silent.sizing_multiplier() < DegradationState::fully_available().sizing_multiplier());
+    assert_eq!(silent.allocation_mode(), AllocationMode::Unconditional);
+    // Still no halt. Narrowing is total here and the platform keeps running.
+    assert!(!silent.halts());
+}
+
+#[test]
+fn an_unknown_freshness_token_is_refused_rather_than_defaulted() -> Result<()> {
+    // Refuse rather than clamp. A policy file with a typo must stop, not
+    // quietly select the permissive reading.
+    assert_eq!(Freshness::parse("fresh")?, Freshness::Fresh);
+    assert_eq!(Freshness::parse("stale")?, Freshness::Stale);
+    assert_eq!(Freshness::parse("unavailable")?, Freshness::Unavailable);
+
+    let refused = Freshness::parse("Stale");
+    assert!(refused.is_err(), "a differently-cased token was accepted");
+    let message = format!("{}", refused.expect_err("just asserted an error"));
+    assert!(
+        message.contains("fresh") && message.contains("unavailable"),
+        "the refusal does not name the permitted tokens: {message}"
+    );
+
+    // The substring trap this repository has been bitten by: a token that
+    // merely contains a valid one is not a valid one.
+    assert!(Freshness::parse("very_stale").is_err());
+    assert!(Freshness::parse("").is_err());
+    Ok(())
+}
+
+#[test]
+fn nothing_in_the_degradation_table_halts_the_platform() {
+    // §6.2's whole premise. Halting belongs to the kill switch, which an
+    // operator holds; it is never a consequence of a warm-path job being late.
+    let mut worst = DegradationState::nothing_known();
+    for capability in Capability::all() {
+        worst.observe(capability, Freshness::Unavailable);
+    }
+    // Premise: this really is the worst state the type can express.
+    assert_eq!(worst.narrowed().len(), Capability::all().len());
+    assert!(!worst.halts());
+    assert!(
+        !worst.pauses(StrategyClass::PriceOnly),
+        "with every cognitive capability gone, a price-only strategy still \
+         trades on prices; pausing it would be halting by another name"
+    );
+}
