@@ -84,7 +84,32 @@ pub struct WorkReport {
     /// Every gate that said no, and why. A cell must answer "why did nothing
     /// trade" as precisely as "why did this trade".
     pub refusals: Vec<(String, String)>,
+    /// Every internal cross booked this pass (§27.1). A cross is a trade
+    /// between two of the platform's own strategies; it is reported rather
+    /// than merely journaled so a caller can see it without replaying the
+    /// chain.
+    pub crosses: Vec<InternalCross>,
     pub halted: bool,
+}
+
+/// One offsetting portion crossed inside the cell rather than at a venue.
+///
+/// §27.1: the price is the prevailing mid at the netting instant, "never a
+/// price either side chose", and both sides are named because the blueprint
+/// treats a cross as a ledger entry and a regulatory expectation rather than
+/// an optimisation detail.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InternalCross {
+    pub object_id: ObjectId,
+    pub venue: VenueId,
+    /// The matched size — the smaller of the buying and selling sides, which
+    /// is exactly how much never needed a venue.
+    pub quantity: Decimal,
+    /// The prevailing mid at the netting instant, read from the book rather
+    /// than taken from any intent's own reference price.
+    pub price: Decimal,
+    pub bought: Vec<StrategyId>,
+    pub sold: Vec<StrategyId>,
 }
 
 /// An order the cell actually sent.
@@ -907,6 +932,11 @@ impl Cell {
         gateway: &mut dyn Placer,
         report: &mut WorkReport,
     ) -> Result<Option<PlacedOrder>> {
+        // Before the zero-net guard below, deliberately: a net that cancelled
+        // to nothing is the *largest* possible cross, and evaluating crossing
+        // only on the survivors would skip the case the cap exists for.
+        self.cross_internally(net_intent, now, report);
+
         let Some(is_buy) = net_intent.is_buy() else {
             self.journal.record(
                 Decision::Refused {
@@ -989,6 +1019,127 @@ impl Cell {
             price,
             simulated,
         }))
+    }
+
+    /// Book the offsetting part of a net as a cross between its own
+    /// contributors, or refuse it and say why (§27.1).
+    ///
+    /// The matched size is the smaller of the buying and selling sides, which
+    /// is exactly the quantity that never needed a venue. It is computed as a
+    /// minimum rather than as `(gross - |net|) / 2` so that no division enters
+    /// a money path: the two are equal, and only one of them can introduce a
+    /// remainder.
+    ///
+    /// **The cap refuses; it does not clamp.** Above forty percent of gross
+    /// intent the blueprint's objection is that a persistent internal market
+    /// forms whose marks drift from reality — and crossing the permitted forty
+    /// percent and abandoning the rest would build exactly that market, just
+    /// more slowly. Refusing the whole cross leaves the offsetting intents
+    /// netted as before: nothing extra reaches the venue, and nothing is
+    /// booked between strategies.
+    ///
+    /// Crossing changes nothing about what is sent. It is a booking decision
+    /// on top of netting, which has already decided what a venue sees.
+    fn cross_internally(
+        &mut self,
+        net_intent: &NetIntent,
+        now: Timestamp,
+        report: &mut WorkReport,
+    ) {
+        let mut bought = Vec::new();
+        let mut sold = Vec::new();
+        let mut buy_size = Decimal::ZERO;
+        let mut sell_size = Decimal::ZERO;
+        for contributor in &net_intent.contributors {
+            if contributor.signed_size.is_positive() {
+                buy_size += contributor.signed_size;
+                bought.push(contributor.strategy.clone());
+            } else if contributor.signed_size.is_negative() {
+                sell_size -= contributor.signed_size;
+                sold.push(contributor.strategy.clone());
+            }
+        }
+        // Nothing offset, so there is nothing to cross. The common case, and
+        // not a refusal: a net every contributor agreed on has no internal
+        // trade in it to record.
+        if buy_size.is_zero() || sell_size.is_zero() {
+            return;
+        }
+        let crossed = if buy_size < sell_size {
+            buy_size
+        } else {
+            sell_size
+        };
+
+        // Forty percent of gross intent, compared without dividing: the cap is
+        // two fifths, so `crossed * 5 > gross * 2` asks the same question in
+        // exact arithmetic. A multiply that cannot be represented refuses,
+        // because a cap that silently answered "under" on overflow would be a
+        // control that cannot fire.
+        let over_cap = match (
+            crossed.checked_mul(Decimal::from_int(5)),
+            net_intent.gross_size.checked_mul(Decimal::from_int(2)),
+        ) {
+            (Some(five_crossed), Some(two_gross)) => five_crossed > two_gross,
+            _ => true,
+        };
+        if over_cap {
+            self.refuse(
+                report,
+                "internal_cross_cap",
+                &format!(
+                    "crossing {crossed} of {} gross intent on {} exceeds the forty percent cap; \
+                     the cross is refused whole rather than trimmed to the cap, because a cross \
+                     repeated at the cap every interval is the persistent internal market the \
+                     cap exists to prevent",
+                    net_intent.gross_size,
+                    net_intent.object_id.as_str()
+                ),
+                now,
+            );
+            return;
+        }
+
+        // The prevailing mid at the netting instant, read from the book now
+        // rather than taken from `reference_price` — that is the largest
+        // contributor's own stamped price, and §27.1 requires a price neither
+        // side chose. A book that serves no mid refuses the cross instead of
+        // falling back to one, because the fallback is precisely the price the
+        // rule forbids.
+        let mid = self
+            .liquidity
+            .get(&net_intent.venue, &net_intent.object_id)
+            .and_then(|state| state.mid());
+        let Some(price) = mid else {
+            self.refuse(
+                report,
+                "internal_cross_price",
+                "the book serves no mid at the netting instant, and a cross has no price either \
+                 side may choose",
+                now,
+            );
+            return;
+        };
+
+        self.journal.record(
+            Decision::CrossedInternally {
+                object: net_intent.object_id.as_str().to_string(),
+                venue: net_intent.venue.as_str().to_string(),
+                quantity: crossed.to_string(),
+                price: price.to_string(),
+                bought: bought.iter().map(|id| id.as_str().to_string()).collect(),
+                sold: sold.iter().map(|id| id.as_str().to_string()).collect(),
+            },
+            now,
+        );
+        report.crosses.push(InternalCross {
+            object_id: net_intent.object_id.clone(),
+            venue: net_intent.venue.clone(),
+            quantity: crossed,
+            price,
+            bought,
+            sold,
+        });
     }
 
     fn venue_for(&self, object: &ObjectId) -> Option<VenueId> {
@@ -1261,5 +1412,177 @@ fn gap_detail(event: &qip_sequencing::tracker::SequenceEvent) -> Option<(String,
         SequenceEvent::StreamStarted { .. }
         | SequenceEvent::Duplicate { .. }
         | SequenceEvent::GapFilled { .. } => None,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::panic_in_result_fn)]
+mod crossing_tests {
+    //! §27.1's crossing price, tested where the two candidate prices differ.
+    //!
+    //! The behavioural tests in `qip-edge-node` cannot tell the book's mid from
+    //! `NetIntent::reference_price`, because a cell prices every intent off the
+    //! same mid in the same pass and the two numbers are equal there. A
+    //! mutation that priced crosses from the reference price survived those
+    //! tests for exactly that reason. These drive the private seam with a net
+    //! intent whose reference price is deliberately nothing like the book, so
+    //! "the prevailing mid at the netting instant, never a price either side
+    //! chose" becomes an assertion instead of a coincidence.
+
+    use super::*;
+    use qip_contracts::message::{MarketMessage, MessageBody};
+    use qip_contracts::venue::{Origin, VenueStatus};
+    use qip_feature_dag::engine::FeatureEngine;
+    use qip_feature_dag::state::MarketState;
+    use qip_orderbook::venue::VenueState;
+
+    const CELL: &str = "london-1";
+
+    fn object() -> ObjectId {
+        ObjectId::from_string("ACME")
+    }
+
+    fn venue() -> VenueId {
+        VenueId::new("XLON")
+    }
+
+    fn at(seconds: i64) -> Timestamp {
+        Timestamp::from_secs(1_700_000_000).saturating_add(qip_core::Duration::from_secs(seconds))
+    }
+
+    /// A book quoting 99 / 101, so the mid is 100.
+    fn book() -> VenueState {
+        let mut state = VenueState::aggregated(object(), venue(), VenueStatus::Open);
+        for (index, (side, price, size)) in
+            [(BookSide::Bid, "99", "900"), (BookSide::Ask, "101", "300")]
+                .iter()
+                .enumerate()
+        {
+            let message = MarketMessage::new(
+                object(),
+                Origin::new(venue(), "feed-a", 0, index as u64),
+                MessageBody::LevelSet {
+                    side: *side,
+                    price: Decimal::parse(price).expect("a decimal literal"),
+                    quantity: Decimal::parse(size).expect("a decimal literal"),
+                    order_count: None,
+                },
+                at(index as i64),
+                at(index as i64),
+            );
+            state.apply(&message).expect("a well-formed level");
+        }
+        state
+    }
+
+    fn cell_with_book() -> Result<Cell> {
+        let config = CellConfig::new(CELL, "europe-west2").with_venue(venue());
+        let features = FeatureEngine::new(MarketState::default(), qip_core::Duration::from_secs(5));
+        let mut cell = Cell::new(config, features)?;
+        cell.track(book());
+        Ok(cell)
+    }
+
+    /// A net of a 100 buy against a 20 sell: 20 crosses, which is a sixth of
+    /// the 120 gross and so comfortably under the forty percent cap.
+    fn offsetting_net(reference_price: Decimal) -> NetIntent {
+        NetIntent {
+            object_id: object(),
+            venue: venue(),
+            representation: qip_contracts::intent::Representation::Spot,
+            net_size: Decimal::parse("80").expect("a decimal literal"),
+            gross_size: Decimal::parse("120").expect("a decimal literal"),
+            contributors: vec![
+                Contributor {
+                    strategy: StrategyId::new("alpha"),
+                    signed_size: Decimal::parse("100").expect("a decimal literal"),
+                    inputs: Vec::new(),
+                },
+                Contributor {
+                    strategy: StrategyId::new("beta"),
+                    signed_size: Decimal::parse("-20").expect("a decimal literal"),
+                    inputs: Vec::new(),
+                },
+            ],
+            reference_price,
+            cycle_id: None,
+        }
+    }
+
+    #[test]
+    fn a_cross_is_priced_at_the_book_mid_and_not_at_a_price_either_side_chose() -> Result<()> {
+        let mut cell = cell_with_book()?;
+        // A reference price nothing in the book could produce. If the cross
+        // were priced from the net intent, this is the number that would
+        // appear — and it is one contributor's own stamped price, which §27.1
+        // forbids by name.
+        let chosen = Decimal::parse("12345").expect("a decimal literal");
+        let net_intent = offsetting_net(chosen);
+        // The premise: the two candidate prices really do differ here, which
+        // is the whole reason this test exists rather than the behavioural one.
+        let mid = cell
+            .liquidity()
+            .get(&venue(), &object())
+            .and_then(|state| state.mid())
+            .expect("the fixture book serves a mid");
+        assert_ne!(mid, chosen, "the fixture cannot distinguish the two prices");
+
+        let mut report = WorkReport::default();
+        cell.cross_internally(&net_intent, at(10), &mut report);
+
+        assert_eq!(report.crosses.len(), 1, "nothing was crossed: {report:?}");
+        assert_eq!(
+            report.crosses[0].price, mid,
+            "the cross was priced at {} rather than at the mid",
+            report.crosses[0].price
+        );
+        assert_ne!(
+            report.crosses[0].price, chosen,
+            "the cross took the reference price, which is a price one side chose"
+        );
+        assert_eq!(
+            report.crosses[0].quantity,
+            Decimal::parse("20").expect("a decimal literal"),
+            "the matched size is the smaller side, not the net or the gross"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_book_with_no_mid_refuses_the_cross_rather_than_pricing_it_from_the_intent() -> Result<()> {
+        // The fallback §27.1 forbids is exactly the one a careless
+        // implementation reaches for when the book is silent. There is no
+        // price neither side chose available, so there is no cross.
+        let config = CellConfig::new(CELL, "europe-west2").with_venue(venue());
+        let features = FeatureEngine::new(MarketState::default(), qip_core::Duration::from_secs(5));
+        let mut cell = Cell::new(config, features)?;
+        cell.track(VenueState::aggregated(object(), venue(), VenueStatus::Open));
+        // Premise: this book genuinely serves no mid, so the refusal below is
+        // about the price and not about something else.
+        assert!(
+            cell.liquidity()
+                .get(&venue(), &object())
+                .and_then(|state| state.mid())
+                .is_none(),
+            "the fixture book serves a mid, so nothing would be refused"
+        );
+
+        let mut report = WorkReport::default();
+        cell.cross_internally(
+            &offsetting_net(Decimal::parse("12345").expect("a decimal literal")),
+            at(10),
+            &mut report,
+        );
+
+        assert!(report.crosses.is_empty(), "a cross was priced with no mid");
+        assert!(
+            report
+                .refusals
+                .iter()
+                .any(|(gate, _)| gate == "internal_cross_price"),
+            "the refusal did not name the pricing gate: {:?}",
+            report.refusals
+        );
+        Ok(())
     }
 }
