@@ -20,6 +20,7 @@ use qip_capital::envelope::{EnvelopeIssuer, EnvelopeTerms, MAXIMUM_ENVELOPE_VALI
 use qip_capital::exposure::{AggregateExposure, CellPosition, ConcentrationLimits};
 use qip_capital::margin::{MarginModel, assess_liquidity};
 use qip_capital::recall::{RecallReason, RecallRegister, RecallState};
+use qip_capital::reservation::ReservationLedger;
 use qip_contracts::governance::Approval;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
@@ -923,5 +924,176 @@ fn an_allocation_plan_can_be_turned_into_grants_that_together_stay_inside_the_bu
     }
     assert_eq!(granted, plan.allocated());
     assert!(granted <= plan.budget);
+    Ok(())
+}
+
+// --- capital reservations ---------------------------------------------------
+//
+// Gap-matrix item 10. Before the ledger existed, passing a capital check held
+// nothing, so two proposals sized in the same cycle each passed against the
+// same free balance and their sum was a position nobody approved. These tests
+// pin the property that closes it: the check and the hold are one operation.
+
+#[test]
+fn a_second_proposal_against_the_same_free_balance_is_refused_while_the_first_holds_it()
+-> Result<()> {
+    let mut ledger = ReservationLedger::new(dec!("1000000"))?;
+    let each = dec!("600000");
+
+    // Premise: either proposal alone fits the free balance, and together they
+    // do not. Without this the refusal below could be a plain overdraft
+    // rather than the double-spend the ledger exists to prevent.
+    assert!(each <= ledger.free(start()));
+    assert!(each + each > ledger.free(start()));
+
+    ledger.reserve("proposal-1", each, start(), Duration::from_hours(1))?;
+    // Premise: the first check actually holds the capital.
+    let held = ledger
+        .reservation("proposal-1")
+        .expect("the first reservation must exist");
+    assert_eq!(held.amount, each);
+    assert_eq!(ledger.free(start()), dec!("400000"));
+
+    // The property: the second proposal is refused — not clamped to the
+    // 400,000 left, not queued — and the refusal names a way out.
+    let refused = ledger
+        .reserve("proposal-2", each, start(), Duration::from_hours(1))
+        .expect_err("the second proposal passed against capital the first already holds");
+    assert_eq!(refused.code(), "denied");
+    assert!(
+        refused.message().contains("release"),
+        "the refusal must name what to do instead: {refused}"
+    );
+    assert!(ledger.reservation("proposal-2").is_none());
+
+    // And the gate admits a good value: once the first hold is gone, the
+    // same second proposal passes. A gate that refuses everything is not a
+    // control either.
+    ledger.release("proposal-1", start())?;
+    ledger.reserve("proposal-2", each, start(), Duration::from_hours(1))?;
+    Ok(())
+}
+
+#[test]
+fn a_reservation_larger_than_the_free_balance_is_refused_rather_than_clamped() -> Result<()> {
+    let mut ledger = ReservationLedger::new(dec!("500000"))?;
+    let refused = ledger
+        .reserve(
+            "proposal-1",
+            dec!("500001"),
+            start(),
+            Duration::from_hours(1),
+        )
+        .expect_err("an oversized reservation was granted");
+    assert_eq!(refused.code(), "denied");
+    // Nothing was silently taken: a clamp here would be a caller bug that
+    // survives, holding a number nobody asked for.
+    assert!(ledger.reservation("proposal-1").is_none());
+    assert_eq!(ledger.free(start()), dec!("500000"));
+    Ok(())
+}
+
+#[test]
+fn committing_a_reservation_spends_the_capital_rather_than_returning_it() -> Result<()> {
+    let mut ledger = ReservationLedger::new(dec!("1000000"))?;
+    ledger.reserve(
+        "proposal-1",
+        dec!("600000"),
+        start(),
+        Duration::from_hours(1),
+    )?;
+    // Premise: the hold exists and the free balance reflects it.
+    assert!(ledger.reservation("proposal-1").is_some());
+    assert_eq!(ledger.free(start()), dec!("400000"));
+
+    let committed = ledger.commit("proposal-1", start())?;
+    assert_eq!(committed, dec!("600000"));
+    // The capital left the ledger; it did not quietly return to free, which
+    // would let the next proposal spend the same money the fill is spending.
+    assert_eq!(ledger.free(start()), dec!("400000"));
+    assert_eq!(ledger.committed_total(), dec!("600000"));
+    assert!(ledger.reservation("proposal-1").is_none());
+    Ok(())
+}
+
+#[test]
+fn releasing_a_reservation_returns_its_capital_to_the_free_balance() -> Result<()> {
+    let mut ledger = ReservationLedger::new(dec!("1000000"))?;
+    ledger.reserve(
+        "proposal-1",
+        dec!("600000"),
+        start(),
+        Duration::from_hours(1),
+    )?;
+    // Premise: the hold reduced the free balance before the release.
+    assert_eq!(ledger.free(start()), dec!("400000"));
+
+    let returned = ledger.release("proposal-1", start())?;
+    assert_eq!(returned, dec!("600000"));
+    assert_eq!(ledger.free(start()), dec!("1000000"));
+    assert_eq!(ledger.committed_total(), Decimal::ZERO);
+    Ok(())
+}
+
+#[test]
+fn an_unclaimed_reservation_returns_its_capital_at_expiry() -> Result<()> {
+    let mut ledger = ReservationLedger::new(dec!("1000000"))?;
+    ledger.reserve(
+        "proposal-1",
+        dec!("600000"),
+        start(),
+        Duration::from_hours(1),
+    )?;
+
+    // Premise: one instant before expiry the hold still binds — a proposal
+    // for the full balance is still refused.
+    let just_before = start().saturating_add(Duration::from_hours(1) - Duration::from_nanos(1));
+    assert_eq!(ledger.free(just_before), dec!("400000"));
+
+    // At expiry the capital is free again, without anyone calling release:
+    // an abandoned proposal must not pin capital forever.
+    let at_expiry = start().saturating_add(Duration::from_hours(1));
+    assert_eq!(ledger.free(at_expiry), dec!("1000000"));
+    assert!(ledger.reservation("proposal-1").is_none());
+    ledger.reserve(
+        "proposal-2",
+        dec!("1000000"),
+        at_expiry,
+        Duration::from_hours(1),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn an_expired_reservation_cannot_be_committed() -> Result<()> {
+    let mut ledger = ReservationLedger::new(dec!("1000000"))?;
+    ledger.reserve(
+        "proposal-1",
+        dec!("600000"),
+        start(),
+        Duration::from_hours(1),
+    )?;
+    // Premise: before expiry the same commit would have succeeded, so the
+    // refusal below is about the clock and nothing else.
+    assert!(
+        !ledger
+            .reservation("proposal-1")
+            .expect("the reservation must exist")
+            .is_expired(start())
+    );
+
+    let at_expiry = start().saturating_add(Duration::from_hours(1));
+    let refused = ledger
+        .commit("proposal-1", at_expiry)
+        .expect_err("a lapsed hold was committed; the free balance already counts that capital");
+    assert_eq!(refused.code(), "denied");
+    assert!(
+        refused.message().contains("expired"),
+        "the refusal must say the hold lapsed: {refused}"
+    );
+    // Fail closed and account honestly: nothing was committed, and the
+    // capital is back where the free balance already said it was.
+    assert_eq!(ledger.committed_total(), Decimal::ZERO);
+    assert_eq!(ledger.free(at_expiry), dec!("1000000"));
     Ok(())
 }
