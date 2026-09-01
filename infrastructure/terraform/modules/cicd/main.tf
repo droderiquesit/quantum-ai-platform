@@ -34,10 +34,36 @@ resource "google_iam_workload_identity_pool_provider" "github" {
   workload_identity_pool_provider_id = "github"
   display_name                       = "GitHub OIDC"
 
-  # Only this repository, and only on a branch the deployment is allowed from.
-  # A pull request from a fork runs with `assertion.repository` set to the fork,
-  # so this refuses it without anyone having to remember to.
-  attribute_condition = "attribute.repository == '${var.github_repository}'"
+  # Only this repository, and only from a branch of it.
+  #
+  # The comment here used to claim "only on a branch the deployment is allowed
+  # from" beside a condition with no ref term in it at all — a control a
+  # reviewer reads, believes, and therefore never checks. Worse, it claimed a
+  # fork's pull request is refused because `assertion.repository` names the
+  # fork: it does not. A pull request runs in *this* repository's context, so
+  # the repository claim is this repository whoever opened it; what identifies
+  # it is the ref, `refs/pull/<n>/merge`.
+  #
+  # So the ref term is real now, and it bounds the class of ref rather than
+  # naming branches. `refs/heads/` admits every branch and refuses the two ref
+  # classes nobody here authenticates from: `refs/pull/<n>/merge`, which is how
+  # a pull request from anywhere reaches this pool, and `refs/tags/<t>`, which
+  # anyone who can push a tag controls.
+  #
+  # It deliberately does not pin `main` and the default branch. deploy.yml's
+  # automatic path is a `workflow_run`, whose token carries the default
+  # branch, and would survive that — but infra.yml is `workflow_dispatch`,
+  # dispatched against whatever branch the change being applied lives on, and a
+  # two-branch allowlist would refuse every one of those with an audience error
+  # naming neither the branch nor the list. Locking the pipeline out of GCP to
+  # narrow a bound the block below already describes as intentionally wide is a
+  # bad trade: `google_service_account.infra`'s comment states plainly that
+  # anyone who can push a workflow file here can reshape dev, test and stage,
+  # and prod is not applied from this pool at all.
+  #
+  # `attribute.ref` must stay in `attribute_mapping` below; a condition naming
+  # an attribute the provider does not map is rejected at apply time.
+  attribute_condition = "attribute.repository == '${var.github_repository}' && attribute.ref.startsWith('refs/heads/')"
 
   attribute_mapping = {
     "google.subject"       = "assertion.sub"

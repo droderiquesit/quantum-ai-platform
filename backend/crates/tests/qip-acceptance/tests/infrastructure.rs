@@ -219,22 +219,120 @@ fn no_secret_value_appears_in_the_terraform() {
     }
 }
 
+/// The expression the root module passes as `venue_credential_readable`,
+/// evaluated at one autonomy ceiling.
+///
+/// Evaluating the predicate rather than matching its text is the whole point
+/// of this pair of functions. The previous version of the test below asserted
+/// the literal source line `venue_credential_readable =
+/// var.autonomy_ceiling != "paper_trading"`, and that predicate was inverted:
+/// with the three live rungs refused at plan time, `!= "paper_trading"` is
+/// true for exactly `observation` and `advisory` and false for every ceiling
+/// that could use a venue credential. A test that pins source text certifies
+/// whatever is written there, including the bug it was written to prevent —
+/// it passed for as long as the defect existed and would have failed on the
+/// fix.
+///
+/// Deliberately a small evaluator over the two forms this predicate has taken
+/// rather than a general HCL one: an unrecognised form panics naming itself,
+/// so a rewrite makes this check fail loudly instead of quietly stopping.
+fn venue_credential_readable_at(ceiling: &str) -> bool {
+    let root = without_comments(&read("infrastructure/terraform/main.tf"));
+    let expression = root
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("venue_credential_readable ="))
+        .map(str::trim)
+        .expect("the root module passes venue_credential_readable to the secrets module")
+        .to_string();
+
+    if let Some(rest) = expression.strip_prefix("contains([") {
+        let (list, tail) = rest
+            .split_once("],")
+            .unwrap_or_else(|| panic!("`{expression}` is a contains() whose list does not close"));
+        assert_eq!(
+            tail.trim(),
+            "var.autonomy_ceiling)",
+            "`{expression}` tests membership of something other than the ceiling"
+        );
+        return list
+            .split(',')
+            .map(|entry| entry.trim().trim_matches('"'))
+            .any(|entry| entry == ceiling);
+    }
+    if let Some(rest) = expression.strip_prefix("var.autonomy_ceiling ") {
+        if let Some(value) = rest.strip_prefix("== ") {
+            return value.trim().trim_matches('"') == ceiling;
+        }
+        if let Some(value) = rest.strip_prefix("!= ") {
+            return value.trim().trim_matches('"') != ceiling;
+        }
+    }
+    panic!(
+        "`{expression}` is a form this check cannot evaluate. Teach it the new \
+         form — deleting the check leaves the venue credential's IAM grant with \
+         nothing asserting which ceilings it appears at."
+    )
+}
+
 #[test]
 fn the_venue_credential_is_unreadable_where_live_trading_is_impossible() {
     // The infrastructure half of the live-trading control. The application
     // refuses a live order below a live autonomy level; this makes the
     // credential unreadable in an environment that could not use it anyway.
+    //
+    // Asserted per rung, because the failure this exists to catch is a
+    // predicate that is the right shape and the wrong way round.
     let secrets = read("infrastructure/terraform/modules/secrets/main.tf");
     assert!(
         secrets.contains("count = var.venue_credential_readable ? 1 : 0"),
         "the venue credential's IAM binding must be conditional"
     );
 
-    let root = read("infrastructure/terraform/main.tf");
-    assert!(
-        root.contains(r#"venue_credential_readable = var.autonomy_ceiling != "paper_trading""#),
-        "the condition must be the autonomy ceiling"
+    // The premise: which rungs a plan can actually carry. `variables.tf`
+    // refuses the three live ones, so the reachable set is the ladder minus
+    // them — taken from the code's own ladder rather than a literal list here,
+    // so a seventh rung is one this test starts covering.
+    let ladder = qip_risk_engine::autonomy::AutonomyLevel::all();
+    let (live, reachable): (Vec<_>, Vec<_>) = ladder.into_iter().partition(|level| level.is_live());
+    assert_eq!(
+        (live.len(), reachable.len()),
+        (3, 3),
+        "the ladder's live rungs changed; this test's premise needs rewriting"
     );
+
+    // No ceiling a plan can carry creates the grant. `observation` is the one
+    // that mattered: an operator hardening dev to it got a plan that *added*
+    // secretAccessor on the venue credential for the fast brain, because the
+    // predicate was `!= "paper_trading"`. Lowering autonomy handed out the
+    // credential.
+    for level in &reachable {
+        assert!(
+            !venue_credential_readable_at(level.as_str()),
+            "at the `{}` ceiling the venue credential's IAM grant is created. \
+             No order can reach a venue at that rung, and a plan cannot carry \
+             any other kind, so this grant should not exist in any applyable \
+             configuration.",
+            level.as_str()
+        );
+    }
+
+    // And the predicate is keyed to live capability rather than merely switched
+    // off. A bare `false` would satisfy every assertion above while recording
+    // the answer and losing the question, and the next reader would delete the
+    // variable along with the reason the resource exists. None of these three
+    // ceilings can reach a plan — `variables.tf` refuses all of them, which is
+    // exactly why the grant is unreachable — so this asserts what the
+    // expression *means*, not that anything is permitted to trade live.
+    for level in &live {
+        assert!(
+            venue_credential_readable_at(level.as_str()),
+            "the venue credential's grant is not conditioned on the ceiling \
+             being able to use it: `{}` is a live rung and the predicate is \
+             false for it, so the predicate no longer says why the resource is \
+             guarded at all",
+            level.as_str()
+        );
+    }
 }
 
 #[test]
@@ -2141,6 +2239,131 @@ fn the_pipeline_authenticates_without_a_long_lived_key() {
         gaps.contains("GCP_WORKLOAD_IDENTITY_PROVIDER"),
         "the variables the pipeline needs are not documented anywhere"
     );
+}
+
+/// The pool provider's attribute condition, as the CEL expression it is.
+fn wif_attribute_condition() -> String {
+    let cicd = without_comments(&read("infrastructure/terraform/modules/cicd/main.tf"));
+    cicd.lines()
+        .find_map(|line| line.trim().strip_prefix("attribute_condition ="))
+        .map(|value| value.trim().trim_matches('"').to_string())
+        .expect("the pool provider declares an attribute_condition")
+}
+
+/// Whether that condition would admit a token minted for a git ref.
+///
+/// Only the ref terms are evaluated; the repository term is asserted
+/// separately, and a term naming neither is not this function's business. An
+/// unrecognised ref term panics rather than being read as permissive, because
+/// the failure this whole check exists to prevent is a condition that looks
+/// like it binds something and does not.
+fn wif_condition_admits(condition: &str, git_ref: &str) -> bool {
+    let mut admitted = true;
+    let mut ref_terms = 0usize;
+    for term in condition.split("&&").map(str::trim) {
+        if !term.contains("attribute.ref") {
+            continue;
+        }
+        ref_terms += 1;
+        if let Some(rest) = term.strip_prefix("attribute.ref.startsWith(") {
+            admitted &= git_ref.starts_with(rest.trim_end_matches(')').trim_matches('\''));
+        } else if let Some(rest) = term.strip_prefix("attribute.ref == ") {
+            admitted &= git_ref == rest.trim_matches('\'');
+        } else if let Some(rest) = term.strip_prefix("attribute.ref in [") {
+            admitted &= rest
+                .trim_end_matches(']')
+                .split(',')
+                .map(|entry| entry.trim().trim_matches('\''))
+                .any(|entry| entry == git_ref);
+        } else {
+            panic!(
+                "`{term}` is a ref term this check cannot evaluate. Teach it the \
+                 new form rather than deleting the check."
+            );
+        }
+    }
+    assert!(
+        ref_terms > 0,
+        "the pool's attribute condition has no ref term at all: `{condition}`"
+    );
+    admitted
+}
+
+/// The branches deploy.yml's automatic path fires on, read from the workflow.
+fn deploy_workflow_run_branches() -> Vec<String> {
+    let deploy = read(".github/workflows/deploy.yml");
+    let branches: Vec<String> = block_under(&deploy, "branches:")
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("- "))
+        .map(|value| value.trim().trim_matches('"').to_string())
+        .collect();
+    assert!(
+        !branches.is_empty(),
+        "deploy.yml's workflow_run names no branches; this test's premise needs \
+         rewriting"
+    );
+    branches
+}
+
+#[test]
+fn the_pool_admits_only_branches_of_this_repository_and_says_so_truthfully() {
+    // The condition used to be `attribute.repository == '…'` and nothing else,
+    // under a comment claiming "only on a branch the deployment is allowed
+    // from". There was no ref term and `attribute_mapping` bound the ref to
+    // nothing, so any ref of this repository — a pull request's merge ref, a
+    // tag anyone who can push one controls — could exchange a token for an
+    // account holding compute.admin, container.admin, projectIamAdmin,
+    // cloudkms.admin and secretmanager.admin. A comment asserting a control
+    // that does not exist is worse than no comment: it is the reason the next
+    // reader does not check.
+    let condition = wif_attribute_condition();
+    assert!(
+        condition.contains("attribute.repository == '${var.github_repository}'"),
+        "the pool's condition no longer pins the repository: `{condition}`"
+    );
+
+    // The condition may only name attributes the provider maps. One that names
+    // an unmapped attribute is rejected at apply time, so this is the half that
+    // keeps the fix from being a broken apply.
+    let cicd = read("infrastructure/terraform/modules/cicd/main.tf");
+    assert!(
+        sets(&cicd, "\"attribute.ref\"", "\"assertion.ref\""),
+        "the condition constrains attribute.ref and attribute_mapping does not \
+         map it; the provider refuses that at apply time"
+    );
+
+    // Every branch the automatic path fires on is still admitted — read from
+    // deploy.yml so a rename there fails here rather than in GCP.
+    for branch in deploy_workflow_run_branches() {
+        let git_ref = format!("refs/heads/{branch}");
+        assert!(
+            wif_condition_admits(&condition, &git_ref),
+            "the pool refuses `{git_ref}`, which deploy.yml's workflow_run \
+             fires on; the pipeline cannot authenticate to GCP at all"
+        );
+    }
+
+    // And so is a branch nothing has heard of. infra.yml is workflow_dispatch
+    // only, dispatched against the branch carrying the change being applied, so
+    // an allowlist of the two branches above would refuse every real infra run
+    // with an audience error naming neither the branch nor the list.
+    assert!(
+        wif_condition_admits(&condition, "refs/heads/claude/some-working-branch"),
+        "the pool admits only named branches, so infra.yml — dispatched against \
+         whatever branch the change lives on — can never authenticate"
+    );
+
+    // What the ref term is actually for: the ref classes nothing here
+    // authenticates from. A pull request runs in *this* repository's context,
+    // so the repository claim does not distinguish it; the ref does.
+    for refused in ["refs/pull/42/merge", "refs/tags/v1.4.0"] {
+        assert!(
+            !wif_condition_admits(&condition, refused),
+            "the pool admits `{refused}`. Nothing in this repository \
+             authenticates from that ref class, and the account it can \
+             impersonate administers IAM, KMS and Secret Manager."
+        );
+    }
 }
 
 // --- workflow step outputs --------------------------------------------------

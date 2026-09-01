@@ -282,9 +282,38 @@ module "secrets" {
     "qip-market-data-key",
   ]
 
-  # The venue credential is readable only by an environment that could use it.
-  # An environment that cannot trade live has no business holding one.
-  venue_credential_readable = var.autonomy_ceiling != "paper_trading"
+  # The venue credential is readable only by an environment that could use it,
+  # and the only ceilings that could use it are the three live ones.
+  #
+  # This was written `!= "paper_trading"`, which is the same sentence read
+  # backwards. The ladder has six rungs and `variables.tf` refuses the three
+  # live ones at plan time, so the only values that reach here are
+  # `observation`, `advisory` and `paper_trading` — and `!= "paper_trading"` is
+  # true for exactly the two rungs *below* the paper one. The grant it guards
+  # could therefore never appear for the case it was written for, and always
+  # appeared for the two cases with the least use for a venue credential. The
+  # concrete failure: an operator hardening dev to `observation` — the move
+  # `variables.tf` explicitly invites — got a plan that *added*
+  # `roles/secretmanager.secretAccessor` on the venue credential to the fast
+  # brain. Lowering autonomy handed out the credential.
+  #
+  # Naming the live rungs makes the predicate say the property rather than its
+  # complement, and it is false for every configuration that can pass
+  # validation, so no plan this repository can produce creates the grant at
+  # all. That is the intended state, not an accident of the list: the platform
+  # is paper-trading only and nothing here should hold a venue credential.
+  #
+  # Written as the membership test rather than as a bare `false` because
+  # `false` records the current answer and loses the question — the next reader
+  # deletes the variable and with it the reason the resource exists. The cost
+  # of saying it this way is stated rather than discovered: anyone who ever
+  # deletes the plan-time refusal in `variables.tf` re-enables this grant as a
+  # side effect, so that change must revisit this line. Two acceptance tests
+  # stand in the way of it happening quietly —
+  # `no_environment_can_be_applied_at_a_ceiling_that_reaches_a_real_venue` and
+  # `the_venue_credential_is_unreadable_where_live_trading_is_impossible`,
+  # which evaluates this predicate for every rung a plan can carry.
+  venue_credential_readable = contains(["supervised_live", "limited_autonomous_live", "autonomous_live"], var.autonomy_ceiling)
 
   # The console's identity and its one grant, created only where the console
   # has a route to the platform at all (ADR 0018).
