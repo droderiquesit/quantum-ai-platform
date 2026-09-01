@@ -182,46 +182,58 @@ fn run() -> Result<()> {
     let evolution_config =
         qip_deepbrain::evolution::EvolutionConfig::from_lookup(&|name| std::env::var(name).ok())
             .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
-    let adapter: Box<dyn qip_market_ingestion::adapter::DataAdapter> =
-        match std::env::var("QIP_DEEPBRAIN_REPLAY_PATH").ok().as_deref() {
-            Some(path) => Box::new(qip_market_ingestion::replay::ReplayAdapter::open(
+    // The match produces the engine rather than a boxed adapter, because the
+    // synthetic branch needs the environment *before* it is boxed: the
+    // reference universe is derived from the exchange's own instrument list,
+    // and once the environment is behind `dyn DataAdapter` that list is
+    // unreachable.
+    let mut evolution = match std::env::var("QIP_DEEPBRAIN_REPLAY_PATH").ok().as_deref() {
+        Some(path) => qip_deepbrain::evolution::EvolutionEngine::new(
+            evolution_config,
+            Box::new(qip_market_ingestion::replay::ReplayAdapter::open(
                 "replay", path,
             )?),
-            None => {
-                // The bar interval must match the step, or a fast cadence
-                // closes a bar every sixty cycles and the node runs blind for
-                // hours while looking configured — the trap the fast brain's
-                // feed documents, walked into here once before this comment.
-                let synthetic = qip_market_ingestion::synthetic::EnvironmentConfig {
-                    seed: platform.config().seed,
-                    step: config.cycle_interval,
-                    bar_interval: if config.cycle_interval < qip_core::Duration::from_mins(1) {
-                        qip_market::bar::Interval::Second
-                    } else {
-                        qip_market::bar::Interval::Minute
-                    },
-                    ..qip_market_ingestion::synthetic::EnvironmentConfig::default()
-                };
-                Box::new(qip_market_ingestion::synthetic::SyntheticEnvironment::demo(
-                    clock.now(),
-                    synthetic,
-                ))
-            }
-        };
-    let mut evolution = qip_deepbrain::evolution::EvolutionEngine::new(
-        evolution_config,
-        adapter,
-        platform.config().seed,
-        // The research node has no reference-data source yet, so this is
-        // empty and the loop's backtests will refuse every candidate with
-        // "no fill" rather than register a flat equity curve as evidence.
-        // That refusal is the point: before this, an empty universe rejected
-        // every order silently and the gate scored the resulting flat line as
-        // a real holdout. Wiring a reference-data feed is what turns the loop
-        // back on, and until then it is visibly off rather than invisibly
-        // producing nothing.
-        Universe::new(),
-    )?;
+            platform.config().seed,
+            // The replay path has no reference-data source — a tape carries
+            // bars, not listings — so this is empty and the loop's backtests
+            // refuse every candidate with "no fill" rather than register a
+            // flat equity curve as evidence. That refusal is the point:
+            // before it, an empty universe rejected every order silently and
+            // the gate scored the resulting flat line as a real holdout. A
+            // reference source derived from the tape's own instruments is
+            // what would turn the loop on here, and until then the replay
+            // path is visibly off rather than invisibly producing nothing.
+            Universe::new(),
+        )?,
+        None => {
+            // The bar interval must match the step, or a fast cadence
+            // closes a bar every sixty cycles and the node runs blind for
+            // hours while looking configured — the trap the fast brain's
+            // feed documents, walked into here once before this comment.
+            let synthetic = qip_market_ingestion::synthetic::EnvironmentConfig {
+                seed: platform.config().seed,
+                step: config.cycle_interval,
+                bar_interval: if config.cycle_interval < qip_core::Duration::from_mins(1) {
+                    qip_market::bar::Interval::Second
+                } else {
+                    qip_market::bar::Interval::Minute
+                },
+                ..qip_market_ingestion::synthetic::EnvironmentConfig::default()
+            };
+            // One instrument list for prices and reference data alike, with
+            // provenance and licensing stamped synthetic. Deriving the
+            // universe from the environment rather than declaring a second
+            // one is what keeps the two from drifting — a listing the
+            // exchange does not price, or a price the universe does not
+            // list, would each turn the loop quietly off again.
+            qip_deepbrain::evolution::EvolutionEngine::over_synthetic(
+                evolution_config,
+                qip_market_ingestion::synthetic::SyntheticEnvironment::demo(clock.now(), synthetic),
+                platform.config().seed,
+                clock.now(),
+            )?
+        }
+    };
     println!(
         "  evolution:        {}",
         if evolution.enabled() {
