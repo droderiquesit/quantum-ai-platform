@@ -18,6 +18,7 @@ use crate::policy::{VerifiedHalt, VerifiedPolicy};
 use crate::seam::CellLiquidity;
 use qip_contracts::capital::{CapitalGrant, Utilisation};
 use qip_contracts::degradation::{DegradationState, StrategyClass};
+use qip_contracts::intent::{Contributor, Intent, NetIntent, net, netting_ratio};
 use qip_contracts::message::{BookSide, MarketMessage};
 use qip_contracts::signal::{Signal, SignalKind, StrategyId};
 use qip_contracts::venue::{VenueId, VenueStatus};
@@ -70,6 +71,16 @@ impl CellConfig {
 pub struct WorkReport {
     pub signals: Vec<Signal>,
     pub orders: Vec<PlacedOrder>,
+    /// Nets that cancelled to zero: strategies that wanted opposite things,
+    /// whose disagreement never reached a venue. Recorded because a
+    /// cancellation is an outcome the platform should be able to explain, not
+    /// an absence.
+    pub cancelled: Vec<NetIntent>,
+    /// Gross intent over net order volume, per blueprint §27 — the single
+    /// best summary of whether the strategy set has genuine diversity. `None`
+    /// when everything cancelled, because the ratio is unbounded there and a
+    /// sentinel would be a number nobody computed.
+    pub netting_ratio: Option<f64>,
     /// Every gate that said no, and why. A cell must answer "why did nothing
     /// trade" as precisely as "why did this trade".
     pub refusals: Vec<(String, String)>,
@@ -80,7 +91,17 @@ pub struct WorkReport {
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlacedOrder {
     pub order_id: String,
+    /// The largest contributor by absolute intended size, kept so every
+    /// existing reader of this field still sees a strategy. It is no longer
+    /// the whole truth once an order carries more than one — `contributors`
+    /// is — and it is retained rather than removed so the change is additive
+    /// at every seam that already reads it.
     pub strategy: StrategyId,
+    /// Every strategy whose intent this order carries, and how much each
+    /// wanted. This is the mechanism by which a fill remains traceable to the
+    /// strategies that caused it after netting has collapsed them into one
+    /// order.
+    pub contributors: Vec<Contributor>,
     pub object_id: ObjectId,
     pub venue: VenueId,
     pub side: BookSide,
@@ -608,6 +629,10 @@ impl Cell {
 
         let vector = self.features.evaluate(now)?;
         let strategy_ids: Vec<String> = self.deployed.keys().cloned().collect();
+        // Phase one collects; phase two nets; phase three sends. The split is
+        // the blueprint's, and §28 is why the per-strategy gates stay in phase
+        // one rather than moving onto the net.
+        let mut intents: Vec<Intent> = Vec::new();
 
         for id in strategy_ids {
             // A paused strategy does not evaluate at all. Refusing before the
@@ -653,7 +678,22 @@ impl Cell {
             );
             report.signals.push(signal.clone());
 
-            if let Some(order) = self.place(&signal, multiplier, now, gateway, &mut report)? {
+            if let Some(intent) = self.intent_for(&signal, multiplier, now, &mut report)? {
+                intents.push(intent);
+            }
+        }
+
+        // Phase two. Everything the strategies asked for collapses onto one
+        // intent per instrument, venue and representation — so two strategies
+        // buying the same thing send one order and pay the spread once, and
+        // two wanting opposite things cancel without either reaching the
+        // venue. Before this, each strategy placed its own order and the two
+        // could cross each other, which is a self-trade: a regulatory problem
+        // and a pure loss at the same time.
+        let nets = net(intents);
+        report.netting_ratio = netting_ratio(&nets);
+        for net_intent in &nets {
+            if let Some(order) = self.place_net(net_intent, now, gateway, &mut report)? {
                 report.orders.push(order);
             }
         }
@@ -661,15 +701,24 @@ impl Cell {
         Ok(report)
     }
 
-    /// Take one signal through every gate to a venue, or refuse it.
-    fn place(
+    /// Take one signal through every per-strategy gate to an intent, or
+    /// refuse it.
+    ///
+    /// Phase one of the two the blueprint separates. §28 is explicit that
+    /// strategy-level limits are checked *before* netting, "because a strategy
+    /// that has exhausted its budget must not contribute to a net intent at
+    /// all" — so expiry, venue, book staleness, pricing, the degradation
+    /// multiplier and the capital envelope all run here, per strategy, exactly
+    /// as they did when this function placed an order directly. No gate was
+    /// removed and none was reordered; what changed is that the admitted size
+    /// becomes an intent instead of an order.
+    fn intent_for(
         &mut self,
         signal: &Signal,
         multiplier: Decimal,
         now: Timestamp,
-        gateway: &mut dyn Placer,
         report: &mut WorkReport,
-    ) -> Result<Option<PlacedOrder>> {
+    ) -> Result<Option<Intent>> {
         if !signal.is_live(now) {
             self.refuse(report, "signal_expiry", "the signal is no longer live", now);
             return Ok(None);
@@ -821,12 +870,65 @@ impl Cell {
             return Ok(None);
         }
 
+        // Signed, because netting is addition: a buy is positive, a sell is
+        // negative, and two opposing intents of equal size sum to nothing
+        // without anybody writing a conditional that could be got backwards.
+        let signed = if matches!(side, BookSide::Bid) {
+            quantity
+        } else {
+            -quantity
+        };
+        let intent = Intent::new(
+            signal.strategy.clone(),
+            signal.object_id.clone(),
+            venue,
+            signed,
+            price,
+            signal.valid_until,
+        )?;
+        Ok(Some(intent))
+    }
+
+    /// Send one net intent as one order, or record that it cancelled.
+    ///
+    /// Phase three. A net of zero is not a refusal: it is two strategies that
+    /// wanted opposite things, cancelled internally, and the venue never sees
+    /// either — which is the self-trade this whole mechanism exists to
+    /// prevent. It is recorded so the cell can still explain what happened.
+    fn place_net(
+        &mut self,
+        net_intent: &NetIntent,
+        now: Timestamp,
+        gateway: &mut dyn Placer,
+        report: &mut WorkReport,
+    ) -> Result<Option<PlacedOrder>> {
+        let Some(is_buy) = net_intent.is_buy() else {
+            self.journal.record(
+                Decision::Refused {
+                    gate: "internal_cross".to_string(),
+                    reason: format!(
+                        "{} intents on {} at {} cancelled to zero; nothing reached the venue",
+                        net_intent.contributors.len(),
+                        net_intent.object_id.as_str(),
+                        net_intent.venue.as_str()
+                    ),
+                },
+                now,
+            );
+            report.cancelled.push(net_intent.clone());
+            return Ok(None);
+        };
+        let side = if is_buy { BookSide::Bid } else { BookSide::Ask };
+        let quantity = net_intent.order_quantity();
+        let price = net_intent.reference_price;
+        let venue = net_intent.venue.clone();
+
         self.order_sequence += 1;
         let order_id = format!("{}-{}", self.config.cell_id, self.order_sequence);
         let simulated = gateway.is_simulated();
         gateway.place(
             &order_id,
-            &signal.object_id,
+            &net_intent.object_id,
             &venue,
             side,
             quantity,
@@ -834,9 +936,15 @@ impl Cell {
             now,
         )?;
 
-        if let Some(deployed) = self.deployed.get_mut(&key) {
-            deployed.utilisation.gross_committed += quantity * price;
-            deployed.utilisation.orders_sent += 1;
+        // Utilisation is charged per contributor, pro-rata on what each
+        // wanted, so a netted order still spends each strategy's own envelope
+        // rather than one strategy's. The split sums exactly to the order, so
+        // the envelopes together are charged what was actually sent.
+        for (strategy, share) in net_intent.split_fill(quantity) {
+            if let Some(deployed) = self.deployed.get_mut(strategy.as_str()) {
+                deployed.utilisation.gross_committed += share * price;
+                deployed.utilisation.orders_sent += 1;
+            }
         }
         self.fills.push(CellFill {
             order_id: order_id.clone(),
@@ -854,10 +962,22 @@ impl Cell {
             now,
         );
 
+        let largest = net_intent
+            .contributors
+            .iter()
+            .max_by(|left, right| {
+                left.signed_size
+                    .abs()
+                    .cmp(&right.signed_size.abs())
+                    .then_with(|| right.strategy.as_str().cmp(left.strategy.as_str()))
+            })
+            .map_or_else(|| StrategyId::new("unknown"), |c| c.strategy.clone());
+
         Ok(Some(PlacedOrder {
             order_id,
-            strategy: signal.strategy.clone(),
-            object_id: signal.object_id.clone(),
+            strategy: largest,
+            contributors: net_intent.contributors.clone(),
+            object_id: net_intent.object_id.clone(),
             venue,
             side,
             quantity,

@@ -284,7 +284,7 @@ impl NetIntent {
                 .and_then(|numerator| numerator.checked_div(denominator))
                 .unwrap_or(Decimal::ZERO);
             let floored = exact.truncate_dp(SPLIT_SCALE);
-            allocated = allocated + floored;
+            allocated += floored;
             shares.push((contributor.strategy.clone(), floored, exact - floored));
         }
         let mut remainder = filled - allocated;
@@ -306,8 +306,8 @@ impl NetIntent {
                     break;
                 }
                 let step = if remainder < unit { remainder } else { unit };
-                shares[index].1 = shares[index].1 + step;
-                remainder = remainder - step;
+                shares[index].1 += step;
+                remainder -= step;
             }
         }
         shares

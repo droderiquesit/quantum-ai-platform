@@ -1215,9 +1215,7 @@ fn two_different_halts_cannot_share_one_signing_string() {
 
 // --- intent netting: blueprint §27 -------------------------------------------
 
-use qip_contracts::intent::{
-    Contributor, Intent, NetIntent, NettingPolicy, Representation, net, netting_ratio,
-};
+use qip_contracts::intent::{Contributor, Intent, NetIntent, Representation, net, netting_ratio};
 
 fn intent(strategy: &str, object: &str, venue: &str, size: &str) -> Intent {
     Intent::new(

@@ -688,3 +688,339 @@ fn a_replayed_halt_cannot_re_halt_a_released_cell_and_a_fresh_one_still_can() ->
     assert!(cell.is_halted());
     Ok(())
 }
+
+// --- intent netting: the self-trade the cell used to permit -------------------
+
+/// A second strategy over the same instrument, entering on the same feature.
+///
+/// Deliberately identical in everything but its id: two strategies that agree
+/// are the netting case, and two that disagree are built from this by giving
+/// one an opposite rule.
+fn second_strategy(id: &str, kind: SignalKind, size: &str) -> Result<(CompiledStrategy, Program)> {
+    let subject = object("ACME");
+    let pressure =
+        qip_contracts::FeatureKey::new("book_pressure", subject.clone()).with("levels", 5);
+    let mut catalogue = FeatureCatalogue::new();
+    catalogue.declare(pressure.clone(), Type::Statistic)?;
+    let spec = StrategySpec::new(StrategyId::new(id), subject, Duration::from_millis(250))
+        .with_rule(Rule::new(
+            "enter",
+            kind,
+            Expr::feature(pressure).greater_than(Expr::Statistic(0.4)),
+            Expr::Exact(Decimal::parse(size).expect("a decimal literal")),
+            Expr::Statistic(0.62),
+            500,
+        ));
+    let mut compiler = StrategyCompiler::new(catalogue);
+    let compiled = compiler.compile(&spec)?;
+    Ok((compiled, compiler.into_program()))
+}
+
+fn grant_for(strategy: &str) -> Result<VerifiedEnvelope> {
+    grant_over(strategy, vec![venue("XLON")])
+}
+
+fn grant_over(strategy: &str, venues: Vec<VenueId>) -> Result<VerifiedEnvelope> {
+    let build = |signature: &str| {
+        qip_contracts::capital::CapitalEnvelope::new(
+            StrategyId::new(strategy),
+            CELL,
+            dec!("1000000"),
+            dec!("100000"),
+            dec!("50000"),
+            venues.clone(),
+            start(),
+            t(3600),
+            "alice@example.com",
+            signature,
+        )
+    };
+    let unsigned = build("unsigned")?;
+    let signed = build(&sign_payload(ENVELOPE_KEY, &unsigned.signing_payload()))?;
+    VerifiedEnvelope::verify(signed, ENVELOPE_KEY, CELL, t(10))
+}
+
+/// The armed cell, plus a second strategy trading the same instrument.
+fn cell_with_two_strategies(kind: SignalKind, size: &str) -> Result<Cell> {
+    let mut cell = armed_cell()?;
+    let (compiled, program) = second_strategy("book-pressure-two", kind, size)?;
+    cell.deploy(compiled, program, grant_for("book-pressure-two")?)?;
+    Ok(cell)
+}
+
+/// The same pair, but the second strategy's envelope does not cover the venue
+/// the cell trades — so its per-strategy gate refuses before netting sees it.
+fn cell_with_a_barred_second_strategy(kind: SignalKind, size: &str) -> Result<Cell> {
+    let mut cell = armed_cell()?;
+    let (compiled, program) = second_strategy("book-pressure-two", kind, size)?;
+    let elsewhere = grant_over("book-pressure-two", vec![venue("XPAR")])?;
+    cell.deploy(compiled, program, elsewhere)?;
+    Ok(cell)
+}
+
+#[test]
+fn two_strategies_agreeing_send_one_order_carrying_both_contributors() -> Result<()> {
+    // Blueprint §27's first row. Before netting, each deployed strategy placed
+    // its own order: two agreeing strategies sent two orders, paid the spread
+    // twice, and showed the venue two prints where the platform meant one.
+    let mut cell = cell_with_two_strategies(SignalKind::Enter, "100")?;
+    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
+
+    let report = cell.work(t(20), &mut gateway)?;
+    // The premise: both strategies really did fire. A netting assertion over
+    // one signal would pass while proving that the second never ran.
+    assert_eq!(
+        report.signals.len(),
+        2,
+        "the fixture needs two firing strategies, got {}",
+        report.signals.len()
+    );
+    assert_eq!(
+        report.orders.len(),
+        1,
+        "two agreeing strategies sent {} orders; netting did not collapse them",
+        report.orders.len()
+    );
+    let order = &report.orders[0];
+    assert_eq!(
+        order.contributors.len(),
+        2,
+        "the order carries {} contributor(s), so a fill cannot be traced back \
+         to both strategies that caused it",
+        order.contributors.len()
+    );
+    // Contributor sizes sum to what was actually sent.
+    let summed: Decimal = order
+        .contributors
+        .iter()
+        .map(|contributor| contributor.signed_size)
+        .fold(Decimal::ZERO, |a, b| a + b);
+    assert_eq!(summed.abs(), order.quantity);
+    assert_eq!(
+        gateway.submitted_count(),
+        1,
+        "the venue saw more than one order"
+    );
+    Ok(())
+}
+
+#[test]
+fn two_strategies_disagreeing_cross_internally_and_the_venue_sees_nothing() -> Result<()> {
+    // The self-trade. Before netting, one strategy's buy and another's sell
+    // both reached the venue and could match each other — a regulatory
+    // problem and a pure loss at once, and the defect this slice exists to
+    // remove. Now they cancel internally and neither order is sent.
+    let mut cell = cell_with_two_strategies(SignalKind::Exit, "100")?;
+    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
+    gateway.seed_touch(&object("ACME"), Side::Buy, dec!("100"), dec!("500"), t(15))?;
+
+    let report = cell.work(t(20), &mut gateway)?;
+    // Premise first, and it is the whole test: both strategies fired, in
+    // opposite directions. Without this the assertions below would pass on a
+    // cell that simply did nothing.
+    assert_eq!(
+        report.signals.len(),
+        2,
+        "the fixture needs two firing strategies"
+    );
+    assert!(
+        report.signals.iter().any(|s| s.kind == SignalKind::Enter)
+            && report.signals.iter().any(|s| s.kind == SignalKind::Exit),
+        "the two strategies did not disagree, so nothing could cross"
+    );
+
+    assert!(
+        report.orders.is_empty(),
+        "opposing intents reached the venue as {} order(s) — this is the \
+         self-trade netting exists to prevent",
+        report.orders.len()
+    );
+    assert_eq!(
+        gateway.submitted_count(),
+        0,
+        "the venue saw an order from two intents that cancelled"
+    );
+    assert_eq!(
+        report.cancelled.len(),
+        1,
+        "the cancellation was not recorded, so the cell cannot explain why it \
+         was quiet"
+    );
+    let cancelled = &report.cancelled[0];
+    assert_eq!(cancelled.contributors.len(), 2);
+    assert!(cancelled.is_cancelled());
+    // Gross survives: something was intended even though nothing was sent.
+    assert!(cancelled.gross_size.is_positive());
+    Ok(())
+}
+
+#[test]
+fn the_netting_ratio_reports_what_the_strategy_set_actually_cost() -> Result<()> {
+    // §27 calls the ratio the single best summary of strategy-set diversity.
+    // The case is chosen so the number is not one: a 100 buy against a 40
+    // sell partially offsets, so gross and net genuinely differ and a ratio
+    // hard-coded to 1.0 — or computed from the net alone — cannot pass. Two
+    // agreeing strategies would give exactly one and prove nothing.
+    let mut cell = cell_with_two_strategies(SignalKind::Exit, "40")?;
+    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
+    gateway.seed_touch(&object("ACME"), Side::Buy, dec!("100"), dec!("500"), t(15))?;
+
+    let report = cell.work(t(20), &mut gateway)?;
+    // Premise: both fired, in opposite directions, and something survived the
+    // offset. Without all three the ratio below would describe a different
+    // situation than the one the test claims to cover.
+    assert_eq!(
+        report.signals.len(),
+        2,
+        "the fixture needs two firing strategies"
+    );
+    assert_eq!(
+        report.orders.len(),
+        1,
+        "a partial offset must still send the surviving remainder"
+    );
+    let order = &report.orders[0];
+    assert_eq!(order.contributors.len(), 2);
+
+    // Gross and net are read off the order the cell actually sent, so the
+    // expectation is not a constant copied from the implementation.
+    let gross = order
+        .contributors
+        .iter()
+        .map(|contributor| contributor.signed_size.abs())
+        .fold(Decimal::ZERO, |a, b| a + b);
+    assert!(
+        gross > order.quantity,
+        "the premise failed: nothing offset, so gross {gross} equals net {}",
+        order.quantity
+    );
+    let expected = gross.to_f64() / order.quantity.to_f64();
+    assert!(
+        expected > 1.1,
+        "the offset was too small to distinguish a real ratio from one"
+    );
+
+    let ratio = report
+        .netting_ratio
+        .expect("an order was sent, so the ratio is defined");
+    assert!(
+        (ratio - expected).abs() < 1e-9,
+        "the cell reported a netting ratio of {ratio}, but the order it sent \
+         implies {expected}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_strategy_its_own_envelope_refuses_never_reaches_the_netting_set() -> Result<()> {
+    // §28's ordering, and the reason it is an ordering rather than a
+    // preference: the per-strategy gates run *before* netting, "because a
+    // strategy that has exhausted its budget must not contribute to a net
+    // intent at all". Run the other way round, a refused strategy's phantom
+    // sell would still cancel a permitted strategy's buy, and the cell would
+    // sit out a trade it was entitled to make on the strength of an order
+    // nobody was allowed to send.
+    let mut cell = cell_with_a_barred_second_strategy(SignalKind::Exit, "100")?;
+    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
+    gateway.seed_touch(&object("ACME"), Side::Buy, dec!("100"), dec!("500"), t(15))?;
+
+    let report = cell.work(t(20), &mut gateway)?;
+    // Premise, in three parts: both strategies fired, they disagreed, and the
+    // second was genuinely refused by its own envelope. Drop any one and the
+    // assertion below describes a different situation.
+    assert_eq!(
+        report.signals.len(),
+        2,
+        "the fixture needs two firing strategies"
+    );
+    assert!(
+        report.signals.iter().any(|s| s.kind == SignalKind::Enter)
+            && report.signals.iter().any(|s| s.kind == SignalKind::Exit),
+        "the two strategies did not disagree, so the ordering would not matter"
+    );
+    assert!(
+        report.refusals.iter().any(|(gate, _)| gate == "capital"),
+        "the second strategy was not refused by its envelope: {:?}",
+        report.refusals
+    );
+
+    assert_eq!(
+        report.orders.len(),
+        1,
+        "the permitted strategy's order was cancelled by a strategy that was \
+         never allowed to trade"
+    );
+    let order = &report.orders[0];
+    assert_eq!(
+        order.contributors.len(),
+        1,
+        "a refused strategy is carried as a contributor to a live order"
+    );
+    assert_eq!(order.contributors[0].strategy.as_str(), STRATEGY);
+    assert_eq!(order.side, BookSide::Ask);
+    assert!(
+        report.cancelled.is_empty(),
+        "a refused strategy still cancelled something"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_netted_order_spends_every_contributing_strategy_s_own_envelope() -> Result<()> {
+    // Netting collapses two strategies into one order, and the capital that
+    // order commits has to come out of both envelopes in proportion to what
+    // each asked for. Charging it all to one strategy would let the other keep
+    // spending capital it has already used, which is a limit that cannot fire.
+    let mut cell = cell_with_two_strategies(SignalKind::Exit, "40")?;
+    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
+    gateway.seed_touch(&object("ACME"), Side::Buy, dec!("100"), dec!("500"), t(15))?;
+
+    let report = cell.work(t(20), &mut gateway)?;
+    assert_eq!(report.orders.len(), 1, "the premise needs one netted order");
+    let order = &report.orders[0];
+    assert_eq!(
+        order.contributors.len(),
+        2,
+        "the premise needs two contributors"
+    );
+
+    let delta = cell.state_delta(&report, t(20));
+    let charge = |strategy: &str| -> Decimal {
+        delta
+            .utilisation
+            .iter()
+            .find(|entry| entry.strategy.as_str() == strategy)
+            .map(|entry| entry.utilisation.gross_committed)
+            .expect("both strategies are deployed, so both report utilisation")
+    };
+    let big = charge(STRATEGY);
+    let small = charge("book-pressure-two");
+
+    // Both spent something: an all-to-the-largest charge leaves the other at
+    // zero and its envelope untouched.
+    assert!(
+        big.is_positive() && small.is_positive(),
+        "one contributor was charged nothing: {big} and {small}"
+    );
+    // Together they were charged exactly what was sent — not what was asked.
+    // Charging each its own unnetted ask would total the gross, which is
+    // larger, and would overstate the capital actually at risk.
+    assert_eq!(
+        big + small,
+        order.quantity * order.price,
+        "the envelopes together were charged {} for an order worth {}",
+        big + small,
+        order.quantity * order.price
+    );
+    // And in the right direction: the strategy that asked for more paid more.
+    assert!(
+        big > small,
+        "the larger contributor was charged {big} against the smaller's {small}"
+    );
+    Ok(())
+}
