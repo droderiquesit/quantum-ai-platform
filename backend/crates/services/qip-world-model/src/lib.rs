@@ -25,7 +25,7 @@ pub mod state;
 pub mod world;
 
 pub use causal::{CausalEdge, CausalGraph, Effect, Mechanism, PropagationResult};
-pub use features::{Feature, FeatureStore, FeatureValue};
+pub use features::{FEATURE_HISTORY, Feature, FeatureLookup, FeatureStore, FeatureValue};
 pub use graph::{Fact, KnowledgeGraph, Node, NodeKind};
 pub use liquidity::{
     Concentration, DepthObservation, LiquidityDrift, LiquidityMap, LiquidityTopology, VenueDepth,
