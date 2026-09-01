@@ -424,8 +424,17 @@ regionally.
 
 §27 and §27.1 are now implemented at the cell: intents, netting, contributor
 attribution, self-trade prevention, internal crossing, the crossing cap and the
-netting ratio. §31 in the capability table ("Aggregation, internal crossing,
-contributor attribution, self-trade prevention") is ALIGNED at the edge.
+netting ratio.
+
+The capability the blueprint numbers **31 in its capability list** — "Intent
+Netting: aggregation, internal crossing, contributor attribution, self-trade
+prevention" — is ALIGNED at the edge and absent at the centre. An earlier
+version of this paragraph called that "§31 in the capability table", which was
+wrong twice: the capability list is numbered independently of the sections, and
+**§31 is "The Eight Execution Paths"**, as
+[`blueprint-diagram-reconciliation.md`](blueprint-diagram-reconciliation.md)
+correctly has it. Two documents on this branch used the same token for
+different things. The sections that govern netting are §27, §27.1 and §27.2.
 
 Two things it deliberately did not do, so that nobody reads the above as
 covering them.
@@ -437,6 +446,17 @@ its own `OrderManager`, and the two order paths never meet. Restoring
 `Order::hypotheses` fixed the central plane's own attribution, which was
 discarding a fact it already held; it did not join the edge's contributors to
 it. That join is a real piece of work and it is not done.
+
+**A full cancellation is never crossed, by arithmetic.** The matched size is
+`min(buy, sell)` over a denominator of `buy + sell`, so the ratio cannot exceed
+one half and reaches it exactly when two strategies cancel completely. The
+forty percent cap therefore refuses §27.1's flagship case — "strategies that
+disagree cost nothing to run together" — every time. It is left that way
+deliberately: §27.1 caps crossing "per instrument **per interval**" and never
+defines the interval, and choosing one here to make the case reachable would be
+inventing the parameter that decides when a safety control fires. The behaviour
+is safe (nothing reaches a venue either way) and less than the blueprint asks
+for. Setting the interval is an owner decision.
 
 **Crossing is booked, not settled.** A cross is recorded as having happened —
 journal entry, both sides, price, size — and no position, cash balance or
@@ -458,7 +478,17 @@ that vector rather than needing a second order path beside the netting one.
 legs cannot be silently combined with directional intents before a producer for
 them exists.
 
-The footgun, stated so the next brief can carry it: a leg that forgets
-`as_cycle_leg` is netted against directional flow, and the resulting order is
-correct-looking and wrong. It should be a compile-time obligation on whatever
-constructs legs rather than a convention.
+The footgun is a **blocking precondition on that brief, not a note attached to
+it.** A leg that forgets `as_cycle_leg` is netted against directional flow, and
+the resulting order is well-formed, plausibly sized and wrong — no error, and
+nothing in the journal to notice. `net()` refuses to combine a leg that
+declares itself one, but `Intent` and `NetIntent` have public fields and are
+built by literal, so the declaring is unenforced. Review judged this acceptable
+only because `LegGroup` has zero call sites anywhere, including tests: the
+guard currently protects a path nothing walks.
+
+So the work that adds a leg producer must make the declaration impossible to
+omit — a constructor that only yields no-net intents, or a leg type that cannot
+become an `Intent` without carrying its cycle — **in the same change that adds
+the producer**. Adding the producer first and the enforcement afterwards is the
+ordering the guard exists to prevent.
