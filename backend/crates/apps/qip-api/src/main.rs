@@ -159,6 +159,14 @@ fn run() -> Result<()> {
     // disagree about which cells have gone quiet.
     let cells = Arc::new(CellRegistry::default());
 
+    // Built before the API so the API can be handed the store the overview
+    // page reads from. An API without it runs cycles the page never shows.
+    let web = Arc::new(Web::new(
+        platform.clone(),
+        authenticator.clone(),
+        rate_limiter.clone(),
+        clock.clone(),
+    ));
     let mut api = Api::new(
         platform.clone(),
         authenticator.clone(),
@@ -166,7 +174,8 @@ fn run() -> Result<()> {
         clock.clone(),
     )
     .with_cells(cells.clone())
-    .with_archive(archive.clone());
+    .with_archive(archive.clone())
+    .with_cycle_overview(web.cycle_overview());
     if let Some(mesh) = &mesh {
         api = api.with_mesh(mesh.clone());
     }
@@ -178,7 +187,6 @@ fn run() -> Result<()> {
         rate_limiter.clone(),
         clock.clone(),
     ));
-    let web = Arc::new(Web::new(platform, authenticator, rate_limiter, clock));
     let router = Router::new(api, web).with_console(console);
 
     let server = Server::bind(&address, Arc::new(router), ServerLimits::default())?;

@@ -25,9 +25,52 @@ pub struct Web {
     rate_limiter: Arc<RateLimiter>,
     clock: Arc<dyn qip_core::Clock>,
     /// The last cycle's stages, so the overview has something to show between
-    /// cycles. Kept here rather than in the platform because it is a display
-    /// concern, and the platform should not carry one.
-    last_cycle: Mutex<Vec<StageRow>>,
+    /// cycles. Shared with whatever runs cycles — see [`CycleOverview`].
+    overview: Arc<CycleOverview>,
+}
+
+/// The stages of the last cycle, as the overview page shows them.
+///
+/// Kept outside the platform because it is a display concern the platform
+/// should not carry, and outside [`Web`] because `Web` never runs a cycle: the
+/// API's `POST /cycle` does. For the process lifetime this store was private
+/// to `Web` and nothing wrote to it, so the stage overview rendered empty after
+/// every cycle the process ran — indistinguishable, to an operator, from a
+/// process that had never cycled. The handle is shared so the route that runs
+/// the cycle is the one that records it.
+#[derive(Debug, Default)]
+pub struct CycleOverview {
+    rows: Mutex<Vec<StageRow>>,
+}
+
+impl CycleOverview {
+    /// Record a cycle's stages for the overview.
+    ///
+    /// A poisoned lock leaves the previous rows in place rather than failing
+    /// the cycle: the cycle already ran, and a page is not allowed to fail it.
+    pub fn record(&self, report: &qip_kernel::CycleReport) {
+        if let Ok(mut rows) = self.rows.lock() {
+            *rows = report
+                .stages
+                .iter()
+                .map(|outcome| StageRow {
+                    stage: outcome.stage.as_str().to_string(),
+                    ran: outcome.ran,
+                    produced: outcome.produced,
+                    detail: outcome.detail.clone(),
+                })
+                .collect();
+        }
+    }
+
+    /// The rows of the last recorded cycle; empty until one is recorded, and
+    /// empty on a poisoned lock rather than a guess about what was there.
+    pub fn rows(&self) -> Vec<StageRow> {
+        self.rows
+            .lock()
+            .map(|rows| rows.clone())
+            .unwrap_or_default()
+    }
 }
 
 impl std::fmt::Debug for Web {
@@ -50,24 +93,16 @@ impl Web {
             authenticator,
             rate_limiter,
             clock,
-            last_cycle: Mutex::new(Vec::new()),
+            overview: Arc::new(CycleOverview::default()),
         }
     }
 
-    /// Record a cycle's stages for the overview.
-    pub fn record_cycle(&self, report: &qip_kernel::CycleReport) {
-        if let Ok(mut last) = self.last_cycle.lock() {
-            *last = report
-                .stages
-                .iter()
-                .map(|outcome| StageRow {
-                    stage: outcome.stage.as_str().to_string(),
-                    ran: outcome.ran,
-                    produced: outcome.produced,
-                    detail: outcome.detail.clone(),
-                })
-                .collect();
-        }
+    /// The store the overview page reads its stages from.
+    ///
+    /// Hand this to [`crate::routes::Api::with_cycle_overview`]; a `Web`
+    /// whose overview nothing feeds shows no stages however many cycles run.
+    pub fn cycle_overview(&self) -> Arc<CycleOverview> {
+        self.overview.clone()
     }
 
     /// Build the view model from the platform.
@@ -112,11 +147,7 @@ impl Web {
             net_exposure: 0.0,
             paper_only: !platform.orders().has_live_fills(),
 
-            stages: self
-                .last_cycle
-                .lock()
-                .map(|last| last.clone())
-                .unwrap_or_default(),
+            stages: self.overview.rows(),
             opportunities: platform
                 .queue()
                 .iter()

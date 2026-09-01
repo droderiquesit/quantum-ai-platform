@@ -362,6 +362,13 @@ pub struct Api {
     /// the lock order is always platform first, then mesh, and no path takes
     /// them the other way around.
     mesh: Option<Arc<Mutex<crate::mesh::MeshBackbone>>>,
+    /// Where the operator interface reads the last cycle's stages from.
+    ///
+    /// `None` when no interface is mounted alongside this API. When one is,
+    /// this is the only writer: the interface never runs a cycle itself, and
+    /// an API assembled without the handle leaves its overview empty for the
+    /// life of the process — the defect this field exists to close.
+    overview: Option<Arc<crate::web::CycleOverview>>,
     /// The bounds every live connection runs under.
     ///
     /// Held here rather than read from a constant so a test can open a stream
@@ -400,6 +407,7 @@ impl Api {
             cells: Arc::new(CellRegistry::default()),
             archive: None,
             mesh: None,
+            overview: None,
             stream_limits: StreamLimits::default(),
             pulse: Arc::new(HealthPulse::default()),
         }
@@ -435,6 +443,15 @@ impl Api {
     /// a missing one.
     pub fn with_cells(mut self, cells: Arc<CellRegistry>) -> Self {
         self.cells = cells;
+        self
+    }
+
+    /// Record each cycle's stages where the operator interface reads them.
+    ///
+    /// Without this the interface's stage overview stays empty after every
+    /// cycle, which an operator cannot tell from a process that never cycled.
+    pub fn with_cycle_overview(mut self, overview: Arc<crate::web::CycleOverview>) -> Self {
+        self.overview = Some(overview);
         self
     }
 
@@ -592,6 +609,11 @@ impl Api {
             }
             (Method::Post, "/cycle") => {
                 let report = platform.run_cycle(now);
+                // Recorded before anything that can fail below, so the page
+                // shows the cycle even when the archive or the mesh does not.
+                if let Some(overview) = &self.overview {
+                    overview.record(&report);
+                }
                 // The hand-over happens here rather than inside the log's
                 // append, so a disk never sits on the path of an individual
                 // event. What that costs is the events of a cycle that was

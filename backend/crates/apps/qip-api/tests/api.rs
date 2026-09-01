@@ -756,6 +756,16 @@ fn assemble() -> Result<Assembled> {
     let rate_limiter = Arc::new(RateLimiter::new(Duration::from_secs(60), 1000));
     let cells = Arc::new(CellRegistry::default());
 
+    // Wired the way `main.rs` wires it: the API records each cycle where the
+    // interface reads it. A fixture that skipped this would pass every test
+    // while the deployed page stayed empty.
+    let web = Arc::new(Web::new(
+        platform.clone(),
+        authenticator.clone(),
+        rate_limiter.clone(),
+        clock.clone(),
+    ));
+
     Ok(Assembled {
         api: Arc::new(
             Api::new(
@@ -764,21 +774,17 @@ fn assemble() -> Result<Assembled> {
                 rate_limiter.clone(),
                 clock.clone(),
             )
-            .with_cells(cells.clone()),
+            .with_cells(cells.clone())
+            .with_cycle_overview(web.cycle_overview()),
         ),
         console: Arc::new(Console::new(
-            platform.clone(),
-            cells.clone(),
-            authenticator.clone(),
-            rate_limiter.clone(),
-            clock.clone(),
-        )),
-        web: Arc::new(Web::new(
             platform,
+            cells.clone(),
             authenticator,
             rate_limiter,
             clock.clone(),
         )),
+        web,
         cells,
         clock,
     })
@@ -933,6 +939,53 @@ fn running_a_cycle_through_the_api_traverses_every_stage() -> Result<()> {
     assert_eq!(response.status, 202);
     let body = String::from_utf8(response.body).unwrap();
     assert!(body.contains("\"traversed_every_stage\":true"), "{body}");
+    Ok(())
+}
+
+/// The overview page reads its stages from a store only the cycle route
+/// writes. Until this was wired, nothing wrote it: the store was private to
+/// the interface, the interface never ran a cycle, and the stage overview
+/// rendered empty for the life of every process — which an operator cannot
+/// tell from "no cycle has run". Driven through the router, as a browser
+/// would, so the seam under test is the one that is deployed.
+#[test]
+fn a_cycle_run_through_the_router_reaches_the_operator_interfaces_stage_overview() -> Result<()> {
+    let assembled = assemble()?;
+    let overview = assembled.web.cycle_overview();
+    // Premise: nothing has been recorded before a cycle runs.
+    assert!(
+        overview.rows().is_empty(),
+        "the overview held stages before any cycle ran"
+    );
+
+    let router = Router::new(assembled.api.clone(), assembled.web.clone());
+    let response = router.handle(&request(
+        Method::Post,
+        "/api/v1/cycle",
+        Some("operator-token"),
+    ));
+    assert_eq!(response.status, 202);
+
+    let rows = overview.rows();
+    assert!(
+        !rows.is_empty(),
+        "the cycle ran and the operator interface's stage overview is still empty"
+    );
+    let stages: Vec<&str> = rows.iter().map(|row| row.stage.as_str()).collect();
+    // Exact tokens, not substrings: every stage of the loop, in cycle order.
+    assert_eq!(
+        stages,
+        [
+            "sense",
+            "understand",
+            "discover",
+            "reason",
+            "simulate",
+            "decide",
+            "act",
+            "learn"
+        ]
+    );
     Ok(())
 }
 

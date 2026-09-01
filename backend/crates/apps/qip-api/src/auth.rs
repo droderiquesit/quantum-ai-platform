@@ -204,14 +204,18 @@ impl UnrecognisedAttempts {
 ///
 /// # What the budget does and does not buy
 ///
-/// Once the budget is spent, an unrecognised token is refused **without being
-/// compared against any credential**, and stays refused until the window turns
-/// over. A valid credential is unaffected, and that asymmetry is the whole
-/// design: a budget that also refused valid tokens would be a lockout any
-/// anonymous caller could trip with ten wrong guesses, and the callers it would
-/// lock out are the operators holding the halt and kill-switch routes. Trading
-/// a guessing risk for a control-plane outage is not a trade this platform
-/// makes.
+/// Every presented token is compared against every credential, spent budget
+/// or not; the budget is consulted only after the comparison finds no match.
+/// What a spent budget changes is the refusal — its message names the flood
+/// and the wait, and the state it leaves behind is one an operator can read —
+/// not whether the comparison ran. That ordering is deliberate rather than an
+/// oversight. Refusing before comparing would be cheaper under a flood, but
+/// it would also refuse a valid token once the budget was spent, which is a
+/// lockout any anonymous caller could trip with ten wrong guesses — and the
+/// callers it would lock out are the operators holding the halt and
+/// kill-switch routes. Trading a guessing risk for a control-plane outage is
+/// not a trade this platform makes, so the cost of the comparison is paid on
+/// every attempt and the budget never stands between an operator and a halt.
 ///
 /// The consequence, stated plainly rather than left for a reader to discover:
 /// because matching happens before the budget is consulted, a *correct* guess
