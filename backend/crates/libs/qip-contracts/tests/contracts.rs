@@ -1212,3 +1212,333 @@ fn two_different_halts_cannot_share_one_signing_string() {
         "two different payload addresses share one signing string"
     );
 }
+
+// --- intent netting: blueprint §27 -------------------------------------------
+
+use qip_contracts::intent::{
+    Contributor, Intent, NetIntent, NettingPolicy, Representation, net, netting_ratio,
+};
+
+fn intent(strategy: &str, object: &str, venue: &str, size: &str) -> Intent {
+    Intent::new(
+        StrategyId::new(strategy),
+        ObjectId::from_string(object),
+        VenueId::new(venue),
+        Decimal::parse(size).expect("a decimal literal"),
+        dec!("100"),
+        t(3_600),
+    )
+    .expect("a non-zero intent")
+}
+
+#[test]
+fn opposing_intents_cancel_internally_and_neither_reaches_the_venue() -> Result<()> {
+    // §27's self-trade row, which is a live defect today: one strategy's buy
+    // crossing another's sell is a regulatory problem and a pure loss at once.
+    // Netting is signed addition precisely so the cancellation is a sum rather
+    // than a conditional somebody can get backwards.
+    let nets = net(vec![
+        intent("momentum", "ACME", "XLON", "100"),
+        intent("reversion", "ACME", "XLON", "-100"),
+    ]);
+    assert_eq!(
+        nets.len(),
+        1,
+        "two intents on one key produced {} nets",
+        nets.len()
+    );
+    let single = &nets[0];
+    // The premise: both strategies really are in the group. A cancellation
+    // computed over one contributor would pass this test while proving that
+    // netting dropped the other one.
+    assert_eq!(single.contributors.len(), 2);
+    assert!(single.is_cancelled(), "opposing intents did not cancel");
+    assert_eq!(single.order_quantity(), Decimal::ZERO);
+    assert_eq!(single.is_buy(), None);
+    // Gross survives the cancellation: something was intended, and the netting
+    // ratio needs to know it even though nothing was sent.
+    assert_eq!(single.gross_size, dec!("200"));
+    Ok(())
+}
+
+#[test]
+fn intents_in_the_same_direction_become_one_order_carrying_both_contributors() -> Result<()> {
+    let nets = net(vec![
+        intent("momentum", "ACME", "XLON", "60"),
+        intent("carry", "ACME", "XLON", "40"),
+    ]);
+    assert_eq!(nets.len(), 1);
+    let single = &nets[0];
+    assert_eq!(single.net_size, dec!("100"));
+    assert_eq!(single.gross_size, dec!("100"));
+    assert_eq!(single.is_buy(), Some(true));
+    // The contributor vector sums to the net. This is the property the whole
+    // attribution chain rests on: a vector that did not sum would attribute a
+    // fill to sizes nobody traded.
+    let summed: Decimal = single
+        .contributors
+        .iter()
+        .map(|contributor| contributor.signed_size)
+        .fold(Decimal::ZERO, |a, b| a + b);
+    assert_eq!(summed, single.net_size);
+    // Premise for that sum: there is more than one contributor, or it holds
+    // trivially and proves nothing about netting.
+    assert_eq!(single.contributors.len(), 2);
+    // Deterministic order, by strategy id ascending.
+    assert_eq!(single.contributors[0].strategy.as_str(), "carry");
+    assert_eq!(single.contributors[1].strategy.as_str(), "momentum");
+    Ok(())
+}
+
+#[test]
+fn a_cycle_leg_is_never_netted_with_a_directional_intent() -> Result<()> {
+    // §27.2: a leg is part of an atomic set, and netting it against a
+    // directional intent silently breaks the cycle's economics — the cycle
+    // still executes, at sizes that no longer close. The refusal is
+    // structural: the leg gets its own group, so there is no code path on
+    // which it joins somebody else's net.
+    let leg = intent("arb", "ACME", "XLON", "50").as_cycle_leg("cycle-7");
+    let nets = net(vec![intent("momentum", "ACME", "XLON", "50"), leg]);
+    assert_eq!(
+        nets.len(),
+        2,
+        "a cycle leg was combined with a directional intent on the same key"
+    );
+    let cycle = nets
+        .iter()
+        .find(|net| net.cycle_id.is_some())
+        .expect("the leg kept its cycle identity");
+    assert_eq!(
+        cycle.contributors.len(),
+        1,
+        "the leg absorbed a contributor"
+    );
+    assert_eq!(cycle.net_size, dec!("50"));
+    // And the directional intent is untouched by the leg's presence.
+    let directional = nets
+        .iter()
+        .find(|net| net.cycle_id.is_none())
+        .expect("the directional intent still nets");
+    assert_eq!(directional.net_size, dec!("50"));
+    assert_eq!(directional.contributors.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn two_legs_of_one_cycle_do_not_net_with_each_other_either() -> Result<()> {
+    // The subtler half of the same rule. Two legs of one cycle that happen to
+    // share an instrument and a venue are still separate legs of an atomic
+    // set; combining them is the same mistake as combining one with a
+    // directional intent, and a group keyed only on the cycle id would make
+    // exactly that mistake.
+    let nets = net(vec![
+        intent("arb", "ACME", "XLON", "30").as_cycle_leg("cycle-7"),
+        intent("arb", "ACME", "XLON", "-30").as_cycle_leg("cycle-7"),
+    ]);
+    assert_eq!(nets.len(), 2, "two legs of one cycle were netted together");
+    assert!(nets.iter().all(|net| !net.is_cancelled()));
+    Ok(())
+}
+
+#[test]
+fn the_netting_key_separates_venues_and_representations() -> Result<()> {
+    // §27.2's two "not netted" rows. Different venues are different executions
+    // at different prices; different representations of one underlying are
+    // different instruments with different risk.
+    let venues = net(vec![
+        intent("momentum", "ACME", "XLON", "50"),
+        intent("momentum", "ACME", "XNYS", "50"),
+    ]);
+    assert_eq!(venues.len(), 2, "two venues were netted into one order");
+
+    let representations = net(vec![
+        intent("momentum", "BTC", "COINBASE", "5"),
+        intent("carry", "BTC", "COINBASE", "-5").with_representation(Representation::Perpetual),
+    ]);
+    assert_eq!(
+        representations.len(),
+        2,
+        "spot and perpetual were netted against each other"
+    );
+    // Premise: without the representation difference these two would have
+    // cancelled, so the separation above is the representation's doing.
+    let same = net(vec![
+        intent("momentum", "BTC", "COINBASE", "5"),
+        intent("carry", "BTC", "COINBASE", "-5"),
+    ]);
+    assert_eq!(same.len(), 1);
+    assert!(same[0].is_cancelled());
+    Ok(())
+}
+
+#[test]
+fn a_fill_splits_across_contributors_and_sums_exactly_to_what_was_traded() -> Result<()> {
+    // Exact attribution, at the seam netting creates. A truncating split loses
+    // a fraction of every fill and a floating-point one invents fractions;
+    // either way the shares stop summing to what was actually traded, and
+    // unexplained P&L is what exact attribution exists to make impossible.
+    //
+    // Thirds are the case that cannot divide evenly, which is why they are
+    // the fixture.
+    let nets = net(vec![
+        intent("alpha", "ACME", "XLON", "1"),
+        intent("beta", "ACME", "XLON", "1"),
+        intent("gamma", "ACME", "XLON", "1"),
+    ]);
+    let single = &nets[0];
+    assert_eq!(
+        single.contributors.len(),
+        3,
+        "the premise needs three ways to split"
+    );
+
+    let filled = dec!("100");
+    let shares = single.split_fill(filled);
+    assert_eq!(shares.len(), 3);
+    let summed: Decimal = shares
+        .iter()
+        .map(|(_, share)| *share)
+        .fold(Decimal::ZERO, |a, b| a + b);
+    assert_eq!(
+        summed,
+        filled,
+        "the split lost or invented {} of the fill",
+        filled - summed
+    );
+    // Every share is a real part of the fill, not a zero standing in for one.
+    assert!(shares.iter().all(|(_, share)| share.is_positive()));
+
+    // A partial fill splits by the same rule and still sums exactly.
+    let partial = single.split_fill(dec!("7"));
+    let partial_sum: Decimal = partial
+        .iter()
+        .map(|(_, share)| *share)
+        .fold(Decimal::ZERO, |a, b| a + b);
+    assert_eq!(partial_sum, dec!("7"));
+    Ok(())
+}
+
+#[test]
+fn the_same_fill_splits_identically_however_the_intents_arrived() -> Result<()> {
+    // Determinism, which the remainder rule owes twice over: the same fill
+    // must split the same way on every machine and in every replay. Equal
+    // remainders are the case where an unstable tie-break would show, so the
+    // fixture is three equal contributors whose remainders are identical.
+    let forward = net(vec![
+        intent("alpha", "ACME", "XLON", "1"),
+        intent("beta", "ACME", "XLON", "1"),
+        intent("gamma", "ACME", "XLON", "1"),
+    ]);
+    let reversed = net(vec![
+        intent("gamma", "ACME", "XLON", "1"),
+        intent("beta", "ACME", "XLON", "1"),
+        intent("alpha", "ACME", "XLON", "1"),
+    ]);
+    let first = forward[0].split_fill(dec!("100"));
+    let second = reversed[0].split_fill(dec!("100"));
+    assert_eq!(
+        first, second,
+        "the same fill split differently depending on the order the intents arrived in"
+    );
+    // The premise: the split really did need a remainder distributed, or the
+    // determinism above is about a case the tie-break never reached.
+    assert!(
+        first.iter().any(|(_, share)| *share != first[0].1),
+        "every share was identical, so no remainder was distributed and the \
+         tie-break was never exercised"
+    );
+
+    // And the tie-break itself, reached directly. `net` sorts contributors by
+    // strategy id, so no vector it builds can exercise the tie — but
+    // `NetIntent` has public fields and a caller may hand `split_fill` a
+    // vector in any order, so the rule has to hold there too. Without the
+    // strategy-id tie-break, a stable sort leaves equal remainders in arrival
+    // order and the leftover unit follows whoever happened to be first.
+    let unsorted = NetIntent {
+        object_id: ObjectId::from_string("ACME"),
+        venue: VenueId::new("XLON"),
+        representation: Representation::Spot,
+        net_size: dec!("3"),
+        gross_size: dec!("3"),
+        contributors: vec![
+            Contributor {
+                strategy: StrategyId::new("gamma"),
+                signed_size: dec!("1"),
+                hypotheses: Vec::new(),
+            },
+            Contributor {
+                strategy: StrategyId::new("alpha"),
+                signed_size: dec!("1"),
+                hypotheses: Vec::new(),
+            },
+            Contributor {
+                strategy: StrategyId::new("beta"),
+                signed_size: dec!("1"),
+                hypotheses: Vec::new(),
+            },
+        ],
+        reference_price: dec!("100"),
+        cycle_id: None,
+    };
+    let split = unsorted.split_fill(dec!("100"));
+    let leader = split
+        .iter()
+        .max_by(|left, right| left.1.cmp(&right.1))
+        .expect("a split");
+    assert_eq!(
+        leader.0.as_str(),
+        "alpha",
+        "the leftover unit went to {} rather than to the lowest strategy id, \
+         so equal remainders are separated by arrival order",
+        leader.0.as_str()
+    );
+    let unsorted_sum: Decimal = split
+        .iter()
+        .map(|(_, share)| *share)
+        .fold(Decimal::ZERO, |a, b| a + b);
+    assert_eq!(unsorted_sum, dec!("100"));
+    Ok(())
+}
+
+#[test]
+fn the_netting_ratio_reports_diversity_and_refuses_to_invent_one() -> Result<()> {
+    // §27 calls this the single best summary of whether a strategy set has
+    // genuine diversity. Two strategies wanting the same thing net to one
+    // order and a ratio of one; two wanting opposite things send nothing, and
+    // the ratio is undefined rather than a sentinel somebody would chart.
+    let agreeing = net(vec![
+        intent("alpha", "ACME", "XLON", "50"),
+        intent("beta", "ACME", "XLON", "50"),
+    ]);
+    let ratio = netting_ratio(&agreeing).expect("a net was sent");
+    assert!(
+        (ratio - 1.0).abs() < 1e-9,
+        "agreeing strategies gave a ratio of {ratio}"
+    );
+
+    let disagreeing = net(vec![
+        intent("alpha", "ACME", "XLON", "50"),
+        intent("beta", "ACME", "XLON", "-50"),
+    ]);
+    assert!(
+        netting_ratio(&disagreeing).is_none(),
+        "a fully cancelled set reported a ratio rather than declining to"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_intent_to_trade_nothing_is_refused_rather_than_carried() {
+    assert!(
+        Intent::new(
+            StrategyId::new("alpha"),
+            ObjectId::from_string("ACME"),
+            VenueId::new("XLON"),
+            Decimal::ZERO,
+            dec!("100"),
+            t(3_600),
+        )
+        .is_err(),
+        "a zero-size intent was admitted into a contributor vector that must sum"
+    );
+}
