@@ -118,7 +118,7 @@ simulating the circuit costs more than solving the problem it encodes.
 
 ## Reading order, and where the rest lives
 
-This document is the shape of the system. Five companions carry the detail:
+This document is the shape of the system. Six companions carry the detail:
 
 1. `docs/adr/` — twenty-two numbered decisions. The reasoning is the point, and
    several of them are settled: reopening one takes a new ADR, not an argument.
@@ -145,6 +145,11 @@ This document is the shape of the system. Five companions carry the detail:
    implemented-but-unverified, planned or missing, and each break named at its
    seam. Where the scorecard says whether a component exists, this says whether
    the things connect.
+6. `docs/architecture/blueprint-diagram-reconciliation.md` — the two
+   authoritative references compared. ADR 0022 makes both the blueprint and its
+   companion diagram the architecture of record, and two authoritative
+   documents will disagree; this records where, with both locations, rather
+   than picking one.
 
 The rules an agent must follow when changing this architecture are in
 `.claude/rules/architecture/`; the per-area constraints are in

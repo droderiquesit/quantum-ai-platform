@@ -86,36 +86,99 @@ argument still holds here.
 
 `[PLANE n/7 — Name] Ownership | Placement | Inputs/outputs | State | Authority | Degradation | Tests`
 
-- **[PLANE 1/7 — Ingestion]** Ownership: `qip-market-ingestion`. Placement: global, once. I/O: sources → normalised bitemporal records. State: bounded working set. Authority: none — observes only. Degradation: world model ages; price-only strategies continue (§6.2 row 1) — *not implemented as an ordered narrowing*. Tests: `absorption.rs`, `sense.rs`.
-- **[PLANE 2/7 — Cognition]** Ownership: split across `qip-world-model`, `qip-twin`, `qip-reasoning-engine`. Placement: global. I/O: events → beliefs/hypotheses. State: bitemporal. Authority: **none — informs only**, which matches §39 rows 3. Degradation: undefined. Tests: `understanding.rs`, `reasoning.rs`.
-- **[PLANE 3/7 — Valuation]** Ownership: none. Placement: n/a. Authority: would be informs-only. Status MISSING-CURRENT; Phase 14.
-- **[PLANE 4/7 — Intelligence]** Ownership: `qip-lifecycle` (gates), `qip-training`, `qip-evolution`. Placement: global. Authority: promotes within approved families (§39 layer 2) — matches. Degradation: undefined. Tests: `lifecycle.rs`, `evolution.rs`.
-- **[PLANE 5/7 — Optimisation]** Ownership: `qip-optimization-engine`. Placement: global. Authority: sets budgets inside the envelope (§39 layer 7) — matches, and is now the *only* zone reaching the solver. Degradation: classical baseline always runs, so a QPU outage narrows nothing. Tests: `optimization.rs`, `architecture.rs`.
-- **[PLANE 6/7 — Execution]** Ownership: `qip-edge`. Placement: regional. Authority: veto-only gates plus order placement inside a granted envelope (§39 layers 9–12). Degradation: stale book supplies nothing (`seam.rs:53`), venue health in `qip-routing/src/health.rs` — mechanism-level, not §6.2's capability-level order. Tests: `e2e.rs`, `resilience.rs`, `chaos.rs`.
-- **[PLANE 7/7 — Ledger/wallet/treasury]** Ownership: `qip-capital` + the event log. Placement: global. Authority: records (§39 layer 14). Degradation: undefined. Tests: `truth_loop.rs`, `compliance_proof.rs`. Wallet and treasury do not exist.
+Runtime evidence below comes from the flow trace in
+[`integration-truth-pass.md`](integration-truth-pass.md), not from the crate
+names. **No plane was given a service because the blueprint names one.** In
+every case the question asked first was whether separate deployment is
+justified today by security, scaling, failure isolation, cadence or ownership;
+in every case the answer was that crate and interface alignment is sufficient
+at current scale, and process proliferation was rejected.
 
-### The argued exemption: `qip-portfolio-engine`
+- **[PLANE 1/7 — Ingestion]** *Ownership:* `qip-market-ingestion`,
+  `qip-normalization`, `qip-entity-resolution`, `qip-data-finder`.
+  *Placement:* global, once — correct per §4.2. *I/O:* sources → normalised
+  bitemporal records; eleven record kinds absorbed at `platform.rs:1129-1243`.
+  *State:* bounded working set, licensing posture evaluated before use.
+  *Authority:* **none — observes only**, which matches §46.1's requirement that
+  the widest external surface reach nothing that moves money; enforced by the
+  absence of an edge to `qip-capital`. *Degradation:* mechanism-level only —
+  a stale book supplies nothing (`edge/qip-edge/src/seam.rs:53-61`). §6.2's
+  capability-level row is typed and unwired. *Tests:* `absorption.rs`,
+  `sense.rs`, `rest_feed.rs`. *Separate service justified?* No — one cadence,
+  one owner, no isolation argument.
 
-Independent review found that `qip-portfolio-engine` reaches the solver
-transitively and is not covered by the boundary test, while the test's own
-comment claimed to cover "every crate that holds a veto, places an order, or
-issues capital". The comment was wrong and has been rewritten; the omission
-was right and is kept, for a reason worth stating.
+- **[PLANE 2/7 — Cognition]** *Ownership:* split across `qip-world-model`
+  (including a real causal graph — `world.rs:41`, `:192`, `causal.rs:234`),
+  `qip-agents/src/memory.rs` (episodic), `qip-twin` (counterfactual),
+  `qip-reasoning-engine` (hypotheses, `bayes.rs` for Bayesian updating).
+  *Placement:* global. *I/O:* events → theses. *State:* bitemporal.
+  *Authority:* **none — informs only**, matching §39 layer 3.
+  *Degradation:* undefined. *Tests:* `understanding.rs`, `reasoning.rs`.
+  *Gaps:* **no belief stage in the cycle** — `grep -n belief
+  runtime/qip-kernel/src/platform.rs` returns one doc-comment line and no code
+  — and **no self-model at all**. Confidence-weighted sizing per §11.2 is not
+  the mechanism here. *Separate service justified?* Not yet; the split across
+  four crates already provides the isolation, and a fifth process would add
+  deployment surface without adding a boundary.
 
-Blueprint §39 puts the optimiser at layer 7 with authority over "allocation,
-cycle selection, path assignment inside the envelope", and the strategy engine
-at layer 8 proposing against it. Optimiser output *exists in order to be
-consumed* as policy — grants, budgets, targets, whitelists, limits. A
-portfolio engine that turns approved hypotheses into constrained target
-portfolios is that consumption working exactly as designed. Forbidding the
-edge would outlaw the intended path and protect nothing.
+- **[PLANE 3/7 — Valuation]** *Ownership:* **none.** *Placement:* n/a.
+  *Authority:* would be informs-only per §39 layer 4. *State:* n/a.
+  *Degradation:* n/a. *Tests:* none. MISSING-CURRENT, blueprint Phase 14.
+  **Deliberately not scaffolded** — six engines named by §16.1 with no consumer
+  would be six empty crates.
 
-So the enforced property is narrower than "touches money" and is now stated as
-what it is: **nothing that vetoes, executes, transfers or issues may reach a
-solver, and no solver may reach any of them.** `qip-portfolio-engine` sizes
-from policy and does none of those four. It is exempt on that argument, not by
-oversight, and `every_service_crate_is_classified_for_money_authority` is what
-stops a future crate from being exempt by oversight.
+- **[PLANE 4/7 — Intelligence]** *Ownership:* `qip-lifecycle` (statistical
+  gates, `gates.rs`, `evidence.rs`), `qip-training`, `qip-evolution`
+  (champion/challenger, wired at `apps/qip-deepbrain/src/evolution.rs:426`),
+  `qip-simulation-engine/src/validation.rs`. *Placement:* global.
+  *I/O:* outcomes → promoted strategies and risk policy. *State:* model
+  registry, drift reports recorded at `apps/qip-deepbrain/src/learning.rs:279`.
+  *Authority:* **promotes within approved families** — §39 layer 2, matches.
+  *Degradation:* undefined. *Tests:* `lifecycle.rs`, `evolution.rs`,
+  `training.rs`. *Gap:* corridor policy has no owner because corridors do not
+  exist (Phase 12). *Separate service justified?* Cadence differs from the hot
+  path and it already runs in its own binary, `qip-deepbrain`. Satisfied.
+
+- **[PLANE 5/7 — Optimisation]** *Ownership:* `qip-optimization-engine`,
+  `qip-quantum`. *Placement:* global. *I/O:* problem → policy.
+  *State:* solver results with a classical baseline computed every time
+  (ADR 0006, `router.rs`). *Authority:* **sets budgets inside the envelope**
+  (§39 layer 7) and is now structurally the *only* zone that reaches the
+  solver, in both directions —
+  `architecture.rs::nothing_that_vetoes_executes_or_moves_money_can_reach_a_quantum_solver`
+  and `::a_quantum_solver_cannot_reach_anything_that_vetoes_executes_or_moves_money`.
+  *Degradation:* a QPU outage narrows nothing, because the classical baseline
+  always runs. *Tests:* `optimization.rs`, `architecture.rs`.
+
+- **[PLANE 6/7 — Execution]** *Ownership:* `qip-edge` (structurally paper-only,
+  `cell.rs:143-148`), `qip-edge-node`, `qip-orderbook`, `qip-routing`,
+  `qip-execution-engine`. *Placement:* regional — three cells in stage tfvars,
+  none in dev, and **as Kubernetes pods rather than the blueprint's bare C3**
+  (ADR 0020). *I/O:* signed capital envelope down, `CellStateDelta` up.
+  *State:* local books, inventory, journal. *Authority:* veto-only gates plus
+  placement inside a granted envelope (§39 layers 9–12); a cell cannot mint its
+  own capital or promote its own strategy. *Degradation:* stale book supplies
+  nothing; venue health in `qip-routing/src/health.rs`; the cell self-halts when
+  its fills disagree with the venue drop-copy (`cell.rs:774-786`). *Tests:*
+  `e2e.rs`, `resilience.rs`, `chaos.rs`, `apps/qip-edge-node/tests/mesh.rs`.
+  *Gaps:* no intent netting, no feasibility gate, no inventory reservation; and
+  **a central halt cannot reach a cell** — the downlink accepts only
+  `CapitalGrantTopic` frames.
+
+- **[PLANE 7/7 — Ledger, wallet and treasury]** *Ownership:* `qip-capital`
+  (allocation, envelope, exposure), `qip-capital-fabric` (internal placement),
+  and the hash-chained event log. *Placement:* global. *I/O:* approved requests
+  → signed grants. *State:* **there is no `Ledger` type** — money state is
+  capital allocation plus the log, which is a different shape from §43.3's
+  per-user, per-strategy authoritative ledger. *Authority:* records (§39 layer
+  14); issuance requires two signatures and a fresh credential
+  (`qip-compliance/src/approval.rs`). *Degradation:* the log is append-only and
+  hash-chained. *Tests:* `truth_loop.rs`, `compliance_proof.rs`.
+  *Gaps:* **no wallet, corridor, transfer gate, destination registry or custody
+  engine** — Phase 12, bounded by ADR 0021 and enforced by
+  `security.rs::no_signing_or_withdrawal_path_exists_for_capital_to_leave_the_platform`.
+  Capital reservation is unbuilt, so two concurrent proposals can pass against
+  one balance.
 
 ## §6.2 — the degradation order
 
