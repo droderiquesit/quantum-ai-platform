@@ -1026,6 +1026,15 @@ fn no_signing_or_withdrawal_path_exists_for_capital_to_leave_the_platform() {
     // APIs as the mechanism by which capital autonomously leaves a venue.
     // This platform is paper-trading only and no such path may exist, so the
     // assertion is about absence rather than about correctness.
+    let exempt = repository_root().join("backend/crates/tests/qip-acceptance/tests/security.rs");
+    // The exemption must name a file that is really there, or it silently
+    // covers nothing and this test scans itself into permanent failure.
+    assert!(
+        exempt.is_file(),
+        "the exempt path {} does not exist; this test no longer knows which \
+         file it is",
+        exempt.display()
+    );
     let mut scanned = 0usize;
     let mut offenders = Vec::new();
     for file in files_with_extension("backend/crates", "rs") {
@@ -1033,15 +1042,24 @@ fn no_signing_or_withdrawal_path_exists_for_capital_to_leave_the_platform() {
         // scanning it would make the test permanently and self-referentially
         // red.
         //
-        // Excluded by **path suffix**, not by base name. The previous version
-        // matched any file called `security.rs` anywhere in the tree, and its
-        // comment claimed the opposite of what it did. `src/security.rs` is an
-        // entirely ordinary module name, so a signing path placed in one was
-        // exempt from the only test guarding the capital-movement refusal —
-        // verified: `sign_withdrawal` in `qip-brokers/src/security.rs` passed,
-        // the same function in `wire.rs` failed. Exactly one file is meant to
-        // be exempt and it is this one.
-        if file.ends_with("tests/security.rs") {
+        // Excluded by **exact path**. Two weaker versions of this check have
+        // already shipped, each wider than it read:
+        //
+        // * matching the base name exempted every `security.rs` in the tree,
+        //   and `src/security.rs` is an ordinary module name — a signing path
+        //   in one was exempt from the only test guarding the capital-movement
+        //   refusal;
+        // * matching a trailing `tests/security.rs` was *wider still*, because
+        //   `Path::ends_with` compares whole trailing components. It exempted
+        //   `<crate>/src/tests/security.rs` — an ordinary module layout, and
+        //   reachable as shipped code through a `#[path]` attribute — and every
+        //   `<crate>/tests/security.rs`, which is an ordinary integration-test
+        //   name.
+        //
+        // Exactly one file is meant to be exempt, so the code now says exactly
+        // that file. An exemption that is easier to fall into than to notice is
+        // not an exemption, it is a hole.
+        if file == exempt {
             continue;
         }
         let content = std::fs::read_to_string(&file).expect("readable source");
