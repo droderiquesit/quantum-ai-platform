@@ -70,14 +70,16 @@ node runs passes. Second, the edge-node health server is single-threaded, so
 a scrape's exposition is rendered on the thread that flushes the journal — the
 same thread that already renders the JSON body, and not the order path.
 
-**Some safety facts are still computed and then discarded, all on the central
-plane.** A central-plane reconciliation break trips a scoped kill switch and
-raises an incident without recording anything. Two facts have no production
-caller at all: `Platform::learn_from`, which produces the belief calibration,
-is called by nothing in the tree, and `Platform::evaluate_alternatives`, which
-scores counterfactuals, is called only by `qip-kernel`'s own tests. The edge
-plane's equivalents — policy freshness, degradation narrowing, halt
-acceptance, the cell's own reconciliation break — are now recorded, as above.
+**A central-plane reconciliation break is now recorded too.**
+`Platform::ingest_cell_report` counts `qip_central_reconciliation_breaks_total`
+by the direction of the gap and `qip_central_cell_halts_total` by cause, on
+the outcome rather than the report, so a refused report charts no halt. The
+`qip_central_` prefix keeps it distinct from the edge's own break counter,
+which records what the cell found rather than what the centre acted on. Two
+facts still have no production caller at all: `Platform::learn_from`, which
+produces the belief calibration, is called by nothing in the tree, and
+`Platform::evaluate_alternatives`, which scores counterfactuals, is called
+only by `qip-kernel`'s own tests.
 
 `workload_metrics_exist` remains `false` everywhere — the default in
 `infrastructure/terraform/variables.tf` and in the observability module, and
@@ -90,8 +92,9 @@ is proof of ingestion, not emission.
 
 Do not describe this platform as observable. That still holds, on today's
 evidence: nothing has been shown to scrape any pod, the edge series have no
-collector and no alert, and a central-plane reconciliation break pages no
-one. Closing the remainder is tracked work.
+collector and no alert, and no alert policy names either `qip_central_`
+descriptor, so a reconciliation break on either plane is charted and still
+pages no one. Closing the remainder is tracked work.
 
 ## Approved
 
