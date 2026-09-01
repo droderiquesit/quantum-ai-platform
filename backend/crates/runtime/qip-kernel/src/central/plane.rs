@@ -143,10 +143,46 @@ pub struct ReconciliationBreak {
     pub detail: String,
 }
 
+/// Which way a reconciliation break points.
+///
+/// The bounded shape of a break, for a series that must not grow with the
+/// instrument list: a break is the cell holding more than the venue confirms,
+/// the venue confirming more than the cell holds, or — when the quantities
+/// agree — a discrepancy that lives only in the detail. Three arms and no
+/// free text, so the label set is closed by construction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BreakDirection {
+    CellOverVenue,
+    VenueOverCell,
+    DetailOnly,
+}
+
+impl BreakDirection {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CellOverVenue => "cell_over_venue",
+            Self::VenueOverCell => "venue_over_cell",
+            Self::DetailOnly => "detail_only",
+        }
+    }
+}
+
 impl ReconciliationBreak {
     /// Signed gap between the two books.
     pub fn difference(&self) -> Decimal {
         self.cell_quantity - self.external_quantity
+    }
+
+    /// The bounded shape of this break, from the sign of [`Self::difference`].
+    pub fn direction(&self) -> BreakDirection {
+        let difference = self.difference();
+        if difference.is_positive() {
+            BreakDirection::CellOverVenue
+        } else if difference.is_negative() {
+            BreakDirection::VenueOverCell
+        } else {
+            BreakDirection::DetailOnly
+        }
     }
 
     pub fn describe(&self) -> String {

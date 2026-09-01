@@ -611,4 +611,21 @@ pub mod names {
     pub const LIVE_FILLS: &str = "qip_live_fills_total";
     pub const LIMIT_BREACHES: &str = "qip_limit_breaches";
     pub const PERMISSION_DENIALS: &str = "qip_permission_denials_total";
+
+    /// Reconciliation breaks the central plane absorbed from a cell report,
+    /// by `direction`: `cell_over_venue`, `venue_over_cell`, or `detail_only`
+    /// where the quantities agree and the break is in the detail. The
+    /// instrument and the cell are deliberately not labels — one is free
+    /// text and the other is a fleet an operator can grow — so the series
+    /// stays bounded by construction. Distinct from
+    /// [`EDGE_RECONCILIATION_BREAKS`], which is what the cell itself found;
+    /// this is what the centre acted on, and the two differ whenever a report
+    /// was lost in transit.
+    pub const CENTRAL_RECONCILIATION_BREAKS: &str = "qip_central_reconciliation_breaks_total";
+    /// Scoped halts the central plane placed on a cell, by `cause`. The
+    /// highest-consequence thing the plane does: a cell that stops trading
+    /// because its book was wrong used to trip the kill switch and raise an
+    /// incident without writing a series, so the one event an operator most
+    /// needed to see was the one no chart could show.
+    pub const CENTRAL_CELL_HALTS: &str = "qip_central_cell_halts_total";
 }

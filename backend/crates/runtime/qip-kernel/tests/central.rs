@@ -53,6 +53,7 @@ use qip_lifecycle::evidence::{
 use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
+use qip_observability::metrics::{labels, names};
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 use qip_simulation_engine::validation::PurgedSplit;
 use qip_strategy::catalogue::FeatureCatalogue;
@@ -662,6 +663,88 @@ fn a_reconciliation_break_halts_that_cell_and_only_that_cell() -> Result<()> {
     );
     assert!(!platform.central().may_act(id.as_str(), CELL));
     assert!(platform.central().may_act(id.as_str(), "cell-nyc-1"));
+    Ok(())
+}
+
+/// A reconciliation break tripped a scoped kill switch and raised an incident
+/// and wrote no series, so the highest-consequence thing the central plane does
+/// was the one thing no operator could chart. The break is counted by its
+/// direction and the halt by its cause; neither the cell nor the instrument is
+/// a label, because both are dimensions that grow.
+#[test]
+fn a_reconciliation_break_is_recorded_by_direction_and_the_halt_by_cause() -> Result<()> {
+    let mut platform = platform()?;
+    let id = strategy();
+    let over = labels([("direction", "cell_over_venue")]);
+    let under = labels([("direction", "venue_over_cell")]);
+    let halted = labels([("cause", "reconciliation")]);
+
+    // Premise: a report that reconciles moves nothing.
+    let clean = CellReport::new("cell-nyc-1", start()).with_positions(vec![position(
+        "cell-nyc-1",
+        &id,
+        INSTRUMENT,
+        dec!("10"),
+    )]);
+    let quiet = platform.ingest_cell_report(clean, start())?;
+    assert!(quiet.halted.is_none());
+    let snapshot = platform.telemetry().metrics.snapshot();
+    assert_eq!(
+        snapshot.counter_total(names::CENTRAL_RECONCILIATION_BREAKS),
+        0,
+        "a clean report is not a break"
+    );
+    assert_eq!(snapshot.counter_total(names::CENTRAL_CELL_HALTS), 0);
+
+    let broken = CellReport::new(CELL, start())
+        .with_positions(vec![position(CELL, &id, INSTRUMENT, dec!("10"))])
+        .with_break(ReconciliationBreak {
+            instrument: INSTRUMENT.to_string(),
+            cell_quantity: dec!("10"),
+            external_quantity: dec!("4"),
+            detail: "six lots the venue has no record of".to_string(),
+        })
+        .with_break(ReconciliationBreak {
+            instrument: "BBB".to_string(),
+            cell_quantity: dec!("1"),
+            external_quantity: dec!("3"),
+            detail: "two lots the cell never booked".to_string(),
+        });
+    let ingestion = platform.ingest_cell_report(broken, start())?;
+    assert_eq!(ingestion.halted, Some(HaltScope::Cell(CELL.to_string())));
+
+    let snapshot = platform.telemetry().metrics.snapshot();
+    assert_eq!(
+        snapshot.counter(names::CENTRAL_RECONCILIATION_BREAKS, &over),
+        1,
+        "one break where the cell holds more than the venue confirms"
+    );
+    assert_eq!(
+        snapshot.counter(names::CENTRAL_RECONCILIATION_BREAKS, &under),
+        1,
+        "one break where the venue confirms more than the cell holds"
+    );
+    assert_eq!(
+        snapshot.counter(names::CENTRAL_CELL_HALTS, &halted),
+        1,
+        "one scoped halt, whatever the number of breaks behind it"
+    );
+    // Bounded by construction: no label names the cell or the instrument.
+    for series in snapshot.series.iter().filter(|s| {
+        s.name == names::CENTRAL_RECONCILIATION_BREAKS || s.name == names::CENTRAL_CELL_HALTS
+    }) {
+        assert!(
+            !series.labels.contains_key("cell") && !series.labels.contains_key("instrument"),
+            "{} is keyed on an unbounded dimension: {:?}",
+            series.name,
+            series.labels
+        );
+        assert!(
+            !series.help.is_empty(),
+            "{} exports without a description",
+            series.name
+        );
+    }
     Ok(())
 }
 
