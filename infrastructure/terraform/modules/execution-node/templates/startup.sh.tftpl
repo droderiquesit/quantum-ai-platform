@@ -1,0 +1,197 @@
+#!/bin/bash
+#
+# The execution node's boot sequence.
+#
+# Rendered by `modules/execution-node`. It does four things, in this order, and
+# the order is the whole design:
+#
+#   1. verifies the image is the one §41.4 describes, and stops if it is not;
+#   2. fetches the node's secrets to a tmpfs, as files, never as environment
+#      variables;
+#   3. writes the unit's configuration;
+#   4. installs and starts one systemd unit.
+#
+# Every failure below exits non-zero without starting the unit. A machine that
+# came up without isolated cores or without huge pages is a machine that will
+# trade with a tail latency nobody predicted, and the correct behaviour for it
+# is to sit there not trading while the health check fails and the instance
+# group refuses to promote it. Fail closed, out loud.
+
+set -euo pipefail
+
+readonly RUN_DIR=/run/qip/secrets
+readonly CONF_DIR=/etc/qip/execution-node
+readonly UNIT=/etc/systemd/system/qip-execution-node.service
+
+log() { echo "qip-execution-node: $*" >&2; }
+fail() { log "REFUSING TO START: $*"; exit 1; }
+
+# --- 1. the image contract --------------------------------------------------
+#
+# Terraform cannot set a kernel parameter. What it can do is refuse to run on a
+# kernel that was not set up, which is the difference between a guarantee and a
+# comment claiming one.
+
+# No container runtime. §41.4: "nothing between the binary and the kernel". A
+# runtime on this machine means somebody built the image from a general-purpose
+# base, and the general-purpose base brings a scheduler, a network namespace and
+# a set of daemons that will preempt an isolated core at the worst moment.
+for runtime in docker containerd podman crio runc; do
+  if command -v "$runtime" >/dev/null 2>&1; then
+    fail "$runtime is installed. §41.4 requires an image with no container runtime."
+  fi
+done
+
+# Isolated cores. The range is derived from the machine shape by the module —
+# cores 0 and 1 for the OS, telemetry drainer and control-plane client, the rest
+# isolated, per §41.3.
+if ! grep -qw "isolcpus=${isolated_cpus}" /proc/cmdline; then
+  fail "the kernel command line does not carry isolcpus=${isolated_cpus}. Build the image with it; a node whose hot path shares cores with the OS is not the machine this architecture costs money for."
+fi
+
+# No swap. A page of the order book on a disk is a latency number that cannot be
+# explained afterwards, and `mlockall` cannot save a process from a machine that
+# was allowed to swap in the first place.
+if [ "$(awk 'NR>1' /proc/swaps | wc -l)" -ne 0 ]; then
+  fail "swap is active. §41.4 requires none."
+fi
+
+# Huge pages, preallocated by the image at boot. Allocating them here would
+# succeed on a freshly booted machine and fail on a fragmented one, which is a
+# check that passes exactly when it does not matter.
+hugepage_kb=$(awk '/^Hugepagesize:/ {print $2}' /proc/meminfo)
+hugepage_total=$(awk '/^HugePages_Total:/ {print $2}' /proc/meminfo)
+hugepage_gb=$(( (hugepage_kb * hugepage_total) / 1048576 ))
+if [ "$hugepage_gb" -lt "${required_hugepages_gb}" ]; then
+  fail "$hugepage_gb GiB of huge pages are preallocated; ${required_hugepages_gb} GiB are required. Preallocate them on the kernel command line in the image."
+fi
+
+# The governor and the C-states are recorded, not enforced, and this is the one
+# place the blueprint asks for something a guest cannot do.
+#
+# On Compute Engine the frequency governor and the package C-states are host
+# properties. The guest usually has no `cpufreq` sysfs at all, and where it does
+# it is not authoritative. Refusing to start on that would refuse every correct
+# machine, so this reports what it found and continues — and the report is the
+# deliverable, because "we set the governor to performance" is a claim somebody
+# will otherwise make on the strength of a line in a document.
+governor=/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+if [ -r "$governor" ]; then
+  log "frequency governor: $(cat "$governor")"
+else
+  log "frequency governor: not exposed to the guest. §41.4's 'governor performance, C-states disabled' is a host and image property and is NOT enforced here."
+fi
+
+# The binary itself, and the secret helper the image is contracted to ship.
+[ -x /usr/local/bin/qip-edge-node ] || fail "/usr/local/bin/qip-edge-node is missing. The binary is part of the image; there is no runtime that could fetch one."
+[ -x /usr/local/bin/qip-fetch-secret ] || fail "/usr/local/bin/qip-fetch-secret is missing. The image must ship a helper that reads a Secret Manager payload and writes it to a file — this script deliberately does not assemble one out of curl and a JSON parser that may not be installed."
+
+# --- 2. secrets, as files ---------------------------------------------------
+#
+# On a tmpfs, mode 0400, owned by the service user. Never in the environment: a
+# key in the environment is a key in /proc/<pid>/environ, in every child
+# process, and in every crash dump.
+
+id -u qip-node >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin qip-node
+install -d -m 0700 -o qip-node -g qip-node "$RUN_DIR"
+mountpoint -q "$RUN_DIR" || mount -t tmpfs -o size=8m,mode=0700,noswap tmpfs "$RUN_DIR"
+chown qip-node:qip-node "$RUN_DIR"
+
+/usr/local/bin/qip-fetch-secret "${project_id}" "${capital_envelope_secret_id}" "$RUN_DIR/capital-envelope-key" \
+  || fail "could not read the capital envelope key. Without it the node cannot verify a grant and qip-edge-node will not start."
+chown qip-node:qip-node "$RUN_DIR/capital-envelope-key"
+chmod 0400 "$RUN_DIR/capital-envelope-key"
+
+# The venue credential is fetched only when the module bound one — which needs
+# the environment's autonomy ceiling to permit live trading *and* the node to be
+# out of shadow mode. When it did not, this string is empty and nothing here
+# looks for a secret the identity could not read anyway.
+%{ if venue_credential_secret_id != "" ~}
+/usr/local/bin/qip-fetch-secret "${project_id}" "${venue_credential_secret_id}" "$RUN_DIR/venue-credential" \
+  || fail "the venue credential was bound to this node's identity and could not be read."
+chown qip-node:qip-node "$RUN_DIR/venue-credential"
+chmod 0400 "$RUN_DIR/venue-credential"
+%{ endif ~}
+
+# --- 3. configuration -------------------------------------------------------
+#
+# Values only. Every credential above is named by path — `qip_core::secret`
+# reads the `_FILE` indirection, exactly as the Secret Manager CSI driver's
+# projection is read in the Kubernetes topology.
+
+install -d -m 0755 "$CONF_DIR"
+cat >"$CONF_DIR/node.env" <<EOF
+QIP_CELL_ID=${node_id}
+QIP_CELL_REGION=${region}
+QIP_VENUES=${venue_ids}
+QIP_HEALTH_PORT=${health_port}
+QIP_STORAGE_TARGET=engine
+QIP_STORAGE_ROOT=/var/lib/qip/journal
+QIP_CAPITAL_ENVELOPE_KEY_FILE=$RUN_DIR/capital-envelope-key
+QIP_GCP_ENDPOINT=${egress_endpoint}
+QIP_EXECUTION_NODE_SHADOW=${shadow_mode ? "1" : "0"}
+EOF
+chmod 0444 "$CONF_DIR/node.env"
+
+# Two things are deliberately absent from that file.
+#
+# `QIP_AUTONOMY_CEILING` is not set. A cell's ceiling is structural —
+# `qip_edge::Cell` has no constructor taking a ceiling other than paper trading
+# — so there is no value of that variable which could raise it, and setting one
+# here would put a fourth apparent decision point on a boundary that is stronger
+# with three. `edge-cell.yaml` sets it as a governance marker because an
+# acceptance test reads every workload manifest for it; nothing reads this file.
+#
+# `QIP_EXECUTION_NODE_SHADOW` is a marker and not a control. The binary does not
+# read it today. What actually prevents this node from taking a venue session is
+# the absence of a venue egress rule and the absence of a venue-credential
+# binding, both of which are decided in Terraform and visible in a plan. If a
+# future binary reads this, it reads it as a second layer, never as the first.
+
+install -d -m 0750 -o qip-node -g qip-node /var/lib/qip/journal
+
+# --- 4. one unit ------------------------------------------------------------
+
+cat >"$UNIT" <<EOF
+[Unit]
+Description=qip execution node ${node_id}
+Documentation=https://github.com/peos/quantum-ai-platform/blob/main/infrastructure/terraform/modules/execution-node/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=qip-node
+Group=qip-node
+EnvironmentFile=$CONF_DIR/node.env
+ExecStart=/usr/local/bin/qip-edge-node
+
+# §41.4: Restart=always, one unit. RestartSec is one second rather than zero so
+# that a node failing its own start-up checks restarts visibly instead of
+# spinning fast enough to look like a running process.
+Restart=always
+RestartSec=1
+%{ if watchdog_seconds > 0 ~}
+WatchdogSec=${watchdog_seconds}
+%{ endif ~}
+
+# mlockall needs both of these: the capability to lock pages, and no limit on
+# how many. This is the half of §41.4's memory line that is enforceable from
+# outside the process — the call itself is the binary's.
+AmbientCapabilities=CAP_IPC_LOCK
+LimitMEMLOCK=infinity
+LimitNOFILE=1048576
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/qip
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now qip-execution-node.service
+log "started in ${shadow_mode ? "SHADOW" : "SESSION-BEARING"} mode with isolcpus=${isolated_cpus}"
