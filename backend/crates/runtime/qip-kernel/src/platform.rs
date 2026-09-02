@@ -37,6 +37,7 @@
 use crate::central::{CellIngestion, CellOutcome, CellReport, CentralPlane, LearningReport};
 use crate::config::PlatformConfig;
 use crate::cycle::{CycleReport, Stage, StageOutcome};
+use crate::series;
 use qip_agents::Budget;
 use qip_agents::memory::ResearchMemory;
 use qip_ai::language::DeterministicModel;
@@ -80,8 +81,10 @@ use qip_financial::universe::Universe;
 use qip_investment_agents::Organisation;
 use qip_investment_agents::desk::{BookView, ComplianceView, Desk, MarketView, RiskView};
 use qip_learning_engine::attribution::Attributor;
-use qip_learning_engine::evaluation::ThesisEvaluator;
-use qip_learning_engine::feedback::FeedbackEngine;
+use qip_learning_engine::evaluation::{
+    Evaluation, Outcome as ThesisOutcome, ThesisClaim, ThesisEvaluator,
+};
+use qip_learning_engine::feedback::{CalibrationReport, FeedbackEngine, FeedbackReport};
 use qip_market::bar::Bar;
 use qip_market::corporate_action::CorporateActionKind;
 use qip_market::snapshot::MarketSnapshot;
@@ -98,8 +101,8 @@ use qip_portfolio::portfolio::Portfolio;
 use qip_portfolio_engine::construction::PortfolioConstructor;
 use qip_portfolio_engine::proposal::{Proposal, ProposalStatus};
 use qip_prediction::resolution::{
-    Comparison, Observations, Proposition, ResolutionCriteria, ResolutionSource, SettlementRule,
-    SourceKind, UndeterminedRule, Verdict,
+    Comparison, Observation, Observations, Proposition, ResolutionCriteria, ResolutionSource,
+    SettlementRule, SourceKind, UndeterminedRule, Verdict,
 };
 use qip_quantum::provider::SimulatedProvider;
 use qip_reasoning_engine::engine::{ReasoningEngine, ReasoningOutcome};
@@ -184,6 +187,21 @@ pub struct Platform {
     confirmations: Confirmations,
     /// Falsifiable claims the REASON stage has made, and their verdicts.
     predictions: Vec<RecordedPrediction>,
+    /// Theses scored against what was published, oldest first, bounded by
+    /// [`PREDICTION_HISTORY`] like the claims they came from.
+    ///
+    /// The window the calibration is computed over. Kept because "when it
+    /// says seventy percent, does it happen seventy percent" is a question
+    /// about many resolved claims, and a Brier score recomputed from only the
+    /// claims that resolved this cycle would be a different number every
+    /// cycle and a statistic on none of them.
+    evaluations: Vec<Evaluation>,
+    /// The most recent calibration, for the health surfaces and the tests.
+    last_calibration: Option<CalibrationReport>,
+    /// What the LEARN stage calibrated this cycle, for the journal. Cleared
+    /// as each cycle's LEARN begins so a cycle that scored nothing journals
+    /// nothing rather than the previous cycle's figure.
+    cycle_calibration: Option<CalibrationJournal>,
     /// The durable, hash-chained mirror of the cycle journal.
     journal: DurableLogTransport,
     /// Everything the platform decided, and what came of it — refusals
@@ -353,6 +371,16 @@ pub const SERIES_HISTORY: usize = 512;
 /// stopped answering, not one worth carrying in memory forever.
 const PREDICTION_HISTORY: usize = 1024;
 
+/// The window a `volatility:<subject>` claim is settled over, in log returns.
+///
+/// The volatility-shift detector's own default window, restated here because
+/// the claim it raises is about *that* statistic: a realised volatility over
+/// any other window would settle the claim against a number nobody claimed
+/// anything about. `DetectorRegistry::standard` constructs the detector with
+/// its default, and the registry test that pins this pairing is the one that
+/// would fail if either side moved.
+const VOLATILITY_CLAIM_WINDOW: usize = 20;
+
 /// How many price levels per side a book observation sums into the liquidity
 /// topology.
 ///
@@ -461,6 +489,16 @@ pub struct RecordedPrediction {
     /// When it was scored.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub scored_at: Option<Timestamp>,
+    /// What the hypothesis claimed, in the shape the learning engine grades:
+    /// direction, magnitude, horizon and the confidence it was stated at.
+    ///
+    /// The proposition above says what would have to be published for the
+    /// claim to be wrong; this says how confident the platform was, which is
+    /// the number calibration is about. `None` on a record written before the
+    /// field existed — such a claim can still be settled, and is still not
+    /// gradeable, because its confidence was never written down.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub claim: Option<ThesisClaim>,
 }
 
 impl RecordedPrediction {
@@ -654,6 +692,42 @@ pub struct CycleJournalEntry {
     pub compute_cost: Decimal,
     /// The lines an operator would have read at three in the morning.
     pub summary: String,
+    /// The belief calibration as LEARN left it, on a cycle that scored at
+    /// least one thesis. Absent on a cycle that scored none — an entry that
+    /// restated the previous figure would read as a measurement this cycle
+    /// made. Defaulted so a journal written before the field existed replays.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub calibration: Option<CalibrationJournal>,
+}
+
+/// What the LEARN stage's calibration pass left in the journal.
+///
+/// The Brier score and the adjustment are the two numbers the blueprint's
+/// "single most important metric" comes down to; the counts say how much
+/// they rest on, which is what stops a score from three theses reading as a
+/// track record.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CalibrationJournal {
+    /// Theses scored this cycle.
+    pub evaluated_this_cycle: usize,
+    /// Informative evaluations in the window the figures below cover.
+    pub evaluations_in_window: usize,
+    pub brier_score: f64,
+    pub confidence_adjustment: f64,
+    pub is_overconfident: bool,
+}
+
+/// What one call to [`Platform::learn_from`] produced.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LearningOutcome {
+    /// The theses scored on this call, verdicts attached.
+    pub evaluations: Vec<Evaluation>,
+    /// Claims that could not be scored — no outcome, or a horizon that has
+    /// not passed — so an unscored thesis is visible rather than absent.
+    pub skipped: Vec<String>,
+    /// The calibration and lessons over the whole window, or `None` where
+    /// nothing in the window was informative.
+    pub report: Option<FeedbackReport>,
 }
 
 impl EventBody for CycleJournalEntry {
@@ -968,6 +1042,9 @@ impl Platform {
             chain: None,
             confirmations: Confirmations::exactly(config.chain_confirmations),
             predictions: Vec::new(),
+            evaluations: Vec::new(),
+            last_calibration: None,
+            cycle_calibration: None,
             journal: DurableLogTransport::in_memory("kernel-journal"),
             outcomes: OutcomeCapture::new(),
             counterfactuals,
@@ -1141,6 +1218,23 @@ impl Platform {
         metrics.describe(
             names::STRATEGY_DEMOTIONS,
             "strategies pushed down or retired, by the rungs left and entered",
+        );
+        metrics.describe(
+            series::BELIEF_BRIER_SCORE,
+            "Brier score over the window of resolved theses; when the platform said seventy \
+             percent, how far from seventy percent it happened",
+        );
+        metrics.describe(
+            series::BELIEF_CONFIDENCE_ADJUSTMENT,
+            "factor stated confidences would be scaled by to match outcomes; one is calibrated",
+        );
+        metrics.describe(
+            series::BELIEF_EVALUATIONS,
+            "informative evaluations the calibration rests on",
+        );
+        metrics.describe(
+            series::THESES_EVALUATED,
+            "theses scored against what was published, by verdict",
         );
     }
 
@@ -1362,25 +1456,87 @@ impl Platform {
         self.capital.costs_paid
     }
 
-    /// Score resolved theses and produce the calibration and lessons.
+    /// Score resolved theses and recompute the calibration over the window.
     ///
-    /// Separate from the cycle because a thesis resolves on its own horizon
-    /// rather than on the cycle's: running this every cycle would mostly find
-    /// nothing to score, and running it only when something has resolved is
-    /// what the horizon is for.
+    /// Called by the LEARN stage on every cycle with whatever resolved since
+    /// the last, and callable directly for claims and outcomes that arrived
+    /// another way. Until the stage called it nothing did: the platform
+    /// wrote down a confidence with every hypothesis, settled the claim
+    /// against what was published, and never once asked whether its seventy
+    /// percents happened seventy percent of the time — the one number the
+    /// blueprint calls the most important metric it has, computed by a
+    /// function with no caller.
+    ///
+    /// The evaluations join the bounded window and the feedback engine runs
+    /// over the whole window, not over this batch alone: calibration is a
+    /// property of many resolved claims, and a Brier score from the two that
+    /// resolved this cycle would be a different number every cycle. The
+    /// report is `None` rather than an error when nothing in the window is
+    /// informative — every verdict inconclusive — because that is the honest
+    /// state of a platform whose claims have not yet moved anything, not a
+    /// failure of the stage.
     pub fn learn_from(
-        &self,
-        claims: &[qip_learning_engine::evaluation::ThesisClaim],
-        outcomes: &[qip_learning_engine::evaluation::Outcome],
+        &mut self,
+        claims: &[ThesisClaim],
+        outcomes: &[ThesisOutcome],
         now: Timestamp,
-    ) -> Result<(
-        usize,
-        Vec<String>,
-        qip_learning_engine::feedback::FeedbackReport,
-    )> {
+    ) -> Result<LearningOutcome> {
         let (evaluations, skipped) = self.evaluator.evaluate_all(claims, outcomes, now);
-        let report = self.feedback.process(&evaluations, now)?;
-        Ok((evaluations.len(), skipped, report))
+        for evaluation in &evaluations {
+            self.telemetry.metrics.count(
+                series::THESES_EVALUATED,
+                labels([("verdict", evaluation.verdict.as_str())]),
+            );
+        }
+        self.evaluations.extend(evaluations.iter().cloned());
+        if self.evaluations.len() > PREDICTION_HISTORY {
+            let excess = self.evaluations.len() - PREDICTION_HISTORY;
+            self.evaluations.drain(..excess);
+        }
+
+        let informative = self
+            .evaluations
+            .iter()
+            .any(|evaluation| evaluation.verdict.is_informative());
+        let report = if informative {
+            let report = self.feedback.process(&self.evaluations, now)?;
+            // Statistics, and therefore `f64` end to end: the Brier score
+            // and the adjustment are already floats in the report.
+            self.telemetry.metrics.gauge(
+                series::BELIEF_BRIER_SCORE,
+                labels([]),
+                report.calibration.brier_score,
+            );
+            self.telemetry.metrics.gauge(
+                series::BELIEF_CONFIDENCE_ADJUSTMENT,
+                labels([]),
+                report.calibration.confidence_adjustment,
+            );
+            self.telemetry.metrics.gauge(
+                series::BELIEF_EVALUATIONS,
+                labels([]),
+                report.calibration.evaluated as f64,
+            );
+            self.last_calibration = Some(report.calibration.clone());
+            Some(report)
+        } else {
+            None
+        };
+        Ok(LearningOutcome {
+            evaluations,
+            skipped,
+            report,
+        })
+    }
+
+    /// The most recent calibration, if any thesis has resolved informatively.
+    pub fn calibration(&self) -> Option<&CalibrationReport> {
+        self.last_calibration.as_ref()
+    }
+
+    /// Every thesis evaluation in the calibration window, oldest first.
+    pub fn evaluations(&self) -> &[Evaluation] {
+        &self.evaluations
     }
 
     pub fn cycle_count(&self) -> u64 {
@@ -2009,6 +2165,7 @@ impl Platform {
             halted: report.halted,
             compute_cost: self.last_cycle_cost(),
             summary: report.summarise(),
+            calibration: self.cycle_calibration.clone(),
         };
 
         let facts = EventFacts::derived(
@@ -2977,6 +3134,40 @@ impl Platform {
         let Some(reference) = Decimal::from_f64(anomaly.observed) else {
             return Ok(false);
         };
+        // A claim about a series standing at zero has no magnitude to be
+        // graded against — every move is infinitely many basis points of it —
+        // so it is not written down rather than written down ungradeable.
+        if anomaly.observed.abs() <= f64::EPSILON {
+            return Ok(false);
+        }
+
+        // What the hypothesis claimed, in the shape the learning engine
+        // grades. Direction from the comparison the proposition tests;
+        // magnitude as the reversion of the anomaly's measured displacement,
+        // in basis points of the reference, which is the same quantity the
+        // thesis is sized on; confidence as the review left it.
+        let direction = match comparison {
+            Comparison::GreaterThan => 1.0,
+            Comparison::LessThan => -1.0,
+            // Unreachable given the table above, which names only the two.
+            // Listed rather than wildcarded so a third comparison added to
+            // that table has to say which way it points.
+            Comparison::AtLeast | Comparison::AtMost | Comparison::EqualTo => 0.0,
+        };
+        let expected_move_bps =
+            (anomaly.expected - anomaly.observed).abs() / anomaly.observed.abs() * 10_000.0;
+        let claim = ThesisClaim {
+            hypothesis_id: reasoned.hypothesis.hypothesis_id.as_str().to_string(),
+            class: reasoned.hypothesis.class.clone(),
+            subject: anomaly.subject.clone(),
+            formed_at: now,
+            resolves_at: now.saturating_add(reasoned.hypothesis.horizon),
+            direction,
+            expected_move_bps: direction * expected_move_bps,
+            confidence: reasoned.hypothesis.effective_confidence(),
+            falsifiers: reasoned.hypothesis.falsifiers.clone(),
+            contributors: reasoned.hypothesis.contributors.clone(),
+        };
 
         // The metric names the observable and the series, so a proposition
         // about one instrument cannot be settled by an observation about
@@ -3009,6 +3200,7 @@ impl Platform {
             recorded_at: now,
             verdict: None,
             scored_at: None,
+            claim: Some(claim),
         });
         Ok(true)
     }
@@ -3506,7 +3698,8 @@ impl Platform {
     }
 
     fn stage_learn(&mut self, now: Timestamp) -> StageOutcome {
-        let outcome = self.attribute(now);
+        self.cycle_calibration = None;
+        let (outcome, by_hypothesis) = self.attribute(now);
         // What the platform did and what it declined, side by side. The tally
         // is the answer to the question a report of trades alone cannot
         // answer: whether the gates are calibrated or merely shut.
@@ -3522,21 +3715,210 @@ impl Platform {
             );
             StageOutcome { detail, ..outcome }
         };
+        // Score whatever resolved, and say how calibrated the platform is on
+        // everything that has. This is the seam where the fact becomes known:
+        // the platform's own series are the only source it holds for the
+        // observables its claims name, and the attribution above is the only
+        // source of what each thesis earned.
+        match self.calibrate_resolved(&by_hypothesis, now) {
+            Ok(Some(pass)) => {
+                let detail = format!("{}; {pass}", outcome.detail);
+                outcome = StageOutcome { detail, ..outcome };
+            }
+            Ok(None) => {}
+            Err(error) => {
+                outcome = outcome.with_problem(format!(
+                    "resolved theses could not be calibrated: {}",
+                    error.message()
+                ));
+            }
+        }
         for problem in std::mem::take(&mut self.capture_problems) {
             outcome = outcome.with_problem(problem);
         }
         outcome
     }
 
+    /// Settle the claims whose horizon has passed against the platform's own
+    /// series, grade them, and recompute the calibration.
+    ///
+    /// Returns `Ok(None)` when nothing was due, which is most cycles: a thesis
+    /// resolves on its own horizon, not the cycle's. The observations come
+    /// from the same series the detectors read — the last close, the
+    /// realised volatility over the volatility detector's own window, the
+    /// last quoted spread — so a claim is settled by the quantity it was made
+    /// about rather than by a neighbour of it. A claim naming a series the
+    /// platform no longer holds stays open; resolving it as failure is how a
+    /// system marks itself right by scoring the questions nobody answered.
+    ///
+    /// The realised move is measured from the same observation that settled
+    /// the verdict, so the two cannot disagree about what was published. The
+    /// realised P&L is the attribution's figure for the hypothesis, and zero
+    /// where the thesis was never expressed as a trade — the honest answer
+    /// for a claim the platform made and did not act on.
+    fn calibrate_resolved(
+        &mut self,
+        by_hypothesis: &BTreeMap<String, Decimal>,
+        now: Timestamp,
+    ) -> Result<Option<String>> {
+        let due: Vec<(String, Decimal)> = self
+            .predictions
+            .iter()
+            .filter(|prediction| prediction.is_open() && prediction.proposition.resolves_at <= now)
+            .filter_map(|prediction| match &prediction.proposition.criteria {
+                ResolutionCriteria::Threshold { metric, value, .. } => {
+                    Some((metric.clone(), *value))
+                }
+                _ => None,
+            })
+            .collect();
+        if due.is_empty() {
+            return Ok(None);
+        }
+
+        let observations = self.published_observations(now, due.iter().map(|(m, _)| m.as_str()));
+        let scored = self.score_predictions(&observations, now);
+        if scored.is_empty() {
+            return Ok(None);
+        }
+
+        let mut claims = Vec::with_capacity(scored.len());
+        let mut outcomes = Vec::with_capacity(scored.len());
+        let mut ungradeable = 0usize;
+        for (hypothesis, _) in &scored {
+            let Some(prediction) = self
+                .predictions
+                .iter()
+                .find(|prediction| &prediction.hypothesis == hypothesis)
+            else {
+                continue;
+            };
+            let Some(claim) = prediction.claim.clone() else {
+                ungradeable += 1;
+                continue;
+            };
+            let ResolutionCriteria::Threshold { metric, value, .. } =
+                &prediction.proposition.criteria
+            else {
+                ungradeable += 1;
+                continue;
+            };
+            let Some(Observation::Numeric(observed)) = observations.get(metric) else {
+                ungradeable += 1;
+                continue;
+            };
+            // Money to statistic: the move and the P&L are graded as
+            // statistics, and this is where the exact figures become floats.
+            let realised_move_bps = if value.is_zero() {
+                0.0
+            } else {
+                (observed.to_f64() - value.to_f64()) / value.to_f64().abs() * 10_000.0
+            };
+            outcomes.push(ThesisOutcome {
+                hypothesis_id: hypothesis.clone(),
+                observed_at: now,
+                realised_move_bps,
+                realised_pnl: by_hypothesis
+                    .get(hypothesis)
+                    .map_or(0.0, |pnl| pnl.to_f64()),
+                falsifiers_triggered: Vec::new(),
+                // The platform holds no observation of a mechanism's own
+                // observables, so it does not claim to have confirmed one.
+                mechanism_confirmed: None,
+            });
+            claims.push(claim);
+        }
+
+        let learned = self.learn_from(&claims, &outcomes, now)?;
+        let mut summary = format!(
+            "{} thesis(es) resolved, {} graded",
+            scored.len(),
+            learned.evaluations.len()
+        );
+        if ungradeable > 0 {
+            summary.push_str(&format!(", {ungradeable} ungradeable"));
+        }
+        if !learned.skipped.is_empty() {
+            summary.push_str(&format!(", {} skipped", learned.skipped.len()));
+        }
+        match &learned.report {
+            Some(report) => {
+                summary.push_str(&format!("; calibration {}", report.calibration.summarise()));
+                self.cycle_calibration = Some(CalibrationJournal {
+                    evaluated_this_cycle: learned.evaluations.len(),
+                    evaluations_in_window: report.calibration.evaluated,
+                    brier_score: report.calibration.brier_score,
+                    confidence_adjustment: report.calibration.confidence_adjustment,
+                    is_overconfident: report.calibration.is_overconfident,
+                });
+            }
+            None => summary.push_str("; nothing informative yet to calibrate on"),
+        }
+        Ok(Some(summary))
+    }
+
+    /// What the platform's own series say, for the metrics named.
+    ///
+    /// The metric is `observable:subject`, as [`Platform::record_prediction`]
+    /// spells it. Three observables are published, each from the series the
+    /// detector that raised the claim read: `close` is the last close held for
+    /// the subject; `volatility` is the standard deviation of log returns over
+    /// the volatility-shift detector's window, computed with the same
+    /// functions; `spread` is the last quoted spread in basis points. Anything
+    /// else is left unpublished, so the claim stays open rather than being
+    /// settled by a number the platform never measured.
+    fn published_observations<'a>(
+        &self,
+        now: Timestamp,
+        metrics: impl Iterator<Item = &'a str>,
+    ) -> Observations {
+        let mut observations = Observations::at(now);
+        for metric in metrics {
+            let Some((observable, subject)) = metric.split_once(':') else {
+                continue;
+            };
+            let value = match observable {
+                "close" => self
+                    .price_history
+                    .get(subject)
+                    .and_then(|series| series.last().copied()),
+                "volatility" => self.price_history.get(subject).and_then(|series| {
+                    let returns = qip_numerics::stats::log_returns(series);
+                    if returns.len() < VOLATILITY_CLAIM_WINDOW {
+                        return None;
+                    }
+                    Some(qip_numerics::stats::stddev(
+                        &returns[returns.len() - VOLATILITY_CLAIM_WINDOW..],
+                    ))
+                }),
+                "spread" => self
+                    .spread_history
+                    .get(subject)
+                    .and_then(|series| series.last().copied()),
+                _ => None,
+            };
+            if let Some(value) = value.and_then(Decimal::from_f64) {
+                observations = observations.with(metric, Observation::Numeric(value));
+            }
+        }
+        observations
+    }
+
     /// Attribute what the fills cost. The body of LEARN, without the capture
     /// reporting wrapped around it.
-    fn attribute(&mut self, now: Timestamp) -> StageOutcome {
+    ///
+    /// Returns the stage outcome and what each hypothesis earned, which the
+    /// calibration pass grades the resolved theses on.
+    fn attribute(&mut self, now: Timestamp) -> (StageOutcome, BTreeMap<String, Decimal>) {
         let fills = self.orders.fills();
         if fills.is_empty() {
-            return StageOutcome::ran(
-                Stage::Learn,
-                0,
-                "no fills to attribute; nothing has resolved yet",
+            return (
+                StageOutcome::ran(
+                    Stage::Learn,
+                    0,
+                    "no fills to attribute; nothing has resolved yet",
+                ),
+                BTreeMap::new(),
             );
         }
 
@@ -3596,22 +3978,28 @@ impl Platform {
                 // `by_hypothesis` returned an empty map, so the number that
                 // was wrong was the one nobody printed. An operator reading
                 // fills attributed across no hypotheses now sees the gap.
-                let hypotheses = attribution.by_hypothesis().len();
-                StageOutcome::ran(
-                    Stage::Learn,
-                    attribution.positions.len(),
-                    format!(
-                        "{} fill(s) attributed across {} hypothesis(es), {} of implementation \
-                         cost, residual {}",
+                let by_hypothesis = attribution.by_hypothesis();
+                (
+                    StageOutcome::ran(
+                        Stage::Learn,
                         attribution.positions.len(),
-                        hypotheses,
-                        attribution.implementation_cost(),
-                        attribution.residual()
+                        format!(
+                            "{} fill(s) attributed across {} hypothesis(es), {} of \
+                             implementation cost, residual {}",
+                            attribution.positions.len(),
+                            by_hypothesis.len(),
+                            attribution.implementation_cost(),
+                            attribution.residual()
+                        ),
                     ),
+                    by_hypothesis,
                 )
             }
-            Err(error) => StageOutcome::ran(Stage::Learn, 0, "attribution failed")
-                .with_problem(error.message().to_string()),
+            Err(error) => (
+                StageOutcome::ran(Stage::Learn, 0, "attribution failed")
+                    .with_problem(error.message().to_string()),
+                BTreeMap::new(),
+            ),
         }
     }
 
@@ -5441,6 +5829,7 @@ mod retention_tests {
                 recorded_at: start(),
                 verdict: None,
                 scored_at: None,
+                claim: None,
             });
         }
 
