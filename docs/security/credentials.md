@@ -122,18 +122,16 @@ What a deployment therefore needs from a person is the tfvars: a real
 `unprovisioned` marker the derivation step refuses before authenticating. The
 values that used to be pasted are now a pure function of those two.
 
-**A finding for the owner of `scripts/bootstrap-deploy.sh`, not fixed here.**
-The script's step 6 (`scripts/bootstrap-deploy.sh:288-326`) still builds
-seven values — `GCP_PROJECT`, `GCP_REGION`, `GCP_WORKLOAD_IDENTITY_PROVIDER`,
+An earlier version of this section carried a finding for the owner of
+`scripts/bootstrap-deploy.sh`: its last step still built seven such values
+(`GCP_PROJECT`, `GCP_REGION`, `GCP_WORKLOAD_IDENTITY_PROVIDER`,
 `GCP_DEPLOY_SERVICE_ACCOUNT`, `GCP_BINAUTHZ_ATTESTOR`,
-`GCP_BINAUTHZ_KEY_VERSION`, `GCP_INFRA_SERVICE_ACCOUNT` — shape-checks them,
-and sets them with `gh variable set` when `gh` is authenticated, or prints
-the commands for a person to run when it is not. Its header (`:16`, `:23`)
-and the comment above step 6 (`:258-268`) still say the pipeline reads them.
-Nothing does: neither workflow contains `${{ vars.`. The step is harmless
-today and misleading, and a bootstrap that fails inside it fails for no
-reason a deployment cares about. The repair belongs to the script's owner —
-either delete step 6 or restate it as the record it actually is.
+`GCP_BINAUTHZ_KEY_VERSION`, `GCP_INFRA_SERVICE_ACCOUNT`) and set them with
+`gh variable set`, harmless and misleading. That finding is closed: commit
+`4564125` deleted the step. Today `grep -c 'gh variable set'
+scripts/bootstrap-deploy.sh` is 0, the script's header says nothing is set
+on GitHub (`scripts/bootstrap-deploy.sh:22-25`), and its last step seeds the
+generated secrets (`:18`) rather than pasting identity values anywhere.
 
 There is deliberately **no** GitHub secret holding a key. The pipeline uses
 workload identity federation: GitHub mints a short-lived OIDC token, GCP
@@ -181,8 +179,9 @@ cd quantum-ai-platform
 
 It enables the APIs, grants you impersonation, creates the versioned state
 bucket, runs `terraform init` and an **interactive** apply — it never
-auto-approves — and sets six GitHub variables that, since the workflows began deriving
-their identity from the tfvars, nothing reads (see §2). It never creates,
+auto-approves — and seeds the generated secrets. It sets nothing on GitHub:
+the workflows derive their identity from the tfvars (see §2), and the step
+that used to write repository variables is gone. It never creates,
 downloads or reads a key. The rest of this section is the same flow by hand,
 kept because a script you cannot check against its documentation is a script
 you have to trust.
