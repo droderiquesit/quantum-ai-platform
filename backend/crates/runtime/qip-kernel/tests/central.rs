@@ -50,6 +50,7 @@ use qip_lifecycle::evidence::{
     CrossValidationRun, FeatureTiming, HoldoutEvidence, KillCondition, LeakageAudit, PaperEvidence,
     PilotEvidence, ScaledEvidence, ShadowDecision, ShadowEvidence, StrategyEvidence,
 };
+use qip_lifecycle::trials::StrategyFamily;
 use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
@@ -305,13 +306,20 @@ fn proposal(id: &StrategyId, cell: &str) -> Result<StrategyProposal> {
 /// Register a candidate with evidence that passes every gate.
 fn register(plane: &mut CentralPlane, id: &StrategyId, cell: &str) -> Result<()> {
     let (compiled, program) = compile(id.as_str())?;
-    let candidate = StrategyCandidate::new(compiled, program, cell, venue(), start())?
-        .with_evidence(full_evidence(id, cell)?)
-        .with_model("microprice-distilled@3")
-        .with_evidence_artifacts(vec![
-            format!("sha256:holdout-{id}"),
-            format!("sha256:shadow-{id}"),
-        ]);
+    let candidate = StrategyCandidate::new(
+        compiled,
+        program,
+        StrategyFamily::new("central-tests")?,
+        cell,
+        venue(),
+        start(),
+    )?
+    .with_evidence(full_evidence(id, cell)?)
+    .with_model("microprice-distilled@3")
+    .with_evidence_artifacts(vec![
+        format!("sha256:holdout-{id}"),
+        format!("sha256:shadow-{id}"),
+    ]);
     plane.factory_mut().register(candidate)?;
     plane.set_proposal(proposal(id, cell)?);
     Ok(())
@@ -1054,7 +1062,14 @@ fn the_learn_edge_widens_a_strategys_error_bar_and_never_narrows_it() -> Result<
         .sharpe_standard_error;
 
     let later = start().saturating_add(Duration::from_hours(1));
-    let outcome = CellOutcome::new(id.clone(), CELL, later, good_returns(77, 60, 0.006));
+    // Live beats the baseline by more than the stated error bar and stays
+    // inside the band the holdout validation defined. The drift used to be
+    // twice this, which put the live Sharpe at twenty against a band topping
+    // out near ten — and a strategy performing far *above* its validation is
+    // not the strategy that was validated, which is why the band trips in
+    // either direction. The property under test is the learn edge widening
+    // the error bar on a strategy that did what it said, not the band.
+    let outcome = CellOutcome::new(id.clone(), CELL, later, good_returns(77, 60, 0.0030));
     let report = plane.learn(&[outcome], None, later)?;
     let learning = report
         .learnings

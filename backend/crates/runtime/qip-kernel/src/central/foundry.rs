@@ -73,6 +73,7 @@ use qip_evolution::mutate::MutationRun;
 use qip_lifecycle::evidence::{
     CrossValidationRun, HoldoutEvidence, LeakageAudit, StrategyEvidence,
 };
+use qip_lifecycle::trials::StrategyFamily;
 use qip_strategy::catalogue::FeatureCatalogue;
 use qip_strategy::compile::StrategyCompiler;
 
@@ -98,6 +99,10 @@ pub struct StrategyFoundry {
     generator: StrategyGenerator,
     compiler: StrategyCompiler,
     ledger: TrialLedger,
+    /// The family every candidate of this search is enrolled in: the search's
+    /// lineage, which is the template-and-sweep the blueprint counts trials
+    /// against. One per foundry, because one foundry is one sweep.
+    family: StrategyFamily,
     /// The cell that would run whatever this foundry produces.
     cell: String,
     venue: VenueId,
@@ -129,8 +134,14 @@ impl StrategyFoundry {
                  per cell and an unnamed cell cannot be recalled",
             ));
         }
+        let lineage = lineage.into();
+        // The lineage names the family. Refused here, before any search, if
+        // it cannot: a family the trial book cannot key on is a sweep whose
+        // count has nowhere to accumulate.
+        let family = StrategyFamily::new(lineage.as_str())?;
         Ok(Self {
-            generator: StrategyGenerator::new(grammar, format!("{}@{seed}", lineage.into()), seed),
+            generator: StrategyGenerator::new(grammar, format!("{lineage}@{seed}"), seed),
+            family,
             compiler: StrategyCompiler::new(catalogue),
             ledger: TrialLedger::new(),
             cell,
@@ -258,6 +269,7 @@ impl StrategyFoundry {
         let registered = StrategyCandidate::new(
             candidate.compiled().clone(),
             self.compiler.program().clone(),
+            self.family.clone(),
             self.cell.clone(),
             self.venue.clone(),
             now,
