@@ -107,7 +107,7 @@ use qip_prediction::resolution::{
 use qip_quantum::provider::SimulatedProvider;
 use qip_reasoning_engine::engine::{ReasoningEngine, ReasoningOutcome};
 use qip_reasoning_engine::hypothesis::Claim;
-use qip_risk::limits::{LimitKind, LimitSet, RiskState};
+use qip_risk::limits::{LimitSet, RiskState};
 use qip_risk_engine::autonomy::AutonomyController;
 use qip_risk_engine::monitor::RiskMonitor;
 use qip_risk_engine::pretrade::PreTradeChecker;
@@ -4186,44 +4186,16 @@ impl Platform {
             net += notional;
             position_notionals.insert(object.clone(), notional.abs());
         }
-        // The tail statistics the limits read. Until these were populated,
-        // `LimitKind::MaxValueAtRisk` and `LimitKind::MaxExpectedShortfall`
-        // both looked their figure up in a map that was always empty, took the
-        // `None` arm, and recorded nothing — so two limits that
-        // `LimitSet::conservative_default` ships by default, and that every
-        // deployment therefore believed it had, could never fire. A control
-        // that cannot fire reads as protection and is not.
-        //
-        // The keys are derived from each configured limit's own confidence,
-        // formatted exactly as the limit will format it. Computing a fixed set
-        // of confidences here instead would put the key on one side of a
-        // rounding boundary and the lookup on the other — `{:.2}` of 0.975 is
-        // one such value, and the default expected-shortfall limit uses it —
-        // and the limit would go on silently never evaluating with no visible
-        // difference from today.
+        // The tail statistics the limits read are derived in the risk lib
+        // from each configured limit's own confidence —
+        // `RiskState::with_tail_risk` — so the key a limit looks up and the
+        // key the figure is filed under are formatted by one rule. This
+        // function used to carry a second copy of that rule; two copies of a
+        // key format are one rounding boundary away from a limit that
+        // silently never evaluates, which is the failure the lib's version
+        // was written to end. The return series is the crossing from the
+        // book's `Decimal` equity to a statistic, made in `equity_returns`.
         let returns = self.equity_returns();
-        let mut value_at_risk = BTreeMap::new();
-        let mut expected_shortfall = BTreeMap::new();
-        if returns.len() >= 2 {
-            for limit in &self.monitor.limits().limits {
-                match limit.kind {
-                    LimitKind::MaxValueAtRisk { confidence, .. } => {
-                        value_at_risk.insert(
-                            format!("{confidence:.2}"),
-                            qip_risk::metrics::historical_var(&returns, confidence),
-                        );
-                    }
-                    LimitKind::MaxExpectedShortfall { confidence, .. } => {
-                        expected_shortfall.insert(
-                            format!("{confidence:.2}"),
-                            qip_risk::metrics::expected_shortfall(&returns, confidence),
-                        );
-                    }
-                    _ => {}
-                }
-            }
-        }
-
         RiskState {
             equity: self.capital.equity(),
             cash: self.capital.cash,
@@ -4231,10 +4203,9 @@ impl Platform {
             net_exposure: net,
             position_notionals,
             drawdown: self.capital.drawdown(),
-            value_at_risk,
-            expected_shortfall,
             ..RiskState::default()
         }
+        .with_tail_risk(self.monitor.limits(), &returns)
     }
 
     /// Submit one order through the full control path.
