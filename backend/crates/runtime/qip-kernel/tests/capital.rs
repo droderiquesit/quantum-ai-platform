@@ -24,7 +24,7 @@ use qip_financial::universe::Universe;
 use qip_kernel::config::PlatformConfig;
 use qip_kernel::platform::Platform;
 use qip_observability::Telemetry;
-use qip_risk::limits::LimitSet;
+use qip_risk::limits::{LimitKind, LimitSet};
 
 fn start() -> Timestamp {
     Timestamp::from_secs(1_760_000_000)
@@ -50,15 +50,28 @@ fn universe() -> Universe {
     universe
 }
 
+/// The conservative default less its two share-of-gross concentration caps.
+///
+/// These tests are about equity arithmetic, and their premise is that the
+/// first order into an empty book is admitted. A share-of-gross cap cannot
+/// grant that premise: the first position in any book is the whole of gross,
+/// so `sector-concentration` (35%) and `country-concentration` (60%) read
+/// 100% and refuse it. That was invisible while the kernel fed the checks no
+/// axis at all — the buckets were empty and the caps could never fire, which
+/// `tests/risk_aggregates.rs` now closes. Every other default limit stays;
+/// whether a share-of-gross cap belongs in a pre-trade set at all is the risk
+/// desk's question, not this fixture's.
+fn limits() -> LimitSet {
+    let mut limits = LimitSet::conservative_default();
+    limits
+        .limits
+        .retain(|limit| !matches!(limit.kind, LimitKind::MaxConcentration { .. }));
+    limits
+}
+
 fn platform(config: PlatformConfig) -> Result<Platform> {
     let (context, _clock) = Context::deterministic(start(), config.seed);
-    Platform::new(
-        config,
-        context,
-        Telemetry::silent(),
-        universe(),
-        LimitSet::conservative_default(),
-    )
+    Platform::new(config, context, Telemetry::silent(), universe(), limits())
 }
 
 /// Submit a traceable order through the full control path.

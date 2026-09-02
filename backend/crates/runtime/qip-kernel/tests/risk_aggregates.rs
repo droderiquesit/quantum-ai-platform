@@ -26,7 +26,7 @@ use qip_kernel::config::PlatformConfig;
 use qip_kernel::platform::Platform;
 use qip_observability::Telemetry;
 use qip_risk::aggregate::{AggregateFigures, RiskAggregates};
-use qip_risk::limits::LimitSet;
+use qip_risk::limits::{Limit, LimitKind, LimitSet};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
@@ -123,20 +123,79 @@ fn universe() -> Universe {
     universe
 }
 
-/// A platform over the default limits with the given initial equity.
+/// The conservative default less its two share-of-gross concentration caps.
+///
+/// The seam tests below need a first order into an empty book admitted, and
+/// a share-of-gross cap cannot grant that: the first position in any book is
+/// the whole of gross, so `sector-concentration` and `country-concentration`
+/// read 100% and refuse it. That was invisible while the kernel fed the
+/// checks no axis — the buckets were empty and the caps could not fire —
+/// which the bucket tests below now close. Every other default limit stays.
+fn limits() -> LimitSet {
+    let mut limits = LimitSet::conservative_default();
+    limits
+        .limits
+        .retain(|limit| !matches!(limit.kind, LimitKind::MaxConcentration { .. }));
+    limits
+}
+
+/// A platform over `limits` with the given initial equity.
 ///
 /// Equity is a parameter because the conservative default caps a single
 /// name at ten percent of it, and the seam test below needs that ceiling
 /// low enough to reach with orders the order-notional limit still admits.
-fn platform(initial_equity: Decimal) -> Result<Platform> {
+fn platform_under(initial_equity: Decimal, limits: LimitSet) -> Result<Platform> {
     let config = PlatformConfig::default().with_initial_equity(initial_equity);
     let (context, _clock) = Context::deterministic(start(), config.seed);
-    Platform::new(
-        config,
-        context,
-        Telemetry::silent(),
-        universe(),
-        LimitSet::conservative_default(),
+    Platform::new(config, context, Telemetry::silent(), universe(), limits)
+}
+
+fn platform(initial_equity: Decimal) -> Result<Platform> {
+    platform_under(initial_equity, limits())
+}
+
+/// A desk order, submitted through the full control path.
+fn buy(platform: &mut Platform, symbol: &str, shares: Decimal, tag: &str) -> Result<()> {
+    let order = platform.order_from(
+        object(symbol),
+        Side::Buy,
+        shares,
+        dec!("100"),
+        &format!("prop-{tag}"),
+        vec![format!("hyp-{tag}")],
+        start(),
+    );
+    platform.submit_order(order, start())
+}
+
+/// The sector bucket every fixture instrument belongs to, as the aggregate
+/// holds it.
+fn sector_bucket(platform: &Platform) -> Decimal {
+    platform
+        .risk_figures()
+        .axis_exposures()
+        .get("sector")
+        .and_then(|buckets| buckets.get("information_technology"))
+        .copied()
+        .unwrap_or(Decimal::ZERO)
+}
+
+/// `limits()` plus a cap on the fixture's one sector at a tenth of equity.
+///
+/// Named `sector-bucket`, so the refusal below can be told from the
+/// position-weight cap — which is also a tenth of equity, and which the
+/// second order is kept under by being in a different name.
+fn limits_with_sector_bucket_cap() -> LimitSet {
+    limits().with(
+        Limit::new(
+            "sector-bucket",
+            LimitKind::MaxBucketExposure {
+                axis: "sector".into(),
+                bucket: "information_technology".into(),
+                limit: 0.10,
+            },
+        )
+        .with_rationale("the fixture's one sector may not exceed a tenth of equity"),
     )
 }
 
@@ -293,5 +352,103 @@ fn a_desk_fill_is_carried_into_the_counters_the_risk_check_reads() -> Result<()>
         "the second order was refused for another reason: {}",
         refused.message()
     );
+    Ok(())
+}
+
+#[test]
+fn a_fill_is_charged_to_its_sector_bucket_and_an_order_that_would_overfill_the_bucket_is_refused()
+-> Result<()> {
+    // A tenth of a million is a hundred thousand: the bucket cap. The first
+    // order fills most of it in one name; the second, in a different name of
+    // the same sector, sits under every per-name limit on its own and
+    // breaches only when projected onto the bucket the first fill already
+    // holds — which is exactly the case an empty bucket could never refuse.
+    let mut platform = platform_under(dec!("1000000"), limits_with_sector_bucket_cap())?;
+
+    // Premise: nothing has been charged to any bucket before the first fill.
+    assert!(platform.risk_figures().axis_exposures().is_empty());
+    buy(&mut platform, "AAA", dec!("900"), "bucket-open")?;
+
+    // Premise: the venue filled, and the fill reached the sector bucket, so
+    // the refusal below is a bucket the aggregate carries and not an empty
+    // map agreeing with a limit that reads zero.
+    let fills = platform.orders().fills();
+    assert!(!fills.is_empty(), "the simulated venue filled nothing");
+    let at_cost: Decimal = fills
+        .iter()
+        .map(|fill| fill.quantity * fill.price)
+        .fold(Decimal::ZERO, |sum, notional| sum + notional);
+    let bucket = sector_bucket(&platform);
+    assert!(
+        bucket.is_positive(),
+        "the fill was aggregated to no sector bucket"
+    );
+    assert_eq!(
+        bucket, at_cost,
+        "the bucket holds something other than the fill"
+    );
+    let ceiling = dec!("100000");
+    assert!(
+        bucket < ceiling,
+        "the first fill {bucket} overfilled the bucket by itself"
+    );
+
+    // An order in another name that takes the bucket over, and only the
+    // bucket: a hundred shares more than the room left, well under the
+    // ten-percent per-name weight and the single-order notional cap.
+    let room = (ceiling - bucket)
+        .checked_div(dec!("100"))
+        .expect("a hundred is not zero")
+        .truncate_dp(0);
+    let shares = room + Decimal::from_int(100);
+    assert!(
+        shares * dec!("100") < ceiling,
+        "the follow-on breaches per-name limits alone"
+    );
+    let refused = buy(&mut platform, "BBB", shares, "bucket-over")
+        .expect_err("the order was admitted, so the pre-trade check never saw the bucket");
+    assert!(
+        refused.message().contains("sector-bucket:"),
+        "refused for another reason: {}",
+        refused.message()
+    );
+    assert!(
+        !refused.message().contains("position-weight:"),
+        "the per-name cap fired too, so this run does not isolate the bucket: {}",
+        refused.message()
+    );
+    // Nothing was charged for a refused order.
+    assert_eq!(sector_bucket(&platform), at_cost);
+    Ok(())
+}
+
+#[test]
+fn an_order_that_keeps_its_sector_bucket_under_the_cap_is_admitted() -> Result<()> {
+    let mut platform = platform_under(dec!("1000000"), limits_with_sector_bucket_cap())?;
+    buy(&mut platform, "AAA", dec!("900"), "bucket-open")?;
+    let opened = sector_bucket(&platform);
+    // Premise: the bucket is live, so the admission below is a limit that
+    // read a real figure and found it inside, not one that read nothing.
+    assert!(
+        opened.is_positive(),
+        "the fill was aggregated to no sector bucket"
+    );
+    let ceiling = dec!("100000");
+    assert!(opened < ceiling);
+
+    // Fifty shares more in another name of the same sector: five thousand
+    // against the room left, so the bucket ends under its cap.
+    let shares = dec!("50");
+    assert!(
+        opened + shares * dec!("100") < ceiling,
+        "the fixture would overfill the bucket"
+    );
+    buy(&mut platform, "BBB", shares, "bucket-under")?;
+    let after = sector_bucket(&platform);
+    assert!(
+        after > opened,
+        "the admitted order's fill was not charged to the bucket ({opened} before, {after} after)"
+    );
+    assert!(after < ceiling);
     Ok(())
 }

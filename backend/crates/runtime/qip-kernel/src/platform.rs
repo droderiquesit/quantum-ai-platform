@@ -277,6 +277,22 @@ pub struct Platform {
     /// projection of it cannot drift from the desk's copy the way absorbed
     /// state would.
     asset_classes: BTreeMap<String, AssetClass>,
+    /// The exposure buckets every instrument this platform was assembled to
+    /// trade belongs to, keyed by object id then axis — the same projection
+    /// of reference data as `asset_classes`, taken at the same moment for
+    /// the same reason.
+    ///
+    /// Four axes are fed, and only where the record carries a value:
+    /// `sector` (the GICS-style sector), `country` (the ISO code of primary
+    /// risk), `asset_class` and `venue` (the primary listing). A record with
+    /// an empty venue feeds no venue bucket rather than an invented one.
+    /// Nothing else the blueprint's gate names — factor, family, causal
+    /// driver — is carried by the instrument record, so nothing else is fed;
+    /// a bucket the data cannot fill is reported as absent, not guessed.
+    /// An instrument the universe holds no record for reaches no bucket at
+    /// all, so a `MaxConcentration` or `MaxBucketExposure` limit sees only
+    /// what the reference data can vouch for.
+    exposure_axes: BTreeMap<String, BTreeMap<String, String>>,
     /// Turns what a decision spent into what its edge has to survive.
     cost_engine: CostEngine,
     /// The rungs the most recent cycle actually used.
@@ -451,6 +467,29 @@ const DECLINED_HISTORY: usize = 256;
 /// a source-file literal for the desk, with the foundry's strategies
 /// arriving beside it as cell fills are carried across.
 const DESK_STRATEGY: &str = "central-desk";
+
+/// The exposure buckets one instrument record vouches for.
+///
+/// Axis names are the ones the default limit set looks up — `sector` and
+/// `country` are what `LimitSet::conservative_default` names, and a limit
+/// keyed on a spelling the fill never writes is a limit that cannot fire.
+/// A value the record leaves blank feeds no bucket: the builder defaults the
+/// venue to an empty string, and an empty-string bucket would be a real
+/// counter under a name nobody chose.
+fn exposure_axes_of(object: &qip_financial::object::FinancialObject) -> BTreeMap<String, String> {
+    let mut axes = BTreeMap::new();
+    for (axis, bucket) in [
+        ("sector", object.sector.as_str().to_string()),
+        ("country", object.geography.clone()),
+        ("asset_class", object.asset_class.as_str().to_string()),
+        ("venue", object.venue.clone()),
+    ] {
+        if !bucket.trim().is_empty() {
+            axes.insert(axis.to_string(), bucket);
+        }
+    }
+    axes
+}
 
 /// Bars the twin estimates liquidity over when pricing a declined path — the
 /// same window the platform's own counterfactual tests price with, so a path
@@ -1098,6 +1137,20 @@ impl Platform {
             .iter()
             .map(|object| (object.object_id.as_str().to_string(), object.asset_class))
             .collect();
+        // The exposure buckets, taken here too. Until this existed the
+        // aggregate was fed no axis at all, so `MaxConcentration` and
+        // `MaxBucketExposure` — two limits in every default set — evaluated
+        // against empty buckets on every cycle and could never fire: a
+        // control that read as protection and was not.
+        let exposure_axes: BTreeMap<String, BTreeMap<String, String>> = universe
+            .iter()
+            .map(|object| {
+                (
+                    object.object_id.as_str().to_string(),
+                    exposure_axes_of(object),
+                )
+            })
+            .collect();
         // What in this universe may not drive a decision, and why, taken here
         // for the same reason: `Universe::not_decision_grade` said the kernel
         // logged it at start-up, and nothing did, so a universe assembled
@@ -1234,6 +1287,7 @@ impl Platform {
             reason_routing: None,
             universe_not_decision_grade: not_decision_grade,
             asset_classes,
+            exposure_axes,
             cycle_ledger: None,
             compute_spend: Decimal::ZERO,
             data_reads: DataReads::new(),
@@ -4316,12 +4370,19 @@ impl Platform {
         let side = order.side;
         let quantity = order.quantity;
         let arrival = order.arrival_price;
+        // The order's own buckets, so the pre-trade projection adds this
+        // order to the sector, country, class and venue it belongs to before
+        // the limits read it. The projection used to be handed no axes, so
+        // an order that would take a bucket over its limit was admitted and
+        // the breach was discovered — if the aggregate had carried a bucket
+        // at all — only by the monitor, one cycle late.
+        let axes = self.exposure_axes_for(object_id.as_str());
         let result = self.orders.submit(
             order,
             self.broker.as_mut(),
             &self.autonomy,
             &risk_state,
-            BTreeMap::new(),
+            axes,
             None,
             now,
         );
@@ -4530,11 +4591,15 @@ impl Platform {
     /// and the aggregate would refuse it as not a fill. The desk's own orders
     /// are charged to one budget holder, [`DESK_STRATEGY`], because a desk
     /// order carries hypotheses and a proposal rather than a foundry strategy
-    /// and the aggregate refuses a fill that names no strategy. No exposure
-    /// axis is passed yet: the walk this replaces reported none either, and
-    /// a bucket the monitor suddenly began to see would be a limit that
-    /// began to fire without a change to the limits — that arm is reported
-    /// as remaining rather than slipped in here.
+    /// and the aggregate refuses a fill that names no strategy.
+    ///
+    /// The fill is charged to the instrument's exposure buckets — sector,
+    /// country, asset class and venue, as the universe's record carries them
+    /// (see the `exposure_axes` field for what is fed and what is not) — so
+    /// each bucket is a running aggregate that a limit reads in constant
+    /// time, never a sum over positions. Until this passed the axes the
+    /// aggregate held no bucket for any instrument, and the two bucket limits
+    /// in every default set were controls that could not fire.
     ///
     /// A refusal is recorded as a capture problem rather than returned: the
     /// fill has already happened and been journalled, and an error here
@@ -4543,10 +4608,11 @@ impl Platform {
     /// aggregate's fill count falling behind the order manager's is the
     /// symptom an operator would see.
     fn aggregate_fill(&mut self, object_id: &str, moved: Decimal) {
+        let axes = self.exposure_axes_for(object_id);
         if !moved.is_zero()
-            && let Err(error) =
-                self.aggregates
-                    .apply_fill(DESK_STRATEGY, object_id, &BTreeMap::new(), moved)
+            && let Err(error) = self
+                .aggregates
+                .apply_fill(DESK_STRATEGY, object_id, &axes, moved)
         {
             self.capture_problems.push(format!(
                 "a fill in {object_id} was booked and not aggregated: {}",
@@ -4568,6 +4634,21 @@ impl Platform {
     /// The running risk counters, as the pre-trade check reads them.
     pub fn risk_figures(&self) -> &RiskAggregates {
         &self.aggregates
+    }
+
+    /// The exposure buckets one instrument is charged to, by axis.
+    ///
+    /// Empty for an instrument the assembled universe holds no record for:
+    /// a bucket has to come from reference data, and a fill in an unknown
+    /// instrument is charged to the book's gross and net and to nothing
+    /// narrower rather than to a bucket somebody guessed. The map is
+    /// cloned because it is at most four short entries and the callers hand
+    /// it across a seam that takes it by value.
+    pub fn exposure_axes_for(&self, object_id: &str) -> BTreeMap<String, String> {
+        self.exposure_axes
+            .get(object_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// The correlation the current work belongs to.
