@@ -215,3 +215,28 @@ An agent asked to "make progress on ADR 0020" still has exactly one correct
 action available: gather step 1's evidence — which GKE workloads have ever
 actually run — and bring it to an owner. That has not changed, and the
 direction being decided is not a reason for it to.
+
+### Correction recorded at ADR 0024
+
+The sequence above was executed in code, not step by step and not on the
+per-step approvals this record required. The owner's instruction — "create
+the new infrastructure while devouring the old", quoted in full in
+[ADR 0024](0024-the-blueprint-runtime-is-provisioned-in-code-and-the-gitops-runtime-is-retired.md)
+— superseded the per-step approval rule **for the code**: the Cloud Run
+catalogue, the execution-node module and the trust zones are wired into the
+root module, the cluster's Terraform is removed, `deploy.yml` moves Cloud Run
+services, and the chart, the manifests, Argo CD, Kargo and KEDA are gone from
+the tree. ADR 0024 maps each commit onto the step it corresponds to.
+
+Three things did not change. Step 1's evidence — which GKE workloads ever
+actually ran — was never gathered. Nothing was applied: no terraform, gcloud
+or kubectl binary existed on the machine that made the commits, and the
+first plan against a project that ran the cluster is a human's to read
+before anything is destroyed — the approval rule stands unchanged for that.
+And the paper-trading boundary is exactly as this record's point 0 left it.
+
+The egress precondition recorded in the corrections above is met in code:
+`modules/egress-proxy` renders the one committed bootstrap as a loopback
+sidecar and as the node's unit, so retiring the chart took no proxy away
+from anything — there was never one to take. ADR 0011 and ADR 0017 are now
+superseded rather than superseded in direction.
