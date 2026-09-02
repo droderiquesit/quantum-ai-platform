@@ -20,7 +20,9 @@
 //!   `qip_risk_engine::autonomy`, and for the same reason: a false demotion
 //!   costs a day of missed opportunity and a missed one costs the book.
 
+use crate::band::{BandVerdict, HoldoutBand};
 use crate::evidence::StrategyEvidence;
+use crate::gates::Admission;
 use crate::trials::TrialBook;
 use qip_contracts::gate::{GateOutcome, GateStage, Promotion};
 use qip_contracts::governance::Approval;
@@ -120,6 +122,11 @@ pub struct LedgerEntry {
     /// The approval, kept whole rather than reduced to a name, so a review can
     /// read the rationale the approvers gave at the time.
     pub approval: Option<Approval>,
+    /// The band the holdout validation defined. Present on every holdout
+    /// admission and nothing else; the interval the strategy's live
+    /// performance is held inside of, from the evidence that admitted it.
+    #[serde(default)]
+    pub band: Option<HoldoutBand>,
 }
 
 impl LedgerEntry {
@@ -233,6 +240,33 @@ impl LifecycleLedger {
         self.path(strategy).contains(&stage)
     }
 
+    /// The holdout band a strategy is held inside of: the one its most recent
+    /// holdout admission produced. `None` for a strategy never admitted to
+    /// holdout, which is a strategy with nothing to be inside of.
+    pub fn holdout_band(&self, strategy: &StrategyId) -> Option<&HoldoutBand> {
+        self.history(strategy)
+            .iter()
+            .rev()
+            .filter(|entry| entry.promotion.to == GateStage::Holdout)
+            .find_map(|entry| entry.band.as_ref())
+    }
+
+    /// Judge live returns against the strategy's holdout band.
+    ///
+    /// Refuses when there is no band on record. A strategy with no band
+    /// cannot be "inside" anything, and answering "inside" for it would be
+    /// the Phase 3 gate passing on a criterion nobody defined.
+    pub fn band_verdict(&self, strategy: &StrategyId, live_returns: &[f64]) -> Result<BandVerdict> {
+        let band = self.holdout_band(strategy).ok_or_else(|| {
+            Error::denied(format!(
+                "no holdout band is on record for {strategy}; live performance is judged \
+                 against the band the holdout gate produced, and there is none to be inside \
+                 of. Promote {strategy} through the holdout gate before judging it live"
+            ))
+        })?;
+        band.judge(live_returns)
+    }
+
     /// The gate outcome that admitted a strategy to a rung, most recent first.
     pub fn admission_evidence(
         &self,
@@ -248,18 +282,21 @@ impl LifecycleLedger {
 
     /// Record a promotion that a gate has passed.
     ///
-    /// Four things are checked here that [`AuthorisedPromotion`] cannot check
+    /// Five things are checked here that [`AuthorisedPromotion`] cannot check
     /// on its own, because they are properties of this ledger rather than of
     /// the promotion: the strategy is where the promotion says it is, it has
-    /// not been retired, the outcome belongs to the rung being entered, and
-    /// the outcome passed.
+    /// not been retired, the outcome belongs to the rung being entered, the
+    /// outcome passed, and a holdout admission carries the band its
+    /// validation defined — a strategy admitted without one would later be
+    /// judged live against nothing.
     pub fn record_promotion(
         &mut self,
         strategy: &StrategyId,
         promotion: AuthorisedPromotion,
-        outcome: GateOutcome,
+        admission: Admission,
         rationale: impl Into<String>,
     ) -> Result<Promotion> {
+        let Admission { outcome, band } = admission;
         let current = self.stage_of(strategy);
         if current == GateStage::Retired {
             return Err(Error::denied(format!(
@@ -293,6 +330,24 @@ impl LifecycleLedger {
                 failures.join("; ")
             )));
         }
+        match (promotion.to(), band.as_ref()) {
+            (GateStage::Holdout, None) => {
+                return Err(Error::denied(format!(
+                    "the holdout admission for {strategy} carries no band; a strategy is \
+                     admitted to holdout only with the band its validation produced, because \
+                     live performance is judged against it and a band that does not exist \
+                     cannot be fallen outside of. Admit through `HoldoutGate::admit`"
+                )));
+            }
+            (to, Some(_)) if to != GateStage::Holdout => {
+                return Err(Error::invalid(format!(
+                    "a holdout band belongs to the holdout admission; the {} admission for \
+                     {strategy} must not carry one",
+                    to.as_str()
+                )));
+            }
+            _ => {}
+        }
 
         let record = Promotion {
             from: promotion.from(),
@@ -318,6 +373,7 @@ impl LifecycleLedger {
                 promotion: record.clone(),
                 outcome: Some(outcome),
                 approval: promotion.approval().cloned(),
+                band,
             });
         self.record_move(names::STRATEGY_PROMOTIONS, record.from, record.to);
         Ok(record)
@@ -377,6 +433,7 @@ impl LifecycleLedger {
                 promotion: record.clone(),
                 outcome: None,
                 approval: None,
+                band: None,
             });
         self.record_move(names::STRATEGY_DEMOTIONS, record.from, record.to);
         Ok(record)
@@ -453,8 +510,8 @@ pub fn attempt_promotion(
         ))
     })?;
     let evidence = charge_holdout_trials(ledger, strategy, evidence, promotion.to(), now)?;
-    let outcome = gate.evaluate(&evidence, now);
-    ledger.record_promotion(strategy, promotion, outcome, rationale)
+    let admission = gate.admit(&evidence, now);
+    ledger.record_promotion(strategy, promotion, admission, rationale)
 }
 
 /// Charge this evaluation to the strategy's family before the holdout gate

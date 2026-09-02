@@ -21,12 +21,15 @@ use qip_core::error::{Error, Result};
 use qip_core::kv::KeyValueStore;
 use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::{Decimal, Duration, ModelId, ObjectId, Timestamp, dec};
+use qip_lifecycle::band::BandMethod;
 use qip_lifecycle::demotion::{DemotionMonitor, DemotionTrigger, LiveObservation, PilotBaseline};
 use qip_lifecycle::evidence::{
     CrossValidationRun, FeatureTiming, HoldoutEvidence, KillCondition, LeakageAudit, PaperEvidence,
     PilotEvidence, ScaledEvidence, ShadowDecision, ShadowEvidence, StrategyEvidence,
 };
-use qip_lifecycle::gates::{Gate, HoldoutGate, PaperGate, PilotGate, ScaledGate, ShadowGate};
+use qip_lifecycle::gates::{
+    Admission, Gate, HoldoutGate, PaperGate, PilotGate, ScaledGate, ShadowGate,
+};
 use qip_lifecycle::ledger::{AuthorisedPromotion, LifecycleLedger, attempt_promotion};
 use qip_lifecycle::scoring::{annualised_sharpe, periodic_sharpe};
 use qip_lifecycle::trials::{JOURNAL_PREFIX, StrategyFamily, TrialBook};
@@ -350,8 +353,12 @@ fn a_promotion_that_skips_a_rung_cannot_be_constructed() -> Result<()> {
     let promotion = AuthorisedPromotion::advance(GateStage::Paper, None, start())?;
     assert_eq!(promotion.to(), GateStage::Shadow);
     let outcome = ShadowGate::default().evaluate(&evidence, start());
+    let admission = Admission {
+        outcome,
+        band: None,
+    };
     let error = ledger
-        .record_promotion(&strategy(), promotion, outcome, "jumping to shadow")
+        .record_promotion(&strategy(), promotion, admission, "jumping to shadow")
         .expect_err("a candidate cannot enter shadow");
     assert!(error.message().contains("candidate"), "{error:?}");
     assert_eq!(ledger.stage_of(&strategy()), GateStage::Candidate);
@@ -683,9 +690,9 @@ fn retirement_is_terminal_and_a_retired_strategy_must_be_re_proposed_as_a_new_ca
     // strategy, so a stale `from` cannot resurrect it.
     let evidence = charged(full_evidence(start(), start())?)?;
     let promotion = AuthorisedPromotion::advance(GateStage::Candidate, None, start())?;
-    let outcome = HoldoutGate::default().evaluate(&evidence, start());
+    let admission = HoldoutGate::default().admit(&evidence, start());
     let error = ledger
-        .record_promotion(&strategy(), promotion, outcome, "trying again")
+        .record_promotion(&strategy(), promotion, admission, "trying again")
         .expect_err("a retired strategy cannot be walked back up");
     assert!(error.message().contains("re-proposed"), "{error:?}");
 
@@ -1130,6 +1137,12 @@ fn every_automatic_trigger_lands_a_strategy_somewhere_that_holds_no_capital() {
         DemotionTrigger::CapitalEnvelopeExpired {
             expired_at: start(),
         },
+        DemotionTrigger::OutsideHoldoutBand {
+            live_sharpe: 0.1,
+            lower: 2.0,
+            upper: 9.0,
+            observations: 30,
+        },
     ];
     for trigger in triggers {
         for from in [GateStage::Pilot, GateStage::Scaled] {
@@ -1541,5 +1554,238 @@ fn every_sharpe_this_crate_reports_is_the_simulation_engines_sharpe() -> Result<
         detail.starts_with(&format!("realised pilot Sharpe {expected:.2} ")),
         "{detail}"
     );
+    Ok(())
+}
+
+/// ADR 0023 step 9 requires a strategy to run "inside its holdout band" and
+/// records that no band was defined anywhere in the tree. The holdout gate
+/// now defines one from the statistic it admits on, and the ledger carries it
+/// on that admission — with the method, the instant, the observations and
+/// the lifetime trial count it was computed under, so it can be reproduced.
+#[test]
+fn a_holdout_admission_carries_the_band_its_validation_produced() -> Result<()> {
+    let mut ledger = ledger()?;
+    let evidence = StrategyEvidence::new().with_holdout(strong_holdout()?);
+    assert!(
+        ledger.holdout_band(&strategy()).is_none(),
+        "premise: nothing yet"
+    );
+
+    attempt_promotion(
+        &mut ledger,
+        &strategy(),
+        &evidence,
+        None,
+        "validated",
+        start(),
+    )?;
+    let band = *ledger
+        .holdout_band(&strategy())
+        .ok_or_else(|| Error::not_found("holdout band"))?;
+    assert!(
+        band.lower < band.centre && band.centre < band.upper,
+        "{band:?}"
+    );
+    assert!(band.standard_error > 0.0);
+    assert_eq!(band.method, BandMethod::NINETY_FIVE);
+    assert_eq!(band.as_of, start());
+    assert_eq!(band.observations, 400);
+    assert_eq!(band.periods_per_year.to_bits(), 252.0_f64.to_bits());
+    assert_eq!(
+        band.trials, 12,
+        "the lifetime count, which after one run is the run's"
+    );
+
+    // It is the band the gate itself produced from this evidence, and the
+    // admission says so in a finding a reviewer can read.
+    let admission = HoldoutGate::default().admit(&charged(evidence.clone())?, start());
+    assert_eq!(admission.band, Some(band));
+    let entry = ledger
+        .history(&strategy())
+        .first()
+        .ok_or_else(|| Error::not_found("entry"))?;
+    assert_eq!(entry.band, Some(band));
+    assert!(
+        admission
+            .outcome
+            .findings
+            .iter()
+            .any(|(name, ok, detail)| name == "holdout_band_defined"
+                && *ok
+                && detail.contains("12 lifetime trial(s)")),
+        "{:?}",
+        admission.outcome.findings
+    );
+
+    // A second holdout admission from a family with more trials records the
+    // count it was corrected under.
+    let second = StrategyId::new("momentum-v3-run2");
+    ledger
+        .trial_book_mut()
+        .ok_or_else(|| Error::not_found("trial book"))?
+        .enrol(&second, &family()?, start())?;
+    attempt_promotion(&mut ledger, &second, &evidence, None, "validated", start())?;
+    assert_eq!(
+        ledger
+            .holdout_band(&second)
+            .map(|b| b.trials)
+            .ok_or_else(|| Error::not_found("second band"))?,
+        24
+    );
+    Ok(())
+}
+
+/// Live performance consistent with the holdout, at the live sample's own
+/// precision, is not a demotion — a band that demoted for noise would empty
+/// the book of every real strategy inside a month.
+#[test]
+fn live_performance_inside_the_holdout_band_is_not_demoted() -> Result<()> {
+    let (mut ledger, baseline) = pilot_fixture()?;
+    let now = start().saturating_add(Duration::from_days(60));
+    let observation = healthy_observation(now);
+    let verdict = ledger.band_verdict(&strategy(), &observation.returns)?;
+    assert!(verdict.inside, "premise: {}", verdict.describe());
+    assert!(verdict.lower < verdict.live && verdict.live < verdict.upper);
+
+    let (triggers, demotion) = DemotionMonitor::default().enforce(
+        &mut ledger,
+        &baseline,
+        &observation,
+        Some(&healthy_registry(now)),
+        now,
+    )?;
+    assert!(
+        !triggers
+            .iter()
+            .any(|t| matches!(t, DemotionTrigger::OutsideHoldoutBand { .. })),
+        "{triggers:?}"
+    );
+    assert!(demotion.is_none(), "{demotion:?}");
+    assert_eq!(ledger.stage_of(&strategy()), GateStage::Pilot);
+    Ok(())
+}
+
+/// Outside the band is a demotion candidate, decided where demotions are
+/// already decided and counted on the series operators already watch. The
+/// live figure here is far *above* the holdout — nothing else trips, so the
+/// band is the only trigger, and a result too good to be the validated
+/// strategy is treated as what it is.
+#[test]
+fn live_performance_outside_the_holdout_band_is_demoted_and_counted() -> Result<()> {
+    let metrics = Arc::new(Metrics::new("lifecycle-test"));
+    let (mut ledger, baseline) = pilot_fixture()?;
+    ledger.attach_metrics(Arc::clone(&metrics));
+    let now = start().saturating_add(Duration::from_days(60));
+    let mut observation = healthy_observation(now);
+    observation.returns = good_returns(9, 60, 0.0080);
+    let verdict = ledger.band_verdict(&strategy(), &observation.returns)?;
+    assert!(!verdict.inside, "premise: {}", verdict.describe());
+    assert!(verdict.live > verdict.upper, "premise: above, not below");
+
+    let (triggers, demotion) = DemotionMonitor::default().enforce(
+        &mut ledger,
+        &baseline,
+        &observation,
+        Some(&healthy_registry(now)),
+        now,
+    )?;
+    assert_eq!(triggers.len(), 1, "only the band tripped: {triggers:?}");
+    let DemotionTrigger::OutsideHoldoutBand {
+        live_sharpe,
+        lower,
+        upper,
+        observations,
+    } = triggers[0]
+    else {
+        return Err(Error::invalid(format!("{triggers:?}")));
+    };
+    assert_eq!(
+        (live_sharpe, lower, upper),
+        (verdict.live, verdict.lower, verdict.upper)
+    );
+    assert_eq!(observations, 60);
+    let demotion = demotion.ok_or_else(|| Error::not_found("demotion"))?;
+    assert_eq!(
+        (demotion.from, demotion.to),
+        (GateStage::Pilot, GateStage::Shadow)
+    );
+    assert!(
+        demotion.rationale.contains("outside the holdout band"),
+        "{}",
+        demotion.rationale
+    );
+    assert!(demotion.approver.is_none(), "no human in the loop");
+    assert_eq!(ledger.stage_of(&strategy()), GateStage::Shadow);
+    assert_eq!(
+        metrics.snapshot().counter(
+            names::STRATEGY_DEMOTIONS,
+            &labels([("from", "pilot"), ("to", "shadow")])
+        ),
+        1
+    );
+    Ok(())
+}
+
+/// No band, no judgement. A strategy never admitted to holdout has nothing to
+/// be inside of, and a holdout admission that arrives without its band is
+/// refused rather than recorded with a gap the Phase 3 gate would later fall
+/// through.
+#[test]
+fn judging_or_admitting_without_a_holdout_band_is_refused() -> Result<()> {
+    let ledger = LifecycleLedger::new();
+    let error = ledger
+        .band_verdict(&strategy(), &good_returns(8, 60, 0.0015))
+        .expect_err("nothing to be inside of");
+    assert_eq!(error.code(), "denied");
+    assert!(error.message().contains("no holdout band"), "{error:?}");
+    assert!(error.message().contains("holdout gate"), "{error:?}");
+
+    // The same evidence admits with its band and is refused without it.
+    let evidence = charged(StrategyEvidence::new().with_holdout(strong_holdout()?))?;
+    let admission = HoldoutGate::default().admit(&evidence, start());
+    assert!(
+        admission.outcome.passed && admission.band.is_some(),
+        "premise"
+    );
+    let mut ledger = LifecycleLedger::new();
+    let promotion = AuthorisedPromotion::advance(GateStage::Candidate, None, start())?;
+    let error = ledger
+        .record_promotion(
+            &strategy(),
+            promotion.clone(),
+            Admission {
+                outcome: admission.outcome.clone(),
+                band: None,
+            },
+            "band mislaid",
+        )
+        .expect_err("a holdout admission without its band is refused");
+    assert_eq!(error.code(), "denied");
+    assert!(error.message().contains("carries no band"), "{error:?}");
+    assert_eq!(ledger.stage_of(&strategy()), GateStage::Candidate);
+    ledger.record_promotion(&strategy(), promotion, admission, "band attached")?;
+    assert_eq!(ledger.stage_of(&strategy()), GateStage::Holdout);
+    assert!(ledger.holdout_band(&strategy()).is_some());
+
+    // And a band cannot be smuggled onto another rung's admission.
+    let band = *ledger
+        .holdout_band(&strategy())
+        .ok_or_else(|| Error::not_found("band"))?;
+    let paper =
+        PaperGate::default().evaluate(&StrategyEvidence::new().with_paper(strong_paper()), start());
+    let promotion = AuthorisedPromotion::advance(GateStage::Holdout, None, start())?;
+    let error = ledger
+        .record_promotion(
+            &strategy(),
+            promotion,
+            Admission {
+                outcome: paper,
+                band: Some(band),
+            },
+            "band on the wrong rung",
+        )
+        .expect_err("a band belongs to the holdout admission");
+    assert_eq!(error.code(), "invalid");
+    assert_eq!(ledger.stage_of(&strategy()), GateStage::Holdout);
     Ok(())
 }

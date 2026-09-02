@@ -64,6 +64,7 @@
 //! assert_eq!(ledger.stage_of(&strategy), GateStage::Retired);
 //! ```
 
+pub mod band;
 pub mod demotion;
 pub mod evidence;
 pub mod gates;
@@ -71,6 +72,7 @@ pub mod ledger;
 pub mod scoring;
 pub mod trials;
 
+pub use band::{BandMethod, BandVerdict, HoldoutBand};
 pub use demotion::{
     DemotionMonitor, DemotionPolicy, DemotionTrigger, LiveObservation, PilotBaseline,
 };
@@ -80,8 +82,8 @@ pub use evidence::{
     StrategyEvidence,
 };
 pub use gates::{
-    Gate, HoldoutGate, HoldoutPolicy, PaperGate, PaperPolicy, PilotGate, PilotPolicy, ScaledGate,
-    ScaledPolicy, ShadowGate, ShadowPolicy, gate_for,
+    Admission, Gate, HoldoutGate, HoldoutPolicy, PaperGate, PaperPolicy, PilotGate, PilotPolicy,
+    ScaledGate, ScaledPolicy, ShadowGate, ShadowPolicy, gate_for,
 };
 pub use ledger::{AuthorisedPromotion, LedgerEntry, LifecycleLedger, attempt_promotion};
 pub use trials::{StrategyFamily, TrialAccount, TrialBook, TrialEvent, TrialRecord};

@@ -24,6 +24,7 @@
 //! and inadequate" are the same answer at a gate, and returning an error for
 //! one of them would tempt a caller to treat it as a retryable problem.
 
+use crate::band::HoldoutBand;
 use crate::evidence::{HoldoutEvidence, StrategyEvidence};
 use crate::trials::TrialAccount;
 use qip_contracts::gate::{GateOutcome, GateStage};
@@ -48,6 +49,31 @@ pub trait Gate {
 
     /// Run every check and report each one.
     fn evaluate(&self, evidence: &StrategyEvidence, now: Timestamp) -> GateOutcome;
+
+    /// Run every check and hand back what the run produced besides a verdict.
+    ///
+    /// Only the holdout gate produces anything: the [`HoldoutBand`] its
+    /// validation defines. The default is the outcome alone, so a gate that
+    /// produces nothing does not have to say so.
+    fn admit(&self, evidence: &StrategyEvidence, now: Timestamp) -> Admission {
+        Admission {
+            outcome: self.evaluate(evidence, now),
+            band: None,
+        }
+    }
+}
+
+/// A gate's verdict together with what its validation produced.
+///
+/// The ledger takes this rather than a bare [`GateOutcome`] so the holdout
+/// band travels with the admission it belongs to and cannot be recorded
+/// against a different one — or forgotten, since the ledger refuses a holdout
+/// admission without it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Admission {
+    pub outcome: GateOutcome,
+    /// Present only for a holdout admission whose Sharpe was deflated.
+    pub band: Option<HoldoutBand>,
 }
 
 /// Thresholds the holdout rung applies.
@@ -182,13 +208,20 @@ impl Gate for HoldoutGate {
     }
 
     fn evaluate(&self, evidence: &StrategyEvidence, now: Timestamp) -> GateOutcome {
+        self.admit(evidence, now).outcome
+    }
+
+    fn admit(&self, evidence: &StrategyEvidence, now: Timestamp) -> Admission {
         let outcome = GateOutcome::new(GateStage::Holdout, now);
         let Some(holdout) = evidence.holdout.as_ref() else {
-            return outcome.record(
-                "holdout_evidence_present",
-                false,
-                "no holdout evidence was submitted",
-            );
+            return Admission {
+                outcome: outcome.record(
+                    "holdout_evidence_present",
+                    false,
+                    "no holdout evidence was submitted",
+                ),
+                band: None,
+            };
         };
 
         let observations = holdout.holdout_returns.len();
@@ -215,10 +248,29 @@ impl Gate for HoldoutGate {
             },
         );
 
+        // The band is defined from the same statistic the admission rests
+        // on, so the interval the strategy is later held inside of is the
+        // interval this evidence supports and not one written afterwards.
+        let mut band = None;
         outcome = match charged.and_then(|trials| {
             deflated_sharpe(&holdout.holdout_returns, trials, holdout.periods_per_year)
         }) {
-            Ok(deflated) => Self::record_deflated(outcome, &deflated),
+            Ok(deflated) => {
+                let outcome = Self::record_deflated(outcome, &deflated);
+                match HoldoutBand::from_deflated(&deflated, holdout.periods_per_year, now) {
+                    Ok(defined) => {
+                        let outcome =
+                            outcome.record("holdout_band_defined", true, defined.describe());
+                        band = Some(defined);
+                        outcome
+                    }
+                    Err(error) => outcome.record(
+                        "holdout_band_defined",
+                        false,
+                        format!("no holdout band could be defined: {}", error.message()),
+                    ),
+                }
+            }
             Err(error) => outcome
                 .record(
                     "deflated_sharpe_above_selection",
@@ -232,6 +284,11 @@ impl Gate for HoldoutGate {
                     "deflated_sharpe_credible",
                     false,
                     "no deflated Sharpe to read",
+                )
+                .record(
+                    "holdout_band_defined",
+                    false,
+                    "no deflated Sharpe to define a band from",
                 ),
         };
 
@@ -289,7 +346,7 @@ impl Gate for HoldoutGate {
         };
 
         let leakage = &holdout.leakage;
-        outcome.record(
+        let outcome = outcome.record(
             "no_leakage",
             leakage.is_clean(),
             if leakage.timings.is_empty() {
@@ -306,7 +363,8 @@ impl Gate for HoldoutGate {
                     findings.join("; ")
                 }
             },
-        )
+        );
+        Admission { outcome, band }
     }
 }
 
