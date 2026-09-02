@@ -25,6 +25,7 @@ use qip_api::web::{Router, Web};
 use qip_core::error::{Error, Result};
 use qip_core::time::Duration;
 use qip_core::{Clock, SystemClock};
+use qip_kernel::central::ArbitragePolicy;
 use qip_kernel::{Platform, PlatformConfig};
 use qip_observability::Telemetry;
 use qip_risk::limits::LimitSet;
@@ -70,7 +71,16 @@ fn run() -> Result<()> {
     // refusal and not an empty universe.
     let catalogue = load_universe(&storage, now)?;
 
-    let config = PlatformConfig::default().with_live_ceiling(ceiling);
+    // The arbitrage desk's policy, read here because this is the one process
+    // that ships the cycle whitelist down the mesh — see `load_arbitrage_policy`
+    // for why an unset path is an empty whitelist and a set one that does not
+    // read is a refusal. Set on the configuration before the platform exists,
+    // so the plane `harden_central` rebuilds from that configuration carries
+    // it too; a policy attached after the rebuild would be lost in the swap.
+    let (arbitrage, arbitrage_banner) = load_arbitrage_policy()?;
+
+    let mut config = PlatformConfig::default().with_live_ceiling(ceiling);
+    config.central.arbitrage = arbitrage;
     let context = qip_core::Context::new(clock.clone(), config.seed);
     let mut platform = Platform::new(
         config,
@@ -253,6 +263,7 @@ fn run() -> Result<()> {
          clears one"
     );
     println!("  capital trust:    {}", provenance.describe());
+    println!("  arbitrage desk:   {arbitrage_banner}");
     match &mesh {
         Some(mesh) => {
             // The addresses come from the bound sockets rather than from the
@@ -358,10 +369,67 @@ fn load_universe(
     Ok(catalogue)
 }
 
+/// Where the arbitrage desk's policy is read from: a JSON `ArbitragePolicy`,
+/// mounted the way the universe is. Unset means no desk.
+const ARBITRAGE_POLICY_VARIABLE: &str = "QIP_ARBITRAGE_POLICY_PATH";
+
+/// The arbitrage desk's policy, from the JSON file the deployment names, and
+/// the banner line that says what was read.
+///
+/// `QIP_ARBITRAGE_POLICY_PATH` unset is not a refusal: it is the operator
+/// saying there is no desk, and the platform's answer to that is the
+/// fail-closed one — `CentralConfig::arbitrage` stays `None`, every cycle
+/// whitelist ships empty, and each cell's installer declines by name. Set
+/// and unreadable, or readable and not a policy, is a refusal to start: a
+/// process that fell back to no desk because the file the operator pointed
+/// at was missing would run healthy with the desk silently off, which is the
+/// state that hid the empty universe once already. The content is only
+/// parsed here; whether it says something the cell would refuse is judged
+/// when the plane assembles, which also stops the process, naming the entry.
+fn load_arbitrage_policy() -> Result<(Option<ArbitragePolicy>, String)> {
+    let Some(path) = std::env::var(ARBITRAGE_POLICY_VARIABLE)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok((
+            None,
+            format!(
+                "none ({ARBITRAGE_POLICY_VARIABLE} is not set); every cycle whitelist ships \
+                 empty and no cell installs a desk"
+            ),
+        ));
+    };
+    let text = std::fs::read_to_string(&path).map_err(|error| {
+        Error::io(format!(
+            "configuration: {ARBITRAGE_POLICY_VARIABLE} names {path}, which cannot be read: \
+             {error}. Unset it to run with no desk; a named policy that does not read is not \
+             a desk that is off"
+        ))
+    })?;
+    let policy: ArbitragePolicy = serde_json::from_str(&text).map_err(|error| {
+        Error::invalid(format!(
+            "configuration: {ARBITRAGE_POLICY_VARIABLE} names {path}, which is not an \
+             arbitrage policy: {error}. See docs/operations/arbitrage-policy.md for the fields"
+        ))
+    })?;
+    let banner = format!(
+        "policy from {path}: strategy {}, {} market(s) across {} venue(s), funded in {}; \
+         sized against that strategy's live grant at each cell",
+        policy.strategy,
+        policy.markets.len(),
+        policy.venues.len(),
+        policy.funding_instrument
+    );
+    Ok((Some(policy), banner))
+}
+
 #[cfg(test)]
 mod tests {
-    //! Pinned, not endorsed: what the committed catalogue does to the first
-    //! desk order under the conservative default. ADR 0027 (proposed) frames
+    //! Two things this root pins. The operator page's example policy is one
+    //! the plane accepts, so the page cannot drift from the type it
+    //! documents — a runbook whose example is refused at start-up is worse
+    //! than none. And, pinned but not endorsed: what the committed catalogue
+    //! does to the first desk order under the conservative default. ADR 0027 (proposed) frames
     //! the decision — whether a share-of-gross concentration cap belongs in
     //! a pre-trade set at all — and it is the risk desk's, not this root's.
     //! Until it is taken, the state is that a catalogued universe turns the
@@ -374,12 +442,45 @@ mod tests {
     // test the assertion is the deliverable and `?` keeps the setup readable.
     #![allow(clippy::panic_in_result_fn)]
 
-    use qip_core::error::Result;
+    use qip_core::error::{Error, Result};
     use qip_core::{Context, Timestamp, dec};
+    use qip_kernel::central::ArbitragePolicy;
     use qip_kernel::{Platform, PlatformConfig};
     use qip_observability::Telemetry;
     use qip_risk::AggregateFigures;
     use qip_risk::limits::LimitSet;
+
+    #[test]
+    fn the_operator_pages_example_policy_is_one_the_plane_accepts() -> Result<()> {
+        let page = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../../docs/operations/arbitrage-policy.md"
+        ))
+        .expect("the operator page is readable");
+        let (_, rest) = page
+            .split_once("```json\n")
+            .ok_or_else(|| Error::not_found("the page's JSON example"))?;
+        let (example, _) = rest
+            .split_once("```")
+            .ok_or_else(|| Error::not_found("the end of the page's JSON example"))?;
+        let policy: ArbitragePolicy = serde_json::from_str(example)?;
+        // Premise: the example says something, so acceptance below is of a
+        // policy and not of an empty object.
+        assert_eq!(policy.markets.len(), 1);
+        policy.validate()?;
+        let mut config = PlatformConfig::default();
+        config.central.arbitrage = Some(policy);
+        let (context, _clock) =
+            Context::deterministic(Timestamp::from_secs(1_760_000_000), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            qip_financial::universe::Universe::new(),
+            LimitSet::conservative_default(),
+        )?;
+        Ok(())
+    }
 
     const COMMITTED: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),

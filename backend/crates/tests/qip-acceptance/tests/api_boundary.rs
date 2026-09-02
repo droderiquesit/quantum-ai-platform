@@ -818,7 +818,7 @@ fn every_mutating_route_is_one_of_three_and_each_raises_a_typed_intent() {
 }
 
 #[test]
-fn the_api_calls_no_platform_mutator_beyond_the_five_it_is_allowed() {
+fn the_api_calls_no_platform_mutator_beyond_the_six_it_is_allowed() {
     // Enumerate every `&mut self` method the platform exposes, from the
     // kernel's source rather than from memory, so a mutator added to the
     // kernel tomorrow is refused here the day it is called from a route.
@@ -859,12 +859,20 @@ fn the_api_calls_no_platform_mutator_beyond_the_five_it_is_allowed() {
     //   beside `set_central`; it is assembly, not a route, and a journal that
     //   does not verify stops the process before any route exists.
     // * `ingest_cell_report` — hands a cell's delta to the platform to judge.
+    // * `issue_cycle_whitelist` — policy emission at the shipping seam, not a
+    //   route mutating state: `pending_policy` asks the platform for the cell's
+    //   cycle whitelist as it builds the payload, and the platform journals
+    //   what it produced. It is `&mut` for the journal append alone. The API
+    //   supplies nothing to it but the cell name and the instant; the policy
+    //   and the grant it is derived from are the platform's, so nothing a
+    //   caller of the API sends can widen what a cell is permitted to price.
     let allowed: BTreeSet<&str> = [
         "run_cycle",
         "autonomy_mut",
         "set_central",
         "open_trial_book",
         "ingest_cell_report",
+        "issue_cycle_whitelist",
     ]
     .into_iter()
     .collect();

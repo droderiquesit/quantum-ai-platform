@@ -100,7 +100,14 @@ struct Rig {
 /// Assemble a serving API with the mesh backbone on ephemeral loopback
 /// ports, the way `main` does it from the environment.
 fn rig(inbox_capacity: usize) -> Result<Rig> {
-    let config = PlatformConfig::default();
+    rig_with(inbox_capacity, PlatformConfig::default())
+}
+
+/// The same rig under a configuration the test states — the arbitrage policy
+/// `main` would have read from `QIP_ARBITRAGE_POLICY_PATH` — set before the
+/// trust root is installed, as `main` orders it, so the plane
+/// `harden_central` rebuilds carries the policy too.
+fn rig_with(inbox_capacity: usize, config: PlatformConfig) -> Result<Rig> {
     let clock = Arc::new(ManualClock::new(start()));
     let context = Context::new(clock.clone(), config.seed);
     let mut platform = Platform::new(
@@ -711,6 +718,557 @@ fn the_orders_a_cell_reports_reach_the_centres_strategy_books() -> Result<()> {
         lot.quantity,
         Decimal::from_int(60),
         "the whole fill belongs to the one contributor on the order's side"
+    );
+    Ok(())
+}
+
+// --- the cycle whitelist, from a policy and a grant, over real sockets -------
+//
+// Slot 8 shipped unproduced from every deployed centre until `pending_policy`
+// called the producer, so the desk the node can install installed never.
+// These tests drive the seam a deployment uses — `POST /cycle` under the
+// platform lock, the signed payload over the wire, the cell's own downlink
+// verifying it — and read the slot the way the node's installer does.
+//
+// The grant is issued through the plane's own door, because it is the only
+// door: `CentralPlane::issue` refuses a strategy the ladder does not say
+// holds capital, so the fixture below compiles a strategy, attaches evidence
+// that passes every gate, walks it to pilot under dual approval, and issues.
+// Mirrored from the kernel's own suite rather than shared with it — a
+// fixture crate would be a dependency, and there is nowhere below both to
+// put one.
+
+use qip_capital::allocation::StrategyProposal;
+use qip_capital::capacity::CapacityModel;
+use qip_compliance::approval::OperatorCredential;
+use qip_contracts::feature::FeatureKey;
+use qip_contracts::gate::GateStage;
+use qip_contracts::governance::Approval;
+use qip_contracts::policy::CycleWhitelist;
+use qip_contracts::signal::SignalKind;
+use qip_contracts::venue::VenueClass;
+use qip_core::dec;
+use qip_core::rng::{Rng, Xoshiro256};
+use qip_events::{EventFilter, Topic};
+use qip_financial::costs::{LiquidityProfile, TransactionCostModel};
+use qip_kernel::central::{
+    ArbitragePolicy, CentralConfig, CentralPlane, StrategyCandidate, WhitelistIssue,
+    WhitelistedMarket, WhitelistedVenue, capital_subject,
+};
+use qip_lifecycle::evidence::{
+    CrossValidationRun, FeatureTiming, HoldoutEvidence, KillCondition, LeakageAudit, PaperEvidence,
+    PilotEvidence, ScaledEvidence, ShadowDecision, ShadowEvidence, StrategyEvidence,
+};
+use qip_lifecycle::trials::StrategyFamily;
+use qip_simulation_engine::validation::PurgedSplit;
+use qip_strategy::catalogue::FeatureCatalogue;
+use qip_strategy::compile::{CompiledStrategy, StrategyCompiler};
+use qip_strategy::ir::{Expr, Rule, StrategySpec, Type};
+use qip_strategy::program::Program;
+
+/// The desk's strategy: the one the policy names and the one the grant funds.
+const DESK: &str = "arb-desk";
+/// The venue the grant permits. The policy trades here, or, in the refusal
+/// test, somewhere the grant does not reach.
+const DESK_VENUE: &str = "XNYS";
+/// The most conversions the node walks per pass — `qip-edge-node`'s
+/// `MAX_CONVERSIONS`, restated because an app cannot link another app; the
+/// kernel's `MAX_MARKETS` is half of it for the same reason.
+const NODE_MAX_CONVERSIONS: usize = 256;
+
+fn desk() -> StrategyId {
+    StrategyId::new(DESK)
+}
+
+fn desk_venue() -> VenueId {
+    VenueId::new(DESK_VENUE)
+}
+
+/// Ninety days of pilot plus a month, so the scaled gate's duration bar is met.
+fn scaled_at() -> Timestamp {
+    start().saturating_add(Duration::from_days(120))
+}
+
+fn compile(id: &str) -> Result<(CompiledStrategy, Program)> {
+    let subject = ObjectId::from_string(format!("obj-{id}"));
+    let pressure = FeatureKey::new("book_pressure", subject.clone()).with("levels", 5);
+    let mut catalogue = FeatureCatalogue::new();
+    catalogue.declare(pressure.clone(), Type::Statistic)?;
+    let spec = StrategySpec::new(StrategyId::new(id), subject, Duration::from_millis(250))
+        .with_rule(Rule::new(
+            "enter",
+            SignalKind::Enter,
+            Expr::feature(pressure).greater_than(Expr::Statistic(0.4)),
+            Expr::Exact(Decimal::from_int(100)),
+            Expr::Statistic(0.62),
+            500,
+        ));
+    let mut compiler = StrategyCompiler::new(catalogue);
+    let compiled = compiler.compile(&spec)?;
+    Ok((compiled, compiler.into_program()))
+}
+
+fn good_returns(seed: u64, n: usize, drift: f64) -> Vec<f64> {
+    let mut rng = Xoshiro256::seeded(seed);
+    (0..n)
+        .map(|_| {
+            let u = rng.next_f64() + rng.next_f64() - 1.0;
+            drift + u * 0.01
+        })
+        .collect()
+}
+
+fn honest_cross_validation(observations: usize) -> Result<CrossValidationRun> {
+    let (folds, label_horizon, embargo) = (5, 10, 5);
+    let splits = PurgedSplit::new(folds, label_horizon, embargo)?.split(observations)?;
+    Ok(CrossValidationRun {
+        folds,
+        label_horizon,
+        embargo,
+        observations,
+        purged: splits.iter().map(|s| s.purged).sum(),
+        embargoed: splits.iter().map(|s| s.embargoed).sum(),
+    })
+}
+
+fn dual_approval(subject: &str, at: Timestamp, rationale: &str) -> Result<Approval> {
+    Approval::new(subject, "alice.chen", at, rationale)?.countersigned_by("bram.oduya")
+}
+
+fn credentials(at: Timestamp) -> Result<Vec<OperatorCredential>> {
+    Ok(vec![
+        OperatorCredential::verified("alice.chen", "webauthn", at)?,
+        OperatorCredential::verified("bram.oduya", "webauthn", at)?,
+    ])
+}
+
+fn full_evidence(id: &StrategyId, cell: &str) -> Result<StrategyEvidence> {
+    let observations = 400;
+    let holdout = HoldoutEvidence {
+        holdout_returns: good_returns(1, observations, 0.0018),
+        in_sample_folds: (0..5).map(|f| good_returns(10 + f, 80, 0.0020)).collect(),
+        out_of_sample_folds: (0..5).map(|f| good_returns(20 + f, 80, 0.0018)).collect(),
+        trials: 12,
+        periods_per_year: 252.0,
+        cross_validation: honest_cross_validation(observations)?,
+        leakage: LeakageAudit {
+            timings: (0..8)
+                .map(|i| FeatureTiming {
+                    feature: format!("feature-{i}"),
+                    known_at: start(),
+                    used_at: at(Duration::from_hours(1)),
+                })
+                .collect(),
+            restated_without_snapshots: Vec::new(),
+        },
+    };
+    let paper = PaperEvidence {
+        against_live_data: true,
+        assumed_cost_bps: 8.0,
+        realised_cost_bps: (0..400).map(|i| 7.0 + f64::from(i % 5) * 0.2).collect(),
+        peak_participation: 0.04,
+        modelled_participation_limit: 0.10,
+        unfillable_orders: 4,
+        filled_orders: 400,
+    };
+    let shadow = ShadowEvidence {
+        decisions: (0..400)
+            .map(|i| ShadowDecision {
+                at: at(Duration::from_mins(i)),
+                object_id: ObjectId::from_string(format!("obj-{}", i % 20)),
+                live: SignalKind::Enter,
+                predicted: SignalKind::Enter,
+                live_quantity: dec!("100"),
+                predicted_quantity: dec!("100"),
+            })
+            .collect(),
+        orders_reached_a_venue: false,
+        decision_latency_p99: Duration::from_millis(40),
+    };
+    let proposed = CapitalEnvelope::new(
+        id.clone(),
+        cell,
+        dec!("250000"),
+        dec!("250000"),
+        dec!("250000"),
+        vec![desk_venue()],
+        start(),
+        at(Duration::from_days(14)),
+        "alice.chen",
+        "proposed-not-issued",
+    )?;
+    let pilot = PilotEvidence {
+        approval: Some(dual_approval(
+            &format!("{id} pilot"),
+            start(),
+            "shadow agreement held at 100% over 400 decisions",
+        )?),
+        envelope: Some(proposed),
+        kill_conditions: vec![
+            KillCondition::RealisedLoss(dec!("25000")),
+            KillCondition::Drawdown(0.08),
+            KillCondition::ConsecutiveLosingDays(5),
+        ],
+    };
+    let scaled = ScaledEvidence {
+        pilot_returns: good_returns(99, 120, 0.0030),
+        pilot_started_at: start(),
+        pilot_utilisation: Utilisation {
+            gross_committed: dec!("180000"),
+            realised_loss: dec!("0"),
+            orders_sent: 5_400,
+        },
+        proposed_notional: dec!("1000000"),
+        modelled_capacity: dec!("4000000"),
+        pilot_approval: Some(dual_approval(
+            &format!("{id} pilot"),
+            start(),
+            "shadow agreement held at 100% over 400 decisions",
+        )?),
+        scaling_approval: Some(dual_approval(
+            &format!("{id} scaling"),
+            scaled_at(),
+            "ninety days at pilot returned a 0.7 Sharpe inside a quarter of capacity",
+        )?),
+    };
+    Ok(StrategyEvidence::new()
+        .with_holdout(holdout)
+        .with_paper(paper)
+        .with_shadow(shadow)
+        .with_pilot(pilot)
+        .with_scaled(scaled))
+}
+
+fn proposal(id: &StrategyId, cell: &str) -> Result<StrategyProposal> {
+    Ok(StrategyProposal {
+        strategy: id.clone(),
+        cell: cell.to_string(),
+        venue: desk_venue(),
+        expected_sharpe: 1.8,
+        sharpe_standard_error: 0.05,
+        capacity: CapacityModel::new(
+            LiquidityProfile::listed(Decimal::from_int(5_000_000), 4.0),
+            TransactionCostModel::listed(4.0),
+            45.0,
+            dec!("100"),
+            0.5,
+        )?,
+        capacity_uncertainty: 0.2,
+    })
+}
+
+/// Register the desk's strategy with evidence that passes every gate, walk it
+/// to pilot, and issue its grant at `CELL`. Returns the envelope the plane
+/// now holds — the one fact the whitelist is sized against.
+fn grant_the_desk(plane: &mut CentralPlane) -> Result<CapitalEnvelope> {
+    let id = desk();
+    let (compiled, program) = compile(DESK)?;
+    let candidate = StrategyCandidate::new(
+        compiled,
+        program,
+        StrategyFamily::new("mesh-tests")?,
+        CELL,
+        desk_venue(),
+        start(),
+    )?
+    .with_evidence(full_evidence(&id, CELL)?)
+    .with_model("microprice-distilled@3")
+    .with_evidence_artifacts(vec![
+        format!("sha256:holdout-{id}"),
+        format!("sha256:shadow-{id}"),
+    ]);
+    plane.factory_mut().register(candidate)?;
+    plane.set_proposal(proposal(&id, CELL)?);
+    for rung in [
+        GateStage::Holdout,
+        GateStage::Paper,
+        GateStage::Shadow,
+        GateStage::Pilot,
+    ] {
+        let approval = if rung.requires_human_approval() {
+            Some(dual_approval(
+                DESK,
+                start(),
+                "every gate check passed with the evidence attached",
+            )?)
+        } else {
+            None
+        };
+        plane
+            .factory_mut()
+            .promote(&id, approval, "the gate passed", start())?;
+    }
+    let approval = dual_approval(
+        &capital_subject(&id, CELL),
+        start(),
+        "the pilot gate passed and the allocator sized it inside the budget",
+    )?;
+    plane.issue(
+        &id,
+        "research.desk",
+        &approval,
+        &credentials(start())?,
+        0.0,
+        start(),
+    )?;
+    plane
+        .envelope(CELL, &id)
+        .cloned()
+        .ok_or_else(|| Error::not_found("the grant the plane just issued"))
+}
+
+/// A policy trading one book at each named venue, funded in USD.
+fn arbitrage_policy(venues: &[&str]) -> ArbitragePolicy {
+    ArbitragePolicy {
+        strategy: desk(),
+        funding_instrument: "USD".to_string(),
+        venues: venues
+            .iter()
+            .map(|venue| {
+                (
+                    venue.to_string(),
+                    WhitelistedVenue {
+                        class: VenueClass::Exchange,
+                        taker_cost: dec!("0.0005"),
+                    },
+                )
+            })
+            .collect(),
+        markets: venues
+            .iter()
+            .map(|venue| WhitelistedMarket {
+                venue: venue.to_string(),
+                market: format!("AAA-USD@{venue}"),
+                base: "AAA".to_string(),
+                quote: "USD".to_string(),
+            })
+            .collect(),
+        start_sizes: BTreeMap::from([("AAA".to_string(), dec!("100"))]),
+    }
+}
+
+fn config_with(policy: ArbitragePolicy) -> PlatformConfig {
+    PlatformConfig::default().with_central(CentralConfig {
+        arbitrage: Some(policy),
+        ..CentralConfig::default()
+    })
+}
+
+/// The whitelist lines the cycle response carries for the one cell.
+fn whitelist_lines(cycle: &serde_json::Value) -> Vec<String> {
+    cycle["mesh"]["policy"]["whitelist"]
+        .as_array()
+        .map(|lines| {
+            lines
+                .iter()
+                .filter_map(|line| line.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Read the slot the way the node's installer does: the payload the cell's
+/// own downlink verified, and slot 8 on it.
+fn shipped_whitelist(rig: &Rig, name: &str) -> Result<Option<CycleWhitelist>> {
+    let mut downlink = policy_downlink(rig, name)?;
+    let batch = downlink.poll(at(Duration::from_secs(5)))?;
+    assert!(
+        batch.refused.is_empty(),
+        "the cycle shipped something this cell refused: {:?}",
+        batch.refused
+    );
+    let payload = batch
+        .verified
+        .first()
+        .ok_or_else(|| Error::not_found("a payload the cell verified"))?;
+    // The rest of the payload ships whatever slot 8 does: the grant manifest
+    // is produced on every path below.
+    assert!(
+        payload.payload().capital_grants.value().is_some(),
+        "the grant manifest slot shipped unproduced"
+    );
+    Ok(payload.payload().cycle_whitelist.value().cloned())
+}
+
+/// The whole path a deployment runs: a policy the operator stated, a grant
+/// the ladder issued, one `POST /cycle`, and a whitelist at the cell's
+/// downlink that the node's `graph_from_whitelist` would accept — every
+/// venue permitted by the grant, no self-conversion, every cost in [0, 1),
+/// one class per venue, within the node's walk bound — sized from the
+/// grant's own order limit. Until the seam called the producer, the slot
+/// this reads was unproduced in every payload any centre ever shipped.
+#[test]
+fn a_cycle_ships_the_desk_a_live_grant_funds_as_a_whitelist_the_cell_verifies() -> Result<()> {
+    let rig = rig_with(64, config_with(arbitrage_policy(&[DESK_VENUE])))?;
+    let grant = {
+        let mut platform = rig
+            .platform
+            .lock()
+            .map_err(|_| Error::invalid("the platform lock is poisoned"))?;
+        // Premise: nothing has been distributed before the cycle, so the
+        // record found afterwards was written by the shipping seam.
+        let distributed = EventFilter::new().topic(Topic::PolicyDistributed);
+        assert!(platform.replay_journal(&distributed)?.is_empty());
+        grant_the_desk(platform.central_mut())?
+    };
+    // Premise: the grant is live and permits the policy's venue, so a
+    // refusal below would be the seam's and not the fixture's.
+    assert!(grant.is_live(at(Duration::from_secs(5))));
+    assert!(grant.permits_venue(&desk_venue()));
+    assert!(grant.order_limit().is_positive());
+
+    let cycle = run_cycle(&rig)?;
+    let lines = whitelist_lines(&cycle);
+    assert_eq!(lines.len(), 1, "one cell, one line: {cycle}");
+    assert!(
+        lines[0].contains("2 trade edge(s)") && lines[0].contains(grant.signature()),
+        "the cycle does not say what it shipped and against which grant: {}",
+        lines[0]
+    );
+
+    let whitelist = shipped_whitelist(&rig, "policy-whitelist")?
+        .ok_or_else(|| Error::not_found("a produced cycle whitelist on the verified payload"))?;
+    // One book, two edges: buying the base out of the quote, selling it back.
+    assert_eq!(whitelist.conversions.len(), 2, "{whitelist:?}");
+    assert!(whitelist.conversions.len() <= NODE_MAX_CONVERSIONS);
+    let mut classes = BTreeMap::new();
+    for conversion in &whitelist.conversions {
+        assert!(
+            grant.permits_venue(&VenueId::new(conversion.venue.as_str())),
+            "the whitelist names {}, which the grant does not permit; the node refuses it whole",
+            conversion.venue
+        );
+        assert_ne!(conversion.from, conversion.to, "a self-conversion");
+        assert!(
+            !conversion.cost_fraction.is_negative() && conversion.cost_fraction < Decimal::ONE,
+            "cost {} is outside [0, 1)",
+            conversion.cost_fraction
+        );
+        if let Some(previous) = classes.insert(conversion.venue.clone(), conversion.venue_class) {
+            assert_eq!(previous, conversion.venue_class, "one venue, two classes");
+        }
+    }
+    assert!(
+        whitelist
+            .conversions
+            .iter()
+            .any(|c| c.from == "USD" && c.to == "AAA")
+            && whitelist
+                .conversions
+                .iter()
+                .any(|c| c.from == "AAA" && c.to == "USD"),
+        "the book did not become an edge in each direction: {:?}",
+        whitelist.conversions
+    );
+    // Sized from the one authority on how much may be committed.
+    assert_eq!(
+        whitelist.start_sizes.get("USD"),
+        Some(&grant.order_limit()),
+        "the funding instrument is not sized by the grant's order limit"
+    );
+    assert_eq!(whitelist.start_sizes.get("AAA"), Some(&dec!("100")));
+
+    // And the record: the whitelist that reached the cell is the one the
+    // journal holds, so the permission is reproducible from the log alone.
+    let platform = rig
+        .platform
+        .lock()
+        .map_err(|_| Error::invalid("the platform lock is poisoned"))?;
+    let recorded = platform.replay_journal(&EventFilter::new().topic(Topic::PolicyDistributed))?;
+    assert_eq!(recorded.len(), 1, "one cycle, one issue for the one cell");
+    let issue = recorded[0].decode::<WhitelistIssue>()?.body;
+    assert_eq!(issue.cell, CELL);
+    assert_eq!(
+        issue.whitelist, whitelist,
+        "the wire and the journal disagree"
+    );
+    Ok(())
+}
+
+/// No policy is the deployed default, and it must read as what it is at both
+/// ends: the slot ships produced and empty — what the producer returned and
+/// what the journal says was distributed — so the installer declines with
+/// `EmptyWhitelist` rather than `NoWhitelist`, and the cycle says the policy
+/// is unset rather than leaving an operator to infer it from a desk that
+/// never appears.
+#[test]
+fn without_a_policy_the_whitelist_ships_empty_and_the_cycle_says_the_policy_is_unset() -> Result<()>
+{
+    let rig = rig(64)?;
+    {
+        let platform = rig
+            .platform
+            .lock()
+            .map_err(|_| Error::invalid("the platform lock is poisoned"))?;
+        // Premise: the default configuration really carries no policy.
+        assert!(platform.central().config().arbitrage.is_none());
+    }
+
+    let cycle = run_cycle(&rig)?;
+    let lines = whitelist_lines(&cycle);
+    assert_eq!(lines.len(), 1, "one cell, one line: {cycle}");
+    assert!(
+        lines[0].contains("CentralConfig::arbitrage is unset"),
+        "the cycle does not say why the whitelist is empty: {}",
+        lines[0]
+    );
+
+    let whitelist = shipped_whitelist(&rig, "policy-no-policy")?
+        .ok_or_else(|| Error::not_found("a produced, empty cycle whitelist"))?;
+    assert!(
+        whitelist.conversions.is_empty() && whitelist.start_sizes.is_empty(),
+        "an unset policy shipped a whitelist with something in it: {whitelist:?}"
+    );
+    Ok(())
+}
+
+/// The producer's refusal, at the seam. A policy trading somewhere the desk's
+/// grant does not reach is a whitelist the cell would refuse whole; the
+/// centre refuses it first, ships the slot unproduced — the cell narrows,
+/// and never receives a guessed whitelist — and names the venue where the
+/// policy was shipped from, not only in a cell's delta stream.
+#[test]
+fn a_policy_venue_the_grant_does_not_permit_ships_the_slot_unproduced_and_names_the_venue()
+-> Result<()> {
+    let rig = rig_with(64, config_with(arbitrage_policy(&[DESK_VENUE, "XOTHER"])))?;
+    let grant = {
+        let mut platform = rig
+            .platform
+            .lock()
+            .map_err(|_| Error::invalid("the platform lock is poisoned"))?;
+        grant_the_desk(platform.central_mut())?
+    };
+    // Premise: the grant is live and it is the second venue it does not
+    // permit, so the refusal below is the venue check and nothing else.
+    assert!(grant.is_live(at(Duration::from_secs(5))));
+    assert!(grant.permits_venue(&desk_venue()));
+    assert!(!grant.permits_venue(&VenueId::new("XOTHER")));
+
+    let cycle = run_cycle(&rig)?;
+    let lines = whitelist_lines(&cycle);
+    assert_eq!(lines.len(), 1, "one cell, one line: {cycle}");
+    assert!(
+        lines[0].contains("not shipped")
+            && lines[0].contains("XOTHER")
+            && lines[0].contains("does not permit"),
+        "the refusal does not name the venue or say nothing shipped: {}",
+        lines[0]
+    );
+
+    assert!(
+        shipped_whitelist(&rig, "policy-refused")?.is_none(),
+        "a refused whitelist reached the cell as a produced slot"
+    );
+    // Nothing was distributed, so nothing is recorded as distributed.
+    let platform = rig
+        .platform
+        .lock()
+        .map_err(|_| Error::invalid("the platform lock is poisoned"))?;
+    assert!(
+        platform
+            .replay_journal(&EventFilter::new().topic(Topic::PolicyDistributed))?
+            .is_empty(),
+        "a refusal was journaled as a distribution"
     );
     Ok(())
 }

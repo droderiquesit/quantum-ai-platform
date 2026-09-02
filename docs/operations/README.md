@@ -10,6 +10,7 @@ needs the first line more than the reasoning.
 * [An agent attempted an ungranted capability](permission-violation.md)
 * [The book and the venue disagree](reconciliation-break.md)
 * [Deploying a new edge cell](deploying-an-edge-cell.md)
+* [The arbitrage desk's policy](arbitrage-policy.md)
 * [Provisioning a managed Google service](provisioning-managed-services.md)
 * [Disaster recovery](disaster-recovery.md)
 * [Scaling and availability](scaling-and-availability.md)
