@@ -1369,14 +1369,35 @@ fn something_collects_the_metrics_the_alert_policies_depend_on_or_says_that_noth
         "a node without the Ops Agent starts anyway, and reaches nobody"
     );
 
-    // The Cloud Run services: no collector yet, and the gap is written down
-    // rather than left to be discovered — with the reason, which is the same
-    // rule the proxy had to satisfy first.
+    // The Cloud Run services: a collector is declared in modules/cloudrun
+    // and runs only under a digest, and no environment names one. The gap
+    // is written down rather than left to be discovered — with the reason,
+    // which is the same rule the proxy had to satisfy first — and the note
+    // must say both halves: what is declared and that no digest is pinned,
+    // because a reader who finds the sidecar in the module and no caveat
+    // will flip the gate.
     let gap = read("infrastructure/terraform/modules/observability/NOT-SCRAPED.md");
     assert!(
-        gap.contains("not attached") && gap.contains("cloud-run-gmp-sidecar"),
-        "NOT-SCRAPED.md no longer records that the Cloud Run services have no collector, or what the collector would be"
+        gap.contains("cloud-run-gmp-sidecar")
+            && gap.contains("collector_image_digest")
+            && gap.contains("No digest is pinned"),
+        "NOT-SCRAPED.md no longer records what the Cloud Run collector is, where it is declared, or that no digest names it"
     );
+    for environment in ["dev", "test", "stage", "prod"] {
+        let tfvars = read(&format!(
+            "infrastructure/environments/{environment}/terraform.tfvars"
+        ));
+        let pinned = tfvars.lines().any(|line| {
+            line.trim_start()
+                .starts_with("metrics_collector_image_digest")
+        });
+        assert!(
+            !pinned,
+            "{environment} pins a metrics collector digest that no reviewed line in \
+             infrastructure/egress/vendored-images.txt has been mirrored and attested from; \
+             a revision carrying it would be refused at admission"
+        );
+    }
 
     // And the gate stays closed until a scrape is a fact. No environment
     // flips it.

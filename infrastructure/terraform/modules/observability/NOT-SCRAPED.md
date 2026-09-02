@@ -4,7 +4,7 @@ Read this before flipping `workload_metrics_exist` to `true` anywhere. The
 alert policies in `main.tf` name descriptors the binaries register, and Cloud
 Monitoring refuses a policy naming a descriptor it has never ingested — so the
 gate stays `false` until a scrape has been *observed*, not until one has been
-declared.
+declared. Two things in this file are declared. Nothing in it is observed.
 
 ## The execution node: scraped, once it exists
 
@@ -20,34 +20,65 @@ that receiver, as `prometheus.googleapis.com/qip_edge_*/gauge` and
 so nothing has been scraped and the three edge policies cannot be created.
 The receiver is declared; ingestion is not a fact.
 
-## The Cloud Run services: emitting, not yet scraped
+## The Cloud Run services: a collector is declared, and no digest is pinned
 
 `qip-fastbrain` and `qip-deepbrain` serve a Prometheus exposition on
 `/metrics` from the registry the kernel writes to, and `qip-api` serves its
 own behind `Role::Monitor`. On GKE a `PodMonitoring` resource collected the
-two brains; that resource left with the cluster.
+two brains; that resource left with the cluster (ADR 0024).
 
 The Cloud Run equivalent is Google's managed-Prometheus sidecar
 (`cloud-run-gmp-sidecar`), a container that scrapes the workload on loopback
-and writes to Cloud Monitoring. It is **not attached**, and the reason is the
-same rule the Envoy proxy had to satisfy first: Binary Authorization admits
-only what the platform's attestor signed, so the sidecar has to be mirrored by
-digest through `infrastructure/egress/vendored-images.txt` and `vendor.yml`
-before any revision carrying it can be admitted. Nobody has pinned that digest
-yet. Attaching an unattested image would produce a revision Binary
-Authorization refuses, which reads as a broken deploy rather than as a
-missing collector.
+and writes to Cloud Monitoring. What is now in the Terraform:
 
-Until it is vendored and attached, the four central-plane policies —
-kill switch, live fill, persistent breach, permission violation — and the
-central reconciliation-break policy name series nothing carries to Cloud
-Monitoring. That is the honest state: emitted, scrapable, not scraped.
+- `modules/cloudrun` takes `collector_image_digest`, null by default. Set,
+  it must be a full `repository@sha256:<64 hex>` and is refused otherwise;
+  null is no sidecar, no configuration bucket, no grant, and the module's
+  `metrics_collected` output is `false`. There is no second switch.
+- Under a digest the module renders the sidecar beside the workload, started
+  after the workload container is ready, with a `RunMonitoring` document
+  scraping `/metrics` on the workload's own port every 30 seconds with a
+  10-second timeout — the same cadence as the node's receiver. The document
+  is published to a bucket named by its hash, mounted read-only, so the
+  target and the interval are in a diff. The sidecar carries no secret, no
+  environment and no identity; it writes on the `metricWriter` grant every
+  workload already holds, and nothing was widened for it.
+- `catalogue.tf` attaches it to both brains and deliberately not to the API,
+  whose `/metrics` sits behind `Role::Monitor` and would answer a tokenless
+  sidecar 401 every thirty seconds. The image is composed from the
+  environment's registry prefix and the root's
+  `metrics_collector_image_digest`, so only a mirrored, attested copy can
+  reach a plan.
+
+What is not:
+
+- **No digest is pinned.** `metrics_collector_image_digest` is null in every
+  environment. The reason is the one the Envoy proxy had to satisfy first:
+  Binary Authorization admits only what the platform's attestor signed, so
+  the sidecar has to be mirrored by digest through
+  `infrastructure/egress/vendored-images.txt` and `vendor.yml` before any
+  revision carrying it can be admitted, and nobody has reviewed that digest.
+  Attaching an unattested image would produce a revision Binary Authorization
+  refuses, which reads as a broken deploy rather than as a missing collector.
+- **Nothing has been applied.** ADR 0024 records that no plan has been
+  produced on any environment; a declared sidecar is a statement about a
+  configuration.
+- **Nothing has been observed.** No `prometheus.googleapis.com/qip_*`
+  descriptor exists in any project.
+
+So today the five central-plane policies — kill switch, live fill, persistent
+breach, permission violation, central reconciliation break — still name
+series nothing carries to Cloud Monitoring. That is the honest state:
+emitted, scrapable, collector declared, not scraped.
 
 ## What would change this file
 
 - A `cloud-run-gmp-sidecar` digest reviewed and added to the vendored-images
-  list, a `metrics_sidecar` input on `modules/cloudrun` shaped like
-  `egress_sidecar`, and the two brains carrying it.
+  list as `vendor/cloud-run-gmp-sidecar`, mirrored and attested by
+  `vendor.yml`, and recorded as `metrics_collector_image_digest` in an
+  environment's tfvars.
+- A plan read and applied by a person, and both brains' revisions admitted
+  carrying the sidecar.
 - A node applied from a non-empty `execution_nodes`, and a
   `prometheus.googleapis.com/qip_edge_halted/gauge` descriptor visible in the
   project's metric explorer.

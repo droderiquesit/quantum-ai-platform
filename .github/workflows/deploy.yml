@@ -484,8 +484,15 @@ jobs:
             # names bytes. Blocks until the revision is Ready and routing,
             # and fails otherwise — which is the rollout wait the GitOps
             # cut-over lost.
+            #
+            # `--container` names the workload's own container, which
+            # modules/cloudrun names after the catalogue entry. Every service
+            # now has more than one — the egress proxy, the metrics collector
+            # — and gcloud refuses an unqualified `--image` on a
+            # multi-container service rather than guess which one to move.
             gcloud run services update "$service" \
               --project "${GCP_PROJECT}" --region "${GCP_REGION}" \
+              --container "$name" \
               --image "$image" --quiet
 
             # The second half: the revision that is serving runs the digest

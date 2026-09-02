@@ -71,6 +71,19 @@ output "has_egress_proxy" {
   value       = local.has_egress_sidecar
 }
 
+output "metrics_collected" {
+  description = <<-EOT
+    Whether a managed-Prometheus collector is declared beside this workload.
+
+    False unless `collector_image_digest` named one. Declared is the whole
+    of what this answers: it says a sidecar is in the plan, not that a
+    scrape has happened, and `workload_metrics_exist` in the root stays a
+    separate fact a person flips on evidence of ingestion.
+  EOT
+
+  value = local.has_metrics_collector
+}
+
 output "network_tags" {
   description = "The tags the workload's VPC interface carries — the trust zone's, so the zone's firewall rules see this instance."
   value       = var.network_tags

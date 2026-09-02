@@ -56,6 +56,11 @@ locals {
       min_instances           = 0
       max_instances           = 4
       always_on_justification = ""
+      # No collector. The API serves `/metrics` behind `Role::Monitor`, so a
+      # sidecar with no token would be answered 401 every thirty seconds
+      # and chart nothing; its cycle and orders are recorded by the brains'
+      # registries, which are the ones scraped.
+      metrics_collector = false
       # The audit chain's Cloud Storage adapter needs the proxy. Nothing in
       # `qip-api` reads `QIP_GCP_ENDPOINT` yet — `qip_storage::gcp` does, and
       # the composition root that constructs it is the change that sets the
@@ -147,6 +152,10 @@ locals {
       min_instances           = 1
       max_instances           = 1
       always_on_justification = "Runs the cycle on its own clock over one hash-chained log; nothing requests it, so a retired instance is a stopped cycle and a second one is a forked chain."
+      # Scraped, once a collector digest is pinned: the kill-switch gauge,
+      # the limit breaches and the order counters every central alert
+      # policy queries are recorded here.
+      metrics_collector = true
       env = merge(
         {
           QIP_FASTBRAIN_HEALTH_ADDRESS = "0.0.0.0:8080"
@@ -202,6 +211,9 @@ locals {
       min_instances           = 1
       max_instances           = 1
       always_on_justification = "Runs the intelligence loop on its own clock over one hash-chained log; nothing requests it, so a retired instance is a stopped loop and a second one is a forked chain."
+      # Scraped, once a collector digest is pinned, for the same series the
+      # fast brain records from its own cycle.
+      metrics_collector = true
       env = {
         QIP_DEEPBRAIN_HEALTH_ADDRESS = "0.0.0.0:8080"
         QIP_STORAGE_TARGET           = var.storage_target
@@ -313,6 +325,13 @@ module "cloud_run" {
   secret_mounts = each.value.secret_mounts
 
   egress_sidecar = each.value.egress_proxy ? module.egress_proxy.sidecar : null
+
+  # The managed-Prometheus collector, for the workloads that ask for one and
+  # only once the root names a digest. Composed here from the registry
+  # prefix and the bare digest, so the only image a plan can carry is the
+  # mirrored, attested copy; null — the state of every environment today —
+  # is no sidecar and `metrics_collected = false`.
+  collector_image_digest = each.value.metrics_collector && var.metrics_collector_image_digest != null ? "${module.registry.image_prefix}/vendor/cloud-run-gmp-sidecar@${var.metrics_collector_image_digest}" : null
 
   # deploy.yml moves the service, as this account, and needs to act as the
   # service's own identity to create a revision.

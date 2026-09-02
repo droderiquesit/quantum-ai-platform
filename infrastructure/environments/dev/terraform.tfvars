@@ -98,6 +98,14 @@ github_repository = "droderiquesit/quantum-ai-platform"
 # do not exist, which is the honest description of an environment nothing
 # has scraped: modules/observability/NOT-SCRAPED.md says what does not yet.
 # workload_metrics_exist = true
+#
+# The collector that would produce that descriptor is declared in
+# modules/cloudrun and attached to both brains by catalogue.tf, but only once
+# a digest is named here — one vendor.yml has mirrored and attested from a
+# reviewed line in infrastructure/egress/vendored-images.txt. No digest has
+# been reviewed, so this stays unset, no service carries a sidecar, and
+# every service's `metrics_collected` output is false.
+# metrics_collector_image_digest = "sha256:<the mirrored collector's digest>"
 
 # --- Customer identity ------------------------------------------------------
 # Identity Platform for customer sign-in, activated once real hostnames
