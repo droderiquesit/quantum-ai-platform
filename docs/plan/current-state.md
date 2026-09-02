@@ -9,11 +9,11 @@ at, because a number without a commit is a number nobody can re-measure.
 | Fact | Value |
 |---|---|
 | Rust crates | 59, in 8 groups (`libs`, `services`, `apps`, `edge`, `agents`, `quant`, `runtime`, `tests`) |
-| Tests | 3,308 workspace tests passing (`cargo test --workspace --no-fail-fast`), as recorded in the PR #5 body for `fef0c97` — the most recent full run with cited output. Not re-measured at `68b7da6`. The figure this row carried before, 3,192, was measured on the §6.2 degradation-contract commit and had been overtaken by three merges |
+| Tests | 3,355 workspace tests passing across 280 binaries (`cargo test --workspace --no-fail-fast`), as recorded in the message of `a4f673c` — the most recent full run with cited output. Not re-measured at `296e187` or at `fca98cc`, thirty-odd commits on: the checkout is clean at `fca98cc`, so the run is possible and simply was not made in this series. The figure this row carried before, 3,308, was the PR #5 body's for `fef0c97` |
 | Clippy | 0 warnings, `--all-targets` |
 | Third-party crates | 11 packages, all permitted (`serde`, `serde_json` and their trees) |
 | Frontend | Next.js + TypeScript, 47 tracked files |
-| Cloud | GCP: GKE, Secret Manager CSI, KMS, Binary Authorization, WIF |
+| Cloud | GCP, as Terraform nothing has applied: Cloud Run for the three central binaries and the two frontends, a Compute Engine execution node per region (`execution_nodes = {}` in every environment's tfvars), Secret Manager as mounted files, KMS, Binary Authorization, WIF. The GKE cluster, edge-cell and console-ingress modules, the Helm chart, the raw manifests and the Argo CD stack were removed at `808ca32`, `67b3e92` and `7d79161`; no `terraform` binary exists here, so none of what replaced them has been through `fmt`, `validate` or a plan |
 | Pipelines | `ci.yml`, `deploy.yml`, `infra.yml` — all deriving identity from committed tfvars |
 | Decision records | 23 ADRs, `0001`–`0023`, every one listed in `docs/adr/README.md` |
 
@@ -47,7 +47,7 @@ composes is a crate the platform does not run.
 | SIMULATE | Resampling and counterfactuals. Works |
 | DECIDE | Sizes approved theses into proposals with legs; records a `nothing_to_do` proposal on quiet cycles |
 | ACT | **Now closed.** Two controls sign, legs become orders, orders go through the deterministic pre-trade path, released proposals are retired |
-| LEARN | Attributes fills exactly. Now has fills of its own to attribute |
+| LEARN | Attributes fills exactly, and now grades and prices as well: every resolved thesis is settled against the platform's own series and graded through `Platform::learn_from` (`platform.rs:3931`, `:4052` at `296e187`), so the belief calibration is a Brier score on a gauge rather than a function nothing called; every refused order is priced through `Platform::evaluate_alternatives` once its horizon has passed (`:3948`, `:5028`), capped at eight per cycle with the excess counted and deferred. `qip-kernel/tests/learning.rs`: `a_cycle_that_resolves_a_thesis_grades_it_and_moves_the_calibration_series`, `a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate`, `declined_paths_past_the_per_cycle_cap_are_counted_as_deferred_and_priced_next_cycle` (`04738ee`, `b9e2242`) |
 
 ## The three breaks found and closed in the spine
 
@@ -113,19 +113,37 @@ nothing.
   statement is that the path exists and has not been exercised, which is a
   different gap from the one this document used to describe.
 - **`workload_metrics_exist` is still `false`** in every environment, and
-  correctly so: the endpoints exist and a collector is declared, but no pod has
-  been observed to scrape. Flipping it requires that evidence.
-- **The Secret Manager CSI credential chain has never been exercised live.**
-- **`infra.yml down` has never been run against a live cluster.**
-- **No TLS egress proxy is running.** The manifest is committed in two
-  byte-identical copies (`infrastructure/helm/qip/templates/egress.yaml`,
-  `infrastructure/kubernetes/base/egress.yaml`) with its `ServiceAccount` and
-  `Deployment` commented out, so Argo CD renders the chart and no proxy pod
-  exists; the Cloud Run module has no equivalent. Commit `64b765a` made the
-  egress suite distinguish a described proxy from a deployed one. Because the
-  in-tree HTTP client speaks plaintext HTTP/1.1 by design, a pod currently has
-  no outbound HTTPS path at all, which is what stands between the wired live
-  source above and any evidence of it.
+  correctly so: the endpoints exist, but no deployed process has been observed
+  to scrape. The collector that was declared — a `PodMonitoring` for the two
+  brains — left with the cluster; on the runtime the tree now describes, the
+  execution node's startup template declares an Ops Agent receiver on its
+  health port and the Cloud Run services have no collector attached
+  (`infrastructure/terraform/modules/observability/NOT-SCRAPED.md`). Flipping
+  the flag requires an observed scrape, and there is nothing to observe.
+- **The secret-mount chain has never been exercised live.** It was the Secret
+  Manager CSI driver on the cluster; at `808ca32` it is Cloud Run's mounted
+  secret files. Neither has ever served a credential to a running process.
+- **`infra.yml down` has never been run.** At `b85684f` it targets the
+  execution nodes, the one thing that bills while idle; there are none.
+- **No TLS egress proxy is running, and the one that was described is gone.**
+  The two byte-identical manifest copies with their `Deployment` commented out
+  were deleted with the chart and the raw manifests at `7d79161`. What exists
+  instead, since `c924191` and wired at `808ca32`, is `modules/egress-proxy`
+  — the same Envoy bootstrap (`infrastructure/egress/envoy.yaml`) rebound to
+  loopback and published to a bucket whose object preconditions refuse a host
+  `egress_allowed_upstreams` does not name — mounted by `modules/cloudrun` as
+  a sidecar the workload container waits for. It has never been planned,
+  applied or observed: no `terraform` binary exists here. Its allowlist names
+  five clusters, all Google or IBM endpoints, and no market-data vendor
+  (`envoy.yaml:392-492`). Because the in-tree HTTP client speaks plaintext
+  HTTP/1.1 by design, a deployed process still has no outbound HTTPS path,
+  which is what stands between the wired live source above and any evidence
+  of it. One consequence for the gate: at `296e187` the egress acceptance
+  suite still read `infrastructure/kubernetes/base/egress.yaml` (`egress.rs:46`
+  and `:1096`), a path that no longer existed, so for five commits the suite
+  that tells a described proxy from a deployed one could not pass; `81dd1cd`
+  retargeted it at the sidecar (14 passed, per its message), and what it now
+  holds is that nothing has been applied.
 
 ## Latency
 
@@ -176,6 +194,21 @@ a look from whoever owns that crate: the architecture suite reasons about
 what the cell can reach, and a declared edge it never opens widens that
 answer for nothing.
 
+**Resolved at `2753911`.** The edge owner's work landed and the same proof
+was applied: thirty-two of the thirty-three were removed across the nine
+manifests (`Cargo.lock` lost the same thirty-two lines), `cargo check -p
+<crate> --all-targets` finished clean after each, and the architecture
+suite passed 25 with `./scripts/check-dependencies.sh` saying all
+permitted. `qip-edge -> qip-arbitrage`, which the sweep had also flagged,
+was not on the list by then because it had stopped being dead — the cell
+constructs the desk (`71f9465`). The one that stays is `qip-edge ->
+qip-execution-engine`, named by no source file: the architecture suite's
+`only_the_edge_cell_itself_holds_an_order_manager` uses "the cell reaches
+`qip-execution-engine`" as its vacuity guard, so removing the edge fails the
+guard rather than the property. The manifest says so beside the line; the
+guard needs re-stating against the cell's real order path (its `Placer`
+seam) before the edge can go.
+
 ### Bench profile
 
 `find backend -name benches -type d` and a grep for `[[bench]]` across
@@ -204,36 +237,27 @@ them; no test changed). The remainder are listed here so nobody mistakes
 them for wired behaviour.
 
 Kept because the doc names a consumer, a control, a runbook, a UI or a
-design decision, or the function is a limit knob or test support (35):
+design decision, or the function is a limit knob or test support (29, down
+from 35 — the six whose doc named a consumer that did not exist are
+resolved below, and the list here is what remains):
 
 - `qip-storage`: `RedisConfig::with_username` (credential-splitting
   rationale), `RedisConfig::with_key_prefix` (names `DEFAULT_KEY_PREFIX`).
-- `qip-financial`: `MarketHours::next_open` (names the scheduler);
-  `Universe::not_decision_grade` — **its doc says the kernel logs it at
-  start-up; nothing does.** A degraded universe is currently visible to no
-  one before it trades.
+- `qip-financial`: `MarketHours::next_open` (names the scheduler).
 - `qip-core::testing`: `any_f64`, `any_returns`, `check_approx`.
 - `qip-observability`: `Logger::set_echo`.
 - `qip-quantum`: `SolverBenchmark::with_validator` (the classical baseline,
   ADR 0006), `QuantumInspiredSolver::with_replicas`, `with_schedule`.
 - `qip-numerics`: `Qubo::to_dense` (names the quantum backends).
 - `qip-agents`: `AuditTrail::for_correlation` (audit query).
-- `qip-events`: `EventBus::reset_deduplication` — **its doc says replay
-  calls it; nothing does**; `EventLog::replay_filtered`.
+- `qip-events`: `EventLog::replay_filtered`.
 - `qip-transport`: `RetryPolicy::worst_case_backoff` (runbook figure).
 - `qip-market-ingestion`: `alternative_reading` (names the discovery
-  stage); `MarketEventEnvelope::is_knowable_at` — **the point-in-time guard,
-  consulted by nothing**; `AlternativeDataAdapter::sense_topics`
-  (compile-time proof).
-- `qip-cost-router`: `CostEngine::spent_so_far` — the figure a caller is
-  meant to compare against value at stake before escalating; **no caller
-  compares it**.
+  stage); `AlternativeDataAdapter::sense_topics` (compile-time proof).
 - `qip-simulation-engine`: `Regime::feed_is_current` (staleness control),
   `Distribution::mean_is_distinguishable_from_zero` (design decision).
 - `qip-execution-engine`: `SimulatedBroker::set_liquidity` — the impact
   model's liquidity input, **supplied by nothing**.
-- `qip-chain`: `BridgeLedger::on_reorg` — **a control that cannot fire**:
-  no caller fails bridged transfers when their source block is reorganised.
 - `qip-data-finder`: `RegisteredSource::quarantine_reason`.
 - `qip-capital-fabric`: `PrePositioningPlanner::with_shortfall_buffer_cap`.
 - `qip-opportunity-engine`: `OpportunityEngine::supported_anomaly_kinds`
@@ -242,14 +266,42 @@ design decision, or the function is a limit knob or test support (35):
 - `qip-training`: `TrainingDataset::design_matrix`.
 - `qip-streaming`: `TieredPublisher::route_batch`.
 - `qip-world-model`: `FeatureLookup::is_truncated` (bounded-retention
-  signal nothing checks); `RelationshipKind::transmits_shock` — **its doc
-  says it bounds causal propagation; nothing calls it.**
+  signal nothing checks).
 - `qip-normalization`: `Normalizer::dropping_unmapped` (D6).
 - `qip-investment-agents`: `LearningAttribution::with_promotion_policy`,
   `promotion_policy`.
 
-Listed only, because another owner is wiring callers into these crates
-during the same refactor (27): `qip-kernel` — `StrategyFactory::
+Resolved since the sweep (6) — the six whose doc named a consumer that did
+not exist, each settled one of two ways:
+
+- **Wired, with a production caller above `#[cfg(test)]` and a test that
+  fails when the call is removed (2):** `BridgeLedger::on_reorg` — the
+  kernel now holds the ledger and `observe_chain`'s reorganised arm calls
+  it (`platform.rs:4736` at `296e187`);
+  `bridges.rs::a_reorganisation_that_withdraws_a_deposit_block_fails_the_transfer_riding_on_it`
+  (`67b3e92`). `Universe::not_decision_grade` — asked by `Platform::new`
+  before the universe moves into the desk (`platform.rs:1075`) and gauged
+  under `qip_universe_not_decision_grade`;
+  `universe_grade.rs::a_research_only_instrument_is_counted_and_named_at_assembly`
+  (`78026e2`).
+- **Removed, because the property the doc described is held elsewhere, and
+  where a property was worth asserting it now is (4):**
+  `MarketEventEnvelope::is_knowable_at` — the withholding is
+  `ConnectorRuntime::admit`'s, applied before any envelope exists, and the
+  only envelope handover polls at the horizon it strips at, so the guard
+  could only ever say yes (`b7d3edc`). `RelationshipKind::transmits_shock`
+  — propagation walks claimed causal edges, never relationships;
+  `understanding.rs::a_relationship_is_structure_and_never_a_path_a_shock_travels_along`
+  asserts it (`b8a8acd`). `EventBus::reset_deduplication` — a replay runs on
+  a fresh bus, and the bus that produced a log must treat that log as the
+  duplicates it is;
+  `backbone.rs::a_log_fed_back_into_the_bus_that_produced_it_dispatches_nothing_twice`
+  (`68ff891`). `CostEngine::spent_so_far` — the bounds it restated are
+  `Router::escalate`'s and `Router::assess`'s (`ed69a52`).
+
+Listed only, because another owner was wiring callers into these crates
+during the same refactor (27; not re-verified at `296e187`, so some may
+have gained callers since): `qip-kernel` — `StrategyFactory::
 with_demotion_policy`, `submit_evidence`, `set_baseline`; `CellOutcome::
 with_drawdown`, `with_losing_days`, `with_realised_cost_bps`;
 `CentralPlane::compliance_mut`, `set_concentration_limits`;
