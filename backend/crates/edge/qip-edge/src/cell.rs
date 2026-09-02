@@ -12,6 +12,7 @@
 
 use crate::dropcopy::{CellFill, Discrepancy, DropCopyFill, DropCopyReconciler};
 use crate::envelope::VerifiedEnvelope;
+use crate::feasibility::{self, VenueModel};
 use crate::journal::{Decision, Journal, Mirror};
 use crate::mesh::{CellStateDelta, DeltaOrder, DeltaRefusal, StrategyUtilisation};
 use crate::policy::{VerifiedHalt, VerifiedPolicy};
@@ -48,6 +49,11 @@ pub struct CellConfig {
     pub max_staleness: Duration,
     /// The runtime node budget a strategy may not exceed.
     pub strategy_budget: usize,
+    /// What the cell knows about executing at each venue, keyed by venue id
+    /// (blueprint §18.1). A venue absent here is judged for depth alone —
+    /// see [`crate::feasibility`] for why that is stated rather than
+    /// defaulted.
+    pub feasibility: BTreeMap<String, VenueModel>,
 }
 
 impl CellConfig {
@@ -58,11 +64,23 @@ impl CellConfig {
             venues: Vec::new(),
             max_staleness: Duration::from_secs(5),
             strategy_budget: 4_096,
+            feasibility: BTreeMap::new(),
         }
     }
 
     pub fn with_venue(mut self, venue: VenueId) -> Self {
         self.venues.push(venue);
+        self
+    }
+
+    /// Install the feasibility model for a venue.
+    ///
+    /// The model is keyed by the venue's id and read on every intent for that
+    /// venue; installing one for a venue the cell cannot reach is harmless
+    /// and installing none for a venue it can is the depth-only case.
+    #[must_use]
+    pub fn with_feasibility(mut self, venue: &VenueId, model: VenueModel) -> Self {
+        self.feasibility.insert(venue.as_str().to_string(), model);
         self
     }
 }
@@ -779,6 +797,15 @@ impl Cell {
             }
         }
 
+        // The feasibility gate, between collection and netting (§18.1). An
+        // intent that cannot execute at its size never enters the netting
+        // set: a net built from an infeasible contributor would carry that
+        // contributor's share to the venue inside an order whose other
+        // contributors were feasible, and the venue's rejection — or the
+        // fee's bite — would land on all of them. `retain` judges in place,
+        // so the gate allocates nothing per pass.
+        intents.retain(|intent| self.admit_feasible(intent, now, &mut report));
+
         // Phase two. Everything the strategies asked for collapses onto one
         // intent per instrument, venue and representation — so two strategies
         // buying the same thing send one order and pay the spread once, and
@@ -1313,6 +1340,56 @@ impl Cell {
         );
         self.metrics.internal_cross(&cross.venue);
         report.crosses.push(cross);
+    }
+
+    /// Judge one intent against the feasibility gate, refusing and counting
+    /// it under the rule that bound.
+    ///
+    /// The book is read here, at the netting instant, and the gate itself is
+    /// a pure function of what it is handed — so the fact judged is the one
+    /// the journal can replay. The size resting at the touch is read on the
+    /// side the intent *takes*: a buy takes the ask, so it is the ask's size
+    /// that bounds it.
+    fn admit_feasible(&mut self, intent: &Intent, now: Timestamp, report: &mut WorkReport) -> bool {
+        let touch = self
+            .liquidity
+            .get(&intent.venue, &intent.object_id)
+            .and_then(|state| {
+                if intent.signed_size.is_positive() {
+                    state.best_ask()
+                } else {
+                    state.best_bid()
+                }
+            })
+            .map(|level| level.size);
+        let verdict = feasibility::assess(
+            self.config.feasibility.get(intent.venue.as_str()),
+            self.feasibility_constraints(),
+            intent,
+            touch,
+        );
+        match verdict {
+            Ok(()) => true,
+            Err(infeasible) => {
+                self.refuse(report, infeasible.gate, &infeasible.reason, now);
+                false
+            }
+        }
+    }
+
+    /// Item 11 of the applied policy payload, if the centre has produced it.
+    ///
+    /// Read whatever its freshness: a venue's minimum order and tick change
+    /// on the order of months, the slot's own time-to-live is a day, and a
+    /// constraint that has gone stale is still the last thing the centre
+    /// knew rather than nothing. The degradation table already narrows the
+    /// cell's sizing on the slot's staleness; refusing to read the slot as
+    /// well would be a second control on the same fact with a different
+    /// threshold.
+    fn feasibility_constraints(&self) -> Option<&qip_contracts::policy::FeasibilityConstraints> {
+        self.policy
+            .as_ref()
+            .and_then(|policy| policy.payload().feasibility_constraints.value())
     }
 
     fn venue_for(&self, object: &ObjectId) -> Option<VenueId> {

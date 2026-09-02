@@ -28,6 +28,7 @@
 pub mod cell;
 pub mod dropcopy;
 pub mod envelope;
+pub mod feasibility;
 pub mod journal;
 pub mod mesh;
 pub mod policy;
@@ -37,6 +38,7 @@ pub mod telemetry;
 pub use cell::{Cell, CellConfig, PlacedOrder, Placer, WorkReport};
 pub use dropcopy::{CellFill, Discrepancy, DropCopyFill, DropCopyReconciler};
 pub use envelope::{VerifiedEnvelope, sign_payload};
+pub use feasibility::{Granularity, Infeasible, VenueModel};
 pub use journal::{Decision, FileMirror, Journal, JournalEntry, MemoryMirror, Mirror, MirrorBatch};
 pub use mesh::{
     CapitalDownlink, CapitalGrantTopic, CellStateDelta, CellUplink, DeltaOrder, DeltaRefusal,

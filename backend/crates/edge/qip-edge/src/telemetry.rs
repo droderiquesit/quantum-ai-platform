@@ -186,11 +186,12 @@ impl CellMetrics {
 
     /// A gate refused.
     ///
-    /// `gate` is a string literal at every call site — `Cell::refuse` is
-    /// never handed a formatted string, and the reason, which is formatted,
+    /// `gate` is a string literal at every call site, or one of the
+    /// `GATE_*` constants `crate::feasibility` names its rules by — `Cell::refuse`
+    /// is never handed a formatted string, and the reason, which is formatted,
     /// goes to the journal and not to a label. The series count is the number
-    /// of distinct literals in `cell.rs`, which is a property of the source
-    /// and not of the market.
+    /// of distinct literals in `cell.rs` and `feasibility.rs`, which is a
+    /// property of the source and not of the market.
     pub fn refusal(&self, gate: &str) {
         self.metrics
             .count(names::EDGE_REFUSALS, self.with("gate", gate));
