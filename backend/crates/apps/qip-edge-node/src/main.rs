@@ -38,11 +38,13 @@
 //! it that way. There is no runtime check because there is nothing to check —
 //! the call does not exist to be made.
 
+use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Duration, SystemClock};
 use qip_edge::cell::PolledHalt;
 use qip_edge::cell::{Cell, CellConfig, Placer, WorkReport};
+use qip_edge_node::arbitrage::{ArbitrageInstaller, STRATEGY_VARIABLE};
 use qip_edge_node::gateway::NodeGateway;
 use qip_edge_node::halt::{FLAG_VARIABLE, HaltFlag};
 use qip_edge_node::mesh::{MeshLink, MeshSettings, PEER_VARIABLE};
@@ -96,6 +98,10 @@ struct NodeConfig {
     /// production requirements rather than silently accepted — see
     /// `qip_edge_node::halt`.
     halt_flag: Option<HaltFlag>,
+    /// The strategy whose grant funds the arbitrage desk, when this node
+    /// runs one. `None` installs no desk and is named in the production
+    /// requirements — see `qip_edge_node::arbitrage`.
+    arbitrage_strategy: Option<StrategyId>,
 }
 
 impl NodeConfig {
@@ -162,6 +168,11 @@ impl NodeConfig {
             _ => None,
         };
 
+        let arbitrage_strategy = match std::env::var(STRATEGY_VARIABLE) {
+            Ok(value) if !value.trim().is_empty() => Some(StrategyId::new(value.trim())),
+            _ => None,
+        };
+
         Ok(Self {
             cell_id,
             region,
@@ -171,6 +182,7 @@ impl NodeConfig {
             storage,
             mesh,
             halt_flag,
+            arbitrage_strategy,
         })
     }
 }
@@ -323,9 +335,21 @@ fn run() -> Result<()> {
     // one, and inventing a feed would be worse than serving without it. The
     // node serves its health surface so an orchestrator can see it, and
     // reports what production would still have to supply.
-    for requirement in
-        missing_production_requirements(config.mesh.is_some(), config.halt_flag.is_some(), &gateway)
-    {
+    // The desk's installer, when the node is told which strategy funds it.
+    // It holds nothing until a grant arrives over the mesh and installs
+    // nothing until a whitelist does, so a node with no peer can never grow
+    // a desk — which is right, since neither input can reach it.
+    let mut installer = config
+        .arbitrage_strategy
+        .clone()
+        .map(|strategy| ArbitrageInstaller::new(strategy, config.venues.clone()));
+
+    for requirement in missing_production_requirements(
+        config.mesh.is_some(),
+        config.halt_flag.is_some(),
+        installer.is_some(),
+        &gateway,
+    ) {
         println!("qip-edge-node: awaiting {requirement}");
     }
     if let Some(flag) = &config.halt_flag {
@@ -341,6 +365,7 @@ fn run() -> Result<()> {
         &gateway,
         &mut mirror,
         link.as_mut(),
+        installer.as_mut(),
         &clock,
         started,
         metrics,
@@ -364,6 +389,7 @@ fn run() -> Result<()> {
 fn missing_production_requirements(
     has_mesh_peer: bool,
     has_halt_flag: bool,
+    has_arbitrage_strategy: bool,
     gateway: &NodeGateway,
 ) -> Vec<String> {
     let mut missing = vec![
@@ -387,6 +413,13 @@ fn missing_production_requirements(
         missing.push(format!(
             "{PEER_VARIABLE} for the central plane: without it this cell publishes no state and \
              receives no capital, and stops when its current envelope expires"
+        ));
+    }
+    if !has_arbitrage_strategy {
+        missing.push(format!(
+            "{STRATEGY_VARIABLE} for the arbitrage desk: without it the cycle whitelist the \
+             centre ships is applied and never priced, and this cell runs strategy programs \
+             alone"
         ));
     }
     if !has_halt_flag {
@@ -422,6 +455,7 @@ fn serve(
     gateway: &NodeGateway,
     mirror: &mut StoreMirror,
     mut link: Option<&mut MeshLink>,
+    mut installer: Option<&mut ArbitrageInstaller>,
     clock: &Arc<dyn Clock>,
     started: qip_core::Timestamp,
     metrics: &Arc<Metrics>,
@@ -482,7 +516,12 @@ fn serve(
                 // in this build, so the delta reports the cell's authority and
                 // halt state rather than its trading.
                 if let Some(link) = link.as_deref_mut() {
-                    let tick = link.exchange(cell, &WorkReport::default(), now);
+                    let tick = link.exchange_with(
+                        cell,
+                        &WorkReport::default(),
+                        now,
+                        installer.as_deref_mut(),
+                    );
                     if !tick.is_quiet() {
                         eprintln!("qip-edge-node: mesh exchange: {tick:?}");
                     }
@@ -556,10 +595,11 @@ fn answer(
         None => "null".to_string(),
     };
     let body = format!(
-        r#"{{"cell":"{}","region":"{}","halted":{},"halt_flag":{halt_flag},"live_capable":{},"venues":{},"strategies":{},"journal_entries":{},"journal_shipped":{},"storage":"{}","durable":{},"gateway":{{"class":"{}","venue":"{}","submitted":{},"rejected":{},"reaches_a_socket":{},"unknown_orders":{}}},"mesh":{mesh},"started_at":{}}}"#,
+        r#"{{"cell":"{}","region":"{}","halted":{},"halt_flag":{halt_flag},"arbitrage_desk":{},"live_capable":{},"venues":{},"strategies":{},"journal_entries":{},"journal_shipped":{},"storage":"{}","durable":{},"gateway":{{"class":"{}","venue":"{}","submitted":{},"rejected":{},"reaches_a_socket":{},"unknown_orders":{}}},"mesh":{mesh},"started_at":{}}}"#,
         config.cell_id,
         config.region,
         cell.is_halted(),
+        cell.arbitrage().is_some(),
         cell.autonomy().ceiling().is_live(),
         config.venues.len(),
         cell.deployed_strategies().len(),

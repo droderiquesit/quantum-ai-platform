@@ -406,6 +406,26 @@ impl Cell {
     /// against the cell's own books, and a venue absent from the cell's list
     /// has no book here to price against and no gateway here to send to.
     pub fn with_arbitrage(mut self, desk: ArbitrageDesk) -> Result<Self> {
+        self.install_arbitrage(desk)?;
+        Ok(self)
+    }
+
+    /// Install the desk into a cell that is already running.
+    ///
+    /// What a composition root needs, because the desk's two inputs arrive
+    /// after the cell is assembled: the whitelist rides a policy payload and
+    /// the desk's capital rides a grant, and neither is known at start-up.
+    /// The same refusals as [`Self::with_arbitrage`], plus one: a cell that
+    /// already holds a desk refuses a second, because replacing one would
+    /// discard the utilisation the first has spent and hand the strategy its
+    /// gross limit again.
+    pub fn install_arbitrage(&mut self, desk: ArbitrageDesk) -> Result<()> {
+        if self.desk.is_some() {
+            return Err(Error::denied(
+                "this cell already holds an arbitrage desk; a second would reset the capital \
+                 the first has committed",
+            ));
+        }
         if desk.envelope().cell() != self.config.cell_id {
             return Err(Error::denied(format!(
                 "an envelope for cell {} cannot fund the arbitrage desk at {}",
@@ -426,7 +446,27 @@ impl Cell {
             }
         }
         self.desk = Some(desk);
-        Ok(self)
+        Ok(())
+    }
+
+    /// The cycle whitelist the applied policy carries, while it is fresh.
+    ///
+    /// Fresh only: the slot's own time-to-live is a minute, and a desk built
+    /// from a whitelist the centre has stopped republishing would price a
+    /// graph the centre may since have withdrawn. Stale reads as none.
+    pub fn cycle_whitelist(
+        &self,
+        now: Timestamp,
+    ) -> Option<&qip_contracts::policy::CycleWhitelist> {
+        let policy = self.policy.as_ref()?;
+        if policy
+            .payload()
+            .freshness(qip_contracts::policy::PolicyItem::CycleWhitelist, now)
+            != qip_contracts::degradation::Freshness::Fresh
+        {
+            return None;
+        }
+        policy.payload().cycle_whitelist.value()
     }
 
     /// The installed arbitrage desk, if any.

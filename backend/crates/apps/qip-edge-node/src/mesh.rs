@@ -43,6 +43,7 @@
 
 use std::sync::Arc;
 
+use crate::arbitrage::ArbitrageInstaller;
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Timestamp};
 use qip_edge::cell::{Cell, WorkReport};
@@ -151,6 +152,8 @@ pub struct MeshTick {
     pub halts: usize,
     /// Set when the policy poll itself failed.
     pub policy_poll_error: Option<String>,
+    /// What the arbitrage installer did this tick, when the node has one.
+    pub desk: Option<String>,
 }
 
 impl MeshTick {
@@ -159,6 +162,10 @@ impl MeshTick {
         self.refused.is_empty()
             && self.poll_error.is_none()
             && self.delta.as_deref().is_none_or(|code| code == "delivered")
+            && self
+                .desk
+                .as_deref()
+                .is_none_or(|desk| !(desk.starts_with("installed") || desk.starts_with("refused")))
     }
 }
 
@@ -273,6 +280,25 @@ impl MeshLink {
     /// about the cell's authority and halt state rather than about its trading
     /// — which is exactly what such a node has to report.
     pub fn exchange(&mut self, cell: &mut Cell, report: &WorkReport, now: Timestamp) -> MeshTick {
+        self.exchange_with(cell, report, now, None)
+    }
+
+    /// The same tick, with the arbitrage installer given its two inputs.
+    ///
+    /// A grant for the desk's strategy is held by the installer rather than
+    /// handed to `renew_capital`, which would refuse it while no desk is
+    /// deployed — and would be right to, since a cell does not deploy a
+    /// strategy because capital arrived for it. The installer is the one
+    /// place that grant may wait, and it waits for a whitelist the centre
+    /// signed. Once a desk is installed, its renewals go through
+    /// `renew_capital` like any strategy's.
+    pub fn exchange_with(
+        &mut self,
+        cell: &mut Cell,
+        report: &WorkReport,
+        now: Timestamp,
+        mut installer: Option<&mut ArbitrageInstaller>,
+    ) -> MeshTick {
         let mut tick = MeshTick::default();
 
         match self.downlink.poll(now) {
@@ -284,6 +310,18 @@ impl MeshLink {
                 }
                 for envelope in batch.verified {
                     let strategy = envelope.strategy().as_str().to_string();
+                    if let Some(installer) = installer.as_deref_mut()
+                        && cell.arbitrage().is_none()
+                        && envelope.strategy() == installer.strategy()
+                    {
+                        match installer.offer(envelope) {
+                            Ok(()) => tick.renewed.push(format!("{strategy} (held for the desk)")),
+                            Err(error) => tick
+                                .refused
+                                .push(format!("{strategy}: {}", error.message())),
+                        }
+                        continue;
+                    }
                     match cell.renew_capital(envelope, now) {
                         Ok(()) => tick.renewed.push(strategy),
                         // The cell refusing a grant it verified is a
@@ -329,6 +367,14 @@ impl MeshLink {
             Err(error) => {
                 tick.policy_poll_error = Some(error.message().to_string());
             }
+        }
+
+        // After both polls, so a whitelist and a grant that arrived in the
+        // same tick install in the same tick, and the delta below reports
+        // the desk's utilisation from its first pass.
+        if let Some(installer) = installer {
+            let outcome = installer.install(cell, now);
+            tick.desk = Some(outcome.describe());
         }
 
         let delta = cell.state_delta(report, now);

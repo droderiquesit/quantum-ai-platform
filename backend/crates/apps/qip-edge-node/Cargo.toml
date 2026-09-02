@@ -12,6 +12,10 @@ serde.workspace = true
 qip-core.workspace = true
 qip-contracts.workspace = true
 qip-edge.workspace = true
+# The scanner's settings and the graph the node builds from the payload's
+# whitelist. A workspace crate the edge already depends on, not a third
+# external dependency.
+qip-arbitrage.workspace = true
 qip-feature-dag.workspace = true
 qip-observability.workspace = true
 # The journal's durable destination. Already a workspace dependency; the node
