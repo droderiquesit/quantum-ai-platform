@@ -98,6 +98,27 @@ resource "google_project_iam_member" "deploy" {
   member  = "serviceAccount:${google_service_account.ci.email}"
 }
 
+# Reading back why a revision refused to start, and nothing else.
+#
+# `gcloud run services update` fails a bad rollout with one sentence — "the
+# user-provided container failed the configured startup probe checks" — and a
+# console URL. The cause is in the revision's own log, and without this the
+# pipeline answers `PERMISSION_DENIED: Permission denied for all log views`
+# and the run ends stating that something failed and never what.
+#
+# `logging.viewer` is the narrowest predefined role that reads log entries.
+# It writes nothing, and it deliberately excludes the data-access logs, which
+# are `logging.privateLogViewer` — the pipeline has no business reading who
+# called what. What it can see is what an operator sees, and this platform
+# already refuses to log a token, key or account identifier
+# (.claude/rules/00-enterprise-governance.md), so a log the pipeline may read
+# is a log with nothing in it to leak.
+resource "google_project_iam_member" "read_deployment_logs" {
+  project = var.project_id
+  role    = "roles/logging.viewer"
+  member  = "serviceAccount:${google_service_account.ci.email}"
+}
+
 # The execution node's rolling replacement, and nothing else about compute.
 #
 # `deploy.yml` asks each node's managed instance group to replace its

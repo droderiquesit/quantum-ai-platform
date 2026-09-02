@@ -1619,6 +1619,50 @@ fn no_environment_can_be_applied_at_a_ceiling_that_reaches_a_real_venue() {
 }
 
 #[test]
+fn the_pipeline_may_read_the_log_it_prints_when_a_rollout_fails() {
+    // The same shape as the attestation grants below, one product over, and
+    // found the same way — by a run that had already built, signed and
+    // attested four images before it asked:
+    //
+    //   ERROR: (gcloud.logging.read) PERMISSION_DENIED: Permission denied for
+    //   all log views. This command is authenticated as qip-ci-dev@...
+    //
+    // A diagnosis step with no grant behind it replaces one unhelpful message
+    // with a different unhelpful message, which is worse than not having it:
+    // the reader now believes the pipeline tried to explain and had nothing
+    // to say, when in fact it was refused.
+    let workflow = read(".github/workflows/deploy.yml");
+    let cicd = read("infrastructure/terraform/modules/cicd/main.tf");
+
+    // Premise: the pipeline really does read logs, so this is a grant for a
+    // live command rather than one somebody removed.
+    assert!(
+        workflow.contains("gcloud logging read"),
+        "deploy.yml no longer reads a revision's log; this test's premise \
+         needs rewriting"
+    );
+
+    let granted = cicd.split("resource \"").any(|block| {
+        block.contains("roles/logging.viewer") && block.contains("google_service_account.ci")
+    });
+    assert!(
+        granted,
+        "nothing grants the pipeline account the role that lets it read a \
+         failed revision's log (roles/logging.viewer), so the diagnosis step \
+         prints a permission error where the cause should be"
+    );
+
+    // And not the role that reads who called what. The pipeline explains its
+    // own rollouts; data-access logs are a different question and a wider
+    // grant than this step can justify.
+    assert!(
+        !cicd.contains("roles/logging.privateLogViewer"),
+        "the pipeline account may read data-access logs, which no step it \
+         runs needs"
+    );
+}
+
+#[test]
 fn every_attestation_command_the_pipeline_runs_has_a_grant_that_permits_it() {
     // Three permission failures in a row taught the shape of this bug: a role
     // named for the neighbouring half of the same product. `cloudkms.admin`
