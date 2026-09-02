@@ -575,3 +575,15 @@ variable "egress_sidecar" {
     error_message = "The egress proxy names a health port and at least one destination listener; a proxy with no listener proxies nothing and reads as a route."
   }
 }
+
+variable "deployer_service_account" {
+  description = <<-EOT
+    The pipeline's account, which moves this service to a new image and must
+    therefore be able to act as the service's identity. Granted on this one
+    account and no other; null grants nobody, which is a service only
+    Terraform can move.
+  EOT
+
+  type    = string
+  default = null
+}

@@ -7,12 +7,17 @@
 # registry, prove the bytes survived the copy, scan them with the same gate
 # the platform's images pass, and attest them with the same attestor. The
 # policy keeps exactly one rule, and the answer to "which foreign code runs
-# in our cluster" is the git history of infrastructure/gitops/vendored-images.txt.
+# on this platform" is the git history of infrastructure/egress/vendored-images.txt.
 #
 # The identity that signs is the same CI service account deploy.yml signs
 # with, holding the same five narrow grants. Deliberately no new identity:
 # "the pipeline signs" stays the single doctrine, and the review surface for
 # a vendored image is the commit that added its digest to the list.
+#
+# One image is vendored today: the Envoy egress proxy every Cloud Run service
+# that needs egress runs as a sidecar (infrastructure/egress/envoy.yaml,
+# modules/egress-proxy). The GitOps controllers this workflow used to mirror
+# left with the cluster (ADR 0024).
 #
 # The copy is done with crane, not docker. `docker pull` of a multi-arch
 # index dereferences it to one platform's manifest, and pushing that back
@@ -29,8 +34,7 @@ on:
       - "main"
       - "claude/autonomous-investment-platform-76gt4y"
     paths:
-      - "infrastructure/gitops/vendored-images.txt"
-      - "infrastructure/gitops/trivyignore/**"
+      - "infrastructure/egress/vendored-images.txt"
       - ".github/workflows/vendor.yml"
   # Other environments are a person's deliberate act, like deploying to them.
   workflow_dispatch:
@@ -167,39 +171,31 @@ jobs:
             fi
             image="${prefix}/${dest}@${source_digest}"
 
-            # Two scans with two jobs, and the split is a policy stated out
-            # loud rather than a loophole. The platform's own images gate on
+            # Two scans, and the split is a policy stated out loud rather
+            # than a loophole. The platform's own images gate on
             # CRITICAL,HIGH because they are a static binary on scratch and
             # anything found is in serde's dependency graph. A vendored
-            # third-party Go image is different weather: it is HIGH-positive
-            # against days-old Go stdlib CVEs approximately always (the
-            # first argocd mirror carried 13 fixable HIGHs in the argocd
-            # binary alone, all awaiting upstream's Go rebuild), and a gate
-            # that always fails is not a gate — it is how
-            # exempt_image_patterns entries get added. So: the full
+            # third-party image is different weather — a distroless Envoy
+            # still carries a Go-free but non-trivial dependency surface —
+            # and a gate that always fails is not a gate: it is how
+            # exempt_image_patterns entries get added. So the full
             # CRITICAL,HIGH report goes in every run's log for the record,
-            # and the *blocking* gate is CRITICAL — where every finding is
-            # resolved by pinning a newer digest (how redis left alpine
-            # 3.22.3's OpenSSL CRITICAL behind) or individually acknowledged
-            # in a committed per-image file naming its reasoning (how
-            # argocd's bundled-tool CVE is carried, in
-            # infrastructure/gitops/trivyignore/).
+            # and the *blocking* gate is CRITICAL, where every finding is
+            # resolved by pinning a newer digest in a new commit. There is
+            # deliberately no per-image acknowledgement file any more: the
+            # one that existed acknowledged findings in Argo CD's bundled
+            # tools, and an acknowledgement written for one build silently
+            # covering the next is how a suppression file becomes a
+            # blindfold.
             trivy image \
               --severity CRITICAL,HIGH \
               --exit-code 0 \
               --ignore-unfixed \
               "$image"
-            ignorefile="infrastructure/gitops/trivyignore/$(echo "$dest" | tr '/' '-')"
-            ignore_args=()
-            if [ -f "$ignorefile" ]; then
-              echo "applying acknowledged findings from ${ignorefile}"
-              ignore_args=(--ignorefile "$ignorefile")
-            fi
             trivy image \
               --severity CRITICAL \
               --exit-code 1 \
               --ignore-unfixed \
-              "${ignore_args[@]}" \
               "$image"
 
             # Idempotent for the same reason deploy.yml's sign step is:
@@ -222,7 +218,7 @@ jobs:
                 --keyversion "${BINAUTHZ_KEY_VERSION}"
             fi
             mirrored=$((mirrored + 1))
-          done < infrastructure/gitops/vendored-images.txt
+          done < infrastructure/egress/vendored-images.txt
           # An empty run means the list parsed to nothing, which is far more
           # likely a format regression than a decision to vendor nothing.
           [ "$mirrored" -gt 0 ] || { echo "no images were mirrored; the list parsed to nothing." >&2; exit 1; }

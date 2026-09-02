@@ -274,4 +274,8 @@ module "cloud_run" {
   secret_mounts = each.value.secret_mounts
 
   egress_sidecar = each.value.egress_proxy ? module.egress_proxy.sidecar : null
+
+  # deploy.yml moves the service, as this account, and needs to act as the
+  # service's own identity to create a revision.
+  deployer_service_account = module.cicd.service_account_email
 }

@@ -2665,34 +2665,6 @@ fn every_environment_names_a_project_of_its_own() {
 }
 
 #[test]
-fn the_teardown_writes_the_flag_to_state_before_it_reads_it() {
-    // `down` is two commands, and the order is the whole point. GKE reads
-    // `deletion_protection` from prior state during a destroy, never from
-    // configuration, so an environment whose tfvars say false but whose state
-    // still says true refuses its own teardown — which is exactly how the
-    // first real teardown attempt failed, twice, once before the flag was a
-    // variable at all and once after. The targeted apply is what writes false
-    // into state; delete it and `down` breaks again, silently, and only for
-    // environments that have not been applied since.
-    let infra = read(".github/workflows/infra.yml");
-    let down = block_under(&infra, "- name: down");
-
-    let apply = down.find("terraform -chdir=infrastructure/terraform apply");
-    let destroy = down.find("terraform -chdir=infrastructure/terraform destroy");
-
-    let apply = apply.expect(
-        "infra.yml's down no longer applies before destroying, so deletion_protection \
-         never reaches state and the teardown refuses itself",
-    );
-    let destroy = destroy.expect("infra.yml's down no longer destroys anything");
-    assert!(
-        apply < destroy,
-        "infra.yml's down destroys before it applies, so the destroy still reads \
-         the old deletion_protection out of state"
-    );
-}
-
-#[test]
 fn the_infrastructure_workflow_cannot_touch_production() {
     // infra.yml holds the identity that can reshape an environment, which is
     // exactly why it must never offer prod. Two layers: prod absent from the
@@ -2712,16 +2684,30 @@ fn the_infrastructure_workflow_cannot_touch_production() {
     // And the destructive action is targeted, never a full destroy: KMS keys
     // and the workload identity pool are soft-deleted by name, so a full
     // destroy/apply cycle collides with its own remains — including this
-    // workflow's own authentication.
+    // workflow's own authentication. The target is the execution nodes,
+    // the one thing that bills while idle.
     assert!(
-        infra.contains("-target=module.cluster"),
-        "infra.yml's down is no longer targeted at the cluster"
+        infra.contains("-target=module.execution_node"),
+        "infra.yml's down is no longer targeted at the execution nodes"
     );
+    let text = without_comments(&infra);
+    let destroys: Vec<String> = text
+        .lines()
+        .filter(|line| line.contains("terraform -chdir=infrastructure/terraform destroy"))
+        .map(|line| line.trim().to_string())
+        .collect();
     assert!(
-        !without_comments(&infra)
-            .contains("destroy -input=false -auto-approve \\\n            -var-file"),
-        "infra.yml runs an untargeted destroy"
+        !destroys.is_empty(),
+        "infra.yml no longer destroys anything"
     );
+    for destroy in &destroys {
+        let after = text.split(destroy.as_str()).nth(1).unwrap_or_default();
+        let next_lines: String = after.lines().take(2).collect::<Vec<_>>().join("\n");
+        assert!(
+            next_lines.contains("-target=module.execution_node"),
+            "infra.yml runs an untargeted destroy: `{destroy}` is not followed by a target"
+        );
+    }
 }
 
 #[test]
@@ -3209,76 +3195,6 @@ fn templates_dev_does_not_deploy() -> Vec<String> {
     vec!["edge-cell.yaml".to_string()]
 }
 
-/// The workloads named in the record of who verifies a promotion.
-///
-/// Was read out of `deploy.yml`'s `kubectl rollout status` loop. That loop is
-/// gone: the pipeline no longer touches the cluster, so there is no longer a
-/// pipeline-side answer to read. The property it protected — that a
-/// deployment producing a broken pod is noticed — outlived the mechanism, so
-/// it is asserted against the place the gap is now recorded.
-fn workloads_named_in_the_verification_record() -> Vec<String> {
-    let record = read("docs/operations/gitops-exceptions.md");
-    let section = record
-        .split("## 4.")
-        .nth(1)
-        .expect("gitops-exceptions.md must record what verifies a promotion");
-    ["qip-api", "qip-fastbrain", "qip-deepbrain"]
-        .into_iter()
-        .filter(|workload| section.contains(*workload))
-        .map(str::to_string)
-        .collect()
-}
-
-/// Every workload that actually gets deployed, by workload name.
-///
-/// Read out of the Helm chart, because the chart is what Argo CD applies.
-/// It used to be read out of `deploy.yml`'s render step, which was correct
-/// while the pipeline applied with kubectl and is not any more: the pipeline
-/// now stops at the registry and commits digests, so a check that reads it
-/// would be asking the wrong file what is deployed.
-fn workloads_deployed_to_dev() -> Vec<String> {
-    let excluded = templates_dev_does_not_deploy();
-    let mut applied: Vec<String> = Vec::new();
-    for path in files_with_extension("infrastructure/helm/qip/templates", "yaml") {
-        let name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .expect("a template has a name")
-            .to_string();
-        if excluded.contains(&name) {
-            continue;
-        }
-        let content = std::fs::read_to_string(&path).expect("readable");
-        // A chart template is not parseable YAML — it carries Go template
-        // actions — so the Deployment's name is matched textually. The names
-        // in this chart are literals rather than expressions, which is what
-        // makes that sound; a templated name would not match and would fail
-        // the count assertion below rather than passing silently.
-        let mut in_deployment = false;
-        for line in content.lines() {
-            if line.trim() == "kind: Deployment" {
-                in_deployment = true;
-            } else if in_deployment {
-                if let Some(rest) = line.trim().strip_prefix("name: ") {
-                    let candidate = rest.trim().trim_matches('"');
-                    if candidate.starts_with("qip-") && !candidate.contains("{{") {
-                        applied.push(candidate.to_string());
-                        in_deployment = false;
-                    }
-                }
-            }
-        }
-    }
-    applied.sort();
-    applied.dedup();
-    assert!(
-        applied.len() >= 3,
-        "only {applied:?} were found in the chart; the template walk is not \
-         reaching them and every check built on it is asserting nothing"
-    );
-    applied
-}
-
 #[test]
 fn every_binary_the_workspace_builds_is_in_the_image_matrix_or_excluded_by_name() {
     // The direction nobody notices: a new deployable lands, the manifests are
@@ -3453,37 +3369,136 @@ fn every_manifest_pulls_from_the_repository_the_pipeline_pushes_to() {
 }
 
 #[test]
-fn a_promotion_names_who_verifies_it() {
-    // `kubectl apply` returns when the API server has accepted the objects, not
-    // when the containers are running. Without this step a pipeline reports
-    // success for an image that crashes on start-up, which is the failure the
-    // whole deployment exists to catch.
-    //
-    // Both directions matter. A workload missing from the list is never
-    // checked; a workload on the list that the pipeline did not apply makes
-    // `rollout status` wait on a Deployment nobody created until it times out,
-    // which fails the deployment for a reason that is not the real one.
-    let waited = workloads_named_in_the_verification_record();
-    let applied = workloads_deployed_to_dev();
+fn the_teardown_stops_the_meter_and_touches_nothing_that_scales_to_zero() {
+    // `down` exists to stop the hourly bill between sessions. The execution
+    // nodes are the only thing here that bills while idle; a Cloud Run
+    // service at zero instances costs nothing and its `deletion_protection`
+    // refuses a destroy in any case. A `down` that reached the services would
+    // fail on that refusal — or worse, succeed after somebody relaxed it —
+    // so the target is pinned and nothing else is named.
+    let infra = read(".github/workflows/infra.yml");
+    let down = block_under(&infra, "- name: down");
+    assert!(
+        down.contains("terraform -chdir=infrastructure/terraform destroy"),
+        "infra.yml's down no longer destroys anything"
+    );
+    assert!(
+        down.contains("-target=module.execution_node"),
+        "infra.yml's down is not targeted at the execution nodes"
+    );
+    for forbidden in [
+        "module.cloud_run",
+        "module.secrets",
+        "module.cicd",
+        "module.evidence",
+        "module.egress_proxy",
+    ] {
+        assert!(
+            !down.contains(forbidden),
+            "infra.yml's down names {forbidden}, which either scales to zero or must never be torn down"
+        );
+    }
+    // And `up` passes the digests the pipeline recorded, when the environment
+    // has any, so an apply after a deploy does not plan a service at nothing.
+    assert!(
+        infra.contains("images.tfvars"),
+        "infra.yml no longer passes images.tfvars, so every plan refuses on a missing digest"
+    );
+}
 
-    for workload in &applied {
+/// The workloads deploy.yml moves: read from the same catalogue the workflow
+/// itself parses, by the same rule, so the two cannot disagree about which
+/// services exist.
+fn workloads_the_pipeline_moves() -> Vec<String> {
+    let deploy = read(".github/workflows/deploy.yml");
+    // The workflow reads catalogue.tf with these two patterns. If either
+    // changes here, the awk in the workflow has changed shape and the
+    // catalogue's own tests need re-reading.
+    for pattern in [
+        "/^    [a-z][a-z0-9-]* = \\{$/",
+        "/^      binary[[:space:]]*=/",
+    ] {
         assert!(
-            waited.contains(workload),
-            "{workload} is deployed by the chart and is not named in the \
-             verification record. The pipeline stopped waiting on a rollout \
-             when the kubectl path was retired, so a {workload} that never \
-             starts is now a deployment that reports success — and the one \
-             thing that must not happen is that being true and unwritten."
+            deploy.contains(pattern),
+            "deploy.yml no longer reads the catalogue with `{pattern}`; the services it moves are now decided somewhere this check cannot see"
         );
     }
-    for workload in &waited {
-        assert!(
-            applied.contains(workload),
-            "the verification record names {workload}, which the chart does \
-             not deploy. A record of who watches a workload nobody deploys \
-             reads as coverage and is not."
-        );
-    }
+    catalogue_workloads()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect()
+}
+
+#[test]
+fn a_promotion_names_who_verifies_it() {
+    // An apply that returns is not a deployment that worked. The GitOps
+    // cut-over lost the rollout wait, so a build that crash-looped on boot
+    // produced a green pipeline, and docs/operations/gitops-exceptions.md
+    // recorded the gap rather than closing it. `gcloud run services update`
+    // blocks until the revision is Ready and routing and fails otherwise;
+    // the describe afterwards proves the serving revision runs the digest
+    // that was signed. Both halves are asserted, because the first alone is
+    // satisfied by a traffic split that never moved.
+    let deploy = read(".github/workflows/deploy.yml");
+    let jobs = workflow_jobs(&deploy);
+    let (_, body) = jobs
+        .iter()
+        .find(|(name, _)| name == "deploy")
+        .expect("deploy.yml has a deploy job");
+    let steps = job_steps(body);
+    let rollout = steps
+        .iter()
+        .find(|step| step.contains("id: rollout"))
+        .expect("the deploy job has a rollout step");
+
+    // The premise: it moves every workload the catalogue deploys, and nothing
+    // the catalogue does not know.
+    let moved = workloads_the_pipeline_moves();
+    assert_eq!(moved.len(), 3, "the catalogue parsed to {moved:?}");
+    assert!(
+        rollout.contains("service=\"qip-${TARGET_ENVIRONMENT}-${name}\""),
+        "the rollout step no longer names services the way modules/cloudrun names them"
+    );
+
+    // The wait.
+    assert!(
+        rollout.contains("gcloud run services update \"$service\""),
+        "the rollout step no longer moves the service with `gcloud run services update`, which is the step that waits for the revision"
+    );
+    assert!(
+        rollout.contains("--image \"$image\""),
+        "the rollout step moves the service to something other than the attested image"
+    );
+    // By digest: the image is assembled from the registry's own digest, never
+    // from the tag the build pushed.
+    assert!(
+        rollout.contains("image=\"${prefix}/${binary}@${digest}\""),
+        "the rollout step deploys by tag rather than by the digest the attestation names"
+    );
+
+    // The proof.
+    assert!(
+        rollout.contains("spec.template.spec.containers[0].image")
+            && rollout.contains("status.conditions[0].status"),
+        "the rollout step does not read back which image the serving revision runs and whether it is Ready"
+    );
+    assert!(
+        rollout.contains("if [ \"$serving\" != \"$image\" ] || [ \"$ready\" != \"True\" ]; then")
+            && rollout.contains("exit 1"),
+        "the rollout step reads the serving revision back and does not fail when it is not the one asked for"
+    );
+
+    // And the record is written after the proof, not before it: a digest
+    // recorded for a service that never served it is the GitOps values file
+    // all over again.
+    let proof = rollout.find("exit 1").expect("the proof refuses");
+    let record = rollout
+        .find(">> \"$images_file\"")
+        .expect("the step records the digest");
+    assert!(
+        proof < record,
+        "the rollout step records a digest before it has proven the service serves it"
+    );
 }
 
 #[test]

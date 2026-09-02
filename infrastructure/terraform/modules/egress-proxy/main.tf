@@ -96,9 +96,15 @@ resource "google_storage_bucket" "bootstrap" {
   labels = var.labels
 }
 
+# Named by its content's hash. A changed allowlist is therefore a new object
+# beside the old one rather than a replacement of it, so publishing never
+# needs `storage.objects.delete` — the permission the infra account
+# deliberately lacks, because an identity that can delete from a bucket can
+# delete from the evidence bucket — and every allowlist that ever ran stays
+# readable under the name the revision that ran it mounted.
 resource "google_storage_bucket_object" "bootstrap" {
   bucket       = google_storage_bucket.bootstrap.name
-  name         = "envoy.yaml"
+  name         = "envoy-${substr(sha256(local.bootstrap), 0, 16)}.yaml"
   content      = local.bootstrap
   content_type = "application/yaml"
 

@@ -234,6 +234,22 @@ resource "google_service_account" "workload" {
   }
 }
 
+# Who may deploy a revision as this identity.
+#
+# Cloud Run refuses to create a revision unless the caller may act as the
+# service's account, so the pipeline needs `serviceAccountUser` on this one
+# account — and on this one account only. Granted here, per workload, rather
+# than project-wide in modules/cicd: a project-wide `serviceAccountUser` is
+# the right to act as every identity in the project, the infra account
+# included.
+resource "google_service_account_iam_member" "deployer" {
+  count = var.deployer_service_account == null ? 0 : 1
+
+  service_account_id = google_service_account.workload.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${var.deployer_service_account}"
+}
+
 # The minimum every workload needs beyond its own secrets, and no more.
 #
 # The same two grants `modules/secrets` gives the GKE deployables, for the same

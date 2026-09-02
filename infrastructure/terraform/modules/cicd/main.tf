@@ -1,7 +1,7 @@
 # The pipeline's identity.
 #
-# The pipeline needs to push images and apply manifests, which means it needs
-# credentials, which is the part that usually goes wrong. A service-account key
+# The pipeline needs to push images and move Cloud Run services, which means
+# it needs credentials, which is the part that usually goes wrong. A service-account key
 # in a repository secret is a credential that lives forever, is copied by
 # anyone who can read the secret, and leaves no trace of which run used it.
 #
@@ -85,17 +85,44 @@ resource "google_service_account_iam_member" "github_impersonation" {
   member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.repository/${var.github_repository}"
 }
 
-# Deploying means reading the cluster's endpoint and applying manifests inside
-# one namespace. `container.developer` is the narrowest predefined role that
-# does it: it cannot create, resize or delete a cluster, and it cannot read
-# secrets outside what the namespace's RBAC allows.
-#
-# It is still broader than one namespace. Narrowing it further is a Kubernetes
-# RBAC role binding rather than a Google one, and it is listed as an open gap
-# in docs/operations/external-dependencies.md rather than pretended away here.
+# Deploying means moving a Cloud Run service to a new image and reading it
+# back. `run.developer` is the narrowest predefined role that does it: it can
+# update a service and describe its revisions, and it cannot set a service's
+# IAM policy — so the pipeline can change what runs and cannot change who may
+# call it. Deploying a revision also needs `actAs` on the service's own
+# identity, which `modules/cloudrun` grants per workload on that one account
+# rather than project-wide here.
 resource "google_project_iam_member" "deploy" {
   project = var.project_id
-  role    = "roles/container.developer"
+  role    = "roles/run.developer"
+  member  = "serviceAccount:${google_service_account.ci.email}"
+}
+
+# The execution node's rolling replacement, and nothing else about compute.
+#
+# `deploy.yml` asks each node's managed instance group to replace its
+# instance under the group's own update policy. That is one verb on one
+# resource type — `instanceGroupManagers.update`, plus the get and list to
+# find the group — and every predefined role that carries it carries
+# instance creation, deletion and metadata too. A custom role with the three
+# permissions is the whole grant, and the group's own service agent, not the
+# pipeline, is what creates the replacement machine.
+resource "google_project_iam_custom_role" "deploy_nodes" {
+  project     = var.project_id
+  role_id     = "qipDeployNodes_${var.environment}"
+  title       = "qip execution-node rolling replacement (${var.environment})"
+  description = "Ask a managed instance group to replace its instances under its own policy. No instance creation, deletion or metadata."
+
+  permissions = [
+    "compute.instanceGroupManagers.get",
+    "compute.instanceGroupManagers.list",
+    "compute.instanceGroupManagers.update",
+  ]
+}
+
+resource "google_project_iam_member" "deploy_nodes" {
+  project = var.project_id
+  role    = google_project_iam_custom_role.deploy_nodes.id
   member  = "serviceAccount:${google_service_account.ci.email}"
 }
 
@@ -153,7 +180,10 @@ resource "google_service_account_iam_member" "infra_impersonation" {
 resource "google_project_iam_member" "infra_roles" {
   for_each = toset([
     "roles/compute.admin",
-    "roles/container.admin",
+    # The catalogue's services and, when there are any, jobs.
+    "roles/run.admin",
+    # The private zone that sends every Google API to the restricted VIP.
+    "roles/dns.admin",
     "roles/iam.serviceAccountAdmin",
     "roles/iam.serviceAccountUser",
     "roles/iam.workloadIdentityPoolAdmin",
@@ -182,7 +212,6 @@ resource "google_project_iam_member" "infra_roles" {
     # before it — a role named for the wrong half of the same product.
     "roles/binaryauthorization.attestorsAdmin",
     "roles/containeranalysis.admin",
-    "roles/gkebackup.admin",
   ])
 
   project = var.project_id
@@ -210,6 +239,11 @@ resource "google_project_iam_custom_role" "infra_storage" {
     "storage.buckets.list",
     "storage.buckets.setIamPolicy",
     "storage.buckets.update",
+    # Create, for the one object Terraform writes: the egress proxy's
+    # bootstrap in modules/egress-proxy. Named by its content's hash, so a
+    # changed allowlist is a new object beside the old one and nothing ever
+    # needs the delete this role still does not carry.
+    "storage.objects.create",
     "storage.objects.get",
     "storage.objects.list",
   ]

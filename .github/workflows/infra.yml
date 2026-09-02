@@ -2,8 +2,9 @@
 #
 # This is the workflow that lets an operator — or an agent working for one —
 # iterate the infrastructure from the repository: plan a change, apply it,
-# and shut the cluster down when nobody is testing, which is where nearly all
-# of the money goes. It authenticates by workload identity federation as the
+# and shut the execution nodes down when nobody is testing, which is where
+# the money goes — every Cloud Run service scales to zero and costs nothing
+# standing. It authenticates by workload identity federation as the
 # `qip-infra` account `modules/cicd` creates; no key exists anywhere in this
 # path.
 #
@@ -15,9 +16,10 @@
 #
 # ## Why `down` is not `destroy`
 #
-# `down` destroys `module.cluster` — the GKE cluster and its node pools, the
-# resources that bill by the hour — and leaves identity, KMS, secrets, the
-# registry and the state bucket standing. That asymmetry is deliberate:
+# `down` destroys `module.execution_node` — the C3 machines, the resources
+# that bill by the hour — and leaves the Cloud Run services (which bill by
+# the request), identity, KMS, secrets, the registry and the state bucket
+# standing. That asymmetry is deliberate:
 #
 #   * KMS keys cannot be truly deleted — destroying them schedules key
 #     versions for destruction and the key names stay claimed, so a full
@@ -47,7 +49,7 @@ on:
           - test
           - stage
       action:
-        description: "plan (read-only), up (apply), down (destroy the cluster to stop the meter; everything else stands)"
+        description: "plan (read-only), up (apply), down (destroy the execution nodes to stop the meter; everything else stands)"
         required: true
         default: "plan"
         type: choice
@@ -134,23 +136,26 @@ jobs:
       # Terraform refreshes existing state — reading the attestor's public
       # key, the attestor resource itself — before it applies anything, so a
       # role this same apply would grant declaratively is too late for the
-      # refresh that needs it. Two roles have hit this so far, each read at
-      # plan time by a resource that already exists from an earlier apply:
-      # cloudkms.publicKeyViewer (the attestor's signing key) and
+      # refresh that needs it. Roles have hit this before, each read at plan
+      # time by a resource that already exists from an earlier apply:
+      # cloudkms.publicKeyViewer (the attestor's signing key),
       # binaryauthorization.attestorsAdmin (the attestor itself, which needs
-      # more than read — Terraform diffs it, not just refreshes it). The
-      # account grants each to itself here — its projectIamAdmin makes that
-      # possible; modules/cicd documents why that is accepted — waiting only
-      # when a binding is new, since a fresh grant can take a minute to bite.
-      # Both exist declaratively in modules/cicd too, so an environment
-      # applied by the bootstrap (whose identity already holds project
-      # owner) never takes this path at all.
+      # more than read — Terraform diffs it, not just refreshes it), and —
+      # new with the Cloud Run runtime — run.admin and dns.admin, which the
+      # first plan against an environment applied before ADR 0024 reads
+      # nothing with, but which every plan afterwards refreshes the services
+      # and the private zone with. The account grants each to itself here —
+      # its projectIamAdmin makes that possible; modules/cicd documents why
+      # that is accepted — waiting only when a binding is new, since a fresh
+      # grant can take a minute to bite. All exist declaratively in
+      # modules/cicd too, so an environment applied by the bootstrap (whose
+      # identity already holds project owner) never takes this path at all.
       - name: the permissions the plan needs before it can grant them
         run: |
           set -euo pipefail
           account="${{ steps.identity.outputs.account }}"
           project="${{ steps.identity.outputs.project }}"
-          for role in roles/cloudkms.publicKeyViewer roles/binaryauthorization.attestorsAdmin; do
+          for role in roles/cloudkms.publicKeyViewer roles/binaryauthorization.attestorsAdmin roles/run.admin roles/dns.admin; do
             held="$(gcloud projects get-iam-policy "$project" \
               --flatten="bindings[].members" \
               --filter="bindings.role:$role AND bindings.members:serviceAccount:$account" \
@@ -173,91 +178,26 @@ jobs:
           terraform -chdir=infrastructure/terraform init -input=false \
             -backend-config="bucket=${{ steps.identity.outputs.project }}-qip-tfstate"
 
+      # Two var-files: the reviewed configuration, and the digests deploy.yml
+      # last recorded. An environment nothing has deployed to has no
+      # images.tfvars, and catalogue.tf then refuses the plan naming the run
+      # that is missing — which is the right refusal, so the file is passed
+      # only when it exists rather than stubbed.
+      - name: the var-files this environment has
+        id: vars
+        run: |
+          set -euo pipefail
+          files="-var-file=../environments/${{ inputs.environment }}/terraform.tfvars"
+          if [ -f "infrastructure/environments/${{ inputs.environment }}/images.tfvars" ]; then
+            files="$files -var-file=../environments/${{ inputs.environment }}/images.tfvars"
+          fi
+          echo "files=$files" >> "$GITHUB_OUTPUT"
+
       - name: plan
         if: inputs.action == 'plan'
         run: |
           terraform -chdir=infrastructure/terraform plan -input=false \
-            -var-file="../environments/${{ inputs.environment }}/terraform.tfvars"
-
-      # A tainted cluster is a deadlock, and which way out depends on
-      # whether the cluster is actually broken.
-      #
-      # GKE creates a default node pool as part of cluster creation. When that
-      # pool cannot get nodes — a quota ceiling, most likely — the create call
-      # returns an error and Terraform marks the cluster tainted. Sometimes
-      # the cluster object survives that and serves fine, and sometimes it
-      # does not; the taint alone cannot tell you which.
-      #
-      # Either way Terraform is stuck, because `deletion_protection` is a
-      # Terraform-side guard rather than a GKE one. The provider reads it from
-      # *prior state* and refuses to issue the delete at all. The only thing
-      # that writes a new value into state is an in-place update, and a
-      # tainted resource is planned as destroy-then-create with no update
-      # ahead of it — so the step that would clear the guard is exactly the
-      # step taint skips. No edit to the tfvars can reach it.
-      #
-      # So ask GKE what the cluster is really doing, and take the matching
-      # way out: untaint a healthy one, delete a broken one.
-      - name: recover a cluster the taint has deadlocked
-        if: inputs.action == 'up'
-        run: |
-          set -euo pipefail
-          address='module.cluster.google_container_cluster.primary'
-          project="${{ steps.identity.outputs.project }}"
-          tfvars="infrastructure/environments/${{ inputs.environment }}/terraform.tfvars"
-
-          tainted="$(terraform -chdir=infrastructure/terraform show -json \
-            | jq -r --arg a "$address" '
-                [.values.root_module.child_modules[]?.resources[]?
-                 | select(.address == $a and .tainted == true)] | length')"
-          if [ "$tainted" = "0" ]; then
-            echo "no tainted cluster in state; nothing to recover"
-            exit 0
-          fi
-
-          cluster="qip-${{ inputs.environment }}"
-          info="$(gcloud container clusters list --project="$project" \
-            --filter="name=${cluster}" --format='value(status,location)' | head -1)"
-          status="$(printf '%s' "$info" | cut -f1)"
-          location="$(printf '%s' "$info" | cut -f2)"
-          echo "${cluster} is tainted in state; GKE reports status='${status:-<absent>}'"
-
-          if [ -z "$status" ]; then
-            echo "GKE has no such cluster, so the refresh will drop it from state"
-            echo "and the apply will create it"
-            exit 0
-          fi
-
-          if [ "$status" = "RUNNING" ]; then
-            terraform -chdir=infrastructure/terraform untaint "$address"
-            echo "untainted: the control plane is serving, so the taint recorded a"
-            echo "failed create-wait rather than a broken cluster"
-            exit 0
-          fi
-
-          # ERROR, DEGRADED, anything else: the cluster must be replaced, and
-          # replacing it is precisely what Terraform cannot do. gcloud can,
-          # because `deletion_protection` is not a field it has ever heard of.
-          #
-          # What authorises that is the environment's own committed
-          # configuration: the delete happens only where the tfvars already
-          # declare deletion protection off — a reviewed statement that this
-          # cluster is disposable — and prod never reaches this workflow at
-          # all. Without that declaration this stops and says so, rather than
-          # deleting a cluster on its own judgement.
-          if ! grep -q '^cluster_deletion_protection[[:space:]]*=[[:space:]]*false' "$tfvars"; then
-            echo "the cluster is ${status} and must be replaced, but ${tfvars}" >&2
-            echo "does not declare cluster_deletion_protection = false, so nothing" >&2
-            echo "here is authorised to delete it. Set it, or delete by hand." >&2
-            exit 1
-          fi
-
-          echo "deleting the ${status} cluster in ${location} so the apply can"
-          echo "create a working one — this takes a few minutes"
-          gcloud container clusters delete "$cluster" \
-            --project="$project" --region="$location" --quiet
-          terraform -chdir=infrastructure/terraform state rm "$address"
-          echo "deleted and dropped from state; the apply will create it fresh"
+            ${{ steps.vars.outputs.files }}
 
       # -auto-approve because there is nobody at a prompt: the review is the
       # dispatch itself, recorded in the Actions log with who pressed it. The
@@ -266,30 +206,22 @@ jobs:
         if: inputs.action == 'up'
         run: |
           terraform -chdir=infrastructure/terraform apply -input=false -auto-approve \
-            -var-file="../environments/${{ inputs.environment }}/terraform.tfvars"
+            ${{ steps.vars.outputs.files }}
 
       - name: down
         if: inputs.action == 'down'
         run: |
           set -euo pipefail
-          # Two steps, because `deletion_protection` is read from state during
-          # a destroy and not from configuration. An environment whose tfvars
-          # say false but whose state still says true — every environment that
-          # has never been applied since the flag became a variable — refuses
-          # its own teardown with "Cannot destroy cluster because
-          # deletion_protection is set to true". The apply is what writes the
-          # flag to state; it is targeted and almost always a no-op otherwise.
-          terraform -chdir=infrastructure/terraform apply -input=false -auto-approve \
-            -target=module.cluster \
-            -var-file="../environments/${{ inputs.environment }}/terraform.tfvars"
-
           # Targeted on purpose — see the header for why a full destroy is a
-          # trap. Terraform also destroys everything that depends on the
-          # cluster (the backup plan, the workload identity bindings), which
-          # `up` recreates.
+          # trap. The execution nodes are the only thing here that bills
+          # while idle: a Cloud Run service at zero instances costs nothing,
+          # and its `deletion_protection` refuses a destroy in any case. The
+          # node's group, template, subnet, identity and rules go together
+          # and `up` recreates them from the same tfvars — in shadow mode,
+          # as always.
           terraform -chdir=infrastructure/terraform destroy -input=false -auto-approve \
-            -target=module.cluster \
-            -var-file="../environments/${{ inputs.environment }}/terraform.tfvars"
+            -target=module.execution_node \
+            ${{ steps.vars.outputs.files }}
 
       - name: what exists now
         if: always()
