@@ -3552,7 +3552,7 @@ impl Platform {
             let at = now;
             let mut signed = 0u64;
             for proposal in &mut self.proposals {
-                if !matches!(proposal.status, ProposalStatus::Draft) {
+                if !matches!(proposal.status(), ProposalStatus::Draft) {
                     continue;
                 }
                 // A proposal with no legs proposes nothing. `stage_decide`
@@ -3593,7 +3593,7 @@ impl Platform {
         let releasable = self
             .proposals
             .iter()
-            .filter(|proposal| proposal.status.is_releasable())
+            .filter(|proposal| proposal.status().is_releasable())
             .count();
 
         // A control that ruled and left no record is a refusal nobody can
@@ -3660,7 +3660,7 @@ impl Platform {
         let approved: Vec<Proposal> = self
             .proposals
             .iter()
-            .filter(|proposal| proposal.status.is_releasable())
+            .filter(|proposal| proposal.status().is_releasable())
             .cloned()
             .collect();
 
@@ -5604,7 +5604,7 @@ mod decide_tests {
         let sized = platform.proposals.last().expect("a proposal is recorded");
         assert!(!sized.is_empty(), "the premise failed: no legs were sized");
         assert!(
-            !sized.status.is_releasable(),
+            !sized.status().is_releasable(),
             "construction is not permission; a fresh proposal must be a draft"
         );
         let legs = sized.legs.len();
@@ -5617,7 +5617,7 @@ mod decide_tests {
         let released = platform
             .proposals
             .iter()
-            .find(|proposal| matches!(proposal.status, ProposalStatus::Released { .. }))
+            .find(|proposal| matches!(proposal.status(), ProposalStatus::Released { .. }))
             .expect("the sized proposal was released");
         assert_eq!(
             released.checks_passed,
@@ -5864,7 +5864,7 @@ mod decide_tests {
              the decide stage has regressed to the unconditional empty proposal"
         );
         assert!(
-            !proposal.status.is_releasable(),
+            !proposal.status().is_releasable(),
             "a freshly constructed proposal must still need its governed approval; \
              construction is not permission"
         );
