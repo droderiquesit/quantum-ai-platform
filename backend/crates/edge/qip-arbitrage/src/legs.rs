@@ -33,20 +33,28 @@
 //! therefore lives in [`signed_size`] and nowhere else, and a test holds it
 //! against the fixture whose sides are known rather than against the cell.
 //!
-//! # What this is not yet
+//! # What is wired, and what is not
 //!
-//! It is the adapter and not the wiring. Nothing deployed calls
-//! [`Opportunity::cycle_legs`]: the scanner is constructed by no composition
-//! root, and the cell's work loop runs compiled strategy programs and never
-//! consults an arbitrage graph. The next slice belongs to the cell and inserts
-//! a scan between the strategy loop's intent collection and `net`, so that
-//! legs and directional intents meet at the one seam the blueprint names.
-//! §31's cross-region paths (3–6) are further off than that: the graph has no
-//! mirror edge class to express them, and when it does the coordination is
-//! policy distributed in advance — a reference price, a threshold, a
-//! direction gate per region — and never a message at execution time. A
-//! cell's graph holds the cell's own venues (ADR 0008), so every cycle this
-//! module can see today is path 1, 2 or 7, executed alone.
+//! The adapter has its caller. `qip_edge::arbitrage::ArbitrageDesk` holds the
+//! scanner, and `qip_edge::Cell::work` re-quotes the desk's graph from the
+//! cell's own books, scans it between the strategy loop's intent collection
+//! and `net`, takes each surviving opportunity through
+//! [`Opportunity::cycle_legs`], and sends the legs by the cell's one order
+//! path — never through `net`, which the type already made impossible and
+//! the cell now never attempts. Every leg passes the cell's feasibility gate
+//! first (blueprint §18.1), and a leg that cannot execute at its size vetoes
+//! the cycle whole.
+//!
+//! What remains further off is unchanged by that. §31's cross-region paths
+//! (3–6) need a mirror edge class the graph does not have, and when it does
+//! the coordination is policy distributed in advance — a reference price, a
+//! threshold, a direction gate per region — and never a message at
+//! execution time. A cell's graph holds the cell's own venues (ADR 0008), so
+//! every cycle the desk can see today is path 1, 2 or 7, executed alone. And
+//! the cell can place but not cancel, so a cycle whose later leg a venue
+//! refuses is recorded and halts the cell rather than being unwound; the
+//! coordinator that would unwind it needs a fill path the cell does not yet
+//! have.
 
 use crate::scan::Opportunity;
 use qip_contracts::edge::LegStep;

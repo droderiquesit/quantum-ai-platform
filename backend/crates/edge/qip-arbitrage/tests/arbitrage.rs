@@ -11,7 +11,9 @@
 // assertion is the deliverable, and `?` is what keeps the setup readable.
 #![allow(clippy::panic_in_result_fn)]
 
-use qip_arbitrage::graph::{ArbitrageGraph, Node, PathKind, SyntheticComponent, VenueFacts};
+use qip_arbitrage::graph::{
+    ArbitrageGraph, EdgeKind, Node, PathKind, SyntheticComponent, VenueFacts,
+};
 use qip_arbitrage::liquidity::{LiquiditySource, StaticLiquidity};
 use qip_arbitrage::netedge::{EdgeAssumptions, NetEdgeCalculator};
 use qip_arbitrage::plan::{LegPlanner, PlanSettings};
@@ -1154,5 +1156,51 @@ fn legs_that_would_expire_before_the_cycle_opens_are_refused() -> Result<()> {
             "legs born expired were produced rather than refused"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn a_trade_edge_re_quoted_from_a_book_is_what_the_search_then_sees() -> Result<()> {
+    // The failure this prevents: a cell that rebuilt its graph per pass, or
+    // one that refreshed a field the search does not read. The effective
+    // rate is what the search searches on, so that is what is asserted.
+    let (mut graph, _) = liquid_triangular()?;
+    let before = graph
+        .edge(0)
+        .expect("the fixture has a first edge")
+        .effective_rate()?;
+    graph.refresh_trade(0, d("0.0005"), at(), 7)?;
+    let edge = graph.edge(0).expect("the edge is still there");
+    assert_eq!(edge.indicative_rate, d("0.0005"));
+    assert_eq!(edge.observations, 7);
+    assert_ne!(
+        edge.effective_rate()?,
+        before,
+        "the refreshed rate did not reach the rate the search uses"
+    );
+
+    // Zero is how a stale book takes its edge out of the search.
+    graph.refresh_trade(0, Decimal::ZERO, at(), 0)?;
+    assert!(
+        search_candidates(&graph, &SearchSettings::default()).is_empty(),
+        "an edge quoted at zero still closed a cycle"
+    );
+
+    // And what is refused: a negative rate, an index that names nothing,
+    // and an edge that has no book to quote from.
+    assert!(graph.refresh_trade(0, d("-1"), at(), 1).is_err());
+    assert!(graph.refresh_trade(99, d("1"), at(), 1).is_err());
+    let (mut with_transfer, _) = cross_venue_with_a_chain()?;
+    let transfer = with_transfer
+        .edges()
+        .iter()
+        .position(|edge| matches!(edge.kind, EdgeKind::Transfer))
+        .expect("the cross-venue fixture holds a transfer");
+    assert!(
+        with_transfer
+            .refresh_trade(transfer, d("1"), at(), 1)
+            .is_err(),
+        "a transfer was re-quoted as if it had a book"
+    );
     Ok(())
 }

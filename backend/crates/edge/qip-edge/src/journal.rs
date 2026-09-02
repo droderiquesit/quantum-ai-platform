@@ -105,6 +105,19 @@ pub enum Decision {
         bought: Vec<String>,
         sold: Vec<String>,
     },
+    /// Every leg of an arbitrage cycle was sent (§30, §27.2).
+    ///
+    /// Recorded once the last leg is past the venue call, naming the orders
+    /// that make up the atomic set, so a reader of the chain can tell which
+    /// `order_sent` entries belong together without re-running the scan.
+    /// The net edge is the scanner's, in units of the instrument the cycle
+    /// started from, carried as a string for the reason every other decimal
+    /// here is.
+    CycleCommitted {
+        cycle_id: String,
+        orders: Vec<String>,
+        net: String,
+    },
 }
 
 impl Decision {
@@ -122,6 +135,7 @@ impl Decision {
             Self::PolicyApplied { .. } => "policy_applied",
             Self::CapitalRenewed { .. } => "capital_renewed",
             Self::CrossedInternally { .. } => "crossed_internally",
+            Self::CycleCommitted { .. } => "cycle_committed",
         }
     }
 }

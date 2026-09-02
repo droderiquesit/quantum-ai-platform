@@ -36,9 +36,12 @@
 //! exact arithmetic — `f64` appears for logarithms, volatility and scores, is
 //! named `_f64` where it does, and never decides anything on its own.
 //!
-//! The order book is not a dependency. `qip-orderbook` is being built
-//! concurrently, and [`liquidity::LiquiditySource`] is the seam it will be
-//! wired in behind; [`liquidity::StaticLiquidity`] stands in until then.
+//! The order book is not a dependency. [`liquidity::LiquiditySource`] is the
+//! seam the edge cell supplies its real books behind — `qip_edge::seam`
+//! implements it over the cell's venue state, and the cell's arbitrage desk
+//! re-quotes this graph from those books before every scan through
+//! [`graph::ArbitrageGraph::refresh_trade`]. [`liquidity::StaticLiquidity`]
+//! remains for tests and for pricing a path away from a live cell.
 
 mod arith;
 
