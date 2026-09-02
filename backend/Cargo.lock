@@ -517,6 +517,7 @@ dependencies = [
  "qip-observability",
  "qip-simulation-engine",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

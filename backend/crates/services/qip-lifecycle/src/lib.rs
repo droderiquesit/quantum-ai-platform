@@ -68,6 +68,7 @@ pub mod demotion;
 pub mod evidence;
 pub mod gates;
 pub mod ledger;
+pub mod trials;
 
 pub use demotion::{
     DemotionMonitor, DemotionPolicy, DemotionTrigger, LiveObservation, PilotBaseline,
@@ -82,3 +83,4 @@ pub use gates::{
     ScaledPolicy, ShadowGate, ShadowPolicy, gate_for,
 };
 pub use ledger::{AuthorisedPromotion, LedgerEntry, LifecycleLedger, attempt_promotion};
+pub use trials::{StrategyFamily, TrialAccount, TrialBook, TrialEvent, TrialRecord};

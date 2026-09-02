@@ -10,6 +10,7 @@
 //! Every field here is something a strategy either has or has not got. There
 //! is no field a researcher can fill in with an opinion.
 
+use crate::trials::TrialAccount;
 use qip_contracts::gate::GateStage;
 use qip_contracts::governance::Approval;
 use qip_contracts::signal::{SignalKind, StrategyId};
@@ -112,11 +113,15 @@ pub struct HoldoutEvidence {
     pub in_sample_folds: Vec<Vec<f64>>,
     /// Per-fold returns on the test windows.
     pub out_of_sample_folds: Vec<Vec<f64>>,
-    /// How many configurations were tried before this one was put forward.
+    /// How many configurations were tried, in this run, before this one was
+    /// put forward.
     ///
-    /// The number that deflates the Sharpe. Understating it is the easiest way
-    /// to make a search result look like a discovery, which is why the gate
-    /// takes it as evidence and the ledger keeps it.
+    /// Not the number that deflates the Sharpe on its own. Understating it is
+    /// the easiest way to make a search result look like a discovery, and
+    /// splitting a sweep across runs understates it without lying, so the
+    /// gate deflates against the family's lifetime count in
+    /// [`StrategyEvidence::trial_account`] and this number is what one run
+    /// adds to it.
     pub trials: usize,
     pub periods_per_year: f64,
     pub cross_validation: CrossValidationRun,
@@ -329,6 +334,16 @@ pub struct ScaledEvidence {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct StrategyEvidence {
     pub holdout: Option<HoldoutEvidence>,
+    /// The lifetime trial count this evaluation was charged under, issued by
+    /// [`crate::trials::TrialBook::charge`].
+    ///
+    /// `None` means the count is unknown, and the holdout gate reads unknown
+    /// as a failed check rather than as zero. [`crate::attempt_promotion`]
+    /// charges the ledger's book itself and sets this, overwriting anything
+    /// the submitted package carried, so on the ordinary path the number
+    /// here is the book's and not the researcher's.
+    #[serde(default)]
+    pub trial_account: Option<TrialAccount>,
     pub paper: Option<PaperEvidence>,
     pub shadow: Option<ShadowEvidence>,
     pub pilot: Option<PilotEvidence>,
@@ -362,6 +377,11 @@ impl StrategyEvidence {
 
     pub fn with_scaled(mut self, evidence: ScaledEvidence) -> Self {
         self.scaled = Some(evidence);
+        self
+    }
+
+    pub fn with_trial_account(mut self, account: TrialAccount) -> Self {
+        self.trial_account = Some(account);
         self
     }
 

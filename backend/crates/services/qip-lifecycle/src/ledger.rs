@@ -21,6 +21,7 @@
 //!   costs a day of missed opportunity and a missed one costs the book.
 
 use crate::evidence::StrategyEvidence;
+use crate::trials::TrialBook;
 use qip_contracts::gate::{GateOutcome, GateStage, Promotion};
 use qip_contracts::governance::Approval;
 use qip_contracts::signal::StrategyId;
@@ -28,6 +29,7 @@ use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
 use qip_observability::metrics::{Metrics, labels, names};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -136,11 +138,38 @@ pub struct LifecycleLedger {
     /// optional rather than required, because the ledger's job is the record
     /// and a missing registry must not stop a demotion.
     metrics: Option<Arc<Metrics>>,
+    /// Where every holdout evaluation is charged, per family, for life.
+    /// Optional for the same reason as the registry — a ledger is built
+    /// before its composition root can hand anything in — but with the
+    /// opposite consequence: a missing registry loses a count, a missing
+    /// book refuses every promotion to holdout, because without it the
+    /// lifetime trial count is unknown and unknown is not zero.
+    trials: Option<TrialBook>,
 }
 
 impl LifecycleLedger {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Charge holdout evaluations to `book` from now on.
+    pub fn with_trial_book(mut self, book: TrialBook) -> Self {
+        self.attach_trial_book(book);
+        self
+    }
+
+    /// Charge holdout evaluations to `book` from now on, for a ledger that
+    /// already exists.
+    pub fn attach_trial_book(&mut self, book: TrialBook) {
+        self.trials = Some(book);
+    }
+
+    pub fn trial_book(&self) -> Option<&TrialBook> {
+        self.trials.as_ref()
+    }
+
+    pub fn trial_book_mut(&mut self) -> Option<&mut TrialBook> {
+        self.trials.as_mut()
     }
 
     /// Count moves into `metrics` from now on.
@@ -423,6 +452,47 @@ pub fn attempt_promotion(
             promotion.to().as_str()
         ))
     })?;
-    let outcome = gate.evaluate(evidence, now);
+    let evidence = charge_holdout_trials(ledger, strategy, evidence, promotion.to(), now)?;
+    let outcome = gate.evaluate(&evidence, now);
     ledger.record_promotion(strategy, promotion, outcome, rationale)
+}
+
+/// Charge this evaluation to the strategy's family before the holdout gate
+/// reads the count, and hand the gate evidence carrying the account.
+///
+/// Charged before the gate runs and whether or not it passes, because a
+/// candidate that failed was still a trial — leaving failures uncounted is
+/// the sweep counting only its winners. Only the holdout rung is charged: it
+/// is the rung that deflates a Sharpe, and the count is meaningless anywhere
+/// else. Whatever account the submitted evidence carried is replaced, so the
+/// number the gate reads is the book's and not the researcher's.
+///
+/// Refuses when the ledger has no book, naming what to attach. The book's own
+/// refusal covers a strategy no family has enrolled.
+fn charge_holdout_trials<'e>(
+    ledger: &mut LifecycleLedger,
+    strategy: &StrategyId,
+    evidence: &'e StrategyEvidence,
+    to: GateStage,
+    now: Timestamp,
+) -> Result<Cow<'e, StrategyEvidence>> {
+    if to != GateStage::Holdout {
+        return Ok(Cow::Borrowed(evidence));
+    }
+    // Without holdout evidence there is nothing to charge and the gate fails
+    // on its first check; charging nothing here keeps that refusal the one
+    // the operator sees.
+    let Some(holdout) = evidence.holdout.as_ref() else {
+        return Ok(Cow::Borrowed(evidence));
+    };
+    let book = ledger.trial_book_mut().ok_or_else(|| {
+        Error::denied(format!(
+            "the lifetime trial count for {strategy} is unknown: this ledger has no trial book. \
+             Attach one with `LifecycleLedger::with_trial_book` — opened on a durable store with \
+             `TrialBook::open` — open the family with `TrialBook::open_family` and enrol \
+             {strategy} with `TrialBook::enrol`; an unknown count is not zero"
+        ))
+    })?;
+    let account = book.charge(strategy, holdout.trials, now)?;
+    Ok(Cow::Owned(evidence.clone().with_trial_account(account)))
 }

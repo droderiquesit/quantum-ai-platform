@@ -23,6 +23,10 @@ qip-simulation-engine.workspace = true
 # lib, so the inward dependency direction holds.
 qip-observability.workspace = true
 
+[dev-dependencies]
+# The trial book's tests stand in a store, and the store port speaks
+# `serde_json::Value`; the crate itself never names it.
+serde_json.workspace = true
 
 [lints]
 workspace = true

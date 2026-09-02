@@ -17,7 +17,8 @@ use qip_contracts::governance::Approval;
 use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::VenueId;
 use qip_contracts::{CapitalEnvelope, Utilisation};
-use qip_core::error::Result;
+use qip_core::error::{Error, Result};
+use qip_core::kv::KeyValueStore;
 use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::{Decimal, Duration, ModelId, ObjectId, Timestamp, dec};
 use qip_lifecycle::demotion::{DemotionMonitor, DemotionTrigger, LiveObservation, PilotBaseline};
@@ -27,10 +28,11 @@ use qip_lifecycle::evidence::{
 };
 use qip_lifecycle::gates::{Gate, HoldoutGate, PaperGate, PilotGate, ScaledGate, ShadowGate};
 use qip_lifecycle::ledger::{AuthorisedPromotion, LifecycleLedger, attempt_promotion};
+use qip_lifecycle::trials::{JOURNAL_PREFIX, StrategyFamily, TrialBook};
 use qip_observability::metrics::{Metrics, labels, names};
-use qip_simulation_engine::validation::PurgedSplit;
+use qip_simulation_engine::validation::{PurgedSplit, deflated_sharpe};
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 fn start() -> Timestamp {
     Timestamp::from_secs(1_700_000_000)
@@ -38,6 +40,75 @@ fn start() -> Timestamp {
 
 fn strategy() -> StrategyId {
     StrategyId::new("momentum-v3")
+}
+
+fn family() -> Result<StrategyFamily> {
+    StrategyFamily::new("momentum")
+}
+
+/// A trial book that knows the test strategy's family, with nothing charged.
+fn opened_book() -> Result<TrialBook> {
+    let mut book = TrialBook::in_memory();
+    book.open_family(&family()?, start())?;
+    book.enrol(&strategy(), &family()?, start())?;
+    Ok(book)
+}
+
+/// A ledger whose holdout promotions can be charged. `LifecycleLedger::new()`
+/// alone refuses them, by design: without a book the lifetime trial count is
+/// unknown.
+fn ledger() -> Result<LifecycleLedger> {
+    Ok(LifecycleLedger::new().with_trial_book(opened_book()?))
+}
+
+/// Evidence charged to a fresh family, for handing to a gate directly. The
+/// ordinary path charges through `attempt_promotion`; a gate evaluated on its
+/// own needs the account the ledger would have attached.
+fn charged(evidence: StrategyEvidence) -> Result<StrategyEvidence> {
+    let trials = evidence.holdout.as_ref().map_or(1, |h| h.trials);
+    let account = opened_book()?.charge(&strategy(), trials, start())?;
+    Ok(evidence.with_trial_account(account))
+}
+
+/// The smallest store the port admits, so the book's durability can be
+/// exercised without depending on an adapter crate.
+#[derive(Debug, Default)]
+struct MemoryStore(Mutex<BTreeMap<String, serde_json::Value>>);
+
+impl MemoryStore {
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, BTreeMap<String, serde_json::Value>>> {
+        self.0
+            .lock()
+            .map_err(|_| Error::io("the test store's lock is poisoned"))
+    }
+}
+
+impl KeyValueStore for MemoryStore {
+    fn get(&self, key: &str) -> Result<Option<serde_json::Value>> {
+        Ok(self.lock()?.get(key).cloned())
+    }
+
+    fn put(&self, key: &str, value: serde_json::Value) -> Result<()> {
+        self.lock()?.insert(key.to_string(), value);
+        Ok(())
+    }
+
+    fn delete(&self, key: &str) -> Result<bool> {
+        Ok(self.lock()?.remove(key).is_some())
+    }
+
+    fn keys_with_prefix(&self, prefix: &str) -> Result<Vec<String>> {
+        Ok(self
+            .lock()?
+            .keys()
+            .filter(|k| k.starts_with(prefix))
+            .cloned()
+            .collect())
+    }
+
+    fn len(&self) -> Result<usize> {
+        Ok(self.lock()?.len())
+    }
 }
 
 /// Returns with a genuine positive drift, drawn from a seeded stream so every
@@ -231,7 +302,7 @@ fn walk_to_scaled(ledger: &mut LifecycleLedger) -> Result<Timestamp> {
 
 #[test]
 fn every_path_from_candidate_to_scaled_passes_through_shadow() -> Result<()> {
-    let mut ledger = LifecycleLedger::new();
+    let mut ledger = ledger()?;
     walk_to_scaled(&mut ledger)?;
 
     let path = ledger.path(&strategy());
@@ -336,7 +407,7 @@ fn a_strategy_failing_one_check_is_not_promoted_however_strong_the_rest() -> Res
     });
     let evidence = StrategyEvidence::new().with_holdout(holdout);
 
-    let outcome = HoldoutGate::default().evaluate(&evidence, start());
+    let outcome = HoldoutGate::default().evaluate(&charged(evidence.clone())?, start());
     assert!(!outcome.passed, "one leaking feature fails the gate");
 
     let passing = outcome.findings.iter().filter(|(_, ok, _)| *ok).count();
@@ -347,7 +418,7 @@ fn a_strategy_failing_one_check_is_not_promoted_however_strong_the_rest() -> Res
     );
     assert_eq!(outcome.failures().len(), 1, "exactly one check failed");
 
-    let mut ledger = LifecycleLedger::new();
+    let mut ledger = ledger()?;
     let error = attempt_promotion(
         &mut ledger,
         &strategy(),
@@ -379,7 +450,7 @@ fn a_cross_validation_run_that_did_not_purge_is_caught_by_reconstruction() -> Re
     // which is what plain k-fold on a time series looks like.
     holdout.cross_validation.purged = 0;
     holdout.cross_validation.embargoed = 0;
-    let evidence = StrategyEvidence::new().with_holdout(holdout);
+    let evidence = charged(StrategyEvidence::new().with_holdout(holdout))?;
 
     let outcome = HoldoutGate::default().evaluate(&evidence, start());
     assert!(!outcome.passed);
@@ -403,7 +474,7 @@ fn a_sub_threshold_deflated_sharpe_is_read_as_a_failure_rather_than_a_score() ->
     let mut holdout = strong_holdout()?;
     holdout.holdout_returns = good_returns(2, 400, 0.0004);
     holdout.trials = 5_000;
-    let evidence = StrategyEvidence::new().with_holdout(holdout);
+    let evidence = charged(StrategyEvidence::new().with_holdout(holdout))?;
 
     let outcome = HoldoutGate::default().evaluate(&evidence, start());
     let credible = outcome
@@ -549,7 +620,7 @@ fn scaling_beyond_modelled_capacity_is_refused() -> Result<()> {
 
 #[test]
 fn a_demotion_succeeds_with_no_approver_at_all() -> Result<()> {
-    let mut ledger = LifecycleLedger::new();
+    let mut ledger = ledger()?;
     walk_to_scaled(&mut ledger)?;
     assert_eq!(ledger.stage_of(&strategy()), GateStage::Scaled);
 
@@ -574,7 +645,7 @@ fn demotion_can_reach_any_lower_rung_from_anywhere() -> Result<()> {
         GateStage::Pilot,
         GateStage::Retired,
     ] {
-        let mut ledger = LifecycleLedger::new();
+        let mut ledger = ledger()?;
         walk_to_scaled(&mut ledger)?;
         ledger.demote(
             &strategy(),
@@ -591,7 +662,7 @@ fn demotion_can_reach_any_lower_rung_from_anywhere() -> Result<()> {
 #[test]
 fn retirement_is_terminal_and_a_retired_strategy_must_be_re_proposed_as_a_new_candidate()
 -> Result<()> {
-    let mut ledger = LifecycleLedger::new();
+    let mut ledger = ledger()?;
     walk_to_scaled(&mut ledger)?;
     ledger.retire(
         &strategy(),
@@ -609,7 +680,7 @@ fn retirement_is_terminal_and_a_retired_strategy_must_be_re_proposed_as_a_new_ca
 
     // …and the ledger refuses even a correctly-formed promotion for a retired
     // strategy, so a stale `from` cannot resurrect it.
-    let evidence = full_evidence(start(), start())?;
+    let evidence = charged(full_evidence(start(), start())?)?;
     let promotion = AuthorisedPromotion::advance(GateStage::Candidate, None, start())?;
     let outcome = HoldoutGate::default().evaluate(&evidence, start());
     let error = ledger
@@ -627,7 +698,7 @@ fn retirement_is_terminal_and_a_retired_strategy_must_be_re_proposed_as_a_new_ca
 
 #[test]
 fn the_ledger_reconstructs_the_full_path_with_its_evidence_and_approvers() -> Result<()> {
-    let mut ledger = LifecycleLedger::new();
+    let mut ledger = ledger()?;
     walk_to_scaled(&mut ledger)?;
     ledger.demote(
         &strategy(),
@@ -685,7 +756,7 @@ fn the_ledger_reconstructs_the_full_path_with_its_evidence_and_approvers() -> Re
 
 /// A strategy at pilot, its baseline, and a ledger that agrees.
 fn pilot_fixture() -> Result<(LifecycleLedger, PilotBaseline)> {
-    let mut ledger = LifecycleLedger::new();
+    let mut ledger = ledger()?;
     let pilot_start = start();
     let evidence = full_evidence(pilot_start, pilot_start)?;
     for target in [
@@ -812,7 +883,7 @@ fn performance_decay_against_the_pilot_baseline_demotes_without_a_human() -> Res
 #[test]
 fn every_promotion_is_counted_by_the_rungs_it_moves_between() -> Result<()> {
     let metrics = Arc::new(Metrics::new("lifecycle-test"));
-    let mut ledger = LifecycleLedger::new().with_metrics(Arc::clone(&metrics));
+    let mut ledger = ledger()?.with_metrics(Arc::clone(&metrics));
     assert_eq!(
         metrics.snapshot().counter_total(names::STRATEGY_PROMOTIONS),
         0,
@@ -1083,7 +1154,10 @@ fn every_automatic_trigger_lands_a_strategy_somewhere_that_holds_no_capital() {
 
 #[test]
 fn every_gate_reports_each_check_it_ran_so_a_reviewer_can_see_the_whole_test() -> Result<()> {
-    let evidence = full_evidence(start(), start().saturating_add(Duration::from_days(120)))?;
+    let evidence = charged(full_evidence(
+        start(),
+        start().saturating_add(Duration::from_days(120)),
+    )?)?;
     for gate in [
         Box::new(HoldoutGate::default()) as Box<dyn Gate>,
         Box::new(PaperGate::default()),
@@ -1105,5 +1179,289 @@ fn every_gate_reports_each_check_it_ran_so_a_reviewer_can_see_the_whole_test() -
             outcome.failures()
         );
     }
+    Ok(())
+}
+
+/// A parameter sweep split across runs must not correct each run against its
+/// own count. Blueprint rule 25: deflated Sharpe is corrected against the
+/// family's cumulative lifetime trials, never per batch. Before the trial
+/// book, `HoldoutGate` passed `holdout.trials` — this run's number — straight
+/// into `deflated_sharpe`, so two runs of twelve corrected for twelve each.
+#[test]
+fn a_second_run_is_corrected_against_the_first_runs_trials_as_well() -> Result<()> {
+    let mut ledger = ledger()?;
+    let second = StrategyId::new("momentum-v3-run2");
+    ledger
+        .trial_book_mut()
+        .ok_or_else(|| Error::not_found("trial book"))?
+        .enrol(&second, &family()?, start())?;
+
+    // A series strong enough to pass at twelve trials and at twenty-four,
+    // but weak enough that the two corrections give different numbers.
+    let mut holdout = strong_holdout()?;
+    holdout.holdout_returns = good_returns(3, 400, 0.0010);
+    assert_eq!(holdout.trials, 12);
+    let evidence = StrategyEvidence::new().with_holdout(holdout.clone());
+
+    // Premise: a single-run correction and a two-run correction differ, in
+    // the direction of more trials meaning less confidence.
+    let single = deflated_sharpe(&holdout.holdout_returns, 12, holdout.periods_per_year)?;
+    let double = deflated_sharpe(&holdout.holdout_returns, 24, holdout.periods_per_year)?;
+    assert!(
+        single.is_credible() && double.is_credible(),
+        "{single:?} {double:?}"
+    );
+    assert!(double.expected_maximum > single.expected_maximum);
+    assert!(
+        double.probability < single.probability,
+        "twenty-four trials must deflate harder than twelve: {} vs {}",
+        double.probability,
+        single.probability
+    );
+    assert_ne!(double.summarise(), single.summarise());
+
+    // Run one: the first candidate from the sweep.
+    attempt_promotion(
+        &mut ledger,
+        &strategy(),
+        &evidence,
+        None,
+        "run one",
+        start(),
+    )?;
+    let book = ledger
+        .trial_book()
+        .ok_or_else(|| Error::not_found("trial book"))?;
+    assert_eq!(book.lifetime_trials(&family()?), Some(12));
+
+    // Run two: another candidate from the same sweep, an hour later. Its own
+    // evidence still says twelve, and the book says twenty-four.
+    let later = start().saturating_add(Duration::from_hours(1));
+    attempt_promotion(&mut ledger, &second, &evidence, None, "run two", later)?;
+    let book = ledger
+        .trial_book()
+        .ok_or_else(|| Error::not_found("trial book"))?;
+    assert_eq!(book.lifetime_trials(&family()?), Some(24));
+
+    // What the gate recorded for run two is the two-run statistic, exactly.
+    let admission = ledger
+        .admission_evidence(&second, GateStage::Holdout)
+        .ok_or_else(|| Error::not_found("run two's admission"))?;
+    let detail = |name: &str| -> Result<String> {
+        admission
+            .findings
+            .iter()
+            .find(|(n, _, _)| n == name)
+            .map(|(_, _, d)| d.clone())
+            .ok_or_else(|| Error::not_found(name))
+    };
+    assert_eq!(detail("deflated_sharpe_credible")?, double.summarise());
+    assert_ne!(detail("deflated_sharpe_credible")?, single.summarise());
+    assert!(
+        detail("lifetime_trial_count_known")?.contains("12 trial(s) this run on top of 12"),
+        "{}",
+        detail("lifetime_trial_count_known")?
+    );
+    Ok(())
+}
+
+/// An unknown lifetime count is not zero and is not this run's number. Every
+/// path that could stand in for the book with a smaller count is refused,
+/// and each refusal names the act that would make the count known.
+#[test]
+fn a_promotion_whose_lifetime_trial_count_is_unknown_is_refused_naming_what_to_do() -> Result<()> {
+    let evidence = StrategyEvidence::new().with_holdout(strong_holdout()?);
+
+    // Premise: with a known count the same evidence passes the same gate.
+    attempt_promotion(
+        &mut ledger()?,
+        &strategy(),
+        &evidence,
+        None,
+        "known",
+        start(),
+    )?;
+
+    // A ledger with no book at all.
+    let mut bare = LifecycleLedger::new();
+    let error = attempt_promotion(&mut bare, &strategy(), &evidence, None, "no book", start())
+        .expect_err("no book means no lifetime count");
+    assert_eq!(error.code(), "denied", "{error:?}");
+    assert!(error.message().contains("unknown"), "{error:?}");
+    assert!(error.message().contains("with_trial_book"), "{error:?}");
+    assert!(error.message().contains("not zero"), "{error:?}");
+    assert_eq!(bare.stage_of(&strategy()), GateStage::Candidate);
+    assert!(bare.history(&strategy()).is_empty());
+
+    // A book that has never heard of the strategy.
+    let mut unenrolled = LifecycleLedger::new().with_trial_book(TrialBook::in_memory());
+    let error = attempt_promotion(
+        &mut unenrolled,
+        &strategy(),
+        &evidence,
+        None,
+        "not enrolled",
+        start(),
+    )
+    .expect_err("a strategy in no family charges nowhere");
+    assert_eq!(error.code(), "denied", "{error:?}");
+    assert!(error.message().contains("TrialBook::enrol"), "{error:?}");
+    assert_eq!(unenrolled.stage_of(&strategy()), GateStage::Candidate);
+
+    // The gate itself, handed evidence with no account, fails the named check
+    // rather than reading the run's own twelve.
+    let outcome = HoldoutGate::default().evaluate(&evidence, start());
+    assert!(!outcome.passed);
+    let known = outcome
+        .findings
+        .iter()
+        .find(|(name, _, _)| name == "lifetime_trial_count_known")
+        .ok_or_else(|| Error::not_found("lifetime_trial_count_known"))?;
+    assert!(!known.1);
+    assert!(known.2.contains("unknown"), "{}", known.2);
+    assert!(
+        !outcome
+            .findings
+            .iter()
+            .any(|(_, _, d)| d.contains("12 trial(s) alone")),
+        "the run's own count must not have been deflated against: {:?}",
+        outcome.findings
+    );
+    let error = HoldoutGate::default()
+        .deflated(&evidence)
+        .expect_err("no account, no statistic");
+    assert_eq!(error.code(), "denied");
+    Ok(())
+}
+
+/// A count that lives only in a process is a per-run count with extra steps.
+/// The book writes each record to its store before admitting it, replays the
+/// journal on reopening, and refuses a journal whose count was lowered or
+/// whose chain has a gap.
+#[test]
+fn a_trial_book_replays_its_journal_from_the_store_and_refuses_a_tampered_one() -> Result<()> {
+    let store = Arc::new(MemoryStore::default());
+    let as_port = |s: &Arc<MemoryStore>| -> Arc<dyn KeyValueStore> { Arc::clone(s) as _ };
+    {
+        let mut book = TrialBook::open(as_port(&store))?;
+        assert!(book.is_durable());
+        assert_eq!(book.lifetime_trials(&family()?), None, "unknown, not zero");
+        book.open_family(&family()?, start())?;
+        assert_eq!(book.lifetime_trials(&family()?), Some(0), "opened is known");
+        book.enrol(&strategy(), &family()?, start())?;
+        let first = book.charge(&strategy(), 12, start())?;
+        let second = book.charge(
+            &strategy(),
+            30,
+            start().saturating_add(Duration::from_hours(1)),
+        )?;
+        assert_eq!(first.lifetime(), 12);
+        assert_eq!(second.prior(), 12);
+        assert_eq!(second.lifetime(), 42);
+    }
+    assert_eq!(store.len()?, 4, "opened, enrolled, two charges");
+
+    // The process restarts: the count is what it was.
+    let reopened = TrialBook::open(as_port(&store))?;
+    assert_eq!(reopened.lifetime_trials(&family()?), Some(42));
+    assert_eq!(reopened.family_of(&strategy()), Some(&family()?));
+    assert_eq!(reopened.journal(&family()?).len(), 4);
+    reopened.verify()?;
+    assert!(
+        reopened
+            .journal(&family()?)
+            .windows(2)
+            .all(|w| w[1].previous == w[0].hash),
+        "each record chains to the one before"
+    );
+
+    // Somebody lowers the last charge's total in the store.
+    let key = |sequence: u64| -> Result<String> {
+        Ok(format!("{JOURNAL_PREFIX}{}/{sequence:020}", family()?))
+    };
+    let last = key(3)?;
+    let mut record = store
+        .get(&last)?
+        .ok_or_else(|| Error::not_found(last.clone()))?;
+    record["lifetime_after"] = serde_json::Value::from(12);
+    store.put(&last, record)?;
+    let error = TrialBook::open(as_port(&store)).expect_err("a lowered count must not replay");
+    assert!(error.message().contains("does not hash"), "{error:?}");
+
+    // Somebody removes a record from the middle instead: the survivor no
+    // longer chains to what precedes it, and the book still refuses.
+    let middle = key(2)?;
+    let first_charge = store
+        .get(&middle)?
+        .ok_or_else(|| Error::not_found(middle.clone()))?;
+    assert!(store.delete(&middle)?);
+    let error = TrialBook::open(as_port(&store)).expect_err("a gap in the chain must not replay");
+    assert!(
+        error.message().contains("sequence") || error.message().contains("chain"),
+        "{error:?}"
+    );
+    // Put it back unaltered and the tampered total is once again the only fault.
+    store.put(&middle, first_charge)?;
+    let error = TrialBook::open(as_port(&store)).expect_err("still tampered");
+    assert!(error.message().contains("does not hash"), "{error:?}");
+    Ok(())
+}
+
+/// The two ways to launder a count without lying about any single run:
+/// reopen the family at zero, or move the strategy to a family with a smaller
+/// count. Both are refused, and so is a run that claims to have tried nothing.
+#[test]
+fn a_family_opens_once_and_a_member_cannot_take_its_trials_elsewhere() -> Result<()> {
+    let mut book = opened_book()?;
+    book.charge(&strategy(), 100, start())?;
+    assert_eq!(book.lifetime_trials(&family()?), Some(100));
+
+    let error = book
+        .open_family(&family()?, start())
+        .expect_err("a family opens once");
+    assert_eq!(error.code(), "denied");
+    assert!(
+        error.message().contains("already open with 100"),
+        "{error:?}"
+    );
+    assert_eq!(
+        book.lifetime_trials(&family()?),
+        Some(100),
+        "nothing was reset"
+    );
+
+    let fresh = StrategyFamily::new("momentum-fresh")?;
+    book.open_family(&fresh, start())?;
+    let error = book
+        .enrol(&strategy(), &fresh, start())
+        .expect_err("a strategy cannot change family");
+    assert_eq!(error.code(), "denied");
+    assert!(error.message().contains("cannot move"), "{error:?}");
+    assert_eq!(book.family_of(&strategy()), Some(&family()?));
+
+    // Re-enrolling in the same family is a no-op, not a second membership.
+    book.enrol(&strategy(), &family()?, start())?;
+    assert_eq!(
+        book.journal(&family()?).len(),
+        3,
+        "opened, enrolled, charged"
+    );
+
+    let error = book
+        .charge(&strategy(), 0, start())
+        .expect_err("a candidate was tried, so the count is at least one");
+    assert_eq!(error.code(), "invalid");
+
+    // A stranger to the book has no count, and asking does not create one.
+    let stranger = StrategyId::new("nobody-enrolled-this");
+    assert_eq!(book.family_of(&stranger), None);
+    let error = book
+        .charge(&stranger, 1, start())
+        .expect_err("no family, no count");
+    assert!(error.message().contains("unknown"), "{error:?}");
+    assert!(
+        StrategyFamily::new("bad/name").is_err() && StrategyFamily::new("  ").is_err(),
+        "a family name is a key segment"
+    );
     Ok(())
 }
