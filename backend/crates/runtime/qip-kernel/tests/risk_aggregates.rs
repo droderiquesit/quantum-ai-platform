@@ -14,6 +14,10 @@
 // assertion is the deliverable, and `?` is what keeps the setup readable.
 #![allow(clippy::panic_in_result_fn)]
 
+use qip_contracts::intent::Contributor;
+use qip_contracts::message::BookSide;
+use qip_contracts::signal::StrategyId;
+use qip_contracts::venue::VenueId;
 use qip_core::error::Result;
 use qip_core::time::Timestamp;
 use qip_core::{Context, Decimal, ObjectId, dec};
@@ -22,8 +26,10 @@ use qip_financial::asset_class::{InstrumentType, Sector};
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::Provenance;
 use qip_financial::universe::Universe;
+use qip_kernel::central::CellReport;
 use qip_kernel::config::PlatformConfig;
 use qip_kernel::platform::Platform;
+use qip_mesh::delta::DeltaOrder;
 use qip_observability::Telemetry;
 use qip_risk::aggregate::{AggregateFigures, RiskAggregates};
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
@@ -450,5 +456,76 @@ fn an_order_that_keeps_its_sector_bucket_under_the_cap_is_admitted() -> Result<(
         "the admitted order's fill was not charged to the bucket ({opened} before, {after} after)"
     );
     assert!(after < ceiling);
+    Ok(())
+}
+
+const CELL: &str = "cell-lon-1";
+
+/// One buy a cell shipped, netted from a single contributor on the buy side.
+fn cell_buy(symbol: &str, shares: Decimal) -> DeltaOrder {
+    let strategy = StrategyId::new("foundry-alpha");
+    DeltaOrder {
+        order_id: format!("cell-ord-{symbol}"),
+        strategy: strategy.clone(),
+        object_id: object(symbol),
+        venue: VenueId::new("XNYS"),
+        // A buy lifts the offer; the plane reads `Ask` as a buy.
+        side: BookSide::Ask,
+        quantity: shares,
+        price: dec!("100"),
+        simulated: true,
+        contributors: vec![Contributor {
+            strategy,
+            signed_size: Decimal::ONE,
+            inputs: vec![("alpha-feature".to_string(), 1)],
+        }],
+    }
+}
+
+#[test]
+fn a_cells_fills_are_charged_into_the_aggregate_and_the_next_desk_order_is_refused_on_leverage()
+-> Result<()> {
+    // A million of equity under the default leverage cap of 1.5x. The desk
+    // opens a small position first, so the premise "a desk order is admitted
+    // against this book" is shown rather than assumed; then one cell reports
+    // sixteen thousand shares at a hundred — 1.6 million, over the cap on its
+    // own — and the same small desk order is refused.
+    let mut platform = platform(dec!("1000000"))?;
+    buy(&mut platform, "AAA", dec!("100"), "desk-before")?;
+    let desk_gross = platform.risk_figures().gross_exposure();
+    let desk_cash = platform.risk_figures().cash();
+    let bucket_before = sector_bucket(&platform);
+    // Premise: the desk fill is in the counters, and nothing is yet charged
+    // to the cell — so what moves below is the cell's report and only that.
+    assert!(
+        desk_gross.is_positive(),
+        "the desk's opening order did not fill"
+    );
+    assert!(platform.risk_figures().strategy_gross(CELL).is_zero());
+
+    let shares = dec!("16000");
+    let cell_notional = shares * dec!("100");
+    let report = CellReport::new(CELL, start()).with_orders(vec![cell_buy("BBB", shares)]);
+    let ingestion = platform.ingest_cell_report(report, start())?;
+    // Premise: the plane settled the fill, so there was something to charge.
+    assert_eq!(ingestion.settlement.orders_settled, 1);
+    assert_eq!(ingestion.settlement.absorbed.len(), 1);
+
+    // The seam: the cell's fill is in the same counters the desk's is, under
+    // the cell's id, in the instrument's sector bucket, and the desk's cash
+    // is untouched by capital the desk never held.
+    let figures = platform.risk_figures();
+    assert_eq!(figures.strategy_gross(CELL), cell_notional);
+    assert_eq!(figures.gross_exposure(), desk_gross + cell_notional);
+    assert_eq!(sector_bucket(&platform), bucket_before + cell_notional);
+    assert_eq!(figures.cash(), desk_cash);
+
+    let refused = buy(&mut platform, "AAA", dec!("100"), "desk-after")
+        .expect_err("the desk order was admitted, so the cell's fill never reached the check");
+    assert!(
+        refused.message().contains("leverage:"),
+        "refused for another reason: {}",
+        refused.message()
+    );
     Ok(())
 }

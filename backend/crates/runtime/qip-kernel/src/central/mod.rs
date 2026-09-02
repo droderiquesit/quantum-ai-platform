@@ -59,6 +59,6 @@ pub use dna::{DnaPayload, StrategyDna};
 pub use factory::{StrategyCandidate, StrategyFactory, StrategyReview};
 pub use learning::{CellOutcome, LearningReport, LearningVerdict, StrategyLearning};
 pub use plane::{
-    BreakDirection, CellIngestion, CellReport, CentralConfig, CentralPlane, IssuedCapital,
-    ReconciliationBreak, capital_subject,
+    AbsorbedFill, BreakDirection, CellIngestion, CellReport, CentralConfig, CentralPlane,
+    IssuedCapital, ReconciliationBreak, capital_subject,
 };

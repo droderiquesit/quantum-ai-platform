@@ -34,7 +34,9 @@
 //!   [`qip_contracts::edge::DeductionKind::ComputeCost`] has always had a slot
 //!   for and nothing was filling.
 
-use crate::central::{CellIngestion, CellOutcome, CellReport, CentralPlane, LearningReport};
+use crate::central::{
+    AbsorbedFill, CellIngestion, CellOutcome, CellReport, CentralPlane, LearningReport,
+};
 use crate::config::PlatformConfig;
 use crate::cycle::{CycleReport, Stage, StageOutcome};
 use qip_agents::Budget;
@@ -1607,6 +1609,18 @@ impl Platform {
     /// returned ingestion: `ingest` can still refuse after the trip, and a
     /// count that waited for `Ok` was un-counted by that refusal — a cell
     /// halted, an incident raised, and no series moved.
+    ///
+    /// The report's venue fills are then charged into the platform's risk
+    /// aggregate — the one the desk's pre-trade check reads — under the
+    /// cell's id as the aggregate's strategy axis. Until this existed only
+    /// desk fills reached the aggregate, so cells could carry the book past
+    /// a gross, leverage or bucket limit while the centre's counters read
+    /// clean and the next desk order was admitted against them. The fills
+    /// charged are exactly the ones the plane settled, read off the
+    /// settlement rather than off the report a second time; a report the
+    /// plane refuses whole is charged nothing, and one refused after it
+    /// settled (a recall the register would not take) returns the error
+    /// without charging, which the caller sees as the failure it is.
     pub fn ingest_cell_report(
         &mut self,
         report: CellReport,
@@ -1618,7 +1632,50 @@ impl Platform {
         let Self {
             central, autonomy, ..
         } = self;
-        central.ingest(report, autonomy.kill_switch_mut(), now)
+        let ingestion = central.ingest(report, autonomy.kill_switch_mut(), now)?;
+        self.charge_cell_fills(&ingestion.cell, &ingestion.settlement.absorbed);
+        Ok(ingestion)
+    }
+
+    /// Charge one cell's absorbed fills into the running risk counters.
+    ///
+    /// The cell's id is the strategy the aggregate charges, not the
+    /// contributing foundry strategies: the aggregate must stay O(1) in
+    /// strategy count, and a counter per cell is bounded by the deployment's
+    /// cell list — a value fixed at deployment — while a counter per
+    /// contributor would grow with the foundry. The strategy-level budgets
+    /// the contributors are held to are the cell's own concern, checked
+    /// before netting where the intents are. Each fill is charged to the
+    /// instrument's exposure buckets exactly as a desk fill is, so a sector
+    /// a cell has filled counts toward the same bucket the desk's orders
+    /// are projected onto.
+    ///
+    /// Cash is re-marked from the desk's ledger afterwards. A cell's fills
+    /// spend capital granted in its envelope, which the desk's ledger does
+    /// not hold, so the aggregate's gross, net, positions and buckets carry
+    /// the cells while its equity and cash remain the desk's — a ratio limit
+    /// therefore compares cell-and-desk gross against desk-only equity,
+    /// which errs toward refusing and is stated here rather than hidden.
+    ///
+    /// A refusal is recorded as a capture problem rather than returned, for
+    /// the reason [`Self::aggregate_fill`] gives: the fill has happened and
+    /// the strategy books hold it, and an error here would tell the caller
+    /// the report failed when it did not.
+    fn charge_cell_fills(&mut self, cell: &str, fills: &[AbsorbedFill]) {
+        for fill in fills {
+            let axes = self.exposure_axes_for(&fill.object_id);
+            if let Err(error) =
+                self.aggregates
+                    .apply_fill(cell, &fill.object_id, &axes, fill.signed_notional)
+            {
+                self.capture_problems.push(format!(
+                    "a fill in {} reported by {cell} was settled and not aggregated: {}",
+                    fill.object_id,
+                    error.message()
+                ));
+            }
+        }
+        self.aggregates.mark_cash(self.capital.cash);
     }
 
     /// Feed realised cell outcomes back into the ladder and the allocator.
