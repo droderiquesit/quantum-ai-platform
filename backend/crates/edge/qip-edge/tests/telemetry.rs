@@ -611,6 +611,75 @@ fn a_polled_halt_moves_its_own_gauge_refuses_the_pass_under_its_own_gate_and_no_
     Ok(())
 }
 
+#[test]
+fn clearing_the_kill_switch_while_the_polled_flag_is_present_leaves_the_cell_halted() -> Result<()>
+{
+    // The third independence direction. The other two are proven above: a
+    // policy payload does not release the polled halt, and the polled flag
+    // does not release the others. What neither covers is the operator
+    // credential that clears the kill switch — the one release that carries
+    // authority — reaching past its own wire. If it did, an operator
+    // clearing a drop-copy trip while the halt flag was still on the disk
+    // would resume a cell somebody else had stopped by hand, and the flag
+    // they were relying on would have been released by a credential that
+    // never named it.
+    use qip_edge::cell::PolledHalt;
+    use qip_risk_engine::autonomy::OperatorIdentity;
+    let (mut cell, metrics) = trading_cell(&[("alpha", SignalKind::Enter, "10")])?;
+    assert!(!cell.is_halted(), "the premise is a running cell");
+
+    cell.autonomy_mut()
+        .kill_switch_mut()
+        .trip_global(t(10), "drop-copy", "a break");
+    cell.apply_polled_halt(PolledHalt::Engaged("drill".to_string()), t(11));
+    assert!(
+        cell.autonomy().kill_switch().is_globally_tripped() && cell.polled_halt().is_some(),
+        "the premise is a cell held by both wires"
+    );
+
+    let operator = OperatorIdentity::verified("alice@example.com", "hardware-key", t(12));
+    cell.autonomy_mut()
+        .kill_switch_mut()
+        .clear_global(&operator, t(12))?;
+    assert!(
+        !cell.autonomy().kill_switch().is_globally_tripped(),
+        "the premise failed: the credential did not clear the kill switch"
+    );
+
+    assert!(
+        cell.is_halted(),
+        "clearing the kill switch released the polled halt, so the two wires share a release"
+    );
+    assert!(
+        cell.polled_halt().is_some(),
+        "the polled halt's own state was cleared by a credential that never named it"
+    );
+    let report = work(&mut cell, t(13))?;
+    assert!(
+        report.halted && report.orders.is_empty(),
+        "a cell whose flag is still present ran a pass"
+    );
+    assert_eq!(
+        metrics
+            .snapshot()
+            .counter(names::EDGE_REFUSALS, &by("gate", "polled_halt")),
+        1,
+        "the pass was not refused under the wire that still holds the cell"
+    );
+    let snapshot = metrics.snapshot();
+    assert_eq!(
+        snapshot.gauge(names::EDGE_HALTED, &by("source", "kill_switch")),
+        Some(0.0),
+        "the cleared kill switch still charts as engaged"
+    );
+    assert_eq!(
+        snapshot.gauge(names::EDGE_HALTED, &by("source", "polled")),
+        Some(1.0),
+        "the polled halt fell on a clearance that cannot release it"
+    );
+    Ok(())
+}
+
 // --- reconciliation ----------------------------------------------------------
 
 #[test]
