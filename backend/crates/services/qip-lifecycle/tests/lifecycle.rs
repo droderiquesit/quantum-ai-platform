@@ -21,7 +21,7 @@ use qip_core::error::{Error, Result};
 use qip_core::kv::KeyValueStore;
 use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::{Decimal, Duration, ModelId, ObjectId, Timestamp, dec};
-use qip_lifecycle::band::BandMethod;
+use qip_lifecycle::band::{BandMethod, HoldoutBand};
 use qip_lifecycle::demotion::{DemotionMonitor, DemotionTrigger, LiveObservation, PilotBaseline};
 use qip_lifecycle::evidence::{
     CrossValidationRun, FeatureTiming, HoldoutEvidence, KillCondition, LeakageAudit, PaperEvidence,
@@ -34,7 +34,9 @@ use qip_lifecycle::ledger::{AuthorisedPromotion, LifecycleLedger, attempt_promot
 use qip_lifecycle::scoring::{annualised_sharpe, periodic_sharpe};
 use qip_lifecycle::trials::{JOURNAL_PREFIX, StrategyFamily, TrialBook};
 use qip_observability::metrics::{Metrics, labels, names};
-use qip_simulation_engine::validation::{PurgedSplit, assess_overfitting, deflated_sharpe};
+use qip_simulation_engine::validation::{
+    DeflatedSharpe, PurgedSplit, assess_overfitting, deflated_sharpe, sharpe_standard_error,
+};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -1638,6 +1640,65 @@ fn a_holdout_admission_carries_the_band_its_validation_produced() -> Result<()> 
 /// Live performance consistent with the holdout, at the live sample's own
 /// precision, is not a demotion — a band that demoted for noise would empty
 /// the book of every real strategy inside a month.
+/// The band once restated the engine's standard error, and nothing checked
+/// the two against each other. It now takes the engine's figure, so the
+/// first half is the same source read two ways; the second half is a
+/// fixture worked by hand, so the shared formula is pinned from this side
+/// as well and a change to it fails here and in the engine's own suite.
+#[test]
+fn the_holdout_band_is_as_wide_as_the_engines_own_standard_error() -> Result<()> {
+    let holdout = strong_holdout()?;
+    let deflated = deflated_sharpe(&holdout.holdout_returns, 12, holdout.periods_per_year)?;
+    // Premise: the series is non-normal, so skew and kurtosis are live terms.
+    assert!(deflated.skewness.abs() > 1e-3 && deflated.excess_kurtosis.abs() > 1e-3);
+    let band = HoldoutBand::from_deflated(&deflated, holdout.periods_per_year, start())?;
+    let scale = holdout.periods_per_year.sqrt();
+    let engine = sharpe_standard_error(
+        deflated.observed / scale,
+        deflated.skewness,
+        deflated.excess_kurtosis,
+        deflated.observations,
+    )? * scale;
+    assert!(engine > 0.0);
+    // Bit-for-bit: the same function on the same inputs, not a near miss.
+    assert_eq!(
+        band.standard_error.to_bits(),
+        engine.to_bits(),
+        "the band widens by the engine's own error: {} vs {engine}",
+        band.standard_error
+    );
+
+    // By hand, for SR = 0.5 a period at one period a year, γ₃ = −1, γ₄ = 4,
+    // n = 101:  (1 + 0.5 + 0.25) / 100 = 0.0175, √0.0175 = 0.132 287 565 55…
+    // and the 95% half-width is 1.959 964 × that = 0.259 278 864 1…
+    let fixture = DeflatedSharpe {
+        observed: 0.5,
+        expected_maximum: 0.0,
+        probability: 0.5,
+        trials: 1,
+        observations: 101,
+        skewness: -1.0,
+        excess_kurtosis: 4.0,
+    };
+    let band = HoldoutBand::from_deflated(&fixture, 1.0, start())?;
+    assert!(
+        (band.standard_error - 0.132_287_565_553_229_5).abs() < 1e-12,
+        "{}",
+        band.standard_error
+    );
+    assert!(
+        (band.lower - (0.5 - 0.259_278_864_1)).abs() < 1e-9,
+        "{}",
+        band.lower
+    );
+    assert!(
+        (band.upper - (0.5 + 0.259_278_864_1)).abs() < 1e-9,
+        "{}",
+        band.upper
+    );
+    Ok(())
+}
+
 #[test]
 fn live_performance_inside_the_holdout_band_is_not_demoted() -> Result<()> {
     let (mut ledger, baseline) = pilot_fixture()?;

@@ -10,8 +10,11 @@
 //!
 //! The band is an interval on the annualised Sharpe ratio, centred on the
 //! holdout's figure and `z` standard errors wide, with the standard error
-//! taken under the same non-normal correction `deflated_sharpe` applies —
-//! negative skew and fat tails widen it. A live figure is judged with its
+//! taken from the engine's own
+//! [`qip_simulation_engine::validation::sharpe_standard_error`] — the figure
+//! `deflated_sharpe` divides by, so the band and the deflation that admitted
+//! it cannot disagree about the error — and negative skew and fat tails
+//! widen it. A live figure is judged with its
 //! own estimation error added in quadrature, because thirty days of live
 //! returns carry a far wider error than a year of holdout, and a band that
 //! ignored it would demote nearly every real strategy for noise. The band
@@ -27,7 +30,7 @@ use crate::scoring;
 use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
 use qip_numerics::stats;
-use qip_simulation_engine::validation::DeflatedSharpe;
+use qip_simulation_engine::validation::{DeflatedSharpe, sharpe_standard_error};
 use serde::{Deserialize, Serialize};
 
 /// How a band's bounds were derived from the holdout.
@@ -60,37 +63,6 @@ impl BandMethod {
             ),
         }
     }
-}
-
-/// Standard error of a per-period Sharpe ratio under non-normal returns.
-///
-/// `sqrt((1 − γ₃·SR + ¼·γ₄·SR²) / (n − 1))`, floored where skew and
-/// kurtosis would drive it below zero. This is the formula inside
-/// [`qip_simulation_engine::validation::deflated_sharpe`], stated here
-/// because the engine does not expose it; the tidy home is an accessor on
-/// [`DeflatedSharpe`], and until it exists this is the one restatement.
-pub fn sharpe_standard_error(
-    periodic_sharpe: f64,
-    skewness: f64,
-    excess_kurtosis: f64,
-    observations: usize,
-) -> Result<f64> {
-    if observations < 2 {
-        return Err(Error::invalid(format!(
-            "{observations} observation(s) give a Sharpe ratio no standard error"
-        )));
-    }
-    let n = observations as f64;
-    let variance = (1.0 - skewness * periodic_sharpe
-        + 0.25 * excess_kurtosis * periodic_sharpe * periodic_sharpe)
-        / (n - 1.0);
-    let standard_error = variance.max(1e-18).sqrt();
-    if !standard_error.is_finite() {
-        return Err(Error::numeric(
-            "the Sharpe standard error is not finite; the inputs are not numbers",
-        ));
-    }
-    Ok(standard_error)
 }
 
 /// The interval a strategy's live Sharpe must stay inside.

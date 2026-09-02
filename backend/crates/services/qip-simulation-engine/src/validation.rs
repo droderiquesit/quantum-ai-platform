@@ -6,6 +6,9 @@
 //!
 //! * [`deflated_sharpe`] discounts a Sharpe ratio for how many strategies were
 //!   tried, and for the non-normality of the returns that produced it.
+//! * [`sharpe_standard_error`] is the error that deflation divides by,
+//!   exposed so a caller that needs the same figure takes it from here
+//!   rather than restating it.
 //! * [`PurgedSplit`] builds cross-validation folds that remove the observations
 //!   overlapping a test set and embargo the ones immediately after it. Without
 //!   purging, a strategy holding positions for ten days leaks ten days of the
@@ -126,11 +129,8 @@ pub fn deflated_sharpe(
         ((1.0 - EULER_MASCHERONI) * a + EULER_MASCHERONI * b) / n.sqrt()
     };
 
-    // Standard error of the periodic Sharpe under non-normal returns.
-    let variance = (1.0 - skewness * periodic_sharpe
-        + 0.25 * excess_kurtosis * periodic_sharpe * periodic_sharpe)
-        / (n - 1.0);
-    let standard_error = variance.max(1e-18).sqrt();
+    let standard_error =
+        sharpe_standard_error(periodic_sharpe, skewness, excess_kurtosis, returns.len())?;
 
     let z = (periodic_sharpe - expected_maximum_periodic) / standard_error;
     let probability = distributions::normal_cdf(z);
@@ -144,6 +144,42 @@ pub fn deflated_sharpe(
         skewness,
         excess_kurtosis,
     })
+}
+
+/// Standard error of a per-period Sharpe ratio under non-normal returns.
+///
+/// `sqrt((1 − γ₃·SR + ¼·γ₄·SR²) / (n − 1))` (Bailey and López de Prado),
+/// floored where skew and kurtosis would drive the variance below zero.
+/// This is the one place the formula is written: [`deflated_sharpe`] divides
+/// by it, and the holdout band in `qip-lifecycle` widens by it. It was once
+/// restated there, and nothing would have noticed the two drifting apart —
+/// a band judged on a different error than the deflation that admitted it
+/// would demote, or keep, a strategy for a reason nobody could reproduce.
+///
+/// Refuses fewer than two observations, which give the ratio no error, and a
+/// result that is not a number.
+pub fn sharpe_standard_error(
+    periodic_sharpe: f64,
+    skewness: f64,
+    excess_kurtosis: f64,
+    observations: usize,
+) -> Result<f64> {
+    if observations < 2 {
+        return Err(Error::invalid(format!(
+            "{observations} observation(s) give a Sharpe ratio no standard error"
+        )));
+    }
+    let n = observations as f64;
+    let variance = (1.0 - skewness * periodic_sharpe
+        + 0.25 * excess_kurtosis * periodic_sharpe * periodic_sharpe)
+        / (n - 1.0);
+    let standard_error = variance.max(1e-18).sqrt();
+    if !standard_error.is_finite() {
+        return Err(Error::numeric(
+            "the Sharpe standard error is not finite; the inputs are not numbers",
+        ));
+    }
+    Ok(standard_error)
 }
 
 /// One training and test split.
