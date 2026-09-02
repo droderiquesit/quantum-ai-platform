@@ -50,7 +50,10 @@ use qip_capital_fabric::{
     PrePositioningRequest, RealisedDemand, Region as CapitalRegion, SettlementCalendar,
     SettlementConvention, TransferCostModel,
 };
-use qip_chain::{ChainState, ChainUpdate, Confirmations, ConfirmedView};
+use qip_chain::{
+    BridgeFailure, BridgeLedger, BridgeTransfer, ChainState, ChainUpdate, Confirmations,
+    ConfirmedView,
+};
 use qip_contracts::edge::Deduction;
 use qip_contracts::governance::Usage;
 use qip_contracts::message::BookSide;
@@ -187,6 +190,14 @@ pub struct Platform {
     chain: Option<ChainState>,
     /// The confirmation depth this deployment requires before reading state.
     confirmations: Confirmations,
+    /// Cross-chain transfers in flight, and what became of them.
+    ///
+    /// Held here so a reorganisation the chain state reports reaches the
+    /// transfers whose deposits sat in the withdrawn blocks. Until this
+    /// existed `BridgeLedger::on_reorg` had no caller: a transfer waiting for
+    /// finality on a block that stopped existing kept waiting, and the value
+    /// it was supposed to move stayed on the books as in flight.
+    bridges: BridgeLedger,
     /// Falsifiable claims the REASON stage has made, and their verdicts.
     predictions: Vec<RecordedPrediction>,
     /// Theses scored against what was published, oldest first, bounded by
@@ -579,6 +590,10 @@ pub struct ChainAbsorption {
     pub deepest_reorg: u32,
     /// Swaps that stopped having happened.
     pub invalidated_trades: u64,
+    /// Bridge transfers failed because a reorganisation withdrew the block
+    /// their deposit sat in. Defaulted so an older record replays.
+    #[serde(default)]
+    pub bridged_transfers_failed: usize,
     /// Trades derived from state buried at least [`PlatformConfig::chain_confirmations`]
     /// deep. `None` when the chain is not yet that deep, which is a real
     /// answer and not a zero.
@@ -599,8 +614,16 @@ impl ChainAbsorption {
             (None, Some(reason)) => reason.clone(),
             (None, None) => "no confirmed view".to_string(),
         };
+        let bridged = if self.bridged_transfers_failed > 0 {
+            format!(
+                "; {} bridge transfer(s) failed on a withdrawn deposit",
+                self.bridged_transfers_failed
+            )
+        } else {
+            String::new()
+        };
         format!(
-            "{} block(s) applied, {} on a side branch, {} reorg(s) (deepest {}); {confirmed}",
+            "{} block(s) applied, {} on a side branch, {} reorg(s) (deepest {}); {confirmed}{bridged}",
             self.extended, self.side_branch, self.reorgs, self.deepest_reorg
         )
     }
@@ -1144,6 +1167,7 @@ impl Platform {
             catalog: Catalog::new(),
             chain: None,
             confirmations: Confirmations::exactly(config.chain_confirmations),
+            bridges: BridgeLedger::new(),
             predictions: Vec::new(),
             evaluations: Vec::new(),
             last_calibration: None,
@@ -1375,6 +1399,10 @@ impl Platform {
         metrics.describe(
             series::CENTRAL_ATTRIBUTION_FAILURES,
             "settlements whose decomposition did not close; must stay at zero",
+        );
+        metrics.describe(
+            series::BRIDGE_TRANSFERS_FAILED,
+            "bridge transfers failed on the platform's own evidence, by failure",
         );
     }
 
@@ -4643,6 +4671,7 @@ impl Platform {
             reorgs: 0,
             deepest_reorg: 0,
             invalidated_trades: 0,
+            bridged_transfers_failed: 0,
             confirmed_trades: None,
             unconfirmable: None,
             problems: Vec::new(),
@@ -4665,6 +4694,19 @@ impl Platform {
                     absorption.reorgs += 1;
                     absorption.deepest_reorg = absorption.deepest_reorg.max(reorg.depth());
                     absorption.invalidated_trades += reorg.invalidated_trades;
+                    // The seam where a bridged deposit stops existing. Failed
+                    // here, on the reorganisation the chain state reported,
+                    // rather than noticed later by diffing snapshots: a
+                    // transfer still waiting on a withdrawn block is value
+                    // the destination could credit against nothing.
+                    let failed = self.bridges.on_reorg(&reorg, self.context.now());
+                    for _ in &failed {
+                        self.telemetry.metrics.count(
+                            series::BRIDGE_TRANSFERS_FAILED,
+                            labels([("failure", BridgeFailure::SourceReorg.as_str())]),
+                        );
+                    }
+                    absorption.bridged_transfers_failed += failed.len();
                 }
                 Err(error) => absorption.problems.push(error.message().to_string()),
             }
@@ -4675,6 +4717,17 @@ impl Platform {
             Err(error) => absorption.unconfirmable = Some(error.message().to_string()),
         }
         absorption
+    }
+
+    /// Open a cross-chain transfer, so a reorganisation of its source block
+    /// can fail it. Refuses a duplicate id, as the ledger does.
+    pub fn open_bridge_transfer(&mut self, transfer: BridgeTransfer) -> Result<()> {
+        self.bridges.open(transfer)
+    }
+
+    /// Every bridge transfer the platform has opened, in flight or settled.
+    pub fn bridges(&self) -> &BridgeLedger {
+        &self.bridges
     }
 
     // --- predictions --------------------------------------------------------

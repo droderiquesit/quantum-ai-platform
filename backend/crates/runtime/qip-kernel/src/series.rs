@@ -54,3 +54,10 @@ pub const CENTRAL_SETTLEMENTS_REFUSED: &str = "qip_central_settlements_refused_t
 /// Attributions whose decomposition did not close. Must stay at zero; a
 /// non-zero here is unexplained P&L on the strategy books.
 pub const CENTRAL_ATTRIBUTION_FAILURES: &str = "qip_central_attribution_failures_total";
+
+/// Bridge transfers the platform failed on its own evidence, by `failure` —
+/// the bridge ledger's five-arm enum. Today only `source_reorg` is recorded,
+/// at the instant a reorganisation withdraws the block a transfer's deposit
+/// sat in; a transfer that kept waiting for finality on a block that no
+/// longer exists is value the destination could still credit against nothing.
+pub const BRIDGE_TRANSFERS_FAILED: &str = "qip_bridge_transfers_failed_total";
