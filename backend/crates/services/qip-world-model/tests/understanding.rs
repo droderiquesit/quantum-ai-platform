@@ -1095,3 +1095,153 @@ fn bulk_absorption_applies_the_same_knowability_clamp_as_the_single_path() {
         "a pre-close knowability claim survived the bulk path"
     );
 }
+
+// --- provenance survives absorption ------------------------------------------
+
+#[test]
+fn a_fundamental_the_vendor_filled_in_is_recorded_as_imputed_not_observed() {
+    // A vendor that fills a gap says so in `DataQuality::is_imputed`, and the
+    // feature store carries a flag of the same meaning. The world model used
+    // to write `false` there whatever the vendor said, so a filled value read
+    // back as a reported one and no point-in-time query afterwards could tell
+    // the two apart — the loss `qip-market-ingestion`'s alternative-data path
+    // guards against at its own seam, undone one stage later.
+    let (mut model, _) = seeded_model();
+    let period_end = days_ago(45);
+    let mut provenance = Provenance::synthetic("fundamentals", period_end);
+    provenance.ingestion_time = days_ago(5);
+    let fundamental = |metric: &str, quality: DataQuality| FundamentalUpdate {
+        entity_id: "ent-northwind".into(),
+        metric: metric.into(),
+        value: Decimal::from_int(4600),
+        unit: "USD_millions".into(),
+        period_end,
+        period: FiscalPeriod::Quarter,
+        consensus: Some(Decimal::from_int(4200)),
+        prior_value: None,
+        is_restatement: false,
+        provenance: provenance.clone(),
+        quality,
+    };
+    let reported = fundamental("revenue", DataQuality::clean());
+    let filled = fundamental("ebitda", DataQuality::clean().imputed());
+    // Premise: the two updates differ in what the vendor said and in nothing
+    // else, so any difference in the features is the flag travelling.
+    assert!(!reported.quality.is_imputed);
+    assert!(filled.quality.is_imputed);
+
+    model.absorb_fundamental(&reported);
+    model.absorb_fundamental(&filled);
+
+    let read = |metric: &str| {
+        model
+            .features()
+            .value_as_of(metric, "ent-northwind", period_end, now())
+            .unwrap_or_else(|| panic!("{metric} was recorded"))
+            .imputed
+    };
+    assert!(!read("revenue"), "a reported value is an observation");
+    assert!(!read("revenue_surprise"));
+    assert!(
+        read("ebitda"),
+        "a value the vendor filled in must still say so once it is a feature"
+    );
+    assert!(
+        read("ebitda_surprise"),
+        "a surprise computed from a filled value is no better than its input"
+    );
+}
+
+#[test]
+fn a_macro_print_the_vendor_filled_in_is_recorded_as_imputed_not_observed() {
+    // The macro path has the same two timestamps and the same flag as the
+    // fundamental path, and had the same defect: `quality.is_imputed` was
+    // read for the confidence score and then dropped on the floor.
+    let (mut model, _) = seeded_model();
+    let observation = |series: &str, quality: DataQuality| MacroObservation {
+        series_id: series.into(),
+        region: "US".into(),
+        value: 3.4,
+        unit: "percent".into(),
+        reference_date: days_ago(10),
+        consensus: Some(3.0),
+        previous: Some(2.9),
+        is_revision: false,
+        provenance: Provenance::synthetic("macro", days_ago(2)),
+        quality,
+    };
+    let printed = observation("US.CPI.YOY", DataQuality::clean());
+    let filled = observation("US.PMI", DataQuality::clean().imputed());
+    assert!(!printed.quality.is_imputed);
+    assert!(filled.quality.is_imputed);
+
+    model.absorb_macro(&printed);
+    model.absorb_macro(&filled);
+
+    let read = |feature: &str, series: &str| {
+        model
+            .features()
+            .value_as_of(feature, series, days_ago(10), now())
+            .unwrap_or_else(|| panic!("{feature} for {series} was recorded"))
+            .imputed
+    };
+    assert!(!read("macro_level", "US.CPI.YOY"));
+    assert!(!read("macro_surprise", "US.CPI.YOY"));
+    assert!(read("macro_level", "US.PMI"));
+    assert!(read("macro_surprise", "US.PMI"));
+}
+
+#[test]
+fn sentiment_from_a_news_item_the_vendor_filled_in_is_recorded_as_imputed() {
+    // Sentiment is derived from the item, so it inherits whatever the item's
+    // quality says about the item. An imputed record producing an observed
+    // feature would launder the flag through the derivation.
+    let (mut model, context) = seeded_model();
+    let item = |id: &str, published_at: Timestamp, quality: DataQuality| NewsItem {
+        item_id: id.into(),
+        headline: "Northwind Semiconductor Corporation cut full year revenue guidance".into(),
+        body: "The company reduced its outlook.".into(),
+        source: NewsSource::CompanyAnnouncement,
+        published_at,
+        entities: vec![EntityMention {
+            text: "Northwind Semiconductor Corporation".into(),
+            entity_id: None,
+            confidence: 0.94,
+            is_primary: true,
+            sentiment: None,
+        }],
+        sentiment: Sentiment {
+            polarity: -0.7,
+            confidence: 0.9,
+            novelty: 0.8,
+        },
+        topics: vec!["guidance".into()],
+        provenance: Provenance::synthetic("synthetic-news", published_at),
+        quality,
+    };
+    let observed_item = item("news-observed", days_ago(1), DataQuality::clean());
+    let filled_item = item("news-filled", now(), DataQuality::clean().imputed());
+    assert!(!observed_item.quality.is_imputed);
+    assert!(filled_item.quality.is_imputed);
+
+    // Premise: both resolve onto the same entity, so both write the same
+    // feature series and the reads below compare like with like.
+    assert_eq!(
+        model.absorb_news(&observed_item, &context),
+        vec!["ent-northwind".to_string()]
+    );
+    assert_eq!(
+        model.absorb_news(&filled_item, &context),
+        vec!["ent-northwind".to_string()]
+    );
+
+    let read = |valid_at: Timestamp| {
+        model
+            .features()
+            .value_as_of("sentiment", "ent-northwind", valid_at, now())
+            .expect("sentiment was recorded")
+            .imputed
+    };
+    assert!(!read(days_ago(1)));
+    assert!(read(now()));
+}
