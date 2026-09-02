@@ -29,7 +29,7 @@ use crate::feed::{FeedTick, SimulatedFeed};
 use crate::gateway::SimulatedGateway;
 use qip_core::error::Result;
 use qip_core::time::Timestamp;
-use qip_edge::cell::{Cell, WorkReport};
+use qip_edge::cell::{Cell, ConfirmedFill, WorkReport};
 
 /// Running totals for the health surface.
 ///
@@ -46,6 +46,9 @@ pub struct PassStats {
     pub refusals: u64,
     pub signals: u64,
     pub orders: u64,
+    /// Fills the venue reported and the cell confirmed, on any turn of the
+    /// loop — a halted node still learns what filled.
+    pub fills: u64,
     /// Reconciliation breaks found after a pass; each one has halted the cell.
     pub breaks: u64,
 }
@@ -53,8 +56,12 @@ pub struct PassStats {
 /// What one turn of the loop did.
 #[derive(Debug)]
 pub enum PassOutcome {
-    /// The cell was halted; the feed was published and nothing else ran.
-    Halted { feed: FeedTick },
+    /// The cell was halted; the feed was published, fills already out were
+    /// confirmed, and nothing else ran.
+    Halted {
+        feed: FeedTick,
+        fills: Vec<ConfirmedFill>,
+    },
     /// The pass ran.
     Ran {
         feed: FeedTick,
@@ -80,16 +87,29 @@ pub fn run_pass(
     now: Timestamp,
 ) -> Result<PassOutcome> {
     let tick = feed.publish(gateway, cell, now)?;
+    // The venue's answers about orders already out, before the halt check:
+    // a halted node sends nothing and still has to book what filled, or the
+    // reconciler below compares the venue's account with a record that
+    // stopped listening.
+    let already_out = cell.confirm_execution_reports(gateway, now);
+    stats.fills = stats.fills.saturating_add(already_out.len() as u64);
     if cell.is_halted() {
         stats.halted = stats.halted.saturating_add(1);
-        return Ok(PassOutcome::Halted { feed: tick });
+        return Ok(PassOutcome::Halted {
+            feed: tick,
+            fills: already_out,
+        });
     }
 
-    let report = cell.work(now, gateway)?;
+    let mut report = cell.work(now, gateway)?;
     stats.passes = stats.passes.saturating_add(1);
     stats.refusals = stats.refusals.saturating_add(report.refusals.len() as u64);
     stats.signals = stats.signals.saturating_add(report.signals.len() as u64);
     stats.orders = stats.orders.saturating_add(report.orders.len() as u64);
+    stats.fills = stats.fills.saturating_add(report.fills.len() as u64);
+    // One list, oldest first, so the report names every fill this turn
+    // confirmed whichever side of the halt check it was confirmed on.
+    report.fills.splice(0..0, already_out);
 
     // The venue's own account of what filled, on the channel the cell does
     // not write. Drained every pass so a disagreement is found on the pass

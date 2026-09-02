@@ -17,11 +17,18 @@
 //!
 //! # What carries over from the pieces, and what does not
 //!
-//! * **Fills come back on the independent channel.** Both gateways drain the
-//!   venue's fills as [`DropCopyFill`]s for `Cell::observe_drop_copy`, so
-//!   reconciliation compares what the cell believes against what the venue
-//!   says — the same two-channel shape a real deployment has, exercised in the
-//!   deployable rather than only in a test harness.
+//! * **Fills reach the cell on two channels, and the channels are different
+//!   code.** The order-entry channel is [`Placer::execution_reports`]: the
+//!   fills the venue returned on acceptance, and — for the simulated venue —
+//!   what `query_order` says has since traded on an order that rested. That
+//!   is what turns a sent order into a fill inside the cell. The drop copy is
+//!   [`SimulatedGateway::drain_drop_copies`], read from the venue's *clearing
+//!   ledger* rather than from its acknowledgements, so the reconciler compares
+//!   two records the venue built separately. Until this split existed the
+//!   gateway handed the acknowledgement's fills to the drop-copy channel and
+//!   the cell wrote a fill on acceptance, so the two channels agreed with each
+//!   other by construction and disagreed with the book: an order that rested
+//!   was a break on the pass it was sent.
 //! * **`is_simulated` is read from the adapter, never from configuration.**
 //!   The flag that decides whether a fill is paper comes from the thing that
 //!   produced the fill. What that flag *means* differs between the two, and the
@@ -51,10 +58,11 @@ use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use qip_core::ids::{ObjectId, OrderId};
 use qip_core::time::Timestamp;
-use qip_edge::cell::Placer;
+use qip_edge::cell::{ExecutionReport, Placer};
 use qip_edge::dropcopy::DropCopyFill;
 use qip_execution_engine::broker::Broker;
 use qip_execution_engine::order::{Order, OrderType, Side};
+use std::collections::BTreeMap;
 
 /// The finest step the synthetic listing trades in.
 ///
@@ -65,12 +73,39 @@ use qip_execution_engine::order::{Order, OrderType, Side};
 /// stated.
 const SYNTHETIC_STEP: Decimal = Decimal::from_raw(1);
 
+/// How many resting orders the gateway will follow at the venue.
+///
+/// The cell holds at most `qip_edge::MAX_OPEN_ORDERS` open, so this bound is
+/// never the binding one in the assembled node; it is here so the gateway's
+/// own memory is bounded by its own rule rather than by a caller's. At the
+/// bound `place` refuses before the venue sees the order, because an order
+/// the gateway could not follow is an order whose later fill it could not
+/// report.
+pub const MAX_WORKING_ORDERS: usize = 1_024;
+
+/// An order the venue accepted and has not finished with, as the gateway
+/// follows it.
+#[derive(Debug)]
+struct WorkingOrder {
+    /// What has been reported to the cell so far, so a later poll reports
+    /// only the difference.
+    reported: Decimal,
+    /// The limit the order rests at. A resting order trades at its own
+    /// price — it is the maker — so the difference a poll finds traded is
+    /// reported at this price.
+    limit: Decimal,
+}
+
 /// The cell's paper gateway: one simulated venue, deterministically seeded.
 #[derive(Debug)]
 pub struct SimulatedGateway {
     exchange: SimulatedExchange,
-    /// Fills awaiting collection by the drop-copy channel.
-    pending: Vec<DropCopyFill>,
+    venue: VenueId,
+    /// Reports awaiting collection by the order-entry channel.
+    reports: Vec<ExecutionReport>,
+    /// Orders that rested, followed until the venue closes them. Bounded by
+    /// [`MAX_WORKING_ORDERS`].
+    working: BTreeMap<String, WorkingOrder>,
 }
 
 impl SimulatedGateway {
@@ -119,7 +154,9 @@ impl SimulatedGateway {
         exchange.bring_up(&credential, at)?;
         Ok(Self {
             exchange,
-            pending: Vec::new(),
+            venue,
+            reports: Vec::new(),
+            working: BTreeMap::new(),
         })
     }
 
@@ -164,10 +201,30 @@ impl SimulatedGateway {
             .seed_liquidity(object_id, side, price, quantity, at)
     }
 
-    /// Everything the venue has filled since the last drain, as the
-    /// independent channel reports it.
+    /// Everything the venue has booked to the clearing account since the
+    /// last drain, as the independent channel reports it.
+    ///
+    /// Read from the exchange's own ledger path — the fills it booked to the
+    /// account, including a resting order's fills as maker — and never from
+    /// the acknowledgements `place` received. The two are different code in
+    /// the venue, which is what makes comparing them a check.
     pub fn drain_drop_copies(&mut self) -> Vec<DropCopyFill> {
-        std::mem::take(&mut self.pending)
+        self.exchange
+            .drain_bookable_fills()
+            .into_iter()
+            .map(|bookable| DropCopyFill {
+                order_id: bookable.fill.order_id.as_str().to_string(),
+                venue: self.venue.clone(),
+                quantity: bookable.fill.quantity,
+                price: bookable.fill.price,
+                at: bookable.fill.at,
+            })
+            .collect()
+    }
+
+    /// Resting orders this gateway is still following at the venue.
+    pub fn working_count(&self) -> usize {
+        self.working.len()
     }
 
     /// Orders the venue holds open, from the venue's own book.
@@ -235,6 +292,15 @@ impl Placer for SimulatedGateway {
             BookSide::Ask => Side::Buy,
             BookSide::Bid => Side::Sell,
         };
+        // Before the venue sees it: a refusal after acceptance would be an
+        // order at the venue that nothing follows.
+        if self.working.len() >= MAX_WORKING_ORDERS {
+            return Err(Error::denied(format!(
+                "the gateway follows {MAX_WORKING_ORDERS} resting orders at {} and cannot take \
+                 another until the venue closes one; order {order_id} was not sent",
+                self.venue.as_str()
+            )));
+        }
         self.ensure_listed(object_id, price, at)?;
         let order = Order::new(
             OrderId::from_string(order_id),
@@ -249,9 +315,11 @@ impl Placer for SimulatedGateway {
             at,
         );
         let fills = self.exchange.submit(&order, at)?;
+        let mut reported = Decimal::ZERO;
         for fill in fills {
             debug_assert!(fill.simulated, "a simulated venue produced a live fill");
-            self.pending.push(DropCopyFill {
+            reported += fill.quantity;
+            self.reports.push(ExecutionReport {
                 order_id: fill.order_id.as_str().to_string(),
                 venue: venue.clone(),
                 quantity: fill.quantity,
@@ -259,7 +327,55 @@ impl Placer for SimulatedGateway {
                 at: fill.at,
             });
         }
+        if reported < quantity {
+            self.working.insert(
+                order_id.to_string(),
+                WorkingOrder {
+                    reported,
+                    limit: price,
+                },
+            );
+        }
         Ok(())
+    }
+
+    fn execution_reports(&mut self) -> Vec<ExecutionReport> {
+        let mut reports = std::mem::take(&mut self.reports);
+        // What the venue says about each order that rested, from its own
+        // order record: a difference in `filled` since the last poll is a
+        // fill as maker, at the resting price. An order the venue reports
+        // closed leaves the working set. This is a read of memory in this
+        // process, not a call that leaves it.
+        let mut closed = Vec::new();
+        for (order_id, working) in &mut self.working {
+            let Ok(order) = self
+                .exchange
+                .query_order(&OrderId::from_string(order_id.as_str()))
+            else {
+                // The venue does not know the order it accepted. Nothing is
+                // reported and the order stays followed, so the next poll
+                // asks again; a report invented here would be a fill nobody
+                // saw.
+                continue;
+            };
+            if order.filled > working.reported {
+                reports.push(ExecutionReport {
+                    order_id: order_id.clone(),
+                    venue: self.venue.clone(),
+                    quantity: order.filled - working.reported,
+                    price: working.limit,
+                    at: order.updated_at,
+                });
+                working.reported = order.filled;
+            }
+            if order.state.is_terminal() {
+                closed.push(order_id.clone());
+            }
+        }
+        for order_id in closed {
+            self.working.remove(&order_id);
+        }
+        reports
     }
 
     fn required_configuration(&self) -> Vec<String> {
@@ -312,8 +428,8 @@ impl Placer for SimulatedGateway {
 pub struct RestGateway {
     adapter: RestOrderEntryAdapter,
     venue: VenueId,
-    /// Fills awaiting collection by the drop-copy channel.
-    pending: Vec<DropCopyFill>,
+    /// Fills the venue acknowledged, awaiting the order-entry channel.
+    reports: Vec<ExecutionReport>,
     /// Orders this gateway handed to the adapter. Counted here rather than read
     /// from the adapter's own `submits_sent` so the health surface reports the
     /// same quantity for both gateways.
@@ -329,7 +445,7 @@ impl std::fmt::Debug for RestGateway {
         f.debug_struct("RestGateway")
             .field("venue", &self.venue.as_str())
             .field("adapter", &self.adapter)
-            .field("pending_drop_copies", &self.pending.len())
+            .field("pending_reports", &self.reports.len())
             .field("submitted", &self.submitted)
             .field("rejected", &self.rejected)
             .finish()
@@ -380,7 +496,7 @@ impl RestGateway {
         Ok(Self {
             adapter,
             venue,
-            pending: Vec::new(),
+            reports: Vec::new(),
             submitted: 0,
             rejected: 0,
         })
@@ -421,9 +537,18 @@ impl RestGateway {
         self.adapter.stats()
     }
 
-    /// Everything the venue has filled since the last drain.
+    /// Nothing, always: this gateway holds no drop-copy session.
+    ///
+    /// The fills the venue acknowledges go to the order-entry channel, where
+    /// they belong. They used to be handed to this one as well, so the
+    /// reconciler compared the acknowledgement with itself and found nothing
+    /// — a check that could not fail. Now a fill confirmed through this
+    /// gateway has nothing on the venue's channel to match and reconciles as
+    /// unknown to the venue, which halts the cell on its first trade. That is
+    /// the correct behaviour for a venue nobody has a second record from,
+    /// and [`Placer::required_configuration`] says so at start-up.
     pub fn drain_drop_copies(&mut self) -> Vec<DropCopyFill> {
-        std::mem::take(&mut self.pending)
+        Vec::new()
     }
 
     /// Re-prove the session if it has gone stale, before an order is sent.
@@ -503,7 +628,7 @@ impl Placer for RestGateway {
             }
         };
         for fill in fills {
-            self.pending.push(DropCopyFill {
+            self.reports.push(ExecutionReport {
                 order_id: fill.order_id.as_str().to_string(),
                 venue: venue.clone(),
                 quantity: fill.quantity,
@@ -512,6 +637,13 @@ impl Placer for RestGateway {
             });
         }
         Ok(())
+    }
+
+    fn execution_reports(&mut self) -> Vec<ExecutionReport> {
+        // Only what the venue acknowledged. An order that rested is not
+        // polled: that would be a request leaving the process on the pass,
+        // and its fills as maker are exactly what a drop copy is for.
+        std::mem::take(&mut self.reports)
     }
 
     fn required_configuration(&self) -> Vec<String> {
@@ -526,6 +658,11 @@ impl Placer for RestGateway {
             RestOrderEntryAdapter::REQUIREMENTS
                 .iter()
                 .map(|requirement| (*requirement).to_string()),
+        );
+        requirements.push(
+            "a drop-copy session from the venue: this gateway has none, so every fill it \
+             confirms reconciles as unknown to the venue and halts the cell on its first trade"
+                .to_string(),
         );
         requirements
     }
@@ -657,6 +794,13 @@ impl Placer for NodeGateway {
             Self::Live(gateway) => {
                 gateway.place(order_id, object_id, venue, side, quantity, price, at)
             }
+        }
+    }
+
+    fn execution_reports(&mut self) -> Vec<ExecutionReport> {
+        match self {
+            Self::Simulated(gateway) => gateway.execution_reports(),
+            Self::Live(gateway) => gateway.execution_reports(),
         }
     }
 

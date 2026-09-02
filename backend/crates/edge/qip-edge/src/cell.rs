@@ -166,7 +166,14 @@ impl CellConfig {
 #[derive(Clone, Debug, Default)]
 pub struct WorkReport {
     pub signals: Vec<Signal>,
+    /// Orders the venue accepted this pass. Accepted, not filled: an entry
+    /// here is a resting or working order until a [`Self::fills`] entry names
+    /// it, and nothing downstream may read it as a position.
     pub orders: Vec<PlacedOrder>,
+    /// Fills the venue reported this pass, on orders from this pass or an
+    /// earlier one, each attributed to its contributors. These — and only
+    /// these — are what the cell has traded.
+    pub fills: Vec<ConfirmedFill>,
     /// Nets that cancelled to zero: strategies that wanted opposite things,
     /// whose disagreement never reached a venue. Recorded because a
     /// cancellation is an outcome the platform should be able to explain, not
@@ -238,6 +245,89 @@ pub struct PlacedOrder {
     pub simulated: bool,
 }
 
+/// The order-entry session's report that part of an order traded.
+///
+/// This is the channel the order went out on answering — the venue's
+/// acknowledgement, or a later execution report on an order that rested. It
+/// is the only thing that turns a sent order into a fill inside the cell.
+/// The drop copy is the *other* channel and is never read for this; it is
+/// what the fills confirmed here are checked against.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExecutionReport {
+    pub order_id: String,
+    pub venue: VenueId,
+    pub quantity: Decimal,
+    pub price: Decimal,
+    pub at: Timestamp,
+}
+
+/// A fill the venue reported, attributed to the strategies whose intent the
+/// order carried (§43.4: the chain starts at the fill).
+///
+/// `shares` is the pro-rata split of `quantity` across the order's
+/// contributors by [`NetIntent::split_fill`], so the shares sum to the fill
+/// exactly, per fill. It is computed from what the venue reported traded and
+/// never from what the cell sent: an order that filled in three parts is
+/// attributed three times, each summing to its own part.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConfirmedFill {
+    pub order_id: String,
+    pub venue: VenueId,
+    pub object_id: ObjectId,
+    /// The side of the book the order took: `Ask` bought, `Bid` sold.
+    pub side: BookSide,
+    pub quantity: Decimal,
+    pub price: Decimal,
+    /// From the gateway's answer at the time the order was sent.
+    pub simulated: bool,
+    pub at: Timestamp,
+    pub shares: Vec<(StrategyId, Decimal)>,
+}
+
+/// An order the venue accepted, as the cell holds it until it is settled.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OpenOrder {
+    pub order_id: String,
+    pub venue: VenueId,
+    pub object_id: ObjectId,
+    pub side: BookSide,
+    /// What was sent.
+    pub quantity: Decimal,
+    /// The limit it was sent with.
+    pub price: Decimal,
+    /// What the venue has reported traded, summed over every report.
+    pub filled: Decimal,
+    pub simulated: bool,
+    pub sent_at: Timestamp,
+    /// Why the cell has finished with it, once it has: `filled` when the
+    /// reports sum to the quantity sent. `None` is an order still working
+    /// at the venue — which is not a position, and not a break.
+    pub closed: Option<String>,
+}
+
+impl OpenOrder {
+    pub fn remaining(&self) -> Decimal {
+        self.quantity - self.filled
+    }
+}
+
+/// An open order and the net it was made from, for attributing its fills.
+#[derive(Clone, Debug)]
+struct Working {
+    order: OpenOrder,
+    net: NetIntent,
+}
+
+/// How many orders the cell will hold open at once.
+///
+/// An order leaves the set when it is settled — closed and agreed with the
+/// venue — so this bounds the working memory of the fill path by the number
+/// of orders the venue has not finished with. At the bound the cell refuses
+/// to send under the `open_orders` gate rather than sending an order it
+/// could not attribute a fill on; the refusal is counted and journaled like
+/// every other, so a cell that stopped for this reason says so.
+pub const MAX_OPEN_ORDERS: usize = 256;
+
 /// A deployed strategy, the arena its plan indexes into, and the capital it
 /// runs under.
 ///
@@ -303,7 +393,25 @@ pub struct Cell {
     /// one.
     desk: Option<ArbitrageDesk>,
     journal: Journal,
-    fills: Vec<CellFill>,
+    /// Orders the venue accepted and the cell has not settled, by order id.
+    /// Bounded by [`MAX_OPEN_ORDERS`]; see the constant for the refusal at
+    /// the bound.
+    working: BTreeMap<String, Working>,
+    /// Every fill the order-entry channel has confirmed on an order still in
+    /// `working`. This is the cell's side of reconciliation. Until this
+    /// existed the cell wrote a fill here the moment the venue *accepted* an
+    /// order, so an order that rested unfilled was a position the cell
+    /// believed in and the venue did not — and the reconciler, doing its
+    /// job, halted the cell on the first strategy that fired against a real
+    /// two-sided book. Retired with its order on settlement; the journal
+    /// keeps the record.
+    confirmed: Vec<ConfirmedFill>,
+    /// Signed quantity held per venue and instrument, from confirmed fills
+    /// alone. Keyed like the crossing history — by what the cell holds books
+    /// for — so it is bounded by the instrument set, and it survives
+    /// settlement because a position does not stop existing when the order
+    /// that built it is agreed.
+    positions: BTreeMap<String, Decimal>,
     /// Every disagreement between this cell's fills and the venue's own
     /// account, kept so the centre hears about it in the state delta as well as
     /// in the journal.
@@ -363,7 +471,9 @@ impl Cell {
             dropcopy: DropCopyReconciler::new(),
             desk: None,
             journal: Journal::new(),
-            fills: Vec::new(),
+            working: BTreeMap::new(),
+            confirmed: Vec::new(),
+            positions: BTreeMap::new(),
             breaks: Vec::new(),
             breaks_omitted: 0,
             order_sequence: 0,
@@ -521,8 +631,36 @@ impl Cell {
         &mut self.dropcopy
     }
 
-    pub fn fills(&self) -> &[CellFill] {
-        &self.fills
+    /// Fills the venue has confirmed and the cell has not yet settled.
+    ///
+    /// Confirmed means reported by the order-entry channel; an order the
+    /// venue accepted and has not filled is in [`Self::open_orders`] and not
+    /// here. Settled fills leave this list and stay in the journal.
+    pub fn fills(&self) -> &[ConfirmedFill] {
+        &self.confirmed
+    }
+
+    /// Orders the venue accepted and the cell has not settled, in order-id
+    /// order — including closed ones awaiting a clean reconciliation.
+    pub fn open_orders(&self) -> Vec<OpenOrder> {
+        self.working
+            .values()
+            .map(|working| working.order.clone())
+            .collect()
+    }
+
+    /// The signed quantity confirmed filled on one instrument at one venue:
+    /// bought positive, sold negative. Zero for an instrument nothing has
+    /// filled on, however much is resting there.
+    pub fn position(&self, venue: &VenueId, object_id: &ObjectId) -> Decimal {
+        self.positions
+            .get(&Self::position_key(venue, object_id))
+            .copied()
+            .unwrap_or(Decimal::ZERO)
+    }
+
+    fn position_key(venue: &VenueId, object_id: &ObjectId) -> String {
+        format!("{}/{}", venue.as_str(), object_id.as_str())
     }
 
     /// Whether the cell is stopped, by any of its three halts.
@@ -971,6 +1109,12 @@ impl Cell {
         self.pass = self.pass.saturating_add(1);
         self.record_halt();
 
+        // What the venue has done with the orders already out, before the
+        // halt check: a halted cell sends nothing, and still has to learn
+        // what filled, because a fill it does not confirm is a fill the
+        // reconciler will read as unknown to it.
+        report.fills = self.confirm_execution_reports(gateway, now);
+
         if report.halted {
             // Books keep absorbing and the journal keeps recording while
             // halted. A cell that stops seeing the market cannot tell whether
@@ -1357,6 +1501,15 @@ impl Cell {
         let price = net_intent.reference_price;
         let venue = net_intent.venue.clone();
 
+        if !self.has_open_capacity(1) {
+            // The cross is not sealed either: like the send-error path
+            // below, nothing of this net happened, and a cross booked beside
+            // a refused order would be a trade between two strategies that
+            // the chain could not pair with the order it was the residual of.
+            self.refuse_for_capacity(report, now);
+            return Ok(None);
+        }
+
         let (order_id, simulated) = self.send(
             &net_intent.object_id,
             &venue,
@@ -1385,7 +1538,29 @@ impl Cell {
                 deployed.utilisation.orders_sent += 1;
             }
         }
-        self.record_sent(&order_id, &venue, quantity, price, simulated, now);
+        self.record_sent(
+            Working {
+                order: OpenOrder {
+                    order_id: order_id.clone(),
+                    venue: venue.clone(),
+                    object_id: net_intent.object_id.clone(),
+                    side,
+                    quantity,
+                    price,
+                    filled: Decimal::ZERO,
+                    simulated,
+                    sent_at: now,
+                    closed: None,
+                },
+                net: net_intent.clone(),
+            },
+            now,
+        );
+        // The venue may have filled some of it on acceptance. Those reports
+        // are confirmed now, against the record just written, so a fill on
+        // this pass is attributed on this pass.
+        let confirmed = self.confirm_execution_reports(gateway, now);
+        report.fills.extend(confirmed);
 
         let largest = net_intent
             .contributors
@@ -1436,33 +1611,222 @@ impl Cell {
         Ok((order_id, simulated))
     }
 
-    /// Record an order the venue accepted: the fill the drop-copy will be
-    /// reconciled against, the chain entry, and the series.
-    fn record_sent(
-        &mut self,
-        order_id: &str,
-        venue: &VenueId,
-        quantity: Decimal,
-        price: Decimal,
-        simulated: bool,
-        now: Timestamp,
-    ) {
-        self.fills.push(CellFill {
-            order_id: order_id.to_string(),
-            venue: venue.clone(),
-            quantity,
-            price,
-        });
+    /// Record an order the venue accepted: the open order its fills will be
+    /// confirmed against, the chain entry, and the series.
+    ///
+    /// Nothing here is a fill. An accepted order is a resting one until the
+    /// order-entry channel says otherwise, and this function once wrote the
+    /// sent quantity straight into the list the reconciler compares with the
+    /// venue — which is how the platform came to record trades that had not
+    /// happened.
+    fn record_sent(&mut self, working: Working, now: Timestamp) {
+        let order = &working.order;
         self.journal.record(
             Decision::OrderSent {
-                order_id: order_id.to_string(),
-                venue: venue.as_str().to_string(),
-                quantity: quantity.to_string(),
-                simulated,
+                order_id: order.order_id.clone(),
+                venue: order.venue.as_str().to_string(),
+                quantity: order.quantity.to_string(),
+                simulated: order.simulated,
             },
             now,
         );
-        self.metrics.order_placed(venue);
+        self.metrics.order_placed(&order.venue);
+        self.working.insert(order.order_id.clone(), working);
+    }
+
+    /// Whether `orders` more can be held open under [`MAX_OPEN_ORDERS`].
+    fn has_open_capacity(&self, orders: usize) -> bool {
+        self.working.len().saturating_add(orders) <= MAX_OPEN_ORDERS
+    }
+
+    fn refuse_for_capacity(&mut self, report: &mut WorkReport, now: Timestamp) {
+        self.refuse(
+            report,
+            "open_orders",
+            &format!(
+                "the cell holds {} open order(s), the most it will track; nothing more is sent \
+                 until fills or expiries settle some, because an order the cell could not hold \
+                 is an order whose fill it could not attribute",
+                self.working.len()
+            ),
+            now,
+        );
+    }
+
+    // --- fills: the venue's facts ------------------------------------------
+
+    /// Absorb what the order-entry channel has reported since the last call.
+    ///
+    /// Returns the fills confirmed, attributed. Safe to call on a halted
+    /// cell and meant to be: a halted cell learns what filled so the
+    /// reconciler is comparing a record and not a memory. Every report is
+    /// judged against the open-order record and a report that names an
+    /// order the cell never sent, or fills one past its size, is a break —
+    /// the venue's channel disagreeing with the cell's own record is the
+    /// same failure the drop copy exists to catch, arriving on the other
+    /// channel.
+    pub fn confirm_execution_reports(
+        &mut self,
+        gateway: &mut dyn Placer,
+        now: Timestamp,
+    ) -> Vec<ConfirmedFill> {
+        let mut confirmed = Vec::new();
+        for execution in gateway.execution_reports() {
+            if let Some(fill) = self.confirm(execution, now) {
+                confirmed.push(fill);
+            }
+        }
+        confirmed
+    }
+
+    fn confirm(&mut self, execution: ExecutionReport, now: Timestamp) -> Option<ConfirmedFill> {
+        if !execution.quantity.is_positive() || !execution.price.is_positive() {
+            self.break_on(
+                format!(
+                    "the order-entry channel reports {} at {} on order {}; a fill needs both \
+                     positive, and one that is not is a record the cell cannot book",
+                    execution.quantity, execution.price, execution.order_id
+                ),
+                now,
+            );
+            return None;
+        }
+        let Some(working) = self.working.get_mut(&execution.order_id) else {
+            self.break_on(
+                format!(
+                    "the order-entry channel reports a fill of {} on order {} at {} and the cell \
+                     has no open order under that id",
+                    execution.quantity,
+                    execution.order_id,
+                    execution.venue.as_str()
+                ),
+                now,
+            );
+            return None;
+        };
+        if working.order.venue != execution.venue {
+            let detail = format!(
+                "the order-entry channel reports order {} filled at {} and the cell sent it to {}",
+                execution.order_id,
+                execution.venue.as_str(),
+                working.order.venue.as_str()
+            );
+            self.break_on(detail, now);
+            return None;
+        }
+
+        // The fill is booked whatever the size check below says: the venue
+        // reports it traded, and a position the cell refuses to believe in
+        // is the position nobody is watching.
+        working.order.filled += execution.quantity;
+        let overfilled = working.order.filled > working.order.quantity;
+        if working.order.filled >= working.order.quantity {
+            working.order.closed = Some("filled".to_string());
+        }
+        let shares = working.net.split_fill(execution.quantity);
+        let fill = ConfirmedFill {
+            order_id: execution.order_id.clone(),
+            venue: execution.venue.clone(),
+            object_id: working.order.object_id.clone(),
+            side: working.order.side,
+            quantity: execution.quantity,
+            price: execution.price,
+            simulated: working.order.simulated,
+            at: execution.at,
+            shares,
+        };
+        let overfill_detail = overfilled.then(|| {
+            format!(
+                "order {} was sent for {} and the order-entry channel has now reported {} filled",
+                fill.order_id, working.order.quantity, working.order.filled
+            )
+        });
+
+        let signed = if matches!(fill.side, BookSide::Ask) {
+            fill.quantity
+        } else {
+            -fill.quantity
+        };
+        *self
+            .positions
+            .entry(Self::position_key(&fill.venue, &fill.object_id))
+            .or_insert(Decimal::ZERO) += signed;
+        self.journal.record(
+            Decision::Filled {
+                order_id: fill.order_id.clone(),
+                venue: fill.venue.as_str().to_string(),
+                object: fill.object_id.as_str().to_string(),
+                quantity: fill.quantity.to_string(),
+                price: fill.price.to_string(),
+                simulated: fill.simulated,
+                shares: fill
+                    .shares
+                    .iter()
+                    .map(|(strategy, share)| (strategy.as_str().to_string(), share.to_string()))
+                    .collect(),
+            },
+            now,
+        );
+        self.metrics.fill_confirmed(&fill.venue);
+        self.confirmed.push(fill.clone());
+        if let Some(detail) = overfill_detail {
+            self.break_on(detail, now);
+        }
+        Some(fill)
+    }
+
+    /// Record a disagreement between the cell's record and a venue channel,
+    /// and halt on the first.
+    ///
+    /// Tripping needs no authority, which is why a break can act immediately:
+    /// the cost of a false stop is minutes of missed opportunity, the cost of
+    /// trading on a book that disagrees with the venue is unbounded.
+    fn break_on(&mut self, detail: String, now: Timestamp) {
+        if self.breaks.len() < MAX_RETAINED_BREAKS {
+            self.breaks.push(detail.clone());
+        } else {
+            self.breaks_omitted = self.breaks_omitted.saturating_add(1);
+        }
+        self.metrics.reconciliation_break();
+        self.journal
+            .record(Decision::ReconciliationBreak { detail }, now);
+        if !self.is_halted() {
+            self.autonomy.kill_switch_mut().trip_global(
+                now,
+                "drop-copy",
+                "the cell's fills disagree with the venue's own account",
+            );
+            self.journal.record(
+                Decision::HaltChanged {
+                    halted: true,
+                    reason: "reconciliation break".to_string(),
+                },
+                now,
+            );
+            // A break halts the cell, which stops it running passes. Without
+            // this the gauge would keep reporting the state of the last pass
+            // that ran, which is the one before the break.
+            self.record_halt();
+        }
+    }
+
+    /// Retire every closed order after a clean comparison.
+    ///
+    /// Only after a clean one: a closed order whose fills the venue has not
+    /// yet matched is exactly the order the next comparison has to see. The
+    /// journal already holds every fill retired here.
+    fn settle(&mut self) {
+        let closed: Vec<String> = self
+            .working
+            .iter()
+            .filter(|(_, working)| working.order.closed.is_some())
+            .map(|(order_id, _)| order_id.clone())
+            .collect();
+        for order_id in closed {
+            self.working.remove(&order_id);
+            self.confirmed.retain(|fill| fill.order_id != order_id);
+            self.dropcopy.retire(&order_id);
+        }
     }
 
     // --- the arbitrage desk --------------------------------------------------
@@ -1847,6 +2211,13 @@ impl Cell {
         gateway: &mut dyn Placer,
         report: &mut WorkReport,
     ) -> Result<()> {
+        // Room for every leg before the first is sent: a cycle refused for
+        // capacity between legs would be a broken cycle, and a broken cycle
+        // is a position nobody chose.
+        if !self.has_open_capacity(cycle.legs.len()) {
+            self.refuse_for_capacity(report, now);
+            return Ok(());
+        }
         let mut orders: Vec<String> = Vec::with_capacity(cycle.legs.len());
         for (position, leg) in cycle.legs.iter().enumerate() {
             // A buy takes the ask; the sign was fixed where the leg was made.
@@ -1880,7 +2251,45 @@ impl Cell {
                     return Err(error);
                 }
             };
-            self.record_sent(&order_id, &leg.venue, quantity, price, simulated, now);
+            // A leg is attributed like a net of one: `net` over a single
+            // no-net intent yields one contributor, which is the leg's
+            // strategy at the leg's full size.
+            let leg_net = net(vec![leg.clone()]).into_iter().next();
+            let Some(leg_net) = leg_net else {
+                let error = Error::invalid(format!(
+                    "leg {position} of cycle {} nets to nothing and cannot be attributed",
+                    cycle.cycle_id
+                ));
+                self.break_cycle(
+                    &cycle.cycle_id,
+                    position.saturating_add(1),
+                    cycle.legs.len(),
+                    &error,
+                    now,
+                    report,
+                );
+                return Err(error);
+            };
+            self.record_sent(
+                Working {
+                    order: OpenOrder {
+                        order_id: order_id.clone(),
+                        venue: leg.venue.clone(),
+                        object_id: leg.object_id.clone(),
+                        side,
+                        quantity,
+                        price,
+                        filled: Decimal::ZERO,
+                        simulated,
+                        sent_at: now,
+                        closed: None,
+                    },
+                    net: leg_net,
+                },
+                now,
+            );
+            let confirmed = self.confirm_execution_reports(gateway, now);
+            report.fills.extend(confirmed);
             if let Some(desk) = self.desk.as_mut() {
                 let utilisation = desk.utilisation_mut();
                 utilisation.gross_committed += quantity * price;
@@ -2548,40 +2957,28 @@ impl Cell {
 
     /// Compare the two records and halt on any disagreement.
     ///
-    /// Tripping needs no authority, which is why a break can act immediately:
-    /// the cost of a false stop is minutes of missed opportunity, the cost of
-    /// trading on a book that disagrees with the venue is unbounded.
+    /// The cell's side is its *confirmed* fills — what the order-entry
+    /// channel reported — never what it sent. An order resting unfilled is
+    /// on neither side and is not a break; a fill on either side alone is.
+    /// A clean comparison settles every closed order, which is what keeps
+    /// both records bounded by the orders still working.
     pub fn reconcile(&mut self, now: Timestamp) -> Vec<Discrepancy> {
-        let fills = self.fills.clone();
+        let fills: Vec<CellFill> = self
+            .confirmed
+            .iter()
+            .map(|fill| CellFill {
+                order_id: fill.order_id.clone(),
+                venue: fill.venue.clone(),
+                quantity: fill.quantity,
+                price: fill.price,
+            })
+            .collect();
         let breaks = self.dropcopy.reconcile(&fills);
         for discrepancy in &breaks {
-            let detail = discrepancy.describe();
-            if self.breaks.len() < MAX_RETAINED_BREAKS {
-                self.breaks.push(detail.clone());
-            } else {
-                self.breaks_omitted = self.breaks_omitted.saturating_add(1);
-            }
-            self.metrics.reconciliation_break();
-            self.journal
-                .record(Decision::ReconciliationBreak { detail }, now);
+            self.break_on(discrepancy.describe(), now);
         }
-        if !breaks.is_empty() && !self.is_halted() {
-            self.autonomy.kill_switch_mut().trip_global(
-                now,
-                "drop-copy",
-                "the cell's fills disagree with the venue's own account",
-            );
-            self.journal.record(
-                Decision::HaltChanged {
-                    halted: true,
-                    reason: "reconciliation break".to_string(),
-                },
-                now,
-            );
-            // A break halts the cell, which stops it running passes. Without
-            // this the gauge would keep reporting the state of the last pass
-            // that ran, which is the one before the break.
-            self.record_halt();
+        if breaks.is_empty() {
+            self.settle();
         }
         breaks
     }
@@ -2774,6 +3171,19 @@ pub trait Placer: std::fmt::Debug {
 
     /// What a production deployment must supply, empty when usable as is.
     fn required_configuration(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Everything the order-entry channel has reported filled since the
+    /// last call: the fills the venue returned on acceptance, and later
+    /// reports on orders that rested.
+    ///
+    /// Defaults to nothing, which is the honest answer for a gateway that
+    /// has no such channel — its orders are then accepted and never filled,
+    /// and the cell holds them open rather than assuming. A gateway must not
+    /// synthesise a report from the order it was handed; the report is the
+    /// venue's answer or it is nothing.
+    fn execution_reports(&mut self) -> Vec<ExecutionReport> {
         Vec::new()
     }
 }

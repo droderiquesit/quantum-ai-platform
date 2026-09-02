@@ -38,6 +38,13 @@ use qip_contracts::venue::VenueId;
 use qip_observability::metrics::{Histogram, Labels, Metrics, names};
 use std::sync::Arc;
 
+/// Fills the venue reported and the cell booked, by venue.
+///
+/// Named here rather than in `qip_observability::metrics::names` because
+/// that module is the observability owner's; the name follows its
+/// `qip_edge_*_total` convention so it can move there unchanged.
+pub const EDGE_FILLS_CONFIRMED: &str = "qip_edge_fills_confirmed_total";
+
 /// Buckets for the netting ratio.
 ///
 /// It is a ratio of gross intent to net order volume, so it starts at exactly
@@ -124,6 +131,10 @@ impl CellMetrics {
         m.describe(
             names::EDGE_ORDERS_PLACED,
             "orders sent to a venue, by venue",
+        );
+        m.describe(
+            EDGE_FILLS_CONFIRMED,
+            "fills the venue reported and the cell booked, by venue",
         );
         m.describe(
             names::EDGE_INTENTS_CANCELLED,
@@ -310,6 +321,16 @@ impl CellMetrics {
             names::EDGE_ORDERS_PLACED,
             self.with("venue", venue.as_str()),
         );
+    }
+
+    /// The venue reported a fill and the cell booked it. Bounded on `venue`
+    /// exactly as [`Self::order_placed`] is: a fill is confirmed only
+    /// against an order the cell sent, whose venue came from the configured
+    /// list. Read beside the orders series: orders placed and fills confirmed
+    /// diverging is a venue where the cell's orders rest.
+    pub fn fill_confirmed(&self, venue: &VenueId) {
+        self.metrics
+            .count(EDGE_FILLS_CONFIRMED, self.with("venue", venue.as_str()));
     }
 
     /// A net that cancelled to zero. An outcome, not an absence — which is

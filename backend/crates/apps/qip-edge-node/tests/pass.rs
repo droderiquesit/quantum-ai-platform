@@ -21,6 +21,7 @@ use qip_core::time::{Duration, Timestamp};
 use qip_core::{Decimal, SystemClock, dec};
 use qip_edge::cell::{CellConfig, PolledHalt};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
+use qip_edge::telemetry::EDGE_FILLS_CONFIRMED;
 use qip_edge_node::feed::{FEED_VARIABLE, FeedChoice, SimulatedFeed};
 use qip_edge_node::gateway::SimulatedGateway;
 use qip_edge_node::pass::{PassOutcome, PassStats, run_pass};
@@ -167,28 +168,41 @@ fn a_node_with_the_simulated_feed_runs_a_pass_and_the_pass_time_series_move() ->
     assert_eq!(stats.passes, 1);
     assert_eq!(stats.orders, 1);
 
-    // And the independent channel was heard. The cell prices at the mid and
-    // records a fill the moment the venue accepts, so against the venue's
-    // own two-sided book its order rests, the venue reports no fill, and the
-    // reconciler must find the disagreement on this same pass and halt the
-    // cell — which is the drop-copy channel doing the one thing it exists
-    // for, and the finding this fixture makes visible rather than hides
-    // behind a book seeded at the price the cell would choose.
+    // The cell prices at the mid, so against the venue's own two-sided book
+    // its order rests. A resting order is not a fill: the cell holds it open
+    // at its full size, books no position, confirms nothing, and the
+    // reconciler — comparing confirmed fills with the venue's account, both
+    // empty — finds no disagreement. Until the cell stopped recording a fill
+    // on acceptance this exact pass halted the node, which is what a
+    // deployed node did on the first strategy that fired.
     assert_eq!(
         gateway.resting_count(),
         3,
         "the premise is an order resting beside the two seeded levels"
     );
     assert_eq!(
-        breaks.len(),
-        1,
-        "a resting order the venue never filled was not reconciled as a break: {breaks:?}"
+        node.cell.position(&venue(), &object()),
+        Decimal::ZERO,
+        "a resting order was booked as a position"
     );
     assert!(
-        node.cell.is_halted(),
-        "a reconciliation break left the cell running"
+        node.cell.fills().is_empty(),
+        "a resting order was confirmed as a fill: {:?}",
+        node.cell.fills()
     );
-    assert_eq!(stats.breaks, 1);
+    let open = node.cell.open_orders();
+    assert_eq!(open.len(), 1, "the resting order is not held open");
+    assert_eq!(open[0].filled, Decimal::ZERO);
+    assert!(
+        breaks.is_empty(),
+        "a resting order the venue has not filled reconciled as a break: {breaks:?}"
+    );
+    assert!(!node.cell.is_halted(), "a resting order halted the cell");
+    assert_eq!(stats.breaks, 0);
+    assert_eq!(
+        stats.fills, 0,
+        "a fill was counted before the venue reported one"
+    );
 
     // And the series a scrape serves moved — the whole reason the node has
     // a pass loop. Both the pass counter and a pass-time fact underneath it.
@@ -210,13 +224,18 @@ fn a_node_with_the_simulated_feed_runs_a_pass_and_the_pass_time_series_move() ->
     );
     assert_eq!(
         after.counter(names::EDGE_RECONCILIATION_BREAKS, &base()),
-        1,
-        "the break the reconciler found was not counted"
+        0,
+        "a resting order was counted as a break"
+    );
+    assert_eq!(
+        after.counter(EDGE_FILLS_CONFIRMED, &by("venue", VENUE)),
+        0,
+        "a fill was charted before the venue reported one"
     );
     assert_eq!(
         after.gauge(names::EDGE_HALTED, &by("source", "kill_switch")),
-        Some(1.0),
-        "the halt the break tripped is not on the registry"
+        Some(0.0),
+        "the kill switch charts as tripped on a pass that broke nothing"
     );
     Ok(())
 }
@@ -281,7 +300,7 @@ fn a_halted_node_runs_no_pass() -> Result<()> {
 
     let mut stats = PassStats::default();
     let outcome = run_pass(&mut node.cell, &mut gateway, &mut feed, &mut stats, t(10))?;
-    let PassOutcome::Halted { feed: tick } = outcome else {
+    let PassOutcome::Halted { feed: tick, .. } = outcome else {
         panic!("a halted node ran a pass: {outcome:?}");
     };
     // The books still absorbed the venue's depth: a cell that stops seeing

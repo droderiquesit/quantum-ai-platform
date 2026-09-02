@@ -207,7 +207,19 @@ fn a_cell_order_reaches_the_matching_engine_and_reconciles_through_drop_copy() -
         "the venue saw a different count"
     );
 
-    // The venue's account of what happened, on the independent channel.
+    // The order-entry channel's answer was confirmed on the pass, and the
+    // venue's account of the same trade arrives on the independent channel.
+    assert_eq!(
+        report.fills.len(),
+        1,
+        "the acknowledged fill was not confirmed"
+    );
+    assert_eq!(report.fills[0].quantity, order.quantity);
+    assert_eq!(
+        cell.position(&venue("XLON"), &object("ACME")),
+        order.quantity,
+        "the position is not the confirmed fill"
+    );
     let copies = gateway.drain_drop_copies();
     assert!(
         !copies.is_empty(),
@@ -232,14 +244,17 @@ fn a_cell_order_reaches_the_matching_engine_and_reconciles_through_drop_copy() -
 }
 
 #[test]
-fn a_partial_fill_at_the_venue_is_a_break_rather_than_a_rounding_up() -> Result<()> {
+fn a_partial_fill_at_the_venue_is_booked_for_what_traded_and_the_rest_rests_without_a_break()
+-> Result<()> {
     let mut cell = armed_cell()?;
     let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
 
     // Less than the order's size rests on the contra side, so the venue can
-    // honestly fill only part of it. The cell's belief and the venue's account
-    // now differ, and that difference must surface as a break — a reconciler
-    // that assumes the rest invents a position nobody holds.
+    // honestly fill only part of it. What the cell may hold is exactly the
+    // part the venue reported: the position is the fill, the remainder is an
+    // open order at the venue, and the two channels agree — so no break. A
+    // reconciler that assumed the rest invented a position nobody held, and
+    // a cell that recorded the whole order on acceptance halted here instead.
     //
     // The contra is 20 against a desired 100 because a cell with no policy
     // payload sizes at its conservative floor (the degradation table's 0.375),
@@ -250,22 +265,53 @@ fn a_partial_fill_at_the_venue_is_a_break_rather_than_a_rounding_up() -> Result<
 
     let report = cell.work(t(20), &mut gateway)?;
     let order = report.orders.first().expect("an order was sent");
+    assert_eq!(
+        report.fills.len(),
+        1,
+        "the venue's partial fill was not confirmed on the pass"
+    );
+    let confirmed = report.fills[0].quantity;
+    assert!(
+        confirmed < order.quantity,
+        "the fixture must produce a partial fill"
+    );
+    assert_eq!(
+        confirmed,
+        dec!("20"),
+        "the confirmed fill is not what rested contra"
+    );
+    assert_eq!(
+        cell.position(&venue("XLON"), &object("ACME")),
+        dec!("20"),
+        "the position is not the part that traded"
+    );
+    let open = cell.open_orders();
+    assert_eq!(open.len(), 1, "the remainder is not held open");
+    assert_eq!(open[0].remaining(), order.quantity - dec!("20"));
+    assert_eq!(open[0].closed, None, "a partially filled order was closed");
+    assert_eq!(
+        gateway.resting_count(),
+        1,
+        "the remainder is not resting at the venue: the seeded touch was consumed and the \
+         cell's residual should be the one order in the book"
+    );
+
     let copies = gateway.drain_drop_copies();
     let venue_filled: Decimal = copies.iter().map(|fill| fill.quantity).sum();
-    assert!(
-        venue_filled < order.quantity,
-        "the fixture must produce a partial fill"
+    assert_eq!(
+        venue_filled, confirmed,
+        "the venue's own account differs from what it acknowledged"
     );
     for copy in copies {
         cell.observe_drop_copy(copy);
     }
 
     let breaks = cell.reconcile(t(30));
-    assert_eq!(
-        breaks.len(),
-        1,
-        "a half-filled order reconciled clean: {breaks:?}"
+    assert!(
+        breaks.is_empty(),
+        "a partial fill both channels agree on reconciled as a break: {breaks:?}"
     );
+    assert!(!cell.is_halted(), "a partial fill halted the cell");
     Ok(())
 }
 
