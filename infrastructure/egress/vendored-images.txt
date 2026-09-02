@@ -1,0 +1,34 @@
+# Third-party images the platform adopts, mirrored into its own registry.
+#
+# Binary Authorization's default rule denies every image the platform's
+# attestor has not signed, and that is the point of it — so a third-party
+# image can run here in one of two ways: an exemption pattern that admits its
+# upstream repository unsigned for ever, or an adoption. This file is the
+# adoption path: `.github/workflows/vendor.yml` copies each source digest into
+# the environment's Artifact Registry byte-for-byte, proves the digest survived
+# the copy, scans it with the same gate the platform's own images pass, and
+# attests it with the same attestor. The admission policy stays exactly one
+# rule with no holes, and "which foreign code runs on this platform" is
+# answered by this file's git history.
+#
+# Sources are named by digest, never by tag. A tag is whatever its owner says
+# it is today; the digest is what was reviewed when the line was added. Moving
+# to a new upstream version is a new digest in a new commit.
+#
+# Format: <source-ref-by-digest> <destination-path> <destination-tag>
+# The destination lands at <registry>/<destination-path>:<destination-tag>
+# in the target environment's registry. The tag is for humans browsing the
+# registry; everything that matters references the digest.
+#
+# One entry. Argo CD, Kargo, KEDA, cert-manager and redis were vendored for
+# the GKE runtime and left with it (ADR 0024); nothing else third-party runs.
+
+# Envoy v1.38.3, distroless. The TLS-terminating egress proxy in
+# infrastructure/egress/envoy.yaml runs this image as a Cloud Run sidecar
+# (modules/egress-proxy, modules/cloudrun). The digest is the multi-arch
+# index for docker.io/envoyproxy/envoy:distroless-v1.38.3, the same digest
+# the Kubernetes chart pinned before it was retired, so the bytes that were
+# reviewed for the chart are the bytes that run here. `modules/egress-proxy`
+# reads this digest back out of this file, so the plan and this list cannot
+# disagree about which proxy runs.
+docker.io/envoyproxy/envoy@sha256:574348fada8eb1130b448132287d76626dfb07525b16668075382f8e154a45a8 vendor/envoy distroless-v1.38.3
