@@ -1576,14 +1576,26 @@ mod tests {
         let mut platform = platform()?;
 
         // The premise, and the defect this endpoint had: a platform that has
-        // recorded nothing serves nothing. It used to serve eight counts
+        // run nothing serves nothing it ran. It used to serve eight counts
         // recomputed from state, so it was never empty and never evidence of
         // anything — a scrape of a process that had done nothing looked
-        // identical to a scrape of one that had.
+        // identical to a scrape of one that had. Since `78026e2` assembly
+        // itself records one fact — the count of instruments the universe
+        // may not trade on — so the honest state before the first cycle is
+        // exactly that gauge and no cycle series, not an empty page.
+        let before = scrape(&platform);
         assert!(
-            scrape(&platform).is_empty(),
-            "a process that has recorded nothing must scrape empty: {}",
-            scrape(&platform)
+            before.contains("\nqip_universe_not_decision_grade 0\n"),
+            "assembly records the unfit-instrument gauge, and the scrape must carry it: {before}"
+        );
+        assert!(
+            !before.contains("qip_cycles_total"),
+            "a process that has run no cycle must not serve a cycle count: {before}"
+        );
+        assert_eq!(
+            before.matches("# TYPE ").count(),
+            1,
+            "before the first cycle the only series is the assembly gauge: {before}"
         );
 
         platform.run_cycle(start());
