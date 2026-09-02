@@ -494,6 +494,13 @@ module "execution_node" {
   venues               = each.value.venues
   central_plane_ranges = local.central_plane_ranges
 
+  # Per node, because a plan and its pricing are a property of what a cell is
+  # asked to run rather than of the environment. Both default to empty, which
+  # is the node's own "deploy nothing" and is what every environment gets
+  # until one names otherwise.
+  default_pricing    = each.value.default_pricing
+  strategy_plan_path = each.value.strategy_plan_path
+
   # The same bootstrap every Cloud Run sidecar mounts, and the loopback
   # addresses it answers on.
   egress_bootstrap = file("${path.module}/../egress/envoy.yaml")

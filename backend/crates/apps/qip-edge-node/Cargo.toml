@@ -39,6 +39,13 @@ qip-transport.workspace = true
 # third external dependency.
 qip-protocols.workspace = true
 qip-orderbook.workspace = true
+# The strategy plan the payload names by digest is read from a file on the
+# node and compiled here, so the deployable names the specification, the
+# compiler and the catalogue the cell already depends on through `qip-edge`.
+# A workspace crate the edge depends on already, not a third external
+# dependency; `serde_json` is one of the two permitted and parses the plan.
+qip-strategy.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 # The mesh tests frame a capital grant the way the central plane does, so the
@@ -46,7 +53,6 @@ qip-orderbook.workspace = true
 # against one this crate also produced. Dev-only: nothing in the binary needs
 # the event envelope directly.
 qip-events.workspace = true
-qip-strategy.workspace = true
 qip-financial.workspace = true
 
 [lints]

@@ -10,11 +10,15 @@
 //! that should ever be ambiguous.
 
 use crate::html::{
-    Element, a, code, div, h1, h2, h3, header, li, main_element, nav, p, section, span, strong,
-    table, tbody, td, th, thead, tr, ul,
+    Element, a, code, div, h1, h2, h3, header, li, main_element, nav, p, section, small, span,
+    strong, table, tbody, td, th, thead, tr, ul,
 };
+use crate::panel::{Freshness, Panel};
 use crate::style::STYLESHEET;
-use crate::view::{AgentRow, OpportunityRow, OrderRow, Posture, ProposalRow, StageRow, ViewModel};
+use crate::view::{
+    AgentRow, EdgeCellRow, Fact, FactRow, OpportunityRow, OrderRow, Posture, ProposalRow,
+    ShippedPolicyRow, StageRow, UniverseExclusionRow, UniverseView, ViewModel,
+};
 
 /// The nine surfaces the platform exposes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -216,6 +220,261 @@ fn empty(message: &str) -> Element {
     p().class("empty").text(message)
 }
 
+/// One figure, as the platform recorded it or as the reason it did not.
+///
+/// The only place a [`Fact`] becomes markup, and it has no arm that renders
+/// a number for [`Fact::NotRecorded`]. `data-fact` names the figure and
+/// `data-state` says which arm it took, so a test can find the one value it
+/// asserts on and a reader can tell a counter that never moved from a wire
+/// that is not attached.
+fn fact(key: &str, fact: &Fact) -> Element {
+    match fact {
+        Fact::Recorded { value } => span()
+            .class("mono")
+            .attr("data-fact", key)
+            .attr("data-state", "recorded")
+            .text(value),
+        Fact::NotRecorded { reason } => span()
+            .class("muted")
+            .attr("data-fact", key)
+            .attr("data-state", "not-recorded")
+            .text("not recorded")
+            .child(small().class("muted").text(format!(" — {reason}"))),
+    }
+}
+
+/// Labelled figures as cards, each a [`Fact`].
+///
+/// Cards are the dangerous shape — a card reading `0` is read as a fact —
+/// which is why a card here is built from a [`Fact`] and not from a number.
+fn fact_cards(rows: &[FactRow]) -> Element {
+    div().class("cards").children(rows.iter().map(|row| {
+        div()
+            .class("card")
+            .child(div().class("label").text(&row.label))
+            .child(div().class("value").child(fact(&row.key, &row.fact)))
+    }))
+}
+
+/// Render a panel as a table, or as the reason there is none.
+///
+/// The console's discipline, on these surfaces: an absent panel says what is
+/// not reporting, a reported-and-empty panel says so in different words, and
+/// neither renders a table that could be read as zero.
+fn panel_table<T>(
+    title: &str,
+    columns: &[&str],
+    panel: &Panel<T>,
+    row: impl Fn(&T) -> Element,
+) -> Element {
+    let rows = panel.rows();
+    let mut out = section()
+        .attr("data-panel", title)
+        .attr(
+            "data-state",
+            panel.freshness().state_attribute(!rows.is_empty()),
+        )
+        .child(h3().text(title));
+    match panel.freshness() {
+        Freshness::Absent { reason } => {
+            out = out.child(
+                p().class("empty")
+                    .child(strong().text("Not recorded. "))
+                    .text(reason),
+            );
+        }
+        Freshness::Current { as_of } | Freshness::Stale { as_of, .. } if rows.is_empty() => {
+            out = out.child(p().class("muted").text(format!(
+                "Reported as of {as_of}, and empty: the platform looked and found nothing. \
+                 This is an observed zero, not a missing feed."
+            )));
+        }
+        Freshness::Current { as_of } => {
+            out = out.child(
+                p().class("muted mono")
+                    .text(format!("reported as of {as_of}")),
+            );
+        }
+        Freshness::Stale { as_of, age, bound } => {
+            out = out.child(
+                p().class("stale")
+                    .child(span().class("pill bad").text("STALE"))
+                    .text(format!(
+                        " last reported {as_of}, {age} ago; the freshness bound is {bound}. \
+                         What follows is the last thing seen, not what is true now."
+                    )),
+            );
+        }
+    }
+    if rows.is_empty() {
+        return out;
+    }
+    out.child(
+        table()
+            .child(thead().child(tr().children(columns.iter().map(|column| th().text(*column)))))
+            .child(tbody().children(rows.iter().map(row))),
+    )
+}
+
+fn yes_no(value: bool) -> Element {
+    span()
+        .class(if value { "pill bad" } else { "pill good" })
+        .text(if value { "yes" } else { "no" })
+}
+
+fn edge_cell_row(row: &EdgeCellRow) -> Element {
+    let key = |name: &str| format!("cell.{}.{name}", row.cell);
+    tr().child(td().class("mono").text(&row.cell))
+        .child(td().class("mono").text(&row.reported_at))
+        .child({
+            let age = td().class("mono").text(&row.age);
+            if row.stale {
+                age.text(" ").child(span().class("pill bad").text("STALE"))
+            } else {
+                age
+            }
+        })
+        .child(td().class("mono").text(row.positions.to_string()))
+        .child(td().class("mono").text(row.strategies.to_string()))
+        .child(
+            td().class(if row.breaks_shipped > 0 {
+                "mono bad"
+            } else {
+                "mono"
+            })
+            .text(row.breaks_shipped.to_string()),
+        )
+        .child(td().child(fact(&key("orders_sent"), &row.orders_sent)))
+        .child(td().child(fact(&key("fills_confirmed"), &row.fills_confirmed)))
+        .child(
+            td().attr("data-fact", &key("halted_by_centre"))
+                .child(yes_no(row.halted_by_centre)),
+        )
+        .child(
+            td().attr("data-fact", &key("policy_halt_flag"))
+                .child(yes_no(row.policy_halt_flag)),
+        )
+        .child(td().child(fact(&key("cell_reports_halted"), &row.cell_reports_halted)))
+        .child(td().child(fact(&key("polled_halt_flag"), &row.polled_halt_flag)))
+}
+
+/// The edge cells and what the centre recorded settling their reports.
+fn cells(model: &ViewModel) -> Element {
+    section()
+        .child(h2().text("Edge cells"))
+        .child(p().class("muted").text(
+            "What the centre holds about each cell: the last report it took, the halt it \
+             placed itself, the halt flag it ships, and — where it keeps no per-cell figure \
+             — the reason. Three halt wires, three facts; none stands in for another.",
+        ))
+        .child(panel_table(
+            "Cells",
+            &[
+                "Cell",
+                "Reported",
+                "Age",
+                "Positions",
+                "Strategies",
+                "Breaks shipped",
+                "Orders sent",
+                "Fills confirmed",
+                "Halted by the centre",
+                "Halt flag on the policy payload",
+                "Cell reports halted",
+                "Polled halt flag",
+            ],
+            &model.cells,
+            edge_cell_row,
+        ))
+        .child(h3().text("Central settlement, across every cell"))
+        .child(if model.settlement.is_empty() {
+            p().class("empty")
+                .child(strong().text("Not recorded. "))
+                .text("The platform's settlement counters were not read for this page.")
+        } else {
+            fact_cards(&model.settlement)
+        })
+}
+
+fn shipped_policy_row(row: &ShippedPolicyRow) -> Element {
+    let slots: Vec<Element> = row
+        .slots
+        .iter()
+        .map(|slot| {
+            li().child(code().text(&slot.label)).text(": ").child(fact(
+                &format!("policy.{}.{}", row.cell, slot.key),
+                &slot.fact,
+            ))
+        })
+        .collect();
+    tr().child(td().class("mono").text(&row.cell))
+        .child(td().class("mono").text(&row.issued_at))
+        .child(td().child(fact(
+            &format!("policy.{}.sequence", row.cell),
+            &row.sequence,
+        )))
+        .child(
+            td().attr("data-fact", &format!("policy.{}.whitelist", row.cell))
+                .text(&row.whitelist),
+        )
+        .child(td().child(ul().class("slots").children(slots)))
+}
+
+/// The last payload the centre shipped each cell, as the journal has it.
+fn shipped_policy(model: &ViewModel) -> Element {
+    section()
+        .child(h2().text("Policy shipped"))
+        .child(p().class("muted").text(
+            "The twelve-slot payload each cell last received, read from the platform's own \
+             journal. A slot the platform did not record as produced is shown as not \
+             recorded, not as produced: the page attests what the journal holds.",
+        ))
+        .child(panel_table(
+            "Last payload per cell",
+            &["Cell", "Issued", "Sequence", "Cycle whitelist", "Slots"],
+            &model.shipped_policy,
+            shipped_policy_row,
+        ))
+}
+
+fn universe_exclusion_row(row: &UniverseExclusionRow) -> Element {
+    tr().child(td().class("mono").text(&row.object))
+        .child(td().text(&row.reason))
+}
+
+/// The universe the platform assembled, as far as it can attest it.
+fn universe(view: &UniverseView) -> Element {
+    section()
+        .child(h2().text("Universe"))
+        .child(fact_cards(&[
+            FactRow::new(
+                "universe.version",
+                "Catalogue version",
+                view.version.clone(),
+            ),
+            FactRow::new("universe.sha256", "Catalogue sha256", view.sha256.clone()),
+            FactRow::new(
+                "universe.instruments",
+                "Instruments",
+                view.instruments.clone(),
+            ),
+            FactRow::new(
+                "universe.not_decision_grade",
+                "Not decision-grade",
+                match view.not_decision_grade.freshness() {
+                    Freshness::Absent { reason } => Fact::not_recorded(reason.clone()),
+                    _ => Fact::recorded(view.not_decision_grade.rows().len().to_string()),
+                },
+            ),
+        ]))
+        .child(panel_table(
+            "Instruments that may not drive a decision",
+            &["Instrument", "Reason"],
+            &view.not_decision_grade,
+            universe_exclusion_row,
+        ))
+}
+
 // --- the surfaces -----------------------------------------------------------
 
 fn overview(model: &ViewModel) -> Element {
@@ -259,6 +518,7 @@ fn overview(model: &ViewModel) -> Element {
                 )
                 .child(tbody().children(stages))
         })
+        .child(universe(&model.universe))
 }
 
 fn opportunities(model: &ViewModel) -> Element {
@@ -443,6 +703,7 @@ fn execution(model: &ViewModel) -> Element {
         } else {
             ul().children(refusals)
         })
+        .child(cells(model))
 }
 
 fn agents(model: &ViewModel) -> Element {
@@ -507,6 +768,7 @@ fn governance(model: &ViewModel) -> Element {
         } else {
             ul().children(findings)
         })
+        .child(shipped_policy(model))
 }
 
 fn audit(model: &ViewModel) -> Element {

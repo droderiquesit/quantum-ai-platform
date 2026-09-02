@@ -644,6 +644,27 @@ impl Cell {
         policy.payload().cycle_whitelist.value()
     }
 
+    /// The compiled plan the last applied payload names (§41.5 item 2),
+    /// while that slot is fresh.
+    ///
+    /// Fresh only, exactly as [`Self::cycle_whitelist`]: a stale plan is a
+    /// plan the centre has stopped vouching for, and a node that deployed
+    /// from it would be running strategies on the strength of a payload
+    /// whose every other slot has already narrowed the cell. The slot names
+    /// the plan by digest and count and carries no strategy itself; whoever
+    /// holds the plan's bytes checks them against this before deploying.
+    pub fn compiled_plan(&self, now: Timestamp) -> Option<&qip_contracts::policy::PlanDigest> {
+        let policy = self.policy.as_ref()?;
+        if policy
+            .payload()
+            .freshness(qip_contracts::policy::PolicyItem::CompiledPlan, now)
+            != qip_contracts::degradation::Freshness::Fresh
+        {
+            return None;
+        }
+        policy.payload().compiled_plan.value()
+    }
+
     /// The installed arbitrage desk, if any.
     pub fn arbitrage(&self) -> Option<&ArbitrageDesk> {
         self.desk.as_ref()
@@ -1139,6 +1160,65 @@ impl Cell {
 
     pub fn deployed_strategies(&self) -> Vec<&str> {
         self.deployed.keys().map(String::as_str).collect()
+    }
+
+    /// Withdraw a deployed strategy, handing back the envelope it ran under.
+    ///
+    /// The path a node takes when a fresh plan no longer names a strategy,
+    /// or names it differently. Refused — nothing withdrawn — while an
+    /// order carrying the strategy's intent is still open at a venue: the
+    /// fill that order may yet report is attributed through the strategy's
+    /// contributor share, and a strategy withdrawn out from under a resting
+    /// order would leave a fill the cell could book but not explain. The
+    /// caller tries again once the order has filled or expired; a resting
+    /// order has a time to live somebody chose, and this does not shorten it.
+    ///
+    /// The envelope is returned rather than dropped because it is capital
+    /// the centre signed for this strategy at this cell. A plan that renames
+    /// nothing but changes a rule redeploys under the same grant; a plan
+    /// that drops the strategy leaves the caller holding a grant it must not
+    /// spend on anything else, which `renew_capital` already refuses.
+    pub fn withdraw(&mut self, strategy: &str, now: Timestamp) -> Result<VerifiedEnvelope> {
+        if !self.deployed.contains_key(strategy) {
+            return Err(Error::not_found(format!(
+                "no strategy named {strategy} is deployed in this cell, so there is nothing to \
+                 withdraw"
+            )));
+        }
+        let open: Vec<&str> = self
+            .working
+            .values()
+            .filter(|working| {
+                working.order.closed.is_none()
+                    && working
+                        .net
+                        .contributors
+                        .iter()
+                        .any(|contributor| contributor.strategy.as_str() == strategy)
+            })
+            .map(|working| working.order.order_id.as_str())
+            .collect();
+        if !open.is_empty() {
+            return Err(Error::denied(format!(
+                "strategy {strategy} has {} open order(s) at the venue ({}); it is withdrawn once \
+                 they have filled or expired, not while a fill on them could still arrive",
+                open.len(),
+                open.join(", ")
+            )));
+        }
+        let Some(deployed) = self.deployed.remove(strategy) else {
+            return Err(Error::not_found(format!(
+                "no strategy named {strategy} is deployed in this cell, so there is nothing to \
+                 withdraw"
+            )));
+        };
+        self.journal.record(
+            Decision::StrategyWithdrawn {
+                strategy: strategy.to_string(),
+            },
+            now,
+        );
+        Ok(deployed.envelope)
     }
 
     // --- the hot path -------------------------------------------------------

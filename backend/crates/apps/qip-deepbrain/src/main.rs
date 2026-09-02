@@ -186,7 +186,7 @@ fn run() -> Result<()> {
     // Read once, immediately after assembly, and carried through the run. It is
     // the boundary between what this process inherited from a previous run's
     // log and what it is itself accountable for handing to the archive.
-    let inherited = node::restored_through(platform.event_log().records());
+    let inherited = platform.inherited_through();
 
     banner(
         provenance, &config, &cleared, &platform, &ceiling, bound, &archive, inherited,

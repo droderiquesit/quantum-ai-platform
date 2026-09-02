@@ -24,6 +24,7 @@ use qip_data_finder::legal::{LicensingPosture, SourceLicense};
 use qip_data_finder::probe::{HeadResponse, InMemoryProbe, PayloadSample, RobotsFetch};
 use qip_data_finder::quality::SourceCost;
 use qip_data_finder::source::{SourceCandidate, SourceIdentity};
+use qip_events::EventBody;
 use qip_events::{EventFilter, Topic};
 use qip_financial::asset_class::{AssetClass, InstrumentType, Sector};
 use qip_financial::object::FinancialObject;
@@ -31,7 +32,7 @@ use qip_financial::quality::{DataQuality, Provenance};
 use qip_financial::universe::Universe;
 use qip_kernel::config::PlatformConfig;
 use qip_kernel::cycle::Stage;
-use qip_kernel::platform::{Platform, RecordedPrediction};
+use qip_kernel::platform::{CycleJournalEntry, Platform, RecordedPrediction};
 use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
@@ -545,10 +546,11 @@ fn every_cycle_reaches_the_durable_log_and_comes_back_unchanged() -> Result<()> 
         summaries.push(platform.run_cycle(at).summarise());
     }
 
-    assert_eq!(platform.journal().len(), 3, "one entry per cycle");
+    // One entry per cycle, after the universe record assembly writes first.
+    assert_eq!(platform.journal().len(), 4, "one entry per cycle");
     assert_eq!(
         platform.event_log().len(),
-        3,
+        4,
         "and one in the platform's own log"
     );
     assert!(
@@ -581,17 +583,38 @@ fn the_journal_is_replayable_as_of_an_instant() -> Result<()> {
     platform.run_cycle(first);
     platform.run_cycle(second);
 
-    let early = platform
-        .replay_journal(&EventFilter::new().as_of(first.saturating_add(Duration::from_nanos(1))))?;
+    // Filtered to the cycle topic. The journal also carries the universe
+    // record `Platform::new` appends at assembly, which is knowable before
+    // either cycle and so appears in *both* replays: counting it would make
+    // the as-of assertion below true for a reason that has nothing to do with
+    // as-of, which is the property this test exists for.
+    let cycles = EventFilter::new().topic(CycleJournalEntry::TOPIC);
+    let early = platform.replay_journal(
+        &cycles
+            .clone()
+            .as_of(first.saturating_add(Duration::from_nanos(1))),
+    )?;
     assert_eq!(
         early.len(),
         1,
         "a replay reads what was knowable at an instant"
     );
-    let all = platform.replay_journal(
+    let all =
+        platform.replay_journal(&cycles.as_of(second.saturating_add(Duration::from_nanos(1))))?;
+    assert_eq!(all.len(), 2);
+
+    // And the record that is not a cycle is there beside them: the universe
+    // the run was assembled over, which a replay needs before it can read a
+    // single cycle.
+    let everything = platform.replay_journal(
         &EventFilter::new().as_of(second.saturating_add(Duration::from_nanos(1))),
     )?;
-    assert_eq!(all.len(), 2);
+    assert_eq!(
+        everything.len(),
+        3,
+        "assembly journalled no universe record, so a replay of this run \
+         cannot say what instruments it ran over"
+    );
 
     // The envelope's payload hash is computed on the way in and recomputed on
     // the way back; an edited payload would not survive this.

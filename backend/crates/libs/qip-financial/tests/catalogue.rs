@@ -306,3 +306,53 @@ fn a_geography_that_is_not_an_alpha_2_code_is_refused_rather_than_opening_a_seco
     );
     Ok(())
 }
+
+/// The kernel writes which catalogue a run saw on its own event log, and the
+/// only way it can know is if the universe it is handed says so. Before the
+/// origin travelled with the universe, the hash lived in a key-value
+/// namespace beside the log and the log's own first record could not name
+/// it. The second half is the honesty rule: a universe edited after loading
+/// is no longer the catalogue, and must stop claiming to be.
+#[test]
+fn the_loaded_universe_names_its_catalogue_until_it_is_edited() -> Result<()> {
+    use qip_core::dec;
+    use qip_financial::asset_class::{InstrumentType, Sector};
+    use qip_financial::object::FinancialObject;
+    use qip_financial::quality::Provenance;
+
+    let text = committed_text();
+    let loaded = catalogue::load(&text, now())?;
+    // Premise: the loader computed a real hash and at least one record.
+    assert_eq!(
+        loaded.manifest.sha256,
+        qip_core::sha256_hex(text.as_bytes())
+    );
+    assert!(loaded.manifest.instruments > 0);
+
+    let mut universe = loaded.universe;
+    let origin = universe
+        .origin()
+        .cloned()
+        .expect("a loaded universe names the catalogue it was read from");
+    assert_eq!(origin.sha256, loaded.manifest.sha256);
+    assert_eq!(origin.version, loaded.manifest.version);
+    assert_eq!(origin.source, loaded.manifest.source);
+
+    universe.insert(
+        FinancialObject::builder(
+            ObjectId::from_string("obj-added-after-load"),
+            "ADDD",
+            InstrumentType::CommonStock,
+        )
+        .venue("XNYS")
+        .sector(Sector::InformationTechnology)
+        .price(dec!("10"))
+        .provenance(Provenance::new("vendor", now(), now()))
+        .build(now())?,
+    )?;
+    assert!(
+        universe.origin().is_none(),
+        "a universe with a record the catalogue never held still claims the catalogue's hash"
+    );
+    Ok(())
+}

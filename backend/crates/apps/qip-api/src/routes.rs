@@ -466,6 +466,24 @@ impl Api {
         self
     }
 
+    /// The registry of cell reports this API serves `/regions` from.
+    ///
+    /// Exposed so the router can hand the same registry to the operator
+    /// interface: a page and the JSON behind it must not disagree about which
+    /// cells have reported.
+    pub fn cells(&self) -> &CellRegistry {
+        &self.cells
+    }
+
+    /// The mesh backbone, where one is served.
+    ///
+    /// For the router to pass to the operator interface, which reads each
+    /// cell's last standing off it. `None` is answered on the page in words,
+    /// the same as `/mesh` answers it.
+    pub fn mesh(&self) -> Option<&Mutex<crate::mesh::MeshBackbone>> {
+        self.mesh.as_deref()
+    }
+
     /// The mesh backbone's status as JSON, `None` when none is configured.
     ///
     /// A poisoned backbone lock still answers — with the fact of its own

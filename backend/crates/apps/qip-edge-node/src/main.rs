@@ -43,7 +43,7 @@ use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Duration, SystemClock};
 use qip_edge::cell::PolledHalt;
-use qip_edge::cell::{Cell, CellConfig, Placer, WorkReport};
+use qip_edge::cell::{Cell, CellConfig, Placer, PricingPolicy, WorkReport};
 use qip_edge_node::arbitrage::{ArbitrageInstaller, STRATEGY_VARIABLE};
 use qip_edge_node::feed::{FEED_VARIABLE, FeedChoice, SIMULATED_FEED, SimulatedFeed};
 use qip_edge_node::gateway::NodeGateway;
@@ -51,6 +51,10 @@ use qip_edge_node::halt::{FLAG_VARIABLE, HaltFlag};
 use qip_edge_node::mesh::{MeshLink, MeshSettings, PEER_VARIABLE};
 use qip_edge_node::mirror::StoreMirror;
 use qip_edge_node::pass::{PassOutcome, PassStats, run_pass};
+use qip_edge_node::strategies::{
+    MARKETABLE, PLAN_VARIABLE, PRICING_VARIABLE, REST_AT_MID_PREFIX, StrategyInstaller,
+    parse_pricing,
+};
 use qip_edge_node::telemetry::{MeshSeries, respond};
 use qip_edge_node::venue::{ACKNOWLEDGEMENT_VARIABLE, ADAPTER_VARIABLE, VenueChoice};
 use qip_edge_node::{NodeAssembly, assemble};
@@ -60,6 +64,7 @@ use qip_observability::metrics::Metrics;
 use qip_storage::settings::{ROOT_VARIABLE, StorageSettings, TARGET_VARIABLE};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Exit code for a configuration problem, matching `sysexits.h`.
@@ -109,6 +114,15 @@ struct NodeConfig {
     /// simulator; see `qip_edge_node::feed` for why a live feed is refused
     /// at start rather than read.
     feed: Option<FeedChoice>,
+    /// How every strategy the plan deploys is priced at the venue, until
+    /// the plan slot carries a policy of its own. `None` deploys nothing
+    /// and is named in the production requirements; a value that is not
+    /// one of the two forms stops the process — see
+    /// `qip_edge_node::strategies`.
+    pricing: Option<PricingPolicy>,
+    /// Where the compiled plan the payload names by digest is read from.
+    /// `None` deploys nothing and is named in the production requirements.
+    plan_path: Option<PathBuf>,
 }
 
 impl NodeConfig {
@@ -180,6 +194,11 @@ impl NodeConfig {
             _ => None,
         };
         let feed = FeedChoice::from_env()?;
+        let pricing = parse_pricing(std::env::var(PRICING_VARIABLE).ok().as_deref())?;
+        let plan_path = match std::env::var(PLAN_VARIABLE) {
+            Ok(value) if !value.trim().is_empty() => Some(PathBuf::from(value.trim())),
+            _ => None,
+        };
 
         Ok(Self {
             cell_id,
@@ -192,6 +211,8 @@ impl NodeConfig {
             halt_flag,
             arbitrage_strategy,
             feed,
+            pricing,
+            plan_path,
         })
     }
 }
@@ -372,6 +393,12 @@ fn run() -> Result<()> {
         .arbitrage_strategy
         .clone()
         .map(|strategy| ArbitrageInstaller::new(strategy, config.venues.clone()));
+    // The plan's installer, always: it holds the grants for strategies the
+    // plan will name and deploys them once a fresh, verified payload names
+    // a plan whose bytes are at the configured path. With no pricing or no
+    // path it deploys nothing and says which on every tick, so a node
+    // running no strategy is a node whose log says why.
+    let mut strategies = StrategyInstaller::new(config.plan_path.clone(), config.pricing);
 
     for requirement in missing_production_requirements(
         config.mesh.is_some(),
@@ -379,6 +406,7 @@ fn run() -> Result<()> {
         installer.is_some(),
         config.feed,
         &gateway,
+        &strategies,
     ) {
         println!("qip-edge-node: awaiting {requirement}");
     }
@@ -397,6 +425,7 @@ fn run() -> Result<()> {
         &mut mirror,
         link.as_mut(),
         installer.as_mut(),
+        &mut strategies,
         &clock,
         started,
         metrics,
@@ -423,6 +452,7 @@ fn missing_production_requirements(
     has_arbitrage_strategy: bool,
     feed: Option<FeedChoice>,
     gateway: &NodeGateway,
+    strategies: &StrategyInstaller,
 ) -> Vec<String> {
     let mut missing = vec![
         "QIP_VENUE_FEED_ENDPOINT and its multicast group or session credential".to_string(),
@@ -468,6 +498,22 @@ fn missing_production_requirements(
              alone"
         ));
     }
+    if strategies.pricing().is_none() {
+        // Unset is allowed and deploys nothing: the cell refuses an unpriced
+        // deploy, and the alternative — defaulting to one of the two forms —
+        // would have this node deciding whether to cross the spread on a
+        // strategy nobody priced.
+        missing.push(format!(
+            "{PRICING_VARIABLE} for the plan's strategies: without it the plan the payload names \
+             deploys nothing; set `{MARKETABLE}` or `{REST_AT_MID_PREFIX}<seconds>`"
+        ));
+    }
+    if strategies.plan_path().is_none() {
+        missing.push(format!(
+            "{PLAN_VARIABLE} for the compiled plan: the payload names the plan by digest, and \
+             without a file to read the digest names nothing this node can deploy"
+        ));
+    }
     if !has_halt_flag {
         // The broadcast halt shares the mesh's failure. A node with no
         // second wire is a node that a partition leaves unhaltable for as
@@ -503,6 +549,7 @@ fn serve(
     mirror: &mut StoreMirror,
     mut link: Option<&mut MeshLink>,
     mut installer: Option<&mut ArbitrageInstaller>,
+    strategies: &mut StrategyInstaller,
     clock: &Arc<dyn Clock>,
     started: qip_core::Timestamp,
     metrics: &Arc<Metrics>,
@@ -569,8 +616,13 @@ fn serve(
                 // no feed, which then reports its authority and halt state
                 // rather than its trading, as it always has.
                 if let Some(link) = link.as_deref_mut() {
-                    let tick =
-                        link.exchange_with(cell, &last_report, now, installer.as_deref_mut());
+                    let tick = link.exchange_with_installers(
+                        cell,
+                        &last_report,
+                        now,
+                        installer.as_deref_mut(),
+                        Some(&mut *strategies),
+                    );
                     if !tick.is_quiet() {
                         eprintln!("qip-edge-node: mesh exchange: {tick:?}");
                     }

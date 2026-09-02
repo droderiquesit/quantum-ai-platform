@@ -147,6 +147,15 @@ pub enum Decision {
         orders: Vec<String>,
         net: String,
     },
+    /// A deployed strategy was withdrawn from the cell, its envelope handed
+    /// back to the caller.
+    ///
+    /// Recorded because it is the moment the cell stopped being able to act
+    /// on that strategy's signals, and "why did this strategy go quiet" has
+    /// the same standing as "why did it trade": a plan that dropped it is
+    /// the usual answer, and the answer belongs in the chain, not in the
+    /// node's log.
+    StrategyWithdrawn { strategy: String },
 }
 
 impl Decision {
@@ -167,6 +176,7 @@ impl Decision {
             Self::CapitalRenewed { .. } => "capital_renewed",
             Self::CrossedInternally { .. } => "crossed_internally",
             Self::CycleCommitted { .. } => "cycle_committed",
+            Self::StrategyWithdrawn { .. } => "strategy_withdrawn",
         }
     }
 }

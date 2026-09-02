@@ -10,13 +10,39 @@
 //! could stall a trading loop behind an HTML page, which is a bad trade.
 
 use crate::auth::{Authenticator, RateLimiter, Role};
+use crate::cells::{CellRegistry, describe_age};
 use crate::http::{Handler, Method, Request, Response, StreamDecision};
+use qip_contracts::policy::PolicyItem;
+use qip_core::time::Timestamp;
+use qip_events::{EventBody, EventFilter};
 use qip_kernel::Platform;
+use qip_kernel::central::WhitelistIssue;
+use qip_observability::Snapshot;
+use qip_observability::metrics::{Labels, labels, names};
 use qip_web::pages::{Surface, render};
+use qip_web::panel::Panel;
 use qip_web::view::{
-    AgentRow, GovernanceRow, LimitRow, OpportunityRow, OrderRow, ProposalRow, StageRow, ViewModel,
+    AgentRow, EdgeCellRow, Fact, FactRow, GovernanceRow, LimitRow, OpportunityRow, OrderRow,
+    ProposalRow, ShippedPolicyRow, StageRow, UniverseExclusionRow, UniverseView, ViewModel,
 };
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
+
+/// What the API holds beside the platform, lent to the interface per request.
+///
+/// The interface owns none of this. The cell registry and the mesh backbone
+/// are the API's — reviewed stores, named in the boundary suite — and the
+/// router lends them for the duration of one render so a page can say which
+/// cells reported and what each last said about itself. Borrowed rather than
+/// held because a `Web` built with its own copies would be a `Web` whose
+/// copies nothing feeds: the stage overview rendered empty for the life of
+/// the process once, for exactly that reason. A `Web` served without a
+/// router gets [`Feeds::default`], and its pages say so in words.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Feeds<'a> {
+    pub cells: Option<&'a CellRegistry>,
+    pub mesh: Option<&'a Mutex<crate::mesh::MeshBackbone>>,
+}
 
 /// Serves the operator interface.
 pub struct Web {
@@ -110,8 +136,15 @@ impl Web {
     /// The lock is taken, everything needed is copied out, and it is released
     /// before rendering. Holding it across rendering would let an HTML page
     /// stall a trading loop.
-    fn model(&self) -> ViewModel {
+    fn model(&self, feeds: Feeds<'_>) -> ViewModel {
         let now = self.clock.now();
+        // The registry's lock is taken and released before the platform's.
+        // Nothing here nests the two, and the platform-then-mesh order the
+        // cycle route documents is kept by reading the mesh last, after the
+        // platform lock has been dropped.
+        let observations = feeds
+            .cells
+            .map(|cells| (cells.observations(), cells.freshness_bound()));
         let Ok(platform) = self.platform.lock() else {
             // A poisoned lock means a thread panicked while holding the
             // platform. Rendering the safe defaults says nothing untrue.
@@ -125,8 +158,39 @@ impl Web {
 
         let controller = platform.autonomy();
         let switch = controller.kill_switch();
+        let snapshot = platform.telemetry().metrics.snapshot();
+        let policy_halt_flag = switch.is_globally_tripped();
+        // Assembled under the lock from the switch and the observations, then
+        // finished after it with the mesh's standings, so the two locks are
+        // never held together.
+        let mut cell_rows: Vec<EdgeCellRow> = observations
+            .as_ref()
+            .map(|(observations, bound)| {
+                observations
+                    .iter()
+                    .map(|observation| EdgeCellRow {
+                        cell: observation.cell.clone(),
+                        reported_at: observation.at.to_rfc3339(),
+                        age: describe_age(observation.age(now)),
+                        stale: observation.is_stale(now, *bound),
+                        positions: observation.positions,
+                        strategies: observation.strategies,
+                        breaks_shipped: observation.reconciliation_breaks,
+                        orders_sent: Fact::not_recorded(NO_PER_CELL_SETTLEMENT),
+                        fills_confirmed: Fact::not_recorded(NO_PER_CELL_SETTLEMENT),
+                        halted_by_centre: switch.is_halted(&observation.cell),
+                        policy_halt_flag,
+                        cell_reports_halted: Fact::not_recorded(NO_MESH),
+                        polled_halt_flag: Fact::not_recorded(POLLED_FLAG_STAYS_ON_THE_NODE),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let shipped_policy = shipped_policy(&platform, now);
+        let universe = universe(&platform, now);
+        let settlement = settlement_rows(&snapshot);
 
-        ViewModel {
+        let model = ViewModel {
             autonomy_level: controller.level().as_str().to_string(),
             autonomy_ceiling: controller.ceiling().as_str().to_string(),
             live: controller.is_live(),
@@ -218,28 +282,58 @@ impl Web {
                     detail: finding.detail.clone(),
                 })
                 .collect(),
+            cells: Panel::default(),
+            settlement,
+            shipped_policy,
+            universe,
+        };
+        drop(platform);
+
+        // The cell's own account of itself travels only on its delta, which
+        // only the mesh decodes. Read after the platform lock is released.
+        if let Some(mesh) = feeds.mesh {
+            let standings: BTreeMap<String, (bool, u64)> = mesh
+                .lock()
+                .map(|mesh| {
+                    mesh.status()
+                        .standings
+                        .into_iter()
+                        .map(|standing| (standing.cell, (standing.halted, standing.sequence)))
+                        .collect()
+                })
+                .unwrap_or_default();
+            for row in &mut cell_rows {
+                row.cell_reports_halted = match standings.get(&row.cell) {
+                    Some((halted, sequence)) => Fact::recorded(format!(
+                        "{} (delta {sequence})",
+                        if *halted { "yes" } else { "no" }
+                    )),
+                    None => Fact::not_recorded(
+                        "the mesh has decoded no delta from this cell, so the cell has not \
+                         said whether it stopped itself",
+                    ),
+                };
+            }
         }
+        let cells = match observations {
+            None => Panel::absent(
+                "no cell registry is lent to this interface; served through the router beside \
+                 the API it reads the API's registry, and served alone it has none",
+            ),
+            Some((observations, _)) if observations.is_empty() => {
+                Panel::absent(crate::missing::NO_CELL_REPORTS)
+            }
+            Some(_) => Panel::current(cell_rows, now.to_rfc3339()),
+        };
+        ViewModel { cells, ..model }
     }
-}
 
-/// The limits the platform runs under, with their rationales.
-fn limit_rows(_platform: &Platform) -> Vec<LimitRow> {
-    qip_risk::limits::LimitSet::conservative_default()
-        .limits
-        .iter()
-        .map(|limit| LimitRow {
-            name: limit.name.clone(),
-            observed: 0.0,
-            bound: 0.0,
-            utilisation: 0.0,
-            breached: false,
-            rationale: limit.rationale.clone(),
-        })
-        .collect()
-}
-
-impl Handler for Web {
-    fn handle(&self, request: &Request) -> Response {
+    /// Render one surface with what the API lends for this request.
+    ///
+    /// [`Handler::handle`] is this with nothing lent, for a `Web` served on
+    /// its own; the router calls this directly with the API's registry and
+    /// mesh so the deployed pages read what the deployed API holds.
+    pub fn serve(&self, request: &Request, feeds: Feeds<'_>) -> Response {
         let now = self.clock.now();
 
         if request.method != Method::Get {
@@ -270,7 +364,249 @@ impl Handler for Web {
         // Every surface shows the same view. Role-dependent redaction would
         // mean two readers of the same page disagreeing about what the
         // platform did, which is worse than one bar for the whole interface.
-        Response::html(200, render(surface, &self.model()))
+        Response::html(200, render(surface, &self.model(feeds)))
+    }
+}
+
+/// Why a per-cell settlement figure is not on the page.
+const NO_PER_CELL_SETTLEMENT: &str = "the platform counts orders sent and fill shares \
+    attributed across every cell, under qip_central_orders_sent_total and \
+    qip_central_fills_attributed_total, and retains no per-cell settlement: the last \
+    ingestion's Settlement is returned to the drain and kept nowhere";
+
+/// Why a cell's own halted flag is not on the page.
+const NO_MESH: &str = "this process serves no mesh, so no delta from the cell has reached it; \
+    the cell's own halted flag travels only on its delta";
+
+/// Why the polled halt flag is never on this page.
+const POLLED_FLAG_STAYS_ON_THE_NODE: &str = "the polled halt flag is a file the node reads off \
+    its own filesystem; it is never shipped to the centre, and the centre cannot see it";
+
+/// Why the catalogue's identity is not on the page.
+const MANIFEST_NOT_ON_THE_PLATFORM: &str = "the catalogue manifest is recorded by the \
+    composition root in the universe key-value store, and the universe itself sits behind \
+    the desk's capability gate; neither is readable from the platform this page is \
+    rendered from";
+
+/// One series from the platform's registry, as a fact.
+///
+/// A series the registry holds is rendered as its value. A series it does
+/// not hold is rendered as the reason: a counter that never incremented has
+/// no value, and `0` would be a claim the platform did not make. The same
+/// rule the scrape surface follows, applied to the page.
+fn counter_fact(snapshot: &Snapshot, name: &str, series_labels: &Labels) -> Fact {
+    match snapshot.get(name, series_labels) {
+        Some(qip_observability::MetricValue::Counter(value)) => Fact::recorded(value.to_string()),
+        _ => Fact::not_recorded(format!(
+            "the platform has recorded no {name}{} series; a counter that never incremented \
+             has no value, and zero would be a claim",
+            describe_labels(series_labels)
+        )),
+    }
+}
+
+/// A series summed over every label set it was recorded under.
+fn counter_total_fact(snapshot: &Snapshot, name: &str) -> Fact {
+    if snapshot.series.iter().any(|series| series.name == name) {
+        Fact::recorded(snapshot.counter_total(name).to_string())
+    } else {
+        Fact::not_recorded(format!(
+            "the platform has recorded no {name} series; a counter that never incremented has \
+             no value, and zero would be a claim"
+        ))
+    }
+}
+
+fn describe_labels(series_labels: &Labels) -> String {
+    if series_labels.is_empty() {
+        return String::new();
+    }
+    let pairs: Vec<String> = series_labels
+        .iter()
+        .map(|(key, value)| format!("{key}=\"{value}\""))
+        .collect();
+    format!("{{{}}}", pairs.join(","))
+}
+
+/// What the central plane recorded settling every cell's reports.
+///
+/// Read off the platform's own registry rather than recomputed from state,
+/// for the reason `/metrics` gives: two claims about one fact will disagree.
+fn settlement_rows(snapshot: &Snapshot) -> Vec<FactRow> {
+    let mut rows = vec![
+        FactRow::new(
+            "central_orders_sent",
+            "Orders sent",
+            counter_total_fact(snapshot, names::CENTRAL_ORDERS_SENT),
+        ),
+        FactRow::new(
+            "central_fills_attributed",
+            "Fill shares attributed",
+            counter_total_fact(snapshot, names::CENTRAL_FILLS_ATTRIBUTED),
+        ),
+        FactRow::new(
+            "central_crosses_settled",
+            "Crosses settled",
+            counter_total_fact(snapshot, names::CENTRAL_CROSSES_SETTLED),
+        ),
+        FactRow::new(
+            "central_settlements_refused",
+            "Settlements refused",
+            counter_total_fact(snapshot, names::CENTRAL_SETTLEMENTS_REFUSED),
+        ),
+    ];
+    for direction in [
+        qip_kernel::central::BreakDirection::CellOverVenue,
+        qip_kernel::central::BreakDirection::VenueOverCell,
+        qip_kernel::central::BreakDirection::DetailOnly,
+        qip_kernel::central::BreakDirection::UnsentFill,
+    ] {
+        rows.push(FactRow::new(
+            format!("central_breaks_{}", direction.as_str()),
+            format!("Reconciliation breaks: {}", direction.as_str()),
+            counter_fact(
+                snapshot,
+                names::CENTRAL_RECONCILIATION_BREAKS,
+                &labels([("direction", direction.as_str())]),
+            ),
+        ));
+    }
+    rows.push(FactRow::new(
+        "central_cell_halts_reconciliation",
+        "Cell halts: reconciliation",
+        counter_fact(
+            snapshot,
+            names::CENTRAL_CELL_HALTS,
+            &labels([("cause", "reconciliation")]),
+        ),
+    ));
+    rows
+}
+
+/// The last cycle whitelist the platform journaled for each cell.
+///
+/// The one slot of the twelve the platform records as it produces it. The
+/// other eleven are assembled at the shipping seam from platform facts and
+/// are not journaled, so they are rendered as not recorded rather than as
+/// produced: the page attests what the journal holds.
+fn shipped_policy(platform: &Platform, now: Timestamp) -> Panel<ShippedPolicyRow> {
+    let mut latest: BTreeMap<String, WhitelistIssue> = BTreeMap::new();
+    // Read through the journal rather than off the event log's records.
+    //
+    // The log stores what `StreamEnvelope::to_frame` produced, so a record's
+    // payload is the sealed envelope and not the body inside it; decoding a
+    // record straight into the body fails on the first field it cannot find
+    // ("missing field `cell`"), which is a silent empty panel when the
+    // failure is swallowed. `replay_journal` is the seam that unwraps, and it
+    // is what this panel's own promise — that it attests what the journal
+    // holds — actually names.
+    let replayed = match platform.replay_journal(&EventFilter::new().topic(WhitelistIssue::TOPIC)) {
+        Ok(replayed) => replayed,
+        Err(error) => {
+            return Panel::absent(format!(
+                "the journal could not be replayed for policy issues, so this page cannot say \
+                 what was shipped: {error}"
+            ));
+        }
+    };
+    for envelope in replayed {
+        let Ok(envelope) = envelope.decode::<WhitelistIssue>() else {
+            continue;
+        };
+        let issue = envelope.body;
+        let newer = latest
+            .get(&issue.cell)
+            .is_none_or(|held| issue.issued_at >= held.issued_at);
+        if newer {
+            latest.insert(issue.cell.clone(), issue);
+        }
+    }
+    if latest.is_empty() {
+        return Panel::absent(
+            "the platform has journaled no policy issue: no cycle has shipped policy to a cell \
+             from this process, or no mesh is served",
+        );
+    }
+    let rows = latest
+        .into_values()
+        .map(|issue| {
+            let issued_at = issue.issued_at.to_rfc3339();
+            let slots = PolicyItem::all()
+                .into_iter()
+                .map(|item| {
+                    let fact = if item == PolicyItem::CycleWhitelist {
+                        Fact::recorded(format!("produced at {issued_at}"))
+                    } else {
+                        Fact::not_recorded(
+                            "the platform journals slot 8 (cycle_whitelist) as it issues it and \
+                             records no other slot; the shipping seam assembles this one \
+                             without a journal entry",
+                        )
+                    };
+                    FactRow::new(item.as_str(), item.as_str(), fact)
+                })
+                .collect();
+            ShippedPolicyRow {
+                cell: issue.cell.clone(),
+                issued_at,
+                sequence: Fact::not_recorded(
+                    "the payload's sequence is assigned at the shipping seam as the issue \
+                     instant in nanoseconds and is not journaled; the journal holds the issue \
+                     instant",
+                ),
+                whitelist: issue.describe(),
+                slots,
+            }
+        })
+        .collect();
+    Panel::current(rows, now.to_rfc3339())
+}
+
+/// The universe the platform assembled, as far as the platform can attest.
+///
+/// The not-decision-grade list is the platform's own, taken at assembly. The
+/// catalogue's version, hash and size are not: the manifest is recorded by
+/// the composition root and the universe sits behind the desk's gate, so
+/// both are rendered as the reason rather than as a figure read past a
+/// control.
+fn universe(platform: &Platform, now: Timestamp) -> UniverseView {
+    let rows = platform
+        .universe_not_decision_grade()
+        .iter()
+        .map(|(object, reason)| UniverseExclusionRow {
+            object: object.clone(),
+            reason: reason.clone(),
+        })
+        .collect();
+    UniverseView {
+        version: Fact::not_recorded(MANIFEST_NOT_ON_THE_PLATFORM),
+        sha256: Fact::not_recorded(MANIFEST_NOT_ON_THE_PLATFORM),
+        instruments: Fact::not_recorded(MANIFEST_NOT_ON_THE_PLATFORM),
+        not_decision_grade: Panel::current(rows, now.to_rfc3339()),
+    }
+}
+
+/// The limits the platform runs under, with their rationales.
+fn limit_rows(_platform: &Platform) -> Vec<LimitRow> {
+    qip_risk::limits::LimitSet::conservative_default()
+        .limits
+        .iter()
+        .map(|limit| LimitRow {
+            name: limit.name.clone(),
+            observed: 0.0,
+            bound: 0.0,
+            utilisation: 0.0,
+            breached: false,
+            rationale: limit.rationale.clone(),
+        })
+        .collect()
+}
+
+impl Handler for Web {
+    /// A `Web` served without the router lends itself nothing; its pages say
+    /// which panels that leaves unreported.
+    fn handle(&self, request: &Request) -> Response {
+        self.serve(request, Feeds::default())
     }
 }
 
@@ -330,7 +666,15 @@ impl Handler for Router {
                 None => Response::text(503, "the operator console is not mounted in this process"),
             };
         }
-        self.web.handle(request)
+        // The API's registry and mesh are lent for this one render, so the
+        // pages read the same stores the JSON routes serve from.
+        self.web.serve(
+            request,
+            Feeds {
+                cells: Some(self.api.cells()),
+                mesh: self.api.mesh(),
+            },
+        )
     }
 
     /// Forward the streaming decision to the API.

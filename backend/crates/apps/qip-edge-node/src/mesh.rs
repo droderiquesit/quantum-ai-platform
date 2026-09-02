@@ -44,6 +44,7 @@
 use std::sync::Arc;
 
 use crate::arbitrage::ArbitrageInstaller;
+use crate::strategies::StrategyInstaller;
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Timestamp};
 use qip_edge::cell::{Cell, WorkReport};
@@ -130,7 +131,7 @@ fn seed_from(cell: &str) -> u64 {
 /// Every field is something an operator or a health probe has to be able to
 /// see. A tick that quietly did nothing and a tick that could not reach the
 /// centre look identical from outside unless the difference is published.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MeshTick {
     /// What happened to the delta: `delivered`, `circuit_open`, `dead_lettered`
     /// or `refused`.
@@ -154,6 +155,32 @@ pub struct MeshTick {
     pub policy_poll_error: Option<String>,
     /// What the arbitrage installer did this tick, when the node has one.
     pub desk: Option<String>,
+    /// What the strategy installer did this tick, when the node has one.
+    pub plan: Option<String>,
+    /// Whether `plan` is something an operator needs to look at. Carried
+    /// as a flag rather than re-read from the text, so a reworded outcome
+    /// cannot make a deployment go quiet.
+    pub plan_is_quiet: bool,
+}
+
+impl Default for MeshTick {
+    /// A tick that has done nothing yet. The plan flag starts quiet because
+    /// a node with no strategy installer has no plan outcome to look at.
+    fn default() -> Self {
+        Self {
+            delta: None,
+            renewed: Vec::new(),
+            refused: Vec::new(),
+            duplicates: 0,
+            poll_error: None,
+            policies: Vec::new(),
+            halts: 0,
+            policy_poll_error: None,
+            desk: None,
+            plan: None,
+            plan_is_quiet: true,
+        }
+    }
 }
 
 impl MeshTick {
@@ -166,6 +193,7 @@ impl MeshTick {
                 .desk
                 .as_deref()
                 .is_none_or(|desk| !(desk.starts_with("installed") || desk.starts_with("refused")))
+            && self.plan_is_quiet
     }
 }
 
@@ -297,7 +325,28 @@ impl MeshLink {
         cell: &mut Cell,
         report: &WorkReport,
         now: Timestamp,
+        installer: Option<&mut ArbitrageInstaller>,
+    ) -> MeshTick {
+        self.exchange_with_installers(cell, report, now, installer, None)
+    }
+
+    /// The same tick, with the strategy installer given its inputs too.
+    ///
+    /// A grant for a strategy the cell does not run is refused by
+    /// `renew_capital` — the cell does not deploy a strategy because capital
+    /// arrived — and, when the node has a strategy installer, is held there
+    /// instead of reported as refused, to be spent when a verified plan
+    /// names the strategy. Without an installer the refusal is reported as
+    /// it always was. The desk's grant is still the desk's: it is offered to
+    /// the arbitrage installer first, so a node running both never holds
+    /// the desk's capital where a plan could spend it on a strategy.
+    pub fn exchange_with_installers(
+        &mut self,
+        cell: &mut Cell,
+        report: &WorkReport,
+        now: Timestamp,
         mut installer: Option<&mut ArbitrageInstaller>,
+        mut strategies: Option<&mut StrategyInstaller>,
     ) -> MeshTick {
         let mut tick = MeshTick::default();
 
@@ -316,6 +365,25 @@ impl MeshLink {
                     {
                         match installer.offer(envelope) {
                             Ok(()) => tick.renewed.push(format!("{strategy} (held for the desk)")),
+                            Err(error) => tick
+                                .refused
+                                .push(format!("{strategy}: {}", error.message())),
+                        }
+                        continue;
+                    }
+                    // Held for the plan only when the cell refuses the grant
+                    // *because nothing runs under that name*. Any other
+                    // refusal — another cell's envelope, most likely — is
+                    // reported as it always was; holding it would be
+                    // keeping a grant the cell has already said is not its
+                    // to spend.
+                    let not_deployed = !cell.deployed_strategies().contains(&strategy.as_str())
+                        && cell
+                            .arbitrage()
+                            .is_none_or(|desk| desk.strategy().as_str() != strategy);
+                    if not_deployed && let Some(strategies) = strategies.as_deref_mut() {
+                        match strategies.offer(envelope) {
+                            Ok(()) => tick.renewed.push(format!("{strategy} (held for the plan)")),
                             Err(error) => tick
                                 .refused
                                 .push(format!("{strategy}: {}", error.message())),
@@ -375,6 +443,14 @@ impl MeshLink {
         if let Some(installer) = installer {
             let outcome = installer.install(cell, now);
             tick.desk = Some(outcome.describe());
+        }
+        // And the plan, for the same reason: a plan and the grants that fund
+        // it may arrive in one tick, and the delta below then reports the
+        // strategies as deployed with their envelopes' expiry.
+        if let Some(strategies) = strategies {
+            let outcome = strategies.install(cell, now);
+            tick.plan_is_quiet = outcome.is_quiet();
+            tick.plan = Some(outcome.describe());
         }
 
         let delta = cell.state_delta(report, now);

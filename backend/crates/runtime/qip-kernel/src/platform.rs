@@ -83,7 +83,7 @@ use qip_execution_engine::oms::{OrderManager, RefusalReason, SubmissionResult};
 use qip_execution_engine::order::{Order, OrderType, Side};
 use qip_financial::asset_class::AssetClass;
 use qip_financial::costs::{LiquidityProfile, TransactionCostModel};
-use qip_financial::universe::Universe;
+use qip_financial::universe::{CatalogueOrigin, Universe};
 use qip_investment_agents::Organisation;
 use qip_investment_agents::desk::{BookView, ComplianceView, Desk, MarketView, RiskView};
 use qip_learning_engine::attribution::Attributor;
@@ -271,6 +271,13 @@ pub struct Platform {
     /// decision, with the reason, in object-id order. Empty is the only
     /// state a production universe should show.
     universe_not_decision_grade: Vec<(String, String)>,
+    /// What the event log's first record says about the universe this
+    /// platform was assembled from. Kept so the overview can say it without
+    /// decoding the log; the log is the record.
+    universe_assembled: UniverseAssembled,
+    /// The last log sequence this platform inherited rather than wrote. See
+    /// `inherited_through`.
+    inherited_through: u64,
     /// The asset class of every instrument this platform was assembled to
     /// trade, taken from the universe at assembly.
     ///
@@ -923,6 +930,72 @@ pub struct LearningOutcome {
     pub report: Option<FeedbackReport>,
 }
 
+/// The universe a platform was assembled from — the first record on its
+/// hash-chained event log, written at assembly and before any cycle.
+///
+/// A replay of a run is built from the log, and the first thing it needs is
+/// the instrument set the run saw: which catalogue, by hash. Until this
+/// existed the roots could only journal that hash in a key-value namespace
+/// *beside* the log (the kernel had no seam a root could append through), so
+/// the fact a replay needs first was the one fact the log did not hold. It is
+/// now written by [`Platform::new`] itself, from the origin the universe
+/// carries, which makes "a cycle over an unrecorded universe" unrepresentable
+/// rather than refused: no cycle can run on a platform that does not exist,
+/// and the platform does not exist until this has been appended.
+///
+/// Recorded under `Topic::ReferenceDataUpdated` — reference data is what a
+/// catalogue is — which is an observation-class topic: a file-backed log
+/// keeps it for good, and the in-memory index evicts it only after every
+/// replaceable record has gone. A topic of its own with permanent retention
+/// belongs in `qip-events` and is named as remaining work rather than
+/// borrowed from a group it does not belong to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UniverseAssembled {
+    /// The catalogue, by the hash `qip_financial::catalogue::load` computed
+    /// over its text — or `None` for a universe assembled in-process from no
+    /// catalogue. `None` is stated rather than the log staying silent: such a
+    /// run cannot be reproduced from the log alone, and the log now says so
+    /// in its first record instead of leaving a replay to discover it.
+    pub catalogue: Option<CatalogueOrigin>,
+    /// How many instruments the universe held at assembly.
+    pub instruments: usize,
+    /// SHA-256 over the object ids in id order, newline-separated: the
+    /// membership of the universe as assembled. Distinct from the catalogue
+    /// hash on purpose — that names a file, this names a set — so a replay
+    /// that rebuilt a universe by hand can still check it holds the same
+    /// instruments, and a catalogue whose loader changed what it admits is
+    /// caught by the two disagreeing.
+    pub members_sha256: String,
+    /// How many of them `Universe::not_decision_grade` named.
+    pub not_decision_grade: usize,
+    pub assembled_at: Timestamp,
+}
+
+impl UniverseAssembled {
+    /// One line for a start-up banner or an overview.
+    pub fn describe(&self) -> String {
+        match &self.catalogue {
+            Some(origin) => format!(
+                "universe of {} instrument(s) from catalogue {} (sha256 {}), {} not \
+                 decision-grade",
+                self.instruments, origin.version, origin.sha256, self.not_decision_grade
+            ),
+            None => format!(
+                "universe of {} instrument(s) from no catalogue (members {}), {} not \
+                 decision-grade; a replay cannot rebuild it from the log",
+                self.instruments, self.members_sha256, self.not_decision_grade
+            ),
+        }
+    }
+}
+
+impl EventBody for UniverseAssembled {
+    // Reference data is what an instrument catalogue is. See the type's
+    // comment for the retention consequence of the topic.
+    const TOPIC: Topic = Topic::ReferenceDataUpdated;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
 impl EventBody for CycleJournalEntry {
     // The cycle's record belongs to the stage that closes it. LEARN is what
     // eventually notices that a stage keeps failing, and this is the artefact
@@ -1127,6 +1200,22 @@ impl Platform {
         // here, so the chain continues from the last record on disk instead of
         // beginning again at sequence one.
         let event_log = config.event_log.open()?;
+        // The last sequence this process did not write.
+        //
+        // Taken here, between opening the log and appending anything to it,
+        // because that is the only instant at which it is knowable: from the
+        // next line on, the log holds records from a previous run and records
+        // from this one and nothing in a `LogRecord` distinguishes them.
+        // A caller that asks the log afterwards gets the wrong answer —
+        // qip-deepbrain's did, and the consequence was precise: it read the
+        // watermark after assembly, so the universe record `Platform::new`
+        // had just appended looked inherited, and the first record of the
+        // chain — the one a replay needs before it can read any cycle — was
+        // the one record the durable archive never sealed.
+        let inherited_through = event_log
+            .records()
+            .last()
+            .map_or(0, |record| record.sequence);
         // The configured book size, used everywhere a "how big is the book"
         // number is needed at assembly — one source instead of the same
         // literal in six places.
@@ -1167,6 +1256,18 @@ impl Platform {
             .into_iter()
             .map(|(object, reason)| (object.object_id.as_str().to_string(), reason))
             .collect();
+        // What the log's first record will say. Taken here, before the
+        // universe moves into the desk, and appended below once the log and
+        // the journal both exist — but before this function returns, so no
+        // cycle can precede it.
+        let members: Vec<String> = universe.ids().map(|id| id.as_str().to_string()).collect();
+        let universe_assembled = UniverseAssembled {
+            catalogue: universe.origin().cloned(),
+            instruments: universe.len(),
+            members_sha256: qip_core::sha256_hex(members.join("\n").as_bytes()),
+            not_decision_grade: not_decision_grade.len(),
+            assembled_at: now,
+        };
 
         let desk = Arc::new(Desk::new(
             MarketView {
@@ -1265,7 +1366,7 @@ impl Platform {
             SettlementCalendar::weekday(SettlementConvention::T1)?,
         );
 
-        let platform = Self {
+        let mut platform = Self {
             central,
             insights: crate::central::insights::CellInsights::new(config.seed),
             data_finder,
@@ -1291,6 +1392,8 @@ impl Platform {
             cost_router: Router::default(),
             reason_routing: None,
             universe_not_decision_grade: not_decision_grade,
+            universe_assembled,
+            inherited_through,
             asset_classes,
             exposure_axes,
             cycle_ledger: None,
@@ -1350,7 +1453,48 @@ impl Platform {
             labels([]),
             platform.universe_not_decision_grade.len() as f64,
         );
+        // The first record, appended last in assembly and before the platform
+        // is handed to anything that could run a cycle. A log that cannot
+        // take it is a platform that does not assemble: the alternative —
+        // a platform running cycles whose log never says what universe they
+        // ran over — is the state this record exists to end.
+        platform.record_universe_assembled(now)?;
         Ok(platform)
+    }
+
+    /// What the event log's first record says about the universe this
+    /// platform was assembled from.
+    pub fn universe_assembled(&self) -> &UniverseAssembled {
+        &self.universe_assembled
+    }
+
+    /// Append the universe record to the event log and publish it to the
+    /// journal, exactly as a cycle's entry is.
+    fn record_universe_assembled(&mut self, now: Timestamp) -> Result<()> {
+        let correlation_id = self
+            .context
+            .ids()
+            .generate::<qip_core::lineage::CorrelationKind>(now);
+        let facts = EventFacts::derived(
+            SourceIdentity::new(
+                SourceId::new("qip-kernel"),
+                SourceType::Internal,
+                StreamRegion::new(HOME_REGION),
+            ),
+            Subject::unattributed(),
+            UniverseAssembled::TOPIC,
+        );
+        let envelope = StreamEnvelope::seal(
+            self.context.ids().generate::<EventKind>(now),
+            Lineage::root(correlation_id, "kernel/universe"),
+            self.universe_assembled.clone(),
+            now,
+            now,
+            facts,
+        )?;
+        self.event_log.append(&envelope.to_frame()?)?;
+        self.journal.publish(envelope, now)?;
+        Ok(())
     }
 
     /// Instruments in the assembled universe unfit to drive a capital
@@ -1805,6 +1949,18 @@ impl Platform {
 
     pub fn event_log(&self) -> &EventLog {
         &self.event_log
+    }
+
+    /// The last log sequence this platform inherited rather than wrote.
+    ///
+    /// Zero for a log that opened empty. Everything after it is this run's to
+    /// hand to a durable archive; everything up to it a previous run already
+    /// did. This is the platform's own answer rather than one derived from
+    /// the log afterwards, because after assembly the log's last record is
+    /// this run's universe record and the derivation is wrong by one — see
+    /// the field's comment in `new`.
+    pub fn inherited_through(&self) -> u64 {
+        self.inherited_through
     }
 
     pub fn orders(&self) -> &OrderManager {
@@ -5131,9 +5287,14 @@ impl Platform {
         self.journal.replay(filter)
     }
 
-    /// Decode the journal back into the entries that were written.
+    /// Decode the journal back into the cycle entries that were written.
+    ///
+    /// Filtered to the cycle entry's own topic: the journal also carries the
+    /// universe record written at assembly and every policy issue, and
+    /// decoding those as cycle entries would fail the whole read the first
+    /// time either was present.
     pub fn journal_entries(&self) -> Result<Vec<CycleJournalEntry>> {
-        self.replay_journal(&EventFilter::new())?
+        self.replay_journal(&EventFilter::new().topic(CycleJournalEntry::TOPIC))?
             .iter()
             .map(|envelope| Ok(envelope.decode::<CycleJournalEntry>()?.body))
             .collect()

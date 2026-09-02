@@ -40,4 +40,4 @@ pub use intelligence::{
 pub use object::{FinancialObject, ObjectBuilder};
 pub use quality::{DataQuality, LicensingClass, Provenance};
 pub use risk_profile::{FactorExposures, Greeks, RiskCharacteristics};
-pub use universe::Universe;
+pub use universe::{CatalogueOrigin, Universe};

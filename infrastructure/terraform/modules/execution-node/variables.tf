@@ -453,3 +453,60 @@ variable "labels" {
   type    = map(string)
   default = {}
 }
+
+variable "default_pricing" {
+  description = <<-EOT
+    How every strategy this node deploys prices its intents, written into
+    `node.env` as `QIP_DEFAULT_PRICING`.
+
+    Two forms and no others: `marketable`, which prices at the touch, and
+    `rest-at-mid:<seconds>`, which rests at mid and withdraws after that many
+    seconds. Empty is the default and is the same as unset — the node deploys
+    no strategy and says so at start-up.
+
+    Written even when empty, on purpose. An optional variable no deployment
+    sets is a capability no environment can select: the binary takes its
+    fallback, the node is healthy, and nothing anywhere says the feature is
+    off. The key being present with an empty value is what makes the choice
+    reviewable in the tfvars rather than invisible.
+  EOT
+
+  type    = string
+  default = ""
+
+  validation {
+    condition = var.default_pricing == "" || var.default_pricing == "marketable" || (
+      startswith(var.default_pricing, "rest-at-mid:")
+      && can(tonumber(trimprefix(var.default_pricing, "rest-at-mid:")))
+    )
+    error_message = <<-EOT
+      default_pricing must be "", "marketable", or "rest-at-mid:<seconds>"
+      with a whole number of seconds — `rest-at-mid:30`, not `rest-at-mid:30s`.
+      The node refuses anything else at start-up; refusing it here means the
+      operator reads the mistake instead of a node that came up quiet.
+    EOT
+  }
+}
+
+variable "strategy_plan_path" {
+  description = <<-EOT
+    The file the node reads its compiled strategy plan from, written into
+    `node.env` as `QIP_STRATEGY_PLAN_PATH`.
+
+    Empty is the default and the same as unset: the payload names a plan by
+    digest and the node has no bytes to check it against, so it deploys
+    nothing. Written even when empty, for the reason `default_pricing` gives.
+  EOT
+
+  type    = string
+  default = ""
+
+  validation {
+    condition     = var.strategy_plan_path == "" || startswith(var.strategy_plan_path, "/")
+    error_message = <<-EOT
+      strategy_plan_path must be absolute. The node's working directory is
+      systemd's, not the one whoever wrote the path had in mind, and a
+      relative path would resolve somewhere nobody chose.
+    EOT
+  }
+}

@@ -28,6 +28,8 @@ pub mod mesh;
 pub mod mirror;
 /// One pass of the node: feed, decide, act, reconcile.
 pub mod pass;
+/// The strategies the payload's plan names, deployed under their grants.
+pub mod strategies;
 /// The node's own metric seam: the mesh link, rendered as a series.
 pub mod telemetry;
 pub mod venue;

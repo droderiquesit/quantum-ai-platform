@@ -15,7 +15,9 @@
 //! panel carries whether its contents were reported, are stale, or were never
 //! reported at all. An empty table that reads as "zero exposure" when it means
 //! "no cell is reporting" is the most dangerous thing a trading console can
-//! render, and the type is what keeps the two apart.
+//! render, and the type is what keeps the two apart. [`view::Fact`] is the
+//! same rule for a single figure: a value the platform never recorded reaches
+//! a page as the reason it is missing, never as `0`.
 //!
 //! Every page carries a banner stating whether the platform is paper trading,
 //! live, or halted. Whether real money is moving is the one thing that must
@@ -34,6 +36,7 @@ pub use html::{Element, escape};
 pub use pages::{Surface, render};
 pub use panel::{Freshness, Panel};
 pub use view::{
-    AgentRow, GovernanceRow, LimitRow, OpportunityRow, OrderRow, Posture, ProposalRow, StageRow,
-    ThesisRow, ViewModel,
+    AgentRow, EdgeCellRow, Fact, FactRow, GovernanceRow, LimitRow, OpportunityRow, OrderRow,
+    Posture, ProposalRow, ShippedPolicyRow, StageRow, ThesisRow, UniverseExclusionRow,
+    UniverseView, ViewModel,
 };

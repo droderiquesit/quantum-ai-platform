@@ -337,6 +337,7 @@ dependencies = [
  "qip-strategy",
  "qip-transport",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -533,9 +533,12 @@ fn a_second_platform_over_the_same_file_continues_the_chain_instead_of_starting_
     assert!(first_count > 0, "the premise: the first run wrote records");
 
     let mut second = platform(PlatformConfig::default().with_event_log_file(&path))?;
+    // Everything the first run wrote, plus the one record assembly itself
+    // writes — which universe this process saw — chained onto the first
+    // run's tail rather than onto genesis.
     assert_eq!(
         second.event_log().records().len(),
-        first_count,
+        first_count + 1,
         "the second platform did not read back what the first one wrote"
     );
 

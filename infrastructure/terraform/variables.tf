@@ -264,6 +264,13 @@ variable "execution_nodes" {
       port = number
     }))
     create_egress_nat = optional(bool, false)
+    # How the node prices the intents of every strategy it deploys, and where
+    # it reads the compiled plan from. Empty is "deploy nothing", which is
+    # what the node does with them unset; they are written into `node.env`
+    # regardless so the choice is visible here rather than nowhere. The
+    # module validates both.
+    default_pricing    = optional(string, "")
+    strategy_plan_path = optional(string, "")
   }))
 
   default = {}

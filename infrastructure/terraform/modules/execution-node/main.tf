@@ -400,6 +400,8 @@ resource "google_compute_instance_template" "node" {
       egress_endpoint            = var.egress_endpoints["gcp"]
       egress_bootstrap           = var.egress_bootstrap
       shadow_mode                = var.shadow_mode
+      default_pricing            = var.default_pricing
+      strategy_plan_path         = var.strategy_plan_path
       isolated_cpus              = local.isolated_cpus
       required_hugepages_gb      = var.required_hugepages_gb
       watchdog_seconds           = var.watchdog_seconds
