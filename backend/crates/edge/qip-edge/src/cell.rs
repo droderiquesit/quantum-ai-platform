@@ -288,6 +288,14 @@ pub struct Cell {
     /// halt only if it was issued *after* this, so a pre-halt payload still in
     /// flight cannot un-halt the cell it was racing.
     policy_halt_barrier: Option<Timestamp>,
+    /// The second halt wire (§46.2): the reason the polled flag gave, while
+    /// it is engaged. Independent of the two above in both directions — it
+    /// is set only by [`Self::apply_polled_halt`], which reads a flag the
+    /// node polls from a file and not a frame off the mesh, and it is
+    /// released only by that flag reading absent or released; no policy
+    /// payload, however new, and no operator credential on the kill switch
+    /// touches it. Two wires that shared a release would share a failure.
+    polled_halt: Option<String>,
     dropcopy: DropCopyReconciler,
     /// The arbitrage desk, if the composition root installed one. `None` is
     /// a cell that runs strategy programs and scans no graph, which is every
@@ -351,6 +359,7 @@ impl Cell {
             policy: None,
             policy_halted: false,
             policy_halt_barrier: None,
+            polled_halt: None,
             dropcopy: DropCopyReconciler::new(),
             desk: None,
             journal: Journal::new(),
@@ -434,6 +443,7 @@ impl Cell {
         self.metrics.halt(
             self.autonomy.kill_switch().is_globally_tripped(),
             self.policy_halted,
+            self.polled_halt.is_some(),
         );
     }
 
@@ -475,9 +485,77 @@ impl Cell {
         &self.fills
     }
 
-    /// Whether the cell is stopped.
+    /// Whether the cell is stopped, by any of its three halts.
     pub fn is_halted(&self) -> bool {
-        self.autonomy.kill_switch().is_globally_tripped() || self.policy_halted
+        self.autonomy.kill_switch().is_globally_tripped()
+            || self.policy_halted
+            || self.polled_halt.is_some()
+    }
+
+    /// The reason the polled halt wire is engaged, while it is.
+    pub fn polled_halt(&self) -> Option<&str> {
+        self.polled_halt.as_deref()
+    }
+
+    /// Apply what the polled halt flag read as, this poll.
+    ///
+    /// The flag is the state: engaged or unreadable halts, absent or
+    /// released does not, and every poll re-applies it. That is the
+    /// opposite discipline from [`Self::apply_halt`], whose broadcast is
+    /// engage-only and released by a newer signed payload, and the
+    /// difference is the point. §46.2 asks for two paths that do not share
+    /// a failure: the broadcast fails when the mesh does, and a mesh
+    /// failure cannot reach this one, because this one is a file on the
+    /// node that nothing on the mesh writes or clears. Neither halt can
+    /// release the other.
+    ///
+    /// Unreadable halts. A flag that exists but cannot be read — the mount
+    /// is gone, the permission is wrong, the content is not one of the two
+    /// words — is a wire whose state is unknown, and a kill switch whose
+    /// state is unknown must read as engaged ("stale is treated as engaged",
+    /// §46.2). Reading it as absent would let the failure of the mount be
+    /// the release of the halt.
+    pub fn apply_polled_halt(&mut self, reading: PolledHalt, now: Timestamp) {
+        let halting = reading.halts();
+        match (self.polled_halt.is_some(), halting) {
+            (false, true) => {
+                let reason = format!("polled halt: {}", reading.describe());
+                self.journal.record(
+                    Decision::HaltChanged {
+                        halted: true,
+                        reason: reason.clone(),
+                    },
+                    now,
+                );
+                self.polled_halt = Some(reason);
+            }
+            (true, false) => {
+                self.polled_halt = None;
+                // `halted` names the cell, not the wire: the other two halts
+                // may still hold it, and a reader of the chain must not take
+                // this entry for a cell that resumed.
+                let halted = self.is_halted();
+                self.journal.record(
+                    Decision::HaltChanged {
+                        halted,
+                        reason: format!(
+                            "the polled halt flag {}; the cell is {}",
+                            reading.describe(),
+                            if halted {
+                                "still halted by another wire"
+                            } else {
+                                "released"
+                            }
+                        ),
+                    },
+                    now,
+                );
+            }
+            // Idempotent in both steady states: a flag re-read as engaged is
+            // one halt, and a flag re-read as absent is no event.
+            (true, true) | (false, false) => {}
+        }
+        self.record_halt();
     }
 
     /// The degradation narrowing currently in force, derived from the applied
@@ -862,8 +940,10 @@ impl Cell {
             // knock on.
             let gate = if self.autonomy.kill_switch().is_globally_tripped() {
                 "kill_switch"
-            } else {
+            } else if self.policy_halted {
                 "policy_halt"
+            } else {
+                "polled_halt"
             };
             self.refuse(&mut report, gate, "the cell is halted", now);
             return Ok(report);
@@ -2487,6 +2567,100 @@ impl Cell {
     }
 }
 
+/// What the polled halt flag read as, on one poll (§46.2's second wire).
+///
+/// Built from the flag's bytes by [`Self::from_content`] and from the
+/// failure to obtain them by the node, which is the only thing that touches
+/// the file. The cell never reads a path: it is handed the reading, so the
+/// same seam is driven by a test with no file at all.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PolledHalt {
+    /// No flag exists. Not halted: the deployment shape is a file the
+    /// operator creates to halt and removes to release, and a node whose
+    /// operator has never written one is running. A *missing mount* is not
+    /// this — see [`crate::cell::PolledHalt::Unreadable`].
+    Absent,
+    /// The flag exists and reads `released`. Not halted: the managed-store
+    /// shape keeps a key that always exists, and this is its off state.
+    Released,
+    /// The flag is engaged, with the reason it carried.
+    Engaged(String),
+    /// The flag could not be read or could not be understood: a permission
+    /// error, a missing directory, more bytes than a flag may hold, bytes
+    /// that are not text, or text that is neither word. Halted, because a
+    /// wire whose state is unknown is a wire that has failed, and a kill
+    /// switch fails engaged.
+    Unreadable(String),
+}
+
+impl PolledHalt {
+    /// The most bytes a flag may hold. A flag is a word and a short reason;
+    /// a file larger than this is not the flag, whatever put it there.
+    pub const MAX_CONTENT_BYTES: usize = 256;
+
+    /// Read the flag's bytes.
+    ///
+    /// Two words are understood: `released`, and `engaged` optionally
+    /// followed by a colon and a reason. An empty file is engaged — its
+    /// presence is the signal in the file-per-halt shape. Anything else
+    /// halts as unreadable; the content is not echoed into the reason,
+    /// because whatever ended up in the file is not a fact the chain should
+    /// carry.
+    pub fn from_content(bytes: &[u8]) -> Self {
+        if bytes.len() > Self::MAX_CONTENT_BYTES {
+            return Self::Unreadable(format!(
+                "the flag holds {} bytes and a flag may hold at most {}",
+                bytes.len(),
+                Self::MAX_CONTENT_BYTES
+            ));
+        }
+        let Ok(text) = std::str::from_utf8(bytes) else {
+            return Self::Unreadable("the flag is not text".to_string());
+        };
+        let text = text.trim();
+        if text.is_empty() || text == "engaged" {
+            return Self::Engaged("the flag is present".to_string());
+        }
+        if let Some(reason) = text.strip_prefix("engaged:") {
+            let reason = reason.trim();
+            return Self::Engaged(if reason.is_empty() {
+                "the flag is present".to_string()
+            } else {
+                reason.to_string()
+            });
+        }
+        if text == "released" {
+            return Self::Released;
+        }
+        Self::Unreadable("the flag holds text that is neither `engaged` nor `released`".to_string())
+    }
+
+    /// Whether this reading stops the cell.
+    pub const fn halts(&self) -> bool {
+        matches!(self, Self::Engaged(_) | Self::Unreadable(_))
+    }
+
+    /// One bounded word per arm, for a health body or a label.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Absent => "absent",
+            Self::Released => "released",
+            Self::Engaged(_) => "engaged",
+            Self::Unreadable(_) => "unreadable",
+        }
+    }
+
+    /// The reading, for the journal.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Absent => "is absent".to_string(),
+            Self::Released => "reads released".to_string(),
+            Self::Engaged(reason) => format!("is engaged: {reason}"),
+            Self::Unreadable(reason) => format!("is unreadable and reads as engaged: {reason}"),
+        }
+    }
+}
+
 /// One net as the crossing window saw it: when, and how much of its gross
 /// was crossed.
 #[derive(Clone, Copy, Debug)]
@@ -3091,5 +3265,145 @@ mod crossing_tests {
                 .is_ok(),
             "a one-pass interval is the per-net reading with accounting on, and is valid"
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::panic_in_result_fn)]
+mod polled_halt_tests {
+    //! §46.2's second wire, at the seam the node drives: what each reading
+    //! of the flag does to the cell, and that no other wire releases it.
+
+    use super::*;
+    use qip_feature_dag::engine::FeatureEngine;
+    use qip_feature_dag::state::MarketState;
+
+    fn cell() -> Result<Cell> {
+        let config = CellConfig::new("london-1", "europe-west2");
+        let features = FeatureEngine::new(MarketState::default(), qip_core::Duration::from_secs(5));
+        Cell::new(config, features)
+    }
+
+    fn at(seconds: i64) -> Timestamp {
+        Timestamp::from_secs(1_700_000_000).saturating_add(qip_core::Duration::from_secs(seconds))
+    }
+
+    #[test]
+    fn every_content_the_flag_can_hold_reads_the_way_the_wire_needs() {
+        // The two words, the empty file, and everything else. Everything
+        // else halts: a flag whose content cannot be understood is a wire
+        // whose state is unknown, and a kill switch fails engaged.
+        assert_eq!(
+            PolledHalt::from_content(b""),
+            PolledHalt::Engaged("the flag is present".to_string())
+        );
+        assert_eq!(
+            PolledHalt::from_content(b"engaged\n"),
+            PolledHalt::Engaged("the flag is present".to_string())
+        );
+        assert_eq!(
+            PolledHalt::from_content(b"engaged: drill 7\n"),
+            PolledHalt::Engaged("drill 7".to_string())
+        );
+        assert_eq!(
+            PolledHalt::from_content(b" released \n"),
+            PolledHalt::Released
+        );
+        assert!(
+            matches!(
+                PolledHalt::from_content(b"release"),
+                PolledHalt::Unreadable(_)
+            ),
+            "a near-miss of the release word must not release"
+        );
+        assert!(matches!(
+            PolledHalt::from_content(b"\xff\xfe"),
+            PolledHalt::Unreadable(_)
+        ));
+        let oversized = vec![b'e'; PolledHalt::MAX_CONTENT_BYTES + 1];
+        assert!(matches!(
+            PolledHalt::from_content(&oversized),
+            PolledHalt::Unreadable(_)
+        ));
+        for (reading, halts) in [
+            (PolledHalt::Absent, false),
+            (PolledHalt::Released, false),
+            (PolledHalt::Engaged("x".to_string()), true),
+            (PolledHalt::Unreadable("x".to_string()), true),
+        ] {
+            assert_eq!(reading.halts(), halts, "{reading:?}");
+        }
+    }
+
+    #[test]
+    fn an_unreadable_flag_halts_and_an_absent_one_releases_and_the_chain_says_which() -> Result<()>
+    {
+        let mut cell = cell()?;
+        assert!(!cell.is_halted(), "the premise is a running cell");
+
+        cell.apply_polled_halt(
+            PolledHalt::Unreadable("permission denied".to_string()),
+            at(1),
+        );
+        assert!(cell.is_halted(), "an unreadable flag did not halt the cell");
+        assert!(
+            cell.polled_halt()
+                .is_some_and(|reason| reason.contains("permission denied")),
+            "the halt does not carry the read failure: {:?}",
+            cell.polled_halt()
+        );
+        // Re-reading the same state is one halt, not a second chain entry.
+        let entries = cell.journal().entries().len();
+        cell.apply_polled_halt(PolledHalt::Engaged("still".to_string()), at(2));
+        assert_eq!(
+            cell.journal().entries().len(),
+            entries,
+            "a re-read was journaled as a new halt"
+        );
+
+        cell.apply_polled_halt(PolledHalt::Absent, at(3));
+        assert!(
+            !cell.is_halted(),
+            "an absent flag did not release the polled halt"
+        );
+        let last = cell
+            .journal()
+            .entries()
+            .last()
+            .expect("the release was journaled");
+        assert_eq!(last.decision.kind(), "halt_changed");
+        assert!(
+            format!("{:?}", last.decision).contains("polled halt flag is absent"),
+            "the release entry does not name the wire: {:?}",
+            last.decision
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_polled_wire_and_the_kill_switch_release_each_other_never() -> Result<()> {
+        // Two wires that shared a release would share a failure. With both
+        // engaged, clearing one leaves the cell exactly as halted, and the
+        // chain entry for the polled release says so rather than reading as
+        // a resumed cell.
+        let mut cell = cell()?;
+        cell.apply_polled_halt(PolledHalt::Engaged("drill".to_string()), at(1));
+        cell.autonomy_mut()
+            .kill_switch_mut()
+            .trip_global(at(2), "operator", "drill");
+        assert!(cell.is_halted(), "the premise needs both wires engaged");
+
+        cell.apply_polled_halt(PolledHalt::Released, at(3));
+        assert!(
+            cell.is_halted(),
+            "releasing the polled wire released a kill switch it does not own"
+        );
+        let last = cell.journal().entries().last().expect("journaled");
+        assert!(
+            matches!(last.decision, Decision::HaltChanged { halted: true, .. }),
+            "the polled release entry claims the cell resumed: {:?}",
+            last.decision
+        );
+        Ok(())
     }
 }

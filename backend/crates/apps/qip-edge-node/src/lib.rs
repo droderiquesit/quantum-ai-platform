@@ -16,6 +16,8 @@
 //! the binary actually uses.
 
 pub mod gateway;
+/// The second halt wire: a flag on the node's own filesystem, polled.
+pub mod halt;
 pub mod mesh;
 pub mod mirror;
 /// The node's own metric seam: the mesh link, rendered as a series.

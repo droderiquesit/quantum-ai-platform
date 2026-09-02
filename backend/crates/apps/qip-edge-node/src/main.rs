@@ -41,8 +41,10 @@
 use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Duration, SystemClock};
+use qip_edge::cell::PolledHalt;
 use qip_edge::cell::{Cell, CellConfig, Placer, WorkReport};
 use qip_edge_node::gateway::NodeGateway;
+use qip_edge_node::halt::{FLAG_VARIABLE, HaltFlag};
 use qip_edge_node::mesh::{MeshLink, MeshSettings, PEER_VARIABLE};
 use qip_edge_node::mirror::StoreMirror;
 use qip_edge_node::telemetry::{MeshSeries, respond};
@@ -89,6 +91,11 @@ struct NodeConfig {
     /// detached, which ADR 0008 makes a legitimate state rather than a
     /// misconfiguration — see `qip_edge_node::mesh`.
     mesh: Option<MeshSettings>,
+    /// The second halt wire, when the deployment has mounted one. `None` is
+    /// a node with the broadcast halt alone, which is named in the list of
+    /// production requirements rather than silently accepted — see
+    /// `qip_edge_node::halt`.
+    halt_flag: Option<HaltFlag>,
 }
 
 impl NodeConfig {
@@ -148,6 +155,12 @@ impl NodeConfig {
         let storage = StorageSettings::from_env()
             .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
         let mesh = MeshSettings::from_env(&cell_id, &region)?;
+        // Set but unusable is refused; unset is a node without the second
+        // wire, which is allowed and announced.
+        let halt_flag = match std::env::var(FLAG_VARIABLE) {
+            Ok(value) if !value.trim().is_empty() => Some(HaltFlag::at(value.trim())?),
+            _ => None,
+        };
 
         Ok(Self {
             cell_id,
@@ -157,6 +170,7 @@ impl NodeConfig {
             health_port,
             storage,
             mesh,
+            halt_flag,
         })
     }
 }
@@ -309,8 +323,16 @@ fn run() -> Result<()> {
     // one, and inventing a feed would be worse than serving without it. The
     // node serves its health surface so an orchestrator can see it, and
     // reports what production would still have to supply.
-    for requirement in missing_production_requirements(config.mesh.is_some(), &gateway) {
+    for requirement in
+        missing_production_requirements(config.mesh.is_some(), config.halt_flag.is_some(), &gateway)
+    {
         println!("qip-edge-node: awaiting {requirement}");
+    }
+    if let Some(flag) = &config.halt_flag {
+        println!(
+            "qip-edge-node: polled halt flag at {}",
+            flag.path().display()
+        );
     }
 
     serve(
@@ -339,7 +361,11 @@ fn run() -> Result<()> {
 /// standing requirements — the ones that hold *even when everything is
 /// configured*, the first of which is that nothing in this code can tell a
 /// sandbox endpoint from a production one.
-fn missing_production_requirements(has_mesh_peer: bool, gateway: &NodeGateway) -> Vec<String> {
+fn missing_production_requirements(
+    has_mesh_peer: bool,
+    has_halt_flag: bool,
+    gateway: &NodeGateway,
+) -> Vec<String> {
     let mut missing = vec![
         "QIP_VENUE_FEED_ENDPOINT and its multicast group or session credential".to_string(),
         "QIP_DROP_COPY_ENDPOINT for the independent fill channel".to_string(),
@@ -361,6 +387,16 @@ fn missing_production_requirements(has_mesh_peer: bool, gateway: &NodeGateway) -
         missing.push(format!(
             "{PEER_VARIABLE} for the central plane: without it this cell publishes no state and \
              receives no capital, and stops when its current envelope expires"
+        ));
+    }
+    if !has_halt_flag {
+        // The broadcast halt shares the mesh's failure. A node with no
+        // second wire is a node that a partition leaves unhaltable for as
+        // long as its envelope runs, and that is said here rather than left
+        // for the incident to discover.
+        missing.push(format!(
+            "{FLAG_VARIABLE} for the second halt wire: without it the only halt this cell can \
+             hear rides the mesh, and a partition that stops the mesh stops the halt with it"
         ));
     }
     missing
@@ -396,14 +432,39 @@ fn serve(
         .map_err(|error| Error::io(format!("cannot bind {address}: {error}")))?;
     println!("qip-edge-node: health on {address}");
 
+    // The last reading of the polled halt flag, so a change is printed once
+    // rather than on every probe; an unreadable flag is printed every time,
+    // because it is an incident for as long as it lasts.
+    let mut last_polled: Option<PolledHalt> = None;
     for incoming in listener.incoming() {
         match incoming {
             Ok(stream) => {
+                let now = clock.now();
+                // The second halt wire, polled first so that the halt it
+                // applies is in the journal the flush below ships and in the
+                // delta the exchange below publishes. It reads a file on this
+                // machine and touches nothing on the mesh — see
+                // `qip_edge_node::halt` for why that is the whole point.
+                if let Some(flag) = &config.halt_flag {
+                    let reading = flag.poll(cell, now);
+                    let unreadable = matches!(reading, PolledHalt::Unreadable(_));
+                    if unreadable || last_polled.as_ref() != Some(&reading) {
+                        eprintln!(
+                            "qip-edge-node: polled halt flag {}; the cell is {}",
+                            reading.describe(),
+                            if cell.is_halted() {
+                                "halted"
+                            } else {
+                                "running"
+                            }
+                        );
+                    }
+                    last_polled = Some(reading);
+                }
                 // A journal that cannot be shipped is reported and the node
                 // keeps serving: the entries are still held locally and still
                 // chained, so the next flush ships them. Exiting here would
                 // turn a storage outage into a trading outage.
-                let now = clock.now();
                 if let Err(error) = cell.flush(mirror, now) {
                     eprintln!(
                         "qip-edge-node: the journal could not be shipped: {}",
@@ -482,8 +543,20 @@ fn answer(
         ),
         None => "null".to_string(),
     };
+    // The polled wire's state, as a fixed word: whether a second wire is
+    // configured at all, and whether it is what holds the cell. A probe that
+    // could see `halted` but not which wire would send an operator to clear
+    // the wrong one.
+    let halt_flag = match &config.halt_flag {
+        Some(flag) => format!(
+            r#"{{"path":"{}","engaged":{}}}"#,
+            flag.path().display(),
+            cell.polled_halt().is_some()
+        ),
+        None => "null".to_string(),
+    };
     let body = format!(
-        r#"{{"cell":"{}","region":"{}","halted":{},"live_capable":{},"venues":{},"strategies":{},"journal_entries":{},"journal_shipped":{},"storage":"{}","durable":{},"gateway":{{"class":"{}","venue":"{}","submitted":{},"rejected":{},"reaches_a_socket":{},"unknown_orders":{}}},"mesh":{mesh},"started_at":{}}}"#,
+        r#"{{"cell":"{}","region":"{}","halted":{},"halt_flag":{halt_flag},"live_capable":{},"venues":{},"strategies":{},"journal_entries":{},"journal_shipped":{},"storage":"{}","durable":{},"gateway":{{"class":"{}","venue":"{}","submitted":{},"rejected":{},"reaches_a_socket":{},"unknown_orders":{}}},"mesh":{mesh},"started_at":{}}}"#,
         config.cell_id,
         config.region,
         cell.is_halted(),
