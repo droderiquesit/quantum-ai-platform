@@ -54,6 +54,7 @@ pub mod insights;
 pub mod learning;
 pub mod models;
 pub mod plane;
+pub mod whitelist;
 
 pub use dna::{DnaPayload, StrategyDna};
 pub use factory::{StrategyCandidate, StrategyFactory, StrategyReview};
@@ -61,4 +62,7 @@ pub use learning::{CellOutcome, LearningReport, LearningVerdict, StrategyLearnin
 pub use plane::{
     AbsorbedFill, BreakDirection, CellIngestion, CellReport, CentralConfig, CentralPlane,
     IssuedCapital, ReconciliationBreak, capital_subject,
+};
+pub use whitelist::{
+    ArbitragePolicy, WhitelistIssue, WhitelistOutcome, WhitelistedMarket, WhitelistedVenue,
 };

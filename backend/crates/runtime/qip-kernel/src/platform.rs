@@ -36,6 +36,7 @@
 
 use crate::central::{
     AbsorbedFill, CellIngestion, CellOutcome, CellReport, CentralPlane, LearningReport,
+    WhitelistIssue,
 };
 use crate::config::PlatformConfig;
 use crate::cycle::{CycleReport, Stage, StageOutcome};
@@ -1556,6 +1557,44 @@ impl Platform {
 
     pub fn central_mut(&mut self) -> &mut CentralPlane {
         &mut self.central
+    }
+
+    /// Produce one cell's cycle whitelist and journal what was produced.
+    ///
+    /// The plane derives the whitelist (`CentralPlane::cycle_whitelist_for`);
+    /// this is the entry point a shipper uses, because the journal is the
+    /// platform's and a whitelist that reached a cell without a record here
+    /// would be a permission reproducible from nothing. Recorded whether or
+    /// not it carries anything: an empty whitelist shipped every few minutes
+    /// is exactly the fact an operator asking why the desk never installs
+    /// needs to find. A refusal is not journaled here, because nothing was
+    /// shipped; it is returned, naming the entry, for the shipper to log.
+    pub fn issue_cycle_whitelist(&mut self, cell: &str, now: Timestamp) -> Result<WhitelistIssue> {
+        let issue = self.central.cycle_whitelist_for(cell, now)?;
+        let correlation_id = self
+            .context
+            .ids()
+            .generate::<qip_core::lineage::CorrelationKind>(now);
+        let facts = EventFacts::derived(
+            SourceIdentity::new(
+                SourceId::new("qip-kernel"),
+                SourceType::Internal,
+                StreamRegion::new(HOME_REGION),
+            ),
+            Subject::unattributed(),
+            WhitelistIssue::TOPIC,
+        );
+        let envelope = StreamEnvelope::seal(
+            self.context.ids().generate::<EventKind>(now),
+            Lineage::root(correlation_id, "kernel/whitelist"),
+            issue.clone(),
+            now,
+            now,
+            facts,
+        )?;
+        self.event_log.append(&envelope.to_frame()?)?;
+        self.journal.publish(envelope, now)?;
+        Ok(issue)
     }
 
     /// Replace the central plane with one built elsewhere.

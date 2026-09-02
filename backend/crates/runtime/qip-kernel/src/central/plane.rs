@@ -22,6 +22,7 @@
 
 use super::dna::StrategyDna;
 use super::factory::StrategyFactory;
+use super::whitelist::{ArbitragePolicy, WhitelistIssue, WhitelistOutcome};
 use qip_capital::allocation::{
     Allocation, AllocationLimits, AllocationPlan, CapitalAllocator, DrawdownSchedule,
     StrategyProposal,
@@ -37,6 +38,7 @@ use qip_compliance::plane::{CompliancePlane, ComplianceReport};
 use qip_compliance::signing::SigningKey;
 use qip_contracts::governance::{Approval, Severity};
 use qip_contracts::message::BookSide;
+use qip_contracts::policy::CycleWhitelist;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::wire::CrossRecord;
 use qip_contracts::{CapitalEnvelope, Utilisation};
@@ -110,6 +112,16 @@ pub struct CentralConfig {
     pub minimum_cells_for_crowding: usize,
     /// Treat every incident as at least this severe.
     pub response_floor: Severity,
+    /// What the arbitrage desk may price, or `None` for nothing.
+    ///
+    /// The source of the shipping payload's cycle whitelist (slot 8), stated
+    /// by an operator because the centre holds no pair list and no fee
+    /// schedule of its own — see [`super::whitelist`]. `#[serde(default)]`
+    /// for the same reason [`crate::PlatformConfig::central`] is: a stored
+    /// configuration written before the desk had a producer still reads,
+    /// and reads as the fail-closed empty whitelist.
+    #[serde(default)]
+    pub arbitrage: Option<ArbitragePolicy>,
 }
 
 impl Default for CentralConfig {
@@ -132,6 +144,7 @@ impl Default for CentralConfig {
             dual_approval_threshold: Decimal::ZERO,
             minimum_cells_for_crowding: 3,
             response_floor: Severity::Observation,
+            arbitrage: None,
         }
     }
 }
@@ -536,6 +549,14 @@ impl CentralPlane {
                 config.recall_acknowledgement.as_secs_f64()
             )));
         }
+        // Refused here for the same reason the recall window is: every
+        // refusal in `ArbitragePolicy::validate` is one the cell would make
+        // when the whitelist arrived, and a plane that carried one would ship
+        // a whitelist every few minutes that every cell refused whole, with
+        // the reason in a delta stream rather than at start-up.
+        if let Some(policy) = &config.arbitrage {
+            policy.validate()?;
+        }
         let key = SigningKey::from_secret(CENTRAL_KEY_ID, signing_secret)?;
         let limits = AllocationLimits::new(
             config.total_budget,
@@ -571,6 +592,56 @@ impl CentralPlane {
 
     pub fn config(&self) -> &CentralConfig {
         &self.config
+    }
+
+    /// The cycle whitelist this cell's payload carries at `now` — slot 8 of
+    /// blueprint §41.5 — and why.
+    ///
+    /// Empty, and said so, when no [`CentralConfig::arbitrage`] policy is set
+    /// or the desk's strategy holds no live grant at the cell: the grant's
+    /// order limit is the funding instrument's start size, and a whitelist
+    /// without one is refused by the cell's installer as unsized. An error is
+    /// a policy venue the grant does not permit, or a grant that permits no
+    /// order — refused at the producer, naming the entry, because the cell
+    /// would refuse the whole whitelist for the same reason and say so only
+    /// in its delta stream.
+    ///
+    /// Policy, not an order: this names what the desk may price and how much
+    /// it may commit. Whether any cycle is taken is decided at the cell,
+    /// against its own books.
+    pub fn cycle_whitelist_for(&self, cell: &str, now: Timestamp) -> Result<WhitelistIssue> {
+        let empty = |outcome| WhitelistIssue {
+            cell: cell.to_string(),
+            issued_at: now,
+            whitelist: CycleWhitelist {
+                cycles: BTreeMap::new(),
+                conversions: Vec::new(),
+                start_sizes: BTreeMap::new(),
+            },
+            outcome,
+        };
+        let Some(policy) = &self.config.arbitrage else {
+            return Ok(empty(WhitelistOutcome::NoPolicy));
+        };
+        let Some(envelope) = self
+            .envelopes
+            .get(&(cell.to_string(), policy.strategy.clone()))
+            .filter(|envelope| envelope.is_live(now))
+        else {
+            return Ok(empty(WhitelistOutcome::NoLiveGrant {
+                strategy: policy.strategy.clone(),
+            }));
+        };
+        let whitelist = policy.whitelist_for(envelope)?;
+        Ok(WhitelistIssue {
+            cell: cell.to_string(),
+            issued_at: now,
+            outcome: WhitelistOutcome::Emitted {
+                edges: whitelist.conversions.len(),
+                sized_against: envelope.signature().to_string(),
+            },
+            whitelist,
+        })
     }
 
     /// Count every strategy move the plane's ledger records, and every
@@ -1388,6 +1459,164 @@ mod tests {
             .envelopes
             .insert((CELL.to_string(), strategy.clone()), envelope);
         Ok(())
+    }
+
+    /// The refusals `qip-edge-node`'s `graph_from_whitelist` and
+    /// `sizes_from_whitelist` make, mirrored here because this crate cannot
+    /// depend on the node. If the node grows a refusal this does not mirror,
+    /// the producer can emit what the cell refuses, and this test stops
+    /// proving what its name says — so the list is the node's, in its order.
+    fn cell_would_accept(
+        whitelist: &CycleWhitelist,
+        venues: &[VenueId],
+    ) -> std::result::Result<(), String> {
+        const MAX_CONVERSIONS: usize = 256;
+        if whitelist.conversions.is_empty() {
+            return Err("no conversion".to_string());
+        }
+        if whitelist.conversions.len() > MAX_CONVERSIONS {
+            return Err("too many conversions".to_string());
+        }
+        let mut classes = BTreeMap::new();
+        for (position, conversion) in whitelist.conversions.iter().enumerate() {
+            let venue = VenueId::new(conversion.venue.as_str());
+            if !venues.contains(&venue) {
+                return Err(format!(
+                    "conversion {position} names a venue the cell may not trade"
+                ));
+            }
+            if conversion.from == conversion.to {
+                return Err(format!("conversion {position} converts into itself"));
+            }
+            if conversion.cost_fraction.is_negative() || conversion.cost_fraction >= Decimal::ONE {
+                return Err(format!("conversion {position} has a cost outside [0, 1)"));
+            }
+            if let Some(previous) = classes.insert(venue, conversion.venue_class)
+                && previous != conversion.venue_class
+            {
+                return Err(format!("conversion {position} reclassifies its venue"));
+            }
+            if !whitelist.start_sizes.contains_key(&conversion.from) {
+                return Err(format!(
+                    "conversion {position} leaves {} unsized",
+                    conversion.from
+                ));
+            }
+        }
+        for (object, size) in &whitelist.start_sizes {
+            if !size.is_positive() {
+                return Err(format!("{object} has a non-positive size"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Slot 8 shipped unproduced from every payload because nothing in the
+    /// centre produced it, so the desk the edge node could install from it
+    /// installed never. The plane now derives it from the operator's policy
+    /// and the desk's live grant, and what it derives is what the cell's
+    /// `graph_from_whitelist` accepts.
+    #[test]
+    fn a_plane_with_two_venues_and_a_pair_set_emits_a_whitelist_the_cell_would_accept() {
+        use super::super::whitelist::{ArbitragePolicy, WhitelistedMarket, WhitelistedVenue};
+        use qip_contracts::venue::VenueClass;
+
+        let desk = StrategyId::new("arb-desk");
+        let venue = |class, cost| WhitelistedVenue {
+            class,
+            taker_cost: cost,
+        };
+        let market = |venue: &str| WhitelistedMarket {
+            venue: venue.to_string(),
+            market: format!("AAA-USD@{venue}"),
+            base: "AAA".to_string(),
+            quote: "USD".to_string(),
+        };
+        let config = CentralConfig {
+            arbitrage: Some(ArbitragePolicy {
+                strategy: desk.clone(),
+                funding_instrument: "USD".to_string(),
+                venues: BTreeMap::from([
+                    (
+                        "XNYS".to_string(),
+                        venue(VenueClass::Exchange, dec!("0.0005")),
+                    ),
+                    (
+                        "XLON".to_string(),
+                        venue(VenueClass::Exchange, dec!("0.001")),
+                    ),
+                ]),
+                markets: vec![market("XNYS"), market("XLON")],
+                start_sizes: BTreeMap::from([("AAA".to_string(), dec!("100"))]),
+            }),
+            ..CentralConfig::default()
+        };
+        let mut plane = CentralPlane::new(&[7u8; 32], config).expect("the policy is valid");
+        let cell_venues = vec![VenueId::new("XNYS"), VenueId::new("XLON")];
+        let envelope = CapitalEnvelope::new(
+            desk.clone(),
+            CELL,
+            dec!("500000"),
+            dec!("25000"),
+            dec!("50000"),
+            cell_venues.clone(),
+            now(),
+            now().saturating_add(Duration::from_hours(8)),
+            "alice.chen",
+            "sig-arb-desk",
+        )
+        .expect("a well-formed grant");
+        plane
+            .envelopes
+            .insert((CELL.to_string(), desk.clone()), envelope);
+
+        let issue = plane
+            .cycle_whitelist_for(CELL, now())
+            .expect("two permitted venues emit");
+        // Premise: something was emitted, and it says what it was sized by.
+        assert_eq!(
+            issue.outcome,
+            WhitelistOutcome::Emitted {
+                edges: 4,
+                sized_against: "sig-arb-desk".to_string()
+            },
+            "{}",
+            issue.describe()
+        );
+        assert!(!issue.is_empty());
+        if let Err(reason) = cell_would_accept(&issue.whitelist, &cell_venues) {
+            panic!("the cell would refuse: {reason}");
+        }
+        // The funding size is the grant's order limit, and the grant alone
+        // decides it: the policy carried no size for USD.
+        assert_eq!(
+            issue.whitelist.start_sizes.get("USD"),
+            Some(&dec!("25000")),
+            "the funding instrument is sized by the grant"
+        );
+        // Both venues reach the whitelist with their own cost.
+        let costs: BTreeMap<&str, Decimal> = issue
+            .whitelist
+            .conversions
+            .iter()
+            .map(|conversion| (conversion.venue.as_str(), conversion.cost_fraction))
+            .collect();
+        assert_eq!(costs.get("XNYS"), Some(&dec!("0.0005")));
+        assert_eq!(costs.get("XLON"), Some(&dec!("0.001")));
+
+        // The same grant expired is no grant: the desk cannot be sized, and
+        // the whitelist says so instead of shipping stale sizes.
+        let later = now().saturating_add(Duration::from_hours(9));
+        let expired = plane
+            .cycle_whitelist_for(CELL, later)
+            .expect("an expired grant is an empty whitelist, not an error");
+        assert_eq!(
+            expired.outcome,
+            WhitelistOutcome::NoLiveGrant {
+                strategy: desk.clone()
+            }
+        );
+        assert!(expired.is_empty());
     }
 
     fn position(strategy: &StrategyId) -> CellPosition {
