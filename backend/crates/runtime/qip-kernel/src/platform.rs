@@ -61,6 +61,7 @@ use qip_contracts::message::BookSide;
 use qip_contracts::venue::{VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
 use qip_core::ids::{DecisionKind, EventKind, ObjectId, OrderId, ProposalId};
+use qip_core::kv::KeyValueStore;
 use qip_core::lineage::CorrelationId;
 use qip_core::lineage::{Lineage, TraceId};
 use qip_core::time::{Duration, Timestamp};
@@ -89,6 +90,7 @@ use qip_learning_engine::evaluation::{
     Evaluation, Outcome as ThesisOutcome, ThesisClaim, ThesisEvaluator,
 };
 use qip_learning_engine::feedback::{CalibrationReport, FeedbackEngine, FeedbackReport};
+use qip_lifecycle::trials::TrialBook;
 use qip_market::bar::Bar;
 use qip_market::corporate_action::CorporateActionKind;
 use qip_market::snapshot::MarketSnapshot;
@@ -1580,7 +1582,61 @@ impl Platform {
         // nothing — the reproducible plane it replaces was wired, and the
         // silence would begin exactly when the real key arrived.
         central.attach_metrics(Arc::clone(&self.telemetry.metrics));
+        // The same for the durable trial book, where one has been opened: a
+        // plane swapped in after `open_trial_book` would otherwise arrive
+        // with the factory's in-process default and forget every family's
+        // lifetime count at the moment the operator's key was installed,
+        // which is the per-run accounting the book exists to prevent — and
+        // it would do so silently, because an in-memory book answers every
+        // question a durable one does. Carrying it across makes the two
+        // calls order-independent rather than leaving a trap in the roots.
+        if let Some(book) = self
+            .central
+            .factory()
+            .ledger()
+            .trial_book()
+            .filter(|book| book.is_durable())
+            .cloned()
+        {
+            central.factory_mut().attach_trial_book(book);
+        }
         self.central = central;
+    }
+
+    /// Open the durable trial book on `store` and charge every holdout
+    /// evaluation from now on to it.
+    ///
+    /// The factory is built with an in-process book, whose lifetime counts
+    /// are this process's — so until a composition root called this, every
+    /// restart forgot every family's lifetime trial count, and a sweep split
+    /// across two runs was two small sweeps as far as the deflated Sharpe
+    /// gate could tell. That is the laundering cumulative accounting exists
+    /// to refuse.
+    ///
+    /// Refuses, and the caller must not start, when the store's journal does
+    /// not verify. `TrialBook::open` replays every family's hash chain and
+    /// refuses a record that was altered, removed, reordered or backdated; a
+    /// process that fell back to an empty book over that store would begin
+    /// counting at zero on top of the very tampering the chain caught.
+    /// `namespace` is the store's name as the root configured it, so the
+    /// refusal says which store to restore; the journal key inside the
+    /// inner message names the family.
+    pub fn open_trial_book(
+        &mut self,
+        store: Arc<dyn KeyValueStore>,
+        namespace: &str,
+    ) -> Result<()> {
+        let book = TrialBook::open(store).map_err(|error| {
+            Error::invalid(format!(
+                "the trial book in store `{namespace}` does not verify, and this process will \
+                 not start over it: {}. A count rebuilt over a broken chain is the understated \
+                 count the chain exists to catch; restore `{namespace}` from its last good copy, \
+                 or open a new namespace and record why",
+                error.message()
+            ))
+        })?;
+        self.central.factory_mut().attach_trial_book(book);
+        Ok(())
     }
 
     /// Enumerate the six governance controls and what enforces each.

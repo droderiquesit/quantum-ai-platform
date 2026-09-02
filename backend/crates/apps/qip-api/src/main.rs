@@ -93,6 +93,19 @@ fn run() -> Result<()> {
     let provenance = qip_api::trust::harden_central(&mut platform, envelope_key.as_deref())
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
 
+    // The durable trial book, on the same storage the event log archives to.
+    // The factory the plane was built with charges holdout evaluations to an
+    // in-process book, so until this call every restart forgot every
+    // family's lifetime trial count — the per-run accounting the deflated
+    // Sharpe gate is corrected against and the one the blueprint forbids.
+    // Opened after the plane is hardened, and carried across by
+    // `set_central` if it ever were not. A journal that does not verify
+    // stops the process here: a count rebuilt over a broken chain is the
+    // understated count the chain exists to catch.
+    platform
+        .open_trial_book(storage.key_value("trial-book")?, "trial-book")
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+
     // The mesh backbone, where the deployment names cells to serve. Absent
     // configuration means the routes are absent: no listener binds, and the
     // banner says the deltas have nowhere to land here.
