@@ -53,8 +53,7 @@ use qip_contracts::time::Watermark;
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Timestamp};
 use qip_transport::{
-    DeadLetterSink, Delivery, MeshConfig, MeshPublisher, PublisherStats, RemoteSubscriber, Sleeper,
-    SubscriberStats,
+    DeadLetterSink, Delivery, MeshConfig, MeshPublisher, RemoteSubscriber, Sleeper,
 };
 
 use crate::envelope::StreamEnvelope;
@@ -116,14 +115,6 @@ impl MeshTransport {
     /// The pulling half, for the same reason.
     pub fn subscriber(&self) -> &RemoteSubscriber {
         &self.subscriber
-    }
-
-    pub fn publisher_stats(&self) -> PublisherStats {
-        self.publisher.stats()
-    }
-
-    pub fn subscriber_stats(&self) -> SubscriberStats {
-        self.subscriber.stats()
     }
 
     /// The peer this link addresses, in both directions.

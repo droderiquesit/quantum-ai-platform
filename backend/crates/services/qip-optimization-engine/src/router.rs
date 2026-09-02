@@ -17,7 +17,7 @@
 //! behaviour an operator should be able to rely on.
 
 use crate::problem::{PortfolioProblem, QuboEncoding};
-use qip_core::error::{Error, Result};
+use qip_core::error::Result;
 use qip_core::rng::Xoshiro256;
 use qip_core::time::Duration;
 use qip_numerics::anneal::{AnnealSettings, anneal, solve_exact};
@@ -621,13 +621,4 @@ fn worst_violation(problem: &PortfolioProblem, weights: &[f64]) -> (f64, String)
         label = "none".to_string();
     }
     (worst, label)
-}
-
-/// Errors the router itself raises.
-pub fn require_provider(
-    provider: Option<&Arc<dyn QuantumProvider>>,
-) -> Result<&dyn QuantumProvider> {
-    provider
-        .map(|p| p.as_ref())
-        .ok_or_else(|| Error::unavailable("no quantum provider is configured"))
 }

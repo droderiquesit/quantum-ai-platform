@@ -111,14 +111,6 @@ pub fn erfc(x: f64) -> f64 {
     }
 }
 
-/// Student-t density with `nu` degrees of freedom.
-pub fn student_t_pdf(x: f64, nu: f64) -> f64 {
-    let a = ln_gamma((nu + 1.0) / 2.0) - ln_gamma(nu / 2.0);
-    let b = -0.5 * (nu * PI).ln();
-    let c = -((nu + 1.0) / 2.0) * (1.0 + x * x / nu).ln();
-    (a + b + c).exp()
-}
-
 /// Student-t CDF via the regularised incomplete beta function.
 pub fn student_t_cdf(x: f64, nu: f64) -> f64 {
     if nu <= 0.0 {

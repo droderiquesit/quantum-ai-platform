@@ -86,11 +86,6 @@ impl GaussianHmm {
         out
     }
 
-    /// The current state probabilities after observing a series.
-    pub fn current_state(&self, observations: &[f64]) -> Option<[f64; 2]> {
-        self.filter(observations).last().copied()
-    }
-
     /// Most likely state sequence, by Viterbi decoding.
     ///
     /// Uses the whole series including the future, so it is for analysis and

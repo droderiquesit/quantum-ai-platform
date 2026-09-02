@@ -171,11 +171,6 @@ impl HedgeInstrument {
         self
     }
 
-    pub fn with_lot_size(mut self, lot_size: Decimal) -> Self {
-        self.lot_size = lot_size;
-        self
-    }
-
     fn validate(&self) -> Result<()> {
         if self.symbol.trim().is_empty() {
             return Err(Error::invalid(

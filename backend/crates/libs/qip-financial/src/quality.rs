@@ -103,11 +103,6 @@ impl Provenance {
     pub fn ingestion_latency(&self) -> qip_core::Duration {
         self.ingestion_time.since(self.event_time)
     }
-
-    /// How stale the record is as of `now`.
-    pub fn age_at(&self, now: Timestamp) -> qip_core::Duration {
-        now.since(self.event_time)
-    }
 }
 
 /// Quality assessment attached to a record or dataset.

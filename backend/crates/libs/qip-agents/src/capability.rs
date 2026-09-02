@@ -230,15 +230,6 @@ impl CapabilitySet {
         self.granted.iter().copied()
     }
 
-    /// The highest sensitivity in the set, or 0 when empty.
-    pub fn peak_sensitivity(&self) -> u8 {
-        self.granted
-            .iter()
-            .map(|c| c.sensitivity())
-            .max()
-            .unwrap_or(0)
-    }
-
     /// Refuse unless the capability is granted.
     ///
     /// The error names the agent and the capability, because the common

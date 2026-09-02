@@ -131,11 +131,6 @@ impl CloudStorageConfig {
         self.prefix = prefix.into().trim_matches('/').to_string();
         self
     }
-
-    pub fn with_content_type(mut self, content_type: impl Into<String>) -> Self {
-        self.content_type = content_type.into();
-        self
-    }
 }
 
 /// Blob storage backed by a Cloud Storage bucket.

@@ -112,13 +112,6 @@ impl ModelReputation {
     pub fn contexts(&self) -> impl Iterator<Item = (&Conditions, &Record)> {
         self.records.iter()
     }
-
-    /// Total observations across every context.
-    pub fn total_observations(&self) -> u32 {
-        self.records
-            .values()
-            .fold(0u32, |sum, record| sum.saturating_add(record.observations))
-    }
 }
 
 /// A model, and how much it has earned the right to be believed here.

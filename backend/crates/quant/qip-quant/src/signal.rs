@@ -209,10 +209,6 @@ impl SignalSet {
         Self::default()
     }
 
-    pub fn from_signals(signals: Vec<Signal>) -> Self {
-        Self { signals }
-    }
-
     pub fn push(&mut self, signal: Signal) {
         self.signals.push(signal);
     }

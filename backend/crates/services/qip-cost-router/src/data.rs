@@ -119,12 +119,6 @@ impl DataReads {
         self.reads.len()
     }
 
-    pub fn total_reads(&self) -> u64 {
-        self.reads
-            .values()
-            .fold(0u64, |sum, n| sum.saturating_add(*n))
-    }
-
     /// Every source and its read count, in a stable order.
     pub fn iter(&self) -> impl Iterator<Item = (&str, u64)> {
         self.reads

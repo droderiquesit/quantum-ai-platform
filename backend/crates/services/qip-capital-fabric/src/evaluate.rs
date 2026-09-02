@@ -122,16 +122,7 @@ pub struct LaneOutcome {
     pub forecast_error_stat: f64,
 }
 
-impl LaneOutcome {
-    /// Share of the realised demand that was met. One where nothing was needed.
-    pub fn coverage_stat(&self) -> f64 {
-        if !self.realised.is_positive() {
-            return 1.0;
-        }
-        let met = (self.realised - self.shortfall).to_f64();
-        met / self.realised.to_f64()
-    }
-}
+impl LaneOutcome {}
 
 /// What a plan was worth, after the fact.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -325,11 +325,6 @@ impl PrivacyLedger {
         SpentEpsilon(self.per_cohort.get(cohort).copied().unwrap_or(0.0))
     }
 
-    /// Every cell this ledger has charged, in cell order.
-    pub fn charged_cells(&self) -> impl Iterator<Item = &CellId> {
-        self.per_cell.keys()
-    }
-
     pub fn report(&self) -> SpendReport {
         SpendReport {
             per_cell: self.per_cell.clone(),

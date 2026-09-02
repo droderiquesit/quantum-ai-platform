@@ -101,9 +101,4 @@ impl Lineage {
             ..self.clone()
         }
     }
-
-    pub fn with_trace(mut self, trace: TraceId) -> Self {
-        self.trace_id = Some(trace);
-        self
-    }
 }

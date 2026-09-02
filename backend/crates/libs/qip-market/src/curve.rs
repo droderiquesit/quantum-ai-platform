@@ -99,11 +99,6 @@ impl TermStructure {
         (self.rate_at(long_years) - self.rate_at(short_years)) * 10_000.0
     }
 
-    /// Butterfly: how humped the curve is between three tenors, in basis points.
-    pub fn butterfly_bps(&self, short: f64, belly: f64, long: f64) -> f64 {
-        (2.0 * self.rate_at(belly) - self.rate_at(short) - self.rate_at(long)) * 10_000.0
-    }
-
     /// True when any segment of the curve slopes downward.
     ///
     /// An inverted curve is one of the regime signals the macro agent watches.

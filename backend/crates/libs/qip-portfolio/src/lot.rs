@@ -134,27 +134,6 @@ impl RealisedTrade {
     }
 }
 
-/// Consume `quantity` from `lots` under `method`, returning the closed trades.
-///
-/// `quantity` is the magnitude to close. Lots are consumed in the method's
-/// order, partially where necessary, and exhausted lots are removed.
-pub fn close_lots(
-    lots: &mut Vec<Lot>,
-    quantity: Decimal,
-    close_price: Decimal,
-    close_costs: Decimal,
-    closed_at: Timestamp,
-) -> Vec<RealisedTrade> {
-    close_lots_with(
-        lots,
-        quantity,
-        close_price,
-        close_costs,
-        closed_at,
-        LotMethod::FirstInFirstOut,
-    )
-}
-
 /// Close lots under an explicit method.
 pub fn close_lots_with(
     lots: &mut Vec<Lot>,

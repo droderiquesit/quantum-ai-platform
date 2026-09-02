@@ -79,15 +79,6 @@ impl LiquidityProfile {
         }
         Some((quantity.abs().to_f64() / daily_capacity).max(0.0))
     }
-
-    /// Fraction of average daily volume represented by `quantity`.
-    pub fn participation_for(&self, quantity: Decimal) -> f64 {
-        let adv = self.average_daily_volume.to_f64();
-        if adv <= 0.0 {
-            return f64::INFINITY;
-        }
-        quantity.abs().to_f64() / adv
-    }
 }
 
 /// Cost model for trading one instrument.
@@ -171,11 +162,6 @@ impl TransactionCostModel {
     /// Total cost in basis points, for comparing instruments.
     pub fn total_bps(&self, participation: f64) -> f64 {
         self.commission_bps + self.tax_bps + self.half_spread_bps + self.impact_bps(participation)
-    }
-
-    /// Cost of holding a short position for `days`, in basis points.
-    pub fn short_carry_bps(&self, days: f64) -> f64 {
-        self.short_borrow_bps_annual * days / 365.0
     }
 
     /// The participation rate at which expected impact eats `alpha_bps` of

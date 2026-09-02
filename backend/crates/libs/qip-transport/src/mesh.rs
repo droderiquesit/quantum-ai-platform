@@ -453,11 +453,6 @@ impl MeshEndpoint {
         }
     }
 
-    pub fn with_max_poll_batch(mut self, limit: usize) -> Self {
-        self.max_poll_batch = limit.max(1);
-        self
-    }
-
     pub fn inbox(&self) -> &MeshInbox {
         &self.inbox
     }

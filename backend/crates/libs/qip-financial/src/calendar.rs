@@ -146,27 +146,6 @@ impl MarketHours {
         }
         None
     }
-
-    /// Trading days between two instants, inclusive of the start day.
-    pub fn trading_days_between(&self, from: Timestamp, to: Timestamp) -> u32 {
-        if to <= from {
-            return 0;
-        }
-        let mut count = 0;
-        let mut cursor = from.start_of_day();
-        let end = to.start_of_day();
-        // Bounded so a mistaken multi-century range cannot spin.
-        for _ in 0..40_000 {
-            if cursor > end {
-                break;
-            }
-            if self.is_trading_day(cursor) {
-                count += 1;
-            }
-            cursor = cursor.saturating_add(Duration::from_days(1));
-        }
-        count
-    }
 }
 
 /// A named set of venue calendars.

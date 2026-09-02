@@ -562,10 +562,6 @@ impl EventBus {
         self.failures_dropped
     }
 
-    pub fn clear_failures(&mut self) {
-        self.failures.clear();
-    }
-
     pub fn duplicates_suppressed(&self) -> u64 {
         self.duplicates_suppressed
     }

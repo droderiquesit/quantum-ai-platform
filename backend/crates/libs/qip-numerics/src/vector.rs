@@ -32,13 +32,6 @@ pub fn sum(a: &[f64]) -> f64 {
     a.iter().sum()
 }
 
-/// `y += alpha * x`, in place.
-pub fn axpy(alpha: f64, x: &[f64], y: &mut [f64]) {
-    for (yi, xi) in y.iter_mut().zip(x) {
-        *yi += alpha * xi;
-    }
-}
-
 pub fn scale(a: &[f64], factor: f64) -> Vec<f64> {
     a.iter().map(|x| x * factor).collect()
 }

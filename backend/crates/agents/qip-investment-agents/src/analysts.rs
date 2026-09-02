@@ -19,7 +19,6 @@ use qip_agents::finding::{AgentBrief, AgentFinding, Direction};
 use qip_agents::manifest::AgentManifest;
 use qip_agents::runtime::{Agent, AgentContext};
 use qip_core::error::Result;
-use qip_core::ids::ObjectId;
 use qip_financial::asset_class::AssetClass;
 use qip_numerics::stats;
 use qip_quant::signal;
@@ -1012,9 +1011,4 @@ impl Agent for AlternativeDataAnalyst {
         }
         builder.build()
     }
-}
-
-/// Convenience for constructing every analyst against one desk.
-pub fn subject_of(brief: &AgentBrief) -> Option<&ObjectId> {
-    brief.objects.first()
 }

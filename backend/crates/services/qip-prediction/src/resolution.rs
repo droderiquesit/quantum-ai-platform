@@ -465,21 +465,6 @@ impl Proposition {
         self.criteria.digest()
     }
 
-    /// Identity of the contract: the question, when it is answered, and what
-    /// it pays.
-    pub fn identity_digest(&self) -> String {
-        qip_core::sha256_hex(
-            format!(
-                "{}|{}|{}|{}",
-                self.criteria.canonical(),
-                self.resolves_at.as_nanos(),
-                self.settlement.payoff,
-                self.settlement.on_undetermined.as_str()
-            )
-            .as_bytes(),
-        )
-    }
-
     /// Everything that differs between two propositions.
     pub fn differences(&self, other: &Self) -> Vec<PropositionDifference> {
         let mut differences = Vec::new();

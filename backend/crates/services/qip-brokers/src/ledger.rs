@@ -140,10 +140,6 @@ impl AccountLedger {
         self.marks.insert(object_id.as_str().to_string(), price);
     }
 
-    pub fn mark_for(&self, object_id: &ObjectId) -> Option<Decimal> {
-        self.marks.get(object_id.as_str()).copied()
-    }
-
     /// Book a fill.
     ///
     /// Cash moves by exactly the fill value plus costs, which is what keeps the

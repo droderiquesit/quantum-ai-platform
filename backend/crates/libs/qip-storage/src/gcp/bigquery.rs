@@ -132,18 +132,8 @@ impl BigQueryConfig {
         self
     }
 
-    pub fn with_max_result_pages(mut self, pages: u32) -> Self {
-        self.max_result_pages = pages;
-        self
-    }
-
     pub fn with_max_query_polls(mut self, polls: u32) -> Self {
         self.max_query_polls = polls;
-        self
-    }
-
-    pub fn with_query_timeout_ms(mut self, milliseconds: u64) -> Self {
-        self.query_timeout_ms = milliseconds;
         self
     }
 }
@@ -327,10 +317,6 @@ impl QueryParameter {
 
     pub fn string(name: impl Into<String>, value: impl Into<String>) -> Result<Self> {
         Self::new(name, "STRING", value)
-    }
-
-    pub fn int64(name: impl Into<String>, value: i64) -> Result<Self> {
-        Self::new(name, "INT64", value.to_string())
     }
 
     pub fn bool(name: impl Into<String>, value: bool) -> Result<Self> {

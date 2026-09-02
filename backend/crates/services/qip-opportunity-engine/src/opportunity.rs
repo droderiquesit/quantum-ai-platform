@@ -132,11 +132,6 @@ impl Opportunity {
             .sum()
     }
 
-    /// Whether the opportunity clears the bar for an agent's time.
-    pub fn is_worth_investigating(&self, threshold: f64) -> bool {
-        self.rank.score >= threshold && self.rank.confidence >= 0.4
-    }
-
     /// A description an agent can act on.
     pub fn brief(&self) -> String {
         let anomalies: Vec<String> = self

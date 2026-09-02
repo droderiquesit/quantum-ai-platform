@@ -81,11 +81,6 @@ impl CapitalLocation {
     pub fn requires_conversion(&self, other: &Self) -> bool {
         self.currency != other.currency
     }
-
-    /// Whether two locations differ only in which venue holds the balance.
-    pub fn is_same_pocket(&self, other: &Self) -> bool {
-        self.region == other.region && self.currency == other.currency
-    }
 }
 
 impl fmt::Display for CapitalLocation {

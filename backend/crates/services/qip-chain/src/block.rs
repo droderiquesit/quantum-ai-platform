@@ -383,11 +383,6 @@ impl Block {
         Ok(())
     }
 
-    /// Transactions that succeeded, in block order.
-    pub fn effective_transactions(&self) -> impl Iterator<Item = &Transaction> {
-        self.transactions.iter().filter(|tx| tx.status.succeeded())
-    }
-
     /// Swaps that actually happened, in block order.
     pub fn trades(&self) -> Vec<&Trace> {
         self.transactions

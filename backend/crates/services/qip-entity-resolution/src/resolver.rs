@@ -500,18 +500,6 @@ fn score_pair(entity: &Entity, record: &EntityRecord) -> (f64, Vec<MatchEvidence
     (score.clamp(0.0, 1.0), evidence)
 }
 
-/// Convenience: resolve a batch of records.
-pub fn resolve_batch(
-    resolver: &mut Resolver,
-    records: &[EntityRecord],
-    context: &Context,
-) -> Vec<(Decision, EntityResolved)> {
-    records
-        .iter()
-        .map(|r| resolver.resolve(r, context))
-        .collect()
-}
-
 /// The entity kinds that always exist, seeded at start-up.
 pub fn seed_reference_entities(resolver: &mut Resolver, context: &Context) {
     let now = context.now();

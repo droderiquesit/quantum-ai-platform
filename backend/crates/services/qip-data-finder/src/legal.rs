@@ -586,10 +586,6 @@ impl LegalAssessment {
         &self.overall
     }
 
-    pub fn is_collectible(&self) -> bool {
-        self.overall.is_permitted()
-    }
-
     /// Each question and its answer, for the decision record.
     pub fn findings(&self) -> BTreeMap<&'static str, String> {
         BTreeMap::from([

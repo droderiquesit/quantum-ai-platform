@@ -492,11 +492,6 @@ impl PrePositioningPlanner {
         &self.calendar
     }
 
-    /// The transfer cost model in force.
-    pub fn transfer_costs(&self) -> &TransferCostModel {
-        &self.transfer
-    }
-
     /// Build a pre-positioning plan against the live allocation.
     ///
     /// Draws no random numbers and reads no clock: `at` is the instant being

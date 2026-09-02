@@ -158,23 +158,6 @@ impl Interval {
         self.upper - self.lower
     }
 
-    /// Width as a fraction of the point estimate — a dimensionless statistic,
-    /// so `f64`.
-    ///
-    /// Infinite where the point estimate is zero and the band is not, which is
-    /// the honest answer: a forecast centred on nothing with a wide band around
-    /// it carries no relative information at all.
-    pub fn relative_width_stat(&self) -> f64 {
-        if self.point.is_zero() {
-            return if self.width().is_zero() {
-                0.0
-            } else {
-                f64::INFINITY
-            };
-        }
-        self.width().to_f64() / self.point.abs().to_f64()
-    }
-
     /// Whether a realised value fell inside the band.
     pub fn contains(&self, value: Decimal) -> bool {
         value >= self.lower && value <= self.upper

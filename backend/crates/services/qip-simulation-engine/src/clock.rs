@@ -224,10 +224,6 @@ impl SimulationClock {
         self.steps.len()
     }
 
-    pub fn is_finished(&self) -> bool {
-        self.cursor >= self.steps.len()
-    }
-
     /// The instant the simulation is currently at.
     pub fn now(&self) -> Option<Timestamp> {
         self.steps.get(self.cursor).copied()

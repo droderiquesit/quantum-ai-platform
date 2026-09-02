@@ -95,10 +95,6 @@ impl Scenario {
         Ok(())
     }
 
-    pub fn shock_for(&self, factor: &str) -> Option<&FactorShock> {
-        self.shocks.iter().find(|shock| shock.factor == factor)
-    }
-
     /// The largest absolute shock in the scenario.
     pub fn severity(&self) -> f64 {
         self.shocks

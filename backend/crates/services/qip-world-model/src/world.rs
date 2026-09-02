@@ -6,7 +6,7 @@ use qip_ai::retrieval::{Document, RetrievalResult, SearchIndex};
 use qip_core::error::Result;
 use qip_core::{Context, Duration, Timestamp};
 use qip_entity_resolution::entity::{Entity, EntityKind, EntityRecord};
-use qip_entity_resolution::resolver::{Decision, Resolver};
+use qip_entity_resolution::resolver::Resolver;
 use qip_financial::intelligence::{FundamentalUpdate, MacroObservation, NewsItem};
 use qip_market::bar::Bar;
 use serde::{Deserialize, Serialize};
@@ -115,10 +115,6 @@ impl WorldModel {
 
     pub fn causal(&self) -> &CausalGraph {
         &self.causal
-    }
-
-    pub fn causal_mut(&mut self) -> &mut CausalGraph {
-        &mut self.causal
     }
 
     pub fn features(&self) -> &FeatureStore {
@@ -265,7 +261,7 @@ impl WorldModel {
                             valid_at: item.published_at,
                             available_at: item.published_at,
                             confidence: item.evidential_weight(),
-                            imputed: false,
+                            imputed: item.quality.is_imputed,
                         },
                     );
                 }
@@ -302,13 +298,17 @@ impl WorldModel {
     /// Absorb a reported fundamental as point-in-time features.
     pub fn absorb_fundamental(&mut self, update: &FundamentalUpdate) {
         // A fundamental is true for the period it covers but only usable when
-        // it is published, which is what the two timestamps record.
+        // it is published, which is what the two timestamps record. Whether
+        // the vendor observed it or filled it in travels with it: a value
+        // stamped observed here regardless of `quality.is_imputed` reads
+        // downstream as a reported number, and no point-in-time query can
+        // tell the two apart afterwards.
         let value = FeatureValue {
             value: update.value.to_f64(),
             valid_at: update.period_end,
             available_at: update.provenance.ingestion_time,
             confidence: update.quality.score(),
-            imputed: false,
+            imputed: update.quality.is_imputed,
         };
         self.features
             .record(&update.metric, &update.entity_id, value);
@@ -322,7 +322,7 @@ impl WorldModel {
                     valid_at: update.period_end,
                     available_at: update.provenance.ingestion_time,
                     confidence: update.quality.score(),
-                    imputed: false,
+                    imputed: update.quality.is_imputed,
                 },
             );
             if surprise.abs() > 0.05 {
@@ -351,7 +351,7 @@ impl WorldModel {
                 valid_at: observation.reference_date,
                 available_at: observation.provenance.ingestion_time,
                 confidence: observation.quality.score(),
-                imputed: false,
+                imputed: observation.quality.is_imputed,
             },
         );
         if let Some(surprise) = observation.surprise() {
@@ -363,7 +363,7 @@ impl WorldModel {
                     valid_at: observation.reference_date,
                     available_at: observation.provenance.ingestion_time,
                     confidence: observation.quality.score(),
-                    imputed: false,
+                    imputed: observation.quality.is_imputed,
                 },
             );
             if surprise.abs() > 0.1 {
@@ -760,9 +760,4 @@ pub fn seed_demo_world(model: &mut WorldModel, context: &Context) -> Result<()> 
     );
 
     Ok(())
-}
-
-/// Whether a decision resolved to an entity, for reporting.
-pub fn resolved_entity(decision: &Decision) -> Option<String> {
-    decision.entity_id().map(|id| id.as_str().to_string())
 }

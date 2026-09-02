@@ -205,18 +205,6 @@ impl RiskDecomposition {
             .map(|(name, value)| (name.as_str(), *value))
     }
 
-    /// The asset carrying the most risk.
-    pub fn dominant_asset(&self) -> Option<(&str, f64)> {
-        self.asset_contributions
-            .iter()
-            .max_by(|a, b| {
-                a.1.abs()
-                    .partial_cmp(&b.1.abs())
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|(name, value)| (name.as_str(), *value))
-    }
-
     /// Whether risk is concentrated in one factor despite many holdings.
     ///
     /// The failure this catches: a portfolio of thirty names that is really one

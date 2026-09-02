@@ -41,12 +41,6 @@ impl EntityKind {
             Self::Fund => "fund",
         }
     }
-
-    /// Whether entities of this kind carry legal-name suffixes worth stripping
-    /// during comparison.
-    pub fn has_legal_form(&self) -> bool {
-        matches!(self, Self::Company | Self::Fund)
-    }
 }
 
 /// A canonical entity: one real-world thing, however many providers describe it.

@@ -59,11 +59,6 @@ impl SourceRequest {
         }
     }
 
-    pub fn with_query(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.query.insert(key.into(), value.into());
-        self
-    }
-
     pub fn for_health(mut self) -> Self {
         self.purpose = RequestPurpose::Health;
         self

@@ -7,7 +7,7 @@
 
 use qip_core::error::Result;
 use qip_core::{Duration, Timestamp};
-use qip_events::bus::{EventBus, Publisher};
+use qip_events::bus::EventBus;
 use qip_events::{EventBody, Topic};
 use qip_financial::intelligence::{
     AlternativeDataPoint, DataQualityFailure, FundamentalUpdate, MacroObservation, NewsItem,
@@ -165,50 +165,6 @@ impl SensedRecord {
                 }
             }
             Self::CorporateAction(_) | Self::ReferenceData(_) => Vec::new(),
-        }
-    }
-
-    /// Publish onto the bus, from inside a handler.
-    pub fn publish_via(
-        &self,
-        publisher: &mut Publisher<'_>,
-        lineage: qip_core::Lineage,
-    ) -> Result<()> {
-        let at = self.occurred_at();
-        match self {
-            Self::Tick(t) => publisher
-                .publish_with_lineage(lineage, at, t.clone())
-                .map(|_| ()),
-            Self::Quote(q) => publisher
-                .publish_with_lineage(lineage, at, q.clone())
-                .map(|_| ()),
-            Self::Trade(t) => publisher
-                .publish_with_lineage(lineage, at, t.clone())
-                .map(|_| ()),
-            Self::Book(b) => publisher
-                .publish_with_lineage(lineage, at, (**b).clone())
-                .map(|_| ()),
-            Self::Bar(b) => publisher
-                .publish_with_lineage(lineage, at, (**b).clone())
-                .map(|_| ()),
-            Self::CorporateAction(a) => publisher
-                .publish_with_lineage(lineage, at, (**a).clone())
-                .map(|_| ()),
-            Self::News(n) => publisher
-                .publish_with_lineage(lineage, at, (**n).clone())
-                .map(|_| ()),
-            Self::Fundamental(f) => publisher
-                .publish_with_lineage(lineage, at, (**f).clone())
-                .map(|_| ()),
-            Self::Macro(m) => publisher
-                .publish_with_lineage(lineage, at, (**m).clone())
-                .map(|_| ()),
-            Self::AlternativeData(a) => publisher
-                .publish_with_lineage(lineage, at, (**a).clone())
-                .map(|_| ()),
-            Self::ReferenceData(r) => publisher
-                .publish_with_lineage(lineage, at, (**r).clone())
-                .map(|_| ()),
         }
     }
 
