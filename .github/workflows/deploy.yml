@@ -560,10 +560,43 @@ jobs:
             # one after it makes gcloud refuse the whole command with
             # `unrecognized arguments: --quiet` — which is how every
             # deployment failed between the sidecars landing and this fix.
-            gcloud run services update "$service" \
+            # On a rollout failure, say why here rather than printing a
+            # console URL nobody in CI can open.
+            #
+            # `services update` fails with one line — "the user-provided
+            # container failed the configured startup probe checks" — and a
+            # Logs URL. That is the true statement and it is not a cause: the
+            # cause is in the revision's own log, one API call away, and a
+            # pipeline that makes a person go and fetch it is a pipeline that
+            # reports failures nobody reads. This platform's roots refuse to
+            # start on a configuration they cannot honour (an unwritable
+            # journal, a live autonomy ceiling, a missing trust root), and
+            # each refusal names what to do instead — so the message that
+            # matters is almost always in those first lines.
+            if ! gcloud run services update "$service" \
               --project "${GCP_PROJECT}" --region "${GCP_REGION}" --quiet \
               --container "$name" \
-              --image "$image"
+              --image "$image"; then
+              echo "::group::${service}: why the revision did not start"
+              revision="$(gcloud run revisions list \
+                --project "${GCP_PROJECT}" --region "${GCP_REGION}" \
+                --service "$service" --sort-by=~metadata.creationTimestamp \
+                --limit 1 --format='value(metadata.name)' || true)"
+              if [ -n "$revision" ]; then
+                echo "revision ${revision}:"
+                # Both containers: a workload that refused its configuration
+                # and a sidecar that never listened look identical from
+                # outside, and the difference is the whole diagnosis.
+                gcloud logging read \
+                  "resource.type=cloud_run_revision AND resource.labels.revision_name=${revision}" \
+                  --project "${GCP_PROJECT}" --limit 50 --order asc \
+                  --format='value(timestamp,labels.container_name,textPayload)' || true
+              else
+                echo "no revision was created; the failure is ahead of the container."
+              fi
+              echo "::endgroup::"
+              exit 1
+            fi
 
             # The second half, and the claim the GitOps cut-over lost: the
             # revision that is *serving* runs the digest that was signed.

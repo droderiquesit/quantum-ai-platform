@@ -1051,6 +1051,65 @@ fn a_cloud_run_service_cannot_be_deleted_by_a_plan_nobody_read() {
 }
 
 #[test]
+fn a_rollout_that_fails_says_why_rather_than_naming_a_console_url() {
+    // What `gcloud run services update` gives you on a failed rollout is one
+    // true sentence that is not a cause —
+    //
+    //   ERROR: The user-provided container failed the configured startup
+    //   probe checks. Logs for this revision might contain more information.
+    //   Logs URL: https://console.cloud.google.com/logs/viewer?...
+    //
+    // — and a link. In CI nobody opens the link, so the run ends with the
+    // fact that something failed and no statement of what. The cause is one
+    // API call away and this platform's composition roots put it in the
+    // first lines they print: they refuse to start on a configuration they
+    // cannot honour and each refusal names what to do instead.
+    // Through `workflow_jobs` first: `job_steps` reads one job's list and
+    // deploy.yml has several, so handing it the whole file parses the first
+    // job only and finds nothing here.
+    let deploy = read(".github/workflows/deploy.yml");
+    let jobs = workflow_jobs(&deploy);
+    let (_, body) = jobs
+        .iter()
+        .find(|(name, _)| name == "deploy")
+        .expect("deploy.yml has a deploy job");
+    let steps = job_steps(body);
+    let rollout = steps
+        .iter()
+        .find(|step| step.contains("gcloud run services update"))
+        .expect("deploy.yml still rolls out with `services update`");
+
+    // Premise: the rollout can still fail. A step that cannot fail needs no
+    // diagnosis, and this test would then be guarding a branch nothing takes.
+    assert!(
+        rollout.contains("exit 1"),
+        "the rollout no longer fails the job, so there is no failure for a \
+         diagnosis to explain"
+    );
+
+    assert!(
+        rollout.contains("gcloud logging read"),
+        "a failed rollout prints gcloud's console URL and nothing else, so \
+         the run says something failed and never says what"
+    );
+    // Keyed on the revision that actually failed, not on the service: a
+    // service-wide read returns the last healthy revision's lines too, and
+    // the reader cannot tell which run they came from.
+    assert!(
+        rollout.contains("resource.labels.revision_name="),
+        "the log read is not keyed on the failed revision, so it returns \
+         lines from revisions that were fine"
+    );
+    // And both containers, because a workload that refused its configuration
+    // and a sidecar that never listened are indistinguishable from outside.
+    assert!(
+        rollout.contains("labels.container_name"),
+        "the log read does not say which container spoke, so a sidecar \
+         failure reads as a workload failure"
+    );
+}
+
+#[test]
 fn a_service_that_failed_its_first_revision_is_repaired_rather_than_left_unfixable() {
     // The deadlock this closes, found by the migration's first successful
     // create phase. A Cloud Run service whose first revision is refused —
