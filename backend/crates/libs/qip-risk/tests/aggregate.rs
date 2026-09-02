@@ -343,6 +343,25 @@ fn a_mark_inside_the_unit_interval_is_recorded() {
 }
 
 #[test]
+fn a_cash_mark_replaces_the_cash_the_fills_implied_and_may_go_negative() {
+    let mut book = RiskAggregates::new(dec!("100000"), dec!("100000")).expect("open");
+    book.apply_fill("alpha", "AAA", &axes("AAA"), dec!("5000"))
+        .expect("a well-formed fill");
+    // Premise: the fill moved cash by its notional, so the mark below is
+    // overriding a figure and not filling an empty one.
+    assert_eq!(book.cash(), dec!("95000"));
+
+    // The ledger paid a fee the fill never told the aggregate about.
+    book.mark_cash(dec!("94990"));
+    assert_eq!(book.cash(), dec!("94990"));
+
+    // A margined book is a negative figure the buffer limit exists to see,
+    // so the mark records it rather than refusing it.
+    book.mark_cash(dec!("-250"));
+    assert_eq!(book.cash(), dec!("-250"));
+}
+
+#[test]
 fn a_mark_with_a_drawdown_the_halt_cannot_compare_is_refused() {
     let mut book = RiskAggregates::new(dec!("100000"), dec!("100000")).expect("open");
     book.mark(dec!("90000"), 0.1)

@@ -109,6 +109,7 @@ use qip_prediction::resolution::{
 use qip_quantum::provider::SimulatedProvider;
 use qip_reasoning_engine::engine::{ReasoningEngine, ReasoningOutcome};
 use qip_reasoning_engine::hypothesis::Claim;
+use qip_risk::aggregate::{AggregateFigures, RiskAggregates};
 use qip_risk::limits::{LimitSet, RiskState};
 use qip_risk_engine::autonomy::AutonomyController;
 use qip_risk_engine::monitor::RiskMonitor;
@@ -326,6 +327,16 @@ pub struct Platform {
     /// The book as realised fills have moved it. What the risk monitor and
     /// the decide stage read instead of the constant they used to watch.
     capital: TrackedCapital,
+    /// The same fills as running counters — the figures every risk check
+    /// reads. `qip_risk::aggregate` holds a check O(1) in strategy count
+    /// only if the check is handed counters kept per fill rather than a
+    /// walk it performs itself, and this is where the kernel keeps them.
+    /// Fed at the one seam a desk fill becomes known
+    /// ([`Platform::capture_submission`]) with the change in the position's
+    /// at-cost notional, so its gross and net are the walk over
+    /// [`TrackedCapital`]'s lots to the cent, and marked with that book's
+    /// equity, cash and drawdown after every fill.
+    aggregates: RiskAggregates,
     /// Opportunities found and not yet worked through.
     queue: Vec<Opportunity>,
     /// Recent proposals, most recent last, capped at [`PROPOSAL_HISTORY`].
@@ -431,6 +442,15 @@ const COUNTERFACTUALS_PER_CYCLE: usize = 8;
 /// reported on the cycle, because evicting the oldest waiting path would
 /// silently choose which veto goes unexamined.
 const DECLINED_HISTORY: usize = 256;
+
+/// The budget holder every desk fill is charged to in the risk aggregate.
+///
+/// The desk's own orders implement proposals and carry hypotheses; they do
+/// not belong to a foundry strategy, and the aggregate refuses a fill that
+/// names none. One fixed name keeps the aggregate's strategy set bounded by
+/// a source-file literal for the desk, with the foundry's strategies
+/// arriving beside it as cell fills are carried across.
+const DESK_STRATEGY: &str = "central-desk";
 
 /// Bars the twin estimates liquidity over when pricing a declined path — the
 /// same window the platform's own counterfactual tests price with, so a path
@@ -927,6 +947,12 @@ impl TrackedCapital {
     /// `(price − average) × closed × direction` on the quantity it closes and
     /// opens any remainder at the fill price. Closing to exactly zero removes
     /// the lot, so an empty book is an empty map rather than a map of zeros.
+    ///
+    /// Returns the signed change in the instrument's at-cost notional, which
+    /// is what the risk aggregate is fed: the fill's own notional would be
+    /// wrong for it, because a partial close at a profit moves the position
+    /// at cost by less than the cash it brought in, and an aggregate fed cash
+    /// would report a long book short after enough of them.
     fn apply_fill(
         &mut self,
         object_id: &str,
@@ -934,7 +960,13 @@ impl TrackedCapital {
         price: Decimal,
         quantity: Decimal,
         costs: Decimal,
-    ) {
+    ) -> Decimal {
+        let at_cost = |positions: &BTreeMap<String, PositionLot>| {
+            positions
+                .get(object_id)
+                .map_or(Decimal::ZERO, |lot| lot.quantity * lot.average_price)
+        };
+        let before = at_cost(&self.positions);
         self.costs_paid += costs;
         let signed = match side {
             Side::Buy => quantity,
@@ -983,6 +1015,7 @@ impl TrackedCapital {
 
         let equity = self.equity();
         self.peak_equity = self.peak_equity.max(equity);
+        at_cost(&self.positions) - before
     }
 
     /// Cash plus open positions at cost: initial equity plus realised P&L
@@ -1242,6 +1275,7 @@ impl Platform {
             liquidity: LiquidityTopology::default(),
             market_events: Vec::new(),
             capital: TrackedCapital::new(initial_equity),
+            aggregates: RiskAggregates::new(initial_equity, initial_equity)?,
             queue: Vec::new(),
             proposals: Vec::new(),
             equity_history: Vec::new(),
@@ -4239,35 +4273,32 @@ impl Platform {
     /// the loop owns no day-boundary convention, and a "daily" number cut at
     /// an arbitrary anchor would be a statement about the anchor.
     fn risk_state(&self) -> RiskState {
-        let mut position_notionals = BTreeMap::new();
-        let mut gross = Decimal::ZERO;
-        let mut net = Decimal::ZERO;
-        for (object, lot) in &self.capital.positions {
-            let notional = lot.quantity * lot.average_price;
-            gross += notional.abs();
-            net += notional;
-            position_notionals.insert(object.clone(), notional.abs());
-        }
-        // The tail statistics the limits read are derived in the risk lib
-        // from each configured limit's own confidence —
-        // `RiskState::with_tail_risk` — so the key a limit looks up and the
-        // key the figure is filed under are formatted by one rule. This
-        // function used to carry a second copy of that rule; two copies of a
-        // key format are one rounding boundary away from a limit that
-        // silently never evaluates, which is the failure the lib's version
-        // was written to end. The return series is the crossing from the
-        // book's `Decimal` equity to a statistic, made in `equity_returns`.
+        self.risk_state_from(&self.aggregates)
+    }
+
+    /// The risk state the checks evaluate, from a set of aggregate figures.
+    ///
+    /// This is the read side of the O(1) contract, and it is a separate
+    /// function taking the figures as a trait so a test can hand it a probe
+    /// that counts every figure consulted: the property "reads the counters,
+    /// never the strategies" is held by that test rather than by this
+    /// comment. Production passes the platform's own aggregate; nothing else
+    /// should. Until this existed the state was rebuilt here by a walk over
+    /// the book's lots, which was O(1) in strategy count only because the
+    /// desk had no strategies yet.
+    ///
+    /// The tail statistics the limits read are derived in the risk lib from
+    /// each configured limit's own confidence — `RiskState::with_tail_risk`
+    /// — so the key a limit looks up and the key the figure is filed under
+    /// are formatted by one rule. This function used to carry a second copy
+    /// of that rule; two copies of a key format are one rounding boundary
+    /// away from a limit that silently never evaluates. The return series is
+    /// the crossing from the book's `Decimal` equity to a statistic, made in
+    /// `equity_returns`.
+    #[doc(hidden)]
+    pub fn risk_state_from(&self, figures: &impl AggregateFigures) -> RiskState {
         let returns = self.equity_returns();
-        RiskState {
-            equity: self.capital.equity(),
-            cash: self.capital.cash,
-            gross_exposure: gross,
-            net_exposure: net,
-            position_notionals,
-            drawdown: self.capital.drawdown(),
-            ..RiskState::default()
-        }
-        .with_tail_risk(self.monitor.limits(), &returns)
+        RiskState::from_figures(figures).with_tail_risk(self.monitor.limits(), &returns)
     }
 
     /// Submit one order through the full control path.
@@ -4481,14 +4512,62 @@ impl Platform {
             // risk state real: the same fills the outcome capture records are
             // the fills the monitor's equity is built from, so the two can
             // never tell different stories.
-            self.capital.apply_fill(
+            let moved = self.capital.apply_fill(
                 object_id.as_str(),
                 side,
                 fill.price,
                 fill.quantity,
                 fill.costs,
             );
+            self.aggregate_fill(object_id.as_str(), moved);
         }
+    }
+
+    /// Carry one desk fill into the running risk counters.
+    ///
+    /// `moved` is the change in the instrument's at-cost notional the fill
+    /// produced; a fill that moved nothing at cost has nothing to aggregate,
+    /// and the aggregate would refuse it as not a fill. The desk's own orders
+    /// are charged to one budget holder, [`DESK_STRATEGY`], because a desk
+    /// order carries hypotheses and a proposal rather than a foundry strategy
+    /// and the aggregate refuses a fill that names no strategy. No exposure
+    /// axis is passed yet: the walk this replaces reported none either, and
+    /// a bucket the monitor suddenly began to see would be a limit that
+    /// began to fire without a change to the limits — that arm is reported
+    /// as remaining rather than slipped in here.
+    ///
+    /// A refusal is recorded as a capture problem rather than returned: the
+    /// fill has already happened and been journalled, and an error here
+    /// would tell the caller the order failed when the venue says it did
+    /// not. The problem surfaces on the next cycle's report, and the
+    /// aggregate's fill count falling behind the order manager's is the
+    /// symptom an operator would see.
+    fn aggregate_fill(&mut self, object_id: &str, moved: Decimal) {
+        if !moved.is_zero()
+            && let Err(error) =
+                self.aggregates
+                    .apply_fill(DESK_STRATEGY, object_id, &BTreeMap::new(), moved)
+        {
+            self.capture_problems.push(format!(
+                "a fill in {object_id} was booked and not aggregated: {}",
+                error.message()
+            ));
+        }
+        self.aggregates.mark_cash(self.capital.cash);
+        if let Err(error) = self
+            .aggregates
+            .mark(self.capital.equity(), self.capital.drawdown())
+        {
+            self.capture_problems.push(format!(
+                "the book's mark was refused by the risk aggregate, which keeps its last: {}",
+                error.message()
+            ));
+        }
+    }
+
+    /// The running risk counters, as the pre-trade check reads them.
+    pub fn risk_figures(&self) -> &RiskAggregates {
+        &self.aggregates
     }
 
     /// The correlation the current work belongs to.

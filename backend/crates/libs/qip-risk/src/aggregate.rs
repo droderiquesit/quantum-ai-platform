@@ -131,6 +131,20 @@ impl RiskAggregates {
         Ok(())
     }
 
+    /// Record the book's cash as the caller's ledger holds it.
+    ///
+    /// [`Self::apply_fill`] moves cash by the fill's notional and nothing
+    /// else, because the notional is all the aggregate is told. A ledger
+    /// that also pays commissions and realises P&L on a closing fill holds a
+    /// different figure, and the cash-buffer limit must read that one — a
+    /// buffer computed from cash that never paid a fee overstates what is
+    /// left. No bound is placed on the value: negative cash is a margined
+    /// book, which is exactly what the buffer limit exists to refuse, and a
+    /// mark that refused it would hide the breach.
+    pub fn mark_cash(&mut self, cash: Decimal) {
+        self.cash = cash;
+    }
+
     /// Apply one fill: a constant number of counter updates.
     ///
     /// `signed_notional` is positive for a buy and negative for a sell. Gross
