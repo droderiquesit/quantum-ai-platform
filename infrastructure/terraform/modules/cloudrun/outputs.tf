@@ -52,6 +52,32 @@ output "secret_file_paths" {
   value = local.secret_files
 }
 
+output "config_file_paths" {
+  description = <<-EOT
+    Mount key to the path the process reads, one entry per configuration
+    file, or empty for a workload that reads none.
+
+    Exported for the reason `secret_file_paths` is: the same path is the
+    value of the workload's `_PATH` variable, and a test asserting the
+    deployment and the binary agree reads this rather than a second copy.
+  EOT
+
+  value = local.config_files
+}
+
+output "config_file_hashes" {
+  description = <<-EOT
+    Mount key to the sha256 of the content this workload was given, one entry
+    per configuration file.
+
+    The object under `/etc/qip` is named by this hash, so it is the answer to
+    "which catalogue did that revision read" — from the plan, not from a
+    shell on the instance.
+  EOT
+
+  value = local.config_file_hashes
+}
+
 output "egress_endpoints" {
   description = <<-EOT
     The loopback addresses this workload's egress proxy answers on, one per

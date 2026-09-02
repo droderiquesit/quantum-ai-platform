@@ -453,6 +453,69 @@ variable "secret_mounts" {
   }
 }
 
+variable "config_files" {
+  description = <<-EOT
+    Configuration this workload reads as a file, and the committed bytes it
+    is made of.
+
+    Keyed by a short mount name. Each entry carries the file's content — read
+    by the root with `file()` from a committed path, so what a revision reads
+    is what the reviewer read — the name it appears under, and the
+    environment variable that points at it. The module publishes every entry
+    to a bucket of this workload's own, under a directory named by the hash
+    of the content, and mounts that directory read-only at `/etc/qip`; the
+    path reaches the process in the named variable.
+
+    This is not a secret and is deliberately not shaped like one: the
+    variable must end in `_PATH`, never `_FILE`, because `_FILE` is the
+    indirection `qip_core::secret` reads and a catalogue under that name
+    would be a credential to every reader of the configuration. A file that
+    is confidential belongs in `secret_mounts`.
+  EOT
+
+  type = map(object({
+    content           = string
+    file_name         = string
+    content_type      = optional(string, "application/octet-stream")
+    env_file_variable = string
+  }))
+
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for key in keys(var.config_files) : can(regex("^[a-z][a-z0-9-]{0,30}$", key))
+    ])
+    error_message = "A configuration file key is a short lower-case token; it names the object and the output entry."
+  }
+
+  validation {
+    condition = alltrue([
+      for file in values(var.config_files) : can(regex("^[a-z0-9][a-z0-9._-]*$", file.file_name))
+    ])
+    error_message = "A configuration file name is a file name, not a path: no slashes, no traversal."
+  }
+
+  validation {
+    condition     = length(distinct([for file in values(var.config_files) : file.file_name])) == length(var.config_files)
+    error_message = "Two configuration files share a file name; they are mounted in one directory and the second would hide the first."
+  }
+
+  validation {
+    condition = alltrue([
+      for file in values(var.config_files) : can(regex("^QIP_[A-Z0-9_]*_PATH$", file.env_file_variable))
+    ])
+    error_message = "The environment variable pointing at a configuration file is named QIP_…_PATH. A _FILE name is what qip_core::secret reads, and this is not a secret; a file that is one belongs in secret_mounts."
+  }
+
+  validation {
+    condition = alltrue([
+      for file in values(var.config_files) : length(file.content) > 0
+    ])
+    error_message = "A configuration file has no content. An empty catalogue mounted at the path the process reads is a process that starts with nothing and reports nothing wrong."
+  }
+}
+
 variable "encryption_key" {
   description = <<-EOT
     The KMS key Cloud Run encrypts this revision's layers with, or null.

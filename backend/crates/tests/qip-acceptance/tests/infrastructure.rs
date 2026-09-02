@@ -491,7 +491,16 @@ fn catalogue_env(body: &str) -> Vec<(String, String)> {
 
 /// The secrets a catalogue entry mounts, by the name the root creates them
 /// under, and the `_FILE` variable each is exposed as.
+///
+/// Read from the entry's `secret_mounts` block alone: a configuration file
+/// under `config_files` names its `_PATH` variable with the same field, and
+/// counted alongside the secrets it would read as a mount with no secret.
 fn catalogue_secret_mounts(body: &str) -> Vec<(String, String)> {
+    let body = block_under(body, "secret_mounts = {");
+    assert!(
+        !body.is_empty(),
+        "the catalogue entry has no `secret_mounts` block; the entry shape has changed"
+    );
     let names: Vec<String> = body
         .lines()
         .filter_map(|line| {
@@ -2992,6 +3001,213 @@ fn the_edge_halt_alert_names_every_halt_discipline_the_cell_records() {
             "the edge_halted policy's documentation does not name `{source}`, which \
              CellMetrics::halt writes as a source; an operator paged on it has no sentence \
              saying what stopped the node"
+        );
+    }
+}
+
+#[test]
+fn every_workload_that_reads_the_universe_is_given_the_committed_catalogue_as_a_mounted_file() {
+    // The three central roots assemble the desk from an instrument universe
+    // read at `QIP_UNIVERSE_PATH`. Two failures this prevents. A workload
+    // that reads the variable and is given no file starts on whatever the
+    // root falls back to, healthy, with nothing anywhere saying which
+    // instruments it is trading. And a file fetched from somewhere other
+    // than the commit — an object somebody uploaded, a template rendered at
+    // apply — is a universe no reviewer read: the plan must carry the
+    // committed bytes, by `file()`, and name them by hash.
+    let catalogue = without_comments(&read(CATALOGUE));
+    let source = catalogue
+        .lines()
+        .find_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            (key.trim() == "universe_catalogue").then(|| value.trim().to_string())
+        })
+        .expect("catalogue.tf declares local.universe_catalogue");
+    let relative = source
+        .strip_prefix("file(\"${path.module}/../../")
+        .and_then(|rest| rest.strip_suffix("\")"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the universe is read as `{source}`, not with file() from a repository path; \
+                 a plan cannot prove a fetched object is the reviewed one"
+            )
+        });
+    assert!(
+        relative.starts_with("data/") && relative.ends_with(".json"),
+        "the universe is read from {relative}, which is not a JSON file under data/ (ADR 0016)"
+    );
+    // The file's presence is enforced by `file()` at plan time, which refuses
+    // a path that does not exist; what is asserted here is that, when it is
+    // present, it is the JSON the roots parse and not an empty placeholder.
+    let committed = repository_root().join(relative);
+    if committed.exists() {
+        let text = read(relative);
+        assert!(
+            !text.trim().is_empty(),
+            "{relative} is empty; an empty universe mounted at the path the roots read is a \
+             desk with no instruments and nothing wrong reported"
+        );
+        serde_json::from_str::<serde_json::Value>(&text)
+            .unwrap_or_else(|error| panic!("{relative} is not JSON: {error}"));
+    }
+
+    // Every workload: given the committed bytes, under the name the module
+    // mounts, pointed at by the variable the roots read — and never by a
+    // path written as a literal in `env` beside it.
+    let workloads = catalogue_workloads();
+    for (name, body) in &workloads {
+        let files = block_under(body, "config_files = {");
+        assert!(
+            !files.is_empty(),
+            "{name} mounts no config_files; a root that reads QIP_UNIVERSE_PATH is given no universe"
+        );
+        assert!(
+            sets(&files, "content", "local.universe_catalogue"),
+            "{name}'s universe is not the committed file read once in local.universe_catalogue"
+        );
+        assert!(
+            sets(&files, "file_name", "\"universe.json\""),
+            "{name} mounts the universe under a name other than universe.json, so the roots' \
+             default path /etc/qip/universe.json reads nothing"
+        );
+        assert!(
+            sets(&files, "env_file_variable", "\"QIP_UNIVERSE_PATH\""),
+            "{name} does not point QIP_UNIVERSE_PATH at the mounted universe"
+        );
+        assert!(
+            catalogue_env(body)
+                .iter()
+                .all(|(variable, _)| variable != "QIP_UNIVERSE_PATH"),
+            "{name} sets QIP_UNIVERSE_PATH as a literal in env as well; the module writes the \
+             path, and a path written twice is a path that will be written two ways"
+        );
+    }
+    assert!(
+        catalogue.contains("config_files  = each.value.config_files"),
+        "catalogue.tf no longer hands each entry's config_files to modules/cloudrun"
+    );
+
+    // The module: the path the variable carries is /etc/qip/<file_name>, the
+    // object's content is the input's content under a hash-named directory,
+    // and the volume is read-only at that directory alone, on both kinds.
+    let module = without_comments(&read(CLOUD_RUN_MODULE));
+    assert!(
+        sets(&module, "config_root", "\"/etc/qip\"")
+            && module.contains("key => \"${local.config_root}/${file.file_name}\"")
+            && module.contains("file.env_file_variable => local.config_files[key]"),
+        "the module no longer writes /etc/qip/<file_name> into the _PATH variable"
+    );
+    let objects = terraform_resources(&module, "google_storage_bucket_object");
+    let (_, object) = objects
+        .iter()
+        .find(|(name, _)| name == "config_files")
+        .expect("the module publishes config_files as bucket objects");
+    assert!(
+        sets(object, "content", "each.value.content")
+            && sets(
+                object,
+                "name",
+                "\"${local.config_prefix}/${each.value.file_name}\""
+            ),
+        "the config object's content or hash-named path is no longer the input's"
+    );
+    assert!(
+        module.contains("sha256(file.content)"),
+        "the module no longer hashes each file's content, so the object's name says nothing about its bytes"
+    );
+    // Line-based and whitespace-collapsed, because `terraform fmt` aligns
+    // the mount's `name` with its `mount_path` and a substring search for
+    // `name = "config-files"` would find the volume and miss the mount.
+    let lines: Vec<&str> = module.lines().collect();
+    let mut volumes = 0usize;
+    let mut mounts = 0usize;
+    for (index, line) in lines.iter().enumerate() {
+        if line.split_whitespace().collect::<Vec<_>>().join(" ") != "name = \"config-files\"" {
+            continue;
+        }
+        // The lines that follow, up to the block's own closing brace.
+        let piece = lines[index + 1..]
+            .iter()
+            .take_while(|line| line.trim() != "}")
+            .copied()
+            .collect::<Vec<_>>()
+            .join("\n");
+        let block = piece.as_str();
+        if block.contains("gcs {") {
+            assert!(
+                sets(block, "read_only", "true")
+                    && block.contains("only-dir=${volumes.value}")
+                    && block.contains("google_storage_bucket.config_files[0].name"),
+                "a config-files volume is not read-only at the hash-named directory of the \
+                 workload's own bucket:\n{block}"
+            );
+            volumes += 1;
+        } else {
+            let preceding = lines[index.saturating_sub(4)..index].join("\n");
+            assert!(
+                sets(block, "mount_path", "volume_mounts.value")
+                    && preceding.contains("[local.config_root]"),
+                "a config-files mount is somewhere other than config_root:\n{preceding}\n{block}"
+            );
+            mounts += 1;
+        }
+    }
+    assert_eq!(
+        (volumes, mounts),
+        (2, 2),
+        "expected a config-files volume and mount on both the service and the job"
+    );
+    // The grant is the narrow one, on the workload's own bucket.
+    let grants = terraform_resources(&module, "google_storage_bucket_iam_member");
+    let (_, grant) = grants
+        .iter()
+        .find(|(name, _)| name == "config_files")
+        .expect("the module grants the workload its config bucket");
+    assert!(
+        sets(grant, "role", "\"roles/storage.objectViewer\""),
+        "the config bucket grant is wider than objectViewer"
+    );
+
+    // Not a secret, and refused if shaped like one; and a change in the
+    // committed bytes is visible in the plan as a hash.
+    let variables = without_comments(&read(CLOUD_RUN_VARIABLES));
+    assert!(
+        variables.contains("^QIP_[A-Z0-9_]*_PATH$"),
+        "config_files no longer refuses a _FILE variable name, so a catalogue could be read as a credential"
+    );
+    assert!(
+        sets(&catalogue, "value", "sha256(local.universe_catalogue)"),
+        "the root no longer outputs the universe's hash"
+    );
+
+    // And the readers: every deployable binary whose source names the
+    // variable is one of the workloads above, each of which was just shown
+    // to mount the file. A binary that is deployed by no workload is argued
+    // in NOT_A_WORKLOAD and is not a Cloud Run reader.
+    let given: Vec<String> = workloads
+        .iter()
+        .map(|(_, body)| catalogue_field(body, "binary"))
+        .collect();
+    for path in files_with_extension("backend/crates/apps", "rs") {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if !text.contains("QIP_UNIVERSE_PATH") {
+            continue;
+        }
+        let crate_name = path
+            .strip_prefix(repository_root().join("backend/crates/apps"))
+            .ok()
+            .and_then(|rest| rest.components().next())
+            .map(|component| component.as_os_str().to_string_lossy().into_owned())
+            .expect("an apps source file sits under its crate");
+        assert!(
+            given.contains(&crate_name)
+                || NOT_A_WORKLOAD
+                    .iter()
+                    .any(|(binary, _)| *binary == crate_name),
+            "{crate_name} reads QIP_UNIVERSE_PATH and is deployed by a workload that is not \
+             given the universe"
         );
     }
 }
