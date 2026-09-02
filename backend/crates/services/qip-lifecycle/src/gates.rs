@@ -732,12 +732,11 @@ impl Gate for ScaledGate {
         };
 
         let duration = now.since(scaled.pilot_started_at);
-        let sigma = stats::stddev(&scaled.pilot_returns);
-        let realised_sharpe = if sigma < 1e-12 {
-            0.0
-        } else {
-            stats::mean(&scaled.pilot_returns) / sigma
-        };
+        // The engine's Sharpe, not a local one: the pilot's realised figure
+        // must be on the scale the holdout was validated on, or the two
+        // cannot be compared and the bar means something different here.
+        let realised = crate::scoring::periodic_sharpe(&scaled.pilot_returns);
+        let realised_sharpe = realised.as_ref().copied().unwrap_or(f64::NAN);
 
         let outcome = outcome
             .record(
@@ -754,11 +753,17 @@ impl Gate for ScaledGate {
             )
             .record(
                 "pilot_performance_sustained",
-                realised_sharpe >= self.policy.minimum_pilot_sharpe,
-                format!(
-                    "realised pilot Sharpe {realised_sharpe:.2} against a {:.2} bar",
-                    self.policy.minimum_pilot_sharpe
-                ),
+                realised.is_ok() && realised_sharpe >= self.policy.minimum_pilot_sharpe,
+                match &realised {
+                    Ok(_) => format!(
+                        "realised pilot Sharpe {realised_sharpe:.2} against a {:.2} bar",
+                        self.policy.minimum_pilot_sharpe
+                    ),
+                    Err(error) => format!(
+                        "the pilot Sharpe could not be computed: {}",
+                        error.message()
+                    ),
+                },
             )
             .record(
                 // A pilot that sent no orders produced no live evidence, only

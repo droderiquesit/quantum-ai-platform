@@ -28,9 +28,10 @@ use qip_lifecycle::evidence::{
 };
 use qip_lifecycle::gates::{Gate, HoldoutGate, PaperGate, PilotGate, ScaledGate, ShadowGate};
 use qip_lifecycle::ledger::{AuthorisedPromotion, LifecycleLedger, attempt_promotion};
+use qip_lifecycle::scoring::{annualised_sharpe, periodic_sharpe};
 use qip_lifecycle::trials::{JOURNAL_PREFIX, StrategyFamily, TrialBook};
 use qip_observability::metrics::{Metrics, labels, names};
-use qip_simulation_engine::validation::{PurgedSplit, deflated_sharpe};
+use qip_simulation_engine::validation::{PurgedSplit, assess_overfitting, deflated_sharpe};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -1462,6 +1463,83 @@ fn a_family_opens_once_and_a_member_cannot_take_its_trials_elsewhere() -> Result
     assert!(
         StrategyFamily::new("bad/name").is_err() && StrategyFamily::new("  ").is_err(),
         "a family name is a key segment"
+    );
+    Ok(())
+}
+
+/// Blueprint rule 27: backtest and live share the production crates, so they
+/// cannot diverge. This crate's own scoring helpers delegate to
+/// `qip_simulation_engine::validation` rather than restating `mean / stddev`,
+/// and the scaled gate — the one place that had written it out by hand —
+/// now reports the engine's number. Held to the last bit, on series with
+/// drift, without, and with no variance at all.
+#[test]
+fn every_sharpe_this_crate_reports_is_the_simulation_engines_sharpe() -> Result<()> {
+    let series: Vec<Vec<f64>> = vec![
+        good_returns(1, 400, 0.0018),
+        good_returns(11, 60, -0.0002),
+        good_returns(5, 30, 0.0),
+        vec![0.001; 25],
+        vec![0.004, -0.003, 0.002, 0.001, -0.002, 0.003, 0.0, 0.001],
+    ];
+    assert!(
+        series
+            .iter()
+            .any(|r| qip_numerics::stats::stddev(r) < 1e-12),
+        "premise: one flat series"
+    );
+    assert!(
+        series
+            .iter()
+            .any(|r| periodic_sharpe(r).is_ok_and(|s| s < 0.0)),
+        "premise: one loser"
+    );
+    for returns in &series {
+        let engine =
+            assess_overfitting(std::slice::from_ref(returns), std::slice::from_ref(returns))?;
+        let periodic = periodic_sharpe(returns)?;
+        assert_eq!(
+            periodic.to_bits(),
+            engine.out_of_sample_sharpe.to_bits(),
+            "{returns:?}"
+        );
+        assert_eq!(periodic.to_bits(), engine.in_sample_sharpe.to_bits());
+
+        // The annualised figure is the one the deflated Sharpe calls
+        // `observed`. The engine refuses to deflate a flat series, which is
+        // the one place the helper and the engine legitimately part.
+        for periods in [252.0, 52.0, 12.0, 0.5] {
+            let annualised = annualised_sharpe(returns, periods)?;
+            match deflated_sharpe(returns, 1, periods) {
+                Ok(deflated) => assert!(
+                    (annualised - deflated.observed).abs() <= 1e-12,
+                    "{annualised} vs {} at {periods}",
+                    deflated.observed
+                ),
+                Err(error) => assert!(
+                    qip_numerics::stats::stddev(returns) < 1e-12 || returns.len() < 20,
+                    "{error:?}"
+                ),
+            }
+        }
+    }
+
+    // The scaled gate quotes the same figure, to the same two decimals.
+    let pilot_start = start();
+    let now = pilot_start.saturating_add(Duration::from_days(120));
+    let scaled = strong_scaled(pilot_start, now)?;
+    let expected = periodic_sharpe(&scaled.pilot_returns)?;
+    assert!(expected >= 0.5, "premise: the fixture clears the bar");
+    let outcome = ScaledGate::default().evaluate(&StrategyEvidence::new().with_scaled(scaled), now);
+    let detail = outcome
+        .findings
+        .iter()
+        .find(|(name, _, _)| name == "pilot_performance_sustained")
+        .map(|(_, _, d)| d.clone())
+        .ok_or_else(|| Error::not_found("pilot_performance_sustained"))?;
+    assert!(
+        detail.starts_with(&format!("realised pilot Sharpe {expected:.2} ")),
+        "{detail}"
     );
     Ok(())
 }

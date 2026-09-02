@@ -68,6 +68,7 @@ pub mod demotion;
 pub mod evidence;
 pub mod gates;
 pub mod ledger;
+pub mod scoring;
 pub mod trials;
 
 pub use demotion::{
