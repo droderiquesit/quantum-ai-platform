@@ -134,3 +134,152 @@ claim, and neither should any other until a reproducible benchmark exists that
 records hardware, topology, dataset and percentiles. The canonical diagram's
 "microseconds" is an aspiration for a colocated path, not a measured property
 of anything in this repository.
+
+## Orphan cleanup
+
+An orphan sweep ran across the workspace on the refactor branch. Every
+removal below was proven unused before it went, and the proof is stated
+next to it; what could not be proven, or belonged to a crate another owner
+was editing at the time, is listed rather than touched.
+
+### Dependency edges
+
+For every `[dependencies]` and `[dev-dependencies]` entry in every crate
+manifest, a grep for `<ident>::`, `use <ident>`, `<ident> as` and
+`extern crate <ident>` (hyphens mapped to underscores) across the crate's
+`src`, `tests`, `benches`, `examples` and `build.rs` found the entries
+nothing named. 110 such edges were removed from 35 manifests, plus the
+root `[workspace.dependencies]` alias `qip-acceptance`, which no manifest
+consumed; `cargo check --workspace --all-targets` then finished clean. The
+one test that moved was the contract-layer pin in `architecture.rs`, which
+named the exact set `qip-contracts` declared and so encoded five unused
+edges as expected; `qip-contracts` contains no `qip_financial::`,
+`qip_market::`, `qip_numerics::`, `qip_portfolio::` or `qip_risk::` path,
+so the pin now names `qip-core` alone.
+
+Thirty-three zero-hit edges sit in crates another owner had uncommitted
+work in and are **deferred to the edge owner**, unverified by a build:
+
+- `qip-arbitrage`: `qip-financial`, `qip-numerics`, `qip-portfolio`, `serde_json`
+- `qip-edge`: `qip-execution-engine`, `qip-financial`, `qip-market`,
+  `qip-numerics`, `qip-portfolio`, `qip-risk`, `qip-routing`
+- `qip-feature-dag`: `qip-financial`, `serde`, `serde_json`
+- `qip-orderbook`: `qip-financial`, `qip-market`, `qip-numerics`
+- `qip-protocols`: `qip-financial`, `qip-market`, `qip-numerics`
+- `qip-routing`: `qip-financial`, `qip-numerics`, `qip-portfolio`, `qip-risk`, `serde_json`
+- `qip-sequencing`: `qip-financial`, `qip-market`, `serde_json`
+- `qip-strategy`: `qip-financial`, `qip-market`, `qip-numerics`, `qip-risk`
+- `qip-edge-node`: `serde_json`
+
+The `qip-edge` entries for `qip-execution-engine` and `qip-routing` deserve
+a look from whoever owns that crate: the architecture suite reasons about
+what the cell can reach, and a declared edge it never opens widens that
+answer for nothing.
+
+### Bench profile
+
+`find backend -name benches -type d` and a grep for `[[bench]]` across
+every manifest both returned nothing, so `[profile.bench]` in the workspace
+root was removed. It returns with the first real benchmark.
+
+### `qip-normalization` (decision D6 pending; crate untouched)
+
+Callers, from `grep -rn "qip_normalization" backend --include=*.rs`: the
+crate's own `tests/canonicalisation.rs`, and the acceptance suites
+`truth_loop.rs` and `performance.rs`. `qip-kernel` declared the edge and
+never named the crate, so that edge went with the sweep above; after it,
+`cargo tree --workspace -i qip-normalization -e normal` lists only the
+crate itself, and with `-e normal,dev` adds `qip-acceptance` as a
+dev-dependency. **No deployable binary reaches it.** Its `dropping_unmapped`
+builder has no caller and was left alone with the rest of the crate.
+
+### Public functions with no caller
+
+Every `pub fn` under `crates/{libs,services,runtime,agents,quant}/**/src`
+was checked for whole-word references across every `.rs` in the workspace
+and every `.md` under `docs/`, excluding its own definition line. 161 had
+none. 99 were removed (accessors, builders and helpers whose doc, where one
+existed, restated the signature; nine imports only they used went with
+them; no test changed). The remainder are listed here so nobody mistakes
+them for wired behaviour.
+
+Kept because the doc names a consumer, a control, a runbook, a UI or a
+design decision, or the function is a limit knob or test support (35):
+
+- `qip-storage`: `RedisConfig::with_username` (credential-splitting
+  rationale), `RedisConfig::with_key_prefix` (names `DEFAULT_KEY_PREFIX`).
+- `qip-financial`: `MarketHours::next_open` (names the scheduler);
+  `Universe::not_decision_grade` — **its doc says the kernel logs it at
+  start-up; nothing does.** A degraded universe is currently visible to no
+  one before it trades.
+- `qip-core::testing`: `any_f64`, `any_returns`, `check_approx`.
+- `qip-observability`: `Logger::set_echo`.
+- `qip-quantum`: `SolverBenchmark::with_validator` (the classical baseline,
+  ADR 0006), `QuantumInspiredSolver::with_replicas`, `with_schedule`.
+- `qip-numerics`: `Qubo::to_dense` (names the quantum backends).
+- `qip-agents`: `AuditTrail::for_correlation` (audit query).
+- `qip-events`: `EventBus::reset_deduplication` — **its doc says replay
+  calls it; nothing does**; `EventLog::replay_filtered`.
+- `qip-transport`: `RetryPolicy::worst_case_backoff` (runbook figure).
+- `qip-market-ingestion`: `alternative_reading` (names the discovery
+  stage); `MarketEventEnvelope::is_knowable_at` — **the point-in-time guard,
+  consulted by nothing**; `AlternativeDataAdapter::sense_topics`
+  (compile-time proof).
+- `qip-cost-router`: `CostEngine::spent_so_far` — the figure a caller is
+  meant to compare against value at stake before escalating; **no caller
+  compares it**.
+- `qip-simulation-engine`: `Regime::feed_is_current` (staleness control),
+  `Distribution::mean_is_distinguishable_from_zero` (design decision).
+- `qip-execution-engine`: `SimulatedBroker::set_liquidity` — the impact
+  model's liquidity input, **supplied by nothing**.
+- `qip-chain`: `BridgeLedger::on_reorg` — **a control that cannot fire**:
+  no caller fails bridged transfers when their source block is reorganised.
+- `qip-data-finder`: `RegisteredSource::quarantine_reason`.
+- `qip-capital-fabric`: `PrePositioningPlanner::with_shortfall_buffer_cap`.
+- `qip-opportunity-engine`: `OpportunityEngine::supported_anomaly_kinds`
+  (documentation and UI).
+- `qip-reasoning-engine`: `CausalChain::weakest_links` (red team).
+- `qip-training`: `TrainingDataset::design_matrix`.
+- `qip-streaming`: `TieredPublisher::route_batch`.
+- `qip-world-model`: `FeatureLookup::is_truncated` (bounded-retention
+  signal nothing checks); `RelationshipKind::transmits_shock` — **its doc
+  says it bounds causal propagation; nothing calls it.**
+- `qip-normalization`: `Normalizer::dropping_unmapped` (D6).
+- `qip-investment-agents`: `LearningAttribution::with_promotion_policy`,
+  `promotion_policy`.
+
+Listed only, because another owner is wiring callers into these crates
+during the same refactor (27): `qip-kernel` — `StrategyFactory::
+with_demotion_policy`, `submit_evidence`, `set_baseline`; `CellOutcome::
+with_drawdown`, `with_losing_days`, `with_realised_cost_bps`;
+`CentralPlane::compliance_mut`, `set_concentration_limits`;
+`DnaPayload::section_digest`; `PlatformConfig::with_licensed_datasets`,
+`with_data_user_agent`, `with_reasoning_confidence_bar`. `qip-lifecycle` —
+`StrategyEvidence::stages_evidenced`. `qip-capital` — `CellPosition::
+is_short`; `AllocationLimits::with_cell_limit`, `with_venue_limit`;
+`Allocation::is_unconstrained`; `CapitalAllocator::with_uncertainty_penalty`;
+`EnvelopeTerms::with_order_fraction`, `with_loss_fraction`, `with_venues`.
+`qip-compliance` — `ArtifactStore::raw_dataset`, `CompliancePlane::
+model_risk_mut`, `ModelRiskFile::has_independent_review`.
+`qip-learning-engine` — `PositionAttribution::return_fraction`,
+`Attribution::period_return`. `qip-evolution` — `NetReturns::corrected_by`.
+
+`verify_dna` has four callers in `qip-kernel/tests/central.rs`, and
+`verify_continuity` is an edge-crate control that
+`docs/operations/disaster-recovery.md` names twice; neither is an orphan.
+
+### Frontend
+
+`@algorik/shared-types` exported a configuration reader (`readConfig`,
+`describeProblems`, `AlgorikConfig`, `IdentityConfig`) that no `.ts`,
+`.tsx`, `.js`, `.mjs` or `.json` under `frontend/` outside `node_modules`
+and `.next` imported; it was removed. The two type aliases that remain,
+`EnvironmentMode` and `TradingPosture`, also have no importer yet.
+
+### `#[allow(dead_code)]`
+
+Every occurrence is under a `tests/` directory: `qip-transport/tests/
+common`, `qip-data-finder/tests/common`, `qip-streaming/tests/common`, and
+`qip-market-ingestion/tests/{server,connector_common}`, each documented as
+a shared fixture that not every integration binary uses in full. None is in
+shipped code; nothing to remove.
