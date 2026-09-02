@@ -299,9 +299,14 @@ pub struct OpenOrder {
     pub filled: Decimal,
     pub simulated: bool,
     pub sent_at: Timestamp,
+    /// When the cell withdraws what has not filled, for an order sent under
+    /// [`PricingPolicy::RestAtMid`]. `None` for a marketable order, which
+    /// either filled on acceptance or was cancelled by the venue.
+    pub expires_at: Option<Timestamp>,
     /// Why the cell has finished with it, once it has: `filled` when the
-    /// reports sum to the quantity sent. `None` is an order still working
-    /// at the venue — which is not a position, and not a break.
+    /// reports sum to the quantity sent, `expired` when the cell withdrew
+    /// the remainder. `None` is an order still working at the venue — which
+    /// is not a position, and not a break.
     pub closed: Option<String>,
 }
 
@@ -328,6 +333,63 @@ struct Working {
 /// every other, so a cell that stopped for this reason says so.
 pub const MAX_OPEN_ORDERS: usize = 256;
 
+/// How a strategy's intents are priced when they reach a venue.
+///
+/// Stated at deployment, per strategy, and read when the net order is
+/// placed — never defaulted. A strategy deployed with no policy has its
+/// intents refused under the `pricing` gate, because the alternative is a
+/// cell deciding on its own whether to cross a spread, and a cell that
+/// crosses spreads nobody asked it to is paying for liquidity nobody
+/// budgeted. Until this existed every order was a limit at the mid: an
+/// order that, against a real two-sided book, rests — and, with nothing to
+/// withdraw it, rests forever.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PricingPolicy {
+    /// Take the touch: a buy is sent at the best ask, a sell at the best bid,
+    /// so it fills on acceptance against what rests there. The net's size
+    /// is checked against the size at the touch when it is placed, and a net
+    /// that would walk past the touch is refused rather than reduced — the
+    /// feasibility gate's rule, applied once more at the size that actually
+    /// goes out, because two feasible contributors can net to more than the
+    /// touch holds.
+    Marketable,
+    /// Rest at the prevailing mid, and have the cell withdraw whatever has
+    /// not filled once `time_to_live` has elapsed.
+    ///
+    /// The withdrawal is the cell's own, through [`Placer::cancel`], which is
+    /// the venue's cancel path and nothing invented here; a gateway that
+    /// cannot withdraw refuses to rest at all, because an order nothing can
+    /// withdraw is a position the cell has promised to take at a price the
+    /// market has since left. The simulated venue offers no venue-side
+    /// expiry, so the cell's own clock is the only one there is.
+    RestAtMid { time_to_live: Duration },
+}
+
+impl PricingPolicy {
+    /// A resting policy, refusing a time to live that could not elapse.
+    ///
+    /// Zero would withdraw the order on the pass after it was sent, which
+    /// is a marketable order that pays to rest for nothing; negative would
+    /// never withdraw it. Neither is what anybody meant.
+    pub fn rest_at_mid(time_to_live: Duration) -> Result<Self> {
+        if time_to_live.as_nanos() <= 0 {
+            return Err(Error::invalid(format!(
+                "a resting order needs a positive time to live and {} nanoseconds is not one; \
+                 name how long the order may rest, or price it marketable",
+                time_to_live.as_nanos()
+            )));
+        }
+        Ok(Self::RestAtMid { time_to_live })
+    }
+
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Marketable => "marketable",
+            Self::RestAtMid { .. } => "rest_at_mid",
+        }
+    }
+}
+
 /// A deployed strategy, the arena its plan indexes into, and the capital it
 /// runs under.
 ///
@@ -350,6 +412,9 @@ struct Deployed {
     /// consumes world events, so an ingestion or episodic loss must not pause
     /// it.
     class: StrategyClass,
+    /// How this strategy's intents are priced at the venue, if the
+    /// deployment said. `None` refuses every intent under `pricing`.
+    pricing: Option<PricingPolicy>,
 }
 
 /// One edge cell.
@@ -942,11 +1007,46 @@ impl Cell {
     /// a feature can be registered and still undefined for want of a quote —
     /// so it stays a per-pass judgement the runtime makes against the vector it
     /// was actually handed.
+    ///
+    /// Deployed this way the strategy names no [`PricingPolicy`], and every
+    /// intent it raises is refused under the `pricing` gate until it is
+    /// deployed through [`Self::deploy_with_pricing`]. The refusal is the
+    /// safe default: a cell that guessed a pricing would either cross
+    /// spreads nobody budgeted or rest orders nothing withdraws.
     pub fn deploy(
         &mut self,
         strategy: CompiledStrategy,
         program: Program,
         envelope: VerifiedEnvelope,
+    ) -> Result<()> {
+        self.install(strategy, program, envelope, None)
+    }
+
+    /// [`Self::deploy`], naming how the strategy's intents are priced.
+    ///
+    /// A `RestAtMid` policy is validated here as it is in
+    /// [`PricingPolicy::rest_at_mid`], so a literal built around the
+    /// constructor is refused at the same seam.
+    pub fn deploy_with_pricing(
+        &mut self,
+        strategy: CompiledStrategy,
+        program: Program,
+        envelope: VerifiedEnvelope,
+        pricing: PricingPolicy,
+    ) -> Result<()> {
+        let pricing = match pricing {
+            PricingPolicy::Marketable => pricing,
+            PricingPolicy::RestAtMid { time_to_live } => PricingPolicy::rest_at_mid(time_to_live)?,
+        };
+        self.install(strategy, program, envelope, Some(pricing))
+    }
+
+    fn install(
+        &mut self,
+        strategy: CompiledStrategy,
+        program: Program,
+        envelope: VerifiedEnvelope,
+        pricing: Option<PricingPolicy>,
     ) -> Result<()> {
         if envelope.cell() != self.config.cell_id {
             return Err(Error::denied(format!(
@@ -1004,9 +1104,17 @@ impl Cell {
                 envelope,
                 utilisation: Utilisation::default(),
                 class: StrategyClass::PriceOnly,
+                pricing,
             },
         );
         Ok(())
+    }
+
+    /// The pricing policy a deployed strategy was given, if any.
+    pub fn pricing_of(&self, strategy: &str) -> Option<PricingPolicy> {
+        self.deployed
+            .get(strategy)
+            .and_then(|deployed| deployed.pricing)
     }
 
     /// Declare which pause rules govern an already-deployed strategy.
@@ -1114,6 +1222,11 @@ impl Cell {
         // what filled, because a fill it does not confirm is a fill the
         // reconciler will read as unknown to it.
         report.fills = self.confirm_execution_reports(gateway, now);
+        // And what has rested long enough. Also before the halt check:
+        // withdrawing is not sending, and a halted cell with orders resting
+        // at a price the market has left is exactly the cell that should
+        // withdraw them.
+        self.withdraw_expired(gateway, now);
 
         if report.halted {
             // Books keep absorbing and the journal keeps recording while
@@ -1324,6 +1437,25 @@ impl Cell {
             self.refuse(report, "pricing", "the book serves no usable price", now);
             return Ok(None);
         };
+        // The price the intent is *reasoned* at is the mid; the price it is
+        // *sent* at is decided by the strategy's policy when the net is
+        // placed, and a strategy that stated none is refused here, before
+        // it can contribute to a net that another strategy's policy would
+        // then price.
+        if self.pricing_of(signal.strategy.as_str()).is_none() {
+            self.refuse(
+                report,
+                "pricing",
+                &format!(
+                    "strategy {} was deployed with no pricing policy; deploy it with \
+                     deploy_with_pricing naming marketable or rest-at-mid with a time to live, \
+                     because an intent with no stated pricing is never sent",
+                    signal.strategy.as_str()
+                ),
+                now,
+            );
+            return Ok(None);
+        }
 
         let side = match signal.kind {
             SignalKind::Enter => BookSide::Ask,
@@ -1498,17 +1630,38 @@ impl Cell {
         // the sign there rather than compensate for it.
         let side = if is_buy { BookSide::Ask } else { BookSide::Bid };
         let quantity = net_intent.order_quantity();
-        let price = net_intent.reference_price;
         let venue = net_intent.venue.clone();
 
+        // Every refusal from here to the send drops the cross unsealed, like
+        // the send-error path below: nothing of this net happened, and a
+        // cross booked beside a refused order would be a trade between two
+        // strategies that the chain could not pair with the order it was the
+        // residual of.
+        if self.would_self_trade(net_intent, side) {
+            self.refuse(
+                report,
+                "self_trade",
+                &format!(
+                    "an order of the cell's own is resting on the other side of {} at {}; a {} \
+                     now would trade with it, so the net is refused until that order fills or \
+                     expires",
+                    net_intent.object_id.as_str(),
+                    venue.as_str(),
+                    if is_buy { "buy" } else { "sell" }
+                ),
+                now,
+            );
+            return Ok(None);
+        }
         if !self.has_open_capacity(1) {
-            // The cross is not sealed either: like the send-error path
-            // below, nothing of this net happened, and a cross booked beside
-            // a refused order would be a trade between two strategies that
-            // the chain could not pair with the order it was the residual of.
             self.refuse_for_capacity(report, now);
             return Ok(None);
         }
+        let Some((price, expires_at)) =
+            self.resolve_pricing(net_intent, side, quantity, now, gateway, report)
+        else {
+            return Ok(None);
+        };
 
         let (order_id, simulated) = self.send(
             &net_intent.object_id,
@@ -1550,6 +1703,7 @@ impl Cell {
                     filled: Decimal::ZERO,
                     simulated,
                     sent_at: now,
+                    expires_at,
                     closed: None,
                 },
                 net: net_intent.clone(),
@@ -1651,6 +1805,257 @@ impl Cell {
             ),
             now,
         );
+    }
+
+    // --- pricing -------------------------------------------------------------
+
+    /// The price a net goes out at, and when the cell withdraws it, under
+    /// the policy its contributors share — or a refusal and `None`.
+    ///
+    /// The contributors must agree: a net is one order and one order has
+    /// one price, and choosing between two strategies' policies would be
+    /// the cell deciding what one of them pays. The touch and the mid are
+    /// read from the book now, at the instant the order goes out, because
+    /// the reference price the net carries is where the size was reasoned
+    /// and not where the venue will match it.
+    fn resolve_pricing(
+        &mut self,
+        net_intent: &NetIntent,
+        side: BookSide,
+        quantity: Decimal,
+        now: Timestamp,
+        gateway: &dyn Placer,
+        report: &mut WorkReport,
+    ) -> Option<(Decimal, Option<Timestamp>)> {
+        let mut policy: Option<PricingPolicy> = None;
+        for contributor in &net_intent.contributors {
+            let Some(theirs) = self.pricing_of(contributor.strategy.as_str()) else {
+                // `intent_for` refuses an unpriced strategy before it can
+                // contribute, so this is a contributor that was undeployed
+                // between phases. Refused, not defaulted.
+                self.refuse(
+                    report,
+                    "pricing",
+                    &format!(
+                        "contributor {} names no pricing policy at the instant the net is placed",
+                        contributor.strategy.as_str()
+                    ),
+                    now,
+                );
+                return None;
+            };
+            match policy {
+                None => policy = Some(theirs),
+                Some(agreed) if agreed == theirs => {}
+                Some(agreed) => {
+                    self.refuse(
+                        report,
+                        "pricing_conflict",
+                        &format!(
+                            "the net on {} at {} carries {} contributors and they do not agree \
+                             how to price it ({} and {}); one order has one price, and the \
+                             cell does not choose whose",
+                            net_intent.object_id.as_str(),
+                            net_intent.venue.as_str(),
+                            net_intent.contributors.len(),
+                            agreed.as_str(),
+                            theirs.as_str()
+                        ),
+                        now,
+                    );
+                    return None;
+                }
+            }
+        }
+        let policy = policy?;
+
+        let book = self
+            .liquidity
+            .get(&net_intent.venue, &net_intent.object_id)
+            .map(|state| (state.best_bid(), state.best_ask(), state.mid()));
+        let Some((bid, ask, mid)) = book else {
+            self.refuse(
+                report,
+                "book",
+                "the cell holds no book for the instrument at the instant the net is placed",
+                now,
+            );
+            return None;
+        };
+
+        match policy {
+            PricingPolicy::Marketable => {
+                let touch = match side {
+                    BookSide::Ask => ask,
+                    BookSide::Bid => bid,
+                };
+                let Some(touch) = touch else {
+                    self.refuse(
+                        report,
+                        feasibility::GATE_DEPTH,
+                        &format!(
+                            "nothing rests at the touch on the side the net on {} would take at {}",
+                            net_intent.object_id.as_str(),
+                            net_intent.venue.as_str()
+                        ),
+                        now,
+                    );
+                    return None;
+                };
+                if quantity > touch.size {
+                    self.refuse(
+                        report,
+                        feasibility::GATE_DEPTH,
+                        &format!(
+                            "the net of {quantity} on {} exceeds the {} resting at the touch at {}; \
+                             the net is refused rather than reduced or walked deeper, because a \
+                             reduced order is a size nobody reasoned about and a deeper one is a \
+                             price nobody did",
+                            net_intent.object_id.as_str(),
+                            touch.size,
+                            net_intent.venue.as_str()
+                        ),
+                        now,
+                    );
+                    return None;
+                }
+                Some((touch.price, None))
+            }
+            PricingPolicy::RestAtMid { time_to_live } => {
+                if !gateway.can_cancel() {
+                    self.refuse(
+                        report,
+                        "pricing",
+                        &format!(
+                            "the net on {} at {} would rest and this gateway cannot withdraw an \
+                             order; a resting order nothing can withdraw is refused rather than \
+                             left to fill at a price the market has since left",
+                            net_intent.object_id.as_str(),
+                            net_intent.venue.as_str()
+                        ),
+                        now,
+                    );
+                    return None;
+                }
+                let Some(mid) = mid else {
+                    self.refuse(report, "pricing", "the book serves no mid to rest at", now);
+                    return None;
+                };
+                // The mid is between two grid prices and need not be on the
+                // grid itself; the venue would refuse it, and the cell says
+                // so first under the gate the feasibility rule names.
+                let tick = feasibility::tick_for(
+                    self.config.feasibility.get(net_intent.venue.as_str()),
+                    self.feasibility_constraints(),
+                    net_intent.venue.as_str(),
+                    &net_intent.object_id,
+                );
+                match tick {
+                    Err(infeasible) => {
+                        self.refuse(report, infeasible.gate, &infeasible.reason, now);
+                        return None;
+                    }
+                    Ok(Some(tick)) if mid.floor_to_step(tick) != mid => {
+                        self.refuse(
+                            report,
+                            feasibility::GATE_TICK,
+                            &format!(
+                                "the mid {mid} is not on the {tick} tick grid for {} at {}; an order \
+                                 cannot rest there and the price is refused rather than rounded",
+                                net_intent.object_id.as_str(),
+                                net_intent.venue.as_str()
+                            ),
+                            now,
+                        );
+                        return None;
+                    }
+                    Ok(_) => {}
+                }
+                Some((mid, Some(now.saturating_add(time_to_live))))
+            }
+        }
+    }
+
+    /// Whether an order of the cell's own rests on the other side of this
+    /// net's instrument at its venue.
+    ///
+    /// Netting prevents two strategies crossing each other within a pass;
+    /// a resting order from an earlier pass is the same self-trade one pass
+    /// later, and the venue would match it. Refused, not withdrawn: the
+    /// resting order has a time to live somebody chose.
+    fn would_self_trade(&self, net_intent: &NetIntent, side: BookSide) -> bool {
+        self.working.values().any(|working| {
+            let order = &working.order;
+            order.closed.is_none()
+                && order.venue == net_intent.venue
+                && order.object_id == net_intent.object_id
+                && order.side != side
+                && order.remaining().is_positive()
+        })
+    }
+
+    /// Withdraw every resting order whose time to live has elapsed.
+    ///
+    /// Returns the ids withdrawn. The cancel goes through the gateway to
+    /// the venue and the venue's answer — what was still open — closes the
+    /// order as `expired`; a cancel the venue refuses leaves an order whose
+    /// state the cell does not know, which is a break and halts the cell.
+    /// A fill that landed between the last report and the cancel is
+    /// confirmed straight afterwards, so the order settles with everything
+    /// the venue did to it.
+    pub fn withdraw_expired(&mut self, gateway: &mut dyn Placer, now: Timestamp) -> Vec<String> {
+        let due: Vec<String> = self
+            .working
+            .values()
+            .filter(|working| {
+                working.order.closed.is_none()
+                    && working
+                        .order
+                        .expires_at
+                        .is_some_and(|expires_at| expires_at <= now)
+            })
+            .map(|working| working.order.order_id.clone())
+            .collect();
+        let mut withdrawn = Vec::new();
+        for order_id in due {
+            let Some(working) = self.working.get(&order_id) else {
+                continue;
+            };
+            let venue = working.order.venue.clone();
+            let object_id = working.order.object_id.clone();
+            match gateway.cancel(&order_id, &object_id, &venue, now) {
+                Ok(remaining) => {
+                    if let Some(working) = self.working.get_mut(&order_id) {
+                        working.order.closed = Some("expired".to_string());
+                    }
+                    self.journal.record(
+                        Decision::OrderExpired {
+                            order_id: order_id.clone(),
+                            venue: venue.as_str().to_string(),
+                            withdrawn: remaining.to_string(),
+                        },
+                        now,
+                    );
+                    self.metrics.order_expired(&venue);
+                    withdrawn.push(order_id);
+                }
+                Err(error) => {
+                    self.break_on(
+                        format!(
+                            "order {order_id} on {} passed its time to live and the venue refused \
+                             to withdraw it: {}; whether it is still working is unknown",
+                            venue.as_str(),
+                            error.message()
+                        ),
+                        now,
+                    );
+                }
+            }
+        }
+        if !withdrawn.is_empty() {
+            self.confirm_execution_reports(gateway, now);
+        }
+        withdrawn
     }
 
     // --- fills: the venue's facts ------------------------------------------
@@ -2282,6 +2687,9 @@ impl Cell {
                         filled: Decimal::ZERO,
                         simulated,
                         sent_at: now,
+                        // A leg is priced at the touch the scanner quoted it
+                        // from and takes it on acceptance; nothing rests.
+                        expires_at: None,
                         closed: None,
                     },
                     net: leg_net,
@@ -3186,6 +3594,31 @@ pub trait Placer: std::fmt::Debug {
     fn execution_reports(&mut self) -> Vec<ExecutionReport> {
         Vec::new()
     }
+
+    /// Whether [`Self::cancel`] reaches the venue. The cell reads this
+    /// before it lets an order rest; a gateway answering `false` gets no
+    /// resting orders at all.
+    fn can_cancel(&self) -> bool {
+        false
+    }
+
+    /// Withdraw what remains of an order, returning the quantity the venue
+    /// says was still open. The default refuses, and a gateway that has a
+    /// venue cancel path overrides both this and [`Self::can_cancel`]
+    /// together: one without the other is a promise the cell would act on.
+    fn cancel(
+        &mut self,
+        order_id: &str,
+        _object_id: &ObjectId,
+        venue: &VenueId,
+        _at: Timestamp,
+    ) -> Result<Decimal> {
+        Err(Error::denied(format!(
+            "this gateway cannot withdraw order {order_id} from {}; it has no cancel path to the \
+             venue",
+            venue.as_str()
+        )))
+    }
 }
 
 /// The gap events worth journalling, and what to say about each.
@@ -3288,6 +3721,58 @@ mod crossing_tests {
         let mut cell = Cell::new(config, features)?;
         cell.track(book());
         Ok(cell)
+    }
+
+    /// Deploy `id` with a marketable pricing policy, so a net it contributes
+    /// to can be priced and reach the venue. The nets these tests build by
+    /// hand name strategies; a net whose contributors are not deployed is
+    /// refused under `pricing` before any venue is called, which is right,
+    /// and not what a test of the venue path is looking at.
+    fn deploy_marketable(cell: &mut Cell, id: &str) -> Result<()> {
+        use qip_contracts::capital::CapitalEnvelope;
+        use qip_strategy::catalogue::FeatureCatalogue;
+        use qip_strategy::compile::StrategyCompiler;
+        use qip_strategy::ir::{Expr, Rule, StrategySpec};
+
+        let mut compiler = StrategyCompiler::new(FeatureCatalogue::new());
+        let spec = StrategySpec::new(
+            StrategyId::new(id),
+            object(),
+            qip_core::Duration::from_secs(30),
+        )
+        .with_rule(Rule::new(
+            "always",
+            SignalKind::Enter,
+            Expr::Flag(true),
+            Expr::Exact(Decimal::ONE),
+            Expr::Statistic(0.5),
+            10,
+        ));
+        let compiled = compiler.compile(&spec)?;
+        let key = b"a-unit-test-envelope-key";
+        let build = |signature: &str| {
+            CapitalEnvelope::new(
+                StrategyId::new(id),
+                CELL,
+                Decimal::from_int(1_000_000),
+                Decimal::from_int(100_000),
+                Decimal::from_int(50_000),
+                vec![venue()],
+                at(0),
+                at(3600),
+                "alice@example.com",
+                signature,
+            )
+        };
+        let unsigned = build("unsigned")?;
+        let signature = crate::envelope::sign_payload(key, &unsigned.signing_payload());
+        let envelope = VerifiedEnvelope::verify(build(&signature)?, key, CELL, at(1))?;
+        cell.deploy_with_pricing(
+            compiled,
+            compiler.into_program(),
+            envelope,
+            PricingPolicy::Marketable,
+        )
     }
 
     /// Net the given `(strategy, signed size)` pairs on the fixture instrument
@@ -3410,6 +3895,8 @@ mod crossing_tests {
         // would leave the chain asserting that two strategies traded during a
         // pass that produced nothing at all. Nobody can unwrite it afterwards.
         let mut cell = cell_with_book()?;
+        deploy_marketable(&mut cell, "alpha")?;
+        deploy_marketable(&mut cell, "beta")?;
         let net_intent = offsetting_net(Decimal::parse("100").expect("a decimal literal"));
         let mut report = WorkReport::default();
 

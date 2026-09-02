@@ -378,6 +378,38 @@ impl Placer for SimulatedGateway {
         reports
     }
 
+    fn can_cancel(&self) -> bool {
+        // The venue's own cancel path, `VenueAdapter::cancel_order`, which
+        // the broker suite proves withdraws a resting order and refuses a
+        // closed one. This is the same in-process matching engine `place`
+        // reaches, so the answer is a fact about the venue and not a claim.
+        true
+    }
+
+    fn cancel(
+        &mut self,
+        order_id: &str,
+        _object_id: &ObjectId,
+        venue: &VenueId,
+        at: Timestamp,
+    ) -> Result<Decimal> {
+        if venue != &self.venue {
+            return Err(Error::denied(format!(
+                "order {order_id} was placed on {} and this gateway reaches {}",
+                venue.as_str(),
+                self.venue.as_str()
+            )));
+        }
+        let ack = self
+            .exchange
+            .cancel_order(&OrderId::from_string(order_id), at)?;
+        // The venue has closed it, so nothing more will be reported on it
+        // and the next poll would only drop it; dropped here so the working
+        // set reads as the venue's.
+        self.working.remove(order_id);
+        Ok(ack.remaining)
+    }
+
     fn required_configuration(&self) -> Vec<String> {
         // The simulated venue is complete as it stands. What production still
         // needs — a real feed, a real order-entry session, a real drop-copy —
@@ -646,6 +678,33 @@ impl Placer for RestGateway {
         std::mem::take(&mut self.reports)
     }
 
+    fn can_cancel(&self) -> bool {
+        // The adapter's own cancel, over the same session `place` uses.
+        true
+    }
+
+    fn cancel(
+        &mut self,
+        order_id: &str,
+        _object_id: &ObjectId,
+        venue: &VenueId,
+        at: Timestamp,
+    ) -> Result<Decimal> {
+        if venue != &self.venue {
+            return Err(Error::denied(format!(
+                "order {order_id} was placed on {} and this gateway holds a session with {}",
+                venue.as_str(),
+                self.venue.as_str()
+            )));
+        }
+        // A cancel is a request that leaves the process, like the submit it
+        // withdraws; the adapter bounds its wait the same way.
+        let ack = self
+            .adapter
+            .cancel_order(&OrderId::from_string(order_id), at)?;
+        Ok(ack.remaining)
+    }
+
     fn required_configuration(&self) -> Vec<String> {
         // The adapter's own standing requirements, verbatim and in full. The
         // first of them is that nothing in the code can tell a sandbox host
@@ -801,6 +860,26 @@ impl Placer for NodeGateway {
         match self {
             Self::Simulated(gateway) => gateway.execution_reports(),
             Self::Live(gateway) => gateway.execution_reports(),
+        }
+    }
+
+    fn can_cancel(&self) -> bool {
+        match self {
+            Self::Simulated(gateway) => gateway.can_cancel(),
+            Self::Live(gateway) => gateway.can_cancel(),
+        }
+    }
+
+    fn cancel(
+        &mut self,
+        order_id: &str,
+        object_id: &ObjectId,
+        venue: &VenueId,
+        at: Timestamp,
+    ) -> Result<Decimal> {
+        match self {
+            Self::Simulated(gateway) => gateway.cancel(order_id, object_id, venue, at),
+            Self::Live(gateway) => gateway.cancel(order_id, object_id, venue, at),
         }
     }
 

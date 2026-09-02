@@ -16,7 +16,7 @@ use qip_core::error::Result;
 use qip_core::ids::ObjectId;
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Decimal, dec};
-use qip_edge::cell::{Cell, CellConfig, Placer};
+use qip_edge::cell::{Cell, CellConfig, Placer, PricingPolicy};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::journal::Decision;
 use qip_edge_node::gateway::SimulatedGateway;
@@ -172,7 +172,7 @@ fn armed_cell() -> Result<Cell> {
     let mut cell = Cell::new(config, fed_features("ACME")?)?;
     cell.track(book_at("XLON", "ACME"));
     let (strategy, program) = compiled_strategy()?;
-    cell.deploy(strategy, program, grant()?)?;
+    cell.deploy_with_pricing(strategy, program, grant()?, PricingPolicy::Marketable)?;
     Ok(cell)
 }
 
@@ -791,7 +791,12 @@ fn grant_over(strategy: &str, venues: Vec<VenueId>) -> Result<VerifiedEnvelope> 
 fn cell_with_two_strategies(kind: SignalKind, size: &str) -> Result<Cell> {
     let mut cell = armed_cell()?;
     let (compiled, program) = second_strategy("book-pressure-two", kind, size)?;
-    cell.deploy(compiled, program, grant_for("book-pressure-two")?)?;
+    cell.deploy_with_pricing(
+        compiled,
+        program,
+        grant_for("book-pressure-two")?,
+        PricingPolicy::Marketable,
+    )?;
     Ok(cell)
 }
 
@@ -801,7 +806,7 @@ fn cell_with_a_barred_second_strategy(kind: SignalKind, size: &str) -> Result<Ce
     let mut cell = armed_cell()?;
     let (compiled, program) = second_strategy("book-pressure-two", kind, size)?;
     let elsewhere = grant_over("book-pressure-two", vec![venue("XPAR")])?;
-    cell.deploy(compiled, program, elsewhere)?;
+    cell.deploy_with_pricing(compiled, program, elsewhere, PricingPolicy::Marketable)?;
     Ok(cell)
 }
 
@@ -1314,7 +1319,12 @@ fn cell_firing_only(kind: SignalKind) -> Result<Cell> {
     let mut cell = Cell::new(config, fed_features("ACME")?)?;
     cell.track(book_at("XLON", "ACME"));
     let (compiled, program) = second_strategy("direction-probe", kind, "100")?;
-    cell.deploy(compiled, program, grant_for("direction-probe")?)?;
+    cell.deploy_with_pricing(
+        compiled,
+        program,
+        grant_for("direction-probe")?,
+        PricingPolicy::Marketable,
+    )?;
     Ok(cell)
 }
 

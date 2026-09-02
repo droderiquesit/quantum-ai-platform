@@ -267,9 +267,9 @@ struct Effective {
 fn effective(
     model: Option<&VenueModel>,
     constraints: Option<&FeasibilityConstraints>,
-    intent: &Intent,
+    venue: &str,
+    object_id: &ObjectId,
 ) -> std::result::Result<Effective, Infeasible> {
-    let venue = intent.venue.as_str();
     let from_policy = |field: &BTreeMap<String, Decimal>, name: &str| {
         match field.get(venue).copied() {
             // A constraint the centre shipped that no venue could have is a
@@ -303,9 +303,23 @@ fn effective(
     Ok(Effective {
         minimum_notional: policy_minimum.or_else(|| model.map(VenueModel::minimum_notional)),
         tick_size: policy_tick
-            .or_else(|| model.map(|model| model.granularity_for(&intent.object_id).tick_size())),
+            .or_else(|| model.map(|model| model.granularity_for(object_id).tick_size())),
         fee_floor: policy_fee.or_else(|| model.map(VenueModel::fee_floor)),
     })
+}
+
+/// The tick grid in force for one instrument at one venue, from the policy
+/// payload first and the venue model second, or `None` where neither states
+/// one. The same resolution [`assess`] uses for its tick rule, exposed so a
+/// price chosen *after* the gate — a resting order's mid, which the gate
+/// never saw — is judged by the same grid.
+pub fn tick_for(
+    model: Option<&VenueModel>,
+    constraints: Option<&FeasibilityConstraints>,
+    venue: &str,
+    object_id: &ObjectId,
+) -> std::result::Result<Option<Decimal>, Infeasible> {
+    effective(model, constraints, venue, object_id).map(|effective| effective.tick_size)
 }
 
 /// Whether `value` sits on the grid of `step`. Both positive.
@@ -335,7 +349,7 @@ pub fn assess(
     let price = intent.reference_price;
     let venue = intent.venue.as_str();
     let object = intent.object_id.as_str();
-    let effective = effective(model, constraints, intent)?;
+    let effective = effective(model, constraints, intent.venue.as_str(), &intent.object_id)?;
 
     if let Some(model) = model {
         let granularity = model.granularity_for(&intent.object_id);
@@ -424,7 +438,7 @@ pub fn fixed_cost_fraction(
     constraints: Option<&FeasibilityConstraints>,
     intent: &Intent,
 ) -> std::result::Result<Decimal, Infeasible> {
-    let effective = effective(model, constraints, intent)?;
+    let effective = effective(model, constraints, intent.venue.as_str(), &intent.object_id)?;
     let fee = effective.fee_floor.unwrap_or(Decimal::ZERO);
     let gas = model
         .and_then(VenueModel::gas_floor)

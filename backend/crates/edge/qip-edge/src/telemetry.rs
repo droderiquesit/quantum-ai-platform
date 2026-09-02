@@ -45,6 +45,10 @@ use std::sync::Arc;
 /// `qip_edge_*_total` convention so it can move there unchanged.
 pub const EDGE_FILLS_CONFIRMED: &str = "qip_edge_fills_confirmed_total";
 
+/// Resting orders the cell withdrew at their time to live, by venue. Named
+/// here for the same reason as [`EDGE_FILLS_CONFIRMED`].
+pub const EDGE_ORDERS_EXPIRED: &str = "qip_edge_orders_expired_total";
+
 /// Buckets for the netting ratio.
 ///
 /// It is a ratio of gross intent to net order volume, so it starts at exactly
@@ -135,6 +139,10 @@ impl CellMetrics {
         m.describe(
             EDGE_FILLS_CONFIRMED,
             "fills the venue reported and the cell booked, by venue",
+        );
+        m.describe(
+            EDGE_ORDERS_EXPIRED,
+            "resting orders withdrawn at their time to live, by venue",
         );
         m.describe(
             names::EDGE_INTENTS_CANCELLED,
@@ -331,6 +339,15 @@ impl CellMetrics {
     pub fn fill_confirmed(&self, venue: &VenueId) {
         self.metrics
             .count(EDGE_FILLS_CONFIRMED, self.with("venue", venue.as_str()));
+    }
+
+    /// A resting order reached its time to live and the venue confirmed the
+    /// withdrawal. Bounded on `venue` as [`Self::order_placed`] is. Read
+    /// beside fills confirmed: a venue where orders expire more than they
+    /// fill is a venue where resting at the mid is the wrong policy.
+    pub fn order_expired(&self, venue: &VenueId) {
+        self.metrics
+            .count(EDGE_ORDERS_EXPIRED, self.with("venue", venue.as_str()));
     }
 
     /// A net that cancelled to zero. An outcome, not an absence — which is

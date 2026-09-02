@@ -71,6 +71,15 @@ pub enum Decision {
         simulated: bool,
         shares: Vec<(String, String)>,
     },
+    /// A resting order passed its time to live and the cell withdrew what
+    /// remained, `withdrawn` being the venue's own answer to the cancel.
+    /// Whatever filled before this is in its own [`Self::Filled`] entries;
+    /// this closes the order without claiming anything about them.
+    OrderExpired {
+        order_id: String,
+        venue: String,
+        withdrawn: String,
+    },
     /// Something was refused, with the gate that refused it.
     Refused { gate: String, reason: String },
     /// The venue and the cell's book disagree about a fill.
@@ -150,6 +159,7 @@ impl Decision {
             Self::EdgePriced { .. } => "edge_priced",
             Self::OrderSent { .. } => "order_sent",
             Self::Filled { .. } => "filled",
+            Self::OrderExpired { .. } => "order_expired",
             Self::Refused { .. } => "refused",
             Self::ReconciliationBreak { .. } => "reconciliation_break",
             Self::HaltChanged { .. } => "halt_changed",

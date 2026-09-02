@@ -19,7 +19,7 @@ use qip_core::error::Result;
 use qip_core::ids::ObjectId;
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Decimal, SystemClock, dec};
-use qip_edge::cell::{CellConfig, PolledHalt};
+use qip_edge::cell::{CellConfig, PolledHalt, PricingPolicy};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::telemetry::EDGE_FILLS_CONFIRMED;
 use qip_edge_node::feed::{FEED_VARIABLE, FeedChoice, SimulatedFeed};
@@ -101,8 +101,11 @@ fn grant() -> Result<VerifiedEnvelope> {
 
 /// The node's pieces, assembled the way `main.rs` assembles them: one
 /// registry, the simulated gateway, the simulated feed attached to the cell,
-/// and one firing strategy deployed under a signed grant.
-fn node_with_feed() -> Result<(NodeAssembly, SimulatedGateway, SimulatedFeed)> {
+/// and one firing strategy deployed under a signed grant with the pricing
+/// the test names.
+fn node_with_feed(
+    pricing: PricingPolicy,
+) -> Result<(NodeAssembly, SimulatedGateway, SimulatedFeed)> {
     let config = CellConfig::new(CELL, REGION).with_venue(venue());
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
     let mut node = assemble(config, features, Arc::new(SystemClock))?;
@@ -110,13 +113,17 @@ fn node_with_feed() -> Result<(NodeAssembly, SimulatedGateway, SimulatedFeed)> {
     let feed = SimulatedFeed::new(venue());
     feed.attach(&mut node.cell)?;
     let (compiled, program) = firing_strategy()?;
-    node.cell.deploy(compiled, program, grant()?)?;
+    node.cell
+        .deploy_with_pricing(compiled, program, grant()?, pricing)?;
     Ok((node, gateway, feed))
 }
 
 #[test]
 fn a_node_with_the_simulated_feed_runs_a_pass_and_the_pass_time_series_move() -> Result<()> {
-    let (mut node, mut gateway, mut feed) = node_with_feed()?;
+    // Rest-at-mid, so the order the pass sends rests against the two-sided
+    // book: the resting half of the proof. The marketable half is below.
+    let (mut node, mut gateway, mut feed) =
+        node_with_feed(PricingPolicy::rest_at_mid(Duration::from_secs(60))?)?;
     // Depth resting at the venue, on both sides, so the venue's own book is
     // what the cell will price off: a mid of 100 between 99 and 101.
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
@@ -168,8 +175,8 @@ fn a_node_with_the_simulated_feed_runs_a_pass_and_the_pass_time_series_move() ->
     assert_eq!(stats.passes, 1);
     assert_eq!(stats.orders, 1);
 
-    // The cell prices at the mid, so against the venue's own two-sided book
-    // its order rests. A resting order is not a fill: the cell holds it open
+    // The order rests at the mid, so against the venue's own two-sided book
+    // it sits between the two seeded levels. A resting order is not a fill: the cell holds it open
     // at its full size, books no position, confirms nothing, and the
     // reconciler — comparing confirmed fills with the venue's account, both
     // empty — finds no disagreement. Until the cell stopped recording a fill
@@ -247,7 +254,7 @@ fn a_pass_with_nothing_listed_at_the_venue_refuses_under_the_venue_selection_gat
     // run, the strategy must fire, and the gate that refuses must be the
     // first one that reads the book — venue selection, which finds no venue
     // holding one — counted on the scrape's registry under its own label.
-    let (mut node, mut gateway, mut feed) = node_with_feed()?;
+    let (mut node, mut gateway, mut feed) = node_with_feed(PricingPolicy::Marketable)?;
     let mut stats = PassStats::default();
     let outcome = run_pass(&mut node.cell, &mut gateway, &mut feed, &mut stats, t(10))?;
     let PassOutcome::Ran {
@@ -291,7 +298,7 @@ fn a_halted_node_runs_no_pass() -> Result<()> {
     // its books and stop there: no pass counted, no signal, no order by any
     // path — the venue's own submitted count is the witness the registry
     // cannot fake.
-    let (mut node, mut gateway, mut feed) = node_with_feed()?;
+    let (mut node, mut gateway, mut feed) = node_with_feed(PricingPolicy::Marketable)?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
     node.cell

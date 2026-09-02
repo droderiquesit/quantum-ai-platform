@@ -49,6 +49,8 @@ pub struct PassStats {
     /// Fills the venue reported and the cell confirmed, on any turn of the
     /// loop — a halted node still learns what filled.
     pub fills: u64,
+    /// Resting orders withdrawn at their time to live, on any turn.
+    pub expired: u64,
     /// Reconciliation breaks found after a pass; each one has halted the cell.
     pub breaks: u64,
 }
@@ -91,7 +93,19 @@ pub fn run_pass(
     // a halted node sends nothing and still has to book what filled, or the
     // reconciler below compares the venue's account with a record that
     // stopped listening.
-    let already_out = cell.confirm_execution_reports(gateway, now);
+    let mut already_out = cell.confirm_execution_reports(gateway, now);
+    // And withdraw what has rested past its time to live, on a halted node
+    // too: withdrawing is not sending. The fills a withdrawal turns up are
+    // in the cell's record; this counts the withdrawals.
+    let expired = cell.withdraw_expired(gateway, now);
+    stats.expired = stats.expired.saturating_add(expired.len() as u64);
+    let late: Vec<ConfirmedFill> = cell
+        .fills()
+        .iter()
+        .filter(|fill| expired.contains(&fill.order_id) && !already_out.contains(fill))
+        .cloned()
+        .collect();
+    already_out.extend(late);
     stats.fills = stats.fills.saturating_add(already_out.len() as u64);
     if cell.is_halted() {
         stats.halted = stats.halted.saturating_add(1);
