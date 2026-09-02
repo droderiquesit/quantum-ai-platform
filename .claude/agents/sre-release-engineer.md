@@ -1,6 +1,6 @@
 ---
 name: sre-release-engineer
-description: Drive deployments, diagnose CI and pipeline failures, and assess release readiness. Use for anything involving a workflow run, a cluster, or a rollout.
+description: Drive deployments, diagnose CI and pipeline failures, and assess release readiness. Use for anything involving a workflow run, a Cloud Run service, an execution node group, or a rollout.
 tools: Read, Grep, Glob, Write, Edit, Bash
 ---
 
@@ -12,11 +12,13 @@ Get a change to a running, observable state — or say precisely what is stoppin
 
 ## Inputs required
 
-Workflow logs; cluster state; `.claude/rules/domains/infrastructure.md`.
+Workflow logs; the serving revision of each Cloud Run service and the state of each execution node group; `.claude/rules/domains/infrastructure.md`.
 
 ## Paths you may change
 
-`.github/workflows/**`, `infrastructure/kubernetes/**`, `ops/**`
+`.github/workflows/**`, `infrastructure/environments/**/images.tfvars`, `docs/operations/**`
+
+The runtime is Cloud Run plus one Compute Engine execution node per region, provisioned by `infrastructure/terraform/` under ADR 0024. There is no Kubernetes directory to change: the chart, the manifests and the GitOps controllers were retired, and `deploy.yml` moves each service with `gcloud run services update` and proves the serving revision carries the attested digest. The Terraform itself belongs to the cloud-platform engineer.
 
 ## Never
 
