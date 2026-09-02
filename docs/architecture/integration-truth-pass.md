@@ -14,6 +14,11 @@ their original line numbers. Flow 6 and one row of flow 7 were re-traced
 again at `584c96b`, where the second halt wire (`ff86473`), the crossing
 interval (`153e429`) and the desk's installation in the node (`584c96b`)
 landed; every `path:line` in a row marked `584c96b` is at that commit.
+Flows 2, 3, 6 and 7 were re-traced once more at `e04815e`, where the node's
+pass loop (`6340610`), fills as venue facts (`cb79b46`), the stated pricing
+policy (`383d4e7`), the produced whitelist (`5396679`, `91d20f5`) and the
+third halt-release direction (`6a515bb`) landed; every `path:line` in a row
+marked `e04815e` is at that commit.
 
 **Status vocabulary.** MEASURED (runtime evidence exists) · TESTED (a named
 passing test) · CONFIGURED (wired in a manifest or tfvars) ·
@@ -64,10 +69,10 @@ The loop runs and closes; it is not the blueprint's loop at two points.
 | → entity resolution | TESTED | `stage_understand` (`platform.rs:2430`), `qip-entity-resolution` |
 | → world event | TESTED | `qip-world-model/src/world.rs`; causal graph is real — `world.rs:41 causal: CausalGraph`, `:192 claim_causal`, `:495` shock propagation, `causal.rs:234` |
 | → **belief** | **SUBSTITUTED — and now graded** | **No belief stage exists.** What runs is `stage_reason` (`platform.rs:2808`) producing *theses*, with Bayesian machinery in `qip-reasoning-engine/src/bayes.rs`. Confidence-weighted sizing per blueprint §11.2 is not the mechanism here. What changed at `04738ee`: the belief *calibration* the blueprint §47 calls its single most important metric is now a number. `stage_learn` settles each resolved claim against the platform's own series and grades it through `Platform::learn_from` (`platform.rs:3931` → `:4052`; `learn_from` at `:1680`), recomputing a Brier score over a bounded window and writing `qip_belief_brier_score` (`:1708`). `qip-kernel/tests/learning.rs::a_cycle_that_resolves_a_thesis_grades_it_and_moves_the_calibration_series`; mutation fired when the LEARN call was severed. The row stays SUBSTITUTED because grading theses after the fact is not a belief stage before the trade |
-| → **strategy intent** | **SPLIT — built at the edge, absent at the centre** | `Intent` exists (`libs/qip-contracts/src/intent.rs`), and with it netting, internal crossing (§27.1) and the contributor vector. `Cell::work` builds one intent per firing strategy, nets them on instrument/venue/representation, crosses the offsetting part at the book mid and places what survives. **This row said all four of those were absent; that was true when it was written and false from the netting slice onward.** What has not changed is the *central* path: `stage_decide` (`platform.rs:3450`) still sizes theses into `Proposal`s with legs and raises no intent, so §27's mechanism operates in one of the two planes. See the seam below, which is the same seam. Re-traced at `296e187`, the cell's intent path has two more seams, both ahead of `net()` in `Cell::work` (`cell.rs:750`): the **arbitrage desk** re-quotes its graph from the cell's own books and scans it (`:851 scan_cycles`), and the **feasibility gate** judges every intent in place (`:860 admit_feasible`) before `net` (`:869`) — minimum quantity, minimum notional, lot, tick, depth at the touch, fee floor, gas floor and a malformed policy constraint, eight gate literals in `feasibility.rs:76-83`, each a refusal and never a rounding. `qip-edge/tests/feasibility.rs::an_off_lot_intent_is_refused_before_netting_and_never_rides_a_feasible_strategys_order`, `::a_sell_is_judged_against_the_bid_side_and_a_buy_against_the_ask`; `qip-edge/tests/arbitrage.rs::a_cycle_on_the_cells_own_books_becomes_its_legs_as_orders_in_one_pass`, `::an_infeasible_leg_vetoes_the_whole_cycle_and_no_leg_goes_out` (`95a4932`, `71f9465`). Direction is pinned too, after two compensating sign inversions were found cancelling at the gateway and nowhere else: `qip-edge/tests/direction.rs::an_enter_signal_leaves_the_cell_taking_the_ask_which_is_a_buy` and `qip-edge-node/tests/gateway.rs::an_enter_signal_is_a_buy_at_the_matching_engine_filling_against_offers_and_resting_against_bids` (`54d32fd`). The honest limit: `qip-edge-node` calls `Cell::work` on no path and installs no desk (`grep -rn "\.work(\|ArbitrageDesk" apps/qip-edge-node/src` is empty), so every seam above is proven by the cell's tests and reached by no deployed process |
+| → **strategy intent** | **SPLIT — built at the edge, absent at the centre** | `Intent` exists (`libs/qip-contracts/src/intent.rs`), and with it netting, internal crossing (§27.1) and the contributor vector. `Cell::work` builds one intent per firing strategy, nets them on instrument/venue/representation, crosses the offsetting part at the book mid and places what survives. **This row said all four of those were absent; that was true when it was written and false from the netting slice onward.** What has not changed is the *central* path: `stage_decide` (`platform.rs:3450`) still sizes theses into `Proposal`s with legs and raises no intent, so §27's mechanism operates in one of the two planes. See the seam below, which is the same seam. Re-traced at `296e187`, the cell's intent path has two more seams, both ahead of `net()` in `Cell::work` (`cell.rs:750`): the **arbitrage desk** re-quotes its graph from the cell's own books and scans it (`:851 scan_cycles`), and the **feasibility gate** judges every intent in place (`:860 admit_feasible`) before `net` (`:869`) — minimum quantity, minimum notional, lot, tick, depth at the touch, fee floor, gas floor and a malformed policy constraint, eight gate literals in `feasibility.rs:76-83`, each a refusal and never a rounding. `qip-edge/tests/feasibility.rs::an_off_lot_intent_is_refused_before_netting_and_never_rides_a_feasible_strategys_order`, `::a_sell_is_judged_against_the_bid_side_and_a_buy_against_the_ask`; `qip-edge/tests/arbitrage.rs::a_cycle_on_the_cells_own_books_becomes_its_legs_as_orders_in_one_pass`, `::an_infeasible_leg_vetoes_the_whole_cycle_and_no_leg_goes_out` (`95a4932`, `71f9465`). Direction is pinned too, after two compensating sign inversions were found cancelling at the gateway and nowhere else: `qip-edge/tests/direction.rs::an_enter_signal_leaves_the_cell_taking_the_ask_which_is_a_buy` and `qip-edge-node/tests/gateway.rs::an_enter_signal_is_a_buy_at_the_matching_engine_filling_against_offers_and_resting_against_bids` (`54d32fd`). The honest limit, as it read until `e04815e`: `qip-edge-node` called `Cell::work` on no path and installed no desk, so every seam above was proven by the cell's tests and reached by no deployed process. Re-traced at `e04815e`: that grep is no longer empty — `run_pass` (`qip-edge-node/src/pass.rs:84`) calls `cell.work` (`:118`) from the loop (`main.rs:586`) whenever `QIP_VENUE_FEED=simulated` (`feed.rs:79-82`; any other value refused at start naming ADR 0003, `:118-131`; `6340610`), and the installer's whitelist has a producer (flow 3). Every seam above is now in the deployed binary's loop: TESTED by `qip-edge-node/tests/pass.rs::a_node_with_the_simulated_feed_runs_a_pass_and_the_pass_time_series_move` and `::a_pass_with_nothing_listed_at_the_venue_refuses_under_the_venue_selection_gate`, MEASURED by nothing, because no node is deployed |
 | → **regional execution** | **BREAKS** | `stage_act` (`platform.rs:3545`) runs the central risk monitor and places through the **central** OMS. It does not reach a cell. See the seam below |
-| → fill | TESTED | Orders reach the simulated broker via `qip-execution-engine/src/oms.rs`; multi-leg in `multileg.rs` |
-| → ledger | PARTIAL / naming | **There is no `Ledger` type.** `grep "pub struct Ledger\b"` finds nothing — the ledgers that exist (`PrivacyLedger`, `BudgetLedger`, `ReservationLedger`, `BridgeLedger`, `LifecycleLedger`) are each something narrower than money state. Money state is `qip-capital` (allocation, envelope, exposure) plus the hash-chained event log. Blueprint §43.3's per-user, per-strategy authoritative ledger does not exist. What arrived at `7ef6063`/`7d79161` is the per-cell, per-strategy, per-instrument *book* the centre keeps from a cell's report: `CentralPlane::ingest` (`central/plane.rs:855`) settles the interval's orders and crosses (`:976 settle`) before the halt step, a fill pro rata to the contributors on its own side through `split_pro_rata` (`:1021`; `qip-learning-engine/src/attribution.rs:266`, largest-remainder, asserts the shares sum), a cross moving buyer up and seller down at the recorded mid, and a decomposition that must close to the last unit or count `qip_central_attribution_failures_total` (`:1126`). `qip-kernel/tests/attribution.rs::a_netted_orders_fill_is_attributed_to_its_contributors_with_zero_residual`, `::an_internal_cross_moves_both_contributors_books_at_the_mid_and_the_close_out_is_exact`, `::a_cross_naming_two_buyers_is_refused_rather_than_split_evenly`; and the API sink now carries the interval (`qip-api/src/mesh.rs:1148-1149`), `qip-api/tests/mesh.rs::the_orders_a_cell_reports_reach_the_centres_strategy_books`, mutation fired with the two builder calls removed |
+| → fill | TESTED | Orders reach the simulated broker via `qip-execution-engine/src/oms.rs`; multi-leg in `multileg.rs`. Re-traced at `e04815e`, the cell's half: a fill is a venue fact (`cb79b46`) — what `Placer::execution_reports` returns (`cell.rs:3594`) is the only thing `Cell::confirm_execution_reports` (`:2073`) books as `Decision::Filled` (`:2160`), counted on `qip_edge_fills_confirmed_total`; an accepted order is an open order until the venue says otherwise, and the node confirms on its next pass what the venue filled between passes (`qip-edge/tests/fills.rs::an_order_the_venue_accepted_is_not_a_fill_until_the_order_entry_channel_reports_one`; `qip-edge-node/tests/pass.rs::a_resting_order_the_venue_fills_on_a_later_pass_is_confirmed_and_the_node_keeps_trading`, `b8d18d3`). How the order is priced is the strategy's stated `PricingPolicy` (`383d4e7`; `cell.rs:347-365`): `Marketable` takes the touch; `RestAtMid` rests and is withdrawn through `Placer::cancel` (`:3609`) when its time to live elapses, on `qip_edge_orders_expired_total`; an intent whose strategy stated no policy is refused under `pricing` before anything is placed (`:1442-1450`; `pricing.rs::an_intent_with_no_stated_pricing_is_refused_and_nothing_reaches_the_venue`) |
+| → ledger | PARTIAL / naming | **There is no `Ledger` type.** `grep "pub struct Ledger\b"` finds nothing — the ledgers that exist (`PrivacyLedger`, `BudgetLedger`, `ReservationLedger`, `BridgeLedger`, `LifecycleLedger`) are each something narrower than money state. Money state is `qip-capital` (allocation, envelope, exposure) plus the hash-chained event log. Blueprint §43.3's per-user, per-strategy authoritative ledger does not exist. What arrived at `7ef6063`/`7d79161` is the per-cell, per-strategy, per-instrument *book* the centre keeps from a cell's report: `CentralPlane::ingest` (`central/plane.rs:855`) settles the interval's orders and crosses (`:976 settle`) before the halt step, a fill pro rata to the contributors on its own side through `split_pro_rata` (`:1021`; `qip-learning-engine/src/attribution.rs:266`, largest-remainder, asserts the shares sum), a cross moving buyer up and seller down at the recorded mid, and a decomposition that must close to the last unit or count `qip_central_attribution_failures_total` (`:1126`). `qip-kernel/tests/attribution.rs::a_netted_orders_fill_is_attributed_to_its_contributors_with_zero_residual`, `::an_internal_cross_moves_both_contributors_books_at_the_mid_and_the_close_out_is_exact`, `::a_cross_naming_two_buyers_is_refused_rather_than_split_evenly`; and the API sink now carries the interval (`qip-api/src/mesh.rs:1148-1149`), `qip-api/tests/mesh.rs::the_orders_a_cell_reports_reach_the_centres_strategy_books`, mutation fired with the two builder calls removed. **Re-traced at `e04815e` — a break in what the books are settled from.** `CellInterval::orders` (`qip-mesh/src/delta.rs:182`) is filled from the pass report's *placed* orders (`cell.rs:3232-3245`), and `settle` (`central/plane.rs:1068`, the loop over `report.orders` at `:1073`) books each as a fill — so an order the cell rested and the venue never filled, which the cell itself now books as nothing (the fill row above), is a position at the centre. Two claims about one fact, and the louder one is wrong. A backend agent is correcting the wire as this is written; this row records the defect and not a fix |
 | → explanation | PARTIAL | Attribution is exact and reconciles (`qip-learning-engine/src/attribution.rs:152 reconciles()`, `:199 by_hypothesis()`), the cost router records a `rationale`, and since `b9e2242` every refused order is priced once the world has said what refusing it cost: `stage_learn` → `score_declined` (`platform.rs:3948`, `:4968`) → `Platform::evaluate_alternatives` (`:5028`, previously called only by tests), eight paths per cycle with the excess deferred and counted, scored to the gate that refused under `qip_counterfactuals_scored_total{gate}` (`:5040`). `learning.rs::a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate`, `::declined_paths_past_the_per_cycle_cap_are_counted_as_deferred_and_priced_next_cycle`. Blueprint §40.2 explanation — what the system believed and why — still has no surface; the cycle overview the console reads is recorded at `POST /cycle` (`qip-api/src/routes.rs:615`, `CycleOverview::record`; `qip-api/tests/api.rs::a_cycle_run_through_the_router_reaches_the_operator_interfaces_stage_overview`, `cf20457`), which is the stage table and not an explanation |
 
 **The seam, precisely.** Central and regional execution are two disjoint paths,
@@ -122,6 +127,16 @@ payload slice, and one slot has gained its first consumer:
 | Stale-item narrowing (§6.2) | TESTED | `Cell::narrowing` (`cell.rs:400`) derives the state from the applied payload every pass and `work()` sizes by it; a payload-less cell sits at the floor. `qip-edge/tests/telemetry.rs::a_policy_going_stale_narrows_the_cell_to_the_floor_and_the_gauges_move_with_it`; the table itself in `qip-contracts/tests/contracts.rs::an_ingestion_stall_pauses_the_strategies_that_need_the_world_and_no_others` and its four siblings; `::an_unproduced_slot_is_stale_from_birth_and_narrows_like_staleness` |
 | Slot 11, feasibility constraints — consumed | TESTED at the cell | First consumer: the feasibility gate reads `PolicyPayload::feasibility_constraints` (`qip-contracts/src/policy.rs:361`) and overrides the venue model's tick, minimum and fee floor per venue when the slot is produced; a constraint that is not a grid is refused rather than replaced. `qip-edge/tests/feasibility.rs::the_policy_payloads_feasibility_slot_is_the_constraint_the_cell_judges_by` (`95a4932`) |
 | Slot 11 — produced | MISSING | `grep -rn feasibility_constraints apps/qip-api/src runtime/qip-kernel/src` returns nothing: the centre ships the slot unproduced, so the cell judges by its installed `VenueModel` and depth alone. Still two of twelve slots with producers |
+
+**Re-traced at `e04815e`.** A third slot has a producer:
+
+| Link | Status now | Evidence |
+|---|---|---|
+| Slot 8, cycle whitelist — produced | TESTED | `CentralPlane::cycle_whitelist_for` (`central/plane.rs:612`) derives the whitelist from `CentralConfig::arbitrage` (`:124`) and the desk's live grant — `ArbitragePolicy::whitelist_for` (`central/whitelist.rs:267`), empty with its reason when the policy is unset or the strategy holds no grant at that cell — and `Platform::issue_cycle_whitelist` (`platform.rs:1572`) journals what it issued (`5396679`; `qip-kernel/tests/central.rs::an_unset_arbitrage_policy_emits_an_empty_whitelist_that_says_why`, `::a_signed_payload_carrying_the_whitelist_round_trips_and_verifies`, `::issuing_a_whitelist_through_the_platform_journals_what_was_issued`) |
+| Slot 8 — shipped | TESTED | `qip-api`'s `pending_policy` (`mesh.rs:636`) calls `issue_cycle_whitelist` per cell (`:663`) and ships it on the signed payload the cell verifies, from a policy read at `QIP_ARBITRAGE_POLICY_PATH` (`main.rs:374`; unset is no desk, and the cycle response says so) — `91d20f5`, registered as read by the API and unset on Cloud Run at `73a1694`; `qip-api/tests/mesh.rs::a_cycle_ships_the_desk_a_live_grant_funds_as_a_whitelist_the_cell_verifies`, `::without_a_policy_the_whitelist_ships_empty_and_the_cycle_says_the_policy_is_unset`; the operator's half is `docs/operations/arbitrage-policy.md` |
+| Slot 8 — installed | TESTED at the node; reached by no deployed node | The installer of `584c96b` now has something to install: a desk exists in a node that runs with a policy set and a grant for its strategy, and `execution_nodes = {}` in every environment |
+
+Three of twelve slots have producers; nine ship unproduced.
 
 **Backlogged, not built.** Blueprint Phase 16 for the full payload. The capital
 envelope is the pattern to generalise: it already proves the sign-verify-refuse
@@ -240,9 +255,11 @@ What the second wire holds, each at its test:
   wire 1 — leaves the polled halt engaged and its gauge at one
   (`qip-edge/tests/telemetry.rs::a_polled_halt_moves_its_own_gauge_refuses_the_pass_under_its_own_gate_and_no_payload_releases_it`).
   The remaining direction — clearing the kill switch while the flag is
-  present — holds because `is_halted` is a disjunction of three fields
-  (`cell.rs:529-533`) and is asserted by no named test; recorded so nobody
-  reads it as one.
+  present — held at `584c96b` because `is_halted` is a disjunction of three
+  fields (`cell.rs:529-533`) and was asserted by no named test. Re-traced at
+  `e04815e`: it is asserted —
+  `qip-edge/tests/telemetry.rs::clearing_the_kill_switch_while_the_polled_flag_is_present_leaves_the_cell_halted`
+  (`:620`, `6a515bb`) — so all three release directions are TESTED.
 - **Series.** `qip_edge_halted{source="polled"}` beside `kill_switch` and
   `policy` (`qip-edge/src/telemetry.rs:172-193`), written from `record_halt`
   (`cell.rs:482`) wherever any halt can change, so a chart shows which path
@@ -260,12 +277,14 @@ Honest limits, the same in kind as the rest of the edge plane:
   managed-store fetcher when one exists, and today nothing on the machine
   writes it but a person. `/run` is a tmpfs, so a reboot clears the flag; the
   broadcast is the halt that survives one.
-- No alert names the polled source. `edge_halted` in
-  `modules/observability/main.tf:187` groups on `source`, so a polled halt
-  would fire it once `workload_metrics_exist` were flipped and something had
-  scraped a node; its documentation text beneath the query names only the two
-  disciplines that existed when it was written, and nothing has been shown to
-  scrape a node.
+- The alert's text, as originally traced, did not name the polled source:
+  `edge_halted` in `modules/observability/main.tf:187` groups on `source`, so
+  a polled halt would fire it once `workload_metrics_exist` were flipped and
+  something had scraped a node, but its documentation text beneath the query
+  named only the two disciplines that existed when it was written. Since
+  `cd16f79` it names `polled` beside them (`main.tf:200`), so an operator
+  paged on the third source is not reading text that says it does not exist.
+  Nothing has been shown to scrape a node.
 
 The "one mechanism, two user interfaces" finding below is now history twice
 over: the broadcast closed the downward half, and the polled flag closed the
@@ -324,6 +343,8 @@ for as long as it has left (ADR 0008).
 | Ledger | — | No ledger type; event log is append-only and hash-chained | PARTIAL |
 | Node / cell | Failure isolation per region | Venue health and degradation in `edge/qip-routing/src/health.rs`; `resilience.rs`, `chaos.rs` | TESTED |
 | Venue | Refuse, do not guess | `qip-brokers/src/connection.rs` degradation; `oms.rs` refusals recorded | TESTED |
+| Venue never fills a rested order | Withdraw it when its time to live elapses; a position is only what the venue reports | Re-traced at `e04815e`. `PricingPolicy::RestAtMid { time_to_live }` (`cell.rs:365`): the order rests at the mid and is withdrawn through `Placer::cancel` (`:3609`) when its time to live elapses, counted on `qip_edge_orders_expired_total`; a cancel the venue refuses is a break and halts the cell; a gateway that cannot withdraw refuses the resting policy at deployment — `qip-edge/tests/pricing.rs::a_resting_order_rests_at_the_mid_and_is_withdrawn_when_its_time_to_live_elapses`, `::a_cancel_the_venue_refuses_is_a_break_and_halts_the_cell`, `::a_resting_policy_is_refused_on_a_gateway_that_cannot_withdraw` (`383d4e7`) | TESTED at the cell; at the centre the wire still bills the placement as a fill (flow 2's ledger row) |
+| Node halted, or nothing listed at the venue | No pass; refuse rather than guess | Re-traced at `e04815e`. A halted node runs no pass, and a pass with nothing listed at the venue refuses under the venue-selection gate — `qip-edge-node/tests/pass.rs::a_halted_node_runs_no_pass`, `::a_pass_with_nothing_listed_at_the_venue_refuses_under_the_venue_selection_gate` (`6340610`) | TESTED |
 | IBM / quantum | Classical baseline always | ADR 0006; `qip-optimization-engine/src/router.rs` computes the baseline every time, so a QPU outage narrows nothing | TESTED |
 
 **The pattern, re-stated.** When first traced, degradation was thorough at the
@@ -349,10 +370,23 @@ was built, per the no-speculative-scaffolding rule.
 
 **The single highest-value next slice was the twelve-item payload**, and it
 landed: flow 3 is PARTIAL, flow 6's downward halt rides it, flow 7's narrowing
-consumes it. At `296e187` the convergence point has moved. Flow 2's cell seams
+consumes it. At `296e187` the convergence point had moved: flow 2's cell seams
 (feasibility, scanner, netting, crossing), flow 6's cycle halt and flow 7's
-capability narrowing are all proven by `qip-edge`'s tests and reached by no
-deployed process, because `qip-edge-node` drives no `Cell::work` pass — since `584c96b` it
-installs a desk, from a whitelist nothing at the centre produces. The one piece of work four flows now converge on is the
-node running passes against a venue feed — which is also the first thing
-between the edge plane's telemetry and any collector.
+capability narrowing were all proven by `qip-edge`'s tests and reached by no
+deployed process, because `qip-edge-node` drove no `Cell::work` pass — since
+`584c96b` it installed a desk, from a whitelist nothing at the centre
+produced — and the one piece of work four flows converged on was the node
+running passes against a venue feed.
+
+At `e04815e` it does. `qip-edge-node` runs `Cell::work` over the in-process
+simulated venue (`6340610`), a fill is a venue fact (`cb79b46`), pricing is
+stated by the strategy or refused (`383d4e7`), the whitelist the installer
+waits for is produced and shipped (`5396679`, `91d20f5`), and every one of
+those is TESTED in the node's own tests and MEASURED by nothing, because no
+node is deployed. Two things now converge on each other. The first is the
+wire: the report a running node ships carries its placements as `orders`,
+and the centre bills them as fills (flow 2's ledger row) — a defect that was
+invisible while no node ran passes and is the first thing a running one would
+produce; it is in flight and not closed here. The second is a deployed node —
+`execution_nodes = {}` in every environment — which is also still the first
+thing between the edge plane's telemetry and any collector.
