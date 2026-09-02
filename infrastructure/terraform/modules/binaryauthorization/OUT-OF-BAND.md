@@ -11,17 +11,23 @@ that means less than it looks like it means.
 
 ## A deployment must supply these
 
-**Two repository variables.** The pipeline reads the attestor and the key
-version from GitHub repository variables, the same way it already reads the
-workload identity provider:
+**Nothing pasted by hand.** The pipeline once read the attestor and the key
+version from two GitHub repository variables, the way it read the workload
+identity provider. It reads none now: `.github/workflows/deploy.yml:22-36`
+records that every value authentication and attestation need — the provider
+audience, the CI service account, the attestor and the key version that signs
+for it — is derived in the `derive the identity from the tfvars` step from
+the project id and project number committed in
+`infrastructure/environments/<env>/terraform.tfvars`, and
+`no_workflow_depends_on_a_repository_variable` in the acceptance suite refuses
+any `${{ vars.` from returning. The reason is in the workflow's header: one
+of those pastes carried a stub shell's apt advice into the audience, and
+every run afterwards failed on a value nothing re-derived.
 
-    GCP_BINAUTHZ_ATTESTOR      terraform output attestor_name
-    GCP_BINAUTHZ_KEY_VERSION   terraform output attestor_key_version
-
-`deploy.yml` checks both before it builds anything and fails with those names
-if either is empty. That is deliberate: the alternative is a pipeline that
-builds four images, pushes them, cannot sign them, and reports success up to
-the moment the cluster refuses them.
+What a deployment must supply, then, is the committed tfvars: `project_id`
+and `project_number` for the environment, from which the attestor's and the
+key version's resource names follow. A tfvars naming the wrong project fails
+at the derive step, before anything is built.
 
 **Two APIs enabled on the project** — `binaryauthorization.googleapis.com` and
 `containeranalysis.googleapis.com` — **and this is no longer a deployment's
@@ -38,9 +44,10 @@ does not hold. `modules/services/BOOTSTRAP.md` has that list.
 **An operator who applies this before the first signed deploy.** The policy
 denies by default from the moment it exists. Anything already running in the
 project keeps running, because Binary Authorization decides at admission; the
-refusal appears the next time a pod is scheduled, which may be hours later and
-will not look like a policy change. Apply this, set the two variables, and let
-one deployment through before relying on the cluster to reschedule anything.
+refusal appears the next time a revision is created, which may be hours later
+and will not look like a policy change. Apply this, confirm the environment's
+tfvars name the project, and let one signed deployment through before relying
+on Cloud Run to roll a service to a new revision.
 
 ## What the signature actually proves
 
@@ -83,10 +90,10 @@ version, and disable the old version only once nothing signed by it is still
 being scheduled. Disabling it early refuses running images at their next
 reschedule, one at a time, as they happen to move.
 
-## This does not fix the pipeline's other gap
+## What the runner reaches
 
-`deploy.yml` still cannot reach the cluster's private endpoint from a
-GitHub-hosted runner. That gap is listed separately in
-`docs/operations/external-dependencies.md` and is unaffected by anything here:
-signing happens against the registry and Cloud KMS, both of which a hosted
-runner can reach.
+Signing happens against the registry and Cloud KMS, and the rollout is a
+`gcloud run services update` against the Cloud Run control plane — all of
+which a GitHub-hosted runner reaches over Google's public API endpoints. The
+gap the GKE runtime had here, a private cluster endpoint no hosted runner
+could reach, left with the cluster (ADR 0024).

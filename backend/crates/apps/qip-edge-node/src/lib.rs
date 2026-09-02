@@ -15,7 +15,11 @@
 //! doing something nobody asked for — so each is exercised against the types
 //! the binary actually uses.
 
+/// The arbitrage desk, built from the payload's whitelist once capital arrives.
+pub mod arbitrage;
 pub mod gateway;
+/// The second halt wire: a flag on the node's own filesystem, polled.
+pub mod halt;
 pub mod mesh;
 pub mod mirror;
 /// The node's own metric seam: the mesh link, rendered as a series.

@@ -313,6 +313,27 @@ pub struct Settlement {
     /// The exact decomposition of everything settled, or `None` where the
     /// report carried nothing to settle.
     pub attribution: Option<Attribution>,
+    /// Every venue fill the settlement booked, one entry per order settled,
+    /// in report order — what the platform charges into its risk aggregate.
+    ///
+    /// Recorded at the line that counts the order settled, so what the
+    /// aggregate is charged and what the strategy books absorbed are one
+    /// list rather than two readings of the report that could disagree.
+    /// Crosses are deliberately absent: a cross moves one strategy's lot up
+    /// and another's down inside the same cell, so the book's exposure is
+    /// unchanged and charging it would be a gross that nobody holds.
+    pub absorbed: Vec<AbsorbedFill>,
+}
+
+/// One venue fill the centre absorbed from a cell's report.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AbsorbedFill {
+    pub object_id: String,
+    /// Positive for a buy, negative for a sell — the sign
+    /// [`RiskAggregates::apply_fill`] takes.
+    ///
+    /// [`RiskAggregates::apply_fill`]: qip_risk::aggregate::RiskAggregates::apply_fill
+    pub signed_notional: Decimal,
 }
 
 impl Settlement {
@@ -1057,6 +1078,10 @@ impl CentralPlane {
                 }
             }
             settlement.orders_settled += 1;
+            settlement.absorbed.push(AbsorbedFill {
+                object_id: order.object_id.as_str().to_string(),
+                signed_notional: direction * order.quantity * order.price,
+            });
         }
 
         for cross in &report.crosses {

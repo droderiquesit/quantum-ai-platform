@@ -7,7 +7,9 @@
 output "cloud_run_services" {
   description = <<-EOT
     Every workload in the catalogue: its Cloud Run URL, its identity, the
-    trust zone it attaches through, and whether it carries the egress proxy.
+    trust zone it attaches through, whether it carries the egress proxy, and
+    whether a metrics collector is declared beside it — declared, which is
+    not scraped; `workload_metrics_exist` is the fact about ingestion.
 
     The URL is internal — every service is `INGRESS_TRAFFIC_INTERNAL_ONLY` —
     so a request arriving at it from the internet is refused before the
@@ -17,11 +19,12 @@ output "cloud_run_services" {
 
   value = {
     for name, workload in module.cloud_run : name => {
-      uri              = workload.uri
-      service_account  = workload.service_account_email
-      trust_zone       = workload.trust_zone
-      has_egress_proxy = workload.has_egress_proxy
-      network_tags     = workload.network_tags
+      uri               = workload.uri
+      service_account   = workload.service_account_email
+      trust_zone        = workload.trust_zone
+      has_egress_proxy  = workload.has_egress_proxy
+      metrics_collected = workload.metrics_collected
+      network_tags      = workload.network_tags
     }
   }
 }

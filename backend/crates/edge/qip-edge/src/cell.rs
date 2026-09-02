@@ -36,7 +36,7 @@ use qip_sequencing::tracker::{ReorderPolicy, Sequencer};
 use qip_strategy::compile::CompiledStrategy;
 use qip_strategy::program::Program;
 use qip_strategy::runtime::StrategyRuntime;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 /// How a cell is identified and what it is allowed to reach.
 #[derive(Clone, Debug)]
@@ -56,7 +56,44 @@ pub struct CellConfig {
     /// see [`crate::feasibility`] for why that is stated rather than
     /// defaulted.
     pub feasibility: BTreeMap<String, VenueModel>,
+    /// The interval §27.1's forty percent crossing cap is measured over, if
+    /// the owner of the cap has chosen one.
+    ///
+    /// `None` — the default — measures the cap against each net on its own,
+    /// which is what this cell has always done and is the safe reading:
+    /// under it a net that cancels completely is always over the cap and is
+    /// never crossed (see [`Cell::cross_internally`] for the arithmetic).
+    /// The blueprint writes the cap "per instrument per interval" and never
+    /// says how long the interval is; the length decides when a safety
+    /// control fires, so the default does not guess one, and setting this is
+    /// the owner's decision (completion plan D3), not this crate's.
+    pub crossing_interval: Option<CrossingInterval>,
 }
+
+/// The rolling window §27.1's crossing cap is evaluated against.
+///
+/// Both forms are "trailing, this pass included": the cap compares the
+/// crossed size the window has admitted plus the one proposed against the
+/// gross intent the window has seen plus this net's. Neither form lets a
+/// cross be trimmed to fit — the cap still refuses whole.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CrossingInterval {
+    /// The last `n` passes of [`Cell::work`], counting the current one.
+    /// `Passes(1)` is the per-net reading with the accounting switched on.
+    Passes(u32),
+    /// Every net evaluated within the trailing span of wall time.
+    Span(Duration),
+}
+
+/// How many nets one instrument's crossing window may hold.
+///
+/// One sample per net per pass, so `Passes(n)` holds at most `n` and is
+/// refused above this at configuration. A `Span` window holds as many as
+/// arrive; at this bound the history is truncated *and the cap refuses every
+/// cross* until it drains, because a window whose oldest gross has been
+/// dropped cannot be measured, and a cap measured against part of its window
+/// is a cap that fires late.
+pub const MAX_CROSSING_WINDOW_SAMPLES: usize = 1_024;
 
 impl CellConfig {
     pub fn new(cell_id: impl Into<String>, region: impl Into<String>) -> Self {
@@ -67,7 +104,45 @@ impl CellConfig {
             max_staleness: Duration::from_secs(5),
             strategy_budget: 4_096,
             feasibility: BTreeMap::new(),
+            crossing_interval: None,
         }
+    }
+
+    /// Measure the crossing cap over `interval` rather than per net.
+    ///
+    /// Refused rather than clamped when the interval is empty or longer
+    /// than the history can hold: a zero-pass window would make the cap
+    /// compare a cross against nothing and admit everything, and a window
+    /// longer than the bound would be silently shortened to it — the safety
+    /// parameter the operator wrote replaced by one they did not.
+    pub fn with_crossing_interval(mut self, interval: CrossingInterval) -> Result<Self> {
+        match interval {
+            CrossingInterval::Passes(0) => {
+                return Err(Error::invalid(
+                    "a crossing interval of zero passes measures the cap against nothing; \
+                     leave it unset to measure per net, or name at least one pass",
+                ));
+            }
+            CrossingInterval::Passes(passes)
+                if usize::try_from(passes).is_ok_and(|n| n > MAX_CROSSING_WINDOW_SAMPLES) =>
+            {
+                return Err(Error::invalid(format!(
+                    "a crossing interval of {passes} passes exceeds the {MAX_CROSSING_WINDOW_SAMPLES} \
+                     the history holds per instrument, and would be measured over fewer than \
+                     configured"
+                )));
+            }
+            CrossingInterval::Span(span) if span.as_nanos() <= 0 => {
+                return Err(Error::invalid(format!(
+                    "a crossing interval of {} nanoseconds measures the cap against nothing; \
+                     leave it unset to measure per net, or name a positive span",
+                    span.as_nanos()
+                )));
+            }
+            CrossingInterval::Passes(_) | CrossingInterval::Span(_) => {}
+        }
+        self.crossing_interval = Some(interval);
+        Ok(self)
     }
 
     pub fn with_venue(mut self, venue: VenueId) -> Self {
@@ -213,6 +288,14 @@ pub struct Cell {
     /// halt only if it was issued *after* this, so a pre-halt payload still in
     /// flight cannot un-halt the cell it was racing.
     policy_halt_barrier: Option<Timestamp>,
+    /// The second halt wire (§46.2): the reason the polled flag gave, while
+    /// it is engaged. Independent of the two above in both directions — it
+    /// is set only by [`Self::apply_polled_halt`], which reads a flag the
+    /// node polls from a file and not a frame off the mesh, and it is
+    /// released only by that flag reading absent or released; no policy
+    /// payload, however new, and no operator credential on the kill switch
+    /// touches it. Two wires that shared a release would share a failure.
+    polled_halt: Option<String>,
     dropcopy: DropCopyReconciler,
     /// The arbitrage desk, if the composition root installed one. `None` is
     /// a cell that runs strategy programs and scans no graph, which is every
@@ -232,6 +315,20 @@ pub struct Cell {
     breaks: Vec<String>,
     breaks_omitted: u32,
     order_sequence: u64,
+    /// Passes of [`Self::work`] so far, counting the halted ones. What a
+    /// [`CrossingInterval::Passes`] window is measured in.
+    pass: u64,
+    /// What each instrument's crossing window has seen, oldest first, keyed
+    /// by venue, instrument and representation — the same key `net` groups
+    /// on. Empty forever when no interval is configured, so the per-net
+    /// reading costs nothing.
+    ///
+    /// Bounded twice: the key set by the instruments the cell holds books
+    /// for, since a net exists only for an instrument a strategy could price
+    /// here; and each history by [`MAX_CROSSING_WINDOW_SAMPLES`], past which
+    /// the oldest sample is dropped and the cap refuses until the window
+    /// drains — see the constant for why refusing is the only honest answer.
+    crossing_history: BTreeMap<String, VecDeque<CrossingSample>>,
     /// Where the cell's facts go.
     ///
     /// Given, never reached for: a cell assembled without one records into a
@@ -262,6 +359,7 @@ impl Cell {
             policy: None,
             policy_halted: false,
             policy_halt_barrier: None,
+            polled_halt: None,
             dropcopy: DropCopyReconciler::new(),
             desk: None,
             journal: Journal::new(),
@@ -269,6 +367,8 @@ impl Cell {
             breaks: Vec::new(),
             breaks_omitted: 0,
             order_sequence: 0,
+            pass: 0,
+            crossing_history: BTreeMap::new(),
             metrics: CellMetrics::silent(),
             config,
         })
@@ -306,6 +406,26 @@ impl Cell {
     /// against the cell's own books, and a venue absent from the cell's list
     /// has no book here to price against and no gateway here to send to.
     pub fn with_arbitrage(mut self, desk: ArbitrageDesk) -> Result<Self> {
+        self.install_arbitrage(desk)?;
+        Ok(self)
+    }
+
+    /// Install the desk into a cell that is already running.
+    ///
+    /// What a composition root needs, because the desk's two inputs arrive
+    /// after the cell is assembled: the whitelist rides a policy payload and
+    /// the desk's capital rides a grant, and neither is known at start-up.
+    /// The same refusals as [`Self::with_arbitrage`], plus one: a cell that
+    /// already holds a desk refuses a second, because replacing one would
+    /// discard the utilisation the first has spent and hand the strategy its
+    /// gross limit again.
+    pub fn install_arbitrage(&mut self, desk: ArbitrageDesk) -> Result<()> {
+        if self.desk.is_some() {
+            return Err(Error::denied(
+                "this cell already holds an arbitrage desk; a second would reset the capital \
+                 the first has committed",
+            ));
+        }
         if desk.envelope().cell() != self.config.cell_id {
             return Err(Error::denied(format!(
                 "an envelope for cell {} cannot fund the arbitrage desk at {}",
@@ -326,7 +446,27 @@ impl Cell {
             }
         }
         self.desk = Some(desk);
-        Ok(self)
+        Ok(())
+    }
+
+    /// The cycle whitelist the applied policy carries, while it is fresh.
+    ///
+    /// Fresh only: the slot's own time-to-live is a minute, and a desk built
+    /// from a whitelist the centre has stopped republishing would price a
+    /// graph the centre may since have withdrawn. Stale reads as none.
+    pub fn cycle_whitelist(
+        &self,
+        now: Timestamp,
+    ) -> Option<&qip_contracts::policy::CycleWhitelist> {
+        let policy = self.policy.as_ref()?;
+        if policy
+            .payload()
+            .freshness(qip_contracts::policy::PolicyItem::CycleWhitelist, now)
+            != qip_contracts::degradation::Freshness::Fresh
+        {
+            return None;
+        }
+        policy.payload().cycle_whitelist.value()
     }
 
     /// The installed arbitrage desk, if any.
@@ -343,6 +483,7 @@ impl Cell {
         self.metrics.halt(
             self.autonomy.kill_switch().is_globally_tripped(),
             self.policy_halted,
+            self.polled_halt.is_some(),
         );
     }
 
@@ -384,9 +525,77 @@ impl Cell {
         &self.fills
     }
 
-    /// Whether the cell is stopped.
+    /// Whether the cell is stopped, by any of its three halts.
     pub fn is_halted(&self) -> bool {
-        self.autonomy.kill_switch().is_globally_tripped() || self.policy_halted
+        self.autonomy.kill_switch().is_globally_tripped()
+            || self.policy_halted
+            || self.polled_halt.is_some()
+    }
+
+    /// The reason the polled halt wire is engaged, while it is.
+    pub fn polled_halt(&self) -> Option<&str> {
+        self.polled_halt.as_deref()
+    }
+
+    /// Apply what the polled halt flag read as, this poll.
+    ///
+    /// The flag is the state: engaged or unreadable halts, absent or
+    /// released does not, and every poll re-applies it. That is the
+    /// opposite discipline from [`Self::apply_halt`], whose broadcast is
+    /// engage-only and released by a newer signed payload, and the
+    /// difference is the point. §46.2 asks for two paths that do not share
+    /// a failure: the broadcast fails when the mesh does, and a mesh
+    /// failure cannot reach this one, because this one is a file on the
+    /// node that nothing on the mesh writes or clears. Neither halt can
+    /// release the other.
+    ///
+    /// Unreadable halts. A flag that exists but cannot be read — the mount
+    /// is gone, the permission is wrong, the content is not one of the two
+    /// words — is a wire whose state is unknown, and a kill switch whose
+    /// state is unknown must read as engaged ("stale is treated as engaged",
+    /// §46.2). Reading it as absent would let the failure of the mount be
+    /// the release of the halt.
+    pub fn apply_polled_halt(&mut self, reading: PolledHalt, now: Timestamp) {
+        let halting = reading.halts();
+        match (self.polled_halt.is_some(), halting) {
+            (false, true) => {
+                let reason = format!("polled halt: {}", reading.describe());
+                self.journal.record(
+                    Decision::HaltChanged {
+                        halted: true,
+                        reason: reason.clone(),
+                    },
+                    now,
+                );
+                self.polled_halt = Some(reason);
+            }
+            (true, false) => {
+                self.polled_halt = None;
+                // `halted` names the cell, not the wire: the other two halts
+                // may still hold it, and a reader of the chain must not take
+                // this entry for a cell that resumed.
+                let halted = self.is_halted();
+                self.journal.record(
+                    Decision::HaltChanged {
+                        halted,
+                        reason: format!(
+                            "the polled halt flag {}; the cell is {}",
+                            reading.describe(),
+                            if halted {
+                                "still halted by another wire"
+                            } else {
+                                "released"
+                            }
+                        ),
+                    },
+                    now,
+                );
+            }
+            // Idempotent in both steady states: a flag re-read as engaged is
+            // one halt, and a flag re-read as absent is no event.
+            (true, true) | (false, false) => {}
+        }
+        self.record_halt();
     }
 
     /// The degradation narrowing currently in force, derived from the applied
@@ -756,6 +965,10 @@ impl Cell {
         // passes. A refusal count with no pass count underneath it cannot tell
         // "nothing was refused" from "the cell never ran".
         self.metrics.work_pass();
+        // Counted before the halt check too, for the crossing window: a
+        // `Passes` interval that skipped halted passes would stretch over
+        // more wall time the longer the cell was stopped.
+        self.pass = self.pass.saturating_add(1);
         self.record_halt();
 
         if report.halted {
@@ -767,8 +980,10 @@ impl Cell {
             // knock on.
             let gate = if self.autonomy.kill_switch().is_globally_tripped() {
                 "kill_switch"
-            } else {
+            } else if self.policy_halted {
                 "policy_halt"
+            } else {
+                "polled_halt"
             };
             self.refuse(&mut report, gate, "the cell is halted", now);
             return Ok(report);
@@ -1118,7 +1333,7 @@ impl Cell {
         let Some(is_buy) = net_intent.is_buy() else {
             // Nothing reached the venue, so the cross — if the cap allowed one
             // — is final at this point and safe to seal into the chain.
-            self.record_cross(crossed, now, report);
+            self.settle_cross(net_intent, crossed, now, report);
             self.journal.record(
                 Decision::Refused {
                     gate: "internal_cross".to_string(),
@@ -1158,7 +1373,7 @@ impl Cell {
         // assert that two strategies traded during a pass that produced
         // nothing at all. The chain is the record; it may not carry a trade
         // the pass did not make.
-        self.record_cross(crossed, now, report);
+        self.settle_cross(net_intent, crossed, now, report);
 
         // Utilisation is charged per contributor, pro-rata on what each
         // wanted, so a netted order still spends each strategy's own envelope
@@ -1757,30 +1972,40 @@ impl Cell {
     /// netted as before: nothing extra reaches the venue, and nothing is
     /// booked between strategies.
     ///
-    /// # What this cap cannot do, stated because the arithmetic is not obvious
+    /// # What the per-net cap cannot do, stated because the arithmetic is not obvious
     ///
-    /// The matched size is `min(buy, sell)` and the denominator is
-    /// `buy + sell`, so the ratio can never exceed one half, and it reaches one
-    /// half exactly when the two sides cancel completely. A forty percent cap
-    /// therefore fires only in the narrow band above two fifths — and **a net
-    /// that cancels to zero is always refused**, which is §27.1's own flagship
-    /// case: "strategies that disagree cost nothing to run together because
-    /// their disagreement never reaches a venue". Under this measure that
-    /// disagreement is never booked as a cross at all.
+    /// With no [`CrossingInterval`] configured the cap is measured against
+    /// this net alone. The matched size is `min(buy, sell)` and the
+    /// denominator is `buy + sell`, so the ratio can never exceed one half,
+    /// and it reaches one half exactly when the two sides cancel completely.
+    /// A forty percent cap therefore fires only in the narrow band above two
+    /// fifths — and **a net that cancels to zero is always refused**, which
+    /// is §27.1's own flagship case: "strategies that disagree cost nothing
+    /// to run together because their disagreement never reaches a venue".
+    /// Under the per-net measure that disagreement is never booked as a
+    /// cross at all.
     ///
-    /// That is a real divergence from the blueprint, left in place deliberately
-    /// rather than tuned away. §27.1 caps crossing at forty percent of gross
-    /// intent "per instrument **per interval**", and never says how long an
-    /// interval is. Measured per net, as here, the bound above is arithmetic.
-    /// Measured across an interval, a full cancellation could sit inside a
-    /// larger instrument-level gross and be admitted — but the window length
-    /// decides when a safety control fires, and choosing one here to make a
-    /// case reachable would be inventing the very parameter that governs it.
-    /// The interval belongs to whoever owns the cap, not to this function.
+    /// That is the default, and it is deliberate. §27.1 caps crossing at
+    /// forty percent of gross intent "per instrument **per interval**", and
+    /// never says how long an interval is. The window length decides when a
+    /// safety control fires, so this crate does not choose one: unset, the
+    /// cap reads per net, which is safe and less than §27.1 asks for, and
+    /// `a_fully_offsetting_net_is_out_of_cap_by_arithmetic_and_is_never_crossed`
+    /// holds that default in place. Choosing the interval is the owner's
+    /// decision (completion plan D3), taken by setting
+    /// [`CellConfig::crossing_interval`].
     ///
-    /// The consequence, so nobody has to derive it: a perfectly offsetting pair
-    /// is netted, never reaches a venue, and is recorded as a cap refusal
-    /// rather than as a cross. Safe, and less than §27.1 asks for.
+    /// # With an interval
+    ///
+    /// The cap is then §27.1's: crossed size over gross intent, per
+    /// instrument, accumulated over the trailing window — what the window
+    /// has already crossed plus this cross, against what it has already
+    /// seen plus this net. A full cancellation can sit inside a larger
+    /// instrument-level gross and be admitted, and a run of them is refused
+    /// once they are two fifths of the window, which is the persistent
+    /// internal market the cap exists to prevent. The window's samples are
+    /// written by [`Self::settle_cross`] only once the pass has an outcome,
+    /// for the same reason the cross itself is.
     ///
     /// Crossing changes nothing about what is sent. It is a booking decision
     /// on top of netting, which has already decided what a venue sees.
@@ -1828,14 +2053,41 @@ impl Cell {
             sell_size
         };
 
+        // What the window has already seen for this instrument. Nothing,
+        // exactly, when no interval is configured — so the per-net reading
+        // below is byte-for-byte the arithmetic this cell always had.
+        let window = self.crossing_window(net_intent, now);
+        if window.full {
+            self.refuse(
+                report,
+                "internal_cross_window",
+                &format!(
+                    "the crossing window for {} on {} holds {MAX_CROSSING_WINDOW_SAMPLES} nets \
+                     and its oldest gross has been dropped; the cap cannot be measured against \
+                     a partial window and refuses until it drains",
+                    net_intent.object_id.as_str(),
+                    net_intent.venue.as_str()
+                ),
+                now,
+            );
+            return None;
+        }
+
         // Forty percent of gross intent, compared without dividing: the cap is
         // two fifths, so `crossed * 5 > gross * 2` asks the same question in
-        // exact arithmetic. A multiply that cannot be represented refuses,
-        // because a cap that silently answered "under" on overflow would be a
-        // control that cannot fire.
+        // exact arithmetic. The totals are the window's plus this net's. A
+        // sum or multiply that cannot be represented refuses, because a cap
+        // that silently answered "under" on overflow would be a control that
+        // cannot fire.
         let over_cap = match (
-            crossed.checked_mul(Decimal::from_int(5)),
-            net_intent.gross_size.checked_mul(Decimal::from_int(2)),
+            window
+                .crossed
+                .checked_add(crossed)
+                .and_then(|total| total.checked_mul(Decimal::from_int(5))),
+            window
+                .gross
+                .checked_add(net_intent.gross_size)
+                .and_then(|total| total.checked_mul(Decimal::from_int(2))),
         ) {
             (Some(five_crossed), Some(two_gross)) => five_crossed > two_gross,
             _ => true,
@@ -1845,12 +2097,14 @@ impl Cell {
                 report,
                 "internal_cross_cap",
                 &format!(
-                    "crossing {crossed} of {} gross intent on {} exceeds the forty percent cap; \
-                     the cross is refused whole rather than trimmed to the cap, because a cross \
-                     repeated at the cap every interval is the persistent internal market the \
-                     cap exists to prevent",
+                    "crossing {crossed} of {} gross intent on {} exceeds the forty percent cap \
+                     ({} already crossed of {} gross in the window); the cross is refused whole \
+                     rather than trimmed to the cap, because a cross repeated at the cap every \
+                     interval is the persistent internal market the cap exists to prevent",
                     net_intent.gross_size,
-                    net_intent.object_id.as_str()
+                    net_intent.object_id.as_str(),
+                    window.crossed,
+                    window.gross
                 ),
                 now,
             );
@@ -1886,6 +2140,121 @@ impl Cell {
             bought,
             sold,
         })
+    }
+
+    /// Seal a cross into the chain, report it, and let the crossing window
+    /// see the net it came from.
+    ///
+    /// One call for the two records because they must agree: a window that
+    /// counted a cross the chain never sealed would refuse later crosses
+    /// against a trade that did not happen, and one that missed a sealed
+    /// cross would admit the persistent internal market the cap exists to
+    /// prevent. Called only once the pass has an outcome, after the venue
+    /// call that can fail — see `place_net`.
+    fn settle_cross(
+        &mut self,
+        net_intent: &NetIntent,
+        crossed: Option<InternalCross>,
+        now: Timestamp,
+        report: &mut WorkReport,
+    ) {
+        let quantity = crossed
+            .as_ref()
+            .map_or(Decimal::ZERO, |cross| cross.quantity);
+        self.record_cross(crossed, now, report);
+        self.observe_crossing(net_intent, quantity, now);
+    }
+
+    /// The instrument key the crossing window is kept by: what `net` groups
+    /// on, so one window per net key.
+    fn crossing_key(net_intent: &NetIntent) -> String {
+        format!(
+            "{}/{}/{}",
+            net_intent.venue.as_str(),
+            net_intent.object_id.as_str(),
+            net_intent.representation.as_str()
+        )
+    }
+
+    /// Whether a sample is inside the configured window at `now`, this pass.
+    fn in_crossing_window(&self, sample: &CrossingSample, now: Timestamp) -> bool {
+        match self.config.crossing_interval {
+            None => false,
+            // The last `n` passes, this one included: a sample from pass
+            // `p` is in while `p + n > current`.
+            Some(CrossingInterval::Passes(passes)) => {
+                sample.pass.saturating_add(u64::from(passes)) > self.pass
+            }
+            Some(CrossingInterval::Span(span)) => sample.at >= now.saturating_sub(span),
+        }
+    }
+
+    /// What the window has seen for this net's instrument, before this net.
+    ///
+    /// Samples that have left the window are dropped here, so a history is
+    /// as long as its window and no longer. With no interval configured the
+    /// history is never written and this is zero, zero, not full.
+    fn crossing_window(&mut self, net_intent: &NetIntent, now: Timestamp) -> CrossingWindow {
+        let mut window = CrossingWindow::default();
+        if self.config.crossing_interval.is_none() {
+            return window;
+        }
+        let key = Self::crossing_key(net_intent);
+        let Some(history) = self.crossing_history.get(&key) else {
+            return window;
+        };
+        let live: Vec<CrossingSample> = history
+            .iter()
+            .filter(|sample| self.in_crossing_window(sample, now))
+            .copied()
+            .collect();
+        if let Some(history) = self.crossing_history.get_mut(&key) {
+            history.clear();
+            history.extend(live.iter().copied());
+        }
+        // A history at the bound has had its oldest sample dropped by
+        // `observe_crossing`, so what it holds is not the whole window.
+        window.full = live.len() >= MAX_CROSSING_WINDOW_SAMPLES;
+        for sample in &live {
+            // Saturating in the safe direction: a total that cannot be
+            // summed reads as the largest representable, so the cap's own
+            // checked sum over it overflows and refuses rather than
+            // trusting a wrapped number.
+            window.gross = window
+                .gross
+                .checked_add(sample.gross)
+                .unwrap_or(Decimal::MAX);
+            window.crossed = window
+                .crossed
+                .checked_add(sample.crossed)
+                .unwrap_or(Decimal::MAX);
+        }
+        window
+    }
+
+    /// Record one settled net in its instrument's window.
+    ///
+    /// Written only when an interval is configured, so the per-net default
+    /// allocates nothing. At the bound the oldest sample is dropped rather
+    /// than the newest: the newest is the one the next evaluation must see,
+    /// and `crossing_window` reports the truncation as `full`.
+    fn observe_crossing(&mut self, net_intent: &NetIntent, crossed: Decimal, now: Timestamp) {
+        if self.config.crossing_interval.is_none() {
+            return;
+        }
+        let history = self
+            .crossing_history
+            .entry(Self::crossing_key(net_intent))
+            .or_default();
+        if history.len() >= MAX_CROSSING_WINDOW_SAMPLES {
+            history.pop_front();
+        }
+        history.push_back(CrossingSample {
+            pass: self.pass,
+            at: now,
+            gross: net_intent.gross_size,
+            crossed,
+        });
     }
 
     /// Seal a cross into the hash-chained journal and report it.
@@ -2238,6 +2607,120 @@ impl Cell {
     }
 }
 
+/// What the polled halt flag read as, on one poll (§46.2's second wire).
+///
+/// Built from the flag's bytes by [`Self::from_content`] and from the
+/// failure to obtain them by the node, which is the only thing that touches
+/// the file. The cell never reads a path: it is handed the reading, so the
+/// same seam is driven by a test with no file at all.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PolledHalt {
+    /// No flag exists. Not halted: the deployment shape is a file the
+    /// operator creates to halt and removes to release, and a node whose
+    /// operator has never written one is running. A *missing mount* is not
+    /// this — see [`crate::cell::PolledHalt::Unreadable`].
+    Absent,
+    /// The flag exists and reads `released`. Not halted: the managed-store
+    /// shape keeps a key that always exists, and this is its off state.
+    Released,
+    /// The flag is engaged, with the reason it carried.
+    Engaged(String),
+    /// The flag could not be read or could not be understood: a permission
+    /// error, a missing directory, more bytes than a flag may hold, bytes
+    /// that are not text, or text that is neither word. Halted, because a
+    /// wire whose state is unknown is a wire that has failed, and a kill
+    /// switch fails engaged.
+    Unreadable(String),
+}
+
+impl PolledHalt {
+    /// The most bytes a flag may hold. A flag is a word and a short reason;
+    /// a file larger than this is not the flag, whatever put it there.
+    pub const MAX_CONTENT_BYTES: usize = 256;
+
+    /// Read the flag's bytes.
+    ///
+    /// Two words are understood: `released`, and `engaged` optionally
+    /// followed by a colon and a reason. An empty file is engaged — its
+    /// presence is the signal in the file-per-halt shape. Anything else
+    /// halts as unreadable; the content is not echoed into the reason,
+    /// because whatever ended up in the file is not a fact the chain should
+    /// carry.
+    pub fn from_content(bytes: &[u8]) -> Self {
+        if bytes.len() > Self::MAX_CONTENT_BYTES {
+            return Self::Unreadable(format!(
+                "the flag holds {} bytes and a flag may hold at most {}",
+                bytes.len(),
+                Self::MAX_CONTENT_BYTES
+            ));
+        }
+        let Ok(text) = std::str::from_utf8(bytes) else {
+            return Self::Unreadable("the flag is not text".to_string());
+        };
+        let text = text.trim();
+        if text.is_empty() || text == "engaged" {
+            return Self::Engaged("the flag is present".to_string());
+        }
+        if let Some(reason) = text.strip_prefix("engaged:") {
+            let reason = reason.trim();
+            return Self::Engaged(if reason.is_empty() {
+                "the flag is present".to_string()
+            } else {
+                reason.to_string()
+            });
+        }
+        if text == "released" {
+            return Self::Released;
+        }
+        Self::Unreadable("the flag holds text that is neither `engaged` nor `released`".to_string())
+    }
+
+    /// Whether this reading stops the cell.
+    pub const fn halts(&self) -> bool {
+        matches!(self, Self::Engaged(_) | Self::Unreadable(_))
+    }
+
+    /// One bounded word per arm, for a health body or a label.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Absent => "absent",
+            Self::Released => "released",
+            Self::Engaged(_) => "engaged",
+            Self::Unreadable(_) => "unreadable",
+        }
+    }
+
+    /// The reading, for the journal.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Absent => "is absent".to_string(),
+            Self::Released => "reads released".to_string(),
+            Self::Engaged(reason) => format!("is engaged: {reason}"),
+            Self::Unreadable(reason) => format!("is unreadable and reads as engaged: {reason}"),
+        }
+    }
+}
+
+/// One net as the crossing window saw it: when, and how much of its gross
+/// was crossed.
+#[derive(Clone, Copy, Debug)]
+struct CrossingSample {
+    pass: u64,
+    at: Timestamp,
+    gross: Decimal,
+    crossed: Decimal,
+}
+
+/// The window's totals for one instrument, before the net being judged.
+#[derive(Clone, Copy, Debug, Default)]
+struct CrossingWindow {
+    gross: Decimal,
+    crossed: Decimal,
+    /// The history was truncated at its bound, so these totals understate
+    /// the window and the cap must refuse rather than measure.
+    full: bool,
+}
+
 /// A cycle past every gate and waiting for the nets to go out first.
 #[derive(Clone, Debug)]
 struct AdmittedCycle {
@@ -2465,7 +2948,7 @@ mod crossing_tests {
 
         let mut report = WorkReport::default();
         let crossed = cell.cross_internally(&net_intent, at(10), &mut report);
-        cell.record_cross(crossed, at(10), &mut report);
+        cell.settle_cross(&net_intent, crossed, at(10), &mut report);
 
         assert_eq!(report.crosses.len(), 1, "nothing was crossed: {report:?}");
         assert_eq!(
@@ -2565,7 +3048,7 @@ mod crossing_tests {
 
         let mut report = WorkReport::default();
         let crossed = cell.cross_internally(&opposed, at(10), &mut report);
-        cell.record_cross(crossed, at(10), &mut report);
+        cell.settle_cross(&opposed, crossed, at(10), &mut report);
 
         assert!(
             report.crosses.is_empty(),
@@ -2603,12 +3086,9 @@ mod crossing_tests {
         );
 
         let mut report = WorkReport::default();
-        let crossed = cell.cross_internally(
-            &offsetting_net(Decimal::parse("12345").expect("a decimal literal")),
-            at(10),
-            &mut report,
-        );
-        cell.record_cross(crossed, at(10), &mut report);
+        let net_intent = offsetting_net(Decimal::parse("12345").expect("a decimal literal"));
+        let crossed = cell.cross_internally(&net_intent, at(10), &mut report);
+        cell.settle_cross(&net_intent, crossed, at(10), &mut report);
 
         assert!(report.crosses.is_empty(), "a cross was priced with no mid");
         assert!(
@@ -2618,6 +3098,351 @@ mod crossing_tests {
                 .any(|(gate, _)| gate == "internal_cross_price"),
             "the refusal did not name the pricing gate: {:?}",
             report.refusals
+        );
+        Ok(())
+    }
+
+    // --- the interval (§27.1 "per instrument per interval") -----------------
+
+    fn cell_with_interval(interval: CrossingInterval) -> Result<Cell> {
+        let config = CellConfig::new(CELL, "europe-west2")
+            .with_venue(venue())
+            .with_crossing_interval(interval)?;
+        let features = FeatureEngine::new(MarketState::default(), qip_core::Duration::from_secs(5));
+        let mut cell = Cell::new(config, features)?;
+        cell.track(book());
+        Ok(cell)
+    }
+
+    fn price() -> Decimal {
+        Decimal::parse("100").expect("a decimal literal")
+    }
+
+    /// Run one net through the crossing seam as `place_net` would, on a
+    /// fresh pass, and return what was crossed.
+    fn judge(cell: &mut Cell, net_intent: &NetIntent, now: Timestamp) -> WorkReport {
+        cell.pass = cell.pass.saturating_add(1);
+        let mut report = WorkReport::default();
+        let crossed = cell.cross_internally(net_intent, now, &mut report);
+        cell.settle_cross(net_intent, crossed, now, &mut report);
+        report
+    }
+
+    fn refused_under(report: &WorkReport, gate: &str) -> bool {
+        report.refusals.iter().any(|(g, _)| g == gate)
+    }
+
+    #[test]
+    fn with_an_interval_two_strategies_cancelling_completely_inside_a_larger_window_both_fill_at_the_mid()
+    -> Result<()> {
+        // §27.1's flagship case, reachable once the cap is measured per
+        // interval. Pass one is a one-sided 400 on the instrument; pass two
+        // is a 100 against a 100. Over the two-pass window that is 100
+        // crossed of 600 gross — a sixth, well under two fifths — so the
+        // full cancellation crosses, at the mid, and both sides are named.
+        let mut cell = cell_with_interval(CrossingInterval::Passes(3))?;
+        let mid = cell
+            .liquidity()
+            .get(&venue(), &object())
+            .and_then(|state| state.mid())
+            .expect("the fixture book serves a mid");
+
+        let one_sided = netted(&[("alpha", "400")], price());
+        let first = judge(&mut cell, &one_sided, at(10));
+        assert!(
+            first.crosses.is_empty(),
+            "a one-sided net has nothing to cross"
+        );
+
+        let opposed = netted(&[("alpha", "100"), ("beta", "-100")], price());
+        // Premise: the sides really cancel, and without the interval this
+        // very net is refused — the default the cited test holds — so what
+        // admits it below is the window and nothing else.
+        assert!(
+            opposed.net_size.is_zero(),
+            "the premise needs a total offset"
+        );
+        let mut per_net = cell_with_book()?;
+        let refused = judge(&mut per_net, &opposed, at(11));
+        assert!(
+            refused.crosses.is_empty() && refused_under(&refused, "internal_cross_cap"),
+            "the premise failed: the per-net default admitted a full cancellation"
+        );
+
+        let second = judge(&mut cell, &opposed, at(11));
+        assert_eq!(
+            second.crosses.len(),
+            1,
+            "the full cancellation was not crossed inside the window: {:?}",
+            second.refusals
+        );
+        let cross = &second.crosses[0];
+        assert_eq!(
+            cross.quantity,
+            Decimal::parse("100").expect("a decimal literal")
+        );
+        assert_eq!(cross.price, mid, "the cross was not priced at the mid");
+        assert_eq!(cross.bought, vec![StrategyId::new("alpha")]);
+        assert_eq!(cross.sold, vec![StrategyId::new("beta")]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_run_of_full_cancellations_is_refused_once_it_is_two_fifths_of_the_window() -> Result<()> {
+        // The persistent internal market the cap exists to prevent, built
+        // one pass at a time. Passes one to three: 100 against 100 each. The
+        // first is refused (100 of 200), the second admitted (100 of 400),
+        // the third admitted (200 of 600). The fourth sees passes two to
+        // four only — 300 crossed of 600 gross, half — and is refused. If
+        // pass one were still counted the fourth would read 300 of 800 and
+        // pass, so this also holds that a `Passes` window forgets.
+        let mut cell = cell_with_interval(CrossingInterval::Passes(3))?;
+        let opposed = netted(&[("alpha", "100"), ("beta", "-100")], price());
+        let outcomes: Vec<bool> = (1..=4)
+            .map(|pass| {
+                let report = judge(&mut cell, &opposed, at(pass));
+                !report.crosses.is_empty()
+            })
+            .collect();
+        assert_eq!(
+            outcomes,
+            vec![false, true, true, false],
+            "crossed-per-pass did not follow the rolling cap"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_span_interval_forgets_nets_older_than_the_span() -> Result<()> {
+        let mut cell =
+            cell_with_interval(CrossingInterval::Span(qip_core::Duration::from_secs(10)))?;
+        let one_sided = netted(&[("alpha", "400")], price());
+        let opposed = netted(&[("alpha", "100"), ("beta", "-100")], price());
+        judge(&mut cell, &one_sided, at(0));
+        // Premise: inside the span the one-sided gross admits the cross.
+        let inside = judge(&mut cell, &opposed, at(5));
+        assert_eq!(
+            inside.crosses.len(),
+            1,
+            "the premise failed: {:?}",
+            inside.refusals
+        );
+        // Thirty seconds on, both earlier nets are outside the ten-second
+        // span and the same cancellation is judged on its own again.
+        let outside = judge(&mut cell, &opposed, at(35));
+        assert!(
+            outside.crosses.is_empty() && refused_under(&outside, "internal_cross_cap"),
+            "a net outside the span still counted towards the window: {outside:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn with_no_interval_the_window_is_never_written() -> Result<()> {
+        // The default must be today's behaviour exactly, and "exactly"
+        // includes allocating nothing: a history that accumulated while
+        // unread would be a bound with nothing behind it.
+        let mut cell = cell_with_book()?;
+        assert!(
+            cell.config().crossing_interval.is_none(),
+            "the premise is the default"
+        );
+        judge(&mut cell, &offsetting_net(price()), at(10));
+        judge(&mut cell, &offsetting_net(price()), at(11));
+        assert!(
+            cell.crossing_history.is_empty(),
+            "the per-net default kept a crossing history: {:?}",
+            cell.crossing_history
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_window_that_hit_its_bound_refuses_rather_than_measuring_part_of_itself() -> Result<()> {
+        // A `Span` long enough to hold everything, fed one net per pass past
+        // the bound. The 1,025th net finds a truncated history and is
+        // refused under the window gate — not admitted against a gross that
+        // is missing its oldest sample, and not silently trimmed.
+        let mut cell =
+            cell_with_interval(CrossingInterval::Span(qip_core::Duration::from_hours(1)))?;
+        let one_sided = netted(&[("alpha", "400")], price());
+        for pass in 0..MAX_CROSSING_WINDOW_SAMPLES {
+            judge(&mut cell, &one_sided, at(pass as i64));
+        }
+        let opposed = netted(&[("alpha", "100"), ("beta", "-100")], price());
+        let report = judge(&mut cell, &opposed, at(MAX_CROSSING_WINDOW_SAMPLES as i64));
+        assert!(
+            report.crosses.is_empty(),
+            "a cross was admitted against a partial window"
+        );
+        assert!(
+            refused_under(&report, "internal_cross_window"),
+            "the refusal did not name the window gate: {:?}",
+            report.refusals
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_or_oversized_interval_is_refused_at_configuration() {
+        for interval in [
+            CrossingInterval::Passes(0),
+            CrossingInterval::Span(qip_core::Duration::ZERO),
+            CrossingInterval::Span(qip_core::Duration::from_secs(-1)),
+            CrossingInterval::Passes(u32::try_from(MAX_CROSSING_WINDOW_SAMPLES + 1).expect("fits")),
+        ] {
+            assert!(
+                CellConfig::new(CELL, "europe-west2")
+                    .with_crossing_interval(interval)
+                    .is_err(),
+                "{interval:?} was accepted, and would measure the cap against nothing or \
+                 against less than it names"
+            );
+        }
+        assert!(
+            CellConfig::new(CELL, "europe-west2")
+                .with_crossing_interval(CrossingInterval::Passes(1))
+                .is_ok(),
+            "a one-pass interval is the per-net reading with accounting on, and is valid"
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::panic_in_result_fn)]
+mod polled_halt_tests {
+    //! §46.2's second wire, at the seam the node drives: what each reading
+    //! of the flag does to the cell, and that no other wire releases it.
+
+    use super::*;
+    use qip_feature_dag::engine::FeatureEngine;
+    use qip_feature_dag::state::MarketState;
+
+    fn cell() -> Result<Cell> {
+        let config = CellConfig::new("london-1", "europe-west2");
+        let features = FeatureEngine::new(MarketState::default(), qip_core::Duration::from_secs(5));
+        Cell::new(config, features)
+    }
+
+    fn at(seconds: i64) -> Timestamp {
+        Timestamp::from_secs(1_700_000_000).saturating_add(qip_core::Duration::from_secs(seconds))
+    }
+
+    #[test]
+    fn every_content_the_flag_can_hold_reads_the_way_the_wire_needs() {
+        // The two words, the empty file, and everything else. Everything
+        // else halts: a flag whose content cannot be understood is a wire
+        // whose state is unknown, and a kill switch fails engaged.
+        assert_eq!(
+            PolledHalt::from_content(b""),
+            PolledHalt::Engaged("the flag is present".to_string())
+        );
+        assert_eq!(
+            PolledHalt::from_content(b"engaged\n"),
+            PolledHalt::Engaged("the flag is present".to_string())
+        );
+        assert_eq!(
+            PolledHalt::from_content(b"engaged: drill 7\n"),
+            PolledHalt::Engaged("drill 7".to_string())
+        );
+        assert_eq!(
+            PolledHalt::from_content(b" released \n"),
+            PolledHalt::Released
+        );
+        assert!(
+            matches!(
+                PolledHalt::from_content(b"release"),
+                PolledHalt::Unreadable(_)
+            ),
+            "a near-miss of the release word must not release"
+        );
+        assert!(matches!(
+            PolledHalt::from_content(b"\xff\xfe"),
+            PolledHalt::Unreadable(_)
+        ));
+        let oversized = vec![b'e'; PolledHalt::MAX_CONTENT_BYTES + 1];
+        assert!(matches!(
+            PolledHalt::from_content(&oversized),
+            PolledHalt::Unreadable(_)
+        ));
+        for (reading, halts) in [
+            (PolledHalt::Absent, false),
+            (PolledHalt::Released, false),
+            (PolledHalt::Engaged("x".to_string()), true),
+            (PolledHalt::Unreadable("x".to_string()), true),
+        ] {
+            assert_eq!(reading.halts(), halts, "{reading:?}");
+        }
+    }
+
+    #[test]
+    fn an_unreadable_flag_halts_and_an_absent_one_releases_and_the_chain_says_which() -> Result<()>
+    {
+        let mut cell = cell()?;
+        assert!(!cell.is_halted(), "the premise is a running cell");
+
+        cell.apply_polled_halt(
+            PolledHalt::Unreadable("permission denied".to_string()),
+            at(1),
+        );
+        assert!(cell.is_halted(), "an unreadable flag did not halt the cell");
+        assert!(
+            cell.polled_halt()
+                .is_some_and(|reason| reason.contains("permission denied")),
+            "the halt does not carry the read failure: {:?}",
+            cell.polled_halt()
+        );
+        // Re-reading the same state is one halt, not a second chain entry.
+        let entries = cell.journal().entries().len();
+        cell.apply_polled_halt(PolledHalt::Engaged("still".to_string()), at(2));
+        assert_eq!(
+            cell.journal().entries().len(),
+            entries,
+            "a re-read was journaled as a new halt"
+        );
+
+        cell.apply_polled_halt(PolledHalt::Absent, at(3));
+        assert!(
+            !cell.is_halted(),
+            "an absent flag did not release the polled halt"
+        );
+        let last = cell
+            .journal()
+            .entries()
+            .last()
+            .expect("the release was journaled");
+        assert_eq!(last.decision.kind(), "halt_changed");
+        assert!(
+            format!("{:?}", last.decision).contains("polled halt flag is absent"),
+            "the release entry does not name the wire: {:?}",
+            last.decision
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_polled_wire_and_the_kill_switch_release_each_other_never() -> Result<()> {
+        // Two wires that shared a release would share a failure. With both
+        // engaged, clearing one leaves the cell exactly as halted, and the
+        // chain entry for the polled release says so rather than reading as
+        // a resumed cell.
+        let mut cell = cell()?;
+        cell.apply_polled_halt(PolledHalt::Engaged("drill".to_string()), at(1));
+        cell.autonomy_mut()
+            .kill_switch_mut()
+            .trip_global(at(2), "operator", "drill");
+        assert!(cell.is_halted(), "the premise needs both wires engaged");
+
+        cell.apply_polled_halt(PolledHalt::Released, at(3));
+        assert!(
+            cell.is_halted(),
+            "releasing the polled wire released a kill switch it does not own"
+        );
+        let last = cell.journal().entries().last().expect("journaled");
+        assert!(
+            matches!(last.decision, Decision::HaltChanged { halted: true, .. }),
+            "the polled release entry claims the cell resumed: {:?}",
+            last.decision
         );
         Ok(())
     }

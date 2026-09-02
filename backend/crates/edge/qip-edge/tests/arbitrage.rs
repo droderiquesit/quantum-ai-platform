@@ -686,3 +686,37 @@ fn a_desk_whose_graph_reaches_a_venue_the_cell_cannot_is_refused_at_installation
     );
     Ok(())
 }
+
+#[test]
+fn a_running_cell_takes_a_desk_once_and_refuses_a_second() -> Result<()> {
+    // `install_arbitrage` is what a composition root calls on a cell that is
+    // already running, once the whitelist and the grant have both arrived.
+    // A second desk would discard the utilisation the first has committed
+    // and hand the strategy its gross limit again, so it is refused by the
+    // cell itself and not only by whoever calls it.
+    let config = CellConfig::new(CELL, REGION).with_venue(venue());
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, features)?;
+    assert!(
+        cell.arbitrage().is_none(),
+        "the premise is a cell with no desk"
+    );
+
+    cell.install_arbitrage(desk(ethereum_graph()?, 1)?)?;
+    assert!(cell.arbitrage().is_some(), "the desk was not installed");
+
+    let refusal = cell
+        .install_arbitrage(desk(two_triangle_graph()?, 1)?)
+        .expect_err("a second desk replaced the first and reset its committed capital");
+    assert!(
+        refusal.message().contains("already holds"),
+        "the refusal does not say why: {}",
+        refusal.message()
+    );
+    assert_eq!(
+        cell.arbitrage().map(|desk| desk.graph().edge_count()),
+        Some(3),
+        "the refused desk replaced the installed one"
+    );
+    Ok(())
+}

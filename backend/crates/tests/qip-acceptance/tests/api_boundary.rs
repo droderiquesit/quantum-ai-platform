@@ -818,7 +818,7 @@ fn every_mutating_route_is_one_of_three_and_each_raises_a_typed_intent() {
 }
 
 #[test]
-fn the_api_calls_no_platform_mutator_beyond_the_four_it_is_allowed() {
+fn the_api_calls_no_platform_mutator_beyond_the_five_it_is_allowed() {
     // Enumerate every `&mut self` method the platform exposes, from the
     // kernel's source rather than from memory, so a mutator added to the
     // kernel tomorrow is refused here the day it is called from a route.
@@ -855,11 +855,15 @@ fn the_api_calls_no_platform_mutator_beyond_the_four_it_is_allowed() {
     // * `run_cycle` — `POST /cycle` runs the loop; it is the loop's own gate.
     // * `autonomy_mut` — only to reach the kill switch, checked below.
     // * `set_central` — installs the trust root once, at start-up.
+    // * `open_trial_book` — opens the durable trial journal once, at start-up,
+    //   beside `set_central`; it is assembly, not a route, and a journal that
+    //   does not verify stops the process before any route exists.
     // * `ingest_cell_report` — hands a cell's delta to the platform to judge.
     let allowed: BTreeSet<&str> = [
         "run_cycle",
         "autonomy_mut",
         "set_central",
+        "open_trial_book",
         "ingest_cell_report",
     ]
     .into_iter()

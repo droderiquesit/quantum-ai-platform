@@ -86,4 +86,7 @@ pub use gates::{
     ScaledGate, ScaledPolicy, ShadowGate, ShadowPolicy, gate_for,
 };
 pub use ledger::{AuthorisedPromotion, LedgerEntry, LifecycleLedger, attempt_promotion};
-pub use trials::{StrategyFamily, TrialAccount, TrialBook, TrialEvent, TrialRecord};
+pub use trials::{
+    DEFAULT_QUARTERLY_BUDGET, Quarter, StrategyFamily, TrialAccount, TrialBook, TrialEvent,
+    TrialRecord,
+};

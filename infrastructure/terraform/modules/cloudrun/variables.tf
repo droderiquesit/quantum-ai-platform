@@ -576,6 +576,39 @@ variable "egress_sidecar" {
   }
 }
 
+variable "collector_image_digest" {
+  description = <<-EOT
+    The managed-Prometheus collector to run beside this workload, pinned by
+    digest, or null for a workload nothing scrapes.
+
+    Google's `cloud-run-gmp-sidecar` scrapes the workload on loopback and
+    writes what it reads to Cloud Monitoring as `prometheus.googleapis.com`
+    descriptors — the ones every alert policy in `modules/observability`
+    queries. It is the Cloud Run form of the `PodMonitoring` that left with
+    the cluster (ADR 0024), and without it a service emits a valid
+    exposition that reaches nobody.
+
+    Null is the default and the closed one: no digest, no sidecar, and the
+    `metrics_collected` output answers false, so nothing downstream can
+    read "a collector is declared" as "a scrape has happened". Set, it
+    must be the full `repository@sha256:<64 hex>` of the copy `vendor.yml`
+    mirrored into the environment's own registry and attested — Binary
+    Authorization admits nothing else, and a revision carrying the
+    upstream image would be refused at admission and read as a broken
+    deploy rather than a missing collector. The root composes the value
+    from the registry prefix and a bare digest, so the upstream repository
+    cannot be named here at all.
+  EOT
+
+  type    = string
+  default = null
+
+  validation {
+    condition     = var.collector_image_digest == null || can(regex("^[a-z0-9][a-z0-9._/-]*[a-z0-9]@sha256:[a-f0-9]{64}$", var.collector_image_digest))
+    error_message = "The metrics collector image must be pinned by digest, as repository@sha256:<64 hex>, or left null for no collector. A tag is a name someone can move after the attestation was signed."
+  }
+}
+
 variable "deployer_service_account" {
   description = <<-EOT
     The pipeline's account, which moves this service to a new image and must

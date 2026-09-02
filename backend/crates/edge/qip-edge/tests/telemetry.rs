@@ -534,6 +534,83 @@ fn an_offsetting_portion_under_the_cap_is_counted_as_a_cross_on_the_venue_that_p
     Ok(())
 }
 
+// --- the polled halt wire ----------------------------------------------------
+
+#[test]
+fn a_polled_halt_moves_its_own_gauge_refuses_the_pass_under_its_own_gate_and_no_payload_releases_it()
+-> Result<()> {
+    // §46.2's second wire, seen from the series and the chain. It must chart
+    // under `source="polled"` and not under either of the other two, so an
+    // incident can tell which path stopped the cell; a pass must refuse
+    // under `polled_halt`; and a fresh, verified policy payload — the thing
+    // that releases the *broadcast* halt — must leave it engaged, because a
+    // wire the mesh can release is a wire that shares the mesh's failure.
+    use qip_edge::cell::PolledHalt;
+    let (mut cell, metrics) = trading_cell(&[("alpha", SignalKind::Enter, "10")])?;
+    assert!(!cell.is_halted(), "the premise is a running cell");
+
+    cell.apply_polled_halt(PolledHalt::Engaged("drill".to_string()), t(10));
+    assert!(
+        cell.is_halted(),
+        "the premise failed: the polled halt did not take"
+    );
+    let halted = metrics.snapshot();
+    assert_eq!(
+        halted.gauge(names::EDGE_HALTED, &by("source", "polled")),
+        Some(1.0),
+        "a polled halt left its own gauge at zero"
+    );
+    assert_eq!(
+        halted.gauge(names::EDGE_HALTED, &by("source", "policy")),
+        Some(0.0),
+        "a polled halt was attributed to the broadcast, which has a different release"
+    );
+    assert_eq!(
+        halted.gauge(names::EDGE_HALTED, &by("source", "kill_switch")),
+        Some(0.0),
+        "a polled halt was attributed to the kill switch, which has a different release"
+    );
+
+    let report = work(&mut cell, t(11))?;
+    assert!(report.halted && report.orders.is_empty());
+    assert_eq!(
+        metrics
+            .snapshot()
+            .counter(names::EDGE_REFUSALS, &by("gate", "polled_halt")),
+        1,
+        "the halted pass was not refused under the polled-halt gate"
+    );
+
+    // A newer signed payload that is not halting: releases the broadcast
+    // halt, and must not release this one.
+    cell.apply_policy(fresh_policy(1, t(12))?, t(12))?;
+    assert!(
+        cell.is_halted(),
+        "a policy payload released the polled halt, so the two wires share a release"
+    );
+    assert_eq!(
+        metrics
+            .snapshot()
+            .gauge(names::EDGE_HALTED, &by("source", "polled")),
+        Some(1.0),
+        "the polled gauge fell on a payload that cannot release it"
+    );
+
+    cell.apply_polled_halt(PolledHalt::Absent, t(13));
+    assert!(
+        !cell.is_halted(),
+        "an absent flag did not release the polled halt"
+    );
+    assert_eq!(
+        metrics
+            .snapshot()
+            .gauge(names::EDGE_HALTED, &by("source", "polled")),
+        Some(0.0),
+        "a released polled halt still reads as halted"
+    );
+    Ok(())
+}
+
 // --- reconciliation ----------------------------------------------------------
 
 #[test]

@@ -14,32 +14,37 @@ It has never been applied.
 
 | Workload | Concurrency | Instances | What a second instance does |
 | --- | --- | --- | --- |
-| `qip-api` | 80 (`catalogue.tf:49`) | 0 to 4, the module defaults | Halves what each instance carries. This is the one that works. |
-| `qip-fastbrain` | 1 (`catalogue.tf:124`) | 0 to 4, the module defaults | Polls the feed again, builds a second world model, decides again — and this is the workload permitted to reach a venue. |
-| `qip-deepbrain` | 1 (`catalogue.tf:171`) | 0 to 4, the module defaults | Writes a second copy of the same evidence, indistinguishable from a replay. |
+| `qip-api` | 80 (`catalogue.tf:49`) | 0 to 4 (`catalogue.tf:56-57`) | Halves what each instance carries. This is the one that works. |
+| `qip-fastbrain` | 1 (`catalogue.tf:138`) | exactly 1 (`catalogue.tf:152-154`) | Would poll the feed again, build a second world model, decide again, and append to the same hash-chained log — and this is the workload permitted to reach a venue. The ceiling of one makes it impossible. |
+| `qip-deepbrain` | 1 (`catalogue.tf:203`) | exactly 1 (`catalogue.tf:211-213`) | Would write a second copy of the same evidence, indistinguishable from a replay. Same ceiling, same reason. |
 | execution node | — | 1, or 2 only during a replacement (`modules/execution-node/variables.tf:126-144`) | Trades a second book against the same signed capital envelope. |
 
-Read the third column before the first. `concurrency` is the one scaling value
-the catalogue sets, and it bounds *requests per instance*, not instances. The
-catalogue passes neither `min_instances` nor `max_instances`, so every service
-takes `modules/cloudrun`'s defaults: a floor of zero and a ceiling of four
-(`modules/cloudrun/variables.tf:242-283`; applied at `modules/cloudrun/main.tf:359-364`).
-Two consequences the previous runtime did not have:
+Read the third column before the first. `concurrency` bounds *requests per
+instance*, not instances; the instance bounds are the catalogue's own, passed
+through to the module per entry (`catalogue.tf:320-322`, applied at
+`modules/cloudrun/main.tf:464-465`) rather than left to its defaults of a zero
+floor and a ceiling of four (`modules/cloudrun/variables.tf:242-283`). The
+API takes `0/4` because it is the one workload that answers requests. Both
+brains are pinned to `min_instances = 1`, `max_instances = 1` with an
+`always_on_justification`, and the two halves of that pin close two failures
+this runtime would otherwise have:
 
-* **A brain can scale to zero.** With `min_instances = 0`, an instance that
-  receives no request is retired and its CPU is throttled between requests
-  (`cpu_idle = var.min_instances == 0`, `modules/cloudrun/main.tf:393`). The
-  brains run their own ingest-and-cycle loop; on this configuration that loop
-  runs only while an instance exists and is serving. Raising the floor needs
-  `always_on_justification`, refused empty at plan time
-  (`modules/cloudrun/main.tf:181-190`), and the catalogue does not carry one
-  for either brain.
-* **A brain is not pinned to one instance.** Nothing in the catalogue says
-  `max_instances = 1` for the brains. Concurrency of one plus a ceiling of four
-  means the fourth concurrent request starts a fourth instance, which is the
-  divergent-world-model failure in the second row. The reasoning against a
-  second replica sits beside each `concurrency` in `catalogue.tf`; the bound
-  itself is not expressed, and this page does not pretend it is.
+* **A brain cannot scale to zero.** Nothing calls a brain — no scheduler, no
+  invoker, and `POST /cycle` is the API's own route — so with a zero floor
+  the instance Cloud Run retired for want of a request would never be started
+  again, and the cycle would simply stop on the first quiet hour. The floor
+  of one keeps it, and keeps its CPU allocated between requests, which a loop
+  that never receives one needs (`cpu_idle = var.min_instances == 0`,
+  `modules/cloudrun/main.tf:497`). A floor above zero is refused at plan time
+  without a written justification (`modules/cloudrun/main.tf:217-231`); each
+  brain's entry carries one.
+* **A brain cannot scale to two.** Each brain opens the event log and runs
+  the cycle on its own clock, so a second instance would run the same cycle
+  and append to the same hash-chained log. Two writers of one chain produce
+  the fork the chain exists to detect, and the platform would report its own
+  redundancy as corruption. The ceiling of one makes that structural rather
+  than a comment beside `concurrency`; a probe that arrives while the one
+  instance is busy queues, and does not start a second.
 
 The execution node is the one workload with a hard bound: `node_count` is one,
 and the module refuses more than two even during a replacement.
@@ -102,14 +107,13 @@ when leadership moves. **None of it exists**, and no Terraform change
 substitutes for it. Until it does:
 
 * Scale the deep brain **vertically**. Its shape is `cpu = "4"`,
-  `memory = "8Gi"` in `catalogue.tf:169-170`, and a change there is a plan a
+  `memory = "8Gi"` in `catalogue.tf:201-202`, and a change there is a plan a
   reviewer reads. Nobody has measured where in that band a cycle sits, and
   there is no recommendation-mode autoscaler on this runtime to measure it
   for you.
-* The fast brain's instance bound is an **open question**, not a decision:
-  the catalogue reasons against a second replica and does not pin the
-  ceiling at one. It needs whoever owns the execution path, and the change
-  is a `max_instances` the catalogue passes through to the module.
+* The fast brain's instance bound is a decision, not an open question: the
+  catalogue pins it at one (`catalogue.tf:152-154`), for the reasons above.
+  Raising that ceiling is the leader-election work, not a plan.
 
 ## Related
 

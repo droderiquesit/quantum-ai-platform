@@ -54,13 +54,16 @@ variable "network_id" {
 
 variable "subnet_cidr" {
   description = <<-EOT
-    The node's own range. Must not overlap an edge cell's or the primary
-    subnet's.
+    The node's own range. Must not overlap a trust zone's, another node's or
+    the primary subnet's.
 
-    A range of its own rather than a share of the primary: the primary is where
-    GKE allocates node addresses, and while both topologies exist (ADR 0020) an
-    execution node drawing from the same pool as a growing node pool produces an
-    allocation failure in whichever of the two asks second.
+    A range of its own rather than a share of the primary, for the reason
+    every trust-zone subnet has one (`modules/trust-zones`): the firewall
+    rules that decide what may reach this machine target a subnet and a tag,
+    and a node drawn from a range something else also allocates from is a
+    node those rules describe only by accident. The cluster this range once
+    had to avoid colliding with is gone (ADR 0024); the reason to keep the
+    range separate is not.
   EOT
 
   type = string
@@ -226,9 +229,10 @@ variable "google_apis_range" {
     The range the node reaches Google APIs on, for the one egress rule that
     permits it.
 
-    The restricted VIP by default — the same `199.36.153.8/30` every
-    NetworkPolicy in `infrastructure/kubernetes` names, reached through the
-    subnet's private Google access. Where a Private Service Connect endpoint
+    The restricted VIP by default — the same `199.36.153.8/30` the trust
+    zones' Google-API egress rules name (`modules/trust-zones`), reached
+    through the subnet's private Google access; the NetworkPolicies that once
+    named it left with the chart (ADR 0024). Where a Private Service Connect endpoint
     exists instead (`modules/connectivity`), this is that endpoint's address as
     a /32, and the far end resolves Google API hostnames to it.
   EOT

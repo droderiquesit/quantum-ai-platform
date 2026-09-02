@@ -107,6 +107,12 @@ impl Representation {
 /// coordinated. `qip-edge-node` installs no desk yet, because the payload's
 /// cycle whitelist carries strings and not a graph — so a deployed node
 /// walks this path only once that source exists.
+///
+/// That source now exists: `CycleWhitelist::conversions` carries the trade
+/// edges in structured form, and `qip-edge-node` builds a desk from them
+/// once a verified envelope for the desk's strategy has arrived. The two
+/// sentences above describe the state this refusal was first written
+/// against and are kept so the reader knows why it exists.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "policy", rename_all = "snake_case")]
 pub enum NettingPolicy {

@@ -316,6 +316,7 @@ dependencies = [
 name = "qip-edge-node"
 version = "0.1.0"
 dependencies = [
+ "qip-arbitrage",
  "qip-brokers",
  "qip-contracts",
  "qip-core",

@@ -657,6 +657,37 @@ variable "workload_metrics_exist" {
   default     = false
 }
 
+variable "metrics_collector_image_digest" {
+  description = <<-EOT
+    The digest of the managed-Prometheus collector the catalogue's scraped
+    workloads run as a sidecar, as `sha256:<64 hex>`, or null for none.
+
+    Google's `cloud-run-gmp-sidecar` is the Cloud Run form of the
+    `PodMonitoring` that left with the cluster (ADR 0024). Binary
+    Authorization admits only what the platform's attestor signed, so the
+    image is adopted the way the Envoy proxy was: a reviewed line in
+    `infrastructure/egress/vendored-images.txt`, mirrored and attested by
+    `vendor.yml`, and its digest recorded here. `catalogue.tf` composes the
+    value with the registry prefix, so the upstream repository cannot be
+    named and an unmirrored image cannot reach a plan.
+
+    Null by default, and null is the closed state: no sidecar on any
+    workload, and every service's `metrics_collected` output is false.
+    Setting this declares a collector; it does not make
+    `workload_metrics_exist` true, which stays a separate fact flipped on
+    evidence a descriptor was ingested. modules/observability/NOT-SCRAPED.md
+    is the record of which of the two holds.
+  EOT
+
+  type    = string
+  default = null
+
+  validation {
+    condition     = var.metrics_collector_image_digest == null || can(regex("^sha256:[a-f0-9]{64}$", var.metrics_collector_image_digest))
+    error_message = "The metrics collector digest is `sha256:<64 hex>` or null. A tag is a name someone can move after the attestation was signed."
+  }
+}
+
 variable "enable_identity_platform" {
   description = "Run Google Cloud Identity Platform for customer sign-in in this environment. Customer identity only — the admin surface uses IAP and workforce identity, a separate trust model on purpose."
   type        = bool

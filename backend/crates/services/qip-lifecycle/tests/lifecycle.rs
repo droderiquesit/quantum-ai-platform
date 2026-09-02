@@ -21,7 +21,7 @@ use qip_core::error::{Error, Result};
 use qip_core::kv::KeyValueStore;
 use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::{Decimal, Duration, ModelId, ObjectId, Timestamp, dec};
-use qip_lifecycle::band::BandMethod;
+use qip_lifecycle::band::{BandMethod, HoldoutBand};
 use qip_lifecycle::demotion::{DemotionMonitor, DemotionTrigger, LiveObservation, PilotBaseline};
 use qip_lifecycle::evidence::{
     CrossValidationRun, FeatureTiming, HoldoutEvidence, KillCondition, LeakageAudit, PaperEvidence,
@@ -32,9 +32,13 @@ use qip_lifecycle::gates::{
 };
 use qip_lifecycle::ledger::{AuthorisedPromotion, LifecycleLedger, attempt_promotion};
 use qip_lifecycle::scoring::{annualised_sharpe, periodic_sharpe};
-use qip_lifecycle::trials::{JOURNAL_PREFIX, StrategyFamily, TrialBook};
+use qip_lifecycle::trials::{
+    DEFAULT_QUARTERLY_BUDGET, JOURNAL_PREFIX, Quarter, StrategyFamily, TrialBook,
+};
 use qip_observability::metrics::{Metrics, labels, names};
-use qip_simulation_engine::validation::{PurgedSplit, assess_overfitting, deflated_sharpe};
+use qip_simulation_engine::validation::{
+    DeflatedSharpe, PurgedSplit, assess_overfitting, deflated_sharpe, sharpe_standard_error,
+};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -52,7 +56,13 @@ fn family() -> Result<StrategyFamily> {
 
 /// A trial book that knows the test strategy's family, with nothing charged.
 fn opened_book() -> Result<TrialBook> {
-    let mut book = TrialBook::in_memory();
+    opened_book_with_budget(DEFAULT_QUARTERLY_BUDGET)
+}
+
+/// The same, budgeted at `budget` trials a quarter, for the one test whose
+/// sweep is deliberately far larger than a quarter admits.
+fn opened_book_with_budget(budget: u64) -> Result<TrialBook> {
+    let mut book = TrialBook::in_memory().with_quarterly_budget(budget)?;
     book.open_family(&family()?, start())?;
     book.enrol(&strategy(), &family()?, start())?;
     Ok(book)
@@ -482,7 +492,13 @@ fn a_sub_threshold_deflated_sharpe_is_read_as_a_failure_rather_than_a_score() ->
     let mut holdout = strong_holdout()?;
     holdout.holdout_returns = good_returns(2, 400, 0.0004);
     holdout.trials = 5_000;
-    let evidence = charged(StrategyEvidence::new().with_holdout(holdout))?;
+    // Ten quarters of budget in one run: charged to a book budgeted to admit
+    // it, because this test is about the deflation, and the budget's own
+    // refusal has its own tests.
+    let account = opened_book_with_budget(5_000)?.charge(&strategy(), 5_000, start())?;
+    let evidence = StrategyEvidence::new()
+        .with_holdout(holdout)
+        .with_trial_account(account);
 
     let outcome = HoldoutGate::default().evaluate(&evidence, start());
     let credible = outcome
@@ -1421,6 +1437,233 @@ fn a_trial_book_replays_its_journal_from_the_store_and_refuses_a_tampered_one() 
     Ok(())
 }
 
+/// Blueprint §20.1: five hundred trials per family per quarter. Before this
+/// the book counted and enforced nothing, so the cap read as a control and
+/// was not one. The boundary is exact — the five-hundredth trial charges,
+/// the five-hundred-and-first does not — and a refused charge leaves no
+/// record, so the sweep cannot creep past the budget by being refused.
+#[test]
+fn the_five_hundredth_trial_of_a_quarter_charges_and_the_five_hundred_and_first_is_refused()
+-> Result<()> {
+    let mut book = opened_book()?;
+    // Premises: the default is the blueprint's figure, zero is refused, and
+    // the fixture instant is where this test thinks it is.
+    assert_eq!(book.quarterly_budget(), 500);
+    assert_eq!(DEFAULT_QUARTERLY_BUDGET, 500);
+    let zero = TrialBook::in_memory()
+        .with_quarterly_budget(0)
+        .expect_err("a budget of zero is a stop, not a budget");
+    assert_eq!(zero.code(), "invalid");
+    assert!(zero.message().contains("retired"), "{zero:?}");
+    assert_eq!(start().to_date_string(), "2023-11-14");
+    let quarter = Quarter::of(start());
+    assert_eq!(quarter.to_string(), "2023Q4");
+    assert_eq!(book.quarter_trials(&family()?, quarter), Some(0));
+    assert_eq!(
+        TrialBook::in_memory().quarter_trials(&family()?, quarter),
+        None,
+        "unknown, not zero"
+    );
+
+    // Four hundred and ninety-nine, split across two runs an hour apart.
+    book.charge(&strategy(), 250, start())?;
+    let later = start().saturating_add(Duration::from_hours(1));
+    book.charge(&strategy(), 249, later)?;
+    assert_eq!(book.quarter_trials(&family()?, quarter), Some(499));
+    let before = book.journal(&family()?).len();
+
+    // Two more would reach 501: refused, and nothing recorded.
+    let error = book
+        .charge(&strategy(), 2, later)
+        .expect_err("499 + 2 passes the budget");
+    assert_eq!(error.code(), "denied");
+    for expected in [
+        "family momentum",
+        "499 trial(s)",
+        "2023Q4",
+        "budget of 500",
+        "501",
+    ] {
+        assert!(
+            error.message().contains(expected),
+            "{expected:?} missing from {error:?}"
+        );
+    }
+    assert_eq!(
+        book.journal(&family()?).len(),
+        before,
+        "a refusal appends nothing"
+    );
+    assert_eq!(book.quarter_trials(&family()?, quarter), Some(499));
+    assert_eq!(book.lifetime_trials(&family()?), Some(499));
+
+    // The five-hundredth charges, and says what it was charged under.
+    let account = book.charge(&strategy(), 1, later)?;
+    assert_eq!(account.quarter_trials(), 500);
+    assert_eq!(account.quarter(), quarter);
+    assert_eq!(account.quarterly_budget(), 500);
+    assert!(
+        account
+            .describe()
+            .contains("500 of the 500 budgeted for 2023Q4"),
+        "{}",
+        account.describe()
+    );
+    assert_eq!(book.quarter_trials(&family()?, quarter), Some(500));
+
+    // The five-hundred-and-first does not, even a month later in the quarter.
+    let december = Timestamp::from_civil(2023, 12, 20);
+    assert_eq!(Quarter::of(december), quarter);
+    let error = book
+        .charge(&strategy(), 1, december)
+        .expect_err("the budget is spent");
+    assert_eq!(error.code(), "denied");
+    assert!(
+        error.message().contains("500 trial(s) charged in 2023Q4"),
+        "{error:?}"
+    );
+    assert_eq!(book.lifetime_trials(&family()?), Some(500));
+    book.verify()?;
+
+    // A second family has its own budget, untouched by the first's.
+    let other = StrategyFamily::new("reversal")?;
+    let cousin = StrategyId::new("reversal-v1");
+    book.open_family(&other, december)?;
+    book.enrol(&cousin, &other, december)?;
+    assert_eq!(book.charge(&cousin, 500, december)?.quarter_trials(), 500);
+    Ok(())
+}
+
+/// The budget is per calendar quarter in UTC — `(month − 1) / 3` of the
+/// charge's own civil date — and the count starts again at the boundary
+/// while the lifetime count does not. The last second of December is the
+/// same quarter as November; the first second of January is not.
+#[test]
+fn a_new_quarter_resets_the_running_count_and_not_the_lifetime() -> Result<()> {
+    let mut book = opened_book()?;
+    let q4 = Quarter::of(start());
+    book.charge(&strategy(), 500, start())?;
+    assert_eq!(book.quarter_trials(&family()?, q4), Some(500));
+
+    // Premise: 2023-12-31T23:59:59Z is still the fourth quarter, so the
+    // budget is still spent there.
+    let last_second = Timestamp::from_civil(2023, 12, 31)
+        .saturating_add(Duration::from_hours(24))
+        .saturating_sub(Duration::from_secs(1));
+    assert_eq!(last_second.to_rfc3339(), "2023-12-31T23:59:59.000Z");
+    assert_eq!(
+        Quarter::of(last_second),
+        q4,
+        "December is the fourth quarter"
+    );
+    assert_eq!(Quarter::of(last_second).number(), 4);
+    let error = book
+        .charge(&strategy(), 1, last_second)
+        .expect_err("still the fourth quarter");
+    assert!(error.message().contains("2023Q4"), "{error:?}");
+
+    // One second on: a new quarter, a fresh count, the same lifetime.
+    let first_second = last_second.saturating_add(Duration::from_secs(1));
+    assert_eq!(first_second.to_rfc3339(), "2024-01-01T00:00:00.000Z");
+    let q1 = Quarter::of(first_second);
+    assert_ne!(q1, q4);
+    assert_eq!((q1.year(), q1.number()), (2024, 1));
+    assert_eq!(q1.to_string(), "2024Q1");
+    assert_eq!(
+        book.quarter_trials(&family()?, q1),
+        Some(0),
+        "nothing filed there yet"
+    );
+    let account = book.charge(&strategy(), 1, first_second)?;
+    assert_eq!(account.quarter_trials(), 1);
+    assert_eq!(account.quarter(), q1);
+    assert_eq!(account.lifetime(), 501, "the lifetime count never resets");
+    assert_eq!(
+        book.quarter_trials(&family()?, q4),
+        Some(500),
+        "the old quarter keeps its count"
+    );
+    assert_eq!(book.quarter_trials(&family()?, q1), Some(1));
+
+    // Every month lands in the quarter the arithmetic says.
+    let by_month: Vec<u32> = (1..=12)
+        .map(|month| Quarter::of(Timestamp::from_civil(2024, month, 15)).number())
+        .collect();
+    assert_eq!(by_month, [1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4]);
+    book.verify()?;
+    Ok(())
+}
+
+/// The quarterly count is carried by the journal and nothing else. A book
+/// reopened on its store refuses against the replayed count, and a record
+/// whose quarterly total was lowered in the store — to free budget without
+/// touching the lifetime — fails to verify.
+#[test]
+fn the_quarterly_count_replays_from_the_store_and_a_lowered_one_is_refused() -> Result<()> {
+    let store = Arc::new(MemoryStore::default());
+    let as_port = |s: &Arc<MemoryStore>| -> Arc<dyn KeyValueStore> { Arc::clone(s) as _ };
+    let q4 = Quarter::of(start());
+    let january = Timestamp::from_civil(2024, 1, 9);
+    let q1 = Quarter::of(january);
+    assert_ne!(q1, q4);
+    {
+        let mut book = TrialBook::open(as_port(&store))?;
+        book.open_family(&family()?, start())?;
+        book.enrol(&strategy(), &family()?, start())?;
+        book.charge(&strategy(), 300, start())?;
+        book.charge(
+            &strategy(),
+            200,
+            start().saturating_add(Duration::from_hours(1)),
+        )?;
+        book.charge(&strategy(), 120, january)?;
+        assert_eq!(book.quarter_trials(&family()?, q4), Some(500));
+        assert_eq!(book.quarter_trials(&family()?, q1), Some(120));
+    }
+    assert_eq!(store.len()?, 5, "opened, enrolled, three charges");
+
+    // The process restarts. The counts are what they were, per quarter, and
+    // the budget applies to them: 120 + 381 passes, 120 + 380 does not.
+    let mut reopened = TrialBook::open(as_port(&store))?;
+    assert_eq!(reopened.quarter_trials(&family()?, q4), Some(500));
+    assert_eq!(reopened.quarter_trials(&family()?, q1), Some(120));
+    assert_eq!(reopened.lifetime_trials(&family()?), Some(620));
+    let error = reopened
+        .charge(&strategy(), 381, january)
+        .expect_err("the replayed count is the count");
+    assert!(
+        error.message().contains("120 trial(s) charged in 2024Q1"),
+        "{error:?}"
+    );
+    assert_eq!(
+        reopened.charge(&strategy(), 380, january)?.quarter_trials(),
+        500
+    );
+    assert_eq!(store.len()?, 6);
+
+    // Somebody lowers the January record's quarterly total in the store,
+    // leaving the lifetime as it was.
+    let key = format!("{JOURNAL_PREFIX}{}/{:020}", family()?, 4);
+    let mut record = store
+        .get(&key)?
+        .ok_or_else(|| Error::not_found(key.clone()))?;
+    assert_eq!(
+        record["quarter_after"],
+        serde_json::Value::from(120),
+        "premise"
+    );
+    assert_eq!(
+        record["lifetime_after"],
+        serde_json::Value::from(620),
+        "premise"
+    );
+    record["quarter_after"] = serde_json::Value::from(1);
+    store.put(&key, record)?;
+    let error = TrialBook::open(as_port(&store)).expect_err("a lowered quarter must not replay");
+    assert!(error.message().contains("does not hash"), "{error:?}");
+    Ok(())
+}
+
 /// The two ways to launder a count without lying about any single run:
 /// reopen the family at zero, or move the strategy to a family with a smaller
 /// count. Both are refused, and so is a run that claims to have tried nothing.
@@ -1638,6 +1881,65 @@ fn a_holdout_admission_carries_the_band_its_validation_produced() -> Result<()> 
 /// Live performance consistent with the holdout, at the live sample's own
 /// precision, is not a demotion — a band that demoted for noise would empty
 /// the book of every real strategy inside a month.
+/// The band once restated the engine's standard error, and nothing checked
+/// the two against each other. It now takes the engine's figure, so the
+/// first half is the same source read two ways; the second half is a
+/// fixture worked by hand, so the shared formula is pinned from this side
+/// as well and a change to it fails here and in the engine's own suite.
+#[test]
+fn the_holdout_band_is_as_wide_as_the_engines_own_standard_error() -> Result<()> {
+    let holdout = strong_holdout()?;
+    let deflated = deflated_sharpe(&holdout.holdout_returns, 12, holdout.periods_per_year)?;
+    // Premise: the series is non-normal, so skew and kurtosis are live terms.
+    assert!(deflated.skewness.abs() > 1e-3 && deflated.excess_kurtosis.abs() > 1e-3);
+    let band = HoldoutBand::from_deflated(&deflated, holdout.periods_per_year, start())?;
+    let scale = holdout.periods_per_year.sqrt();
+    let engine = sharpe_standard_error(
+        deflated.observed / scale,
+        deflated.skewness,
+        deflated.excess_kurtosis,
+        deflated.observations,
+    )? * scale;
+    assert!(engine > 0.0);
+    // Bit-for-bit: the same function on the same inputs, not a near miss.
+    assert_eq!(
+        band.standard_error.to_bits(),
+        engine.to_bits(),
+        "the band widens by the engine's own error: {} vs {engine}",
+        band.standard_error
+    );
+
+    // By hand, for SR = 0.5 a period at one period a year, γ₃ = −1, γ₄ = 4,
+    // n = 101:  (1 + 0.5 + 0.25) / 100 = 0.0175, √0.0175 = 0.132 287 565 55…
+    // and the 95% half-width is 1.959 964 × that = 0.259 278 864 1…
+    let fixture = DeflatedSharpe {
+        observed: 0.5,
+        expected_maximum: 0.0,
+        probability: 0.5,
+        trials: 1,
+        observations: 101,
+        skewness: -1.0,
+        excess_kurtosis: 4.0,
+    };
+    let band = HoldoutBand::from_deflated(&fixture, 1.0, start())?;
+    assert!(
+        (band.standard_error - 0.132_287_565_553_229_5).abs() < 1e-12,
+        "{}",
+        band.standard_error
+    );
+    assert!(
+        (band.lower - (0.5 - 0.259_278_864_1)).abs() < 1e-9,
+        "{}",
+        band.lower
+    );
+    assert!(
+        (band.upper - (0.5 + 0.259_278_864_1)).abs() < 1e-9,
+        "{}",
+        band.upper
+    );
+    Ok(())
+}
+
 #[test]
 fn live_performance_inside_the_holdout_band_is_not_demoted() -> Result<()> {
     let (mut ledger, baseline) = pilot_fixture()?;

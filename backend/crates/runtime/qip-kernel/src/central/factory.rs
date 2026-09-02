@@ -249,8 +249,15 @@ impl StrategyFactory {
     /// Charge holdout evaluations to `book` — the durable one a composition
     /// root opened on its store — instead of the in-process default.
     pub fn with_trial_book(mut self, book: TrialBook) -> Self {
-        self.ledger.attach_trial_book(book);
+        self.attach_trial_book(book);
         self
+    }
+
+    /// The same, on a factory that already exists — the shape a composition
+    /// root needs, because the plane it hardens is built before the store's
+    /// book is opened and swapped in whole.
+    pub fn attach_trial_book(&mut self, book: TrialBook) {
+        self.ledger.attach_trial_book(book);
     }
 
     /// Use a non-default demotion policy.

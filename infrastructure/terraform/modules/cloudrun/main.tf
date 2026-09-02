@@ -110,6 +110,42 @@ locals {
   has_egress_sidecar = var.egress_sidecar != null
   sidecar_name       = "qip-egress"
   sidecar_mount      = "/etc/envoy"
+
+  # The managed-Prometheus collector, when this workload carries one.
+  #
+  # Keyed on the digest alone: a null digest is no sidecar, no bucket, no
+  # grant and `metrics_collected = false`. There is no second switch that
+  # could declare a collector without naming the bytes it runs.
+  has_metrics_collector = var.collector_image_digest != null
+  collector_name        = "qip-metrics-collector"
+  collector_mount       = "/etc/rungmp"
+
+  # What the collector scrapes, as the `RunMonitoring` document the sidecar
+  # reads from `/etc/rungmp/config.yaml`. The workload's own port and the
+  # path both brains and the API serve their exposition on; thirty seconds
+  # with a ten-second timeout, the same cadence the execution node's Ops
+  # Agent receiver uses, so the two planes' series are comparable. Written
+  # here rather than left to the sidecar's built-in default so that the
+  # target and the interval are in a diff, not in an image.
+  collector_config = <<-EOT
+    apiVersion: monitoring.googleapis.com/v1beta
+    kind: RunMonitoring
+    metadata:
+      name: ${local.name}
+    spec:
+      endpoints:
+        - port: ${var.container_port}
+          path: /metrics
+          interval: 30s
+          timeout: 10s
+  EOT
+
+  # The object's directory is its content's hash, for the reason the egress
+  # bootstrap is named by its hash: a changed configuration is a new object
+  # beside the old one, never an overwrite, so publishing needs no
+  # `storage.objects.delete` and every configuration that ever scraped
+  # stays readable under the name the revision that ran it mounted.
+  collector_prefix = substr(sha256(local.collector_config), 0, 16)
 }
 
 # --- the workload's own identity --------------------------------------------
@@ -193,6 +229,14 @@ resource "google_service_account" "workload" {
     precondition {
       condition     = var.max_instances >= var.min_instances
       error_message = "max_instances (${var.max_instances}) is below min_instances (${var.min_instances}); Cloud Run would refuse this at apply."
+    }
+
+    # A job listens on nothing, so there is no port for a collector to
+    # scrape; a collector beside one would fail every scrape for ever and
+    # read as a workload that is emitting and not ingested.
+    precondition {
+      condition     = var.kind == "service" || !local.has_metrics_collector
+      error_message = "A Cloud Run job carries no metrics collector: it serves no port to scrape. Leave collector_image_digest null."
     }
 
     # The venue credential belongs to the trading zone and reaches nothing
@@ -301,6 +345,66 @@ resource "google_storage_bucket_iam_member" "egress_bootstrap" {
   count = local.has_egress_sidecar ? 1 : 0
 
   bucket = var.egress_sidecar.bootstrap_bucket
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${google_service_account.workload.email}"
+}
+
+# --- the collector's configuration ------------------------------------------
+
+# Where the collector reads its scrape configuration from, when this workload
+# carries one.
+#
+# A bucket rather than a secret, for the reason the egress bootstrap is one:
+# the document is not confidential, `no_secret_value_appears_in_the_terraform`
+# refuses a secret version written from Terraform, and a bucket object is the
+# one Cloud Run volume type that carries a file Terraform wrote. One bucket per
+# collecting workload, because the object names the workload's own port and a
+# shared bucket would put one workload's configuration where another could
+# mount it.
+resource "google_storage_bucket" "collector_config" {
+  count = local.has_metrics_collector ? 1 : 0
+
+  project  = var.project_id
+  name     = "qip-metrics-${var.environment}-${var.name}-${var.project_id}"
+  location = var.region
+
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+  force_destroy               = false
+
+  versioning {
+    enabled = true
+  }
+
+  labels = local.labels
+
+  lifecycle {
+    # Google's limit is 63 characters, enforced at apply — after the image
+    # has been built. Refused at plan instead, naming the length.
+    precondition {
+      condition     = length("qip-metrics-${var.environment}-${var.name}-${var.project_id}") <= 63
+      error_message = "The collector bucket name qip-metrics-${var.environment}-${var.name}-${var.project_id} is ${length("qip-metrics-${var.environment}-${var.name}-${var.project_id}")} characters; Google allows 63. Shorten the workload name."
+    }
+  }
+}
+
+resource "google_storage_bucket_object" "collector_config" {
+  count = local.has_metrics_collector ? 1 : 0
+
+  bucket       = google_storage_bucket.collector_config[0].name
+  name         = "${local.collector_prefix}/config.yaml"
+  content      = local.collector_config
+  content_type = "application/yaml"
+}
+
+# Read the one file, and nothing else. The same narrow role the egress
+# bootstrap is read with; the collector writes to Cloud Monitoring on the
+# `roles/monitoring.metricWriter` every workload already holds, so nothing
+# is widened for it.
+resource "google_storage_bucket_iam_member" "collector_config" {
+  count = local.has_metrics_collector ? 1 : 0
+
+  bucket = google_storage_bucket.collector_config[0].name
   role   = "roles/storage.objectViewer"
   member = "serviceAccount:${google_service_account.workload.email}"
 }
@@ -500,6 +604,39 @@ resource "google_cloud_run_v2_service" "workload" {
       }
     }
 
+    # The metrics collector, beside the workload, when a digest names one.
+    #
+    # It scrapes `127.0.0.1:<port>/metrics` on the instance's own network
+    # namespace and writes to Cloud Monitoring as the service's identity —
+    # the `metricWriter` grant every workload holds — so it carries no
+    # secret, no environment and no identity of its own, exactly as the
+    # proxy does not. It starts after the workload container is ready
+    # rather than before, because a collector that polls a port nobody has
+    # bound yet fills the log with the one error an operator will learn to
+    # ignore.
+    dynamic "containers" {
+      for_each = local.has_metrics_collector ? [var.collector_image_digest] : []
+
+      content {
+        name  = local.collector_name
+        image = containers.value
+
+        depends_on = [var.name]
+
+        resources {
+          limits = {
+            cpu    = "1"
+            memory = "256Mi"
+          }
+        }
+
+        volume_mounts {
+          name       = "metrics-collector-config"
+          mount_path = local.collector_mount
+        }
+      }
+    }
+
     # Secrets as files. The value never enters the environment, and the
     # environment carries the path instead.
     dynamic "volumes" {
@@ -536,6 +673,23 @@ resource "google_cloud_run_v2_service" "workload" {
         gcs {
           bucket    = volumes.value.bootstrap_bucket
           read_only = true
+        }
+      }
+    }
+
+    # The collector's configuration, from the bucket above. Read-only, and
+    # mounted at the hash-named directory alone, so `/etc/rungmp/config.yaml`
+    # is the one document this revision was planned with.
+    dynamic "volumes" {
+      for_each = local.has_metrics_collector ? [local.collector_prefix] : []
+
+      content {
+        name = "metrics-collector-config"
+
+        gcs {
+          bucket        = google_storage_bucket.collector_config[0].name
+          read_only     = true
+          mount_options = ["only-dir=${volumes.value}"]
         }
       }
     }

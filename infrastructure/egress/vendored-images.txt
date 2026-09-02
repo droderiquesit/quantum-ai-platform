@@ -22,6 +22,13 @@
 #
 # One entry. Argo CD, Kargo, KEDA, cert-manager and redis were vendored for
 # the GKE runtime and left with it (ADR 0024); nothing else third-party runs.
+#
+# The second adoption is pending: Google's managed-Prometheus collector for
+# Cloud Run (`cloud-run-gmp-sidecar`), which modules/cloudrun runs beside the
+# two brains once `metrics_collector_image_digest` names a digest mirrored
+# from a line here as `vendor/cloud-run-gmp-sidecar`. No digest has been
+# reviewed, so there is no line, no mirror and no sidecar —
+# modules/observability/NOT-SCRAPED.md records the state.
 
 # Envoy v1.38.3, distroless. The TLS-terminating egress proxy in
 # infrastructure/egress/envoy.yaml runs this image as a Cloud Run sidecar

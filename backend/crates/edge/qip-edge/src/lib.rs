@@ -37,7 +37,7 @@ pub mod seam;
 pub mod telemetry;
 
 pub use arbitrage::ArbitrageDesk;
-pub use cell::{Cell, CellConfig, PlacedOrder, Placer, WorkReport};
+pub use cell::{Cell, CellConfig, CrossingInterval, PlacedOrder, Placer, PolledHalt, WorkReport};
 pub use dropcopy::{CellFill, Discrepancy, DropCopyFill, DropCopyReconciler};
 pub use envelope::{VerifiedEnvelope, sign_payload};
 pub use feasibility::{Granularity, Infeasible, VenueModel};

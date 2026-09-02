@@ -30,7 +30,7 @@ use qip_simulation_engine::scenario::{
     FactorExposure, FactorShock, Scenario, StressTester, standard_library,
 };
 use qip_simulation_engine::validation::{
-    PurgedSplit, WalkForward, assess_overfitting, deflated_sharpe,
+    PurgedSplit, WalkForward, assess_overfitting, deflated_sharpe, sharpe_standard_error,
 };
 use std::collections::BTreeMap;
 
@@ -624,6 +624,67 @@ fn a_sharpe_ratio_is_deflated_for_the_number_of_strategies_tried() -> Result<()>
         "the same result is less credible after a thousand trials: {} vs {}",
         searched.probability,
         single.probability
+    );
+    Ok(())
+}
+
+/// The standard error is written once, and this pins what it says. Both
+/// halves matter: the fixture catches the formula itself changing, which
+/// nothing else can now that the holdout band takes its figure from here
+/// rather than restating it; the second half catches `deflated_sharpe`
+/// quietly growing a private copy again, by rebuilding its probability from
+/// the exposed error and the fields it reports.
+#[test]
+fn the_sharpe_standard_error_is_the_stated_formula_and_is_what_deflation_divides_by() -> Result<()>
+{
+    // By hand, for SR = 0.5, γ₃ = −1, γ₄ = 4, n = 101:
+    //   1 − γ₃·SR         = 1 − (−1)(0.5)      = 1.5
+    //   ¼·γ₄·SR²          = 0.25 · 4 · 0.25    = 0.25
+    //   variance          = (1.5 + 0.25) / 100 = 0.0175
+    //   standard error    = √0.0175            = 0.132 287 565 553 229 5…
+    let error = sharpe_standard_error(0.5, -1.0, 4.0, 101)?;
+    assert!(
+        (error - 0.0175_f64.sqrt()).abs() < 1e-15,
+        "standard error {error} is not √0.0175"
+    );
+    assert!((error - 0.132_287_565_553_229_5).abs() < 1e-12, "{error}");
+    // Normal returns (no skew, no excess kurtosis) reduce to √(1/(n−1)).
+    let plain = sharpe_standard_error(0.5, 0.0, 0.0, 101)?;
+    assert!((plain - 0.1).abs() < 1e-15, "{plain}");
+    assert!(error > plain, "negative skew and fat tails widen the error");
+    let refused = sharpe_standard_error(0.5, 0.0, 0.0, 1).expect_err("one observation");
+    assert_eq!(refused.code(), "invalid");
+
+    // Premise: a searched, non-normal series, so every term is live.
+    let mut rng = Xoshiro256::seeded(29);
+    let returns: Vec<f64> = (0..400)
+        .map(|_| {
+            let r = rng.normal_with(0.0008, 0.01);
+            if r < -0.02 { r * 3.0 } else { r }
+        })
+        .collect();
+    let deflated = deflated_sharpe(&returns, 50, 252.0)?;
+    assert!(deflated.skewness < -0.1, "{deflated:?}");
+    assert!(deflated.excess_kurtosis > 0.5, "{deflated:?}");
+    assert!(deflated.expected_maximum > 0.0, "{deflated:?}");
+
+    // The probability `deflated_sharpe` reports is Φ of the periodic gap
+    // over the exposed error, and nothing else.
+    let scale = 252.0_f64.sqrt();
+    let periodic = deflated.observed / scale;
+    let exposed = sharpe_standard_error(
+        periodic,
+        deflated.skewness,
+        deflated.excess_kurtosis,
+        deflated.observations,
+    )?;
+    let rebuilt = qip_numerics::distributions::normal_cdf(
+        (periodic - deflated.expected_maximum / scale) / exposed,
+    );
+    assert!(
+        (rebuilt - deflated.probability).abs() < 1e-12,
+        "deflation divides by a different error than it exposes: {rebuilt} vs {}",
+        deflated.probability
     );
     Ok(())
 }

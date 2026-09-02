@@ -2628,7 +2628,7 @@ fn every_cloud_run_container_declares_a_cpu_and_a_memory_limit() {
     // A memory limit without a CPU limit lets a busy instance starve its
     // neighbours; a CPU limit without a memory limit lets a leak take down the
     // instance. Both, on every container the module renders: the service, the
-    // job, and the proxy sidecar.
+    // job, the proxy sidecar and the metrics collector.
     let module = without_comments(&read(CLOUD_RUN_MODULE));
     let limits: Vec<String> = module
         .split("limits = {")
@@ -2637,8 +2637,8 @@ fn every_cloud_run_container_declares_a_cpu_and_a_memory_limit() {
         .collect();
     assert_eq!(
         limits.len(),
-        3,
-        "{} limits blocks were read; the service, the job and the sidecar each carry one",
+        4,
+        "{} limits blocks were read; the service, the job, the proxy sidecar and the metrics collector each carry one",
         limits.len()
     );
     for block in &limits {
@@ -2663,6 +2663,265 @@ fn every_cloud_run_container_declares_a_cpu_and_a_memory_limit() {
         assert!(
             memory.ends_with("Mi") || memory.ends_with("Gi"),
             "{name} asks for {memory} memory, which Cloud Run does not accept"
+        );
+    }
+}
+
+/// The catalogue workloads whose binary opens the hash-chained event log and
+/// runs the cycle on its own clock, with the value each sets for a scaling
+/// field.
+///
+/// Read from the binaries rather than from a list here: the day a fourth
+/// binary opens the archive and loops on an interval, this finds it, and a
+/// list would not. Two facts make a workload one of these — `main.rs` opens
+/// the `ChainArchive`, and `config.rs` declares a `DEFAULT_CYCLE_INTERVAL` —
+/// because the API opens the archive too and cycles only when asked, which
+/// is a workload that may scale.
+fn workloads_that_run_the_cycle_over_the_journal(field: &str) -> Vec<(String, String)> {
+    catalogue_workloads()
+        .into_iter()
+        .filter(|(_, body)| {
+            let binary = catalogue_field(body, "binary");
+            let main = read(&format!("backend/crates/apps/{binary}/src/main.rs"));
+            let config =
+                repository_root().join(format!("backend/crates/apps/{binary}/src/config.rs"));
+            let config = std::fs::read_to_string(config).unwrap_or_default();
+            main.contains("ChainArchive::open(") && config.contains("DEFAULT_CYCLE_INTERVAL")
+        })
+        .map(|(name, body)| {
+            let value = catalogue_field(&body, field);
+            (name, value)
+        })
+        .collect()
+}
+
+#[test]
+fn every_workload_that_runs_the_cycle_over_the_journal_is_pinned_to_one_warm_instance() {
+    // The module's defaults are a floor of zero and a ceiling of four, sized
+    // for a request-serving workload. The two brains are not that: each runs
+    // the cycle on its own clock and appends to one hash-chained log. A
+    // second instance is a second writer, and two writers of one chain
+    // produce the fork the chain exists to detect — a double-run cycle
+    // reported as corruption rather than tolerated as redundancy. And a zero
+    // floor is a loop that stops: nothing requests these services, so the
+    // instance Cloud Run retires for want of a request is never started
+    // again. Both bounds belong in the catalogue, where a diff shows them,
+    // not in a default sized for something else.
+    let ceilings = workloads_that_run_the_cycle_over_the_journal("max_instances");
+    assert!(
+        !ceilings.is_empty(),
+        "no catalogue workload opens the event log and runs a cycle on its own \
+         clock; the binaries have been reshaped and every bound below is vacuous"
+    );
+    for (name, ceiling) in &ceilings {
+        assert_eq!(
+            ceiling, "1",
+            "{name} runs the cycle over the event log and may scale to {ceiling} \
+             instances; two would each run the cycle and fork the chain"
+        );
+    }
+    for (name, floor) in workloads_that_run_the_cycle_over_the_journal("min_instances") {
+        assert_eq!(
+            floor, "1",
+            "{name} runs the cycle on its own clock with a floor of {floor}; \
+             nothing requests it, so an instance retired for idleness is a \
+             cycle that never runs again"
+        );
+    }
+    for (name, why) in workloads_that_run_the_cycle_over_the_journal("always_on_justification") {
+        assert!(
+            why.len() > 40,
+            "{name} keeps a warm instance with no written reason; the module \
+             refuses that at plan time, and a reviewer should be able to read \
+             why without the plan"
+        );
+    }
+
+    // The API is the workload that may scale, and it still does: pinning it
+    // too would be the opposite mistake, a ceiling copied from the service
+    // next door.
+    let (_, body) = catalogue_workloads()
+        .into_iter()
+        .find(|(name, _)| name == "api")
+        .expect("the catalogue has an api entry");
+    let api_ceiling: u32 = catalogue_field(&body, "max_instances")
+        .parse()
+        .expect("the API's max_instances is a number");
+    assert!(
+        api_ceiling > 1,
+        "the API has been pinned to one instance, which it does not need"
+    );
+
+    // And the values reach the module rather than sitting in the entry: the
+    // catalogue passes each one through and the module applies it to the
+    // service's scaling block.
+    let catalogue = without_comments(&read(CATALOGUE));
+    let module = without_comments(&read(CLOUD_RUN_MODULE));
+    for field in ["min_instances", "max_instances", "always_on_justification"] {
+        assert!(
+            sets(&catalogue, field, &format!("each.value.{field}")),
+            "the catalogue no longer passes {field} to the module, so the entry's value is decoration"
+        );
+    }
+    assert!(
+        sets(&module, "max_instance_count", "var.max_instances")
+            && sets(&module, "min_instance_count", "var.min_instances"),
+        "the module no longer applies its instance bounds to the service"
+    );
+}
+
+#[test]
+fn the_metrics_collector_runs_only_under_a_digest_pinned_image_and_nothing_claims_a_scrape() {
+    // The Cloud Run services emit and nothing scrapes them (NOT-SCRAPED.md).
+    // The collector that closes that is a third-party image, and a
+    // third-party image on this platform is admitted only as the bytes the
+    // attestor signed. So the sidecar is keyed on one thing — a digest — and
+    // the failure this test prevents has two shapes: a collector declared
+    // under a tag, which Binary Authorization would refuse at admission and
+    // an operator would read as a broken deploy; and a collector declared
+    // by default, which would put a sidecar nobody vendored on every
+    // service the day the module was applied.
+    let variables = without_comments(&read(CLOUD_RUN_VARIABLES));
+    let block = variables
+        .split("variable \"collector_image_digest\" {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}\n").next())
+        .expect("modules/cloudrun declares collector_image_digest");
+    assert!(
+        sets(block, "default", "null"),
+        "collector_image_digest has a default other than null, so a collector is declared on a workload nobody named one for"
+    );
+    assert!(
+        block.contains(
+            "var.collector_image_digest == null || can(regex(\"^[a-z0-9][a-z0-9._/-]*[a-z0-9]@sha256:[a-f0-9]{64}$\", var.collector_image_digest))"
+        ),
+        "collector_image_digest no longer refuses anything but null or a full repository@sha256 digest"
+    );
+
+    // The module renders the sidecar from the digest and from nothing else,
+    // and reports only that it declared one.
+    let module = without_comments(&read(CLOUD_RUN_MODULE));
+    assert!(
+        sets(
+            &module,
+            "has_metrics_collector",
+            "var.collector_image_digest != null"
+        ),
+        "the collector is keyed on something other than the digest being set"
+    );
+    let sidecar = module
+        .split("for_each = local.has_metrics_collector ? [var.collector_image_digest] : []")
+        .nth(1)
+        .and_then(|rest| rest.split("\n    }\n").next())
+        .expect("the Cloud Run module renders the collector from the digest");
+    // Premise: this really is the collector's block.
+    assert!(
+        sets(sidecar, "image", "containers.value") && sidecar.contains("depends_on = [var.name]"),
+        "the collector block has been reshaped; every absence below is vacuous"
+    );
+    for (marker, why) in [
+        (
+            "secret",
+            "a mounted secret is a credential the collector has no use for",
+        ),
+        (
+            "env {",
+            "an environment value on the collector is one more thing in /proc/<pid>/environ",
+        ),
+        (
+            "service_account",
+            "an identity of its own would be a second principal for one service",
+        ),
+    ] {
+        assert!(
+            !sidecar.contains(marker),
+            "the metrics collector carries `{marker}`: {why}"
+        );
+    }
+    let outputs = without_comments(&read(
+        "infrastructure/terraform/modules/cloudrun/outputs.tf",
+    ));
+    let collected = outputs
+        .split("output \"metrics_collected\" {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}\n").next())
+        .expect("modules/cloudrun outputs metrics_collected");
+    assert!(
+        sets(collected, "value", "local.has_metrics_collector"),
+        "metrics_collected answers something other than whether a collector was declared"
+    );
+
+    // What it scrapes is written down: the workload's own port, the path the
+    // brains serve, and a bounded interval — not the sidecar's built-in
+    // default, which is a target and a cadence that live in an image.
+    let config = module
+        .split("collector_config = <<-EOT")
+        .nth(1)
+        .and_then(|rest| rest.split("\n  EOT").next())
+        .expect("the module writes a RunMonitoring document");
+    for line in [
+        "kind: RunMonitoring",
+        "port: ${var.container_port}",
+        "path: /metrics",
+        "interval: 30s",
+        "timeout: 10s",
+    ] {
+        assert!(
+            config.contains(line),
+            "the collector's RunMonitoring document no longer says `{line}`"
+        );
+    }
+
+    // The root names the digest bare and the catalogue composes it with the
+    // registry prefix, so the upstream repository cannot reach a plan; and
+    // the two brains carry it while the API, whose /metrics needs a token,
+    // does not.
+    let root = without_comments(&read("infrastructure/terraform/variables.tf"));
+    let root_block = root
+        .split("variable \"metrics_collector_image_digest\" {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}\n").next())
+        .expect("the root declares metrics_collector_image_digest");
+    assert!(
+        sets(root_block, "default", "null")
+            && root_block.contains(
+                "can(regex(\"^sha256:[a-f0-9]{64}$\", var.metrics_collector_image_digest))"
+            ),
+        "the root's collector digest is not null-by-default and refused unless it is a bare sha256 digest"
+    );
+    let catalogue = without_comments(&read(CATALOGUE));
+    assert!(
+        catalogue.contains("\"${module.registry.image_prefix}/vendor/cloud-run-gmp-sidecar@${var.metrics_collector_image_digest}\""),
+        "the catalogue composes the collector image from somewhere other than the environment's own registry"
+    );
+    let mut collecting = Vec::new();
+    for (name, body) in catalogue_workloads() {
+        let wants = catalogue_field(&body, "metrics_collector");
+        assert!(
+            wants == "true" || wants == "false",
+            "{name}'s metrics_collector is `{wants}`, not a boolean"
+        );
+        if wants == "true" {
+            collecting.push(name);
+        }
+    }
+    assert_eq!(
+        collecting,
+        vec!["fastbrain", "deepbrain"],
+        "the collector is attached to something other than the two brains; the API's /metrics is behind Role::Monitor and answers a tokenless scrape 401"
+    );
+
+    // And no environment names a digest, because none has been reviewed,
+    // mirrored and attested. The tfvars comment says how one would be.
+    for environment in ["dev", "test", "stage", "prod"] {
+        let tfvars = read(&format!(
+            "infrastructure/environments/{environment}/terraform.tfvars"
+        ));
+        assert!(
+            !tfvars.lines().any(|line| line
+                .trim_start()
+                .starts_with("metrics_collector_image_digest")),
+            "{environment} names a collector digest that vendored-images.txt does not carry"
         );
     }
 }

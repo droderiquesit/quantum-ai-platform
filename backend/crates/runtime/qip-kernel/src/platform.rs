@@ -34,7 +34,9 @@
 //!   [`qip_contracts::edge::DeductionKind::ComputeCost`] has always had a slot
 //!   for and nothing was filling.
 
-use crate::central::{CellIngestion, CellOutcome, CellReport, CentralPlane, LearningReport};
+use crate::central::{
+    AbsorbedFill, CellIngestion, CellOutcome, CellReport, CentralPlane, LearningReport,
+};
 use crate::config::PlatformConfig;
 use crate::cycle::{CycleReport, Stage, StageOutcome};
 use qip_agents::Budget;
@@ -59,6 +61,7 @@ use qip_contracts::message::BookSide;
 use qip_contracts::venue::{VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
 use qip_core::ids::{DecisionKind, EventKind, ObjectId, OrderId, ProposalId};
+use qip_core::kv::KeyValueStore;
 use qip_core::lineage::CorrelationId;
 use qip_core::lineage::{Lineage, TraceId};
 use qip_core::time::{Duration, Timestamp};
@@ -87,6 +90,7 @@ use qip_learning_engine::evaluation::{
     Evaluation, Outcome as ThesisOutcome, ThesisClaim, ThesisEvaluator,
 };
 use qip_learning_engine::feedback::{CalibrationReport, FeedbackEngine, FeedbackReport};
+use qip_lifecycle::trials::TrialBook;
 use qip_market::bar::Bar;
 use qip_market::corporate_action::CorporateActionKind;
 use qip_market::snapshot::MarketSnapshot;
@@ -277,6 +281,22 @@ pub struct Platform {
     /// projection of it cannot drift from the desk's copy the way absorbed
     /// state would.
     asset_classes: BTreeMap<String, AssetClass>,
+    /// The exposure buckets every instrument this platform was assembled to
+    /// trade belongs to, keyed by object id then axis — the same projection
+    /// of reference data as `asset_classes`, taken at the same moment for
+    /// the same reason.
+    ///
+    /// Four axes are fed, and only where the record carries a value:
+    /// `sector` (the GICS-style sector), `country` (the ISO code of primary
+    /// risk), `asset_class` and `venue` (the primary listing). A record with
+    /// an empty venue feeds no venue bucket rather than an invented one.
+    /// Nothing else the blueprint's gate names — factor, family, causal
+    /// driver — is carried by the instrument record, so nothing else is fed;
+    /// a bucket the data cannot fill is reported as absent, not guessed.
+    /// An instrument the universe holds no record for reaches no bucket at
+    /// all, so a `MaxConcentration` or `MaxBucketExposure` limit sees only
+    /// what the reference data can vouch for.
+    exposure_axes: BTreeMap<String, BTreeMap<String, String>>,
     /// Turns what a decision spent into what its edge has to survive.
     cost_engine: CostEngine,
     /// The rungs the most recent cycle actually used.
@@ -451,6 +471,29 @@ const DECLINED_HISTORY: usize = 256;
 /// a source-file literal for the desk, with the foundry's strategies
 /// arriving beside it as cell fills are carried across.
 const DESK_STRATEGY: &str = "central-desk";
+
+/// The exposure buckets one instrument record vouches for.
+///
+/// Axis names are the ones the default limit set looks up — `sector` and
+/// `country` are what `LimitSet::conservative_default` names, and a limit
+/// keyed on a spelling the fill never writes is a limit that cannot fire.
+/// A value the record leaves blank feeds no bucket: the builder defaults the
+/// venue to an empty string, and an empty-string bucket would be a real
+/// counter under a name nobody chose.
+fn exposure_axes_of(object: &qip_financial::object::FinancialObject) -> BTreeMap<String, String> {
+    let mut axes = BTreeMap::new();
+    for (axis, bucket) in [
+        ("sector", object.sector.as_str().to_string()),
+        ("country", object.geography.clone()),
+        ("asset_class", object.asset_class.as_str().to_string()),
+        ("venue", object.venue.clone()),
+    ] {
+        if !bucket.trim().is_empty() {
+            axes.insert(axis.to_string(), bucket);
+        }
+    }
+    axes
+}
 
 /// Bars the twin estimates liquidity over when pricing a declined path — the
 /// same window the platform's own counterfactual tests price with, so a path
@@ -1098,6 +1141,20 @@ impl Platform {
             .iter()
             .map(|object| (object.object_id.as_str().to_string(), object.asset_class))
             .collect();
+        // The exposure buckets, taken here too. Until this existed the
+        // aggregate was fed no axis at all, so `MaxConcentration` and
+        // `MaxBucketExposure` — two limits in every default set — evaluated
+        // against empty buckets on every cycle and could never fire: a
+        // control that read as protection and was not.
+        let exposure_axes: BTreeMap<String, BTreeMap<String, String>> = universe
+            .iter()
+            .map(|object| {
+                (
+                    object.object_id.as_str().to_string(),
+                    exposure_axes_of(object),
+                )
+            })
+            .collect();
         // What in this universe may not drive a decision, and why, taken here
         // for the same reason: `Universe::not_decision_grade` said the kernel
         // logged it at start-up, and nothing did, so a universe assembled
@@ -1234,6 +1291,7 @@ impl Platform {
             reason_routing: None,
             universe_not_decision_grade: not_decision_grade,
             asset_classes,
+            exposure_axes,
             cycle_ledger: None,
             compute_spend: Decimal::ZERO,
             data_reads: DataReads::new(),
@@ -1524,7 +1582,61 @@ impl Platform {
         // nothing — the reproducible plane it replaces was wired, and the
         // silence would begin exactly when the real key arrived.
         central.attach_metrics(Arc::clone(&self.telemetry.metrics));
+        // The same for the durable trial book, where one has been opened: a
+        // plane swapped in after `open_trial_book` would otherwise arrive
+        // with the factory's in-process default and forget every family's
+        // lifetime count at the moment the operator's key was installed,
+        // which is the per-run accounting the book exists to prevent — and
+        // it would do so silently, because an in-memory book answers every
+        // question a durable one does. Carrying it across makes the two
+        // calls order-independent rather than leaving a trap in the roots.
+        if let Some(book) = self
+            .central
+            .factory()
+            .ledger()
+            .trial_book()
+            .filter(|book| book.is_durable())
+            .cloned()
+        {
+            central.factory_mut().attach_trial_book(book);
+        }
         self.central = central;
+    }
+
+    /// Open the durable trial book on `store` and charge every holdout
+    /// evaluation from now on to it.
+    ///
+    /// The factory is built with an in-process book, whose lifetime counts
+    /// are this process's — so until a composition root called this, every
+    /// restart forgot every family's lifetime trial count, and a sweep split
+    /// across two runs was two small sweeps as far as the deflated Sharpe
+    /// gate could tell. That is the laundering cumulative accounting exists
+    /// to refuse.
+    ///
+    /// Refuses, and the caller must not start, when the store's journal does
+    /// not verify. `TrialBook::open` replays every family's hash chain and
+    /// refuses a record that was altered, removed, reordered or backdated; a
+    /// process that fell back to an empty book over that store would begin
+    /// counting at zero on top of the very tampering the chain caught.
+    /// `namespace` is the store's name as the root configured it, so the
+    /// refusal says which store to restore; the journal key inside the
+    /// inner message names the family.
+    pub fn open_trial_book(
+        &mut self,
+        store: Arc<dyn KeyValueStore>,
+        namespace: &str,
+    ) -> Result<()> {
+        let book = TrialBook::open(store).map_err(|error| {
+            Error::invalid(format!(
+                "the trial book in store `{namespace}` does not verify, and this process will \
+                 not start over it: {}. A count rebuilt over a broken chain is the understated \
+                 count the chain exists to catch; restore `{namespace}` from its last good copy, \
+                 or open a new namespace and record why",
+                error.message()
+            ))
+        })?;
+        self.central.factory_mut().attach_trial_book(book);
+        Ok(())
     }
 
     /// Enumerate the six governance controls and what enforces each.
@@ -1553,6 +1665,18 @@ impl Platform {
     /// returned ingestion: `ingest` can still refuse after the trip, and a
     /// count that waited for `Ok` was un-counted by that refusal — a cell
     /// halted, an incident raised, and no series moved.
+    ///
+    /// The report's venue fills are then charged into the platform's risk
+    /// aggregate — the one the desk's pre-trade check reads — under the
+    /// cell's id as the aggregate's strategy axis. Until this existed only
+    /// desk fills reached the aggregate, so cells could carry the book past
+    /// a gross, leverage or bucket limit while the centre's counters read
+    /// clean and the next desk order was admitted against them. The fills
+    /// charged are exactly the ones the plane settled, read off the
+    /// settlement rather than off the report a second time; a report the
+    /// plane refuses whole is charged nothing, and one refused after it
+    /// settled (a recall the register would not take) returns the error
+    /// without charging, which the caller sees as the failure it is.
     pub fn ingest_cell_report(
         &mut self,
         report: CellReport,
@@ -1564,7 +1688,50 @@ impl Platform {
         let Self {
             central, autonomy, ..
         } = self;
-        central.ingest(report, autonomy.kill_switch_mut(), now)
+        let ingestion = central.ingest(report, autonomy.kill_switch_mut(), now)?;
+        self.charge_cell_fills(&ingestion.cell, &ingestion.settlement.absorbed);
+        Ok(ingestion)
+    }
+
+    /// Charge one cell's absorbed fills into the running risk counters.
+    ///
+    /// The cell's id is the strategy the aggregate charges, not the
+    /// contributing foundry strategies: the aggregate must stay O(1) in
+    /// strategy count, and a counter per cell is bounded by the deployment's
+    /// cell list — a value fixed at deployment — while a counter per
+    /// contributor would grow with the foundry. The strategy-level budgets
+    /// the contributors are held to are the cell's own concern, checked
+    /// before netting where the intents are. Each fill is charged to the
+    /// instrument's exposure buckets exactly as a desk fill is, so a sector
+    /// a cell has filled counts toward the same bucket the desk's orders
+    /// are projected onto.
+    ///
+    /// Cash is re-marked from the desk's ledger afterwards. A cell's fills
+    /// spend capital granted in its envelope, which the desk's ledger does
+    /// not hold, so the aggregate's gross, net, positions and buckets carry
+    /// the cells while its equity and cash remain the desk's — a ratio limit
+    /// therefore compares cell-and-desk gross against desk-only equity,
+    /// which errs toward refusing and is stated here rather than hidden.
+    ///
+    /// A refusal is recorded as a capture problem rather than returned, for
+    /// the reason [`Self::aggregate_fill`] gives: the fill has happened and
+    /// the strategy books hold it, and an error here would tell the caller
+    /// the report failed when it did not.
+    fn charge_cell_fills(&mut self, cell: &str, fills: &[AbsorbedFill]) {
+        for fill in fills {
+            let axes = self.exposure_axes_for(&fill.object_id);
+            if let Err(error) =
+                self.aggregates
+                    .apply_fill(cell, &fill.object_id, &axes, fill.signed_notional)
+            {
+                self.capture_problems.push(format!(
+                    "a fill in {} reported by {cell} was settled and not aggregated: {}",
+                    fill.object_id,
+                    error.message()
+                ));
+            }
+        }
+        self.aggregates.mark_cash(self.capital.cash);
     }
 
     /// Feed realised cell outcomes back into the ladder and the allocator.
@@ -4316,12 +4483,19 @@ impl Platform {
         let side = order.side;
         let quantity = order.quantity;
         let arrival = order.arrival_price;
+        // The order's own buckets, so the pre-trade projection adds this
+        // order to the sector, country, class and venue it belongs to before
+        // the limits read it. The projection used to be handed no axes, so
+        // an order that would take a bucket over its limit was admitted and
+        // the breach was discovered — if the aggregate had carried a bucket
+        // at all — only by the monitor, one cycle late.
+        let axes = self.exposure_axes_for(object_id.as_str());
         let result = self.orders.submit(
             order,
             self.broker.as_mut(),
             &self.autonomy,
             &risk_state,
-            BTreeMap::new(),
+            axes,
             None,
             now,
         );
@@ -4530,11 +4704,15 @@ impl Platform {
     /// and the aggregate would refuse it as not a fill. The desk's own orders
     /// are charged to one budget holder, [`DESK_STRATEGY`], because a desk
     /// order carries hypotheses and a proposal rather than a foundry strategy
-    /// and the aggregate refuses a fill that names no strategy. No exposure
-    /// axis is passed yet: the walk this replaces reported none either, and
-    /// a bucket the monitor suddenly began to see would be a limit that
-    /// began to fire without a change to the limits — that arm is reported
-    /// as remaining rather than slipped in here.
+    /// and the aggregate refuses a fill that names no strategy.
+    ///
+    /// The fill is charged to the instrument's exposure buckets — sector,
+    /// country, asset class and venue, as the universe's record carries them
+    /// (see the `exposure_axes` field for what is fed and what is not) — so
+    /// each bucket is a running aggregate that a limit reads in constant
+    /// time, never a sum over positions. Until this passed the axes the
+    /// aggregate held no bucket for any instrument, and the two bucket limits
+    /// in every default set were controls that could not fire.
     ///
     /// A refusal is recorded as a capture problem rather than returned: the
     /// fill has already happened and been journalled, and an error here
@@ -4543,10 +4721,11 @@ impl Platform {
     /// aggregate's fill count falling behind the order manager's is the
     /// symptom an operator would see.
     fn aggregate_fill(&mut self, object_id: &str, moved: Decimal) {
+        let axes = self.exposure_axes_for(object_id);
         if !moved.is_zero()
-            && let Err(error) =
-                self.aggregates
-                    .apply_fill(DESK_STRATEGY, object_id, &BTreeMap::new(), moved)
+            && let Err(error) = self
+                .aggregates
+                .apply_fill(DESK_STRATEGY, object_id, &axes, moved)
         {
             self.capture_problems.push(format!(
                 "a fill in {object_id} was booked and not aggregated: {}",
@@ -4568,6 +4747,21 @@ impl Platform {
     /// The running risk counters, as the pre-trade check reads them.
     pub fn risk_figures(&self) -> &RiskAggregates {
         &self.aggregates
+    }
+
+    /// The exposure buckets one instrument is charged to, by axis.
+    ///
+    /// Empty for an instrument the assembled universe holds no record for:
+    /// a bucket has to come from reference data, and a fill in an unknown
+    /// instrument is charged to the book's gross and net and to nothing
+    /// narrower rather than to a bucket somebody guessed. The map is
+    /// cloned because it is at most four short entries and the callers hand
+    /// it across a seam that takes it by value.
+    pub fn exposure_axes_for(&self, object_id: &str) -> BTreeMap<String, String> {
+        self.exposure_axes
+            .get(object_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// The correlation the current work belongs to.

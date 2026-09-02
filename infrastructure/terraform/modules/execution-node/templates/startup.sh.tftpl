@@ -131,6 +131,23 @@ chown qip-node:qip-node "$RUN_DIR/venue-credential"
 chmod 0400 "$RUN_DIR/venue-credential"
 %{ endif ~}
 
+# --- 2b. the polled halt flag ----------------------------------------------
+#
+# §46.2's second kill-switch path, the one that does not ride the mesh. The
+# node reads `$HALT_DIR/engaged` on every pass of its loop: the file present
+# halts the cell, the file absent releases it, and the *directory* absent —
+# the tmpfs gone — halts, because a wire whose state is unknown reads as
+# engaged. Root-owned and group-readable, so the service user can read the
+# flag and cannot clear it. Who writes it: an operator with root on the box
+# (`touch /run/qip/halt/engaged`; `rm` to release), or the managed-store
+# fetcher when one exists — today nothing on the machine writes it but a
+# person, and that is the whole point of a wire that shares nothing with the
+# broadcast. `/run` is a tmpfs, so a reboot clears the flag; the broadcast
+# halt is what survives one.
+
+readonly HALT_DIR=/run/qip/halt
+install -d -m 0750 -o root -g qip-node "$HALT_DIR"
+
 # --- 3. configuration -------------------------------------------------------
 #
 # Values only. Every credential above is named by path — `qip_core::secret`
@@ -152,6 +169,8 @@ QIP_HEALTH_PORT=${health_port}
 QIP_STORAGE_TARGET=engine
 QIP_STORAGE_ROOT=/var/lib/qip/journal
 QIP_CAPITAL_ENVELOPE_KEY_FILE=$RUN_DIR/capital-envelope-key
+QIP_HALT_FLAG_PATH=$HALT_DIR/engaged
+QIP_ARBITRAGE_STRATEGY=arbitrage-desk
 QIP_EXECUTION_NODE_SHADOW=${shadow_mode ? "1" : "0"}
 EOF
 chmod 0444 "$CONF_DIR/node.env"
@@ -197,14 +216,25 @@ metrics:
 OPS_AGENT_EOF
 chmod 0644 "$OPS_AGENT_CONF"
 
+# `QIP_ARBITRAGE_STRATEGY` names the strategy whose signed grant funds the
+# cell's arbitrage desk. It is a name, not a control: the desk is built only
+# once the centre has shipped a cycle whitelist with conversions in it *and*
+# a verified grant for this strategy has arrived over the mesh, and this
+# runtime has neither a producer for that slot nor a mesh path to the node
+# (ADR 0024). Until both exist the node says at start-up that it awaits
+# them. The centre's grant must name the same id, which is why it is written
+# here beside the cell's own identity rather than left to a default.
+#
 # Two things are deliberately absent from the node's configuration.
 #
 # `QIP_AUTONOMY_CEILING` is not set. A cell's ceiling is structural —
 # `qip_edge::Cell` has no constructor taking a ceiling other than paper trading
 # — so there is no value of that variable which could raise it, and setting one
 # here would put a fourth apparent decision point on a boundary that is stronger
-# with three. `edge-cell.yaml` sets it as a governance marker because an
-# acceptance test reads every workload manifest for it; nothing reads this file.
+# with three. The retired chart's edge-cell Deployment set it as a governance
+# marker because an acceptance test read every workload manifest for it; that
+# Deployment is gone (ADR 0024), this node is what replaced it, and the suite
+# now asserts the variable is absent here rather than present.
 #
 # `QIP_EXECUTION_NODE_SHADOW` is a marker and not a control. The binary does not
 # read it today. What actually prevents this node from taking a venue session is

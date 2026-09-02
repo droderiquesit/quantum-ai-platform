@@ -10,7 +10,10 @@ re-traced at `296e187` where their seams changed — the feasibility gate, the
 arbitrage scanner, central attribution, belief calibration and the trial
 book — and every `path:line` in a re-traced row is at that commit. Rows and
 sections the document marks "as originally found" are history and keep
-their original line numbers.
+their original line numbers. Flow 6 and one row of flow 7 were re-traced
+again at `584c96b`, where the second halt wire (`ff86473`), the crossing
+interval (`153e429`) and the desk's installation in the node (`584c96b`)
+landed; every `path:line` in a row marked `584c96b` is at that commit.
 
 **Status vocabulary.** MEASURED (runtime evidence exists) · TESTED (a named
 passing test) · CONFIGURED (wired in a manifest or tfvars) ·
@@ -175,7 +178,10 @@ halts, and release requires a strictly newer signed payload issued after the
 halt's barrier — stopping easy, resuming a fresh decision. What remains open,
 honestly: both paths share `qip-transport`, so this is mechanism independence
 rather than the blueprint's two independent *wires*; the managed-store second
-wire stays backlogged. ADR 0008 is intact — an unreachable cell keeps trading
+wire stays backlogged. **Closed at `ff86473`:** the second wire is a flag
+polled on the node's own filesystem and shares nothing with the mesh; the
+re-trace at `584c96b` below walks both wires, and what remains is the managed
+store that would write the flag. ADR 0008 is intact — an unreachable cell keeps trading
 its envelope, and the guarantee added is only that a reachable one obeys. The
 sections below record the state as originally found.
 
@@ -200,6 +206,70 @@ three halts that did not exist when the table was written:
 | Cell self-halts on a cycle broken between legs | TESTED | `place_cycle` (`cell.rs:1628`): a venue that breaks a cycle after some legs trips the switch as a reconciliation break does (`:1723`, `:1729`) and journals how far it got; `qip-edge/tests/arbitrage.rs::a_cycle_that_breaks_between_legs_halts_the_cell_and_records_the_break` (`71f9465`). This is what stands in for a `LegGroup`: the cell's `Placer` cannot cancel, so it halts rather than coordinating an unwind it cannot perform |
 | The centre counts the cell's break and its own scoped halt | TESTED | `Platform::ingest_cell_report` records `qip_central_reconciliation_breaks_total` by direction (`platform.rs:1368`) and `qip_central_cell_halts_total` by cause (`:1372`), on the outcome and not the report; `qip-kernel/tests/central.rs::a_reconciliation_break_is_recorded_by_direction_and_the_halt_by_cause`, `::a_reconciliation_break_halts_that_cell_and_only_that_cell`; over the wire, `qip-api/tests/mesh.rs::a_reconciliation_break_crossing_the_wire_halts_that_cell_and_only_that_cell` |
 | The halted console still says PAPER TRADING | TESTED | `qip-web/tests/web.rs::a_halted_paper_platform_still_says_paper_trading_on_every_surface`, `console.rs::a_halted_console_still_states_that_it_is_paper_trading` (`03d5236`) — the halted banner used to replace the posture rather than add to it |
+
+Re-traced at `584c96b` — **two wires, since `ff86473`.** §46.2 asks for two
+independent paths, "Spanner flag polled and Pub/Sub broadcast", either of
+which halts. Both now reach the cell, and the second shares nothing with the
+first:
+
+| Wire | Path, as read | Status | Evidence |
+|---|---|---|---|
+| 1 — broadcast | `POST /api/v1/kill-switch` (`qip-api/src/routes.rs:664`) trips the central switch and calls `broadcast_halt` (`:682`), which signs one engage-only `HaltCommand` per cell (`qip-api/src/mesh.rs:815`, `:822`) → the cell's inbox over `qip-transport` decodes and verifies it (`qip-edge/src/mesh.rs:1122`) → the node's mesh exchange applies every halt before any payload (`qip-edge-node/src/mesh.rs:348`) → `Cell::apply_halt` (`cell.rs:627`). Release: a strictly newer signed payload | TESTED | `qip-edge/tests/telemetry.rs::a_wired_cell_reports_not_halted_before_its_first_pass_and_a_central_halt_moves_the_gauge`; `qip-api/tests/mesh.rs::a_cycle_ships_a_signed_payload_the_cell_verifies_and_a_trip_reaches_it` |
+| 2 — polled | An operator with root on the execution node creates `/run/qip/halt/engaged` — `startup.sh.tftpl:148-149` installs the directory root-owned and group-readable, so the service user can read the flag and cannot clear it, and `:172` sets `QIP_HALT_FLAG_PATH` in `node.env` → `qip-edge-node` polls it on every pass of its loop, before the flush and the mesh exchange (`main.rs:482-483`; `HaltFlag::poll` at `halt.rs:100`, one `read` and, when the file is absent, one `metadata` on its directory — two syscalls and nothing off-machine, `halt.rs:73-77`) → `Cell::apply_polled_halt` (`cell.rs:558`) → `is_halted` (`:529-533`) reads the polled halt beside the switch and the policy halt → `work` refuses under gate `polled_halt` (`:986`) | TESTED | `qip-edge-node/tests/halt.rs::the_node_halts_the_cell_on_a_present_flag_and_releases_it_when_the_flag_is_removed`, `::a_flag_that_cannot_be_read_halts_the_cell_rather_than_reading_as_absent`, `::a_flag_that_reads_released_does_not_halt_and_malformed_content_does`, `::an_empty_or_relative_flag_path_is_refused_at_configuration`, `::the_binary_reads_the_flag_variable_and_polls_the_flag_in_its_loop` |
+
+What the second wire holds, each at its test:
+
+- **The flag is the state, and it fails toward engaged.** The file present
+  halts; removing it releases, and every poll re-applies what it read. A file
+  that cannot be read, a directory that is gone, content that is not text,
+  more bytes than a flag may hold, or any text that is neither `engaged` nor
+  `released` — including a near miss of the release word — halts
+  (`PolledHalt`, `cell.rs:2617`, `from_content` at `:2649`;
+  `cell.rs::polled_halt_tests::every_content_the_flag_can_hold_reads_the_way_the_wire_needs`,
+  `::an_unreadable_flag_halts_and_an_absent_one_releases_and_the_chain_says_which`).
+- **Shared failure: none.** Wire 1 dies with the mesh — a wedged centre, a
+  partition, a downlink with its circuit open. Wire 2 links no mesh:
+  `HaltFlag::read` touches the local filesystem and nothing else, and the node
+  polls it ahead of the exchange so the halt is in the journal the flush ships
+  and in the delta the exchange publishes (`main.rs:477-483`).
+- **Neither wire releases the other.** With both engaged, releasing the polled
+  wire leaves the cell halted and its chain entry says so rather than reading
+  as a cell that resumed
+  (`cell.rs::polled_halt_tests::the_polled_wire_and_the_kill_switch_release_each_other_never`,
+  `cell.rs:3424`); a fresh, verified policy payload — the thing that releases
+  wire 1 — leaves the polled halt engaged and its gauge at one
+  (`qip-edge/tests/telemetry.rs::a_polled_halt_moves_its_own_gauge_refuses_the_pass_under_its_own_gate_and_no_payload_releases_it`).
+  The remaining direction — clearing the kill switch while the flag is
+  present — holds because `is_halted` is a disjunction of three fields
+  (`cell.rs:529-533`) and is asserted by no named test; recorded so nobody
+  reads it as one.
+- **Series.** `qip_edge_halted{source="polled"}` beside `kill_switch` and
+  `policy` (`qip-edge/src/telemetry.rs:172-193`), written from `record_halt`
+  (`cell.rs:482`) wherever any halt can change, so a chart shows which path
+  stopped the cell and which did not.
+
+Honest limits, the same in kind as the rest of the edge plane:
+
+- It reaches a deployed process only once a node runs — `execution_nodes = {}`
+  in every environment's `terraform.tfvars` — so nothing has ever polled a real
+  flag. A node started without the variable lists it among its production
+  requirements (`main.rs:425-431`), because a node with one wire is unhaltable
+  for as long as a partition lasts.
+- §46.2's "Spanner flag polled" is still a file a person writes: the template
+  says so (`startup.sh.tftpl:141-144`) — an operator with root, or a
+  managed-store fetcher when one exists, and today nothing on the machine
+  writes it but a person. `/run` is a tmpfs, so a reboot clears the flag; the
+  broadcast is the halt that survives one.
+- No alert names the polled source. `edge_halted` in
+  `modules/observability/main.tf:187` groups on `source`, so a polled halt
+  would fire it once `workload_metrics_exist` were flipped and something had
+  scraped a node; its documentation text beneath the query names only the two
+  disciplines that existed when it was written, and nothing has been shown to
+  scrape a node.
+
+The "one mechanism, two user interfaces" finding below is now history twice
+over: the broadcast closed the downward half, and the polled flag closed the
+independence half.
 
 ### What does not work
 
@@ -248,6 +318,7 @@ for as long as it has left (ADR 0008).
 | Trial count unknown | Honest significance cannot be claimed, so it is not | `qip_lifecycle::trials::TrialBook` — one hash-chained journal per family, replayed from the store with the chain verified; a gate handed no account fails `lifetime_trial_count_known` (`gates.rs:242`), a ledger with no book refuses outright, and the kernel's `StrategyFactory` enrols each candidate in its family at registration (`central/factory.rs:281-299`). `qip-lifecycle/tests/lifecycle.rs::a_promotion_whose_lifetime_trial_count_is_unknown_is_refused_naming_what_to_do`, `::a_second_run_is_corrected_against_the_first_runs_trials_as_well`, `::a_trial_book_replays_its_journal_from_the_store_and_refuses_a_tampered_one` (`9332bcb`, `94dd7e2`). Limit: the factory's default book is `TrialBook::in_memory` (`factory.rs:243`) and `with_trial_book` (`:251`) has no caller in any composition root, so a deployed count is per-process — the accounting the blueprint forbids the moment a second process runs | TESTED, durable book PLANNED |
 | Live returns leave the holdout band | Demote; a gate with no value cannot be failed | `HoldoutBand::from_deflated` at the holdout gate (`gates.rs:260`), carried on the `Admission` and refused off it (`ledger.rs:129`, `:246`); the demotion monitor's `OutsideHoldoutBand` trigger (`demotion.rs:154`) is two-sided — far above is a different strategy, not good news — and the kernel's factory drives `DemotionMonitor::enforce` (`factory.rs:449`). `lifecycle.rs::a_holdout_admission_carries_the_band_its_validation_produced`, `::live_performance_outside_the_holdout_band_is_demoted_and_counted`, `::judging_or_admitting_without_a_holdout_band_is_refused` (`d0558b4`) | TESTED |
 | Infeasible leg in a cycle | Veto the cycle whole | A cycle short a leg is a position, not a smaller cycle: `arbitrage.rs::an_infeasible_leg_vetoes_the_whole_cycle_and_no_leg_goes_out` | TESTED |
+| Capability degraded while a desk is installed | The desk is price-only and pauses with that class; a narrowed size opens no cycle | Re-traced at `584c96b`. `scan_cycles` (`cell.rs:1488`): the §6.2 pause for `PriceOnly` refuses under `degradation_pause` (`:1504-1511`) and a sizing multiplier below one under `degradation_sizing` (`:1513-1522`), because a cycle re-priced at a narrower size is a different cycle whose legs no longer close on what was priced. At installation the same table applies: a degraded cell installs no desk (`584c96b`, `qip-edge-node/tests/arbitrage.rs::a_degraded_cell_and_an_empty_whitelist_install_no_desk`) | PARTIAL — the installation refusal is TESTED; the two pass-time gates are code that no test drives a desk through (`degradation_pause` is asserted only for a strategy, `qip-edge-node/tests/gateway.rs::a_strategy_that_recognises_situations_pauses_when_episodic_memory_goes_stale`) |
 | Source chain reorganises a deposit block | Fail the bridged transfer | `observe_chain` hands each reorganisation to `BridgeLedger::on_reorg` (`platform.rs:4736`); `qip-kernel/tests/bridges.rs::a_reorganisation_that_withdraws_a_deposit_block_fails_the_transfer_riding_on_it` (`67b3e92`) | TESTED |
 | Synthetic path overflows | Refuse, do not restart from the initial price | `market_conditions.rs::a_synthetic_path_that_overflows_is_refused_rather_than_restarted_from_the_initial_price` (`cc92d66`) — the reset the comment above it denied is gone | TESTED |
 | Ledger | — | No ledger type; event log is append-only and hash-chained | PARTIAL |
@@ -281,7 +352,7 @@ landed: flow 3 is PARTIAL, flow 6's downward halt rides it, flow 7's narrowing
 consumes it. At `296e187` the convergence point has moved. Flow 2's cell seams
 (feasibility, scanner, netting, crossing), flow 6's cycle halt and flow 7's
 capability narrowing are all proven by `qip-edge`'s tests and reached by no
-deployed process, because `qip-edge-node` drives no `Cell::work` pass and
-installs no desk. The one piece of work four flows now converge on is the
+deployed process, because `qip-edge-node` drives no `Cell::work` pass — since `584c96b` it
+installs a desk, from a whitelist nothing at the centre produces. The one piece of work four flows now converge on is the
 node running passes against a venue feed — which is also the first thing
 between the edge plane's telemetry and any collector.

@@ -424,6 +424,61 @@ fn a_grant_for_a_strategy_the_node_does_not_run_is_reported_rather_than_deployed
 }
 
 #[test]
+fn a_grant_for_the_desks_strategy_is_held_by_the_installer_rather_than_refused() -> Result<()> {
+    // The same frame as the stranger's, addressed to the strategy the node
+    // was told funds its desk. `renew_capital` would refuse it — no desk is
+    // deployed, and a cell does not deploy one because capital arrived —
+    // so the exchange hands it to the installer, which holds exactly one
+    // and waits for a whitelist. Nothing is deployed by the grant alone.
+    use qip_edge_node::arbitrage::ArbitrageInstaller;
+    let inbox = MeshInbox::new("central", 64, 256)?;
+    let server = MeshServer::spawn(MeshEndpoint::new(inbox))?;
+    let mut centre = centre_publisher(&server.url())?;
+    let grant = signed_envelope("arbitrage-desk", "1000", 7_200)?;
+    centre.publish_frame(grant_frame(&grant, "EVT-DESK", t(20))?, t(20))?;
+
+    let mut cell = deployed_cell(3_600)?;
+    let mut installer = ArbitrageInstaller::new(
+        StrategyId::new("arbitrage-desk"),
+        vec![VenueId::new("XLON")],
+    );
+    let mut node_link = link(&server.url())?;
+    let tick = node_link.exchange_with(
+        &mut cell,
+        &WorkReport::default(),
+        t(30),
+        Some(&mut installer),
+    );
+
+    assert!(
+        tick.refused.is_empty(),
+        "the desk's grant was refused: {tick:?}"
+    );
+    assert!(
+        tick.renewed
+            .iter()
+            .any(|entry| entry.starts_with("arbitrage-desk")),
+        "the tick does not report the grant as held: {tick:?}"
+    );
+    assert!(
+        installer.holds_envelope(),
+        "the installer did not hold the desk's grant"
+    );
+    assert_eq!(
+        tick.desk.as_deref(),
+        Some("no fresh cycle whitelist applied"),
+        "the installer's outcome is not reported: {tick:?}"
+    );
+    assert!(cell.arbitrage().is_none(), "a grant alone installed a desk");
+    assert_eq!(
+        cell.deployed_strategies(),
+        vec!["mean-reversion-1"],
+        "capital arriving for the desk deployed something"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_node_without_a_configured_peer_runs_detached_rather_than_refusing_to_start() -> Result<()> {
     // Asserting its own premise first: this is a test about the *absent*
     // variable, and a suite that happened to run with it set would pass while

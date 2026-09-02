@@ -38,6 +38,8 @@
 //! an extra key either. Policy travels here; permission does not.
 
 use crate::degradation::{Capability, DegradationState, Freshness};
+use crate::message::BookSide;
+use crate::venue::VenueClass;
 use qip_core::error::{Error, Result};
 use qip_core::hash::{sha256_hex, to_hex};
 use qip_core::{Decimal, Duration, Timestamp, hmac_sha256};
@@ -277,12 +279,63 @@ pub struct GrantManifest {
     pub live_grants: Vec<String>,
 }
 
+/// One conversion the centre permits a cell's arbitrage desk to price: a
+/// trade edge of blueprint §30's graph, as the whitelist (§41.5 item 8) can
+/// carry it.
+///
+/// Added because the whitelist's string map cannot carry what a graph needs.
+/// A cycle identifier names a cycle; a desk needs the *edges* — which book
+/// at which venue, consumed on which side, at what proportional cost — and
+/// encoding those into a string would be a second grammar inside a signed
+/// payload, parsed at the cell with no schema to refuse against. This is
+/// the structured form instead, typed so a malformed edge is refused by
+/// deserialisation and `deny_unknown_fields`, and the venue is re-checked
+/// against the cell's own list before a graph is built from it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WhitelistedConversion {
+    /// The venue whose book this conversion trades against. A venue the
+    /// receiving cell may not reach makes the whole whitelist unusable there.
+    pub venue: String,
+    /// What the venue is, for the planner's settlement assumptions.
+    pub venue_class: VenueClass,
+    /// The book, named by its own instrument id — not either of the
+    /// instruments on it, since a venue quoting one against several has
+    /// several books and no single one for it.
+    pub market: String,
+    /// The instrument held before the conversion.
+    pub from: String,
+    /// The instrument held after it.
+    pub to: String,
+    /// The side of the book consumed: `Ask` buys `to`, `Bid` sells `from`.
+    pub side: BookSide,
+    /// Proportional cost of taking the conversion, as a fraction in `[0, 1)`.
+    /// Exact, because it is charged against money.
+    pub cost_fraction: Decimal,
+}
+
 /// Which cycles may run and which of the eight mechanisms each is assigned.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CycleWhitelist {
     /// Cycle identifier to path assignment, ordered.
     pub cycles: BTreeMap<String, String>,
+    /// The trade edges the desk may price, in the order the centre listed
+    /// them. Empty is "no graph", and a cell installs no desk from it.
+    ///
+    /// Additive to the signed shape. The slot's digest is taken over its
+    /// serialised bytes, so this is skipped when empty: a payload signed
+    /// before the field existed deserialises with it empty, serialises
+    /// without it, and produces the digest — and the signature — it always
+    /// did. A cell built before this field refuses a payload that carries
+    /// it, by `deny_unknown_fields`, which is the safe direction.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conversions: Vec<WhitelistedConversion>,
+    /// How much of each starting instrument a cycle may commit, by
+    /// instrument id. Exact, because it sizes a position. Skipped when
+    /// empty for the same reason as `conversions`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub start_sizes: BTreeMap<String, Decimal>,
 }
 
 /// The risk envelope as shipped.
