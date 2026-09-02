@@ -31,6 +31,24 @@ fires on something nobody acts on trains people to ignore the ones that matter.
 | A node's book and its venue's record disagree | any break, over 5 minutes | [reconciliation-break](../../operations/reconciliation-break.md) |
 | The centre acted on a report whose exposure disagrees with its envelope | any break, over 5 minutes | [reconciliation-break](../../operations/reconciliation-break.md) |
 
+The seventh watches `qip_central_reconciliation_breaks_total`, whose
+`direction` label is one of `cell_over_venue`, `venue_over_cell`,
+`detail_only` or `unsent_fill`. The first three are the cell's own finding,
+carried up on its report; the fourth is the centre's, since `3c2b789`: a
+cell reported a fill on an order the centre never saw sent, or beyond the
+quantity it saw sent. Both kinds halt that cell through the same path
+(`CentralPlane::record_halt`, `backend/crates/runtime/qip-kernel/src/central/plane.rs:1398`),
+and the policy's query has no direction filter, so a fill the platform has
+no order behind pages once the policy exists.
+
+Two series exist so that the two claims about a cell's trading can be read
+against each other rather than one standing in for both:
+`qip_central_orders_sent_total` counts the orders a cell reported sent —
+accepted by the venue, not filled — and `qip_central_fills_attributed_total`
+counts the fill shares the centre booked. For one slice the centre billed
+every sent order as a fill, and there was no series in which the two could
+disagree.
+
 Defined in `infrastructure/terraform/modules/observability/main.tf`, each with
 its runbook text inline, so the alert that fires carries its own instructions.
 Every descriptor named is one `qip-observability` registers, and
