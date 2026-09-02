@@ -174,6 +174,7 @@ jobs:
           terraform_version: "1.9.8"
 
       - name: terraform init
+        id: init
         run: |
           terraform -chdir=infrastructure/terraform init -input=false \
             -backend-config="bucket=${{ steps.identity.outputs.project }}-qip-tfstate"
@@ -223,8 +224,17 @@ jobs:
             -target=module.execution_node \
             ${{ steps.vars.outputs.files }}
 
+      # Only where init succeeded, and only counting what was actually
+      # listed. `state list | wc -l` printed 0 for a backend that could not
+      # be read exactly as it did for an environment holding nothing, and
+      # `always()` ran it after the prod refusal, before terraform was even
+      # installed — so the step could report a number nobody computed, or
+      # bury the real failure under its own. Now a listing that fails stops
+      # the step with terraform's own message.
       - name: what exists now
-        if: always()
+        if: always() && steps.init.outcome == 'success'
         run: |
-          terraform -chdir=infrastructure/terraform state list | wc -l | \
-            xargs -I{} echo "{} resources in ${{ inputs.environment }} state"
+          set -euo pipefail
+          listed="$(terraform -chdir=infrastructure/terraform state list)"
+          count="$(printf '%s\n' "$listed" | grep -c . || true)"
+          echo "${count} resources in ${{ inputs.environment }} state"

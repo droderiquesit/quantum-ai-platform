@@ -1933,6 +1933,51 @@ fn the_infrastructure_workflow_cannot_touch_production() {
 }
 
 #[test]
+fn the_infrastructure_workflow_reports_no_resource_count_it_did_not_read() {
+    // `terraform state list | wc -l` printed `0` for a backend it could not
+    // read exactly as it did for an environment holding nothing, so a broken
+    // bootstrap reported "0 resources in dev state" as a fact about the
+    // cloud. And `always()` ran it after the prod refusal, before terraform
+    // was installed, burying the real failure under its own. A step that
+    // reports a number nobody computed is the failure mode this repository
+    // exists to refuse.
+    let infra = read(".github/workflows/infra.yml");
+    let steps = job_steps(&infra);
+    let count = steps
+        .iter()
+        .find(|step| step.contains("what exists now"))
+        .expect("infra.yml has a step that says what exists");
+
+    // Premise: the step still counts state, so what follows is about how.
+    assert!(
+        count.contains("terraform -chdir=infrastructure/terraform state list"),
+        "the step no longer lists state, so this test guards nothing"
+    );
+    assert!(
+        !count.contains("state list | wc -l"),
+        "the step still pipes the listing straight into wc, which counts a \
+         failure as zero"
+    );
+    assert!(
+        count.contains("set -euo pipefail"),
+        "the step does not stop on a listing that failed"
+    );
+    assert!(
+        count.contains("steps.init.outcome == 'success'"),
+        "the step runs whether or not init succeeded, so it can fail before \
+         terraform exists and hide the failure that mattered"
+    );
+    // And the id that condition names is on the init step, or the condition
+    // is never true and the step never runs at all.
+    assert!(
+        steps
+            .iter()
+            .any(|step| step.contains("terraform init") && step.contains("id: init")),
+        "no step carries `id: init`, so the condition above can never hold"
+    );
+}
+
+#[test]
 fn production_is_never_deployed_automatically() {
     let deploy = read(".github/workflows/deploy.yml");
     assert!(
@@ -3801,15 +3846,61 @@ fn a_promotion_names_who_verifies_it() {
         "the rollout step deploys by tag rather than by the digest the attestation names"
     );
 
-    // The proof.
+    // Every global flag precedes `--container`, which opens a scope only
+    // container-level flags may enter. This is not style: with `--quiet`
+    // after it, gcloud refused the whole command — `unrecognized arguments:
+    // --quiet` — and every deployment between the sidecars landing and the
+    // fix failed there, run 33636602162 among them.
+    let update = rollout
+        .split("gcloud run services update")
+        .nth(1)
+        .expect("the rollout step runs `gcloud run services update`");
+    let update = update.split("\n\n").next().unwrap_or(update);
+    let container_at = update
+        .find("--container")
+        .expect("the update names the container it moves");
+    for global in ["--quiet", "--project", "--region"] {
+        let at = update
+            .find(global)
+            .unwrap_or_else(|| panic!("the update no longer passes {global}"));
+        assert!(
+            at < container_at,
+            "the update passes {global}, a global flag, after --container; gcloud refuses that"
+        );
+    }
+
+    // The proof. Read by name, never by position: every service carries the
+    // egress sidecar and may carry the metrics collector, so an index picks
+    // a sidecar as readily as the workload, and nothing documents the first
+    // condition as Ready. And the revisions read are the ones traffic
+    // routes to — `spec.template` is what was asked for, which is the half
+    // a traffic split that never moved would also satisfy.
+    // Comment lines go first: the step's own comment names both positional
+    // selectors in order to say why they are wrong, and a check that read
+    // prose would refuse the explanation along with the defect.
+    let rollout_code: String = rollout
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
-        rollout.contains("spec.template.spec.containers[0].image")
-            && rollout.contains("status.conditions[0].status"),
-        "the rollout step does not read back which image the serving revision runs and whether it is Ready"
+        !rollout_code.contains("containers[0]") && !rollout_code.contains("conditions[0]"),
+        "the rollout step selects a container or a condition by position again"
     );
     assert!(
-        rollout.contains("if [ \"$serving\" != \"$image\" ] || [ \"$ready\" != \"True\" ]; then")
-            && rollout.contains("exit 1"),
+        rollout.contains("c.get(\"type\") == \"Ready\""),
+        "the rollout step does not select the Ready condition by type"
+    );
+    assert!(
+        rollout.contains("c.get(\"name\") == wanted"),
+        "the rollout step does not select the workload's own container by name"
+    );
+    assert!(
+        rollout.contains("status.get(\"traffic\", [])"),
+        "the rollout step does not read the revisions traffic actually routes to"
+    );
+    assert!(
+        rollout.contains("if [ \"$serving\" != \"$image\" ]; then") && rollout.contains("exit 1"),
         "the rollout step reads the serving revision back and does not fail when it is not the one asked for"
     );
 
