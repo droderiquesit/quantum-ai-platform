@@ -40,9 +40,9 @@ use qip_financial::object::FinancialObject;
 use qip_financial::quality::{DataQuality, Provenance as DataProvenance};
 use qip_financial::universe::Universe;
 use qip_kernel::central::{
-    ArbitragePolicy, CellOutcome, CellReport, CentralConfig, CentralPlane, IssuedCapital,
-    LearningVerdict, ReconciliationBreak, StrategyCandidate, StrategyDna, WhitelistIssue,
-    WhitelistOutcome, WhitelistedMarket, WhitelistedVenue, capital_subject,
+    ArbitragePolicy, BreakOrigin, CellOutcome, CellReport, CentralConfig, CentralPlane,
+    IssuedCapital, LearningVerdict, ReconciliationBreak, StrategyCandidate, StrategyDna,
+    WhitelistIssue, WhitelistOutcome, WhitelistedMarket, WhitelistedVenue, capital_subject,
 };
 use qip_kernel::config::PlatformConfig;
 use qip_kernel::cycle::Stage;
@@ -654,6 +654,7 @@ fn a_reconciliation_break_halts_that_cell_and_only_that_cell() -> Result<()> {
             cell_quantity: dec!("10"),
             external_quantity: dec!("4"),
             detail: "six lots the venue has no record of".to_string(),
+            origin: BreakOrigin::Book,
         });
     let ingestion = platform.ingest_cell_report(broken, start())?;
 
@@ -722,6 +723,7 @@ fn a_reconciliation_break_is_recorded_by_direction_and_the_halt_by_cause() -> Re
             cell_quantity: dec!("10"),
             external_quantity: dec!("4"),
             detail: "six lots the venue has no record of".to_string(),
+            origin: BreakOrigin::Book,
         });
     let ingestion = platform.ingest_cell_report(cell_over, start())?;
     assert_eq!(ingestion.halted, Some(HaltScope::Cell(CELL.to_string())));
@@ -752,6 +754,7 @@ fn a_reconciliation_break_is_recorded_by_direction_and_the_halt_by_cause() -> Re
             cell_quantity: dec!("1"),
             external_quantity: dec!("3"),
             detail: "two lots the cell never booked".to_string(),
+            origin: BreakOrigin::Book,
         });
     let ingestion = platform.ingest_cell_report(venue_over, start())?;
     assert_eq!(
@@ -816,6 +819,7 @@ fn a_break_with_equal_quantities_is_recorded_as_detail_only_and_still_halts() ->
         cell_quantity: dec!("10"),
         external_quantity: dec!("10"),
         detail: "the venue books the lot for T+1 and the cell for T+2".to_string(),
+        origin: BreakOrigin::Book,
     };
     // Premise: the quantities agree, so this is the arm neither sign selects.
     assert_eq!(reconciliation_break.difference(), Decimal::ZERO);

@@ -18,6 +18,7 @@ use qip_contracts::intent::Contributor;
 use qip_contracts::message::BookSide;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
+use qip_contracts::wire::{FillRecord, FillShare};
 use qip_core::error::Result;
 use qip_core::time::Timestamp;
 use qip_core::{Context, Decimal, ObjectId, dec};
@@ -31,6 +32,7 @@ use qip_kernel::config::PlatformConfig;
 use qip_kernel::platform::Platform;
 use qip_mesh::delta::DeltaOrder;
 use qip_observability::Telemetry;
+use qip_observability::metrics::names;
 use qip_risk::aggregate::{AggregateFigures, RiskAggregates};
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 use std::cell::RefCell;
@@ -482,6 +484,115 @@ fn cell_buy(symbol: &str, shares: Decimal) -> DeltaOrder {
     }
 }
 
+/// The venue's report on [`cell_buy`]'s order, for `shares` of it.
+fn cell_fill(symbol: &str, shares: Decimal) -> FillRecord {
+    FillRecord {
+        order_id: format!("cell-ord-{symbol}"),
+        object_id: object(symbol),
+        venue: VenueId::new("XNYS"),
+        side: BookSide::Ask,
+        quantity: shares,
+        price: dec!("100"),
+        simulated: true,
+        at: start(),
+        shares: vec![FillShare {
+            strategy: StrategyId::new("foundry-alpha"),
+            quantity: shares,
+        }],
+    }
+}
+
+#[test]
+fn a_sent_order_the_venue_has_not_filled_charges_nothing_to_the_aggregate() -> Result<()> {
+    // The defect: a report carrying a sent order and no fill was billed as
+    // a fill of the order's whole size, so a resting order — or one that
+    // expired unfilled — was charged into gross, moved a strategy book and
+    // sat in the aggregate as a position nobody held. Premise first: the
+    // report genuinely carries the order and no fill, and the cell is
+    // charged nothing before it.
+    let mut platform = platform(dec!("1000000"))?;
+    buy(&mut platform, "AAA", dec!("100"), "desk-before")?;
+    let desk_gross = platform.risk_figures().gross_exposure();
+    let bucket_before = sector_bucket(&platform);
+    assert!(platform.risk_figures().strategy_gross(CELL).is_zero());
+
+    let report = CellReport::new(CELL, start()).with_orders(vec![cell_buy("BBB", dec!("16000"))]);
+    assert_eq!(report.orders.len(), 1, "the premise is a sent order");
+    assert!(
+        report.fills.is_empty(),
+        "the premise is that nothing filled"
+    );
+    let ingestion = platform.ingest_cell_report(report, start())?;
+
+    assert_eq!(
+        ingestion.settlement.orders_sent, 1,
+        "the order was not registered as sent"
+    );
+    assert_eq!(ingestion.settlement.fills_settled, 0);
+    assert!(
+        ingestion.settlement.absorbed.is_empty(),
+        "a sent order was absorbed as a fill"
+    );
+    assert!(
+        ingestion.settlement.attribution.is_none(),
+        "a sent order was attributed"
+    );
+    assert!(ingestion.halted.is_none(), "an open order is not a break");
+    let figures = platform.risk_figures();
+    assert!(
+        figures.strategy_gross(CELL).is_zero(),
+        "a resting order was charged to the cell's gross: {}",
+        figures.strategy_gross(CELL)
+    );
+    assert_eq!(figures.gross_exposure(), desk_gross);
+    assert_eq!(sector_bucket(&platform), bucket_before);
+    assert_eq!(
+        platform
+            .telemetry()
+            .metrics
+            .snapshot()
+            .counter_total(names::CENTRAL_ORDERS_SENT),
+        1,
+        "the sent order left no series behind it"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_same_order_filled_in_the_next_report_charges_exactly_the_fill() -> Result<()> {
+    // Sixteen thousand sent in one report, six thousand of it filled in
+    // the next. What the aggregate is charged is six hundred thousand — the
+    // fill — and not the 1.6 million the order was sent for. Premise: the
+    // first report charged nothing, so what moves below is the fill alone.
+    let mut platform = platform(dec!("1000000"))?;
+    let sent = dec!("16000");
+    let filled = dec!("6000");
+    assert!(filled < sent, "the fixture is a partial fill");
+    let first = CellReport::new(CELL, start()).with_orders(vec![cell_buy("BBB", sent)]);
+    platform.ingest_cell_report(first, start())?;
+    assert!(platform.risk_figures().strategy_gross(CELL).is_zero());
+
+    let second = CellReport::new(CELL, start()).with_fills(vec![cell_fill("BBB", filled)]);
+    assert!(
+        second.orders.is_empty(),
+        "the order was sent in the earlier report"
+    );
+    let ingestion = platform.ingest_cell_report(second, start())?;
+    assert!(
+        ingestion.halted.is_none(),
+        "{:?}",
+        ingestion.settlement.breaks
+    );
+    assert_eq!(ingestion.settlement.fills_settled, 1);
+    assert_eq!(ingestion.settlement.absorbed.len(), 1);
+    assert_eq!(
+        platform.risk_figures().strategy_gross(CELL),
+        filled * dec!("100"),
+        "the aggregate was charged something other than the fill"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_cells_fills_are_charged_into_the_aggregate_and_the_next_desk_order_is_refused_on_leverage()
 -> Result<()> {
@@ -505,10 +616,14 @@ fn a_cells_fills_are_charged_into_the_aggregate_and_the_next_desk_order_is_refus
 
     let shares = dec!("16000");
     let cell_notional = shares * dec!("100");
-    let report = CellReport::new(CELL, start()).with_orders(vec![cell_buy("BBB", shares)]);
+    // The order and the venue's confirmation of it, in one report: the fill
+    // is what is charged, and it names the order beside it.
+    let report = CellReport::new(CELL, start())
+        .with_orders(vec![cell_buy("BBB", shares)])
+        .with_fills(vec![cell_fill("BBB", shares)]);
     let ingestion = platform.ingest_cell_report(report, start())?;
     // Premise: the plane settled the fill, so there was something to charge.
-    assert_eq!(ingestion.settlement.orders_settled, 1);
+    assert_eq!(ingestion.settlement.fills_settled, 1);
     assert_eq!(ingestion.settlement.absorbed.len(), 1);
 
     // The seam: the cell's fill is in the same counters the desk's is, under
