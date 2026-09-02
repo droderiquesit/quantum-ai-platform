@@ -16,6 +16,7 @@
 
 pub mod asset_class;
 pub mod calendar;
+pub mod catalogue;
 pub mod constraints;
 pub mod costs;
 pub mod extensions;
@@ -28,6 +29,7 @@ pub mod universe;
 
 pub use asset_class::{AssetClass, InstrumentType, Sector};
 pub use calendar::{MarketHours, Session, TradingCalendar};
+pub use catalogue::{CatalogueManifest, LoadedCatalogue};
 pub use constraints::{Jurisdiction, RegulatoryConstraints, TradingRestriction};
 pub use costs::{LiquidityProfile, TransactionCostModel};
 pub use extensions::Extension;
