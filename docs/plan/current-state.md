@@ -16,7 +16,7 @@ at, because a number without a commit is a number nobody can re-measure.
 | Frontend | Next.js + TypeScript, 47 tracked files |
 | Cloud | GCP, as Terraform nothing has applied: Cloud Run for the three central binaries and the two frontends, a Compute Engine execution node per region (`execution_nodes = {}` in every environment's tfvars), Secret Manager as mounted files, KMS, Binary Authorization, WIF. The GKE cluster, edge-cell and console-ingress modules, the Helm chart, the raw manifests and the Argo CD stack were removed at `808ca32`, `67b3e92` and `7d79161`; no `terraform` binary exists here, so none of what replaced them has been through `fmt`, `validate` or a plan |
 | Pipelines | `ci.yml`, `deploy.yml`, `infra.yml` — all deriving identity from committed tfvars |
-| Decision records | 24 ADRs, `0001`–`0024`, every one listed in `docs/adr/README.md` (`ls docs/adr \| grep -c '^[0-9]'` = 24 at `851c0ed`) |
+| Decision records | 26 ADRs, `0001`–`0026`, every one listed in `docs/adr/README.md` (`ls docs/adr \| grep -c '^[0-9]'` = 26 at `02031f1`). Two of them, `0025` and `0026`, are proposed rather than accepted: each frames a decision for the owner and marks its recommendation as one |
 
 ## Against the canonical architecture
 
