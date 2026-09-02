@@ -127,21 +127,38 @@ provider, and in most cases a cross-connect that is not a cloud resource.
 These are not missing third-party services. They are things this configuration
 describes but does not complete, and each would stop a deployment.
 
-### The pipeline cannot reach the cluster
+### The pipeline reaches Cloud Run, and there is no cluster to reach
 
-`enable_private_endpoint = true` with `authorised_networks = []` means the
-control plane is reachable only from inside the VPC. A GitHub-hosted runner is
-not. As written, `deploy.yml` will authenticate successfully and then fail to
-reach the API server.
+This section used to say that a private GKE endpoint with no authorised
+networks left `deploy.yml` able to authenticate and unable to reach the API
+server, and named the Connect gateway as the way out. The cluster, its
+endpoint and that question all left the configuration at `808ca32`; ADR 0024
+records the runtime that replaced them.
 
-The three ways out, in rough order of preference: a self-hosted runner inside
-the VPC; the GKE Connect gateway, which proxies the API server through Google's
-control plane and needs `roles/gkehub.gatewayEditor` and a fleet membership; or
-an authorised network for the runner's egress addresses, which GitHub-hosted
-runners do not have stable ones of.
+What the pipeline reaches now is the Cloud Run Admin API, which is a Google
+API and answers a GitHub-hosted runner the way every other one does: there is
+no VPC between the runner and the control plane and nothing to proxy. The
+`deploy` job (line numbers in this section and the next are at `02031f1`)
+authenticates by workload identity federation with values derived from the
+environment's committed tfvars (`.github/workflows/deploy.yml:394`, the same
+`derive the identity from the tfvars` step as `:191-224` in the `images`
+job) and then, for each catalogue entry, runs `gcloud run services update
+--container <name> --image <prefix>/<binary>@<digest>` with the digest the
+`images` job signed and attested (`:449-487`). Terraform creates each service
+at the digest in `images.tfvars` and ignores the image thereafter
+(`infrastructure/terraform/modules/cloudrun/main.tf:558`), so the pipeline is
+the only writer to a service's image and there is no reconciler between the
+two. The values the pipeline used to read as repository variables —
+`GCP_PROJECT`, `GCP_REGION`, `GCP_WORKLOAD_IDENTITY_PROVIDER`,
+`GCP_DEPLOY_SERVICE_ACCOUNT`, `GCP_BINAUTHZ_ATTESTOR`,
+`GCP_BINAUTHZ_KEY_VERSION`, `GCP_INFRA_SERVICE_ACCOUNT` — are read by no
+workflow (`grep -c '${{ vars.' .github/workflows/*.yml` is 0 in every file)
+and `no_workflow_depends_on_a_repository_variable` in the acceptance suite
+refuses their return.
 
-None is configured. This is the single thing that stands between this
-configuration and a deployment that runs.
+Nothing has exercised that path. No run of `deploy.yml` has been made against
+a project this configuration was applied to, because nothing has been applied
+— see "What has not been verified".
 
 ### Images are signed now, and it is worth knowing by whom
 
@@ -190,42 +207,43 @@ rotates only symmetric keys automatically. Disabling the old version before
 everything signed by it has been rescheduled refuses running images one at a
 time, as they happen to move.
 
-### All four workloads now serve
+### A rollout is proven by the serving revision's digest
 
-This section used to name the workloads that ran once and exited. There are
-none left, and the exemption list in the acceptance suite
-(`DOES_NOT_SERVE_YET`) is empty.
+This section used to be about Deployments, their probes, and a rollout check
+at the end of `deploy.yml` that should now pass. There are no Deployments and
+no rollout check, and `DOES_NOT_SERVE_YET`, the exemption list it cited, is
+no longer in the acceptance suite (`grep -c DOES_NOT_SERVE_YET
+backend/crates/tests/qip-acceptance/tests/infrastructure.rs` = 0).
 
-`qip-fastbrain` validates its agent roster, then runs an ingest-and-cycle loop
-and serves `/health` and `/ready` on its own listener. `qip-deepbrain` does the
-same with a research cadence rather than a fast-path one. Both Deployments
-carry real probes.
+What proves a rollout now is in the same `deploy` step. `gcloud run services
+update` blocks until the new revision is Ready and routing and fails the job
+when it is not — the rollout wait the GitOps cut-over lost, which
+`docs/operations/gitops-exceptions.md` recorded. Then the step reads the
+service back, `spec.template.spec.containers[0].image` and
+`status.conditions[0].status` (`.github/workflows/deploy.yml:495-503`), and
+fails unless the first is exactly the attested image reference and the second
+is `True`. `services update` returning is not that proof: a traffic split or
+a previous revision still routing would look identical from the exit code.
+Only after that does the step append the digest to
+`infrastructure/environments/<env>/images.tfvars` and commit the file
+(`:542`), so the committed record and the serving revision agree.
 
-The two endpoints answer different questions on purpose, and the reasoning
-differs between the nodes. On the fast path, liveness stays 200 while a cycle
-is merely slow — restarting a slow node makes the problem worse — and readiness
-turns 503 once cycles have breached the fast-path ceiling for longer than the
-breach tolerance, so a node that is alive and not fast leaves rotation instead
-of being killed. On the deep path there is **no cycle ceiling at all**: a long
-cycle there is research rather than a fault, so slow is never unready. Its
-readiness is revoked only for stopping, halted, stalled, persistently failing,
-and warming — that last having no fast-path equivalent, because until the first
-cycle lands there is no world model to consult.
+Readiness is still what the binary reports, not process liveness:
+`qip-fastbrain` and `qip-deepbrain` each serve `/health` and `/ready` on their
+own listener, and the fast path revokes readiness for cycles that have
+breached its ceiling while the deep path, which has no cycle ceiling, revokes
+it only for stopping, halted, stalled, persistently failing and warming.
 
-The rollout check at the end of `deploy.yml` should now pass against both
-rather than time out.
-
-`qip-edge-node` used to be the third and is not any more. It binds
-`QIP_HEALTH_PORT`, answers every request with the cell's state, and
-`edge-cell.yaml` probes `/health` for real. It is still absent from the
-rollout check, but for a different reason — the pipeline does not apply
-`edge-cell.yaml` at all. Bringing a cell up is
-[a runbook](deploying-an-edge-cell.md), because a workload that trades should
-not appear unattended.
-
-`backend/crates/tests/qip-acceptance/tests/infrastructure.rs` holds this as an explicit,
-shrinking list. The test fails when a binary on it gains a serving loop, which
-is what forces the exemption to be removed rather than forgotten.
+The execution node is not a Cloud Run service and is not deployed in the
+same sense. The step after the services asks each `qip-<env>-exec-*` managed
+instance group to replace its instances under the group's own surge-one
+policy (`:516-540`) and, with `execution_nodes = {}` in every environment's
+tfvars, finds no group and says so rather than inventing one. On a node the
+health listener is `QIP_HEALTH_PORT` on the machine
+(`infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl:151`).
+Bringing one up is still a runbook, and
+[that runbook](deploying-an-edge-cell.md) carries ADR 0024's banner rather
+than a procedure for this runtime.
 
 ### Execution nodes exist in code, and every environment declares none
 
@@ -293,18 +311,64 @@ half, and a verification path in `qip-edge` that is not HMAC. `grep -rl
 comment in `envelope.rs` that points here. Until then, reading a node's copy
 of the key grants the ability to mint as well as to verify.
 
-### Kubernetes Secrets are created out of band
+### Secrets reach a service as mounted files, and a node fetches them at boot
 
-`qip-tokens` and `qip-capital-envelope-key` are referenced by the manifests and
-created by nothing. That is consistent with the rule that no secret value
-appears in Terraform or in a manifest, and it leaves a step that is currently a
-person with `kubectl`. A Secret Manager CSI driver or an external-secrets
-controller would close it; neither is configured.
+This section used to be "Kubernetes Secrets are created out of band": the
+manifests referenced `qip-tokens` and `qip-capital-envelope-key`, nothing
+created them, and a person with `kubectl` closed the gap. No Kubernetes
+Secret exists any more, nothing is created with `kubectl`, and there is no
+CSI driver because nothing needs one.
+
+Every secret a Cloud Run service reads is a Secret Manager volume.
+`modules/cloudrun` (line numbers at `02031f1`) mounts each entry of
+`secret_mounts` at `/var/run/secrets/qip/<key>/<file>`
+(`infrastructure/terraform/modules/cloudrun/main.tf:72-79`; the volume at
+`:505-523`, mode 0400), grants the workload's own identity
+`roles/secretmanager.secretAccessor` on that secret and no other (`:281-288`),
+and puts only the path into the environment, as the `_FILE` variable
+`qip_core::secret` reads (`:82-90`). The value never enters the environment.
+
+The execution node has no volume to mount, so
+`infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl:107-131`
+fetches at boot instead: `qip-fetch-secret` writes the capital envelope key
+to a tmpfs at mode 0400, and the venue credential only if the module bound
+one, which the paper ceiling and shadow mode each prevent on their own. The
+binary reads `QIP_CAPITAL_ENVELOPE_KEY_FILE` (`:154`). The helper is one the
+boot image is contracted to ship (`:91`), and no image bake exists in this
+repository.
+
+What is still out of band is the values. Terraform creates every secret
+container empty — no value appears in any `.tf`, and
+`no_secret_value_appears_in_the_terraform` refuses one — so a service whose
+secret has no version cannot start. `scripts/bootstrap-deploy.sh` seeds the
+six self-generated values once, the role tokens and the envelope key, and
+never overwrites an existing one; the market-data key, the venue credential
+and the quantum token come from a vendor, a broker and a provider, and no
+script can invent them.
 
 ### There is no ingress controller
 
-`allow-api-ingress` permits traffic from a namespace labelled `ingress-nginx`.
-Nothing in this repository creates that namespace or the controller in it.
+Still true, and no longer a gap: there is no `ingress-nginx`, no namespace
+for it to run in, and no ingress resource of any kind in front of the API.
+That is the configuration rather than something it has yet to complete.
+
+Every catalogue entry is passed `ingress_posture = "internal"`
+(`infrastructure/terraform/catalogue.tf:284` at `02031f1`), which
+`modules/cloudrun` renders as `INGRESS_TRAFFIC_INTERNAL_ONLY`
+(`infrastructure/terraform/modules/cloudrun/main.tf:67`); the module has no
+input that produces `INGRESS_TRAFFIC_ALL`. The API answers a caller inside
+the VPC only, and only one named in its `invokers` list, which is the
+console's identity (`catalogue.tf:64`, `modules/cloudrun/main.tf:563`,
+`infrastructure/terraform/outputs.tf:280`); the console reaches it by URL
+over its own VPC egress, and no load balancer sits between them.
+`public_ingress = {}` in all four environments' tfvars, so the one firewall
+rule that would open a zone to Google's load-balancer ranges
+(`infrastructure/terraform/modules/trust-zones/main.tf:446`) is created zero
+times. The only forwarding rule in the tree is Private Service Connect for
+Google APIs (`infrastructure/terraform/modules/connectivity/main.tf:149`),
+which is an egress path, not an entrance. Nothing in this configuration
+publishes any service to the internet, and a change that did would be a
+`public_ingress` entry a reviewer can read.
 
 ### GitHub settings are not in this repository
 
@@ -315,22 +379,54 @@ list four repository variables as well; the workflows now derive every such
 value from the committed tfvars, and the acceptance suite refuses a workflow
 that reads one — see `docs/security/credentials.md` §2.
 
-### The pipeline's cluster role is broader than one namespace
+### The pipeline's role is project-wide, on Cloud Run rather than a cluster
 
-`roles/container.developer` is the narrowest predefined role that can apply
-manifests. It still reaches every namespace in the project. Narrowing it is a
-Kubernetes RBAC binding rather than a Google one, and is not written.
+This section used to say `roles/container.developer` reaches every namespace
+in the project and that the RBAC binding to narrow it was not written. The
+role went with the cluster.
+
+The deploy account, `qip-ci-<env>`
+(`infrastructure/terraform/modules/cicd/main.tf:17-22`), holds
+`roles/run.developer` at the project (`:95-99`): it can update any Cloud Run
+service in the project and describe its revisions, and it cannot set a
+service's IAM policy, so it can change what runs and not who may call it. It
+is `roles/iam.serviceAccountUser` on each workload's own identity, granted
+per workload in `infrastructure/terraform/modules/cloudrun/main.tf:245-251`
+(at `02031f1`) rather than at the project, because a project-wide grant is
+the right to act as every identity in the project, the infra account
+included. `roles/artifactregistry.writer` on the repository
+(`infrastructure/terraform/modules/registry/main.tf`, `ci_push`) and a custom
+role of three `instanceGroupManagers` permissions for the node's rolling
+replacement (`modules/cicd/main.tf:110-127`) complete it.
+
+The width that remains is the same shape as before: `run.developer` at the
+project is every service in the project, not the entries the catalogue names.
+Narrowing it would be a per-service binding in place of the project one, and
+that is not written — as the namespace-scoped binding it replaces was not
+either.
 
 ---
 
 ## What has not been verified
 
-None of this has been applied, planned or validated. There are no Google Cloud
-credentials in the environment this was written in, so `terraform init`,
-`terraform validate`, `terraform plan` and `terraform apply` were all
-unavailable, and so was `kubectl --dry-run`.
+None of this has been applied, planned or validated. ADR 0024's "Nothing was
+applied" section records the machine that made every commit on this branch:
+`terraform`, `gcloud`, `helm` and `kubectl` are all `not found`. So
+`terraform init`, `terraform validate`, `terraform plan` and `terraform
+apply` have not run; no `gcloud run` command has run; no Cloud Run revision
+has been created, no image has been attested, and no service has been proven
+Ready by the step that would prove it. `kubectl --dry-run`, which the earlier
+text listed as unavailable, has no equivalent to be unavailable any more; the
+nearest thing to a dry run of this runtime is `terraform plan`, and none has
+been produced.
 
-Everything here is checked structurally instead, by tests that read the files:
-`backend/crates/tests/qip-acceptance/tests/infrastructure.rs`. Those tests can tell that
-a security property has been deleted. They cannot tell that the configuration
-would apply.
+What ran in place of `validate` is the structural pass ADR 0024 describes —
+balanced braces, every module source present, every `var.` reference
+declared, every module argument declared and every required one passed. It
+proves less than `validate` would, with no provider schema and no type
+checking, and the first `terraform init` may find something it did not.
+
+Everything else here is checked structurally, by tests that read the files:
+`backend/crates/tests/qip-acceptance/tests/infrastructure.rs`. Those tests
+can tell that a security property has been deleted. They cannot tell that
+the configuration would apply, or that a service would serve.
