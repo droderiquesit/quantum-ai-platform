@@ -23,8 +23,8 @@
 //! reconciliation breaks — are **absolute**: they describe the cell as it
 //! stands, and a centre that summed them across deltas would drift from the
 //! cell it is describing at exactly the moment a message was lost. Its
-//! *interval* fields — the orders and refusals since the previous delta —
-//! are **incremental**: they cover one interval, and a centre that
+//! *interval* fields — the orders, fills and refusals since the previous
+//! delta — are **incremental**: they cover one interval, and a centre that
 //! overwrote them would lose the activity of every interval it did not
 //! sample. The decode returns them as two separate types rather than one
 //! struct with a comment, because the comment is the thing a later caller
@@ -37,7 +37,7 @@ use qip_contracts::intent::Contributor;
 use qip_contracts::message::BookSide;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
-use qip_contracts::wire::CrossRecord;
+use qip_contracts::wire::{CrossRecord, FillRecord};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, ObjectId, Timestamp};
 use qip_events::{AnyEvent, EventBody, Topic};
@@ -111,6 +111,10 @@ struct WireDelta {
     halted: bool,
     utilisation: Vec<StrategyStanding>,
     orders: Vec<DeltaOrder>,
+    #[serde(default)]
+    fills: Vec<FillRecord>,
+    #[serde(default)]
+    fills_omitted: u32,
     refusals: Vec<DeltaRefusal>,
     #[serde(default)]
     refusals_omitted: u32,
@@ -179,7 +183,19 @@ pub struct CellStanding {
 /// the orders and refusals of every interval it did not sample.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CellInterval {
+    /// Orders the cell *sent* this interval — accepted by the venue, not
+    /// filled. A reader that books one of these as a position is the defect
+    /// [`Self::fills`] exists to end.
     pub orders: Vec<DeltaOrder>,
+    /// Fills the venue confirmed this interval, each with the cell's own
+    /// attribution. Shares its declaration with the edge crate, like the
+    /// crosses, so the half that bills cannot drift from the half that
+    /// writes. Defaulted on the wire: a delta written before the field
+    /// existed replays as having confirmed nothing, which is what it said.
+    pub fills: Vec<FillRecord>,
+    /// Fills that did not fit the wire bound — each one a fill the centre
+    /// will never bill, which is why it is counted and not merely dropped.
+    pub fills_omitted: u32,
     pub refusals: Vec<DeltaRefusal>,
     /// Refusals that did not fit the wire bound. Counted so a truncation is
     /// visible; an accumulator adds this too or it undercounts.
@@ -233,6 +249,8 @@ pub fn decode_cell_delta(frame: &AnyEvent) -> Result<DecodedCellDelta> {
         },
         interval: CellInterval {
             orders: wire.orders,
+            fills: wire.fills,
+            fills_omitted: wire.fills_omitted,
             refusals: wire.refusals,
             refusals_omitted: wire.refusals_omitted,
             crosses: wire.crosses,
@@ -453,6 +471,30 @@ mod tests {
         // from the whole decode quietly failing.
         assert_eq!(decoded.interval.orders[0].order_id, "ord-1");
         assert!(decoded.interval.orders[0].simulated);
+        Ok(())
+    }
+
+    #[test]
+    fn a_delta_written_before_fills_existed_decodes_as_having_confirmed_none() -> Result<()> {
+        // A cell on the previous wire shipped orders and no fills, and the
+        // centre of that day billed the orders. Its deltas are sealed in the
+        // log; they must still decode, and the honest reading of one is
+        // that it confirmed nothing — not that its order filled. Premise
+        // first: the fixture genuinely lacks the field, or this asserts a
+        // default over a payload that set it empty.
+        let payload = wire_payload();
+        assert!(
+            payload.get("fills").is_none(),
+            "the fixture already carries fills, so this proves nothing"
+        );
+        assert_eq!(payload["orders"].as_array().map(Vec::len), Some(1));
+
+        let decoded = decode_cell_delta(&frame_with(payload)?)?;
+        assert!(decoded.interval.fills.is_empty());
+        assert_eq!(decoded.interval.fills_omitted, 0);
+        // The order still arrived as *sent*, so the default did not come
+        // from the decode quietly dropping the interval.
+        assert_eq!(decoded.interval.orders.len(), 1);
         Ok(())
     }
 
