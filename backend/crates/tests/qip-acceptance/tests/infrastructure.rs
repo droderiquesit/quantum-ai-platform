@@ -1933,6 +1933,59 @@ fn the_infrastructure_workflow_cannot_touch_production() {
 }
 
 #[test]
+fn no_variable_validation_reads_through_the_null_it_is_guarding_against() {
+    // `a == null || a.field` does not protect `a.field`. Terraform evaluates
+    // both sides of `||`, so a null value there fails the whole plan with
+    // "Attempt to get attribute from null value" — which is how the first
+    // plan of the Cloud Run migration ended, on
+    // `var.market_data_connector == null || startswith(var.market_data_connector.base_url, ...)`
+    // with the variable at its own default of null. `can()` and `try()` swallow
+    // that error, which is why the neighbouring validations survived; the
+    // conditional operator is the one that genuinely does not evaluate the
+    // branch it did not take.
+    let mut unguarded = Vec::new();
+    let mut guarded_forms = 0usize;
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        let content = std::fs::read_to_string(&path).expect("readable");
+        for line in content.lines() {
+            let line = line.trim();
+            if !line.starts_with("condition") {
+                continue;
+            }
+            let Some((left, right)) = line.split_once("== null") else {
+                continue;
+            };
+            // The variable being guarded, as the condition names it.
+            let Some(name) = left.split("var.").nth(1).map(str::trim) else {
+                continue;
+            };
+            let dereference = format!("var.{name}.");
+            if !right.contains(&dereference) {
+                continue;
+            }
+            guarded_forms += 1;
+            if !right.contains("can(") && !right.contains("try(") && !right.contains('?') {
+                unguarded.push(format!("{}: {line}", path.display()));
+            }
+        }
+    }
+
+    // Premise: the scan found conditions of this shape at all, so an empty
+    // result means they are guarded rather than that the walk reads nothing.
+    assert!(
+        guarded_forms >= 3,
+        "only {guarded_forms} null-guarded validations were seen; the scan is \
+         not reading the conditions it is meant to judge"
+    );
+    assert!(
+        unguarded.is_empty(),
+        "a validation dereferences the value it is checking for null, which \
+         Terraform evaluates anyway and fails the plan on:\n{}",
+        unguarded.join("\n")
+    );
+}
+
+#[test]
 fn an_environment_can_be_brought_up_before_anything_has_been_deployed_to_it() {
     // The deadlock this closes. `catalogue.tf` refuses to create a Cloud Run
     // service without a digest for it, `image_digests` defaults to empty, and

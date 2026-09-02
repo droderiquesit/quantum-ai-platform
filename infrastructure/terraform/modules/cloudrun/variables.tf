@@ -634,7 +634,7 @@ variable "egress_sidecar" {
   }
 
   validation {
-    condition     = var.egress_sidecar == null || (var.egress_sidecar.health_port > 0 && var.egress_sidecar.health_port <= 65535 && length(var.egress_sidecar.ports) > 0)
+    condition     = var.egress_sidecar == null ? true : (var.egress_sidecar.health_port > 0 && var.egress_sidecar.health_port <= 65535 && length(var.egress_sidecar.ports) > 0)
     error_message = "The egress proxy names a health port and at least one destination listener; a proxy with no listener proxies nothing and reads as a route."
   }
 }

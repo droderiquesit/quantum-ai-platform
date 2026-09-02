@@ -356,7 +356,7 @@ variable "market_data_connector" {
   default = null
 
   validation {
-    condition     = var.market_data_connector == null || startswith(var.market_data_connector.base_url, "http://127.0.0.1:")
+    condition     = var.market_data_connector == null ? true : startswith(var.market_data_connector.base_url, "http://127.0.0.1:")
     error_message = "The connector's base URL is the egress proxy on loopback, http://127.0.0.1:<port>. `qip_transport::http` refuses https by name, and an address off the instance is a route that does not exist."
   }
 }
