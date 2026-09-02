@@ -1933,6 +1933,53 @@ fn the_infrastructure_workflow_cannot_touch_production() {
 }
 
 #[test]
+fn an_environment_can_be_brought_up_before_anything_has_been_deployed_to_it() {
+    // The deadlock this closes. `catalogue.tf` refuses to create a Cloud Run
+    // service without a digest for it, `image_digests` defaults to empty, and
+    // the digests live in `images.tfvars` — which the bootstrap, the script
+    // that creates the services and the only path prod has, never passed. So
+    // the apply stopped at "No digest is recorded for qip-api, ...", the
+    // services were never created, and deploy.yml — which only ever *moves* a
+    // service — had nothing to move. Neither end could go first.
+    let bootstrap = read("scripts/bootstrap-deploy.sh");
+
+    // Premise: the script still applies, and the precondition it tripped on
+    // is still there to trip on.
+    assert!(
+        bootstrap.contains("terraform -chdir=\"${TF_DIR}\" apply"),
+        "the bootstrap no longer applies, so this test guards nothing"
+    );
+    let catalogue = read("infrastructure/terraform/catalogue.tf");
+    assert!(
+        catalogue.contains("No digest is recorded for"),
+        "catalogue.tf no longer refuses a workload with no digest; the \
+         deadlock this guards is gone and so is its premise"
+    );
+
+    assert!(
+        bootstrap.contains("images.tfvars"),
+        "the bootstrap passes no images.tfvars, so its apply cannot create a \
+         Cloud Run service and the environment it bootstraps has none"
+    );
+    assert!(
+        bootstrap.contains("tf_var_files+=(-var-file=\"${IMAGES_TFVARS}\")"),
+        "the bootstrap knows the file but does not pass it to terraform"
+    );
+
+    // And deploy.yml says which of the two runs first, rather than leaving a
+    // raw `Service could not be found` in the log with no fix beside it.
+    let deploy = read(".github/workflows/deploy.yml");
+    assert!(
+        deploy.contains("Terraform creates the Cloud Run services"),
+        "deploy.yml does not say that a missing service is Terraform's to make"
+    );
+    assert!(
+        deploy.contains("action=up"),
+        "deploy.yml names no way to create the service it could not find"
+    );
+}
+
+#[test]
 fn the_infrastructure_workflow_reports_no_resource_count_it_did_not_read() {
     // `terraform state list | wc -l` printed `0` for a backend it could not
     // read exactly as it did for an environment holding nothing, so a broken

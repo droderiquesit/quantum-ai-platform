@@ -539,6 +539,22 @@ jobs:
             # now has more than one — the egress proxy, the metrics collector
             # — and gcloud refuses an unqualified `--image` on a
             # multi-container service rather than guess which one to move.
+            # Terraform owns the service — its ingress, its secrets, its
+            # sidecars, its identity, its scaling floor. This step only moves
+            # the image, so a service that does not exist yet is not
+            # something to create here: `gcloud run deploy` would make a bare
+            # one carrying none of that, and the next apply would fight it.
+            # Say what is missing and what makes it, rather than dying on
+            # `Service could not be found` with the fix nowhere in the log.
+            if ! gcloud run services describe "$service" \
+              --project "${GCP_PROJECT}" --region "${GCP_REGION}" \
+              --format='value(name)' >/dev/null 2>&1; then
+              echo "${service} does not exist in ${GCP_PROJECT}/${GCP_REGION}." >&2
+              echo "Terraform creates the Cloud Run services; this step only moves them to a digest it has attested." >&2
+              echo "Run the infra workflow first with action=up and environment=${TARGET_ENVIRONMENT}, then re-run this one." >&2
+              exit 1
+            fi
+
             # Every global flag precedes `--container`. `--container` opens
             # a scope that only container-level flags may enter, so a global
             # one after it makes gcloud refuse the whole command with
