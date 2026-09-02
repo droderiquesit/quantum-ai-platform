@@ -1157,3 +1157,64 @@ fn every_rendering_derives_from_the_single_committed_bootstrap() {
         "more than one Envoy bootstrap exists under infrastructure/: {bootstraps:?}. Two copies of an allowlist is two allowlists."
     );
 }
+
+#[test]
+fn the_vendor_workflow_attests_every_platform_manifest_and_not_only_the_index() {
+    // Cloud Run resolves a multi-arch index to the manifest for the platform
+    // it runs and asks Binary Authorization about *that* digest. GKE asked
+    // about the digest in the pod spec, which is the index, so attesting the
+    // index alone was enough there and is not enough here. The first Cloud
+    // Run apply of the migration was refused on it:
+    //
+    //   Image .../vendor/envoy@sha256:c8fecdf5... denied by attestor
+    //   qip-dev-build: No attestations found that were valid and signed by a
+    //   key trusted by the attestor
+    //
+    // — a digest that appears in no committed file, because it is the
+    // linux/amd64 child of the index digest that does. A workflow that signs
+    // only the index leaves the platform admitting nothing it vendored, and
+    // the failure surfaces at apply rather than at review.
+    let vendor = read(".github/workflows/vendor.yml");
+
+    // Premise: the workflow still mirrors by digest and still signs. Without
+    // both, what follows is a test about a workflow that does nothing.
+    assert!(
+        vendor.contains("crane copy") && vendor.contains("binauthz attestations sign-and-create"),
+        "vendor.yml no longer mirrors and signs, so this guards nothing"
+    );
+
+    // The children are read from the mirrored image's own manifest rather
+    // than from a list, and the index is signed alongside them.
+    assert!(
+        vendor.contains("crane manifest") && vendor.contains(".manifests[]?.digest"),
+        "vendor.yml does not read the platform manifests out of the index, so \
+         a multi-arch image is attested only at its index digest and Cloud \
+         Run refuses every revision that runs it"
+    );
+
+    // And the signing call must be inside the loop over those digests, not
+    // beside it: a loop that computes the children and then signs one fixed
+    // reference is the same gap wearing a for statement.
+    let signing = vendor
+        .split_once("for digest in")
+        .expect("vendor.yml signs inside a loop over the digests")
+        .1;
+    let sign_at = signing
+        .find("sign-and-create")
+        .expect("the loop body signs");
+    let loop_end = signing.find("\n            done").unwrap_or(signing.len());
+    assert!(
+        sign_at < loop_end,
+        "vendor.yml signs outside the loop over the index and its platform \
+         manifests, so only one of them is attested"
+    );
+    // Read from the signing call itself, not from the loop body around it.
+    // The first draft asserted over the whole body and a mutation that made
+    // sign-and-create name the fixed index reference passed anyway, because
+    // the idempotency lookup two lines above still named the loop variable.
+    assert!(
+        signing[sign_at..loop_end].contains("--artifact-url \"${artifact}\""),
+        "sign-and-create names something other than the digest the loop is \
+         on, so every iteration attests the same reference"
+    );
+}
