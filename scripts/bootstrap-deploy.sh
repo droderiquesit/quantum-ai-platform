@@ -2,8 +2,8 @@
 # The whole first deployment, as one command.
 #
 # Run this from Google Cloud Shell (https://shell.cloud.google.com), where
-# gcloud, terraform and gh are preinstalled and you are already authenticated,
-# or from any machine that has all three. It performs, in order, the manual
+# gcloud and terraform are preinstalled and you are already authenticated, or
+# from any machine that has both. It performs, in order, the manual
 # flow documented in docs/security/credentials.md:
 #
 #   1. checks the tools and the authenticated identity
@@ -13,14 +13,17 @@
 #   4. creates the Terraform state bucket if it does not exist
 #   5. terraform init + apply, impersonating claude-builder — apply shows its
 #      plan and asks before changing anything; this script never auto-approves
-#   6. sets the six GitHub Actions *variables* the deploy pipeline reads
+#   6. grants the infra account the one object-delete right it needs, on the
+#      state bucket alone
 #   7. seeds the six generated secrets with random values, if they are empty
 #
 # What it deliberately never does: create, download or read a service-account
 # key. Authentication is your own identity impersonating the bootstrap
 # account, so credentials are short-lived and the audit log names a person.
-# There is no secret anywhere in this flow — all six pipeline values are
-# identifiers, which is why they are variables and not GitHub secrets.
+# There is no secret anywhere in this flow, and nothing is set on GitHub:
+# deploy.yml and infra.yml derive every identity value they need from the
+# committed tfvars, so a bootstrap has nothing to paste anywhere
+# (docs/security/credentials.md says why that used to go wrong).
 #
 # Idempotent: every step either detects its work is already done or is safe
 # to repeat, so rerunning after a partial failure is the intended recovery.
@@ -77,7 +80,7 @@ echo
 # --- 1. tools and identity ---------------------------------------------------
 
 missing=()
-for tool in gcloud terraform gh openssl; do
+for tool in gcloud terraform openssl; do
   command -v "${tool}" >/dev/null 2>&1 || missing+=("${tool}")
 done
 if ((${#missing[@]} > 0)); then
@@ -96,24 +99,16 @@ fi
 # `command -v` is not enough for terraform: Cloud Shell ships a stub that
 # passes the check and prints apt install instructions instead of running.
 # One bootstrap trusted it, captured several lines of that advisory from
-# `terraform output`, and set them as the workload-identity variable — a
-# value that passed a non-empty check and failed authentication with an
-# error naming an invalid audience. Ask the binary what it is before
-# believing it.
+# `terraform output`, and set them as the pipeline's workload-identity
+# value — which passed a non-empty check and failed authentication with an
+# error naming an invalid audience. The pipeline now derives that value from
+# the tfvars and reads nothing this script sets, but the stub still cannot
+# apply anything. Ask the binary what it is before believing it.
 if ! terraform version 2>/dev/null | head -1 | grep -q '^Terraform v'; then
   echo "the 'terraform' on PATH is not terraform (Cloud Shell installs a stub" >&2
   echo "that prints install instructions). Install the real one and rerun:" >&2
   echo "  sudo apt update && sudo apt install -y terraform" >&2
   exit 69
-fi
-
-# Checked here, not at step 6 where it is used. Failing after a twenty-minute
-# apply for a login that takes thirty seconds would mean running the whole
-# script twice; nothing before step 6 depends on GitHub, but the point of one
-# command is that it finishes.
-if ! gh auth status >/dev/null 2>&1; then
-  echo "gh is not authenticated. Run: gh auth login   (then rerun this script)" >&2
-  exit 77
 fi
 
 ACCOUNT="$(gcloud config get-value account 2>/dev/null || true)"
@@ -146,9 +141,10 @@ gcloud services enable \
 #
 # Owner rather than a hand-picked list, deliberately. The configuration
 # creates IAM bindings, service accounts, a workload identity pool, KMS keys,
-# clusters and buckets; a curated role list that misses one permission fails
-# in the middle of an apply with an error naming a permission rather than a
-# decision, which is exactly the failure this script exists to prevent.
+# Cloud Run services, instance templates and buckets; a curated role list
+# that misses one permission fails in the middle of an apply with an error
+# naming a permission rather than a decision, which is exactly the failure
+# this script exists to prevent.
 if ! gcloud iam service-accounts describe "${BOOTSTRAP_SA}" >/dev/null 2>&1; then
   echo "creating bootstrap service account ${BOOTSTRAP_SA}…"
   if ! gcloud iam service-accounts create claude-builder \
@@ -255,24 +251,25 @@ terraform -chdir="${TF_DIR}" init -backend-config="bucket=${STATE_BUCKET}"
 # tfvars away from applying the wrong environment.
 terraform -chdir="${TF_DIR}" apply -var-file="${TFVARS}"
 
-# --- 6. the pipeline variables -----------------------------------------------
+# --- 6. the infra account's state-bucket grant -------------------------------
 
-# Variables, not secrets: all six are identifiers that appear in resource
-# names anyway. See docs/security/credentials.md for why that distinction is
-# load-bearing.
-#
-# Six, not four. `deploy.yml` refuses to build unless the two Binary
-# Authorization variables are set — an unattested image is one the cluster's
-# admission policy rejects, so a pipeline missing them would push images and
-# then fail at the point where no pod starts. Setting four of six here left
-# that failure for the first person to press the button.
-wip="$(terraform -chdir="${TF_DIR}" output -raw workload_identity_provider)"
-deploy_sa="$(terraform -chdir="${TF_DIR}" output -raw deploy_service_account)"
-attestor="$(terraform -chdir="${TF_DIR}" output -raw binary_authorization_attestor)"
-key_version="$(terraform -chdir="${TF_DIR}" output -raw binary_authorization_key_version)"
-# The seventh: what infra.yml impersonates to plan, apply and tear down the
-# stack from the repository. See modules/cicd for what bounds it.
+# What infra.yml impersonates to plan, apply and tear down the stack from the
+# repository; modules/cicd says what bounds it. Read from the apply that just
+# finished rather than typed, so this script cannot disagree with it.
 infra_sa="$(terraform -chdir="${TF_DIR}" output -raw infra_service_account)"
+
+# Shape-checked, not just non-empty. Cloud Shell's terraform stub prints an
+# apt install advisory where terraform would print an output, and a check
+# that only asked "is it set" once let several lines of that through as a
+# pipeline value. This script sets nothing on GitHub any more — deploy.yml and
+# infra.yml construct every identity value from the committed tfvars, and the
+# acceptance suite refuses a workflow that reads a repository variable — but a
+# grant to a member named by an advisory would fail no more usefully.
+[[ "${infra_sa}" =~ ^[a-z][a-z0-9-]*@[a-z0-9-]+\.iam\.gserviceaccount\.com$ ]] || {
+  echo "infra_service_account is not a service-account email; refusing to grant on it:" >&2
+  echo "${infra_sa}" >&2
+  exit 65
+}
 
 # The infra account's one object-delete grant, scoped to the state bucket.
 # Overwriting Terraform state requires storage.objects.delete, and the
@@ -283,63 +280,15 @@ infra_sa="$(terraform -chdir="${TF_DIR}" output -raw infra_service_account)"
 gcloud storage buckets add-iam-policy-binding "gs://${STATE_BUCKET}" \
   --member="serviceAccount:${infra_sa}" \
   --role="roles/storage.objectAdmin" --quiet >/dev/null
-
-declare -A pipeline_variables=(
-  [GCP_PROJECT]="${PROJECT}"
-  [GCP_REGION]="${REGION}"
-  [GCP_WORKLOAD_IDENTITY_PROVIDER]="${wip}"
-  [GCP_DEPLOY_SERVICE_ACCOUNT]="${deploy_sa}"
-  [GCP_BINAUTHZ_ATTESTOR]="${attestor}"
-  [GCP_BINAUTHZ_KEY_VERSION]="${key_version}"
-  [GCP_INFRA_SERVICE_ACCOUNT]="${infra_sa}"
-)
-
-# Shape-checked, not just non-empty. Non-empty let a Cloud Shell stub's
-# install advisory through as the workload-identity provider, so each value
-# is held to the one form it can legitimately take. Multi-line refuses first:
-# no identifier here contains a newline, and the advisory was nothing but.
-for name in "${!pipeline_variables[@]}"; do
-  value="${pipeline_variables[$name]}"
-  [[ -n "${value}" && "${value}" != *$'\n'* ]] || {
-    echo "the value for ${name} is empty or spans lines; refusing to set it:" >&2
-    echo "${value}" >&2
-    exit 65
-  }
-done
-[[ "${wip}" =~ ^projects/[0-9]+/locations/global/workloadIdentityPools/.+/providers/.+$ ]] || {
-  echo "workload_identity_provider is not a provider resource name: ${wip}" >&2
-  exit 65
-}
-for account in "${deploy_sa}" "${infra_sa}"; do
-  [[ "${account}" =~ ^[a-z][a-z0-9-]*@[a-z0-9-]+\.iam\.gserviceaccount\.com$ ]] || {
-    echo "not a service-account email: ${account}" >&2
-    exit 65
-  }
-done
-[[ "${key_version}" =~ ^projects/.+/cryptoKeyVersions/[0-9]+$ ]] || {
-  echo "binary_authorization_key_version is not a key version name: ${key_version}" >&2
-  exit 65
-}
-
-if gh auth status >/dev/null 2>&1; then
-  for name in "${!pipeline_variables[@]}"; do
-    gh variable set "${name}" --repo "${GITHUB_REPOSITORY}" --body "${pipeline_variables[$name]}"
-  done
-  echo "pipeline variables set on ${GITHUB_REPOSITORY}"
-else
-  echo
-  echo "gh is not authenticated (run: gh auth login). Set the variables yourself:"
-  for name in "${!pipeline_variables[@]}"; do
-    echo "  gh variable set ${name} --repo ${GITHUB_REPOSITORY} --body \"${pipeline_variables[$name]}\""
-  done
-fi
+echo "granted ${infra_sa} object administration on gs://${STATE_BUCKET}"
 
 # --- 7. the generated secrets ------------------------------------------------
 
 # Terraform creates the secret containers empty — their values are never in
 # Terraform, so a leaked state file leaks no credential. Six of them are
 # self-generated random values with no external party involved, and a secret
-# with no version fails the CSI mount, leaving every pod in ContainerCreating.
+# with no version fails the Cloud Run volume mount, so the revision that
+# needs it never becomes Ready and the pipeline's rollout proof fails.
 # So the six are seeded here, once: an existing value is never overwritten,
 # because replacing the capital-envelope key mid-flight would strand every
 # grant signed under the old one. Rotation is a deliberate act — add a version
@@ -367,6 +316,6 @@ echo
 echo "images deploy automatically when ci passes on the default branch, or on demand with:"
 echo "  gh workflow run deploy --repo ${GITHUB_REPOSITORY} -f environment=${ENVIRONMENT}"
 echo
-echo "the cluster's autonomy ceiling is $(tfvar autonomy_ceiling): supplying a"
+echo "the environment's autonomy ceiling is $(tfvar autonomy_ceiling): supplying a"
 echo "venue credential does not enable live trading, and nothing in this script"
 echo "can raise the ceiling."
