@@ -226,40 +226,71 @@ not appear unattended.
 shrinking list. The test fails when a binary on it gains a serving loop, which
 is what forces the exemption to be removed rather than forgotten.
 
-### Edge cells have no nodes
+### Execution nodes exist in code, and every environment declares none
 
-`modules/edge-cell` creates a cell's subnet, identity, IAM and egress firewall.
-It does not create a node pool. Until one exists carrying the cell's tag — the
-tag every firewall rule in the module targets — the cell has nowhere to be
-scheduled, and its egress rules constrain nothing.
+This section used to describe `modules/edge-cell` and the node pool it did not
+create. Neither exists any more: the cluster, the edge-cell module and the
+manifests left at `808ca32`, `67b3e92` and `7d79161`, and ADR 0024 records
+the runtime that replaced them. An edge cell is now one Compute Engine machine
+from `modules/execution-node`, not a workload waiting for a node pool.
 
-### Nothing in the central plane can mint a capital envelope
+`infrastructure/terraform/main.tf:467-469` (line numbers throughout this
+section are at `851c0ed`) instantiates that module once per
+entry in `var.execution_nodes`, and every environment's tfvars leaves the map
+empty (`infrastructure/environments/{dev,test,stage,prod}/terraform.tfvars`,
+`execution_nodes = {}`). So the plan, if one ran, would create no node. The
+module's `README.md:10-17` says why the first entry is a venue decision rather
+than a Terraform one: `qip-edge-node` refuses an empty `QIP_VENUES`, and no
+venue's published address ranges are recorded anywhere in this repository.
 
-`modules/edge-cell` grants `roles/secretmanager.secretAccessor` on
-`qip-capital-envelope-key` to each cell's service account, and to nothing else.
-No central-plane identity — not `qip-api`, not `qip-deepbrain` — has a reader
-binding on it.
+When an entry does exist, the module creates the node's own subnet
+(`modules/execution-node/main.tf:109`), a service account with no key
+(`:174`), a shielded instance template with no external address (`:292`), a
+zonal managed instance group (`:416`), and a firewall that denies all egress
+at priority 65000 (`:472`) with named allows for Google APIs (`:495`) and the
+central plane (`:522`). The per-venue egress rule is created only when
+`shadow_mode` is false (`:551-552`), and the root passes `shadow_mode = true`
+unconditionally (`main.tf:492`), so the first node cannot open a venue session
+until a reviewer sees that literal change. The module's README carries the
+rest: what the startup script verifies about the boot image, what nothing here
+enforces, and that no image bake exists.
 
-That matters because the signature is symmetric.
-`qip_edge::envelope::sign_payload` is HMAC-SHA256 over a shared secret, and the
-function says so itself: it "proves possession of a shared secret, not the
-identity of a signer". Whoever mints an envelope must read the same bytes the
-cell verifies against. As configured, no workload can.
+None of it has been planned or validated. There is no `terraform` binary in
+this environment.
 
-**This is deliberately not fixed here, because the obvious repair is the wrong
-one.** Granting a central-plane workload read on that key gives it the authority
-to mint an envelope for any cell — which is the exact authority
-`edge-cell.yaml` calls the most security-relevant value in the file, and it
-would mean one compromised central-plane pod could widen every cell's bound
-without anyone agreeing. It would be a real reduction in the platform's safety,
-made silently, in a commit about deployment coverage.
+### The capital-envelope key is symmetric, and the centre now holds it
 
-The answer is asymmetric signing: the central plane holds a private key, each
-cell holds only the public half, and reading a cell's copy grants the ability
-to verify and not to mint. That needs a signing key in KMS, a verification path
-in `qip-edge` that is not HMAC, and a decision about which identity signs.
-Until then, envelopes are minted only in tests, and the absent IAM binding is
-the honest state rather than a missing line.
+This section used to say that no central-plane identity could read
+`qip-capital-envelope-key`, and that the absent binding was the honest state
+rather than a missing line. The configuration has since taken the other side
+of that argument, and this section now describes what is written rather than
+what was once refused.
+
+`infrastructure/terraform/catalogue.tf` mounts the key as a file into all
+three central Cloud Run services — at `851c0ed`, `api` (`catalogue.tf:96-100`),
+`fastbrain` (`:149-151`) and `deepbrain` (`:181-183`) — and
+`modules/execution-node/main.tf:200-203` grants
+`roles/secretmanager.secretAccessor` on it to each node's service account.
+`qip-api` reads it as `QIP_CAPITAL_ENVELOPE_KEY` and signs the envelopes it
+dispatches down the mesh with it (`backend/crates/apps/qip-api/src/trust.rs`);
+`qip-edge-node` reads the same variable and verifies against it
+(`backend/crates/apps/qip-edge-node/src/main.rs:103`).
+
+The signature is still symmetric. `qip_edge::envelope::sign_payload` is
+HMAC-SHA256 over the shared secret, and the function says so itself: it
+"proves possession of a shared secret, not the identity of a signer". The
+consequence the earlier version of this section warned about therefore
+holds by construction now: any process that can read the key can mint an
+envelope for any node, so a compromised central-plane service could widen
+every cell's bound. That is the trade the catalogue makes so the centre can
+grant capital at all, and it is worth naming rather than assuming.
+
+What would close it is unchanged and unbuilt: asymmetric signing, with the
+central plane holding a private key in KMS, each node holding only the public
+half, and a verification path in `qip-edge` that is not HMAC. `grep -rl
+'kms\|ed25519\|asymmetric' backend/crates/edge/qip-edge/src` finds only the
+comment in `envelope.rs` that points here. Until then, reading a node's copy
+of the key grants the ability to mint as well as to verify.
 
 ### Kubernetes Secrets are created out of band
 
