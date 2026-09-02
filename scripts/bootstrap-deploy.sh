@@ -121,15 +121,27 @@ gcloud config set project "${PROJECT}" --quiet
 
 # --- 2. project APIs ---------------------------------------------------------
 
-# The list from docs/security/credentials.md, plus iamcredentials — without
-# it the impersonation below fails with an error that does not name it.
+# The `always` set in infrastructure/terraform/modules/services/main.tf, in
+# its order, and nothing else. That module is the authoritative list — it
+# names, per API, the resource that cannot be created without it — and the
+# apply below adopts each of these without a call once they are on. This
+# list used to enable `container.googleapis.com` for a GKE cluster that has
+# left the tree and left out `run.googleapis.com`, so a first apply reached
+# the catalogue and stopped on `SERVICE_DISABLED`. The flagged APIs
+# (BigQuery, AlloyDB, Vertex AI, …) are not here: the module enables each
+# when its flag is set, and enabling one for a service nothing uses is a
+# quota surface and an audit-log stream nobody reads.
 echo "enabling APIs (idempotent, may take a minute on first run)…"
 gcloud services enable \
-  container.googleapis.com compute.googleapis.com \
-  artifactregistry.googleapis.com secretmanager.googleapis.com \
-  cloudkms.googleapis.com iam.googleapis.com \
-  iamcredentials.googleapis.com cloudresourcemanager.googleapis.com \
-  monitoring.googleapis.com logging.googleapis.com storage.googleapis.com
+  serviceusage.googleapis.com cloudresourcemanager.googleapis.com \
+  iam.googleapis.com iamcredentials.googleapis.com \
+  sts.googleapis.com compute.googleapis.com \
+  run.googleapis.com dns.googleapis.com \
+  cloudkms.googleapis.com secretmanager.googleapis.com \
+  pubsub.googleapis.com artifactregistry.googleapis.com \
+  storage.googleapis.com monitoring.googleapis.com \
+  logging.googleapis.com binaryauthorization.googleapis.com \
+  containeranalysis.googleapis.com
 
 # --- 3. the bootstrap account ------------------------------------------------
 
