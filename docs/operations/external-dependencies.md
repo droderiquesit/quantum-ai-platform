@@ -159,17 +159,18 @@ an attestor holding the public half, and a policy whose default rule is
 `REQUIRE_ATTESTATION` with `ENFORCED_BLOCK_AND_AUDIT_LOG` — plus the same rule
 pinned to the cluster, so loosening the default later does not quietly loosen
 the cluster that trades. `deploy.yml` signs each image by digest after the
-push, and refuses to build at all until the two repository variables that make
-signing possible are set:
+push. The attestor and key version it signs with are not repository variables
+any more: the `derive the identity from the tfvars` step
+(`.github/workflows/deploy.yml:191-224`) constructs both from the
+environment's committed `project_id` and `region`, and
+`no_workflow_depends_on_a_repository_variable` in the acceptance suite refuses
+a `${{ vars.` in either workflow. `docs/security/credentials.md` §2 has the
+reasoning.
 
-    GCP_BINAUTHZ_ATTESTOR       terraform output binary_authorization_attestor
-    GCP_BINAUTHZ_KEY_VERSION    terraform output binary_authorization_key_version
+Three things are still out of band, and the module's `OUT-OF-BAND.md` carries
+them in full (its first item, the two repository variables, is the stale one;
+that file belongs to the module's owner):
 
-Four things are still out of band, and the module's `OUT-OF-BAND.md` carries
-them in full:
-
-  * those two repository variables, which only a person with repository
-    settings access can set;
   * `binaryauthorization.googleapis.com` and `containeranalysis.googleapis.com`
     enabled on the project — this configuration manages no
     `google_project_service` anywhere;
@@ -307,12 +308,12 @@ Nothing in this repository creates that namespace or the controller in it.
 
 ### GitHub settings are not in this repository
 
-Four repository variables (`GCP_WORKLOAD_IDENTITY_PROVIDER`,
-`GCP_DEPLOY_SERVICE_ACCOUNT`, `GCP_PROJECT`, `GCP_REGION`), and required
-reviewers on the `production` environment. The first two come from
-`terraform output`. The reviewers are the control that makes "production is
-never deployed automatically" more than a convention in a workflow file, and
-they are a setting rather than a file.
+Required reviewers on the `prod` environment. They are the control that makes
+"production is never deployed automatically" more than a convention in a
+workflow file, and they are a setting rather than a file. This section used to
+list four repository variables as well; the workflows now derive every such
+value from the committed tfvars, and the acceptance suite refuses a workflow
+that reads one — see `docs/security/credentials.md` §2.
 
 ### The pipeline's cluster role is broader than one namespace
 

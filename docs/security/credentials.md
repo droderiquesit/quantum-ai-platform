@@ -88,66 +88,59 @@ recommended place to run the script.
 
 ### For the deploy pipeline
 
-Six GitHub Actions **variables**, not secrets — every one is an identifier that
-appears in a resource name anyway. `bootstrap-deploy.sh` sets all six from the
-Terraform outputs; the table is here so they can be checked or set by hand.
+**The pipeline reads no repository variable.** This section used to list six
+GitHub Actions variables the pipeline needed and `bootstrap-deploy.sh` set;
+that is no longer how `deploy.yml` authenticates, and the earlier text sent a
+maintainer to set values nothing reads.
 
-| Variable | Source |
-|---|---|
-| `GCP_PROJECT` | `project-d3f96b6b-852b-4460-b6d` |
-| `GCP_REGION` | The Artifact Registry region |
-| `GCP_WORKLOAD_IDENTITY_PROVIDER` | `terraform output workload_identity_provider` |
-| `GCP_DEPLOY_SERVICE_ACCOUNT` | `terraform output deploy_service_account` — the Terraform-created one, not `claude-builder` |
-| `GCP_BINAUTHZ_ATTESTOR` | `terraform output binary_authorization_attestor` |
-| `GCP_BINAUTHZ_KEY_VERSION` | `terraform output binary_authorization_key_version` |
+Every value authentication and attestation need — the workload-identity
+provider audience, the CI service account, the Binary Authorization attestor
+and the key version that signs for it — is derived in the workflow itself from
+the environment's committed tfvars. `.github/workflows/deploy.yml:22-36` states
+the rule and the failure that produced it; the `derive the identity from the
+tfvars` step (`:191-224` in the `images` job, repeated at `:394` in `deploy`)
+reads `project_id`, `project_number` and `region` from
+`infrastructure/environments/<env>/terraform.tfvars` and constructs the rest
+from the names the `cicd` and `binaryauthorization` modules fix
+(`qip-github-<env>`, `qip-ci-<env>`, `qip-<env>-build`, version 1 of
+`qip-<env>-attestor`). `infra.yml` does the same. The acceptance test
+`no_workflow_depends_on_a_repository_variable`
+(`backend/crates/tests/qip-acceptance/tests/infrastructure.rs:1765`) refuses
+any `${{ vars.` in either workflow, so the variables cannot come back without
+that test being changed.
 
-The last two are what signs an image. Without them the project's Binary
-Authorization policy refuses every image the pipeline pushes, which surfaces as
-a Cloud Run revision that never becomes Ready rather than as a build that
-failed — so the `images` job refuses to start until both are set.
+Why: repository variables were the one input nothing reviewed. They were
+written by the bootstrap's last step, and once a bootstrap that reached that
+step ran against Cloud Shell's `terraform` stub and captured several lines of
+apt install advice into the workload-identity variable — non-empty, so every
+check that only asked whether it was set waved it through, and every run
+afterwards failed on an audience nobody could explain. A value nothing
+re-derives is a value that stays wrong.
+
+What a deployment therefore needs from a person is the tfvars: a real
+`project_id` and `project_number` in the environment's file, in place of the
+`unprovisioned` marker the derivation step refuses before authenticating. The
+values that used to be pasted are now a pure function of those two.
+
+**A finding for the owner of `scripts/bootstrap-deploy.sh`, not fixed here.**
+The script's step 6 (`scripts/bootstrap-deploy.sh:288-326`) still builds
+seven values — `GCP_PROJECT`, `GCP_REGION`, `GCP_WORKLOAD_IDENTITY_PROVIDER`,
+`GCP_DEPLOY_SERVICE_ACCOUNT`, `GCP_BINAUTHZ_ATTESTOR`,
+`GCP_BINAUTHZ_KEY_VERSION`, `GCP_INFRA_SERVICE_ACCOUNT` — shape-checks them,
+and sets them with `gh variable set` when `gh` is authenticated, or prints
+the commands for a person to run when it is not. Its header (`:16`, `:23`)
+and the comment above step 6 (`:258-268`) still say the pipeline reads them.
+Nothing does: neither workflow contains `${{ vars.`. The step is harmless
+today and misleading, and a bootstrap that fails inside it fails for no
+reason a deployment cares about. The repair belongs to the script's owner —
+either delete step 6 or restate it as the record it actually is.
 
 There is deliberately **no** GitHub secret holding a key. The pipeline uses
 workload identity federation: GitHub mints a short-lived OIDC token, GCP
 exchanges it for a credential scoped to one job. An `attribute_condition` pins
-the repository, so a token from any other repository is refused.
-
-### Setting the pipeline variables
-
-All four are **variables, not secrets** — every one is an identifier that
-appears in resource names anyway, and marking them secret only makes them
-harder to debug. Run these once you have applied the infrastructure:
-
-```sh
-gh variable set GCP_PROJECT --repo droderiquesit/quantum-ai-platform \
-  --body "project-d3f96b6b-852b-4460-b6d"
-
-gh variable set GCP_REGION --repo droderiquesit/quantum-ai-platform \
-  --body "europe-west2"
-
-# Both of these are Terraform outputs. They do not exist until apply.
-gh variable set GCP_WORKLOAD_IDENTITY_PROVIDER --repo droderiquesit/quantum-ai-platform \
-  --body "$(terraform -chdir=infrastructure/terraform output -raw workload_identity_provider)"
-
-gh variable set GCP_DEPLOY_SERVICE_ACCOUNT --repo droderiquesit/quantum-ai-platform \
-  --body "$(terraform -chdir=infrastructure/terraform output -raw deploy_service_account)"
-```
-
-Only `GCP_PROJECT` and `GCP_REGION` can be set today. The other two are
-Terraform outputs and do not exist until the infrastructure has been applied
-once — which is the correct ordering, not an inconvenience: the provider and
-the pipeline account are created by the apply.
-
-**`GCP_DEPLOY_SERVICE_ACCOUNT` must not be `claude-builder`.** That is the
-bootstrap identity and it holds project admin. The value belongs to the narrow
-account Terraform creates, which can push an image and move a Cloud Run
-service and nothing else. Setting it to the bootstrap account would give every CI run
-permanent project admin and make one compromised workflow file enough to own
-the project — see the section above.
-
-**No GitHub secret is needed at all.** There is deliberately no key to store:
-the pipeline exchanges a GitHub OIDC token for a short-lived credential, and
-`attribute_condition` pins the repository so a token minted anywhere else is
-refused.
+the repository, so a token from any other repository is refused. And the
+account it exchanges for is `qip-ci-<env>`, the narrow one Terraform creates
+— never `claude-builder`, for the reasons in §1.
 
 ### For the platform at runtime
 
@@ -188,7 +181,8 @@ cd quantum-ai-platform
 
 It enables the APIs, grants you impersonation, creates the versioned state
 bucket, runs `terraform init` and an **interactive** apply — it never
-auto-approves — and sets the six pipeline variables. It never creates,
+auto-approves — and sets six GitHub variables that, since the workflows began deriving
+their identity from the tfvars, nothing reads (see §2). It never creates,
 downloads or reads a key. The rest of this section is the same flow by hand,
 kept because a script you cannot check against its documentation is a script
 you have to trust.
