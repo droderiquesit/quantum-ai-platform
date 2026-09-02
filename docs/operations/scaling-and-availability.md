@@ -15,12 +15,12 @@ page; the rest is what to do when something makes you want to ignore it.
 | `qip-deepbrain` | 1, fixed | **None.** Same loop, slower. | Writes a second copy of the same evidence, indistinguishable from a replay. |
 | edge cell | 2 per cell, fixed | **None.** Capacity comes from *new cells*. | Trades a second book against the same signed capital envelope. |
 
-The reasoning for each refusal is in the manifest itself, at the point where
-somebody would go to add an autoscaler:
-[api.yaml](../../infrastructure/kubernetes/base/api.yaml),
-[fastbrain.yaml](../../infrastructure/kubernetes/base/fastbrain.yaml),
-[deepbrain.yaml](../../infrastructure/kubernetes/base/deepbrain.yaml),
-[edge-cell.yaml](../../infrastructure/kubernetes/base/edge-cell.yaml).
+The reasoning for each refusal used to sit in each manifest, at the point
+where somebody would go to add an autoscaler. The manifests are gone
+(ADR 0024); it now sits beside each workload's `concurrency` in
+[catalogue.tf](../../infrastructure/terraform/catalogue.tf), and for the
+cell in [modules/execution-node](../../infrastructure/terraform/modules/execution-node/main.tf),
+which provisions exactly one machine per entry.
 
 ## The API is pinned at six replicas
 
