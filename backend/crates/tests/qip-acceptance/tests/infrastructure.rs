@@ -2082,9 +2082,11 @@ fn the_workflow_grants_itself_the_reads_before_terraform_refreshes_with_them() {
         "roles/dns.admin",
         "roles/iap.admin",
         "roles/identityplatform.admin",
-        // The one the halted teardown needed. Without it a delete that GKE
-        // accepted is reported as a failure, because the poll is denied.
-        "roles/container.clusterViewer",
+        // The one the halted teardown needed, in both halves: polling the
+        // node pool delete GKE had already accepted, and then issuing the
+        // cluster delete after this same teardown destroyed the declarative
+        // grant that carried it.
+        "roles/container.clusterAdmin",
     ] {
         assert!(
             step.contains(&format!("{role} ")) || step.contains(&format!("{role};")),
@@ -2093,13 +2095,19 @@ fn the_workflow_grants_itself_the_reads_before_terraform_refreshes_with_them() {
         );
     }
 
-    // And nothing in this loop may carry a write it does not need: the
-    // account already holds every write it uses, and container.admin would
-    // hand it the cluster-mutating half of the same product for a read.
-    assert!(
-        !step.contains("roles/container.admin"),
-        "the self-grant loop takes container.admin where a read was denied"
-    );
+    // And nothing in this loop may reach past what it needs. The teardown
+    // manages clusters and node pools; container.admin adds full access to
+    // the Kubernetes API objects inside a cluster, which no step here
+    // touches. The two names differ by one segment, so this matches the
+    // delimited token — `contains("roles/container.admin")` would also be
+    // true of a hypothetical `roles/container.adminViewer`.
+    for delimiter in [' ', ';', '\n'] {
+        assert!(
+            !step.contains(&format!("roles/container.admin{delimiter}")),
+            "the self-grant loop takes container.admin, which carries the \
+             inside of a cluster as well as the cluster"
+        );
+    }
 }
 
 #[test]

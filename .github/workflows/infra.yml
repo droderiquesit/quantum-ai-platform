@@ -151,13 +151,20 @@ jobs:
       # identityplatform.admin, because the Identity Platform config the
       # blueprint keeps is refreshed on every plan and answered 403 to a
       # caller holding nothing on it. Then a seventh the apply after them
-      # found: container.clusterViewer, because the account could issue the
-      # GKE node pool delete but not poll the operation it returned —
-      # `Required "container.operations.get"` — so the teardown of the runtime
-      # ADR 0024 retires halted holding a delete that had in fact been
-      # accepted. clusterViewer is the narrowest predefined role carrying that
-      # read; container.admin would also carry the writes, and the writes this
-      # account needs it already has. The account grants each to itself here —
+      # found: container.clusterAdmin, for the teardown of the runtime ADR
+      # 0024 retires. It was reached in two steps, and the second is why the
+      # role is an admin one. First the account could issue the node pool
+      # delete but not poll the operation it returned — `Required
+      # "container.operations.get"` — so a delete GKE had accepted was
+      # reported as a failure. clusterViewer closed that, the pool went, and
+      # the cluster delete behind it answered `Required
+      # "container.clusters.delete"`: this same teardown had already destroyed
+      # the declarative grant carrying it, so the apply was removing the
+      # account's own ability to finish itself. clusterAdmin manages clusters
+      # and node pools and nothing inside them, which is the whole of what a
+      # teardown does; container.admin would add full access to the Kubernetes
+      # API objects of the cluster being deleted, and a test refuses it. The
+      # account grants each to itself here —
       # its projectIamAdmin makes that possible; modules/cicd documents why
       # that is accepted — waiting only when a binding is new, since a fresh
       # grant can take a minute to bite. All exist declaratively in
@@ -168,7 +175,7 @@ jobs:
           set -euo pipefail
           account="${{ steps.identity.outputs.account }}"
           project="${{ steps.identity.outputs.project }}"
-          for role in roles/cloudkms.publicKeyViewer roles/binaryauthorization.attestorsAdmin roles/run.admin roles/dns.admin roles/iap.admin roles/identityplatform.admin roles/container.clusterViewer; do
+          for role in roles/cloudkms.publicKeyViewer roles/binaryauthorization.attestorsAdmin roles/run.admin roles/dns.admin roles/iap.admin roles/identityplatform.admin roles/container.clusterAdmin; do
             held="$(gcloud projects get-iam-policy "$project" \
               --flatten="bindings[].members" \
               --filter="bindings.role:$role AND bindings.members:serviceAccount:$account" \
