@@ -7,7 +7,8 @@ health surfaces in `backend/crates/apps/**`
 
 **Both planes emit and both are scrapable. What is still missing is proof
 of ingestion, and the edge plane's recording sites in `Cell::work` reach no
-deployed process until the node runs passes.** Read all of this before
+deployed process until a node is deployed — the binary runs passes since
+`6340610`, and none is deployed.** Read all of this before
 writing anything about the domain: two earlier versions of this file were
 each false in one direction — one said nothing wrote to `Telemetry`, the next
 said the edge plane could not emit — and agents who believed either were told
@@ -51,7 +52,10 @@ still answers the JSON health body. The series and what each is keyed on:
   computed.
 - `qip_edge_policy_sequence` — the payload the cell has *applied*, for
   correlation against what the centre believes it published.
-- `qip_edge_work_passes_total`, `qip_edge_refusals_total{gate}`,
+- `qip_edge_work_passes_total`, `qip_edge_fills_confirmed_total{venue}` (a
+  fill the venue reported, and nothing else — `cb79b46`),
+  `qip_edge_orders_expired_total{venue}` (a rested order withdrawn when its
+  time to live elapsed — `383d4e7`), `qip_edge_refusals_total{gate}`,
   `qip_edge_signals_raised_total{kind}`, `qip_edge_orders_placed_total{venue}`,
   `qip_edge_intents_cancelled_total`, `qip_edge_internal_crosses_total{venue}`,
   `qip_edge_netting_ratio` (histogram), `qip_edge_reconciliation_breaks_total`.
@@ -68,11 +72,19 @@ id. Each recording site is proven by a test in
 `backend/crates/edge/qip-edge/tests/telemetry.rs` that drives the cell through
 the event and asserts the series moved, and each was mutation-verified.
 
-Two honest limits on the edge half. First, this build of `qip-edge-node`
-configures no venue feed and never calls `Cell::work`: the halt gauge, policy
-sequence and mesh series reach a deployed process, and the pass-time series
-(freshness, refusals, signals, orders, netting, crosses) will only once the
-node runs passes. Second, the edge-node health server is single-threaded, so
+Two honest limits on the edge half. First, `qip-edge-node` runs `Cell::work`
+only when `QIP_VENUE_FEED=simulated` (`6340610`; `run_pass` at
+`qip-edge-node/src/pass.rs:118`, called from `main.rs:586`; the execution
+node's template writes the line at `startup.sh.tftpl:174`, and any other
+value stops the process naming ADR 0003), so the pass-time series —
+freshness, refusals, signals, orders, netting, crosses, and
+`qip_edge_work_passes_total`, `qip_edge_fills_confirmed_total` and
+`qip_edge_orders_expired_total` — reach a process that runs passes **only in
+test** (`qip-edge-node/tests/pass.rs::a_node_with_the_simulated_feed_runs_a_pass_and_the_pass_time_series_move`).
+Nothing is deployed, because `execution_nodes = {}` in every environment.
+An earlier version of this paragraph said the binary never called
+`Cell::work`; that was true until `6340610` and is not now. Second, the
+edge-node health server is single-threaded, so
 a scrape's exposition is rendered on the thread that flushes the journal — the
 same thread that already renders the JSON body, and not the order path.
 
@@ -97,7 +109,11 @@ commented out in `environments/dev/terraform.tfvars` — and flipping it still
 requires evidence something actually scraped. All seven alert policies in
 `modules/observability/main.tf` are gated on it and name descriptors the
 binaries do record: four central-plane policies, `edge_halted`,
-`edge_reconciliation_break` and `central_reconciliation_break`. What collects
+`edge_reconciliation_break` and `central_reconciliation_break`. Since
+`cd16f79` the `edge_halted` policy's documentation names the `polled` source
+beside `kill_switch` and `policy` (`main.tf:200`), so an operator paged on
+the third source is not reading text that says it does not exist. What
+collects
 is the runtime's business (ADR 0024) and `modules/observability/NOT-SCRAPED.md`
 is the record: the `PodMonitoring` that once selected the two brains left
 with the cluster, and nothing scrapes a Cloud Run service — the managed
