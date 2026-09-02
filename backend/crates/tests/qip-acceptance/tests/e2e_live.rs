@@ -123,13 +123,15 @@ use qip_chain::block::{BlockNumber, ChainId};
 use qip_chain::finality::Confirmations;
 use qip_chain::rpc::{JsonRpcChainAdapter, RpcChainConfig, TokenBinding};
 use qip_contracts::capital::CapitalEnvelope;
+use qip_contracts::intent::Contributor;
+use qip_contracts::message::BookSide;
 use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
 use qip_core::ids::ObjectId;
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Clock, Context, Currency, Decimal, ManualClock, dec};
-use qip_edge::cell::{Cell, CellConfig, WorkReport};
+use qip_edge::cell::{Cell, CellConfig, ConfirmedFill, PlacedOrder, WorkReport};
 use qip_edge::envelope::sign_payload;
 use qip_edge::mesh::{CapitalDownlink, CellStateDelta, CellUplink, DownlinkConfig, UplinkConfig};
 use qip_events::AnyEvent;
@@ -635,21 +637,85 @@ impl CellDeltaSink for DeltaCollector {
     }
 }
 
+/// The order id the cell's one pass sends up the mesh, named once so the
+/// premise below can match it whole rather than by substring.
+const CELL_ORDER: &str = "london-1-pass-1";
+
+/// One pass of the cell as the cell would report it: an order the venue
+/// accepted for a hundred, and the venue's report that forty of it traded.
+///
+/// Written by hand because there is no seam by which a socket can feed the
+/// cell's feature engine (see `trivial_strategy`), so `Cell::work` cannot be
+/// driven here — and said so, rather than dressed up as a pass that ran.
+/// What it exercises is the wire and the centre's reading of it: the sent
+/// quantity and the filled quantity are deliberately different, so a reader
+/// that books the one as the other produces a number the assertions can see.
+fn cell_pass() -> WorkReport {
+    let strategy = StrategyId::new(STRATEGY);
+    WorkReport {
+        orders: vec![PlacedOrder {
+            order_id: CELL_ORDER.to_string(),
+            strategy: strategy.clone(),
+            contributors: vec![Contributor {
+                strategy: strategy.clone(),
+                signed_size: d("100"),
+                inputs: Vec::new(),
+            }],
+            object_id: object(),
+            venue: venue(),
+            side: BookSide::Ask,
+            quantity: d("100"),
+            price: d("100.02"),
+            simulated: true,
+        }],
+        fills: vec![ConfirmedFill {
+            order_id: CELL_ORDER.to_string(),
+            venue: venue(),
+            object_id: object(),
+            side: BookSide::Ask,
+            quantity: d("40"),
+            price: d("100.02"),
+            simulated: true,
+            at: at(Duration::from_secs(55)),
+            shares: vec![(strategy, d("40"))],
+        }],
+        ..WorkReport::default()
+    }
+}
+
+/// The central plane's report, built from the delta as the centre reads it.
+///
+/// Positions come from `fills` — one per attributed share, signed by the side
+/// the fill took, exactly as `CentralPlane::settle` books them — and never
+/// from `orders`. The first version of this helper mapped `delta.orders` to
+/// positions, which is the defect `FillRecord` was added to remove, rebuilt
+/// in the one test that walks the wire end to end: an order the venue
+/// accepted and never filled would have reached the centre's exposure as a
+/// holding. It survived because the fixture delta carried no orders, so the
+/// map ran over an empty list and nothing downstream could tell. The orders
+/// and fills are forwarded beside the positions so the centre's own
+/// settlement — the path that bills — runs on the same delta.
 fn report_from(delta: &CellStateDelta) -> CellReport {
     CellReport::new(delta.cell.clone(), delta.at)
         .with_positions(
             delta
-                .orders
+                .fills
                 .iter()
-                .map(|order| CellPosition {
-                    cell: delta.cell.clone(),
-                    strategy: order.strategy.clone(),
-                    instrument: order.object_id.as_str().to_string(),
-                    sector: Sector::InformationTechnology,
-                    venue: order.venue.clone(),
-                    currency: Currency::GBP,
-                    quantity: order.quantity,
-                    price: order.price,
+                .flat_map(|fill| {
+                    let direction = match fill.side {
+                        BookSide::Ask => Decimal::ONE,
+                        BookSide::Bid => Decimal::NEG_ONE,
+                    };
+                    fill.shares.iter().map(move |share| CellPosition {
+                        cell: delta.cell.clone(),
+                        strategy: share.strategy.clone(),
+                        instrument: fill.object_id.as_str().to_string(),
+                        sector: Sector::InformationTechnology,
+                        venue: fill.venue.clone(),
+                        currency: Currency::GBP,
+                        quantity: direction * share.quantity,
+                        price: fill.price,
+                    })
                 })
                 .collect(),
         )
@@ -660,6 +726,29 @@ fn report_from(delta: &CellStateDelta) -> CellReport {
                 .map(|entry| (entry.strategy.clone(), entry.utilisation.clone()))
                 .collect(),
         )
+        // `DeltaOrder` is declared once at each end of the uplink and the
+        // centre's builder takes its own; the fill record is the shared wire
+        // type and crosses as it is. Copied field by field, so a field added
+        // on one side and not the other stops compiling here rather than
+        // decoding to a default.
+        .with_orders(
+            delta
+                .orders
+                .iter()
+                .map(|order| qip_mesh::delta::DeltaOrder {
+                    order_id: order.order_id.clone(),
+                    strategy: order.strategy.clone(),
+                    object_id: order.object_id.clone(),
+                    venue: order.venue.clone(),
+                    side: order.side,
+                    quantity: order.quantity,
+                    price: order.price,
+                    simulated: order.simulated,
+                    contributors: order.contributors.clone(),
+                })
+                .collect(),
+        )
+        .with_fills(delta.fills.clone())
 }
 
 /// One rule over one feature, compiled by the real compiler.
@@ -1157,7 +1246,7 @@ fn the_platform_completes_a_cycle_observed_from_sockets_and_acted_on_over_one() 
         sleeper(),
         Box::new(MemoryDeadLetters::new(16)),
     )?;
-    let delta = cell.state_delta(&WorkReport::default(), at(Duration::from_secs(60)));
+    let delta = cell.state_delta(&cell_pass(), at(Duration::from_secs(60)));
     let sent_up = uplink.publish(delta, at(Duration::from_secs(60)))?;
     assert!(
         sent_up.is_delivered(),
@@ -1188,6 +1277,44 @@ fn the_platform_completes_a_cycle_observed_from_sockets_and_acted_on_over_one() 
         "the expiry that crossed the wire is not the one the centre granted"
     );
 
+    // The premise for everything the centre books below: the delta carries
+    // what the cell sent *and* what the venue confirmed, as two records, and
+    // the fill names the order. Asserted before the ingest because a delta
+    // with no fill settles nothing, and a report built from nothing would
+    // pass every assertion about what was booked.
+    assert!(
+        !received.orders.is_empty(),
+        "the delta carried no sent order, so nothing below is evidence about the wire"
+    );
+    assert!(
+        !received.fills.is_empty(),
+        "the delta carried no fill, so the centre had nothing to settle and the assertions \
+         about its book would hold vacuously"
+    );
+    for fill in &received.fills {
+        assert!(
+            received
+                .orders
+                .iter()
+                .any(|order| order.order_id == fill.order_id),
+            "the fill names order {} and the delta sent no order by exactly that id",
+            fill.order_id
+        );
+    }
+    assert_eq!(received.orders[0].order_id, CELL_ORDER);
+    assert_eq!(received.fills[0].order_id, CELL_ORDER);
+    assert_eq!(received.orders[0].quantity, d("100"));
+    assert_eq!(received.fills[0].quantity, d("40"));
+    assert_ne!(
+        received.orders[0].quantity, received.fills[0].quantity,
+        "the sent and filled quantities coincide, so nothing below could tell a position built \
+         from the order from one built from the fill"
+    );
+    assert!(
+        received.fills[0].simulated,
+        "a paper fill crossed the wire as real"
+    );
+
     // The centre knew nothing about this cell before the delta crossed, which is
     // what makes the assertion after the ingest evidence about the wire rather
     // than about a field that was already populated.
@@ -1215,6 +1342,54 @@ fn the_platform_completes_a_cycle_observed_from_sockets_and_acted_on_over_one() 
             .utilisation(CELL, &StrategyId::new(STRATEGY))
             .is_some(),
         "the delta crossed the wire, was absorbed, and left the central plane knowing nothing          about what the cell has committed"
+    );
+
+    // The centre settles from the fill and registers the order as sent, and
+    // the two are billed differently: forty is on the book, a hundred is not.
+    // Until this ran, a report that read the sent order as a holding would
+    // have reached the exposure as a hundred — what the venue accepted, not
+    // what it filled — and the reconciliation would have been between two
+    // claims the platform itself made.
+    assert_eq!(
+        ingestion.settlement.orders_sent, 1,
+        "the order the cell sent was not registered as sent: {:?}",
+        ingestion.settlement.refused
+    );
+    assert_eq!(
+        ingestion.settlement.fills_settled, 1,
+        "the fill the venue confirmed was not settled: {:?}",
+        ingestion.settlement.refused
+    );
+    assert!(
+        ingestion.settlement.refused.is_empty(),
+        "the centre refused part of the report: {:?}",
+        ingestion.settlement.refused
+    );
+    let lot = platform
+        .central()
+        .strategy_books()
+        .get(&(
+            CELL.to_string(),
+            StrategyId::new(STRATEGY),
+            object().as_str().to_string(),
+        ))
+        .ok_or_else(|| Error::not_found("the strategy lot the fill should have opened"))?;
+    assert_eq!(
+        lot.quantity,
+        d("40"),
+        "the strategy book holds {} — the fill was forty, the order a hundred",
+        lot.quantity
+    );
+    assert_eq!(
+        ingestion.positions_absorbed, 1,
+        "one fill with one share is one position"
+    );
+    assert_eq!(
+        platform.central().exposure().gross(),
+        d("4000.8"),
+        "the centre's gross exposure is {}; forty at 100.02 is 4000.8, and a hundred at 100.02 \
+         would mean the sent order was read as a holding",
+        platform.central().exposure().gross()
     );
     println!(
         "mesh: grant of {} down one socket and verified; delta up another and absorbed",
