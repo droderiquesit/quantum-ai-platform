@@ -1051,6 +1051,84 @@ fn a_cloud_run_service_cannot_be_deleted_by_a_plan_nobody_read() {
 }
 
 #[test]
+fn a_service_that_failed_its_first_revision_is_repaired_rather_than_left_unfixable() {
+    // The deadlock this closes, found by the migration's first successful
+    // create phase. A Cloud Run service whose first revision is refused —
+    // there, an egress sidecar whose image was not yet attested — exists as
+    // an object and does not serve. Terraform marks it tainted; a tainted
+    // resource is planned destroy-then-create; and the destroy is refused:
+    //
+    //   Error: cannot destroy service without setting
+    //   deletion_protection=false and running `terraform apply`
+    //
+    // So the environment holds a broken service Terraform can neither repair
+    // nor remove, which is the GKE cluster of August in a new place. The
+    // answer is the same one: untaint on evidence, so the apply updates in
+    // place. This test exists mostly to stop the *other* answer, which is to
+    // make deletion_protection a variable — the test above refuses that, and
+    // a future reader hitting this error will reach for it first.
+    let infra = read(".github/workflows/infra.yml");
+    let steps = job_steps(&infra);
+
+    let position = |needle: &str| {
+        steps
+            .iter()
+            .position(|step| step.contains(needle))
+            .unwrap_or_else(|| panic!("infra.yml has no step containing {needle}"))
+    };
+    // By step name: the comment block explaining this sits *above* the step,
+    // and job_steps attaches leading comments to the step before, so a search
+    // for "untaint" finds the plan step and every assertion below then reads
+    // the wrong block. That is how the first draft of this test failed.
+    let repair = position("name: repair a tainted service");
+    let apply = position("apply -input=false -auto-approve");
+
+    // Ordering: an untaint after the apply is an untaint that changed nothing
+    // about the apply that just failed.
+    assert!(
+        repair < apply,
+        "the repair runs at step {repair} and the apply at {apply}, so the \
+         apply still plans a replacement it cannot perform"
+    );
+
+    let step = &steps[repair];
+
+    // It only ever runs on an apply. A plan that mutated state would be a
+    // read-only action that is not one.
+    assert!(
+        step.contains("inputs.action == 'up'"),
+        "the repair is not gated on the apply, so `plan` mutates state"
+    );
+
+    // Evidence, not assumption: the taint is cleared only for a service Cloud
+    // Run confirms it still has. Without the describe this is "untaint
+    // everything", which would hide a service that genuinely needs recreating.
+    assert!(
+        step.contains("gcloud run services describe"),
+        "the repair untaints without asking Cloud Run whether the service is \
+         there, so a service that must be recreated silently is not"
+    );
+    let describe = step
+        .find("gcloud run services describe")
+        .expect("checked above");
+    let untaint = step
+        .find("terraform -chdir=infrastructure/terraform untaint")
+        .expect("the repair untaints");
+    assert!(
+        describe < untaint,
+        "the untaint precedes the read that is supposed to justify it"
+    );
+
+    // And the deletion guard itself is untouched — this is the whole point of
+    // taking this route rather than the other one.
+    let module = without_comments(&read(CLOUD_RUN_MODULE));
+    assert!(
+        sets(&module, "deletion_protection", "true"),
+        "the repair path was taken and the guard was weakened anyway"
+    );
+}
+
+#[test]
 fn every_key_rotates_and_the_ones_that_hold_data_cannot_be_destroyed() {
     let secrets = read("infrastructure/terraform/modules/secrets/main.tf");
     assert_eq!(

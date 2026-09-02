@@ -220,6 +220,80 @@ jobs:
           terraform -chdir=infrastructure/terraform plan -input=false \
             ${{ steps.vars.outputs.files }}
 
+      # Repair a service that exists rather than replacing it.
+      #
+      # A Cloud Run service whose first revision is refused — an unattested
+      # sidecar, a bad digest — is created as an object and then fails to
+      # serve, so Terraform marks it tainted, and a tainted resource is
+      # planned destroy-then-create. `modules/cloudrun` sets
+      # `deletion_protection = true` and deliberately offers no way to turn it
+      # off, so the destroy half is refused and the environment is stuck with
+      # a broken service Terraform can neither repair nor remove:
+      #
+      #   Error: cannot destroy service without setting
+      #   deletion_protection=false and running `terraform apply`
+      #
+      # This is the GKE deadlock of August in a new place, and it takes the
+      # same answer rather than the tempting one. Making the flag a variable
+      # would reopen the teardown hole `a_cloud_run_service_cannot_be_deleted_by_a_plan_nobody_read`
+      # closed on purpose; untainting costs no safety property at all, because
+      # an in-place update fully specifies the service and creates a new
+      # revision — which is exactly what the run that found this did to the
+      # fast brain, in the same apply that refused the other two.
+      #
+      # On evidence, never on assumption: a service is untainted only when
+      # Cloud Run says it still has it. Anything else keeps its taint and is
+      # replaced, which is what taint is for.
+      - name: repair a tainted service Cloud Run still has
+        if: inputs.action == 'up'
+        run: |
+          set -euo pipefail
+          cat >"${RUNNER_TEMP}/tainted-services.py" <<'PYEOF'
+          import json
+          import sys
+
+          # `terraform show -json` marks each state resource, and the flag is
+          # the only place the taint is visible: `state list` does not show it
+          # and the plan only says "must be replaced", which is also what a
+          # genuine configuration change says.
+          def walk(module, out):
+              for resource in module.get("resources", []):
+                  if resource.get("type") != "google_cloud_run_v2_service":
+                      continue
+                  if not resource.get("tainted"):
+                      continue
+                  name = resource.get("values", {}).get("name")
+                  if name:
+                      out.append((resource["address"], name))
+              for child in module.get("child_modules", []):
+                  walk(child, out)
+
+          found = []
+          walk(json.load(sys.stdin).get("values", {}).get("root_module", {}), found)
+          for address, name in found:
+              print(address, name)
+          PYEOF
+          region="$(sed -n 's/^region[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' \
+            "infrastructure/environments/${{ inputs.environment }}/terraform.tfvars" | head -1)"
+          [ -n "$region" ] || { echo "the tfvars name no region" >&2; exit 1; }
+          tainted="$(terraform -chdir=infrastructure/terraform show -json \
+            | python3 "${RUNNER_TEMP}/tainted-services.py")"
+          if [ -z "$tainted" ]; then
+            echo "no Cloud Run service is tainted; nothing to repair."
+          else
+            printf '%s\n' "$tainted" | while read -r address name; do
+              [ -n "$address" ] || continue
+              if gcloud run services describe "$name" \
+                --project "${{ steps.identity.outputs.project }}" \
+                --region "$region" --format='value(name)' >/dev/null 2>&1; then
+                echo "$name exists in Cloud Run; untainting $address so the apply updates it in place."
+                terraform -chdir=infrastructure/terraform untaint "$address"
+              else
+                echo "$name is tainted and Cloud Run does not have it; keeping the taint so the apply recreates it."
+              fi
+            done
+          fi
+
       # -auto-approve because there is nobody at a prompt: the review is the
       # dispatch itself, recorded in the Actions log with who pressed it. The
       # prod refusal above is what keeps that acceptable.
