@@ -151,7 +151,7 @@ fn banner(model: &ViewModel) -> Element {
 /// the one fact that must never be ambiguous.
 pub(crate) fn banner_of(posture: &Posture) -> Element {
     if posture.halted {
-        return div()
+        let banner = div()
             .class("banner halted")
             .child(strong().text("HALTED"))
             .text(format!(" — {}", posture.halt_reason))
@@ -159,6 +159,20 @@ pub(crate) fn banner_of(posture: &Posture) -> Element {
                 p().class("muted")
                     .text("No orders will be sent until an operator clears the halt."),
             );
+        // A halt does not change the posture underneath it. The halted banner
+        // used to drop the label, which made it the one place the interface
+        // showed posture without saying PAPER TRADING — a reader of a halted
+        // page could not tell a halted simulator from a halted live book. A
+        // halted live platform is still not labelled live: the halt is the
+        // fact that matters there, and "LIVE TRADING" on a page where nothing
+        // trades misstates it.
+        if posture.live {
+            return banner;
+        }
+        return banner.child(p().class("muted").text(format!(
+            "PAPER TRADING — orders reach no market in any state. This deployment's ceiling is {}.",
+            posture.autonomy_ceiling
+        )));
     }
     if posture.live {
         return div()
