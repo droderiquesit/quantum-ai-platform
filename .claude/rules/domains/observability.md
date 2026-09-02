@@ -80,25 +80,37 @@ by the direction of the gap and `qip_central_cell_halts_total` by cause, on
 the outcome rather than the report, so a refused report charts no halt. The
 `qip_central_` prefix keeps it distinct from the edge's own break counter,
 which records what the cell found rather than what the centre acted on. Two
-facts still have no production caller at all: `Platform::learn_from`, which
-produces the belief calibration, is called by nothing in the tree, and
-`Platform::evaluate_alternatives`, which scores counterfactuals, is called
-only by `qip-kernel`'s own tests.
+facts that once had no production caller now have one, in the LEARN stage:
+`Platform::learn_from`, which produces the belief calibration, is called from
+`calibrate_resolved` (`platform.rs:4086`, reached from `stage_learn` at
+`:3965`; `04738ee`), and `Platform::evaluate_alternatives`, which scores
+counterfactuals, is called from `score_declined` (`platform.rs:5107`, reached
+from `stage_learn` at `:3982`; `b9e2242`). Recount with
+`grep -n "learn_from\|evaluate_alternatives" backend/crates/runtime/qip-kernel/src/platform.rs`
+before quoting either line.
 
 `workload_metrics_exist` remains `false` everywhere — the default in
 `infrastructure/terraform/variables.tf` and in the observability module, and
 commented out in `environments/dev/terraform.tfvars` — and flipping it still
-requires evidence a pod actually scraped. All four alert policies name
-descriptors the kernel does record, and a collector selecting `qip-fastbrain`
-and `qip-deepbrain` on `/metrics` is declared; no collector yet selects
-`qip-edge-node`, and no alert policy names an edge descriptor. What is missing
-is proof of ingestion, not emission.
+requires evidence something actually scraped. All seven alert policies in
+`modules/observability/main.tf` are gated on it and name descriptors the
+binaries do record: four central-plane policies, `edge_halted`,
+`edge_reconciliation_break` and `central_reconciliation_break`. What collects
+is the runtime's business (ADR 0024) and `modules/observability/NOT-SCRAPED.md`
+is the record: the `PodMonitoring` that once selected the two brains left
+with the cluster, and nothing scrapes a Cloud Run service — the managed
+Prometheus sidecar is not attached because its image is not yet vendored and
+attested. The execution node's startup script declares an Ops Agent
+Prometheus receiver on the health port, so `qip-edge-node` is scraped once a
+node exists; `execution_nodes` is empty in every environment, so none does.
+What is missing is proof of ingestion, not emission.
 
 Do not describe this platform as observable. That still holds, on today's
-evidence: nothing has been shown to scrape any pod, the edge series have no
-collector and no alert, and no alert policy names either `qip_central_`
-descriptor, so a reconciliation break on either plane is charted and still
-pages no one. Closing the remainder is tracked work.
+evidence: nothing has been shown to scrape any process, no Cloud Run service
+has a collector at all, and every alert policy is absent until
+`workload_metrics_exist` is flipped, so a reconciliation break on either
+plane is charted and still pages no one. Closing the remainder is tracked
+work.
 
 ## Approved
 
