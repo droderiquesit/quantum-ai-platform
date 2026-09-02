@@ -22,6 +22,15 @@
 //!   the record before, so a count that has been lowered — or a family
 //!   reopened at zero — fails [`TrialBook::verify`] rather than passing as a
 //!   fresh start.
+//! * **The quarter is budgeted.** Blueprint §20.1 caps a family at five
+//!   hundred trials per calendar quarter, and a cap the book only counted
+//!   against would be a limit that cannot fire. Every record also carries
+//!   the family's count for the quarter it falls in — chained and verified
+//!   like the lifetime — and [`TrialBook::charge`] refuses a charge that
+//!   would carry the quarter past the budget, naming the family, the
+//!   quarter, the count and the budget, and charging nothing. The quarter
+//!   is the UTC calendar quarter of the charge's own instant, so a replay
+//!   files every charge where the original did.
 //! * **The count survives the process.** A book opened on a
 //!   [`KeyValueStore`] writes each record before it acknowledges it and
 //!   replays the journal, verifying the chain, when it is opened again. A book
@@ -51,6 +60,55 @@ pub const JOURNAL_PREFIX: &str = "lifecycle/trials/";
 
 /// The `previous` hash of a family's first record.
 const GENESIS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+/// Trials a family may be charged in one calendar quarter, unless a book is
+/// built with another figure. Blueprint §20.1 and §54.1: five hundred per
+/// family per quarter, and the reasoning there is that a per-batch cap is
+/// laundered by splitting the sweep, which is why the count is per quarter
+/// and per family rather than per run.
+pub const DEFAULT_QUARTERLY_BUDGET: u64 = 500;
+
+/// A calendar quarter, in UTC.
+///
+/// Derived from an instant and never stored on its own: the year and month
+/// of [`Timestamp::civil_date`], which is UTC, and `(month − 1) / 3` for the
+/// quarter, so January–March is the first. UTC on purpose — the boundary is
+/// then the same instant everywhere, and two processes charging the same
+/// family from different regions cannot file one charge in two quarters. The
+/// arithmetic is deterministic, so a replay of the journal recovers every
+/// quarterly count from the records alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct Quarter {
+    year: i32,
+    /// Zero-based inside; [`Self::number`] is the one-based figure shown.
+    index: u32,
+}
+
+impl Quarter {
+    /// The quarter `at` falls in.
+    pub fn of(at: Timestamp) -> Self {
+        let (year, month, _) = at.civil_date();
+        Self {
+            year,
+            index: (month - 1) / 3,
+        }
+    }
+
+    pub fn year(self) -> i32 {
+        self.year
+    }
+
+    /// One to four.
+    pub fn number(self) -> u32 {
+        self.index + 1
+    }
+}
+
+impl fmt::Display for Quarter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}Q{}", self.year, self.number())
+    }
+}
 
 /// A family of strategies that share a trial budget.
 ///
@@ -134,6 +192,11 @@ pub struct TrialRecord {
     pub event: TrialEvent,
     /// The family's lifetime trial count once this record is applied.
     pub lifetime_after: u64,
+    /// The family's trial count for the calendar quarter of `at`, once this
+    /// record is applied. Zero again at the first record of a new quarter.
+    /// Under the hash like the lifetime, so a quarter's count lowered by
+    /// hand fails to verify rather than freeing up budget.
+    pub quarter_after: u64,
     pub at: Timestamp,
     /// Hash of the record before this one, or all zeros for the first.
     pub previous: String,
@@ -147,11 +210,12 @@ impl TrialRecord {
         sequence: u64,
         event: &TrialEvent,
         lifetime_after: u64,
+        quarter_after: u64,
         at: Timestamp,
         previous: &str,
     ) -> String {
         let canonical = format!(
-            "{family}|{sequence}|{}|{lifetime_after}|{}|{previous}",
+            "{family}|{sequence}|{}|{lifetime_after}|{quarter_after}|{}|{previous}",
             event.canonical(),
             at.as_nanos()
         );
@@ -166,6 +230,7 @@ impl TrialRecord {
                 self.sequence,
                 &self.event,
                 self.lifetime_after,
+                self.quarter_after,
                 self.at,
                 &self.previous,
             )
@@ -173,6 +238,43 @@ impl TrialRecord {
 
     fn key(&self) -> String {
         format!("{JOURNAL_PREFIX}{}/{:020}", self.family, self.sequence)
+    }
+
+    /// The lifetime and quarterly totals a record must carry, given the
+    /// record before it. One computation for appending and for verifying, so
+    /// the book cannot accept from a store a total it would not have written.
+    ///
+    /// The quarterly total carries over from the previous record only when
+    /// both fall in the same [`Quarter`]; otherwise it starts again at zero.
+    /// A record is never dated before its predecessor — [`TrialBook`] refuses
+    /// that separately — so a quarter, once left, is never charged again.
+    fn totals_after(
+        previous: Option<&TrialRecord>,
+        event: &TrialEvent,
+        at: Timestamp,
+    ) -> Result<(u64, u64)> {
+        let (prior_lifetime, prior_quarter) = match previous {
+            None => (0, 0),
+            Some(p) if Quarter::of(p.at) == Quarter::of(at) => (p.lifetime_after, p.quarter_after),
+            Some(p) => (p.lifetime_after, 0),
+        };
+        match event {
+            TrialEvent::Opened => Ok((0, 0)),
+            TrialEvent::Enrolled { .. } => Ok((prior_lifetime, prior_quarter)),
+            TrialEvent::Charged { trials, .. } => {
+                let lifetime = prior_lifetime.checked_add(*trials).ok_or_else(|| {
+                    Error::numeric(format!(
+                        "charging {trials} trial(s) overflows the lifetime count"
+                    ))
+                })?;
+                let quarter = prior_quarter.checked_add(*trials).ok_or_else(|| {
+                    Error::numeric(format!(
+                        "charging {trials} trial(s) overflows the quarterly count"
+                    ))
+                })?;
+                Ok((lifetime, quarter))
+            }
+        }
     }
 }
 
@@ -192,6 +294,9 @@ pub struct TrialAccount {
     lifetime: u64,
     charged_at: Timestamp,
     sequence: u64,
+    quarter: Quarter,
+    quarter_trials: u64,
+    quarterly_budget: u64,
 }
 
 impl TrialAccount {
@@ -228,13 +333,32 @@ impl TrialAccount {
         self.sequence
     }
 
+    /// The calendar quarter the charge was filed in.
+    pub fn quarter(&self) -> Quarter {
+        self.quarter
+    }
+
+    /// The family's count for that quarter including this run.
+    pub fn quarter_trials(&self) -> u64 {
+        self.quarter_trials
+    }
+
+    /// The budget the quarter was charged under.
+    pub fn quarterly_budget(&self) -> u64 {
+        self.quarterly_budget
+    }
+
     pub fn describe(&self) -> String {
         format!(
-            "{} trial(s) this run on top of {} already charged to family {}: {} lifetime",
+            "{} trial(s) this run on top of {} already charged to family {}: {} lifetime, {} of \
+             the {} budgeted for {}",
             self.this_run,
             self.prior(),
             self.family,
-            self.lifetime
+            self.lifetime,
+            self.quarter_trials,
+            self.quarterly_budget,
+            self.quarter
         )
     }
 }
@@ -245,6 +369,10 @@ pub struct TrialBook {
     store: Option<Arc<dyn KeyValueStore>>,
     journals: BTreeMap<StrategyFamily, Vec<TrialRecord>>,
     members: BTreeMap<StrategyId, StrategyFamily>,
+    /// Trials a family may be charged per calendar quarter. Configuration,
+    /// not record: the journal verifies the same under any budget, so a
+    /// book reopened with a different figure still replays.
+    quarterly_budget: u64,
 }
 
 impl TrialBook {
@@ -259,7 +387,33 @@ impl TrialBook {
             store: None,
             journals: BTreeMap::new(),
             members: BTreeMap::new(),
+            quarterly_budget: DEFAULT_QUARTERLY_BUDGET,
         }
+    }
+
+    /// Budget each family at `budget` trials per calendar quarter instead of
+    /// [`DEFAULT_QUARTERLY_BUDGET`].
+    ///
+    /// Refuses zero. A budget of zero would refuse every evaluation in every
+    /// family for ever, which is not a budget but a stop, and a stop is
+    /// expressed by retiring the family, where the ledger records who did it
+    /// and why. Raising the figure above the blueprint's is a decision that
+    /// belongs in the composition root with its reason beside it.
+    pub fn with_quarterly_budget(mut self, budget: u64) -> Result<Self> {
+        if budget == 0 {
+            return Err(Error::invalid(format!(
+                "a quarterly trial budget of zero would refuse every evaluation; the blueprint's \
+                 figure is {DEFAULT_QUARTERLY_BUDGET}, and a family that must stop is retired \
+                 rather than budgeted to nothing"
+            )));
+        }
+        self.quarterly_budget = budget;
+        Ok(self)
+    }
+
+    /// Trials a family may be charged per calendar quarter.
+    pub fn quarterly_budget(&self) -> u64 {
+        self.quarterly_budget
     }
 
     /// Open the book on a store, replaying and verifying every journal in it.
@@ -283,6 +437,7 @@ impl TrialBook {
             store: Some(store),
             journals,
             members,
+            quarterly_budget: DEFAULT_QUARTERLY_BUDGET,
         })
     }
 
@@ -325,9 +480,9 @@ impl TrialBook {
                 describe()
             )));
         }
-        let (expected_sequence, expected_previous, prior_lifetime, prior_at) = match previous {
-            None => (0, GENESIS.to_string(), 0, Timestamp::EPOCH),
-            Some(p) => (p.sequence + 1, p.hash.clone(), p.lifetime_after, p.at),
+        let (expected_sequence, expected_previous, prior_at) = match previous {
+            None => (0, GENESIS.to_string(), Timestamp::EPOCH),
+            Some(p) => (p.sequence + 1, p.hash.clone(), p.at),
         };
         if record.sequence != expected_sequence {
             return Err(Error::invalid(format!(
@@ -350,40 +505,32 @@ impl TrialBook {
                 describe()
             )));
         }
-        let expected_lifetime = match &record.event {
-            TrialEvent::Opened => {
-                if previous.is_some() {
-                    return Err(Error::invalid(format!(
-                        "trial journal {} reopens a family that already has a journal; a \
-                         family opens once, at zero, and never again",
-                        describe()
-                    )));
-                }
-                0
-            }
-            TrialEvent::Enrolled { .. } => prior_lifetime,
-            TrialEvent::Charged { trials, .. } => {
-                prior_lifetime.checked_add(*trials).ok_or_else(|| {
-                    Error::numeric(format!(
-                        "trial journal {} overflows the lifetime count",
-                        describe()
-                    ))
-                })?
-            }
-        };
-        if previous.is_none() && record.event != TrialEvent::Opened {
+        if let (Some(_), TrialEvent::Opened) = (previous, &record.event) {
             return Err(Error::invalid(format!(
-                "trial journal {} is the first record of its family but is not an opening; \
-                 the count has no origin",
+                "trial journal {} reopens a family that already has a journal; a family opens \
+                 once, at zero, and never again",
                 describe()
             )));
         }
+        let (expected_lifetime, expected_quarter) =
+            TrialRecord::totals_after(previous, &record.event, record.at).map_err(|e| {
+                Error::numeric(format!("trial journal {}: {}", describe(), e.message()))
+            })?;
         if record.lifetime_after != expected_lifetime {
             return Err(Error::invalid(format!(
                 "trial journal {} carries a lifetime of {} where {expected_lifetime} follows \
                  from the record before it; the count was lowered or raised by hand",
                 describe(),
                 record.lifetime_after
+            )));
+        }
+        if record.quarter_after != expected_quarter {
+            return Err(Error::invalid(format!(
+                "trial journal {} carries {} trial(s) for {} where {expected_quarter} follows \
+                 from the record before it; the quarterly count was lowered or raised by hand",
+                describe(),
+                record.quarter_after,
+                Quarter::of(record.at)
             )));
         }
         Ok(())
@@ -465,12 +612,32 @@ impl TrialBook {
             .map(|record| record.lifetime_after)
     }
 
+    /// The family's trial count for `quarter`. `None` for a family never
+    /// opened — unknown, not zero — and zero for an open family with no
+    /// record in that quarter.
+    ///
+    /// Read from the last record filed in the quarter rather than summed, so
+    /// what the book reports is what the chain verified.
+    pub fn quarter_trials(&self, family: &StrategyFamily, quarter: Quarter) -> Option<u64> {
+        let journal = self.journals.get(family)?;
+        Some(
+            journal
+                .iter()
+                .rev()
+                .find(|record| Quarter::of(record.at) == quarter)
+                .map_or(0, |record| record.quarter_after),
+        )
+    }
+
     /// Charge one evaluation to the strategy's family and return the count
     /// the evaluation must be corrected against.
     ///
     /// `trials` is what the run that produced the candidate tried — the
     /// number the evidence already carries — and it must be at least one,
-    /// because the candidate itself was tried.
+    /// because the candidate itself was tried. Refuses, charging nothing,
+    /// when the family's count for the calendar quarter of `at` would pass
+    /// the book's budget: the five-hundredth trial of a quarter charges and
+    /// the five-hundred-and-first does not, however the sweep was split.
     pub fn charge(
         &mut self,
         strategy: &StrategyId,
@@ -492,6 +659,28 @@ impl TrialBook {
         }
         let trials = u64::try_from(trials)
             .map_err(|_| Error::numeric(format!("{trials} trials does not fit the journal")))?;
+        let quarter = Quarter::of(at);
+        let charged = self.quarter_trials(&family, quarter).ok_or_else(|| {
+            Error::denied(format!(
+                "family {family} has no journal though {strategy} is enrolled in it; the book \
+                 is inconsistent and nothing can be charged until it is reopened"
+            ))
+        })?;
+        let would_reach = charged.checked_add(trials).ok_or_else(|| {
+            Error::numeric(format!(
+                "charging {trials} trial(s) to family {family} overflows its count for {quarter}"
+            ))
+        })?;
+        if would_reach > self.quarterly_budget {
+            return Err(Error::denied(format!(
+                "family {family} has {charged} trial(s) charged in {quarter} and {trials} more \
+                 for {strategy} would make {would_reach}, past the budget of {} per family per \
+                 quarter (blueprint §20.1); nothing was charged. Cut the sweep down or wait for \
+                 the next quarter — the lifetime count stays at {} either way",
+                self.quarterly_budget,
+                self.lifetime_trials(&family).unwrap_or(0)
+            )));
+        }
         let record = self.append(
             &family,
             TrialEvent::Charged {
@@ -507,6 +696,9 @@ impl TrialBook {
             lifetime: record.lifetime_after,
             charged_at: at,
             sequence: record.sequence,
+            quarter,
+            quarter_trials: record.quarter_after,
+            quarterly_budget: self.quarterly_budget,
         })
     }
 
@@ -532,28 +724,27 @@ impl TrialBook {
     ) -> Result<&TrialRecord> {
         let journal = self.journals.entry(family.clone()).or_default();
         let previous = journal.last();
-        let (sequence, previous_hash, prior_lifetime) = match previous {
-            None => (0, GENESIS.to_string(), 0),
-            Some(p) => (p.sequence + 1, p.hash.clone(), p.lifetime_after),
+        let (sequence, previous_hash) = match previous {
+            None => (0, GENESIS.to_string()),
+            Some(p) => (p.sequence + 1, p.hash.clone()),
         };
-        let lifetime_after = match &event {
-            TrialEvent::Opened => 0,
-            TrialEvent::Enrolled { .. } => prior_lifetime,
-            TrialEvent::Charged { trials, .. } => {
-                prior_lifetime.checked_add(*trials).ok_or_else(|| {
-                    Error::numeric(format!(
-                        "charging {trials} to family {family} overflows its lifetime count"
-                    ))
-                })?
-            }
-        };
-        let hash =
-            TrialRecord::digest(family, sequence, &event, lifetime_after, at, &previous_hash);
+        let (lifetime_after, quarter_after) = TrialRecord::totals_after(previous, &event, at)
+            .map_err(|e| Error::numeric(format!("family {family}: {}", e.message())))?;
+        let hash = TrialRecord::digest(
+            family,
+            sequence,
+            &event,
+            lifetime_after,
+            quarter_after,
+            at,
+            &previous_hash,
+        );
         let record = TrialRecord {
             family: family.clone(),
             sequence,
             event,
             lifetime_after,
+            quarter_after,
             at,
             previous: previous_hash,
             hash,
