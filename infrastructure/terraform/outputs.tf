@@ -1,32 +1,43 @@
 # Outputs.
 #
-# Nothing here is a secret. The endpoint and the service-account emails are
-# needed to deploy; the credentials they authenticate with are in Secret
+# Nothing here is a secret. The service URLs and the service-account emails
+# are needed to deploy; the credentials they authenticate with are in Secret
 # Manager and never in state or output.
 
-output "cluster_name" {
-  description = "The cluster's name."
-  value       = module.cluster.name
-}
+output "cloud_run_services" {
+  description = <<-EOT
+    Every workload in the catalogue: its Cloud Run URL, its identity, the
+    trust zone it attaches through, and whether it carries the egress proxy.
 
-output "cluster_endpoint" {
-  description = "The private control-plane endpoint."
-  value       = module.cluster.endpoint
-  # Not a secret, but not something to print in a CI log either.
-  sensitive = true
+    The URL is internal — every service is `INGRESS_TRAFFIC_INTERNAL_ONLY` —
+    so a request arriving at it from the internet is refused before the
+    container sees it. It is what `deploy.yml` moves and what the console is
+    configured to call.
+  EOT
+
+  value = {
+    for name, workload in module.cloud_run : name => {
+      uri              = workload.uri
+      service_account  = workload.service_account_email
+      trust_zone       = workload.trust_zone
+      has_egress_proxy = workload.has_egress_proxy
+      network_tags     = workload.network_tags
+    }
+  }
 }
 
 output "service_account_emails" {
-  description = "The workload identity service accounts, one per deployable."
-  value       = module.secrets.service_account_emails
+  description = "The Cloud Run identities, one per deployable, keyed by catalogue name."
+  value       = { for name, workload in module.cloud_run : name => workload.service_account_email }
 }
 
 output "autonomy_ceiling" {
   description = <<-EOT
     The highest autonomy level this environment's platform may reach.
 
-    Surfaced as an output so an operator can answer "could this cluster trade
-    live" from the infrastructure rather than by reading a config map.
+    Surfaced as an output so an operator can answer "could this deployment
+    trade live" from the infrastructure rather than by reading a service's
+    environment.
   EOT
   value       = var.autonomy_ceiling
 }
@@ -49,8 +60,8 @@ output "image_prefix" {
   description = <<-EOT
     The prefix every image reference starts with.
 
-    Needed by the pipeline to tag what it pushes and by the manifests to name
-    what they pull, so it comes from the infrastructure rather than being
+    Needed by the pipeline to tag what it pushes and by the catalogue to name
+    what it runs, so it comes from the infrastructure rather than being
     written down twice.
   EOT
 
@@ -64,57 +75,98 @@ output "evidence_bucket" {
 
 output "workload_identity_provider" {
   description = <<-EOT
-    Set this as the GitHub repository variable GCP_WORKLOAD_IDENTITY_PROVIDER.
-
-    Until it is set, the deploy workflow cannot authenticate and says so. That
-    is the intended failure: the alternative is a service-account key in a
-    repository secret, which is a credential that never expires and leaves no
-    record of which run used it.
+    The provider the pipeline authenticates against. Informational: deploy.yml,
+    vendor.yml and infra.yml derive it from the committed tfvars rather than
+    from a repository variable, and the acceptance suite refuses a workflow
+    that reads one.
   EOT
 
   value = module.cicd.workload_identity_provider
 }
 
 output "deploy_service_account" {
-  description = "Set this as the GitHub repository variable GCP_DEPLOY_SERVICE_ACCOUNT."
+  description = "The pipeline's account. Derived by the workflows from the tfvars; surfaced here for an operator checking a grant."
   value       = module.cicd.service_account_email
 }
 
-output "edge_cells" {
+output "infra_service_account" {
   description = <<-EOT
-    Each cell's identity, subnet, node tag and permitted venues.
-
-    The node tag matters: every firewall rule constraining a cell targets it,
-    and a rule targeting a tag nothing carries does nothing silently.
+    The account infra.yml — the manually dispatched workflow that plans,
+    applies and tears down the execution nodes — authenticates as, so an
+    operator or an agent can iterate the infrastructure from the repository
+    with no key in existence. See modules/cicd for what bounds it.
   EOT
-
-  value = {
-    for id, cell in module.edge_cell : id => {
-      service_account            = cell.service_account_email
-      kubernetes_service_account = cell.kubernetes_service_account
-      subnet_id                  = cell.subnet_id
-      node_tag                   = cell.node_tag
-      venues                     = cell.venues
-    }
-  }
+  value       = module.cicd.infra_service_account
 }
 
 output "binary_authorization_attestor" {
-  description = <<-EOT
-    Set this as the GitHub repository variable `GCP_BINAUTHZ_ATTESTOR`.
-
-    Until it and `GCP_BINAUTHZ_KEY_VERSION` are set, `deploy.yml` refuses to
-    build. That is the intended failure: the alternative is a pipeline that
-    builds and pushes four images it cannot sign, and a cluster that refuses
-    every one of them at admission with no indication of why.
-  EOT
-
-  value = module.binary_authorization.attestor_name
+  description = "The attestor the pipeline signs for. Derived by deploy.yml from the tfvars; surfaced here for an operator checking the policy."
+  value       = module.binary_authorization.attestor_name
 }
 
 output "binary_authorization_key_version" {
-  description = "Set this as the GitHub repository variable `GCP_BINAUTHZ_KEY_VERSION`. The fully qualified KMS key version the pipeline signs with; the private half never leaves KMS."
+  description = "The fully qualified KMS key version the pipeline signs with; the private half never leaves KMS."
   value       = module.binary_authorization.attestor_key_version
+}
+
+output "egress_proxy" {
+  description = <<-EOT
+    The egress proxy every rendering runs: the mirrored image by digest, the
+    hosts the published bootstrap dials, and the loopback address each
+    listener answers on. The whole external surface of the platform's
+    outbound path in one place, which is the form a review is done on.
+  EOT
+
+  value = {
+    image     = module.egress_proxy.image
+    upstreams = module.egress_proxy.dialled_upstreams
+    endpoints = module.egress_proxy.endpoints
+  }
+}
+
+output "trust_zones" {
+  description = <<-EOT
+    Each declared zone's subnet, its network tag and the identities placed in
+    it; the paths that exist between zones; every destination outside the
+    VPC any zone may reach; and which zones hold any route out at all.
+
+    `zones_with_external_egress` is expected to be a short list and to stay
+    one. A zone appearing there that was not expected to is the finding.
+  EOT
+
+  value = {
+    subnets                    = module.trust_zones.zone_subnets
+    network_tags               = module.trust_zones.zone_network_tags
+    identities                 = module.trust_zones.zone_identities
+    permitted_paths            = module.trust_zones.permitted_paths
+    external_egress            = module.trust_zones.external_egress_destinations
+    zones_with_external_egress = module.trust_zones.zones_with_external_egress
+  }
+}
+
+output "execution_nodes" {
+  description = <<-EOT
+    Each node's identity, subnet, network tag, instance group, isolated core
+    range, and whether it is in shadow mode and whether the venue credential
+    is bound to it.
+
+    Empty in every environment today. `shadow_mode` is what a report of ADR
+    0020 step 3's state cites rather than asserts, and `venue_credential_bound`
+    is false unless the ceiling permits live trading *and* the node is out of
+    shadow mode *and* a secret was named.
+  EOT
+
+  value = {
+    for id, node in module.execution_node : id => {
+      service_account        = node.service_account_email
+      subnet_id              = node.subnet_id
+      node_tag               = node.node_tag
+      instance_group         = node.instance_group
+      isolated_cpus          = node.isolated_cpus
+      shadow_mode            = node.shadow_mode
+      venue_credential_bound = node.venue_credential_bound
+    }
+  }
 }
 
 output "interconnect_pairing_keys" {
@@ -143,10 +195,6 @@ output "private_connectivity_still_needed" {
     What a deployment must still arrange elsewhere for the private path to
     carry traffic: a circuit against each pairing key, somebody enabling an
     attachment after reviewing its far end, and DNS at the colocated site.
-
-    The counterpart of the data module's `enabled_without_an_adapter`, and for
-    the same reason: a gap an operator reads at plan time rather than
-    discovering at cutover.
   EOT
 
   value = module.connectivity.still_needs_arranging_out_of_band
@@ -166,73 +214,37 @@ output "enabled_apis" {
   value       = module.services.enabled
 }
 
-output "node_pool_bounds" {
-  description = <<-EOT
-    What the node pool may grow and shrink to, per zone and regionally.
-
-    Both forms, because they are three apart and confusing them is how a pool
-    ends up a third of the intended size. A HorizontalPodAutoscaler's ceiling is
-    only a policy if the regional maximum can hold it: `qip-api` asks for six
-    replicas at 250m, which is why nothing being able to add a node made that
-    ceiling a capacity limit instead.
-  EOT
-  value       = module.cluster.node_pool_bounds
-}
-
-output "confidential_nodes" {
-  description = <<-EOT
-    Whether the node pool's memory is encrypted by an AMD SEV key.
-
-    Surfaced so the answer comes from the infrastructure rather than from a
-    crate's name. `backend/crates/libs/qip-confidential` is statistical disclosure
-    control with no enclave and no attestation, and this being true does not
-    change that; see the variable and modules/data/NOT-PROVISIONED.md.
-  EOT
-  value       = module.cluster.confidential_nodes
-}
-
 output "journal_backup" {
   description = <<-EOT
-    What the edge cell journal backups cover, and where that stops.
+    What the journal snapshots cover, and where that stops.
 
-    `survives_region_loss` is the field to read: it is false whenever backups
-    are stored in the cluster's own region, which is the default.
-    `protected_pod_count` is the other one — a plan whose namespace selector
-    matches nothing succeeds, reports healthy and protects zero pods, which is
-    indistinguishable from a working backup until somebody needs one.
-
-    modules/backup/NOT-COVERED.md says what is deliberately excluded, including
-    the positions and open orders that the disaster-recovery runbook insists are
-    reconciled from the venue and never restored.
+    `covers_before_attach` is the field to read: the schedule protects a disk
+    only once `journal_snapshot_attachment_command` has been run for it, and
+    until then the answer is nothing. modules/backup/NOT-COVERED.md says what
+    is deliberately excluded, including the positions and open orders that
+    the disaster-recovery runbook insists are reconciled from the venue and
+    never restored.
   EOT
   value = merge(
     module.backup.coverage,
     {
-      plan                = module.backup.plan_name
-      protected_pod_count = module.backup.protected_pod_count
-      snapshot_schedule   = module.backup.snapshot_schedule_name
+      snapshot_schedule = module.backup.snapshot_schedule_name
     },
   )
 }
 
 output "journal_snapshot_attachment_command" {
   description = <<-EOT
-    The command that attaches the journal snapshot schedule to the journal
-    disks, and the reason it is an output instead of a resource.
+    The command that attaches the journal snapshot schedule to every journal
+    disk, and the reason it is an output instead of a resource.
 
-    A Compute Engine resource policy attaches to a disk. The journal disks are
-    named `pvc-<uuid>` and are created by the CSI driver when a cell's pod is
-    first scheduled — after any apply, with a name nothing could have
-    predicted. `infrastructure/kubernetes/base/journal-storage.yaml` labels them
-    `qip-journal=true` for exactly this reason; this is the other end of that
-    arrangement.
-
-    Until it has been run for a given disk, that disk is covered by the GKE
-    backup plan and by nothing else — which is enough until somebody deletes
-    the claim, at which point it is covered by nothing at all.
-
-    Run it after a cell's first pod is running, and again after adding a cell.
-    `docs/operations/disaster-recovery.md` carries it as a numbered step.
+    A Compute Engine resource policy attaches to a disk. A node's disk is
+    created by its managed instance group when the instance is built — after
+    any apply, under a name the group chose — and the instance template labels
+    it `qip_journal=true` for exactly this reason; this is the other end of
+    that arrangement. Run it after a node's first boot, and again after every
+    replacement. `docs/operations/disaster-recovery.md` carries it as a
+    numbered step.
   EOT
   value       = module.backup.snapshot_attachment_command
 }
@@ -241,26 +253,12 @@ output "security_command_center_still_needs_an_organisation" {
   description = <<-EOT
     What Security Command Center cannot do from a project-scoped configuration.
 
-    The counterpart of the data module's `enabled_without_an_adapter` and the
-    connectivity module's `still_needs_arranging_out_of_band`: a gap read at
-    plan time beats one inferred from an empty findings list months later. The
-    entry that matters most is the first — nothing this project defines
-    evaluates at all until SCC is activated at the organisation, and a project
-    cannot tell whether it has been.
+    A gap read at plan time beats one inferred from an empty findings list
+    months later. The entry that matters most is the first — nothing this
+    project defines evaluates at all until SCC is activated at the
+    organisation, and a project cannot tell whether it has been.
   EOT
   value       = module.scc.still_needs_an_organisation
-}
-
-output "infra_service_account" {
-  description = <<-EOT
-    Set this as the GitHub repository variable GCP_INFRA_SERVICE_ACCOUNT.
-
-    It is what infra.yml — the manually dispatched workflow that plans,
-    applies and tears down the stack — authenticates as, so an operator or an
-    agent can iterate the infrastructure from the repository with no key in
-    existence. See modules/cicd for what bounds it.
-  EOT
-  value       = module.cicd.infra_service_account
 }
 
 output "identity_frontend_environment" {
@@ -268,39 +266,9 @@ output "identity_frontend_environment" {
   value       = module.identity.frontend_environment
 }
 
-output "console_url" {
-  description = "The URL Argo CD is published on, or empty when the consoles are not published."
-  value       = module.console_ingress.hostname == "" ? "" : "https://${module.console_ingress.hostname}"
-}
-
-output "console_address" {
-  description = "The reserved address Argo CD's load balancer answers on."
-  value       = module.console_ingress.address
-}
-
-output "console_address_name" {
-  description = "The address's name, which the Ingress references by kubernetes.io/ingress.global-static-ip-name."
-  value       = module.console_ingress.address_name
-}
-
-output "kargo_url" {
-  description = "The URL Kargo is published on, or empty when the consoles are not published."
-  value       = module.console_ingress.kargo_hostname == "" ? "" : "https://${module.console_ingress.kargo_hostname}"
-}
-
-output "kargo_address" {
-  description = "The reserved address Kargo's load balancer answers on."
-  value       = module.console_ingress.kargo_address
-}
-
-output "kargo_address_name" {
-  description = "The address's name, which Kargo's Ingress references by kubernetes.io/ingress.global-static-ip-name."
-  value       = module.console_ingress.kargo_address_name
-}
-
 # --- The console's route to the platform (ADR 0018) --------------------------
 #
-# `scripts/deploy-frontends.sh` reads both. They are outputs rather than
+# `scripts/deploy-frontends.sh` reads these. They are outputs rather than
 # constants in the script because the script deploying against a value
 # Terraform did not create is the drift this arrangement exists to prevent.
 
@@ -309,14 +277,19 @@ output "console_egress_subnet" {
   value       = module.network.console_egress_subnet
 }
 
-output "api_internal_address" {
-  description = "The address qip-api's internal load balancer answers on, or null where none exists."
-  value       = module.network.api_internal_address
-}
-
 output "api_internal_base_url" {
-  description = "The value QIP_API_BASE_URL takes on the console. Null where the console has no platform to read, so a deployment cannot set the variable to the string 'null' and spend an afternoon on it."
-  value       = module.network.api_internal_address == null ? null : "http://${module.network.api_internal_address}:8080"
+  description = <<-EOT
+    The value QIP_API_BASE_URL takes on the console: the API's own Cloud Run
+    URL. Internal ingress, so it answers only a caller inside the VPC — the
+    console's direct VPC egress — and only one the catalogue names as an
+    invoker, which is the console's identity.
+
+    It replaces the reserved internal-load-balancer address the GKE runtime
+    needed: there is no load balancer between the console and the API now,
+    and no address to reserve. The console speaks HTTPS to it; the platform's
+    own binaries could not, and do not call the API.
+  EOT
+  value       = module.cloud_run["api"].uri
 }
 
 output "console_service_account_email" {

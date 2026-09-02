@@ -31,46 +31,6 @@ resource "google_kms_key_ring" "platform" {
   location = var.region
 }
 
-resource "google_kms_crypto_key" "node_encryption" {
-  name     = "qip-${var.environment}-node-encryption"
-  key_ring = google_kms_key_ring.platform.id
-
-  # Ninety days. Short enough that a compromised key has a bounded window,
-  # long enough that rotation is not itself a source of incidents.
-  rotation_period = "7776000s"
-
-  version_template {
-    algorithm        = "GOOGLE_SYMMETRIC_ENCRYPTION"
-    protection_level = "SOFTWARE"
-  }
-
-  # Destroying the key that encrypts etcd destroys the cluster's data.
-  lifecycle {
-    prevent_destroy = true
-  }
-
-  labels = var.labels
-}
-
-# The GKE service agent encrypts etcd with the node-encryption key as itself,
-# not as any workload — so the agent needs the key, exactly like the storage
-# agent in modules/evidence. Without this the cluster fails its precondition
-# with MISSING_IAM_PERMISSIONS_ON_CRYPTO_KEY, which is how the first real
-# apply died.
-resource "google_project_service_identity" "container" {
-  provider = google-beta
-  project  = var.project_id
-  service  = "container.googleapis.com"
-}
-
-resource "google_kms_crypto_key_iam_member" "gke_robot" {
-  crypto_key_id = google_kms_crypto_key.node_encryption.id
-  role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
-  member        = "serviceAccount:service-${var.project_number}@container-engine-robot.iam.gserviceaccount.com"
-
-  depends_on = [google_project_service_identity.container]
-}
-
 resource "google_kms_crypto_key" "secrets" {
   name            = "qip-${var.environment}-secrets"
   key_ring        = google_kms_key_ring.platform.id
@@ -86,43 +46,6 @@ resource "google_kms_crypto_key" "secrets" {
   }
 
   labels = var.labels
-}
-
-# The nodes' identity.
-#
-# Separate from every workload account on purpose. The kubelet pulls images and
-# writes node telemetry as this account; a pod authenticates as its own through
-# workload identity. Reusing a workload's account for the node pool would mean a
-# node compromise yields that workload's permissions, which is precisely the
-# sharing the accounts below exist to avoid.
-resource "google_service_account" "nodes" {
-  project      = var.project_id
-  account_id   = "qip-nodes-${var.environment}"
-  display_name = "qip nodes (${var.environment})"
-  description  = "The node pool's identity. Pulls images and writes node telemetry; runs no workload."
-}
-
-resource "google_project_iam_member" "node_telemetry" {
-  for_each = toset([
-    "roles/monitoring.metricWriter",
-    "roles/logging.logWriter",
-    "roles/stackdriver.resourceMetadata.writer",
-  ])
-
-  project = var.project_id
-  role    = each.value
-  member  = "serviceAccount:${google_service_account.nodes.email}"
-}
-
-# One service account per deployable. A compromised component has only its own
-# permissions, which is the entire argument for not sharing one.
-resource "google_service_account" "workload" {
-  for_each = var.service_accounts
-
-  project      = var.project_id
-  account_id   = "${each.value}-${var.environment}"
-  display_name = "qip ${each.key} (${var.environment})"
-  description  = "Workload identity for the qip ${each.key} deployable."
 }
 
 # The secrets themselves, created without values.
@@ -239,43 +162,6 @@ resource "google_secret_manager_secret" "platform" {
   }
 }
 
-# The API reads the tokens that authenticate its callers.
-resource "google_secret_manager_secret_iam_member" "api_tokens" {
-  for_each = toset([
-    for name in var.secret_names : name
-    if startswith(name, "qip-token-")
-  ])
-
-  project   = var.project_id
-  secret_id = google_secret_manager_secret.platform[each.value].secret_id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.workload["api"].email}"
-}
-
-# The capital-envelope key, readable by every central-plane workload.
-#
-# The API signs envelopes with it and the two brains verify and sign against
-# it; a cell verifies grants against the same key, and gets its own grant in
-# `modules/edge-cell`. Until this existed only the cells could read it — so the
-# process that *mints* the grants could not read the key it mints them under,
-# and the pod would have stopped at `ContainerCreating` when the CSI driver
-# failed to project a secret its identity was not allowed to fetch.
-#
-# One key rather than a signing key and a verification key: the envelope is
-# authenticated with an HMAC, which is symmetric, so the two are the same
-# bytes. Splitting the variable in two would produce a deployment where the
-# centre signs under one value and the cells verify under another, and the
-# failure — every grant rejected — reads as a mesh fault rather than a
-# configuration one.
-resource "google_secret_manager_secret_iam_member" "capital_envelope_key" {
-  for_each = var.service_accounts
-
-  project   = var.project_id
-  secret_id = google_secret_manager_secret.platform["qip-capital-envelope-key"].secret_id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.workload[each.key].email}"
-}
-
 # The venue credential is readable only where live trading is permitted at all.
 #
 # This is the infrastructure half of the live-trading control. The application
@@ -283,39 +169,28 @@ resource "google_secret_manager_secret_iam_member" "capital_envelope_key" {
 # credential unreadable in an environment that could not use it anyway, so a
 # misconfigured application in a paper environment still cannot authenticate to
 # a venue.
+#
+# The reader is the fast brain's Cloud Run identity, passed in by the root
+# from the catalogue rather than created here: every workload's account is
+# created by `modules/cloudrun` beside the workload, and this module holds
+# only the one grant whose condition is the environment's ceiling. `count`
+# on the root's predicate is the shape three acceptance tests evaluate rung
+# by rung; keep it.
 resource "google_secret_manager_secret_iam_member" "venue_credential" {
   count = var.venue_credential_readable ? 1 : 0
 
   project   = var.project_id
   secret_id = google_secret_manager_secret.platform["qip-venue-credential"].secret_id
   role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.workload["fastbrain"].email}"
+  member    = "serviceAccount:${var.venue_credential_reader}"
 }
 
-# The workload identity bindings are deliberately NOT here. The pool they
-# name — `<project_id>.svc.id.goog` — exists only once a cluster with
-# workload identity has been created, and the cluster consumes this module's
-# node-encryption key, so a binding here would need the cluster to exist
-# before the thing the cluster depends on. They live in the root, after
-# `module.cluster`. The first real apply proved the cycle the hard way:
-# "Identity Pool does not exist (…svc.id.goog)".
-
-# The minimum each deployable needs beyond its secrets: write telemetry.
-resource "google_project_iam_member" "telemetry" {
-  for_each = var.service_accounts
-
-  project = var.project_id
-  role    = "roles/monitoring.metricWriter"
-  member  = "serviceAccount:${google_service_account.workload[each.key].email}"
-}
-
-resource "google_project_iam_member" "logging" {
-  for_each = var.service_accounts
-
-  project = var.project_id
-  role    = "roles/logging.logWriter"
-  member  = "serviceAccount:${google_service_account.workload[each.key].email}"
-}
+# Every other grant a workload needs — its mounted secrets, telemetry,
+# logging — is made by `modules/cloudrun` on the identity it creates, in the
+# file where the mount is declared. There is no per-deployable account here
+# any more: the GKE runtime's `workload` accounts and their workload-identity
+# bindings left with it (ADR 0024), and an account created here for a
+# workload created elsewhere would be an identity with nothing attached.
 
 # --- The console's identity (ADR 0018) ---------------------------------------
 

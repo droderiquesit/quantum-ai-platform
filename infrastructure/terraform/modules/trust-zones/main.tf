@@ -23,9 +23,11 @@
 #   * the internet reaches `public_ingress` zones and nothing else, from
 #     Google's load-balancer ranges only.
 #
-# Nothing here is wired into the root module yet. An unwired module changes no
-# plan, which is deliberate: the wiring pass carries its own plan as evidence.
-# NOT-ENFORCED-HERE.md, §Not wired, lists exactly what that pass has to do.
+# Wired from `infrastructure/terraform/main.tf` under ADR 0024. A Cloud Run
+# workload attaches to its zone's subnet and carries its zone's network tag
+# on its VPC interface, which is what makes every rule below bind it.
+# NOT-ENFORCED-HERE.md is the part a network and an IAM policy still cannot
+# hold, and it has not shrunk by being wired.
 
 locals {
   # --- the zone model ------------------------------------------------------
@@ -199,22 +201,6 @@ resource "google_compute_subnetwork" "zone" {
   # no-external-address posture survivable rather than merely stated.
   private_ip_google_access = true
 
-  dynamic "secondary_ip_range" {
-    for_each = each.value.pod_cidr == null ? [] : [each.value.pod_cidr]
-    content {
-      range_name    = "pods"
-      ip_cidr_range = secondary_ip_range.value
-    }
-  }
-
-  dynamic "secondary_ip_range" {
-    for_each = each.value.service_cidr == null ? [] : [each.value.service_cidr]
-    content {
-      range_name    = "services"
-      ip_cidr_range = secondary_ip_range.value
-    }
-  }
-
   # "What talked to what" is the question asked after an incident, and half a
   # percent is enough to answer it.
   log_config {
@@ -224,55 +210,44 @@ resource "google_compute_subnetwork" "zone" {
   }
 }
 
-# One identity per zone, and therefore no identity shared by two.
+# The identities in each zone, as pairs this module can key a grant on.
 #
-# This is the structural half of the wallet/treasury separation: the read path
-# and the signing path authenticate as different principals because there is no
-# expression in this module that could give them the same one. Workload
-# Identity Federation throughout — a downloaded key would make the whole
-# arrangement a formality, since a key copied out of one zone works from any.
-resource "google_service_account" "zone" {
-  for_each = var.zones
-
-  project    = var.project_id
-  account_id = "qip-tz-${local.zone_code[each.key]}-${var.environment}"
-
-  lifecycle {
-    precondition {
-      condition     = length("qip-tz-${local.zone_code[each.key]}-${var.environment}") <= 30
-      error_message = "The derived service account id qip-tz-${local.zone_code[each.key]}-${var.environment} is ${length("qip-tz-${local.zone_code[each.key]}-${var.environment}")} characters; Google allows 30. Shorten the code for this zone in local.zone_code."
-    }
+# Keyed by zone and position rather than by email, because the email of a
+# Cloud Run identity is not known until it exists and a `for_each` key must
+# be. The positions are stable for as long as the root lists the catalogue in
+# one order, which it does by name.
+locals {
+  ledger_read_members = {
+    for pair in flatten([
+      for zone in local.ledger_readers : [
+        for index, email in lookup(var.zone_identities, zone, []) : { key = "${zone}-${index}", email = email }
+      ]
+    ]) : pair.key => pair.email
   }
 
-  display_name = "qip trust zone ${each.key} (${var.environment})"
-  description  = "Workload identity for the ${each.key} trust zone. Blueprint §46.1."
-}
+  ledger_append_members = {
+    for pair in flatten([
+      for zone in local.ledger_appenders : [
+        for index, email in lookup(var.zone_identities, zone, []) : { key = "${zone}-${index}", email = email }
+      ]
+    ]) : pair.key => pair.email
+  }
 
-resource "google_service_account_iam_member" "workload_identity" {
-  for_each = var.zones
+  fabric_publish_members = {
+    for pair in flatten([
+      for zone in local.fabric_publishers : [
+        for index, email in lookup(var.zone_identities, zone, []) : { key = "${zone}-${index}", email = email }
+      ]
+    ]) : pair.key => pair.email
+  }
 
-  service_account_id = google_service_account.zone[each.key].name
-  role               = "roles/iam.workloadIdentityUser"
-  member             = "serviceAccount:${var.project_id}.svc.id.goog[${var.kubernetes_namespace}/${each.value.kubernetes_service_account}]"
-}
-
-# The baseline every zone gets and no zone gets more of: it may say what it did
-# and how it is. A zone that cannot write a log is a zone whose breach has no
-# record, and that is the one grant worth having before any other.
-resource "google_project_iam_member" "telemetry" {
-  for_each = var.zones
-
-  project = var.project_id
-  role    = "roles/monitoring.metricWriter"
-  member  = "serviceAccount:${google_service_account.zone[each.key].email}"
-}
-
-resource "google_project_iam_member" "logging" {
-  for_each = var.zones
-
-  project = var.project_id
-  role    = "roles/logging.logWriter"
-  member  = "serviceAccount:${google_service_account.zone[each.key].email}"
+  fabric_attach_members = {
+    for pair in flatten([
+      for zone in local.fabric_subscribers : [
+        for index, email in lookup(var.zone_identities, zone, []) : { key = "${zone}-${index}", email = email }
+      ]
+    ]) : pair.key => pair.email
+  }
 }
 
 # --- default deny, in both directions ---------------------------------------
@@ -323,6 +298,34 @@ resource "google_compute_firewall" "deny_ingress" {
   log_config {
     metadata = "INCLUDE_ALL_METADATA"
   }
+}
+
+# Google APIs, over the restricted VIP, from every zone.
+#
+# The one path that is not a zone decision: every workload reads Secret
+# Manager for its mounted secrets and writes telemetry, and the egress proxy
+# beside it reaches Cloud Storage, BigQuery and Vertex at the same four
+# addresses. `modules/network`'s private zone resolves every Google API to
+# this range, so a rule naming anything wider would be a route to nothing
+# that resolves. Which *API* a zone may reach at that range is a VPC Service
+# Controls question this configuration cannot answer — NOT-ENFORCED-HERE.md.
+resource "google_compute_firewall" "google_apis" {
+  for_each = var.zones
+
+  project = var.project_id
+  name    = "qip-${var.environment}-tz-${each.key}-google-apis"
+  network = var.network_id
+
+  direction = "EGRESS"
+  priority  = 1000
+
+  allow {
+    protocol = "tcp"
+    ports    = ["443"]
+  }
+
+  destination_ranges = [var.google_apis_range]
+  target_tags        = [local.zone_tag[each.key]]
 }
 
 # --- the permitted paths ------------------------------------------------------
@@ -538,23 +541,23 @@ resource "google_compute_router_nat" "egress" {
 # Append-only is held by the schema and by the application, not by this
 # binding — see NOT-ENFORCED-HERE.md rather than reading the mode as a control.
 resource "google_spanner_database_iam_member" "ledger_read" {
-  for_each = var.ledger_database == null ? toset([]) : toset(local.ledger_readers)
+  for_each = var.ledger_database == null ? {} : local.ledger_read_members
 
   project  = var.project_id
   instance = var.ledger_database.instance
   database = var.ledger_database.database
   role     = "roles/spanner.databaseReader"
-  member   = "serviceAccount:${google_service_account.zone[each.value].email}"
+  member   = "serviceAccount:${each.value}"
 }
 
 resource "google_spanner_database_iam_member" "ledger_append" {
-  for_each = var.ledger_database == null ? toset([]) : toset(local.ledger_appenders)
+  for_each = var.ledger_database == null ? {} : local.ledger_append_members
 
   project  = var.project_id
   instance = var.ledger_database.instance
   database = var.ledger_database.database
   role     = "roles/spanner.databaseUser"
-  member   = "serviceAccount:${google_service_account.zone[each.value].email}"
+  member   = "serviceAccount:${each.value}"
 }
 
 # --- the control fabric -------------------------------------------------------
@@ -563,12 +566,12 @@ resource "google_spanner_database_iam_member" "ledger_append" {
 # direction. A publisher that can also subscribe can read every other zone's
 # payload, which turns a fabric into a shared bus.
 resource "google_pubsub_topic_iam_member" "fabric_publish" {
-  for_each = var.control_fabric_topic == null ? toset([]) : toset(local.fabric_publishers)
+  for_each = var.control_fabric_topic == null ? {} : local.fabric_publish_members
 
   project = var.project_id
   topic   = var.control_fabric_topic
   role    = "roles/pubsub.publisher"
-  member  = "serviceAccount:${google_service_account.zone[each.value].email}"
+  member  = "serviceAccount:${each.value}"
 }
 
 # The attach side, and only the attach side. `subscriber` on a topic grants
@@ -578,10 +581,10 @@ resource "google_pubsub_topic_iam_member" "fabric_publish" {
 # be inferred: a reader who takes this for the whole grant will look for a
 # consumer permission that is not here.
 resource "google_pubsub_topic_iam_member" "fabric_attach" {
-  for_each = var.control_fabric_topic == null ? toset([]) : toset(local.fabric_subscribers)
+  for_each = var.control_fabric_topic == null ? {} : local.fabric_attach_members
 
   project = var.project_id
   topic   = var.control_fabric_topic
   role    = "roles/pubsub.subscriber"
-  member  = "serviceAccount:${google_service_account.zone[each.value].email}"
+  member  = "serviceAccount:${each.value}"
 }

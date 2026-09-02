@@ -1,12 +1,18 @@
 # Binary Authorization: only an image this pipeline signed may run.
 #
-# `docs/operations/external-dependencies.md` named this gap precisely. The
-# cluster has always carried `binary_authorization =
-# PROJECT_SINGLETON_POLICY_ENFORCE`, which reads like a control and was not
-# one: with no policy resource in the project, Google evaluates the *implicit*
-# policy, whose default rule is `ALWAYS_ALLOW`. Enforcement was on and it
-# refused nothing. A switch that reports "on" and admits every image is worse
-# than an absent control, because a reviewer reads the line and stops looking.
+# `docs/operations/external-dependencies.md` named this gap precisely, in the
+# GKE runtime: enforcement was switched on against no policy, so Google
+# evaluated the *implicit* policy — default rule `ALWAYS_ALLOW` — and refused
+# nothing while reading as though it did. A switch that reports "on" and
+# admits every image is worse than an absent control, because a reviewer
+# reads the line and stops looking.
+#
+# The same shape holds on Cloud Run. Every service and job in the catalogue
+# carries `binary_authorization { use_default = true }`, which evaluates the
+# project's default policy — this one — on every revision. With no policy
+# resource that would again be the implicit one. So this is the policy, and
+# it is one rule with no holes: the images the pipeline attests, and the one
+# vendored image `vendor.yml` mirrors and attests with the same attestor.
 #
 # The chain is five links and four of them are here:
 #
@@ -15,20 +21,25 @@
 #   3. an attestor, which is that note plus the *public* half of the key;
 #   4. a policy whose default rule requires an attestation by that attestor.
 #
-# The fifth is something that signs, and that is the step added to
+# The fifth is something that signs, and that is the step in
 # `.github/workflows/deploy.yml` after the push. What a deployment must still
 # supply, and what this chain does and does not prove, is in OUT-OF-BAND.md.
 # Read it before applying: a deny-by-default policy with no working signer
-# produces a cluster that refuses every image, which is a safe failure and a
-# total one.
+# produces a catalogue in which every revision is refused, which is a safe
+# failure and a total one.
+#
+# The execution node has no admission controller at all — §41.4's point is
+# that nothing sits between the binary and the kernel — so this policy does
+# not reach it. `modules/execution-node/README.md` says what stands in for
+# it there, and that it is a contract on the image rather than a control.
 #
 # # There is no enable flag here, and that is deliberate
 #
 # Every optional service in this configuration defaults to off. This is not
-# optional. The cluster already enforces the project's singleton policy, so the
-# only two states available are "a policy that denies by default" and "the
-# implicit policy that allows everything". An off switch here would be a switch
-# whose off position is the gap.
+# optional. `use_default = true` is set in the Cloud Run module without a
+# variable, so the only two states available are "a policy that denies by
+# default" and "the implicit policy that allows everything". An off switch
+# here would be a switch whose off position is the gap.
 
 locals {
   prefix = "qip-${var.environment}"
@@ -188,13 +199,11 @@ resource "google_binary_authorization_attestor_iam_member" "ci_reads_attestor" {
 resource "google_binary_authorization_policy" "platform" {
   project = var.project_id
 
-  # Google's own policy, evaluated first, and the reason the cluster still
-  # starts at all. GKE's system workloads — kube-dns, the metrics server, the
-  # Calico agents that enforce every NetworkPolicy in this platform — run
-  # images Google builds and this pipeline has never signed. With this
-  # `DISABLE`, the default rule below denies them: the cluster comes up with no
-  # DNS and no network policy enforcement, and it reads as broken nodes rather
-  # than as a policy decision somebody made here.
+  # Google's own policy, evaluated first. It admits the system images Google
+  # maintains and nothing else; on Cloud Run there is no system workload of
+  # ours that needs it, and leaving it enabled costs nothing while keeping
+  # this policy's own rule the one that decides every image this platform
+  # asks to run.
   global_policy_evaluation_mode = "ENABLE"
 
   # Exemptions, by image path prefix. Empty by default: every pattern here is
@@ -222,19 +231,10 @@ resource "google_binary_authorization_policy" "platform" {
     require_attestations_by = [google_binary_authorization_attestor.build.name]
   }
 
-  # The same rule again, pinned to the cluster that trades.
-  #
-  # Deliberately a duplicate of the default. A cluster rule outranks the
-  # default, so the day somebody loosens the default to admit a vendor image,
-  # this cluster keeps requiring an attestation instead of quietly inheriting
-  # the wider rule. The key is `<location>.<cluster name>` — GKE matches on
-  # exactly that string, and a rule naming a cluster that does not exist is
-  # silently never evaluated, so it comes from the cluster module's own output
-  # rather than being spelled again here.
-  cluster_admission_rules {
-    cluster                 = var.cluster_id
-    evaluation_mode         = "REQUIRE_ATTESTATION"
-    enforcement_mode        = "ENFORCED_BLOCK_AND_AUDIT_LOG"
-    require_attestations_by = [google_binary_authorization_attestor.build.name]
-  }
+  # No per-cluster rule any more. The GKE runtime carried a second copy of
+  # the default pinned to the cluster, so that a loosened default could not
+  # reach the cluster that traded. Cloud Run evaluates the default rule and
+  # nothing else, so the one rule above is the whole control — and the
+  # variable that would loosen it, `exempt_image_patterns`, is deliberately
+  # not surfaced from the root.
 }

@@ -1822,7 +1822,60 @@ fn every_metric_an_alert_policy_queries_is_one_the_platform_emits() {
              could, it would watch a series nothing produces."
         );
     }
+
+    // The other half. A policy naming a real series is necessary; a real
+    // series that nothing pages on is the failure the observability rule
+    // records as still open — a reconciliation break charted and paging no
+    // one. These are the series a person must be woken for, on both planes,
+    // and each must be both registered by the code and named by a policy.
+    for (series, why) in SERIES_THAT_MUST_PAGE {
+        assert!(
+            emitted.contains(&format!("\"{series}\"")),
+            "{series} is on the list of series that must page and nothing registers it: {why}"
+        );
+        assert!(
+            queried.contains(series),
+            "no alert policy names {series}: {why}. It is charted and pages no one, which \
+             reads in the console as a project being watched."
+        );
+    }
 }
+
+/// The series a person must be woken for, and why.
+///
+/// A second copy of the policy list on purpose: a test that read the list
+/// out of the policies it checks would agree with every deletion. Adding a
+/// series that pages is therefore two edits and a reviewer who sees both.
+const SERIES_THAT_MUST_PAGE: [(&str, &str); 7] = [
+    (
+        "qip_kill_switch_tripped",
+        "the platform has halted and no order will be sent until an operator clears it",
+    ),
+    (
+        "qip_live_fills_total",
+        "an order reached a real venue in an environment that should only ever trade on paper",
+    ),
+    (
+        "qip_limit_breaches",
+        "a risk limit has been breached and the book is not coming back inside on its own",
+    ),
+    (
+        "qip_permission_denials_total",
+        "an agent reached for a capability its manifest does not grant",
+    ),
+    (
+        "qip_edge_halted",
+        "an execution node is refusing to trade, by kill switch or by policy",
+    ),
+    (
+        "qip_edge_reconciliation_breaks_total",
+        "a node's book and its venue's record disagree",
+    ),
+    (
+        "qip_central_reconciliation_breaks_total",
+        "the central plane acted on a report whose exposure disagrees with the envelope it granted",
+    ),
+];
 
 #[test]
 fn something_collects_the_metrics_the_alert_policies_depend_on() {

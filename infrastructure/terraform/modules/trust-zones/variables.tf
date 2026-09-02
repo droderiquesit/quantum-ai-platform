@@ -24,19 +24,6 @@ variable "network_id" {
   type        = string
 }
 
-variable "kubernetes_namespace" {
-  description = <<-EOT
-    The namespace the workload identity bindings name.
-
-    One namespace, matching the rest of the platform. The zone boundary is the
-    service account and the subnet, not the namespace: a namespace is a naming
-    convenience and nothing in Kubernetes stops a workload being scheduled
-    with the wrong one, which is why nothing here depends on it.
-  EOT
-  type        = string
-  default     = "qip"
-}
-
 variable "zones" {
   description = <<-EOT
     The trust zones to create, keyed by zone name.
@@ -60,20 +47,19 @@ variable "zones" {
         for it on every hop.
       * `subnet_cidr` is the zone's own range, and it is the range the path
         rules name — so two zones sharing one would be two zones with one
-        boundary drawn between them on paper.
-      * `pod_cidr` and `service_cidr` are optional secondary ranges, for a
-        zone that hosts a GKE node pool.
-      * `kubernetes_service_account` is the KSA the zone's identity is bound
-        to. Wrong here means a pod that authenticates as nothing, which fails
-        closed and is diagnosed by an audit log entry naming the binding.
+        boundary drawn between them on paper. A Cloud Run direct-VPC-egress
+        interface needs a /26 or larger, and Google reserves addresses in it
+        as instances scale; a /24 per zone is the working size.
+
+    A zone's identities are not declared here. They are the Cloud Run
+    workloads the catalogue places in the zone, and the root passes them in
+    through `zone_identities`, so a zone with no workload has no identity and
+    no grant.
   EOT
 
   type = map(object({
-    region                     = string
-    subnet_cidr                = string
-    pod_cidr                   = optional(string)
-    service_cidr               = optional(string)
-    kubernetes_service_account = string
+    region      = string
+    subnet_cidr = string
   }))
 
   default = {}
@@ -112,17 +98,62 @@ variable "zones" {
     error_message = "Two zones share a subnet range. The path rules name ranges, so zones sharing one can reach each other whatever this module declares — the boundary would exist only in the diagram."
   }
 
-  validation {
-    condition = alltrue([
-      for zone in values(var.zones) :
-      can(regex("^[a-z][a-z0-9-]{1,61}[a-z0-9]$", zone.kubernetes_service_account))
-    ])
-    error_message = "A Kubernetes service account name is lower case, starts with a letter, and contains only letters, digits and hyphens."
-  }
+}
+
+variable "zone_identities" {
+  description = <<-EOT
+    The service accounts placed in each zone, keyed by zone name: the
+    identities `modules/cloudrun` created for the workloads the catalogue
+    puts there. The ledger and control-fabric grants below are made to these
+    accounts and to nothing else.
+
+    Empty by default, which grants nothing. A zone named here that is not in
+    `zones` is refused, because an identity in a zone that has no subnet and
+    no rules is an identity outside every boundary.
+
+    Whether one account appears under two zones cannot be checked at plan
+    time — the emails are not known until the accounts exist — so the
+    structural guarantee is the catalogue's: every workload names exactly one
+    zone, and `modules/cloudrun` creates exactly one account per workload.
+  EOT
+
+  type    = map(list(string))
+  default = {}
 
   validation {
-    condition     = length(distinct([for zone in values(var.zones) : zone.kubernetes_service_account])) == length(var.zones)
-    error_message = "Two zones name the same Kubernetes service account, which is two zones with one identity. Wallet read and treasury write are the pair this matters most for: an identity shared is a boundary that exists only until somebody reads the token."
+    condition = alltrue([
+      for zone in keys(var.zone_identities) : contains([
+        "public-edge",
+        "application-identity",
+        "ingestion-discovery",
+        "cognition",
+        "valuation",
+        "intelligence",
+        "optimisation",
+        "control-fabric",
+        "execution",
+        "ledger",
+        "wallet-read",
+        "treasury-write",
+        "management",
+      ], zone)
+    ])
+    error_message = "zone_identities names a zone outside the thirteen of blueprint §46.1. An identity in an undeclared zone is an identity outside every boundary."
+  }
+}
+
+variable "google_apis_range" {
+  description = <<-EOT
+    The range every zone may reach Google APIs on, for the one egress rule
+    that permits it. The restricted VIP by default, which `modules/network`'s
+    private zone resolves every `*.googleapis.com` to.
+  EOT
+  type        = string
+  default     = "199.36.153.8/30"
+
+  validation {
+    condition     = var.google_apis_range != "0.0.0.0/0"
+    error_message = "Google's APIs are not the whole internet."
   }
 }
 

@@ -1,20 +1,17 @@
-# Development: the central plane on its own.
+# Development: the central plane on its own, on Cloud Run.
 #
-# No cells. A cell exists to be next to a venue, and there is no venue here —
-# a development cell would be the same binary on the same machine as the
-# central plane, testing the deployment topology and nothing about latency.
-# `edge_cells = {}` is a working configuration, not an incomplete one.
+# No execution node. A node exists to be next to a venue, and there is no
+# venue here — and a node must be configured for at least one venue before
+# the plan admits it. `execution_nodes = {}` is a working configuration, not
+# an incomplete one.
 
 # The project this environment lives in. An identifier, not a secret: it
 # appears in every resource name and in the pipeline's own configuration, so
 # keeping it out of version control would buy nothing and cost reproducibility.
 #
-# All four environments name the same project today. Separate projects would
-# be better — a blast radius that stops at a project boundary is the only one
-# that reliably stops — and the change is this one line per file plus a state
-# bucket each. What makes one project survivable meanwhile is that every
-# resource carries the `environment` prefix below, so `dev` and `prod` cannot
-# collide on a name.
+# Each environment names a project of its own, or says it has none. Two
+# environments in one project share one IAM boundary, one KMS key ring and one
+# Binary Authorization attestor, whatever their name prefixes say.
 project_id = "algorik-dev"
 
 # The project's numeric id, recorded so nothing has to ask for it. It is an
@@ -29,47 +26,48 @@ environment      = "dev"
 region           = "us-east4"
 autonomy_ceiling = "paper_trading"
 
-node_count   = 1
-machine_type = "e2-standard-4"
-
-# The pool may shrink to one node per zone and grow to three.
+# --- The trust zones (blueprint §46.1) ---------------------------------------
 #
-# A floor of one is correct here and nowhere else: development has no market
-# open to be cold for, so the argument for keeping capacity warm overnight does
-# not apply. The ceiling is low on purpose — this environment has no edge cells
-# and nothing that should ever need nine nodes, so a low maximum turns a runaway
-# workload into a `Pending` pod rather than into a bill.
-min_node_count = 1
-max_node_count = 3
-
-# Reachable from the office range only. Never the whole internet: a private
-# cluster with a public control plane is a private cluster in name only.
-authorised_networks = []
-
-# The first two remote cells of the v4 footprint (docs/operations/
-# deploying-an-edge-cell.md): London in the metro, Tokyo in the metro.
-# CIDRs follow the runbook's ladder — cell 1 and cell 2. `venues` is empty
-# deliberately: a fresh cell can reach nothing until the venue ranges are
-# added, which is step 9 of the runbook and never the default.
-edge_cells = {
-  london-1 = {
-    region       = "europe-west2"
-    subnet_cidr  = "10.16.0.0/20"
-    pod_cidr     = "10.20.0.0/14"
-    service_cidr = "10.24.0.0/20"
-    venues       = {}
+# The three zones the catalogue places a workload in, and no others: a zone
+# with nothing in it constrains nothing, and a range chosen for a zone nobody
+# uses is the range that collides later. Each is a /24 — a Cloud Run direct
+# VPC egress interface needs a /26 or larger and Google reserves addresses
+# in it as instances scale.
+#
+# The ranges sit above the console's 10.0.16.0/26 and below the ladder the
+# execution nodes draw from (10.<64+n>.0.0/16, per environments/README.md),
+# so nothing here overlaps a node's range whichever node is added first.
+trust_zones = {
+  "application-identity" = {
+    region      = "us-east4"
+    subnet_cidr = "10.0.32.0/24"
   }
-  tokyo-1 = {
-    region       = "asia-northeast1"
-    subnet_cidr  = "10.32.0.0/20"
-    pod_cidr     = "10.36.0.0/14"
-    service_cidr = "10.40.0.0/20"
-    venues       = {}
+  "cognition" = {
+    region      = "us-east4"
+    subnet_cidr = "10.0.33.0/24"
+  }
+  "intelligence" = {
+    region      = "us-east4"
+    subnet_cidr = "10.0.34.0/24"
   }
 }
 
-# Every managed service off. Development runs on memory and local files, which
-# is what the three implemented storage targets are for.
+# No path between zones, no external egress, no public ingress. The API is
+# reached by the console as a named Cloud Run invoker, which needs no
+# firewall path; nothing here reaches a vendor, because no vendor's ranges
+# have been recorded and the proxy's IBM listeners are reachable from no
+# zone declared here. Each of these is a declaration somebody has to write
+# down, with a note saying why.
+permitted_paths = {}
+external_egress = {}
+public_ingress  = {}
+
+# No execution node. See the header, and modules/execution-node/README.md
+# for the entry a node needs when a venue's published ranges exist.
+execution_nodes = {}
+
+# Every managed service off. Development runs on memory, which is what the
+# implemented storage targets are for on an instance with no volume.
 enable_bigquery      = false
 enable_cloud_storage = false
 enable_alloydb       = false
@@ -80,49 +78,25 @@ enable_vertex_ai     = false
 
 # --- Off, and each is a decision rather than an oversight --------------------
 
-# Confidential VMs on the nodes. Real hardening, and off because
-# `backend/crates/libs/qip-confidential` is statistical disclosure control with no
-# enclave and no attestation — turning this on next to a crate with that name
-# lets the two together imply a guarantee neither provides. It is also never a
-# one-line change: the machine type above is Intel and this needs n2d, c2d or
-# c3d, which the cluster module refuses at plan time.
-enable_confidential_nodes = false
-
-# Security Command Center's project-scoped resources: two custom detectors that
-# watch for a cluster with Binary Authorization enforcement turned off or a
-# public control plane. Off because they only ever evaluate if SCC is activated
-# at the organisation, which is not a project-level act and which nothing here
-# can check. Detectors that are stored and never run read in the console as a
-# project being watched, which is worse than the gap they replace.
+# Security Command Center's project-scoped resources. Off because they only
+# ever evaluate if SCC is activated at the organisation, which is not a
+# project-level act and which nothing here can check. Detectors that are
+# stored and never run read in the console as a project being watched, which
+# is worse than the gap they replace.
 enable_security_command_center = false
 
 # The only repository whose pipeline may deploy into this project. No default
 # exists for this on purpose: a default would name a repository somebody else
 # could be running, and the consequence of getting it wrong is that their
-# pipeline pushes images and applies manifests here.
+# pipeline pushes images and moves services here.
 github_repository = "droderiquesit/quantum-ai-platform"
 
-# pd-standard, 50GB: a fresh project's SSD_TOTAL_GB quota is 250 in the
-# region, and a regional cluster's three pd-ssd boot disks at the default
-# 100GB are already 300 — the first apply died on exactly that. Standard
-# disks draw on a separate, far larger quota, and development does not trade
-# on its disk latency.
-node_disk_type    = "pd-standard"
-node_disk_size_gb = 50
-
-# Off, so infra.yml's `down` can actually destroy this cluster between test
-# sessions and, separately, so a cluster left `tainted` by a failed create
-# (quota, a bad config) can be destroyed and recreated rather than stuck
-# forever. The provider default is true and refuses both with the same
-# message a deliberate teardown gets. Nothing here trades, so there is no
-# live book this protects.
-cluster_deletion_protection = false
-
-# Flip to true and re-apply after the first deployment is running: the four
-# workload alert policies name Prometheus metrics, and Cloud Monitoring
-# refuses a policy for a metric it has never ingested. While this is false
-# the alerts do not exist, which is the honest description of an environment
-# whose workloads have never emitted a metric.
+# Flip to true and re-apply only once a scrape has been observed — a
+# `prometheus.googleapis.com/qip_*` descriptor visible in this project. The
+# alert policies name Prometheus metrics, and Cloud Monitoring refuses a
+# policy for a metric it has never ingested. While this is false the alerts
+# do not exist, which is the honest description of an environment nothing
+# has scraped: modules/observability/NOT-SCRAPED.md says what does not yet.
 # workload_metrics_exist = true
 
 # --- Customer identity ------------------------------------------------------
@@ -137,39 +111,16 @@ identity_authorized_domains = [
   "algorik-landing-rgxpsss2lq-uk.a.run.app",
 ]
 
-# Publish the delivery consoles on a real URL, behind Identity-Aware Proxy.
-#
-# The desk asked for an address it can open rather than a tunnel it has to
-# start. IAP is what makes that safe to say yes to: the request is
-# authenticated against Google identity at Google's edge, so an
-# unauthenticated visitor never reaches Argo CD's login page, and who may
-# pass is the list below rather than whoever holds a password.
-enable_console_ingress = true
-
-# The desk. A group would be better than a person once there is more than
-# one operator — membership then changes without an apply.
-console_operators = [
-  "user:droderiques.it@gmail.com",
-]
-
 # --- The console's route to the platform (ADR 0018) --------------------------
 #
-# Until these existed the portal had no platform to read. `QIP_API_BASE_URL`
-# was unset because no value could have worked: `qip-api` is a ClusterIP
-# Service in a private cluster, and Cloud Run had no path into the VPC at all.
-# Every page said "unavailable" — correctly, and permanently.
+# The portal reaches `qip-api` at the API's own Cloud Run URL, as the one
+# invoker the catalogue names. This subnet is the interface the portal's
+# direct VPC egress attaches to; 10.0.16.0/26 is a /26 because that is the
+# smallest direct VPC egress accepts, and the console needs a handful of
+# addresses, not a network.
 #
-# 10.0.16.0/26 sits immediately above the primary subnet's 10.0.0.0/20 and
-# below nothing. It is a /26 because that is the smallest direct VPC egress
-# accepts, and the console needs a handful of addresses, not a network.
+# There is no `api_internal_address` any more. The GKE runtime reserved an
+# address for an internal load balancer the cluster created from a Service;
+# with no cluster there is no load balancer and nothing to reserve. The URL
+# the console calls is the `api_internal_base_url` output.
 console_egress_cidr = "10.0.16.0/26"
-
-# Inside the primary subnet, at the far end of it. GKE allocates node
-# addresses from the bottom of the range upward, so the top is where a
-# reserved address does not collide with a pool that grows.
-#
-# This value is repeated in infrastructure/helm/qip/values-dev.yaml, where the
-# Service claims it. `console_route.rs` refuses a commit where the two
-# disagree — the same guard manifest_wiring.rs applies to the mesh ports, for
-# the same reason: an address written twice is an address that drifts once.
-api_internal_address = "10.0.15.250"
