@@ -77,7 +77,7 @@ use qip_data_finder::legal::{LicensingPosture, SourceLicense};
 use qip_data_finder::probe::{HeadResponse, InMemoryProbe, PayloadSample, RobotsFetch};
 use qip_data_finder::quality::SourceCost;
 use qip_data_finder::source::{SourceCandidate, SourceIdentity};
-use qip_edge::cell::{Cell, CellConfig, Placer};
+use qip_edge::cell::{Cell, CellConfig, Placer, PricingPolicy};
 use qip_edge::dropcopy::DropCopyFill;
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::journal::Decision as JournalDecision;
@@ -705,7 +705,9 @@ fn the_platform_walks_from_a_discovered_source_to_a_learned_lesson() -> Result<(
     let verified =
         VerifiedEnvelope::verify(resigned_for_cell(&envelope)?, ENVELOPE_KEY, CELL, t(10))?;
     let (strategy, program) = compiled_strategy()?;
-    cell.deploy(strategy, program, verified)?;
+    // Marketable: since 383d4e7 an intent from a strategy deployed with no
+    // pricing policy is refused, and this flow expects the order to go out.
+    cell.deploy_with_pricing(strategy, program, verified, PricingPolicy::Marketable)?;
     assert_eq!(cell.deployed_strategies(), vec![STRATEGY]);
 
     let mut gateway = PaperGateway::default();
