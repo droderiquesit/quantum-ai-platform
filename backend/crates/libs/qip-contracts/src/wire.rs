@@ -25,9 +25,10 @@
 //! declaration. A convention plus a test that can actually fail — weaker than
 //! a compiler guarantee, and worth saying so rather than overstating it.
 
+use crate::message::BookSide;
 use crate::signal::StrategyId;
 use crate::venue::VenueId;
-use qip_core::{Decimal, ObjectId};
+use qip_core::{Decimal, ObjectId, Timestamp};
 use serde::{Deserialize, Serialize};
 
 /// One internal cross a cell booked, as it crosses the uplink (§27.1).
@@ -58,6 +59,66 @@ pub struct CrossRecord {
 /// is never told it missed is the failure mode this pairing exists to prevent.
 pub const MAX_CROSSES_PER_DELTA: usize = 64;
 
+/// One strategy's share of a venue fill, as the cell attributed it.
+///
+/// A named pair rather than a tuple because a tuple serialises as a
+/// positional array, and a reader that swapped the two positions would
+/// book a quantity as a strategy id with nothing on the wire to say so.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FillShare {
+    pub strategy: StrategyId,
+    /// This strategy's part of the fill's quantity. Positive; the side is
+    /// the fill's. The shares of one fill sum to its quantity exactly.
+    pub quantity: Decimal,
+}
+
+/// One fill the venue reported on an order the cell sent, as it crosses
+/// the uplink (§43.4: the attribution chain starts at the fill).
+///
+/// This record exists because the delta's `orders` list is a list of what
+/// the cell *sent*, and for one slice the centre read it as a list of what
+/// *filled* — attributing, charging the risk aggregate and moving strategy
+/// books for orders that were still resting at the venue, or had expired
+/// unfilled. Two claims about one fact, and the louder one was wrong. A
+/// fill now travels only when the venue reported one, in this record, and
+/// the centre bills from nothing else.
+///
+/// `shares` is the cell's own pro-rata split of `quantity` across the
+/// order's contributors, computed from what the venue said traded rather
+/// than from what was sent: an order that filled in three parts is shipped
+/// three times, each summing to its own part. The centre books the shares
+/// as shipped and refuses a fill whose shares do not sum to its quantity,
+/// rather than re-splitting on a vector the fill no longer carries.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FillRecord {
+    /// The order this fill was reported against — the id the cell sent in
+    /// the same or an earlier delta's `orders`. A fill naming an order the
+    /// centre never saw sent is a reconciliation break, not a position.
+    pub order_id: String,
+    pub object_id: ObjectId,
+    pub venue: VenueId,
+    /// The side of the book the order took: `Ask` bought, `Bid` sold.
+    pub side: BookSide,
+    pub quantity: Decimal,
+    pub price: Decimal,
+    /// From the gateway's answer at the time the order was sent. A paper
+    /// fill counted as real is the single most consequential bit in the
+    /// execution path, and it stays that way on the wire.
+    pub simulated: bool,
+    /// When the venue reported it, as the cell recorded it.
+    pub at: Timestamp,
+    pub shares: Vec<FillShare>,
+}
+
+/// How many fills one delta carries before it starts counting instead.
+///
+/// Bounded like the crosses, and counted beside the list for the same
+/// reason. The consequence is stated rather than softened: a fill that did
+/// not fit is a fill the centre never bills, and the counter is what makes
+/// that visible in the same delta rather than discoverable at the next
+/// reconciliation.
+pub const MAX_FILLS_PER_DELTA: usize = 64;
+
 /// The schema version of a cell's state delta, for both ends of the uplink.
 ///
 /// Raise it whenever the delta's wire shape changes in a way an older reader
@@ -76,4 +137,12 @@ pub const MAX_CROSSES_PER_DELTA: usize = 64;
 ///   cross itself — so the one thing §27.1 calls a ledger entry was the one
 ///   thing that stopped at the cell, in a plane built to keep working while
 ///   partitioned from the centre.
-pub const CELL_DELTA_SCHEMA_VERSION: u32 = 3;
+/// * **4** — `fills`: the fills the venue confirmed, each with the cell's
+///   own attribution. Before this the centre had only `orders` — what was
+///   sent — and billed every one of them as a fill: attributing, charging
+///   the risk aggregate and settling positions for orders still resting or
+///   already expired. An older centre reading a newer delta would do that
+///   again, which is why this is a bump and not a defaulted field alone: a
+///   centre behind this version goes quiet about the cells ahead of it
+///   rather than charging them for orders that never traded.
+pub const CELL_DELTA_SCHEMA_VERSION: u32 = 4;

@@ -638,8 +638,10 @@ pub mod names {
     pub const PERMISSION_DENIALS: &str = "qip_permission_denials_total";
 
     /// Reconciliation breaks the central plane absorbed from a cell report,
-    /// by `direction`: `cell_over_venue`, `venue_over_cell`, or `detail_only`
-    /// where the quantities agree and the break is in the detail. The
+    /// by `direction`: `cell_over_venue`, `venue_over_cell`, `detail_only`
+    /// where the quantities agree and the break is in the detail, or
+    /// `unsent_fill` where a cell reported a fill on an order the centre
+    /// never saw sent, or beyond the quantity it saw sent. The
     /// instrument and the cell are deliberately not labels — one is free
     /// text and the other is a fleet an operator can grow — so the series
     /// stays bounded by construction. Distinct from
@@ -701,9 +703,16 @@ pub mod names {
     /// full, or the twin refused the evaluation.
     pub const COUNTERFACTUALS_UNSCORED: &str = "qip_counterfactuals_unscored_total";
 
-    /// Cell fills the central plane attributed to strategies, by `basis`: the
-    /// contributor vector the cell shipped, or — for a delta written before the
-    /// vector existed — the largest contributor the older wire named.
+    /// Orders a cell reported *sent* — accepted by the venue, not filled —
+    /// counted as the centre registers them against later fills. Kept beside
+    /// [`CENTRAL_FILLS_ATTRIBUTED`] so the two can be read against each
+    /// other: for one slice the centre billed every sent order as a fill,
+    /// and there was no series in which the two claims could disagree.
+    pub const CENTRAL_ORDERS_SENT: &str = "qip_central_orders_sent_total";
+    /// Cell fill shares the central plane booked to strategies, by `basis`:
+    /// `contributor_vector`, the cell's own split of a venue-confirmed fill.
+    /// A fill is booked only from a delta's `fills`; a sent order books
+    /// nothing, whatever contributors it names.
     pub const CENTRAL_FILLS_ATTRIBUTED: &str = "qip_central_fills_attributed_total";
     /// Internal crosses settled to both contributors' books at the mid.
     pub const CENTRAL_CROSSES_SETTLED: &str = "qip_central_crosses_settled_total";
