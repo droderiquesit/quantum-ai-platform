@@ -19,9 +19,8 @@ use qip_financial::quality::{LicensingClass, Provenance};
 use qip_financial::universe::Universe;
 use qip_kernel::config::PlatformConfig;
 use qip_kernel::platform::Platform;
-use qip_kernel::series;
 use qip_observability::Telemetry;
-use qip_observability::metrics::labels;
+use qip_observability::metrics::{labels, names};
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 
 fn start() -> Timestamp {
@@ -76,7 +75,7 @@ fn a_research_only_instrument_is_counted_and_named_at_assembly() -> Result<()> {
             .telemetry()
             .metrics
             .snapshot()
-            .gauge(series::UNIVERSE_NOT_DECISION_GRADE, &labels([])),
+            .gauge(names::UNIVERSE_NOT_DECISION_GRADE, &labels([])),
         Some(1.0),
         "the degraded count did not reach the registry at assembly"
     );

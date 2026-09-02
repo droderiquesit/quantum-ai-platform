@@ -24,9 +24,8 @@ use qip_financial::quality::Provenance;
 use qip_financial::universe::Universe;
 use qip_kernel::config::PlatformConfig;
 use qip_kernel::platform::Platform;
-use qip_kernel::series;
 use qip_observability::Telemetry;
-use qip_observability::metrics::labels;
+use qip_observability::metrics::{labels, names};
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 
 // --- fixtures ---------------------------------------------------------------
@@ -148,7 +147,7 @@ fn a_reorganisation_that_withdraws_a_deposit_block_fails_the_transfer_riding_on_
             .telemetry()
             .metrics
             .snapshot()
-            .counter_total(series::BRIDGE_TRANSFERS_FAILED),
+            .counter_total(names::BRIDGE_TRANSFERS_FAILED),
         0
     );
 
@@ -213,7 +212,7 @@ fn a_reorganisation_that_withdraws_a_deposit_block_fails_the_transfer_riding_on_
     );
     assert_eq!(
         platform.telemetry().metrics.snapshot().counter(
-            series::BRIDGE_TRANSFERS_FAILED,
+            names::BRIDGE_TRANSFERS_FAILED,
             &labels([("failure", "source_reorg")])
         ),
         1

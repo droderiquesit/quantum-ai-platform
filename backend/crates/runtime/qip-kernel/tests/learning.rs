@@ -25,11 +25,10 @@ use qip_financial::universe::Universe;
 use qip_kernel::config::PlatformConfig;
 use qip_kernel::cycle::Stage;
 use qip_kernel::platform::Platform;
-use qip_kernel::series;
 use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
-use qip_observability::metrics::{Snapshot, labels};
+use qip_observability::metrics::{Snapshot, labels, names};
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 
 // --- fixtures ---------------------------------------------------------------
@@ -153,13 +152,13 @@ fn a_cycle_that_resolves_a_thesis_grades_it_and_moves_the_calibration_series() -
     );
     let snapshot = recorded(&platform);
     assert_eq!(
-        snapshot.counter_total(series::THESES_EVALUATED),
+        snapshot.counter_total(names::THESES_EVALUATED),
         0,
         "a claim was graded before its horizon passed"
     );
     assert!(
         snapshot
-            .gauge(series::BELIEF_BRIER_SCORE, &labels([]))
+            .gauge(names::BELIEF_BRIER_SCORE, &labels([]))
             .is_none(),
         "a Brier score exists before anything resolved"
     );
@@ -215,7 +214,7 @@ fn a_cycle_that_resolves_a_thesis_grades_it_and_moves_the_calibration_series() -
 
     let snapshot = recorded(&platform);
     assert!(
-        snapshot.counter_total(series::THESES_EVALUATED) >= 1,
+        snapshot.counter_total(names::THESES_EVALUATED) >= 1,
         "the resolved claim was not counted as evaluated"
     );
     assert!(
@@ -236,16 +235,16 @@ fn a_cycle_that_resolves_a_thesis_grades_it_and_moves_the_calibration_series() -
         .calibration()
         .expect("an informative verdict produces a calibration");
     assert_eq!(
-        snapshot.gauge(series::BELIEF_BRIER_SCORE, &labels([])),
+        snapshot.gauge(names::BELIEF_BRIER_SCORE, &labels([])),
         Some(calibration.brier_score),
         "the gauge must be the calibration's own Brier score"
     );
     assert_eq!(
-        snapshot.gauge(series::BELIEF_CONFIDENCE_ADJUSTMENT, &labels([])),
+        snapshot.gauge(names::BELIEF_CONFIDENCE_ADJUSTMENT, &labels([])),
         Some(calibration.confidence_adjustment)
     );
     assert_eq!(
-        snapshot.gauge(series::BELIEF_EVALUATIONS, &labels([])),
+        snapshot.gauge(names::BELIEF_EVALUATIONS, &labels([])),
         Some(calibration.evaluated as f64)
     );
 
@@ -325,7 +324,7 @@ fn a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate
     );
     assert_eq!(platform.declined_awaiting_score(), 1);
     assert_eq!(
-        recorded(&platform).counter_total(series::COUNTERFACTUALS_SCORED),
+        recorded(&platform).counter_total(names::COUNTERFACTUALS_SCORED),
         0
     );
 
@@ -335,7 +334,7 @@ fn a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate
     // whatever suited it.
     let early = platform.run_cycle(start());
     assert_eq!(
-        recorded(&platform).counter_total(series::COUNTERFACTUALS_SCORED),
+        recorded(&platform).counter_total(names::COUNTERFACTUALS_SCORED),
         0,
         "a path was priced before its horizon passed:\n{}",
         early.summarise()
@@ -357,7 +356,7 @@ fn a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate
     // vetoes — can be read off two series with one label.
     assert_eq!(
         snapshot.counter(
-            series::COUNTERFACTUALS_SCORED,
+            names::COUNTERFACTUALS_SCORED,
             &labels([("gate", "order-validation")])
         ),
         1,
@@ -365,7 +364,7 @@ fn a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate
         snapshot
             .series
             .iter()
-            .filter(|s| s.name == series::COUNTERFACTUALS_SCORED)
+            .filter(|s| s.name == names::COUNTERFACTUALS_SCORED)
             .map(|s| s.labels.clone())
             .collect::<Vec<_>>()
     );
@@ -385,7 +384,7 @@ fn a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate
     );
     // The regret bit and the counter agree, whichever way the tape went.
     let regrets = snapshot.counter(
-        series::COUNTERFACTUAL_REGRETS,
+        names::COUNTERFACTUAL_REGRETS,
         &labels([("gate", "order-validation")]),
     );
     assert_eq!(regrets, u64::from(scores[0].regret));
@@ -428,9 +427,9 @@ fn declined_paths_past_the_per_cycle_cap_are_counted_as_deferred_and_priced_next
     platform.observe(bars_after("AAA", start(), 5));
     let first = platform.run_cycle(start().saturating_add(Duration::from_days(3)));
     let snapshot = recorded(&platform);
-    assert_eq!(snapshot.counter_total(series::COUNTERFACTUALS_SCORED), 8);
+    assert_eq!(snapshot.counter_total(names::COUNTERFACTUALS_SCORED), 8);
     assert_eq!(
-        snapshot.counter_total(series::COUNTERFACTUALS_DEFERRED),
+        snapshot.counter_total(names::COUNTERFACTUALS_DEFERRED),
         1,
         "the ninth path was not counted as deferred:\n{}",
         first.summarise()
@@ -449,11 +448,11 @@ fn declined_paths_past_the_per_cycle_cap_are_counted_as_deferred_and_priced_next
     // The next cycle prices what the cap left.
     platform.run_cycle(start().saturating_add(Duration::from_days(3)));
     let snapshot = recorded(&platform);
-    assert_eq!(snapshot.counter_total(series::COUNTERFACTUALS_SCORED), 9);
-    assert_eq!(snapshot.counter_total(series::COUNTERFACTUALS_DEFERRED), 1);
+    assert_eq!(snapshot.counter_total(names::COUNTERFACTUALS_SCORED), 9);
+    assert_eq!(snapshot.counter_total(names::COUNTERFACTUALS_DEFERRED), 1);
     assert_eq!(platform.declined_awaiting_score(), 0);
     assert_eq!(
-        snapshot.counter_total(series::COUNTERFACTUALS_UNSCORED),
+        snapshot.counter_total(names::COUNTERFACTUALS_UNSCORED),
         0,
         "nothing was refused by the twin, so nothing may be counted as unscorable"
     );

@@ -22,7 +22,6 @@
 
 use super::dna::StrategyDna;
 use super::factory::StrategyFactory;
-use crate::series;
 use qip_capital::allocation::{
     Allocation, AllocationLimits, AllocationPlan, CapitalAllocator, DrawdownSchedule,
     StrategyProposal,
@@ -1054,7 +1053,7 @@ impl CentralPlane {
                 total += gained;
                 settlement.fills_attributed += 1;
                 if let Some(metrics) = &self.metrics {
-                    metrics.count(series::CENTRAL_FILLS_ATTRIBUTED, labels([("basis", basis)]));
+                    metrics.count(names::CENTRAL_FILLS_ATTRIBUTED, labels([("basis", basis)]));
                 }
             }
             settlement.orders_settled += 1;
@@ -1110,7 +1109,7 @@ impl CentralPlane {
             settlement.fills_attributed += 2;
             settlement.crosses_settled += 1;
             if let Some(metrics) = &self.metrics {
-                metrics.count(series::CENTRAL_CROSSES_SETTLED, labels([]));
+                metrics.count(names::CENTRAL_CROSSES_SETTLED, labels([]));
             }
         }
 
@@ -1124,7 +1123,7 @@ impl CentralPlane {
             Ok(attribution) => settlement.attribution = Some(attribution),
             Err(error) => {
                 if let Some(metrics) = &self.metrics {
-                    metrics.count(series::CENTRAL_ATTRIBUTION_FAILURES, labels([]));
+                    metrics.count(names::CENTRAL_ATTRIBUTION_FAILURES, labels([]));
                 }
                 settlement.refused.push(format!(
                     "the settlement's decomposition did not close: {}",
@@ -1185,10 +1184,7 @@ impl CentralPlane {
 
     fn refuse_settlement(&self, settlement: &mut Settlement, kind: &str, reason: String) {
         if let Some(metrics) = &self.metrics {
-            metrics.count(
-                series::CENTRAL_SETTLEMENTS_REFUSED,
-                labels([("kind", kind)]),
-            );
+            metrics.count(names::CENTRAL_SETTLEMENTS_REFUSED, labels([("kind", kind)]));
         }
         settlement.refused.push(reason);
     }

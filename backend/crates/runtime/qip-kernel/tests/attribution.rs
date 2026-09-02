@@ -30,10 +30,9 @@ use qip_financial::universe::Universe;
 use qip_kernel::central::CellReport;
 use qip_kernel::config::PlatformConfig;
 use qip_kernel::platform::Platform;
-use qip_kernel::series;
 use qip_mesh::delta::DeltaOrder;
 use qip_observability::Telemetry;
-use qip_observability::metrics::labels;
+use qip_observability::metrics::{labels, names};
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 
 // --- fixtures ---------------------------------------------------------------
@@ -207,13 +206,13 @@ fn a_netted_orders_fill_is_attributed_to_its_contributors_with_zero_residual() -
     let snapshot = platform.telemetry().metrics.snapshot();
     assert_eq!(
         snapshot.counter(
-            series::CENTRAL_FILLS_ATTRIBUTED,
+            names::CENTRAL_FILLS_ATTRIBUTED,
             &labels([("basis", "contributor_vector")])
         ),
         3
     );
     assert_eq!(
-        snapshot.counter_total(series::CENTRAL_ATTRIBUTION_FAILURES),
+        snapshot.counter_total(names::CENTRAL_ATTRIBUTION_FAILURES),
         0,
         "the decomposition closed, so no failure may be counted"
     );
@@ -290,7 +289,7 @@ fn an_internal_cross_moves_both_contributors_books_at_the_mid_and_the_close_out_
             .telemetry()
             .metrics
             .snapshot()
-            .counter_total(series::CENTRAL_CROSSES_SETTLED),
+            .counter_total(names::CENTRAL_CROSSES_SETTLED),
         1
     );
 
@@ -357,7 +356,7 @@ fn a_cross_naming_two_buyers_is_refused_rather_than_split_evenly() -> Result<()>
     }
     assert_eq!(
         platform.telemetry().metrics.snapshot().counter(
-            series::CENTRAL_SETTLEMENTS_REFUSED,
+            names::CENTRAL_SETTLEMENTS_REFUSED,
             &labels([("kind", "cross")])
         ),
         1
@@ -386,7 +385,7 @@ fn an_order_from_a_cell_older_than_the_vector_is_attributed_to_the_strategy_it_n
     assert_eq!(lot(&platform, "legacy"), Some((dec!("-10"), dec!("99"))));
     assert_eq!(
         platform.telemetry().metrics.snapshot().counter(
-            series::CENTRAL_FILLS_ATTRIBUTED,
+            names::CENTRAL_FILLS_ATTRIBUTED,
             &labels([("basis", "largest_contributor")])
         ),
         1

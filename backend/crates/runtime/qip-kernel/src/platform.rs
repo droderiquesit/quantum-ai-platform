@@ -37,7 +37,6 @@
 use crate::central::{CellIngestion, CellOutcome, CellReport, CentralPlane, LearningReport};
 use crate::config::PlatformConfig;
 use crate::cycle::{CycleReport, Stage, StageOutcome};
-use crate::series;
 use qip_agents::Budget;
 use qip_agents::memory::ResearchMemory;
 use qip_ai::language::DeterministicModel;
@@ -1254,7 +1253,7 @@ impl Platform {
         // the instrument list is unbounded and the reasons are for the
         // overview, which reads them from the platform.
         platform.telemetry.metrics.gauge(
-            series::UNIVERSE_NOT_DECISION_GRADE,
+            names::UNIVERSE_NOT_DECISION_GRADE,
             labels([]),
             platform.universe_not_decision_grade.len() as f64,
         );
@@ -1382,61 +1381,61 @@ impl Platform {
             "strategies pushed down or retired, by the rungs left and entered",
         );
         metrics.describe(
-            series::BELIEF_BRIER_SCORE,
+            names::BELIEF_BRIER_SCORE,
             "Brier score over the window of resolved theses; when the platform said seventy \
              percent, how far from seventy percent it happened",
         );
         metrics.describe(
-            series::BELIEF_CONFIDENCE_ADJUSTMENT,
+            names::BELIEF_CONFIDENCE_ADJUSTMENT,
             "factor stated confidences would be scaled by to match outcomes; one is calibrated",
         );
         metrics.describe(
-            series::BELIEF_EVALUATIONS,
+            names::BELIEF_EVALUATIONS,
             "informative evaluations the calibration rests on",
         );
         metrics.describe(
-            series::THESES_EVALUATED,
+            names::THESES_EVALUATED,
             "theses scored against what was published, by verdict",
         );
         metrics.describe(
-            series::COUNTERFACTUALS_SCORED,
+            names::COUNTERFACTUALS_SCORED,
             "declined paths priced by the twin once their horizon passed, by the gate that \
              declined them",
         );
         metrics.describe(
-            series::COUNTERFACTUAL_REGRETS,
+            names::COUNTERFACTUAL_REGRETS,
             "declined paths that, priced, would have beaten standing aside, by gate",
         );
         metrics.describe(
-            series::COUNTERFACTUALS_DEFERRED,
+            names::COUNTERFACTUALS_DEFERRED,
             "declined paths due for pricing and left for a later cycle by the per-cycle cap",
         );
         metrics.describe(
-            series::COUNTERFACTUALS_UNSCORED,
+            names::COUNTERFACTUALS_UNSCORED,
             "declined paths that will never be priced, by reason",
         );
         metrics.describe(
-            series::CENTRAL_FILLS_ATTRIBUTED,
+            names::CENTRAL_FILLS_ATTRIBUTED,
             "cell fills attributed to strategies by the central plane, by the basis of the split",
         );
         metrics.describe(
-            series::CENTRAL_CROSSES_SETTLED,
+            names::CENTRAL_CROSSES_SETTLED,
             "internal crosses settled to both contributors' books at the mid",
         );
         metrics.describe(
-            series::CENTRAL_SETTLEMENTS_REFUSED,
+            names::CENTRAL_SETTLEMENTS_REFUSED,
             "orders and crosses the central plane refused to settle, by kind",
         );
         metrics.describe(
-            series::CENTRAL_ATTRIBUTION_FAILURES,
+            names::CENTRAL_ATTRIBUTION_FAILURES,
             "settlements whose decomposition did not close; must stay at zero",
         );
         metrics.describe(
-            series::BRIDGE_TRANSFERS_FAILED,
+            names::BRIDGE_TRANSFERS_FAILED,
             "bridge transfers failed on the platform's own evidence, by failure",
         );
         metrics.describe(
-            series::UNIVERSE_NOT_DECISION_GRADE,
+            names::UNIVERSE_NOT_DECISION_GRADE,
             "instruments in the assembled universe unfit to drive a capital decision",
         );
     }
@@ -1687,7 +1686,7 @@ impl Platform {
         let (evaluations, skipped) = self.evaluator.evaluate_all(claims, outcomes, now);
         for evaluation in &evaluations {
             self.telemetry.metrics.count(
-                series::THESES_EVALUATED,
+                names::THESES_EVALUATED,
                 labels([("verdict", evaluation.verdict.as_str())]),
             );
         }
@@ -1706,17 +1705,17 @@ impl Platform {
             // Statistics, and therefore `f64` end to end: the Brier score
             // and the adjustment are already floats in the report.
             self.telemetry.metrics.gauge(
-                series::BELIEF_BRIER_SCORE,
+                names::BELIEF_BRIER_SCORE,
                 labels([]),
                 report.calibration.brier_score,
             );
             self.telemetry.metrics.gauge(
-                series::BELIEF_CONFIDENCE_ADJUSTMENT,
+                names::BELIEF_CONFIDENCE_ADJUSTMENT,
                 labels([]),
                 report.calibration.confidence_adjustment,
             );
             self.telemetry.metrics.gauge(
-                series::BELIEF_EVALUATIONS,
+                names::BELIEF_EVALUATIONS,
                 labels([]),
                 report.calibration.evaluated as f64,
             );
@@ -4373,7 +4372,7 @@ impl Platform {
             if let Some(decision) = refused {
                 if self.declined.len() >= DECLINED_HISTORY {
                     self.telemetry.metrics.count(
-                        series::COUNTERFACTUALS_UNSCORED,
+                        names::COUNTERFACTUALS_UNSCORED,
                         labels([("reason", "capacity")]),
                     );
                     self.capture_problems.push(format!(
@@ -4737,7 +4736,7 @@ impl Platform {
                     let failed = self.bridges.on_reorg(&reorg, self.context.now());
                     for _ in &failed {
                         self.telemetry.metrics.count(
-                            series::BRIDGE_TRANSFERS_FAILED,
+                            names::BRIDGE_TRANSFERS_FAILED,
                             labels([("failure", BridgeFailure::SourceReorg.as_str())]),
                         );
                     }
@@ -4989,7 +4988,7 @@ impl Platform {
         let deferred = due.len().saturating_sub(COUNTERFACTUALS_PER_CYCLE);
         if deferred > 0 {
             self.telemetry.metrics.increment(
-                series::COUNTERFACTUALS_DEFERRED,
+                names::COUNTERFACTUALS_DEFERRED,
                 labels([]),
                 deferred as u64,
             );
@@ -5038,13 +5037,13 @@ impl Platform {
                         entry.counterfactual_outcome.simulated_pnl()
                     });
                     self.telemetry.metrics.count(
-                        series::COUNTERFACTUALS_SCORED,
+                        names::COUNTERFACTUALS_SCORED,
                         labels([("gate", gate.as_str())]),
                     );
                     if regret {
                         regrets += 1;
                         self.telemetry.metrics.count(
-                            series::COUNTERFACTUAL_REGRETS,
+                            names::COUNTERFACTUAL_REGRETS,
                             labels([("gate", gate.as_str())]),
                         );
                     }
@@ -5066,7 +5065,7 @@ impl Platform {
                 }
                 Err(error) => {
                     self.telemetry.metrics.count(
-                        series::COUNTERFACTUALS_UNSCORED,
+                        names::COUNTERFACTUALS_UNSCORED,
                         labels([("reason", "refused")]),
                     );
                     problems.push(format!(
