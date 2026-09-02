@@ -25,14 +25,15 @@ Neither is secret. Both are recorded so the next person does not have to ask.
 These are deliberately different identities and must not be merged.
 
 **`claude-builder` is the bootstrap identity.** It is what *applies* Terraform:
-it creates the cluster, the network, the KMS keys, the service accounts. It
-therefore holds project-level administrative roles, and it is used by a person
-or a privileged automation run, rarely.
+it creates the network, the trust zones, the KMS keys, the service accounts,
+the Cloud Run services and any execution node group. It therefore holds
+project-level administrative roles, and it is used by a person or a privileged
+automation run, rarely.
 
 **The pipeline identity is created by Terraform**, in
-`infrastructure/terraform/modules/cicd`. It can push an image and apply a
-manifest. It cannot create a cluster, read a secret's payload, or grant itself
-anything.
+`infrastructure/terraform/modules/cicd`. It can push an image and move a Cloud
+Run service to a digest. It cannot create a service, read a secret's payload,
+or grant itself anything.
 
 Pointing the deploy pipeline at `claude-builder` would be the single most
 damaging shortcut available here: every CI run would hold permanent project
@@ -60,7 +61,7 @@ part-way through.
 | Requirement | How to check it | Why the script cannot do it |
 |---|---|---|
 | The project exists | `gcloud projects describe project-d3f96b6b-852b-4460-b6d` | A project is created in a folder, under an organisation, with org policies — a landing-zone decision this repository does not make |
-| Billing is enabled on it | `gcloud beta billing projects describe <project>` | `container`, `cloudkms` and `artifactregistry` refuse to enable without it, and the error names billing rather than the API |
+| Billing is enabled on it | `gcloud beta billing projects describe <project>` | `run`, `compute`, `cloudkms` and `artifactregistry` refuse to enable without it, and the error names billing rather than the API |
 | Service Usage and Cloud Resource Manager are on | `gcloud services list --enabled \| grep -E 'serviceusage\|cloudresourcemanager'` | Service Usage cannot enable itself. See `modules/services/BOOTSTRAP.md` |
 | `claude-builder@…` exists, with project admin | `gcloud iam service-accounts describe claude-builder@<project>.iam.gserviceaccount.com` | The script creates it when you have the authority to create service accounts; a project owner creates it otherwise |
 | You can impersonate it | The script grants this and says who to ask if it cannot | Needs `roles/iam.serviceAccountTokenCreator`, which only a project owner can give |
@@ -100,10 +101,10 @@ Terraform outputs; the table is here so they can be checked or set by hand.
 | `GCP_BINAUTHZ_ATTESTOR` | `terraform output binary_authorization_attestor` |
 | `GCP_BINAUTHZ_KEY_VERSION` | `terraform output binary_authorization_key_version` |
 
-The last two are what signs an image. Without them the cluster's Binary
+The last two are what signs an image. Without them the project's Binary
 Authorization policy refuses every image the pipeline pushes, which surfaces as
-a pod that will not schedule rather than as a build that failed — so the
-`images` job refuses to start until both are set.
+a Cloud Run revision that never becomes Ready rather than as a build that
+failed — so the `images` job refuses to start until both are set.
 
 There is deliberately **no** GitHub secret holding a key. The pipeline uses
 workload identity federation: GitHub mints a short-lived OIDC token, GCP
@@ -138,8 +139,8 @@ the pipeline account are created by the apply.
 
 **`GCP_DEPLOY_SERVICE_ACCOUNT` must not be `claude-builder`.** That is the
 bootstrap identity and it holds project admin. The value belongs to the narrow
-account Terraform creates, which can push an image and apply a manifest and
-nothing else. Setting it to the bootstrap account would give every CI run
+account Terraform creates, which can push an image and move a Cloud Run
+service and nothing else. Setting it to the bootstrap account would give every CI run
 permanent project admin and make one compromised workflow file enough to own
 the project — see the section above.
 
@@ -152,8 +153,8 @@ refused.
 
 | Secret | Consumer | Injection |
 |---|---|---|
-| `qip-tokens` | `qip-api` — operator, approver, analyst, viewer, monitor bearer tokens | Secret Manager → CSI mount |
-| `qip-capital-envelope-key` | `qip-edge-node` — verifies signed capital envelopes | Secret Manager → CSI mount |
+| `qip-token-{operator,approver,analyst,viewer,monitor}` | `qip-api` — the five bearer tokens | Secret Manager → a volume `modules/cloudrun` mounts as a file, named by `secret_mounts` in `catalogue.tf`; the process reads the `_FILE` variable |
+| `qip-capital-envelope-key` | `qip-api`, `qip-fastbrain` and `qip-deepbrain` mount it (`catalogue.tf`); `qip-edge-node` verifies signed capital envelopes against it | The same volume mount on Cloud Run; on the execution node, fetched at boot by the startup script into the unit's run directory and named by `QIP_CAPITAL_ENVELOPE_KEY_FILE` |
 | `qip-quantum-token` | Quantum provider | Secret Manager. **No IAM reader binding exists yet** — the audit records this |
 | Venue feed endpoint + session credential | Edge cell market data | Not yet modelled. Per venue |
 | Venue gateway endpoint + order-entry credential | Edge cell execution | Not yet modelled. Per venue |
@@ -222,7 +223,8 @@ up. `gcloud iam service-accounts keys list` will show any.
 Narrower than Owner, which is the point:
 
 ```
-roles/container.admin              GKE
+roles/run.admin                    the Cloud Run services in catalogue.tf
+roles/compute.instanceAdmin.v1     the execution node's template and group
 roles/compute.networkAdmin         VPC, subnets, firewall, NAT
 roles/iam.serviceAccountAdmin      the accounts Terraform creates
 roles/iam.serviceAccountUser       attaching them to workloads
@@ -267,8 +269,9 @@ It has no `gcloud`, no `terraform`, no credentials and no application-default
 credentials. It therefore cannot authenticate, plan, apply or deploy anything,
 and a service-account email does not change that — an identifier is not a key.
 
-The infrastructure is **specified and structurally tested**: 54 tests read the
-Terraform and manifests and assert properties a plan would not catch, such as
-the node pool having no public addresses and no workload identity holding
-delete on the evidence bucket. It has never been validated against the provider
-schema, because that needs a provider download, and never applied.
+The infrastructure is **specified and structurally tested**: the
+`infrastructure` acceptance suite reads the Terraform and asserts properties a
+plan would not catch, such as the execution node's template carrying no
+external address and no workload identity holding delete on the evidence
+bucket. It has never been validated against the provider schema, because that
+needs a provider download, and never applied.
