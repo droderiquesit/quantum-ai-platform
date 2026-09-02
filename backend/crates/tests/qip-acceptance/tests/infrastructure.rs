@@ -2821,42 +2821,10 @@ fn every_workload_pulls_from_the_repository_the_pipeline_pushes_to() {
 /// with what each is. Each is re-proved to still exist and still mention it,
 /// so the list expires entry by entry rather than excusing the next mention.
 const STILL_MENTIONS_THE_RETIRED_STACK: &[(&str, &str)] = &[
-    (
-        "scripts/bootstrap-gitops.sh",
-        "installs Argo CD into a cluster that no longer exists; retire it",
-    ),
-    (
-        "scripts/verify-argocd.sh",
-        "checks an Argo CD sync; retire it",
-    ),
-    (
-        "scripts/bootstrap-kargo-admin.sh",
-        "creates a Kargo admin; retire it",
-    ),
-    (
-        "scripts/open-consoles.sh",
-        "opens the Argo CD and Kargo consoles; retire it",
-    ),
-    (
-        "docs/operations/deploying-an-edge-cell.md",
-        "the cell runbook, written for a StatefulSet; rewrite for modules/execution-node",
-    ),
-    (
-        "docs/operations/disaster-recovery.md",
-        "names the GKE backup plan; rewrite for the disk snapshot schedule",
-    ),
-    (
-        "docs/operations/multi-region.md",
-        "reasons about node pools; rewrite for one node per region",
-    ),
-    (
-        "docs/operations/scaling-and-availability.md",
-        "reasons about replicas and KEDA; rewrite for Cloud Run scaling",
-    ),
-    (
-        "docs/operations/enabling-live-trading.md",
-        "names a ConfigMap; rewrite for the root's autonomy_ceiling",
-    ),
+    // Empty since the documentation sweep that followed ADR 0024: the four
+    // scripts were deleted and the five runbooks rewritten, and every entry
+    // expired the way the loop below demands. The list stays so the next
+    // mention has somewhere to be declared rather than somewhere to hide.
 ];
 
 #[test]
