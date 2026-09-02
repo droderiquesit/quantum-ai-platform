@@ -3232,15 +3232,21 @@ fn every_workload_that_reads_the_universe_is_given_the_committed_catalogue_as_a_
         "catalogue.tf no longer hands each entry's config_files to modules/cloudrun"
     );
 
-    // The module: the path the variable carries is /etc/qip/<file_name>, the
-    // object's content is the input's content under a hash-named directory,
-    // and the volume is read-only at that directory alone, on both kinds.
+    // The module: the path the variable carries is
+    // /etc/qip/<hash>/<file_name>, the object's content is the input's
+    // content under that same hash-named directory, and the volume is a
+    // read-only mount of the bucket, on both kinds. The hash is in the path
+    // rather than in the mount because the GA provider has no `mount_options`
+    // to select a directory with; either way the variable names exactly the
+    // bytes the plan carried, which is the property.
     let module = without_comments(&read(CLOUD_RUN_MODULE));
     assert!(
         sets(&module, "config_root", "\"/etc/qip\"")
-            && module.contains("key => \"${local.config_root}/${file.file_name}\"")
+            && module.contains(
+                "key => \"${local.config_root}/${local.config_prefix}/${file.file_name}\""
+            )
             && module.contains("file.env_file_variable => local.config_files[key]"),
-        "the module no longer writes /etc/qip/<file_name> into the _PATH variable"
+        "the module no longer writes /etc/qip/<hash>/<file_name> into the _PATH variable"
     );
     let objects = terraform_resources(&module, "google_storage_bucket_object");
     let (_, object) = objects
@@ -3279,12 +3285,18 @@ fn every_workload_that_reads_the_universe_is_given_the_committed_catalogue_as_a_
             .join("\n");
         let block = piece.as_str();
         if block.contains("gcs {") {
+            // Read-only, from the workload's own bucket. The hash-named
+            // directory used to be selected by `only-dir`, which the GA
+            // provider has no argument for — it refused the first plan of
+            // this runtime — so the whole bucket mounts and the hash is
+            // carried in the path the environment names instead. The
+            // guarantee is the same and it is asserted below, on the path.
             assert!(
                 sets(block, "read_only", "true")
-                    && block.contains("only-dir=${volumes.value}")
+                    && !block.contains("mount_options")
                     && block.contains("google_storage_bucket.config_files[0].name"),
-                "a config-files volume is not read-only at the hash-named directory of the \
-                 workload's own bucket:\n{block}"
+                "a config-files volume is not a plain read-only mount of the workload's own \
+                 bucket:\n{block}"
             );
             volumes += 1;
         } else {

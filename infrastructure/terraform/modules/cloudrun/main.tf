@@ -104,7 +104,7 @@ locals {
   config_root      = "/etc/qip"
   config_files = {
     for key, file in var.config_files :
-    key => "${local.config_root}/${file.file_name}"
+    key => "${local.config_root}/${local.config_prefix}/${file.file_name}"
   }
   config_file_hashes = {
     for key, file in var.config_files :
@@ -778,9 +778,21 @@ resource "google_cloud_run_v2_service" "workload" {
       }
     }
 
-    # The collector's configuration, from the bucket above. Read-only, and
-    # mounted at the hash-named directory alone, so `/etc/rungmp/config.yaml`
-    # is the one document this revision was planned with.
+    # The collector's configuration, from the bucket above, read-only.
+    #
+    # The sidecar reads `/etc/rungmp/config.yaml` and takes no argument
+    # naming another path, so the document has to land at exactly that name
+    # under the mount. `only-dir` would have selected the hash-named
+    # directory and left the file at the root of the mount, but the GA
+    # provider has no `mount_options` on a Cloud Run GCS volume — 6.50.0
+    # refuses it, and that refusal is what stopped the first plan of this
+    # runtime. The whole bucket mounts instead, so the object cannot live
+    # under a hash and still be found: pinning a collector digest means
+    # first deciding whether to name the object `config.yaml` at the bucket
+    # root — an overwrite, which needs `storage.objects.delete` this module
+    # deliberately does not grant — or to reach for the beta provider.
+    # `collector_image_digest` is null in every environment, so nothing
+    # renders this today and no revision has ever carried it.
     dynamic "volumes" {
       for_each = local.has_metrics_collector ? [local.collector_prefix] : []
 
@@ -788,16 +800,17 @@ resource "google_cloud_run_v2_service" "workload" {
         name = "metrics-collector-config"
 
         gcs {
-          bucket        = google_storage_bucket.collector_config[0].name
-          read_only     = true
-          mount_options = ["only-dir=${volumes.value}"]
+          bucket    = google_storage_bucket.collector_config[0].name
+          read_only = true
         }
       }
     }
 
-    # The configuration files, from the bucket above. Read-only, and mounted
-    # at the hash-named directory alone, so `/etc/qip/<file_name>` is the one
-    # committed file this revision was planned with.
+    # The configuration files, from the bucket above, read-only. The whole
+    # bucket mounts and the hash-named directory is part of the path the
+    # environment carries, so `/etc/qip/<hash>/<file_name>` is the one
+    # committed file this revision was planned with — the same guarantee
+    # `only-dir` gave, moved from the mount into the path.
     dynamic "volumes" {
       for_each = local.has_config_files ? [local.config_prefix] : []
 
@@ -805,9 +818,8 @@ resource "google_cloud_run_v2_service" "workload" {
         name = "config-files"
 
         gcs {
-          bucket        = google_storage_bucket.config_files[0].name
-          read_only     = true
-          mount_options = ["only-dir=${volumes.value}"]
+          bucket    = google_storage_bucket.config_files[0].name
+          read_only = true
         }
       }
     }
@@ -941,9 +953,8 @@ resource "google_cloud_run_v2_job" "workload" {
           name = "config-files"
 
           gcs {
-            bucket        = google_storage_bucket.config_files[0].name
-            read_only     = true
-            mount_options = ["only-dir=${volumes.value}"]
+            bucket    = google_storage_bucket.config_files[0].name
+            read_only = true
           }
         }
       }
