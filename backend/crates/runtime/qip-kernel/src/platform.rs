@@ -1360,6 +1360,22 @@ impl Platform {
             series::COUNTERFACTUALS_UNSCORED,
             "declined paths that will never be priced, by reason",
         );
+        metrics.describe(
+            series::CENTRAL_FILLS_ATTRIBUTED,
+            "cell fills attributed to strategies by the central plane, by the basis of the split",
+        );
+        metrics.describe(
+            series::CENTRAL_CROSSES_SETTLED,
+            "internal crosses settled to both contributors' books at the mid",
+        );
+        metrics.describe(
+            series::CENTRAL_SETTLEMENTS_REFUSED,
+            "orders and crosses the central plane refused to settle, by kind",
+        );
+        metrics.describe(
+            series::CENTRAL_ATTRIBUTION_FAILURES,
+            "settlements whose decomposition did not close; must stay at zero",
+        );
     }
 
     pub fn config(&self) -> &PlatformConfig {
