@@ -134,8 +134,14 @@ chmod 0400 "$RUN_DIR/venue-credential"
 # --- 3. configuration -------------------------------------------------------
 #
 # Values only. Every credential above is named by path — `qip_core::secret`
-# reads the `_FILE` indirection, exactly as the Secret Manager CSI driver's
-# projection is read in the Kubernetes topology.
+# reads the `_FILE` indirection, exactly as a Cloud Run secret volume is read.
+#
+# No QIP_GCP_ENDPOINT, deliberately. The proxy's Google APIs listener is up
+# at ${egress_endpoint}, but `qip-edge-node` constructs no `qip_storage::gcp`
+# client today — its journal is the local engine — so a value here would be a
+# control that does nothing, and `manifest_wiring` refuses exactly that. The
+# composition root that first constructs the client is the change that adds
+# the line, and the listener is already waiting for it.
 
 install -d -m 0755 "$CONF_DIR"
 cat >"$CONF_DIR/node.env" <<EOF
@@ -146,7 +152,6 @@ QIP_HEALTH_PORT=${health_port}
 QIP_STORAGE_TARGET=engine
 QIP_STORAGE_ROOT=/var/lib/qip/journal
 QIP_CAPITAL_ENVELOPE_KEY_FILE=$RUN_DIR/capital-envelope-key
-QIP_GCP_ENDPOINT=${egress_endpoint}
 QIP_EXECUTION_NODE_SHADOW=${shadow_mode ? "1" : "0"}
 EOF
 chmod 0444 "$CONF_DIR/node.env"

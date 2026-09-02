@@ -1543,168 +1543,6 @@ fn every_attestation_command_the_pipeline_runs_has_a_grant_that_permits_it() {
     }
 }
 
-// --- Kubernetes -------------------------------------------------------------
-
-#[test]
-fn the_namespace_denies_all_traffic_by_default() {
-    let namespace = read("infrastructure/kubernetes/base/namespace.yaml");
-    assert!(
-        namespace.contains("name: default-deny"),
-        "without a default deny, every flow is permitted"
-    );
-    assert!(
-        namespace
-            .lines()
-            .any(|line| line.trim() == "pod-security.kubernetes.io/enforce: restricted")
-    );
-}
-
-#[test]
-fn no_container_runs_as_root_or_can_escalate() {
-    for path in files_with_extension("infrastructure/kubernetes", "yaml") {
-        let content = std::fs::read_to_string(&path).expect("readable");
-        if !is_workload(&content) {
-            continue;
-        }
-        for (setting, why) in [
-            (
-                "runAsNonRoot: true",
-                "a container running as root is a node compromise away",
-            ),
-            (
-                "allowPrivilegeEscalation: false",
-                "without it a setuid binary inside the container escalates",
-            ),
-            (
-                "readOnlyRootFilesystem: true",
-                "a writable root filesystem lets an attacker persist",
-            ),
-            (
-                "drop: [\"ALL\"]",
-                "a container needs none of the default capabilities",
-            ),
-            (
-                "seccompProfile",
-                "without one the container can make any syscall",
-            ),
-        ] {
-            assert!(
-                content.contains(setting),
-                "{} is missing {setting}: {why}",
-                path.display()
-            );
-        }
-    }
-}
-
-#[test]
-fn every_container_has_both_a_cpu_and_a_memory_limit() {
-    // A memory limit without a CPU limit lets a busy pod starve its
-    // neighbours; a CPU limit without a memory limit lets a leak take down the
-    // node.
-    for path in files_with_extension("infrastructure/kubernetes", "yaml") {
-        let content = std::fs::read_to_string(&path).expect("readable");
-        if !is_workload(&content) {
-            continue;
-        }
-        assert!(
-            content.contains("limits:"),
-            "{} has no limits",
-            path.display()
-        );
-        let after_limits = content.split("limits:").nth(1).unwrap_or("");
-        assert!(
-            after_limits.contains("cpu:"),
-            "{} has no CPU limit",
-            path.display()
-        );
-        assert!(
-            after_limits.contains("memory:"),
-            "{} has no memory limit",
-            path.display()
-        );
-    }
-}
-
-#[test]
-fn no_credential_appears_in_a_kubernetes_manifest() {
-    // Every credential comes from a secret reference, never from a literal.
-    for path in files_with_extension("infrastructure/kubernetes", "yaml") {
-        let content = std::fs::read_to_string(&path).expect("readable");
-        for line in content.lines() {
-            let line = line.trim();
-            if !line.starts_with("value:") {
-                continue;
-            }
-            let value = line.trim_start_matches("value:").trim().trim_matches('"');
-            assert!(
-                !looks_like_a_credential(value),
-                "{} has what looks like a literal credential: {line}",
-                path.display()
-            );
-        }
-        // And the tokens specifically come from the secret store, as files
-        // projected by the CSI driver. `secretKeyRef` was the earlier shape
-        // and is refused now: it reads a synced Kubernetes Secret, which puts
-        // the plaintext in etcd and does not exist on a fresh cluster until
-        // after the first pod has already failed.
-        if content.contains("QIP_TOKEN_") {
-            assert!(
-                content.contains("secrets-store-gke.csi.k8s.io"),
-                "{} sets a token without projecting it from the secret store",
-                path.display()
-            );
-            assert!(
-                !content.contains("secretKeyRef"),
-                "{} reads a credential through a synced Kubernetes Secret; \
-                 project it as a file through the CSI driver instead",
-                path.display()
-            );
-        }
-    }
-}
-
-/// Whether a manifest value looks like a credential rather than configuration.
-///
-/// Deliberately narrow: a check that flags every long string produces a wall of
-/// false positives, and a wall of false positives is a check people stop
-/// reading.
-fn looks_like_a_credential(value: &str) -> bool {
-    value.len() >= 24
-        && value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
-        && value.chars().any(|c| c.is_ascii_digit())
-        && value.chars().any(|c| c.is_ascii_uppercase())
-}
-
-#[test]
-fn the_autonomy_ceiling_comes_from_a_named_resource_rather_than_a_command_line() {
-    // Changing what the platform is permitted to do should appear in a diff
-    // and in an audit log.
-    let api = read("infrastructure/kubernetes/base/api.yaml");
-    assert!(
-        api.contains("configMapKeyRef"),
-        "the ceiling must come from a config map"
-    );
-    let config = read("infrastructure/kubernetes/base/config.yaml");
-    assert!(
-        config.contains(r#"autonomy_ceiling: "paper_trading""#),
-        "the shipped config map must be paper trading"
-    );
-}
-
-#[test]
-fn the_api_pod_mounts_no_service_account_token() {
-    // The workload authenticates through workload identity; a mounted token is
-    // a credential nothing needs.
-    let api = read("infrastructure/kubernetes/base/api.yaml");
-    assert!(
-        api.lines()
-            .any(|line| line.trim() == "automountServiceAccountToken: false")
-    );
-}
-
 // --- CI ---------------------------------------------------------------------
 
 #[test]
@@ -1749,631 +1587,6 @@ fn the_dependency_policy_is_enforced_rather_than_documented() {
     // And it actually reads the lockfile rather than the manifests, so a
     // transitive dependency cannot slip past.
     assert!(script.contains("Cargo.lock"));
-}
-
-// --- the workloads and the binaries they run --------------------------------
-//
-// The bug these exist to catch is already in the repository's history: an
-// `allow-deepbrain-egress` NetworkPolicy governing a pod that no Deployment
-// creates. A rule for a workload that does not exist is not harmless — it is a
-// reviewer reading the namespace and concluding the deep brain is deployed and
-// constrained, when it is neither.
-//
-// So the correspondence is checked in both directions. A test that only asked
-// "does every binary have a Deployment" would have passed on that namespace
-// without noticing, because the missing half was the Deployment.
-
-/// Binaries in the workspace that are deliberately not deployed as a workload.
-///
-/// Kept as a list with a reason attached rather than as a filter in the test,
-/// because "why is this one exempt" is the question the next person will have
-/// and a predicate cannot answer it.
-const NOT_A_WORKLOAD: &[(&str, &str)] = &[(
-    // `qip-cli` builds a binary called `qip`.
-    "qip",
-    "an operator's tool, run by a person against a cluster rather than \
-     scheduled in one",
-)];
-
-/// Binaries the workspace builds that the pipeline deliberately builds no image
-/// for.
-///
-/// The sibling of `NOT_A_WORKLOAD`, and deliberately a second list rather than
-/// a reuse of the first: "nothing schedules it" and "nothing builds it" are
-/// different decisions, and a crate could sensibly be one without the other —
-/// an operator tool distributed as an image and run as a `Job` would be in the
-/// matrix and absent from the manifests.
-///
-/// Each entry carries the crate it comes from as well as the binary, because
-/// the two differ exactly where this matters: `qip-cli` builds `qip`, and a
-/// reader searching the decision record for "qip" finds every line in it.
-///
-/// The reasons are the short form. The decision is
-/// `docs/adr/0010-what-gets-deployed.md`, and
-/// `every_deployment_exclusion_is_recorded_as_a_decision` is what keeps the two
-/// from drifting.
-const NOT_IN_THE_IMAGE_MATRIX: &[(&str, &str, &str)] = &[(
-    "qip-cli",
-    "qip",
-    "an operator's tool, run by a person against a cluster rather than \
-     scheduled in one",
-)];
-
-/// Deployments whose binary is not in the workspace yet.
-///
-/// This list has to shrink to nothing, and
-/// `every_pending_workload_is_still_actually_pending` is what makes it: that
-/// test fails the moment the crate lands, so the exemption is removed by
-/// whoever lands it rather than surviving as a permanent hole in the check
-/// above.
-const AWAITING_ITS_CRATE: &[(&str, &str)] = &[];
-
-/// Workloads whose binary has no serving loop, so no probe can be written.
-///
-/// Same discipline: a probe pointed at an endpoint that does not exist looks
-/// like coverage and is not, and an exemption that cannot expire is a
-/// permanent one.
-const DOES_NOT_SERVE_YET: &[(&str, &str)] = &[
-    // Empty, and the list stays here rather than being deleted with its last
-    // entry: the discipline it encodes — an exemption states its reason and
-    // expires when the reason does — is what the next unserving binary needs,
-    // and re-deriving it under deadline is how a permanent hole gets opened.
-    //
-    // `qip-fastbrain` was the first to leave. `qip-deepbrain` was the last: it
-    // now runs a bounded research loop behind its roster validation and serves
-    // `/health` and `/ready`, so its Deployment carries real probes and the
-    // exemption would be describing a binary that no longer exists.
-];
-
-/// The binaries the workspace actually builds, by binary name.
-///
-/// Read from the manifests rather than from a list here, because a list here
-/// would be a second copy of the truth and the whole point of this section is
-/// that the two copies drift.
-fn workspace_binaries() -> Vec<String> {
-    let mut found = Vec::new();
-    for path in files_with_extension("backend/crates", "toml") {
-        if path.file_name().is_none_or(|name| name != "Cargo.toml") {
-            continue;
-        }
-        let content = std::fs::read_to_string(&path).expect("readable");
-        let Some(directory) = path.parent() else {
-            continue;
-        };
-        // A `[[bin]]` section names the binary explicitly; a `src/main.rs`
-        // with no section produces one named after the package. Both count,
-        // because both are something a Deployment could run.
-        let declared: Vec<String> = content
-            .split("[[bin]]")
-            .skip(1)
-            .filter_map(|section| {
-                section
-                    .lines()
-                    .find(|line| line.trim_start().starts_with("name"))
-                    .and_then(|line| line.split('"').nth(1))
-                    .map(str::to_string)
-            })
-            .collect();
-        if !declared.is_empty() {
-            found.extend(declared);
-            continue;
-        }
-        if directory.join("src/main.rs").exists() {
-            let name = content
-                .lines()
-                .find(|line| line.trim_start().starts_with("name"))
-                .and_then(|line| line.split('"').nth(1))
-                .expect("a package declares a name");
-            found.push(name.to_string());
-        }
-    }
-    found.sort();
-    found.dedup();
-    assert!(
-        found.len() >= 4,
-        "only {found:?} were found; the manifest walk is not reaching the apps"
-    );
-    found
-}
-
-/// Every YAML document in every manifest, paired with the file it came from.
-fn manifest_documents() -> Vec<(std::path::PathBuf, String)> {
-    let mut documents = Vec::new();
-    for path in files_with_extension("infrastructure/kubernetes", "yaml") {
-        let content = std::fs::read_to_string(&path).expect("readable");
-        for document in content.split("\n---\n") {
-            documents.push((path.clone(), document.to_string()));
-        }
-    }
-    assert!(
-        documents.len() > 10,
-        "only {} documents were found; the manifest walk is not reaching them",
-        documents.len()
-    );
-    documents
-}
-
-/// Documents of one kind.
-/// Documents whose **own** kind is `kind`.
-///
-/// The match is anchored at column zero rather than trimmed, because `kind:`
-/// appears nested inside several Kubernetes objects and a trimmed match reads
-/// those as the document's own kind. A `HorizontalPodAutoscaler` names its
-/// target in a `scaleTargetRef` containing `kind: Deployment`, so the trimmed
-/// version pulled every HPA into the Deployment set and then panicked on it
-/// having no container — which made a correctly written HPA fail four tests
-/// that have nothing to do with autoscaling.
-///
-/// The workaround at the time was to write `scaleTargetRef` as an inline flow
-/// mapping so the line never appeared on its own. That is a coupling between a
-/// manifest's formatting and a test's parser, and the kind of thing that holds
-/// until somebody reformats a file for good reasons.
-fn documents_of_kind(kind: &str) -> Vec<(std::path::PathBuf, String)> {
-    manifest_documents()
-        .into_iter()
-        .filter(|(_, document)| document.lines().any(|line| line == format!("kind: {kind}")))
-        .collect()
-}
-
-/// The value of the first `key:` in a document, at any indentation.
-fn first_value(document: &str, key: &str) -> Option<String> {
-    document.lines().find_map(|line| {
-        let trimmed = line.trim();
-        trimmed
-            .strip_prefix(&format!("{key}:"))
-            .map(|value| value.trim().trim_matches('"').to_string())
-    })
-}
-
-/// The lines nested under `key`, by indentation.
-///
-/// Splitting on a key and then on a fixed indent looks simpler and is wrong:
-/// the remainder begins with the newline the split left behind, so the first
-/// element is empty and the check quietly passes on nothing.
-fn block_under(text: &str, key: &str) -> String {
-    let mut lines = text.lines();
-    let opening = lines.find(|line| line.trim() == key);
-    let Some(opening) = opening else {
-        return String::new();
-    };
-    let indent = opening.len() - opening.trim_start().len();
-    lines
-        .take_while(|line| line.trim().is_empty() || line.len() - line.trim_start().len() > indent)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Whether a manifest declares a workload that runs containers.
-///
-/// A `StatefulSet` is a `Deployment` that keeps its volumes, and every rule in
-/// this file — no root, no escalation, limits, a probe, a pinned image — is
-/// about the container rather than about which controller manages it. Keying
-/// these checks on `kind: Deployment` alone is how a workload converted to a
-/// `StatefulSet` would quietly stop being checked.
-///
-/// Anchored at column zero, exactly like `documents_of_kind` and for exactly
-/// its reason: `kind:` appears nested inside other objects' target
-/// references, and the substring version of this helper pulled
-/// `autoscaling.yaml` — three VerticalPodAutoscalers whose `targetRef` each
-/// name `kind: Deployment` — into the workload set and demanded its
-/// nonexistent containers carry probes and drop capabilities. The parser
-/// above had already been fixed; this helper was the copy the fix missed.
-fn is_workload(content: &str) -> bool {
-    WORKLOAD_KINDS
-        .iter()
-        .any(|kind| content.lines().any(|line| line == format!("kind: {kind}")))
-}
-
-/// The kinds of workload the manifests may declare.
-const WORKLOAD_KINDS: [&str; 2] = ["Deployment", "StatefulSet"];
-
-/// Every workload document in the manifests, of either kind.
-///
-/// The single place that knows which controllers run containers, so a third
-/// kind is one edit rather than nine.
-fn workload_documents() -> Vec<(std::path::PathBuf, String)> {
-    WORKLOAD_KINDS
-        .iter()
-        .flat_map(|kind| documents_of_kind(kind))
-        .collect()
-}
-
-/// The container blocks inside a workload document.
-///
-/// Split on the fixed indentation these manifests use. That is brittle on
-/// purpose: a reindented manifest makes this return nothing, and every caller
-/// asserts it found at least one container, so the failure is loud rather than
-/// a check that quietly stops checking.
-fn containers(document: &str) -> Vec<String> {
-    let Some(start) = document.find("\n      containers:\n") else {
-        return Vec::new();
-    };
-    let body = &document[start..];
-    let body = body.split("\n      volumes:").next().unwrap_or(body);
-    body.split("\n        - name: ")
-        .skip(1)
-        .map(str::to_string)
-        .collect()
-}
-
-/// The binary a container runs, taken from its image reference.
-///
-/// The image is the honest link between a Deployment and a binary: a container
-/// name is a label somebody chose, and an image is the thing that will actually
-/// execute.
-fn container_binary(container: &str) -> String {
-    let image = container
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("image:"))
-        .unwrap_or_else(|| panic!("a container declares an image:\n{container}"))
-        .trim();
-    let without_tag = image.split(':').next().unwrap_or(image);
-    without_tag
-        .rsplit('/')
-        .next()
-        .unwrap_or(without_tag)
-        .to_string()
-}
-
-/// Every binary a Deployment in the manifests runs.
-fn deployed_binaries() -> Vec<String> {
-    let mut deployed: Vec<String> = WORKLOAD_KINDS
-        .iter()
-        .flat_map(|kind| documents_of_kind(kind))
-        .collect::<Vec<_>>()
-        .iter()
-        .flat_map(|(path, document)| {
-            let found = containers(document);
-            assert!(
-                !found.is_empty(),
-                "{} has a workload with no container the split could find; \
-                 the manifest's indentation has changed and this check has \
-                 stopped checking",
-                path.display()
-            );
-            found
-        })
-        .map(|container| container_binary(&container))
-        .collect();
-    deployed.sort();
-    deployed.dedup();
-    deployed
-}
-
-#[test]
-fn every_deployable_binary_in_the_workspace_has_a_deployment() {
-    let deployed = deployed_binaries();
-    for binary in workspace_binaries() {
-        if NOT_A_WORKLOAD.iter().any(|(name, _)| *name == binary) {
-            continue;
-        }
-        assert!(
-            deployed.contains(&binary),
-            "{binary} is a binary this workspace builds and nothing deploys it. \
-             Either give it a Deployment or add it to NOT_A_WORKLOAD with the \
-             reason it is not one."
-        );
-    }
-}
-
-#[test]
-fn every_deployment_runs_a_binary_that_exists() {
-    // The other direction, and the one the repository actually got wrong.
-    let binaries = workspace_binaries();
-    for binary in deployed_binaries() {
-        if AWAITING_ITS_CRATE.iter().any(|(name, _)| *name == binary) {
-            continue;
-        }
-        assert!(
-            binaries.contains(&binary),
-            "a Deployment runs {binary}, which no crate in this workspace \
-             builds. A manifest for a binary that does not exist reads to a \
-             reviewer as a component that is deployed and constrained."
-        );
-    }
-}
-
-#[test]
-fn every_pending_workload_is_still_actually_pending() {
-    // What keeps AWAITING_ITS_CRATE from becoming permanent. When the crate
-    // lands this fails, and the person who landed it deletes the entry — at
-    // which point `every_deployment_runs_a_binary_that_exists` starts covering
-    // it for real.
-    let binaries = workspace_binaries();
-    for (binary, reason) in AWAITING_ITS_CRATE {
-        assert!(
-            !binaries.contains(&(*binary).to_string()),
-            "{binary} now exists in the workspace, so the exemption \"{reason}\" \
-             is stale. Delete it from AWAITING_ITS_CRATE."
-        );
-    }
-}
-
-#[test]
-fn every_workload_that_cannot_be_probed_says_why_and_stops_being_exempt_when_it_can() {
-    // A Deployment with no liveness probe is normally a mistake. Here three of
-    // them are deliberate, because the binaries do not serve yet, and a probe
-    // written against an endpoint that does not exist is worse than none: it
-    // looks like coverage.
-    for (path, document) in workload_documents() {
-        let workload = first_value(&document, "name").expect("a Deployment is named");
-        let binary = containers(&document)
-            .first()
-            .map(|container| container_binary(container))
-            .unwrap_or_else(|| panic!("{} has a Deployment with no container", path.display()));
-
-        let exempt = DOES_NOT_SERVE_YET.iter().any(|(name, _)| *name == binary);
-        let probed = document.contains("livenessProbe") && document.contains("readinessProbe");
-
-        if exempt {
-            assert!(
-                !probed,
-                "{binary} carries a probe and is still listed in \
-                 DOES_NOT_SERVE_YET. If it serves now, delete the entry."
-            );
-            assert!(
-                document.contains("No liveness or readiness probe"),
-                "{} does not say why {workload} has no probe",
-                path.display()
-            );
-        } else {
-            assert!(
-                probed,
-                "{workload} has no liveness and readiness probe, and is not \
-                 listed in DOES_NOT_SERVE_YET with a reason"
-            );
-        }
-    }
-}
-
-// --- identity ---------------------------------------------------------------
-
-#[test]
-fn every_workload_has_its_own_service_account_and_mounts_no_token() {
-    // Sharing an account would undo the entire argument for having several,
-    // and a mounted token is a credential nothing here needs: every workload
-    // authenticates to Google through workload identity and none of them talks
-    // to the Kubernetes API.
-    let mut seen: Vec<String> = Vec::new();
-    for (path, document) in workload_documents() {
-        let workload = first_value(&document, "name").expect("a Deployment is named");
-        let account = first_value(&document, "serviceAccountName").unwrap_or_else(|| {
-            panic!("{workload} runs under the namespace's default service account")
-        });
-        assert!(
-            !seen.contains(&account),
-            "{workload} shares the service account {account} with another workload"
-        );
-        seen.push(account);
-
-        assert!(
-            document
-                .lines()
-                .any(|line| line.trim() == "automountServiceAccountToken: false"),
-            "{} mounts a service-account token for {workload}",
-            path.display()
-        );
-    }
-    assert!(
-        seen.len() >= 4,
-        "only {} workloads were checked",
-        seen.len()
-    );
-}
-
-// --- what a container may do ------------------------------------------------
-
-#[test]
-fn every_container_has_a_cpu_and_a_memory_request_as_well_as_a_limit() {
-    // The existing check reads the first `limits:` block in a file. This one
-    // reads every container, and checks requests too: a container with limits
-    // and no requests is scheduled as if it were free, which is how a node ends
-    // up with more promised to it than it has.
-    let mut checked = 0usize;
-    for (path, document) in workload_documents() {
-        let found = containers(&document);
-        assert!(
-            !found.is_empty(),
-            "{} has a Deployment whose containers could not be read",
-            path.display()
-        );
-        for container in found {
-            let name = container.lines().next().unwrap_or("?").trim();
-            let resources = block_under(&container, "resources:");
-            assert!(
-                !resources.is_empty(),
-                "{name} in {} has no resources",
-                path.display()
-            );
-            for section in ["requests:", "limits:"] {
-                let block = block_under(&resources, section);
-                assert!(!block.is_empty(), "{name} has no {section}");
-                assert!(block.contains("cpu:"), "{name} has no cpu in {section}");
-                assert!(
-                    block.contains("memory:"),
-                    "{name} has no memory in {section}"
-                );
-            }
-            checked += 1;
-        }
-    }
-    assert!(checked >= 4, "only {checked} containers were checked");
-}
-
-#[test]
-fn no_container_in_any_workload_runs_as_root_or_can_escalate() {
-    // The existing check asks whether the settings appear anywhere in a file.
-    // This one asks per container, so a second container added to a Deployment
-    // that already has the settings once cannot arrive without them.
-    for (path, document) in workload_documents() {
-        assert!(
-            document.contains("runAsNonRoot: true"),
-            "{} does not set runAsNonRoot",
-            path.display()
-        );
-        assert!(
-            !document.contains("runAsUser: 0"),
-            "{} runs a container as uid 0",
-            path.display()
-        );
-        for container in containers(&document) {
-            let name = container.lines().next().unwrap_or("?").trim();
-            for (setting, why) in [
-                (
-                    "allowPrivilegeEscalation: false",
-                    "a setuid binary inside the container escalates without it",
-                ),
-                (
-                    "readOnlyRootFilesystem: true",
-                    "a writable root filesystem lets an attacker persist",
-                ),
-                (
-                    "drop: [\"ALL\"]",
-                    "a container needs none of the default capabilities",
-                ),
-            ] {
-                assert!(
-                    container.contains(setting),
-                    "the {name} container in {} is missing {setting}: {why}",
-                    path.display()
-                );
-            }
-        }
-    }
-}
-
-// --- what a workload may reach ----------------------------------------------
-
-/// The `app` label a NetworkPolicy selects, and which directions it governs.
-fn policy_targets() -> Vec<(String, bool, bool)> {
-    documents_of_kind("NetworkPolicy")
-        .iter()
-        .filter_map(|(_, document)| {
-            let selector = document
-                .split("podSelector:")
-                .nth(1)
-                .and_then(|rest| rest.split("policyTypes:").next())
-                .unwrap_or("");
-            let app = selector
-                .lines()
-                .find_map(|line| line.trim().strip_prefix("app:"))
-                .map(|value| value.trim().to_string())?;
-            let types = block_under(document, "policyTypes:");
-            Some((app, types.contains("- Ingress"), types.contains("- Egress")))
-        })
-        .collect()
-}
-
-#[test]
-fn every_workload_is_covered_by_both_an_ingress_and_an_egress_policy() {
-    // The default is deny, so a workload with no matching policy cannot be
-    // reached and cannot reach anything — and it fails by hanging rather than
-    // by erroring, which is the failure that takes longest to diagnose. A
-    // missing egress rule for the API is exactly what was wrong here.
-    let policies = policy_targets();
-    let mut checked = 0usize;
-    for (_, document) in workload_documents() {
-        let app = document
-            .split("labels:")
-            .nth(1)
-            .and_then(|rest| {
-                rest.lines()
-                    .find_map(|line| line.trim().strip_prefix("app:"))
-            })
-            .map(|value| value.trim().to_string())
-            .expect("a Deployment carries an app label");
-
-        assert!(
-            policies
-                .iter()
-                .any(|(target, ingress, _)| *target == app && *ingress),
-            "{app} is covered by no ingress policy, so nothing can reach it and \
-             the connection hangs rather than failing"
-        );
-        assert!(
-            policies
-                .iter()
-                .any(|(target, _, egress)| *target == app && *egress),
-            "{app} is covered by no egress policy, so it can reach nothing — \
-             not Secret Manager, not the API, not telemetry"
-        );
-        checked += 1;
-    }
-    assert!(checked >= 4, "only {checked} workloads were checked");
-
-    // And the default is still deny, so all of the above means something.
-    let namespace = read("infrastructure/kubernetes/base/namespace.yaml");
-    assert!(namespace.contains("name: default-deny"));
-    let deny = namespace
-        .split("name: default-deny")
-        .nth(1)
-        .expect("the default-deny policy exists")
-        .split("\n---")
-        .next()
-        .expect("the document ends");
-    assert!(
-        deny.contains("podSelector: {}"),
-        "the default deny does not select every pod"
-    );
-    assert!(
-        deny.contains("- Ingress") && deny.contains("- Egress"),
-        "the default deny does not cover both directions"
-    );
-}
-
-#[test]
-fn no_network_policy_permits_the_whole_internet() {
-    // A `0.0.0.0/0` in an egress rule undoes every other rule in the file, and
-    // it is one line that looks like the others.
-    for (path, document) in documents_of_kind("NetworkPolicy") {
-        let content = without_comments(&document);
-        assert!(
-            !content.contains("0.0.0.0/0"),
-            "{} permits the whole internet",
-            path.display()
-        );
-        assert!(
-            !content.contains("::/0"),
-            "{} permits the whole internet over IPv6",
-            path.display()
-        );
-    }
-}
-
-/// The `to:` destinations a named egress policy permits: `ipBlock` CIDRs and
-/// the `app` labels of the pods it names.
-///
-/// Searched across every manifest rather than in one file. A cell's policies
-/// live with the cell because they name that cell's venues, and a check that
-/// only looked in namespace.yaml would stop finding them the moment they moved.
-fn egress_destinations(policy: &str) -> (Vec<String>, Vec<String>) {
-    let document = manifest_documents()
-        .into_iter()
-        .find(|(_, document)| {
-            document
-                .lines()
-                .any(|line| line.trim() == format!("name: {policy}"))
-        })
-        .map(|(_, document)| document)
-        .unwrap_or_else(|| panic!("{policy} exists"));
-    let egress = document
-        .split("  egress:")
-        .nth(1)
-        .unwrap_or_else(|| panic!("{policy} has an egress section"))
-        .to_string();
-    let egress = without_comments(&egress);
-
-    let cidrs = egress
-        .lines()
-        .filter_map(|line| line.trim().strip_prefix("cidr:"))
-        .map(|value| value.trim().to_string())
-        .collect();
-    let apps = egress
-        .lines()
-        .filter_map(|line| line.trim().strip_prefix("app:"))
-        .map(|value| value.trim().to_string())
-        .collect();
-    (cidrs, apps)
 }
 
 // --- the evidence store -----------------------------------------------------
@@ -3138,20 +2351,716 @@ fn every_step_output_a_workflow_reads_is_one_that_job_writes() {
     );
 }
 
+// --- the workloads and the binaries they run --------------------------------
+//
+// The bug these exist to catch is already in the repository's history: a
+// NetworkPolicy governing a pod that no Deployment created. A rule for a
+// workload that does not exist is not harmless — it is a reviewer reading the
+// configuration and concluding the deep brain is deployed and constrained,
+// when it is neither.
+//
+// So the correspondence is checked in both directions. A test that only asked
+// "does every binary have a workload" would have passed on that namespace
+// without noticing, because the missing half was the workload.
+
+/// Binaries in the workspace that are deliberately not deployed as a workload.
+///
+/// Kept as a list with a reason attached rather than as a filter in the test,
+/// because "why is this one exempt" is the question the next person will have
+/// and a predicate cannot answer it.
+const NOT_A_WORKLOAD: &[(&str, &str)] = &[(
+    // `qip-cli` builds a binary called `qip`.
+    "qip",
+    "an operator's tool, run by a person against a deployment rather than \
+     scheduled in one",
+)];
+
+/// Binaries the workspace builds that the pipeline deliberately builds no image
+/// for.
+///
+/// The sibling of `NOT_A_WORKLOAD`, and deliberately a second list rather than
+/// a reuse of the first: "nothing schedules it" and "nothing builds it" are
+/// different decisions, and a crate could sensibly be one without the other —
+/// an operator tool distributed as an image and run as a Cloud Run job would
+/// be in the matrix and absent from the catalogue.
+///
+/// The reasons are the short form. The decision is
+/// `docs/adr/0010-what-gets-deployed.md`, and
+/// `every_deployment_exclusion_is_recorded_as_a_decision` is what keeps the two
+/// from drifting.
+const NOT_IN_THE_IMAGE_MATRIX: &[(&str, &str, &str)] = &[(
+    "qip-cli",
+    "qip",
+    "an operator's tool, run by a person against a deployment rather than \
+     scheduled in one",
+)];
+
+/// Workloads whose binary is not in the workspace yet.
+///
+/// This list has to shrink to nothing, and
+/// `every_pending_workload_is_still_actually_pending` is what makes it: that
+/// test fails the moment the crate lands, so the exemption is removed by
+/// whoever lands it rather than surviving as a permanent hole in the check
+/// above.
+const AWAITING_ITS_CRATE: &[(&str, &str)] = &[];
+
+/// The binaries the workspace actually builds, by binary name.
+///
+/// Read from the manifests rather than from a list here, because a list here
+/// would be a second copy of the truth and the whole point of this section is
+/// that the two copies drift.
+fn workspace_binaries() -> Vec<String> {
+    let mut found = Vec::new();
+    for path in files_with_extension("backend/crates", "toml") {
+        if path.file_name().is_none_or(|name| name != "Cargo.toml") {
+            continue;
+        }
+        let content = std::fs::read_to_string(&path).expect("readable");
+        let Some(directory) = path.parent() else {
+            continue;
+        };
+        let declared: Vec<String> = content
+            .split("[[bin]]")
+            .skip(1)
+            .filter_map(|section| {
+                section
+                    .lines()
+                    .find(|line| line.trim_start().starts_with("name"))
+                    .and_then(|line| line.split('"').nth(1))
+                    .map(str::to_string)
+            })
+            .collect();
+        if !declared.is_empty() {
+            found.extend(declared);
+            continue;
+        }
+        if directory.join("src/main.rs").exists() {
+            let name = content
+                .lines()
+                .find(|line| line.trim_start().starts_with("name"))
+                .and_then(|line| line.split('"').nth(1))
+                .expect("a package declares a name");
+            found.push(name.to_string());
+        }
+    }
+    found.sort();
+    found.dedup();
+    assert!(
+        found.len() >= 4,
+        "only {found:?} were found; the manifest walk is not reaching the apps"
+    );
+    found
+}
+
+/// The binary the execution node's unit runs, from its `ExecStart`.
+fn node_binary() -> String {
+    // The startup script writes two units: the egress proxy's, whose
+    // ExecStart is the vendored Envoy, and the node's. Only the second runs
+    // a binary this workspace builds, so the walk starts at its
+    // Description line rather than at the first ExecStart in the file —
+    // which is the proxy's, and would make every test here ask whether
+    // `envoy` is a crate.
+    let startup = read(NODE_STARTUP);
+    let unit = startup
+        .split("Description=qip execution node")
+        .nth(1)
+        .expect("the startup script writes a unit described as the execution node");
+    unit.lines()
+        .find_map(|line| line.trim().strip_prefix("ExecStart=/usr/local/bin/"))
+        .map(|rest| rest.split_whitespace().next().unwrap_or(rest).to_string())
+        .expect("the node's unit names the binary it runs")
+}
+
+/// Every binary something deploys: the catalogue's services and the node.
+fn deployed_binaries() -> Vec<String> {
+    let mut deployed: Vec<String> = catalogue_workloads()
+        .iter()
+        .map(|(_, body)| catalogue_field(body, "binary"))
+        .collect();
+    deployed.push(node_binary());
+    deployed.sort();
+    deployed.dedup();
+    deployed
+}
+
+/// The lines nested under `key`, by indentation.
+fn block_under(text: &str, key: &str) -> String {
+    let mut lines = text.lines();
+    let opening = lines.find(|line| line.trim() == key);
+    let Some(opening) = opening else {
+        return String::new();
+    };
+    let indent = opening.len() - opening.trim_start().len();
+    lines
+        .take_while(|line| line.trim().is_empty() || line.len() - line.trim_start().len() > indent)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn every_deployable_binary_in_the_workspace_has_a_workload() {
+    let deployed = deployed_binaries();
+    for binary in workspace_binaries() {
+        if NOT_A_WORKLOAD.iter().any(|(name, _)| *name == binary) {
+            continue;
+        }
+        assert!(
+            deployed.contains(&binary),
+            "{binary} is a binary this workspace builds and nothing deploys it. \
+             Either give it a catalogue entry or add it to NOT_A_WORKLOAD with \
+             the reason it is not one."
+        );
+    }
+}
+
+#[test]
+fn every_workload_runs_a_binary_that_exists() {
+    // The other direction, and the one the repository actually got wrong.
+    let binaries = workspace_binaries();
+    for binary in deployed_binaries() {
+        if AWAITING_ITS_CRATE.iter().any(|(name, _)| *name == binary) {
+            continue;
+        }
+        assert!(
+            binaries.contains(&binary),
+            "a workload runs {binary}, which no crate in this workspace builds. \
+             A catalogue entry for a binary that does not exist reads to a \
+             reviewer as a component that is deployed and constrained."
+        );
+    }
+}
+
+#[test]
+fn every_pending_workload_is_still_actually_pending() {
+    let binaries = workspace_binaries();
+    for (binary, reason) in AWAITING_ITS_CRATE {
+        assert!(
+            !binaries.contains(&(*binary).to_string()),
+            "{binary} now exists in the workspace, so the exemption \"{reason}\" \
+             is stale. Delete it from AWAITING_ITS_CRATE."
+        );
+    }
+}
+
+#[test]
+fn every_cloud_run_service_is_probed_on_a_path_its_binary_serves() {
+    // A probe pointed at an endpoint that does not exist looks like coverage
+    // and is not: Cloud Run would never route to the service, and the failure
+    // reads as an image that will not start. Each catalogue entry names the
+    // path, and the binary's own source has to serve it.
+    let module = without_comments(&read(CLOUD_RUN_MODULE));
+    assert!(
+        module.contains("startup_probe {") && module.contains("liveness_probe {"),
+        "the Cloud Run module no longer probes the workload"
+    );
+    assert_eq!(
+        module.matches("path = var.health_path").count(),
+        2,
+        "the two probes do not both poll the catalogue's health path"
+    );
+
+    let mut probed = 0usize;
+    for (name, body) in catalogue_workloads() {
+        let binary = catalogue_field(&body, "binary");
+        let path = catalogue_field(&body, "health_path");
+        assert!(
+            path.starts_with('/'),
+            "{name}'s health path {path} is not a path"
+        );
+        let sources: String =
+            files_with_extension(&format!("backend/crates/apps/{binary}/src"), "rs")
+                .iter()
+                .filter_map(|source| std::fs::read_to_string(source).ok())
+                .collect();
+        assert!(
+            sources.contains(&format!("\"{path}\"")),
+            "{name} is probed on {path} and {binary} serves no such path; Cloud Run would \
+             never route to it and the failure would read as an image that will not start"
+        );
+        probed += 1;
+    }
+    assert_eq!(
+        probed, 3,
+        "the premise failed: not every workload was checked"
+    );
+}
+
+#[test]
+fn the_image_runs_as_a_non_root_user_on_an_empty_filesystem() {
+    // The container properties the Kubernetes manifests used to carry as a
+    // security context are properties of the image now, because Cloud Run
+    // runs what the image says. A statically linked binary on scratch, as a
+    // fixed non-root uid: no shell, no package manager, no libc to reach, so a
+    // container an attacker reaches is a container they can do very little
+    // with.
+    let dockerfile = read("infrastructure/docker/Dockerfile");
+    let stages: Vec<&str> = dockerfile
+        .lines()
+        .filter(|line| line.starts_with("FROM "))
+        .collect();
+    assert!(
+        stages.last().is_some_and(|last| *last == "FROM scratch"),
+        "the image's final stage is not scratch: {stages:?}"
+    );
+    assert!(
+        dockerfile
+            .lines()
+            .any(|line| line.trim() == "USER 10001:10001"),
+        "the image does not fix a non-root user, so Cloud Run runs it as root"
+    );
+    assert!(
+        dockerfile.contains("--locked"),
+        "the image is built without --locked, so it can resolve a dependency graph the tests never ran against"
+    );
+    // And the one third-party image is the distroless one, for the same
+    // reason.
+    let vendored = read("infrastructure/egress/vendored-images.txt");
+    assert!(
+        vendored.lines().any(|line| !line.starts_with('#')
+            && line.contains("vendor/envoy")
+            && line.contains("distroless")),
+        "the vendored Envoy is not the distroless image; a shell on the process that terminates TLS is a shell"
+    );
+}
+
+#[test]
+fn every_cloud_run_container_declares_a_cpu_and_a_memory_limit() {
+    // A memory limit without a CPU limit lets a busy instance starve its
+    // neighbours; a CPU limit without a memory limit lets a leak take down the
+    // instance. Both, on every container the module renders: the service, the
+    // job, and the proxy sidecar.
+    let module = without_comments(&read(CLOUD_RUN_MODULE));
+    let limits: Vec<String> = module
+        .split("limits = {")
+        .skip(1)
+        .map(|rest| rest.split('}').next().unwrap_or("").to_string())
+        .collect();
+    assert_eq!(
+        limits.len(),
+        3,
+        "{} limits blocks were read; the service, the job and the sidecar each carry one",
+        limits.len()
+    );
+    for block in &limits {
+        assert!(
+            block.contains("cpu"),
+            "a container has no CPU limit: {block}"
+        );
+        assert!(
+            block.contains("memory"),
+            "a container has no memory limit: {block}"
+        );
+    }
+    // And the catalogue sets both for every workload rather than taking a
+    // default sized for something else.
+    for (name, body) in catalogue_workloads() {
+        let cpu = catalogue_field(&body, "cpu");
+        let memory = catalogue_field(&body, "memory");
+        assert!(
+            ["0.25", "0.5", "1", "2", "4", "8"].contains(&cpu.as_str()),
+            "{name} asks for {cpu} CPU, which Cloud Run does not accept"
+        );
+        assert!(
+            memory.ends_with("Mi") || memory.ends_with("Gi"),
+            "{name} asks for {memory} memory, which Cloud Run does not accept"
+        );
+    }
+}
+
+/// No Kubernetes manifest exists for a credential to appear in; the property
+/// this test owned moved to the Cloud Run catalogue and is asserted there.
+///
+/// The name is kept because `security.rs` and the threat model cite it by name
+/// as the test that scans deployed configuration for an inline credential, and
+/// a renamed test is one those citations stop finding. What it now asserts is
+/// the truth on this runtime: there is no manifest, and the catalogue that
+/// replaced it carries no literal credential and projects every token as a
+/// mounted file.
+#[test]
+fn no_credential_appears_in_a_kubernetes_manifest() {
+    for retired in ["infrastructure/kubernetes", "infrastructure/helm"] {
+        assert!(
+            !repository_root().join(retired).exists(),
+            "{retired} exists again; the Kubernetes runtime was retired under ADR 0024 and a \
+             manifest directory nothing applies reads as the running system"
+        );
+    }
+    let catalogue = without_comments(&read(CATALOGUE));
+    let mut values = 0usize;
+    for line in catalogue.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if !key.trim().starts_with("QIP_") {
+            continue;
+        }
+        values += 1;
+        let value = value.trim().trim_matches('"');
+        assert!(
+            !looks_like_a_credential(value),
+            "catalogue.tf has what looks like a literal credential: {line}"
+        );
+    }
+    assert!(values >= 8, "only {values} environment values were scanned");
+    // Every token is a mounted file, never a value. `QIP_TOKEN_` appears in
+    // the catalogue only as the `_FILE` variable of a secret mount.
+    for line in catalogue.lines().filter(|line| line.contains("QIP_TOKEN_")) {
+        assert!(
+            line.contains("env_file_variable") && line.contains("_FILE"),
+            "catalogue.tf carries a token outside a secret mount: {line}"
+        );
+    }
+}
+
+/// Whether a value looks like a credential rather than configuration.
+///
+/// Deliberately narrow: a check that flags every long string produces a wall of
+/// false positives, and a wall of false positives is a check people stop
+/// reading.
+fn looks_like_a_credential(value: &str) -> bool {
+    value.len() >= 24
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
+        && value.chars().any(|c| c.is_ascii_digit())
+        && value.chars().any(|c| c.is_ascii_uppercase())
+}
+
+#[test]
+fn the_autonomy_ceiling_comes_from_the_one_root_variable_rather_than_a_literal() {
+    // Changing what the platform is permitted to do should appear in a diff
+    // and in an audit log, in one place. Every catalogue workload takes the
+    // ceiling from `var.autonomy_ceiling` — the variable whose validation
+    // refuses the three live rungs at plan time — and never from a string.
+    let mut checked = 0usize;
+    for (name, body) in catalogue_workloads() {
+        let setting = body
+            .lines()
+            .find(|line| line.trim_start().starts_with("QIP_AUTONOMY_CEILING"))
+            .unwrap_or_else(|| panic!("{name} does not set QIP_AUTONOMY_CEILING"));
+        let (_, value) = setting.split_once('=').expect("an assignment");
+        assert_eq!(
+            value.trim(),
+            "var.autonomy_ceiling",
+            "{name} takes its ceiling from `{}` rather than from the one root variable",
+            value.trim()
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 3, "not every workload was checked");
+}
+
+#[test]
+fn every_image_the_matrix_builds_has_a_workload_that_runs_it() {
+    // An image nobody deploys is a build that costs money and ships nothing.
+    // Worse, it reads to a reviewer as a component that is deployed: the
+    // pipeline visibly builds and pushes it, and nothing says it is never run.
+    let deployed = deployed_binaries();
+    for binary in image_matrix() {
+        assert!(
+            deployed.contains(&binary),
+            "the pipeline builds and pushes {binary} and no workload runs it. \
+             Either write the catalogue entry or take it out of the matrix."
+        );
+    }
+}
+
+#[test]
+fn the_pipeline_builds_an_image_for_every_workload_it_deploys() {
+    // The reverse, and the one that fails a deployment rather than wasting a
+    // build: a service whose image nothing pushes is a revision waiting for a
+    // digest that will never exist.
+    let matrix = image_matrix();
+    for binary in deployed_binaries() {
+        if AWAITING_ITS_CRATE.iter().any(|(name, _)| *name == binary) {
+            continue;
+        }
+        assert!(
+            matrix.contains(&binary),
+            "{binary} has a workload and the pipeline builds no image for it"
+        );
+    }
+}
+
+#[test]
+fn every_workload_pulls_from_the_repository_the_pipeline_pushes_to() {
+    // Three places name the same repository and none of them can see the other
+    // two: the workflow builds `<region>-docker.pkg.dev/<project>/qip-<env>`,
+    // Terraform creates `qip-<env>`, and the catalogue reads the prefix from
+    // the registry module. If any drifts, every pull in every environment
+    // fails with a 404 that names neither of the two that disagree.
+    let deploy = read(".github/workflows/deploy.yml");
+    assert!(
+        deploy.contains(
+            "docker.pkg.dev/${{ steps.identity.outputs.project }}/qip-${TARGET_ENVIRONMENT}"
+        ),
+        "the pipeline no longer pushes to qip-<environment> in the project's \
+         Artifact Registry"
+    );
+    let registry = read("infrastructure/terraform/modules/registry/main.tf");
+    assert!(
+        sets(&registry, "repository_id", r#""qip-${var.environment}""#),
+        "the registry Terraform creates is not the one the pipeline pushes to"
+    );
+
+    // And the catalogue pins no registry of its own, and never a tag: the
+    // image is the registry module's prefix, the binary, and a digest.
+    let catalogue = without_comments(&read(CATALOGUE));
+    assert!(
+        catalogue.contains("image_digest = \"${module.registry.image_prefix}/${each.value.binary}@${lookup(var.image_digests, each.value.binary, \"\")}\""),
+        "the catalogue names an image some way other than registry prefix, binary and digest"
+    );
+    let variables = read(CLOUD_RUN_VARIABLES);
+    assert!(
+        variables.contains("@sha256:[a-f0-9]{64}$"),
+        "the Cloud Run module no longer refuses an image that is not pinned by digest"
+    );
+}
+
+/// Files outside this change's paths that still mention the retired stack,
+/// with what each is. Each is re-proved to still exist and still mention it,
+/// so the list expires entry by entry rather than excusing the next mention.
+const STILL_MENTIONS_THE_RETIRED_STACK: &[(&str, &str)] = &[
+    (
+        "scripts/bootstrap-gitops.sh",
+        "installs Argo CD into a cluster that no longer exists; retire it",
+    ),
+    (
+        "scripts/verify-argocd.sh",
+        "checks an Argo CD sync; retire it",
+    ),
+    (
+        "scripts/bootstrap-kargo-admin.sh",
+        "creates a Kargo admin; retire it",
+    ),
+    (
+        "scripts/open-consoles.sh",
+        "opens the Argo CD and Kargo consoles; retire it",
+    ),
+    (
+        ".claude/rules/domains/data-and-streaming.md",
+        "names the chart's egress.yaml as the proxy's only manifest; point it at infrastructure/egress/envoy.yaml",
+    ),
+    (
+        "docs/operations/deploying-an-edge-cell.md",
+        "the cell runbook, written for a StatefulSet; rewrite for modules/execution-node",
+    ),
+    (
+        "docs/operations/disaster-recovery.md",
+        "names the GKE backup plan; rewrite for the disk snapshot schedule",
+    ),
+    (
+        "docs/operations/multi-region.md",
+        "reasons about node pools; rewrite for one node per region",
+    ),
+    (
+        "docs/operations/scaling-and-availability.md",
+        "reasons about replicas and KEDA; rewrite for Cloud Run scaling",
+    ),
+    (
+        "docs/operations/enabling-live-trading.md",
+        "names a ConfigMap; rewrite for the root's autonomy_ceiling",
+    ),
+];
+
+#[test]
+fn no_kubernetes_manifest_helm_chart_or_gitops_controller_remains() {
+    // The failure this prevents: a directory of manifests a reviewer takes for
+    // the running system, that nothing applies. It began as a guard on an
+    // empty overlays directory, and on 2026-08-31 the same failure arrived at
+    // a hundred times the size when Argo CD replaced kubectl and left the
+    // sed-rendered manifests behind. ADR 0024 retired the whole runtime; this
+    // is what keeps it retired.
+    for retired in [
+        "infrastructure/kubernetes",
+        "infrastructure/helm",
+        "infrastructure/gitops",
+    ] {
+        assert!(
+            !repository_root().join(retired).exists(),
+            "{retired} exists again. The Kubernetes runtime was retired under ADR 0024; a \
+             manifest, chart or controller directory nothing applies reads as the running \
+             system."
+        );
+    }
+
+    // No manifest anywhere under infrastructure or the workflows: a YAML
+    // document with a top-level `kind:` is a Kubernetes object whatever
+    // directory it is in.
+    let mut yaml_scanned = 0usize;
+    for directory in ["infrastructure", ".github"] {
+        for extension in ["yaml", "yml"] {
+            for path in files_with_extension(directory, extension) {
+                let content = std::fs::read_to_string(&path).expect("readable");
+                yaml_scanned += 1;
+                assert!(
+                    !content
+                        .lines()
+                        .any(|line| line.starts_with("kind: ") || line.starts_with("apiVersion: ")),
+                    "{} is a Kubernetes manifest",
+                    path.display()
+                );
+            }
+        }
+    }
+    assert!(
+        yaml_scanned >= 5,
+        "only {yaml_scanned} YAML files were scanned"
+    );
+
+    // No workflow runs the retired tooling. Comments are stripped, because a
+    // workflow explaining why it no longer runs kubectl must be allowed to
+    // say so.
+    for path in files_with_extension(".github/workflows", "yml") {
+        let commands: String = std::fs::read_to_string(&path)
+            .expect("readable")
+            .lines()
+            .map(|line| line.split('#').next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for tool in ["kubectl ", "helm ", "argocd ", "kargo ", "kustomize "] {
+            assert!(
+                !commands.contains(tool),
+                "{} runs `{tool}`, which has nothing to run against",
+                path.display()
+            );
+        }
+    }
+
+    // No GKE resource in the Terraform.
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        for resource in [
+            "google_container_cluster",
+            "google_container_node_pool",
+            "google_gke_backup_backup_plan",
+            "svc.id.goog",
+            "kubernetes_service_account",
+        ] {
+            assert!(
+                !content.contains(resource),
+                "{} declares {resource}; the cluster is gone and this is a resource for it",
+                path.display()
+            );
+        }
+    }
+
+    // What still mentions the retired stack outside this change's paths, each
+    // re-proved so the list shrinks rather than grows.
+    for (path, what) in STILL_MENTIONS_THE_RETIRED_STACK {
+        let content = std::fs::read_to_string(repository_root().join(path)).unwrap_or_else(|_| {
+            panic!(
+                "{path} no longer exists; delete its entry from STILL_MENTIONS_THE_RETIRED_STACK"
+            )
+        });
+        let lowered = content.to_lowercase();
+        assert!(
+            [
+                "argocd",
+                "argo cd",
+                "kargo",
+                "keda",
+                "helm",
+                "kubernetes",
+                "configmap",
+                "node pool",
+                "statefulset"
+            ]
+            .iter()
+            .any(|token| lowered.contains(token)),
+            "{path} no longer mentions the retired stack ({what}); delete its entry so the list expires"
+        );
+    }
+}
+
+#[test]
+fn nothing_added_here_raises_the_autonomy_ceiling_anywhere() {
+    // Everything above adds workloads, identities and network paths. None of
+    // it is allowed to change the one line that decides whether the platform
+    // can reach a real venue — and the venue credential's IAM binding must
+    // stay absent wherever the ceiling is paper trading.
+    for environment in ["dev", "test", "stage", "prod"] {
+        let tfvars = without_comments(&read(&format!(
+            "infrastructure/environments/{environment}/terraform.tfvars"
+        )));
+        assert!(
+            tfvars.contains(r#"autonomy_ceiling = "paper_trading""#),
+            "{environment} does not ship with a paper-trading ceiling"
+        );
+        for level in [
+            "supervised_live",
+            "limited_autonomous_live",
+            "autonomous_live",
+        ] {
+            assert!(
+                !tfvars.contains(level),
+                "{environment} names {level}, which is above paper trading"
+            );
+        }
+    }
+
+    // Every workload reads the ceiling from the one root variable, and no
+    // live rung is spelt anywhere in the catalogue.
+    let catalogue = without_comments(&read(CATALOGUE));
+    // Matched as a trimmed line, not a substring: `terraform fmt` pads the
+    // `=` to align with the entry's longest key, so a fixed-width match
+    // counts a workload only when its neighbours happen to be short.
+    let workloads = catalogue_workloads();
+    assert_eq!(
+        workloads.len(),
+        3,
+        "the catalogue no longer has three entries"
+    );
+    let takes_the_root_ceiling = catalogue
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            line.starts_with("QIP_AUTONOMY_CEILING")
+                && line.trim_end().ends_with("= var.autonomy_ceiling")
+        })
+        .count();
+    assert_eq!(
+        takes_the_root_ceiling,
+        workloads.len(),
+        "not every catalogue workload takes the ceiling from var.autonomy_ceiling"
+    );
+    for level in [
+        "supervised_live",
+        "limited_autonomous_live",
+        "autonomous_live",
+    ] {
+        assert!(
+            !catalogue.contains(level),
+            "catalogue.tf names {level}, a live autonomy level"
+        );
+    }
+
+    // And the binding is still conditional on the ceiling, with nothing new
+    // granting the venue credential unconditionally.
+    let secrets = read("infrastructure/terraform/modules/secrets/main.tf");
+    let bindings = secrets.matches("qip-venue-credential").count();
+    assert_eq!(
+        bindings, 1,
+        "the venue credential is named {bindings} times in the secrets module; \
+         exactly one of them is the conditional IAM binding"
+    );
+}
+
 // --- what deploys, and what deliberately does not ---------------------------
 //
 // Three lists have to agree: the binaries the workspace builds, the images the
-// pipeline pushes, and the workloads the manifests declare. Every pair of them
-// can disagree in both directions, and each of the six failures is quiet:
+// pipeline pushes, and the workloads the catalogue and the node declare. Every
+// pair of them can disagree in both directions, and each of the six failures
+// is quiet:
 //
 //   * a binary with no image — the crate ships nowhere, and the deploy that was
 //     supposed to include it succeeds;
-//   * an image with no manifest — a build that costs money and ships nothing,
+//   * an image with no workload — a build that costs money and ships nothing,
 //     and reads to a reviewer as a deployed component;
-//   * a manifest with no image — a rollout waiting for a tag that will never
-//     exist;
-//   * a workload the rollout check never waits on — a pipeline that reports
-//     success for a container that never started.
+//   * a workload with no image — a revision waiting for a digest that will
+//     never exist;
+//   * a workload the pipeline never proves serving — a pipeline that reports
+//     success for a revision that never started.
 //
 // None of these produces an error anywhere. They produce a deployment that is
 // missing something, and a review in which everything present is correct.
@@ -3183,16 +3092,6 @@ fn image_matrix() -> Vec<String> {
          indentation has changed and this check has stopped checking"
     );
     binaries
-}
-
-/// The templates the chart carries but dev does not deploy.
-///
-/// The edge cell is the only one, and it is gated on a value rather than
-/// skipped by a pipeline: bringing up a cell needs a cell id, a region and a
-/// set of venue ranges, and it is a deliberate act with a runbook rather than
-/// something an unattended sync does to a workload that trades.
-fn templates_dev_does_not_deploy() -> Vec<String> {
-    vec!["edge-cell.yaml".to_string()]
 }
 
 #[test]
@@ -3283,89 +3182,6 @@ fn qip_web_is_a_library_and_stops_being_exempt_the_moment_it_is_not() {
          nothing serves them. Either something else does — and then that is \
          what deploys them — or the crate is unused."
     );
-}
-
-#[test]
-fn every_image_the_matrix_builds_has_a_manifest_that_runs_it() {
-    // An image nobody deploys is a build that costs money and ships nothing.
-    // Worse, it reads to a reviewer as a component that is deployed: the
-    // pipeline visibly builds and pushes it, and nothing says the cluster never
-    // asks for it.
-    let deployed = deployed_binaries();
-    for binary in image_matrix() {
-        assert!(
-            deployed.contains(&binary),
-            "the pipeline builds and pushes {binary} and no manifest runs it. \
-             Either write the manifest or take it out of the matrix."
-        );
-    }
-}
-
-#[test]
-fn the_pipeline_builds_an_image_for_every_workload_it_deploys() {
-    // The reverse, and the one that fails a deployment rather than wasting a
-    // build: a Deployment whose image nothing pushes is a rollout waiting for a
-    // tag that will never exist.
-    let matrix = image_matrix();
-    for binary in deployed_binaries() {
-        if AWAITING_ITS_CRATE.iter().any(|(name, _)| *name == binary) {
-            continue;
-        }
-        assert!(
-            matrix.contains(&binary),
-            "{binary} has a Deployment and the pipeline builds no image for it"
-        );
-    }
-}
-
-#[test]
-fn every_manifest_pulls_from_the_repository_the_pipeline_pushes_to() {
-    // Three places name the same repository and none of them can see the other
-    // two: the workflow builds `<region>-docker.pkg.dev/<project>/qip-<env>`,
-    // Terraform creates `qip-<env>`, and every manifest writes `IMAGE_PREFIX`
-    // for the workflow to substitute. If any drifts, every pull in every
-    // environment fails with a 404 that names neither of the two that disagree.
-    let deploy = read(".github/workflows/deploy.yml");
-    assert!(
-        deploy.contains(
-            "docker.pkg.dev/${{ steps.identity.outputs.project }}/qip-${TARGET_ENVIRONMENT}"
-        ),
-        "the pipeline no longer pushes to qip-<environment> in the project's \
-         Artifact Registry"
-    );
-    let registry = read("infrastructure/terraform/modules/registry/main.tf");
-    assert!(
-        sets(&registry, "repository_id", r#""qip-${var.environment}""#),
-        "the registry Terraform creates is not the one the pipeline pushes to"
-    );
-
-    // And no manifest pins a registry of its own. A hard-coded prefix survives
-    // the pipeline's placeholder check — there is no placeholder left in it —
-    // and pulls from wherever it says, in every environment.
-    let mut checked = 0usize;
-    for (path, document) in workload_documents() {
-        for container in containers(&document) {
-            let image = container
-                .lines()
-                .find_map(|line| line.trim().strip_prefix("image:"))
-                .map(str::trim)
-                .unwrap_or_else(|| panic!("a container declares an image"));
-            assert!(
-                image.starts_with("IMAGE_PREFIX/"),
-                "{} pulls {image}, which names a registry rather than deferring \
-                 to the one the pipeline substitutes",
-                path.display()
-            );
-            assert!(
-                image.ends_with(":IMAGE_TAG"),
-                "{} pulls {image}, which pins a tag rather than the commit \
-                 being deployed",
-                path.display()
-            );
-            checked += 1;
-        }
-    }
-    assert!(checked >= 4, "only {checked} images were checked");
 }
 
 #[test]
@@ -3502,150 +3318,6 @@ fn a_promotion_names_who_verifies_it() {
 }
 
 #[test]
-fn nothing_reads_as_deployed_that_nothing_deploys() {
-    // The failure this prevents: a directory of manifests a reviewer takes for
-    // the running system, that nothing applies. It began as a guard on an
-    // empty `infrastructure/kubernetes/overlays` — harmless while empty, a lie
-    // the moment somebody put a manifest in it.
-    //
-    // On 2026-08-31 the same failure arrived at a hundred times the size.
-    // deploy.yml stopped applying `infrastructure/kubernetes/base/*.yaml`
-    // because Argo CD applies the Helm chart instead, which left that whole
-    // directory in exactly the state this test exists to forbid. It is kept —
-    // 22 checks read it as the description of the platform's Kubernetes shape
-    // — so what it now needs is to say plainly that it is not what runs.
-    //
-    // The marker is required rather than assumed. A comment somebody may or
-    // may not have written is not a guarantee; a test that fails without it
-    // is.
-    // Comments are stripped before the match, and that is not fussiness. The
-    // first version of this check read the whole file and failed on the
-    // comment in deploy.yml that explains why the apply was removed — a test
-    // that forbids describing the thing it forbids. `#` opens a comment in
-    // both YAML and the shell inside a `run:` block, so one rule covers both.
-    let deploy = read(".github/workflows/deploy.yml");
-    let commands: String = deploy
-        .lines()
-        .map(|line| line.split('#').next().unwrap_or(""))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        !commands.contains("kubectl apply"),
-        "deploy.yml applies to the cluster again. Argo CD applies the chart; \
-         two unattended writers to one namespace undo each other on every \
-         disagreement, and the divergence that made this a real incident was \
-         invisible until the cluster behaved oddly."
-    );
-
-    let readme = read("infrastructure/kubernetes/base/README.md");
-    assert!(
-        readme.contains("infrastructure/helm/qip"),
-        "infrastructure/kubernetes/base/README.md must name the chart that \
-         replaced it, or a reader has no way to find what actually deploys"
-    );
-
-    let skipped = templates_dev_does_not_deploy();
-    let runbooks: String = files_with_extension("docs/operations", "md")
-        .iter()
-        .filter_map(|path| std::fs::read_to_string(path).ok())
-        .collect();
-
-    let mut checked = 0usize;
-    for path in files_with_extension("infrastructure/helm/qip/templates", "yaml") {
-        let name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .expect("a manifest has a name")
-            .to_string();
-        assert!(
-            path.parent()
-                .is_some_and(|parent| parent.ends_with("infrastructure/helm/qip/templates")),
-            "{} is a template outside the directory the Argo CD Application \
-             points at. Nothing applies it.",
-            path.display()
-        );
-        if skipped.contains(&name) {
-            assert!(
-                runbooks.contains(&name),
-                "{name} is skipped by the deploy pipeline and named by no \
-                 runbook in docs/operations, so nothing applies it and nobody \
-                 is told to"
-            );
-        }
-        checked += 1;
-    }
-    assert!(checked >= 5, "only {checked} manifests were checked");
-}
-
-/// The environment variables a binary refuses to start without.
-///
-/// Read out of the source rather than listed here. `required("QIP_X", &mut
-/// missing)` is the call that puts a variable on the list the binary exits on,
-/// so matching it is matching the actual requirement rather than a second
-/// statement of it.
-fn variables_the_binary_refuses_to_start_without(source: &str) -> Vec<String> {
-    // `required_secret(` is the credential variant of the same refusal, and a
-    // split on `required(` alone does not match it — which is exactly how the
-    // envelope key fell out of this walk when it moved to `qip_core::secret`
-    // and took a `_FILE` alternative. Both sites put the variable on the list
-    // the binary exits on, so both belong here.
-    ["required(\"", "required_secret(\""]
-        .iter()
-        .flat_map(|call| {
-            source
-                .split(call)
-                .skip(1)
-                .filter_map(|rest| rest.split('"').next())
-        })
-        .map(str::to_string)
-        .collect()
-}
-
-#[test]
-fn every_variable_a_deployable_refuses_to_start_without_is_set_by_its_manifest() {
-    // The bug this was written for: `edge-cell.yaml` set QIP_CELL_ID,
-    // QIP_CELL_REGION and QIP_CAPITAL_ENVELOPE_KEY and not QIP_VENUES, which
-    // `qip-edge-node` also requires. The container would have exited with a
-    // configuration error and been restarted for ever.
-    //
-    // Nothing else would have caught it. The manifest is not applied by the
-    // pipeline, so no rollout check runs against it; the runbook that does
-    // apply it substituted the placeholders that were there.
-    let mut checked = 0usize;
-    for (path, document) in workload_documents() {
-        for container in containers(&document) {
-            let binary = container_binary(&container);
-            let source = format!("backend/crates/apps/{binary}/src/main.rs");
-            if !repository_root().join(&source).exists() {
-                continue;
-            }
-            for variable in variables_the_binary_refuses_to_start_without(&read(&source)) {
-                // `- name: {variable}_FILE` also satisfies the requirement:
-                // `qip_core::secret` accepts the file variant, and it is the
-                // one the manifests use for anything projected by the CSI
-                // driver. The plain match below matches it too, as a prefix —
-                // stated here so a reader does not think the file variant
-                // slips through unchecked.
-                assert!(
-                    container.contains(&format!("- name: {variable}")),
-                    "{binary} refuses to start without {variable} and {} does \
-                     not set it. The container exits with a configuration error \
-                     and is restarted for ever, which looks like a crash loop \
-                     rather than a missing value.",
-                    path.display()
-                );
-                checked += 1;
-            }
-        }
-    }
-    assert!(
-        checked >= 4,
-        "only {checked} required variables were checked; the walk from a \
-         container to the source of the binary it runs is finding nothing"
-    );
-}
-
-#[test]
 fn every_deployment_exclusion_is_recorded_as_a_decision() {
     // A reason in a `const` is read by whoever is already editing this file.
     // The person asking why the operator CLI is not in the cluster, or why
@@ -3685,56 +3357,3 @@ fn every_deployment_exclusion_is_recorded_as_a_decision() {
 }
 
 // --- the safety property that outranks all of this --------------------------
-
-#[test]
-fn nothing_added_here_raises_the_autonomy_ceiling_anywhere() {
-    // Everything above adds workloads, identities and network paths. None of it
-    // is allowed to change the one line that decides whether the platform can
-    // reach a real venue — and the venue credential's IAM binding must stay
-    // absent wherever the ceiling is paper trading.
-    for environment in ["dev", "test", "stage", "prod"] {
-        let tfvars = without_comments(&read(&format!(
-            "infrastructure/environments/{environment}/terraform.tfvars"
-        )));
-        assert!(
-            tfvars.contains(r#"autonomy_ceiling = "paper_trading""#),
-            "{environment} does not ship with a paper-trading ceiling"
-        );
-        for level in [
-            "supervised_live",
-            "limited_autonomous_live",
-            "autonomous_live",
-        ] {
-            assert!(
-                !tfvars.contains(level),
-                "{environment} names {level}, which is above paper trading"
-            );
-        }
-    }
-
-    // The config map the workloads read is paper trading too, and every new
-    // workload reads it from that config map rather than from its own default.
-    let config = read("infrastructure/kubernetes/base/config.yaml");
-    assert!(config.contains(r#"autonomy_ceiling: "paper_trading""#));
-    for manifest in ["fastbrain.yaml", "deepbrain.yaml", "edge-cell.yaml"] {
-        let content = read(&format!("infrastructure/kubernetes/base/{manifest}"));
-        assert!(
-            content.contains("key: autonomy_ceiling"),
-            "{manifest} does not take the ceiling from the config map"
-        );
-        assert!(
-            !content.contains("supervised_live"),
-            "{manifest} names a live autonomy level"
-        );
-    }
-
-    // And the binding is still conditional on the ceiling, with nothing new
-    // granting the venue credential unconditionally.
-    let secrets = read("infrastructure/terraform/modules/secrets/main.tf");
-    let bindings = secrets.matches("qip-venue-credential").count();
-    assert_eq!(
-        bindings, 1,
-        "the venue credential is named {bindings} times in the secrets module; \
-         exactly one of them is the conditional IAM binding"
-    );
-}
