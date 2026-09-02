@@ -242,6 +242,93 @@ impl Attribution {
     }
 }
 
+/// Split a total across weights pro rata, exactly.
+///
+/// The join between a netted fill and the strategies behind it (blueprint
+/// §27, §43.4): one order carries several strategies' shares, and each must
+/// receive its fraction of the fill so that the fractions sum to the fill.
+/// A split by floating-point multiplication does not sum — three thirds of a
+/// hundred come to 99.999999999 — and a split that rounds each share loses or
+/// invents the difference, which is exactly the residual [`Attribution`]
+/// refuses to carry.
+///
+/// Largest-remainder in the fixed-point representation's own units: every
+/// share takes the floor of its exact fraction, and the units the floors
+/// left over go one each to the shares with the largest fractional parts,
+/// ties broken by position so two runs over the same vector split it the
+/// same way. The shares sum to `total` to the last unit, whatever the
+/// weights, and the function asserts it before returning.
+///
+/// Refuses an empty weight vector, a negative weight, and weights that sum
+/// to zero: each is a caller that has nothing to split by, and inventing an
+/// even split for it would attribute a fill to strategies that contributed
+/// nothing.
+pub fn split_pro_rata(total: Decimal, weights: &[Decimal]) -> Result<Vec<Decimal>> {
+    if weights.is_empty() {
+        return Err(Error::invalid(
+            "a pro-rata split needs at least one weight; there is nobody to attribute to",
+        ));
+    }
+    if weights.iter().any(|weight| weight.is_negative()) {
+        return Err(Error::invalid(
+            "a pro-rata weight cannot be negative; pass the magnitude of a signed share",
+        ));
+    }
+    let denominator: u128 = weights
+        .iter()
+        .try_fold(0u128, |sum, weight| {
+            sum.checked_add(weight.raw().unsigned_abs())
+        })
+        .ok_or_else(|| Error::numeric("the pro-rata weights overflow when summed"))?;
+    if denominator == 0 {
+        return Err(Error::invalid(
+            "every pro-rata weight is zero, so no share can be computed",
+        ));
+    }
+
+    let magnitude = total.raw().unsigned_abs();
+    let mut floors = Vec::with_capacity(weights.len());
+    let mut remainders = Vec::with_capacity(weights.len());
+    for weight in weights {
+        let scaled = magnitude
+            .checked_mul(weight.raw().unsigned_abs())
+            .ok_or_else(|| {
+                Error::numeric("the pro-rata split overflows; the total is too large")
+            })?;
+        floors.push(scaled / denominator);
+        remainders.push(scaled % denominator);
+    }
+    let allocated: u128 = floors.iter().sum();
+    let mut order: Vec<usize> = (0..weights.len()).collect();
+    order.sort_by(|a, b| remainders[*b].cmp(&remainders[*a]).then(a.cmp(b)));
+    // At most one unit per share is ever left over, and fewer units than
+    // shares, so this loop hands each leftover to the share that was
+    // closest to rounding up.
+    for index in order.into_iter().take((magnitude - allocated) as usize) {
+        floors[index] += 1;
+    }
+
+    let shares: Vec<Decimal> = floors
+        .into_iter()
+        .map(|units| {
+            let signed = i128::try_from(units)
+                .map_err(|_| Error::numeric("a pro-rata share overflows the decimal range"))?;
+            Ok(Decimal::from_raw(if total.is_negative() {
+                -signed
+            } else {
+                signed
+            }))
+        })
+        .collect::<Result<_>>()?;
+    let sum: Decimal = shares.iter().copied().sum();
+    if sum != total {
+        return Err(Error::numeric(format!(
+            "the pro-rata shares sum to {sum} against a total of {total}; the split is not exact"
+        )));
+    }
+    Ok(shares)
+}
+
 /// The inputs needed to attribute one position.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PositionPeriod {
@@ -397,5 +484,61 @@ impl Attributor {
         };
         attribution.validate()?;
         Ok(attribution)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // In a test the assertion is the deliverable; the workspace denies this
+    // lint for production code, where a panic on this path would be a bug.
+    #![allow(clippy::panic_in_result_fn)]
+
+    use super::*;
+
+    fn dec(text: &str) -> Decimal {
+        Decimal::parse(text).expect("a decimal literal")
+    }
+
+    #[test]
+    fn a_split_the_weights_do_not_divide_still_sums_to_the_total_to_the_last_unit() -> Result<()> {
+        // Three equal contributors to a fill of one hundred. A share of
+        // 33.333333333 three times is 99.999999999, and the missing unit is
+        // exactly the residual an attribution must not carry. Premise first:
+        // the fraction genuinely does not divide at nine places.
+        let total = dec("100");
+        let weights = [dec("1"), dec("1"), dec("1")];
+        assert_ne!(
+            (total / dec("3")) * dec("3"),
+            total,
+            "the fixture divides exactly, so it proves nothing about the remainder"
+        );
+
+        let shares = split_pro_rata(total, &weights)?;
+        assert_eq!(shares.len(), 3);
+        let sum: Decimal = shares.iter().copied().sum();
+        assert_eq!(sum, total, "shares {shares:?} do not sum to the total");
+        // One share carries the leftover unit, and it is the first: ties in
+        // the fractional part break by position so a replay splits the same
+        // way.
+        assert_eq!(shares[0], dec("33.333333334"));
+        assert_eq!(shares[1], dec("33.333333333"));
+        assert_eq!(shares[2], dec("33.333333333"));
+        Ok(())
+    }
+
+    #[test]
+    fn shares_follow_the_weights_and_a_negative_total_splits_to_negative_shares() -> Result<()> {
+        let shares = split_pro_rata(dec("-100"), &[dec("60"), dec("40")])?;
+        assert_eq!(shares, vec![dec("-60"), dec("-40")]);
+        let sum: Decimal = shares.iter().copied().sum();
+        assert_eq!(sum, dec("-100"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_split_with_nothing_to_split_by_is_refused_rather_than_made_even() {
+        assert!(split_pro_rata(dec("100"), &[]).is_err());
+        assert!(split_pro_rata(dec("100"), &[Decimal::ZERO, Decimal::ZERO]).is_err());
+        assert!(split_pro_rata(dec("100"), &[dec("1"), dec("-1")]).is_err());
     }
 }

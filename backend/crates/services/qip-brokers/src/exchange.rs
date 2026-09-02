@@ -292,10 +292,6 @@ impl SimulatedExchange {
         self.heartbeat_source = true;
     }
 
-    pub fn heartbeat_is_running(&self) -> bool {
-        self.heartbeat_source
-    }
-
     /// Take the client fills produced since the last call.
     ///
     /// Includes fills on orders that were resting and got hit, which is the
@@ -311,10 +307,6 @@ impl SimulatedExchange {
 
     pub fn rejected_count(&self) -> u64 {
         self.rejected
-    }
-
-    pub fn heartbeat_count(&self) -> u64 {
-        self.heartbeats
     }
 
     pub fn resting_count(&self) -> usize {

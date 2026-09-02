@@ -120,11 +120,6 @@ impl ReasoningEngine {
         }
     }
 
-    pub fn with_action_bar(mut self, bar: f64) -> Self {
-        self.action_bar = bar.clamp(0.0, 1.0);
-        self
-    }
-
     pub fn red_team(&self) -> &RedTeam {
         &self.red_team
     }

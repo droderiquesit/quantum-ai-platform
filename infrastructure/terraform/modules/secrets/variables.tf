@@ -14,14 +14,23 @@ variable "labels" {
   type = map(string)
 }
 
-variable "service_accounts" {
-  description = "Deployable name to service-account name."
-  type        = map(string)
-}
-
 variable "secret_names" {
   description = "The secrets that exist. Values are written out of band."
   type        = list(string)
+}
+
+variable "venue_credential_reader" {
+  description = <<-EOT
+    The identity the venue credential is granted to, when it is granted at
+    all: the fast brain's Cloud Run service account, from the catalogue.
+
+    Required rather than defaulted so the root has to say which workload
+    could ever hold the credential. It is read only inside the conditional
+    binding below, so in every environment a plan can carry — where
+    `venue_credential_readable` is false — the value names nothing that is
+    granted anything.
+  EOT
+  type        = string
 }
 
 variable "venue_credential_readable" {

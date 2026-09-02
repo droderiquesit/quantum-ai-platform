@@ -12,14 +12,13 @@
 
 use crate::desk::Desk;
 use crate::support::{
-    FindingBuilder, computed, conviction_from_z, direction_from, no_data, out_of_scope,
-    robust_z_score_of_last, z_score_of_last,
+    FindingBuilder, computed, conviction_from_z, direction_from, no_data, observed_feature,
+    out_of_scope, robust_z_score_of_last, z_score_of_last,
 };
 use qip_agents::finding::{AgentBrief, AgentFinding, Direction};
 use qip_agents::manifest::AgentManifest;
 use qip_agents::runtime::{Agent, AgentContext};
 use qip_core::error::Result;
-use qip_core::ids::ObjectId;
 use qip_financial::asset_class::AssetClass;
 use qip_numerics::stats;
 use qip_quant::signal;
@@ -338,11 +337,19 @@ impl Agent for CreditAnalyst {
         let world = self.desk.world.get(ctx)?;
         let features = world.features();
 
-        let spreads: Vec<f64> = features
-            .history("credit_spread_bps", subject.as_str(), brief.as_of)
-            .iter()
-            .map(|v| v.value)
-            .collect();
+        let history = features.history("credit_spread_bps", subject.as_str(), brief.as_of);
+        let spreads: Vec<f64> = history.iter().map(|v| v.value).collect();
+        // The latest record is what the finding reports as the level, and it
+        // is reported as observed from the store: the agent read it, it did
+        // not produce it. `history` is at least `MINIMUM_HISTORY` long past
+        // this check, so `last` cannot be empty.
+        let Some(latest) = history.last().copied() else {
+            return Ok(no_data(
+                ctx,
+                brief.as_of,
+                format!("no spread observations for {}", subject.as_str()),
+            ));
+        };
         if spreads.len() < MINIMUM_HISTORY {
             return Ok(no_data(
                 ctx,
@@ -372,14 +379,12 @@ impl Agent for CreditAnalyst {
         // Duration is required to translate a spread move into a price move.
         // Without it the agent reports the spread and says the translation is
         // missing, rather than assuming a duration.
-        let duration = features
-            .value_as_of(
-                "effective_duration",
-                subject.as_str(),
-                brief.as_of,
-                brief.as_of,
-            )
-            .map(|v| v.value);
+        let duration = features.value_as_of(
+            "effective_duration",
+            subject.as_str(),
+            brief.as_of,
+            brief.as_of,
+        );
 
         let mut builder = FindingBuilder::new(
             ctx,
@@ -389,12 +394,13 @@ impl Agent for CreditAnalyst {
                 subject.as_str()
             ),
         )
-        .fact(computed(
-            ctx,
+        .fact(observed_feature(
+            features,
             "credit_spread_bps",
-            level,
+            subject.as_str(),
+            "credit_spread_bps",
             "bps",
-            &["credit_spread_bps"],
+            latest,
         ))
         .fact(computed(
             ctx,
@@ -421,12 +427,20 @@ impl Agent for CreditAnalyst {
         ]);
 
         match duration {
-            Some(duration) if duration.is_finite() && duration > 0.0 => {
+            Some(duration) if duration.value.is_finite() && duration.value > 0.0 => {
                 // A wide spread that reverts is a price gain, so the direction
                 // for the bondholder is the opposite of the spread's sign.
-                let price_impact_pct = -duration * change / 10_000.0 * 100.0;
+                let price_impact_pct = -duration.value * change / 10_000.0 * 100.0;
                 builder = builder
                     .direction(direction_from(-z, NOISE_DEAD_ZONE), conviction_from_z(z))
+                    .fact(observed_feature(
+                        features,
+                        "effective_duration",
+                        subject.as_str(),
+                        "effective_duration",
+                        "years",
+                        duration,
+                    ))
                     .fact(computed(
                         ctx,
                         "price_impact_pct",
@@ -478,17 +492,29 @@ impl Agent for DerivativesAnalyst {
             ));
         };
 
+        // The implied volatility is read, not derived, and the fact says so.
+        // Built inside the borrow so the finding carries the store's record
+        // rather than a number copied out of it.
         let implied = {
             let world = self.desk.world.get(ctx)?;
-            world
-                .features()
+            let features = world.features();
+            features
                 .value_as_of(
                     "implied_volatility",
                     subject.as_str(),
                     brief.as_of,
                     brief.as_of,
                 )
-                .map(|v| v.value)
+                .map(|value| {
+                    observed_feature(
+                        features,
+                        "implied_volatility",
+                        subject.as_str(),
+                        "implied_volatility",
+                        "ratio",
+                        value,
+                    )
+                })
         };
         let market = self.desk.market.get(ctx)?;
         let realised = market.snapshot.get(subject).and_then(|state| {
@@ -501,9 +527,10 @@ impl Agent for DerivativesAnalyst {
             signal::realised_volatility(&closes, 20, 252.0)
         });
 
-        let (Some(implied), Some(realised)) = (implied, realised) else {
+        let implied_missing = implied.is_none();
+        let (Some(implied_fact), Some(realised)) = (implied, realised) else {
             let mut missing = Vec::new();
-            if implied.is_none() {
+            if implied_missing {
                 missing.push(format!("implied_volatility for {}", subject.as_str()));
             }
             if realised.is_none() {
@@ -514,6 +541,7 @@ impl Agent for DerivativesAnalyst {
             }
             return Ok(no_data(ctx, brief.as_of, missing.join("; ")));
         };
+        let implied = implied_fact.value;
 
         // The variance risk premium: what option buyers pay over what the
         // underlying has actually delivered. Positive means options are rich.
@@ -541,13 +569,7 @@ impl Agent for DerivativesAnalyst {
             direction_from(-premium * 20.0, NOISE_DEAD_ZONE),
             conviction_from_z(premium * 20.0),
         )
-        .fact(computed(
-            ctx,
-            "implied_volatility",
-            implied,
-            "ratio",
-            &["implied_volatility"],
-        ))
+        .fact(implied_fact)
         .fact(computed(
             ctx,
             "realised_volatility",
@@ -632,30 +654,16 @@ impl Agent for CommoditiesAnalyst {
 
         let world = self.desk.world.get(ctx)?;
         let features = world.features();
-        let front = features
-            .value_as_of(
-                "front_month_price",
-                subject.as_str(),
-                brief.as_of,
-                brief.as_of,
-            )
-            .map(|v| v.value);
-        let deferred = features
-            .value_as_of(
-                "deferred_month_price",
-                subject.as_str(),
-                brief.as_of,
-                brief.as_of,
-            )
-            .map(|v| v.value);
-        let months = features
-            .value_as_of(
-                "deferred_tenor_months",
-                subject.as_str(),
-                brief.as_of,
-                brief.as_of,
-            )
-            .map(|v| v.value);
+        // Each curve point is a reading from the store, and is reported as
+        // one. The roll yield is the only number here this agent produces.
+        let read = |name: &str, unit: &str| {
+            features
+                .value_as_of(name, subject.as_str(), brief.as_of, brief.as_of)
+                .map(|value| observed_feature(features, name, subject.as_str(), name, unit, value))
+        };
+        let front = read("front_month_price", "price");
+        let deferred = read("deferred_month_price", "price");
+        let months = read("deferred_tenor_months", "months");
 
         let (Some(front), Some(deferred), Some(months)) = (front, deferred, months) else {
             return Ok(no_data(
@@ -667,7 +675,7 @@ impl Agent for CommoditiesAnalyst {
                 ),
             ));
         };
-        if front <= 0.0 || months <= 0.0 {
+        if front.value <= 0.0 || months.value <= 0.0 {
             return Ok(no_data(
                 ctx,
                 brief.as_of,
@@ -677,8 +685,8 @@ impl Agent for CommoditiesAnalyst {
 
         // Backwardation — a deferred price below the front — pays a positive
         // roll yield to a long position.
-        let annualised_roll = (front - deferred) / front * (12.0 / months);
-        let backwardated = deferred < front;
+        let annualised_roll = (front.value - deferred.value) / front.value * (12.0 / months.value);
+        let backwardated = deferred.value < front.value;
 
         FindingBuilder::new(
             ctx,
@@ -705,14 +713,9 @@ impl Agent for CommoditiesAnalyst {
             "ratio",
             &["front_month_price", "deferred_month_price", "deferred_tenor_months"],
         ))
-        .fact(computed(ctx, "front_month_price", front, "price", &["front_month_price"]))
-        .fact(computed(
-            ctx,
-            "deferred_month_price",
-            deferred,
-            "price",
-            &["deferred_month_price"],
-        ))
+        .fact(front)
+        .fact(deferred)
+        .fact(months)
         .evidence(vec![format!("curve:{}@{}", subject.as_str(), brief.as_of)])
         .falsifiers(vec![
             "the curve flattens or inverts within the horizon".to_string(),
@@ -757,32 +760,40 @@ impl Agent for FxRatesAnalyst {
 
         let world = self.desk.world.get(ctx)?;
         let features = world.features();
+        // The two legs and the volatility are readings, reported as observed
+        // from the store; the differential and the carry are this agent's.
         let read = |name: &str| {
             features
                 .value_as_of(name, subject.as_str(), brief.as_of, brief.as_of)
-                .map(|v| v.value)
+                .map(|value| {
+                    observed_feature(features, name, subject.as_str(), name, "ratio", value)
+                })
         };
         let base_rate = read("base_rate");
         let quote_rate = read("quote_rate");
         let volatility = read("realised_volatility");
 
-        let (Some(base_rate), Some(quote_rate)) = (base_rate, quote_rate) else {
+        let (base_present, quote_present) = (base_rate.is_some(), quote_rate.is_some());
+        let (Some(base_fact), Some(quote_fact)) = (base_rate, quote_rate) else {
             return Ok(no_data(
                 ctx,
                 brief.as_of,
                 format!(
-                    "carry for {} needs both legs' rates; base {:?}, quote {:?}",
+                    "carry for {} needs both legs' rates; base {}, quote {}",
                     subject.as_str(),
-                    base_rate,
-                    quote_rate
+                    if base_present { "present" } else { "missing" },
+                    if quote_present { "present" } else { "missing" },
                 ),
             ));
         };
+        let base_rate = base_fact.value;
+        let quote_rate = quote_fact.value;
 
         // Carry without a volatility adjustment is the classic way to look
         // good until the currency moves, so an unadjusted number is reported
         // as partial rather than as a view.
-        let Some(volatility) = volatility.filter(|v| v.is_finite() && *v > 1e-6) else {
+        let Some(volatility_fact) = volatility.filter(|v| v.value.is_finite() && v.value > 1e-6)
+        else {
             return FindingBuilder::new(
                 ctx,
                 brief.as_of,
@@ -793,6 +804,8 @@ impl Agent for FxRatesAnalyst {
                 ),
             )
             .direction(Direction::Neutral, 0.0)
+            .fact(base_fact)
+            .fact(quote_fact)
             .fact(computed(
                 ctx,
                 "rate_differential",
@@ -807,6 +820,7 @@ impl Agent for FxRatesAnalyst {
             .build();
         };
 
+        let volatility = volatility_fact.value;
         let carry = signal::carry(base_rate, quote_rate, volatility).unwrap_or(0.0);
 
         FindingBuilder::new(
@@ -822,6 +836,9 @@ impl Agent for FxRatesAnalyst {
             direction_from(carry, NOISE_DEAD_ZONE),
             conviction_from_z(carry),
         )
+        .fact(base_fact)
+        .fact(quote_fact)
+        .fact(volatility_fact)
         .fact(computed(
             ctx,
             "volatility_adjusted_carry",
@@ -994,9 +1011,4 @@ impl Agent for AlternativeDataAnalyst {
         }
         builder.build()
     }
-}
-
-/// Convenience for constructing every analyst against one desk.
-pub fn subject_of(brief: &AgentBrief) -> Option<&ObjectId> {
-    brief.objects.first()
 }

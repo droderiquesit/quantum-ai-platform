@@ -33,12 +33,10 @@ dependencies = [
  "qip-arbitrage",
  "qip-brokers",
  "qip-capital",
- "qip-capital-fabric",
  "qip-chain",
  "qip-compliance",
  "qip-contracts",
  "qip-core",
- "qip-cost-router",
  "qip-data-finder",
  "qip-edge",
  "qip-entity-resolution",
@@ -57,21 +55,17 @@ dependencies = [
  "qip-observability",
  "qip-optimization-engine",
  "qip-orderbook",
- "qip-portfolio",
  "qip-portfolio-engine",
- "qip-protocols",
  "qip-quantum",
  "qip-reasoning-engine",
  "qip-risk",
  "qip-risk-engine",
- "qip-routing",
  "qip-sequencing",
  "qip-simulation-engine",
  "qip-storage",
  "qip-strategy",
  "qip-transport",
  "qip-twin",
- "qip-web",
  "qip-world-model",
  "serde",
  "serde_json",
@@ -83,7 +77,6 @@ version = "0.1.0"
 dependencies = [
  "qip-ai",
  "qip-core",
- "qip-observability",
  "serde",
  "serde_json",
 ]
@@ -111,8 +104,6 @@ dependencies = [
  "qip-kernel",
  "qip-mesh",
  "qip-observability",
- "qip-opportunity-engine",
- "qip-portfolio",
  "qip-risk",
  "qip-risk-engine",
  "qip-storage",
@@ -128,12 +119,8 @@ version = "0.1.0"
 dependencies = [
  "qip-contracts",
  "qip-core",
- "qip-financial",
  "qip-market",
- "qip-numerics",
- "qip-portfolio",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -146,8 +133,6 @@ dependencies = [
  "qip-financial",
  "qip-market",
  "qip-portfolio",
- "qip-risk",
- "qip-risk-engine",
  "qip-routing",
  "qip-transport",
  "serde",
@@ -161,12 +146,8 @@ dependencies = [
  "qip-contracts",
  "qip-core",
  "qip-financial",
- "qip-market",
- "qip-numerics",
  "qip-portfolio",
- "qip-risk",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -178,10 +159,7 @@ dependencies = [
  "qip-core",
  "qip-financial",
  "qip-numerics",
- "qip-portfolio",
- "qip-risk",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -190,9 +168,6 @@ version = "0.1.0"
 dependencies = [
  "qip-contracts",
  "qip-core",
- "qip-financial",
- "qip-market",
- "qip-numerics",
  "qip-transport",
  "serde",
  "serde_json",
@@ -222,7 +197,6 @@ dependencies = [
  "qip-storage",
  "qip-strategy",
  "qip-transport",
- "serde",
  "serde_json",
 ]
 
@@ -233,9 +207,6 @@ dependencies = [
  "qip-ai",
  "qip-contracts",
  "qip-core",
- "qip-events",
- "qip-financial",
- "qip-numerics",
  "serde",
  "serde_json",
 ]
@@ -253,11 +224,6 @@ name = "qip-contracts"
 version = "0.1.0"
 dependencies = [
  "qip-core",
- "qip-financial",
- "qip-market",
- "qip-numerics",
- "qip-portfolio",
- "qip-risk",
  "serde",
  "serde_json",
 ]
@@ -280,7 +246,6 @@ dependencies = [
  "qip-core",
  "qip-financial",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -303,7 +268,6 @@ version = "0.1.0"
 dependencies = [
  "qip-agents",
  "qip-ai",
- "qip-api",
  "qip-contracts",
  "qip-core",
  "qip-events",
@@ -337,15 +301,10 @@ dependencies = [
  "qip-events",
  "qip-execution-engine",
  "qip-feature-dag",
- "qip-financial",
- "qip-market",
- "qip-numerics",
+ "qip-observability",
  "qip-orderbook",
- "qip-portfolio",
  "qip-protocols",
- "qip-risk",
  "qip-risk-engine",
- "qip-routing",
  "qip-sequencing",
  "qip-strategy",
  "qip-transport",
@@ -371,7 +330,6 @@ dependencies = [
  "qip-strategy",
  "qip-transport",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -381,9 +339,7 @@ dependencies = [
  "qip-core",
  "qip-events",
  "qip-financial",
- "qip-numerics",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -406,7 +362,6 @@ dependencies = [
  "qip-simulation-engine",
  "qip-strategy",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -414,11 +369,7 @@ name = "qip-execution-engine"
 version = "0.1.0"
 dependencies = [
  "qip-core",
- "qip-events",
- "qip-financial",
  "qip-market",
- "qip-numerics",
- "qip-portfolio",
  "qip-risk",
  "qip-risk-engine",
  "serde",
@@ -430,11 +381,9 @@ name = "qip-fastbrain"
 version = "0.1.0"
 dependencies = [
  "qip-agents",
- "qip-api",
  "qip-contracts",
  "qip-core",
  "qip-data-finder",
- "qip-events",
  "qip-financial",
  "qip-investment-agents",
  "qip-kernel",
@@ -454,12 +403,9 @@ version = "0.1.0"
 dependencies = [
  "qip-contracts",
  "qip-core",
- "qip-financial",
  "qip-market",
  "qip-numerics",
  "qip-quant",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -489,7 +435,6 @@ dependencies = [
  "qip-risk",
  "qip-world-model",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -507,7 +452,6 @@ dependencies = [
  "qip-core",
  "qip-cost-router",
  "qip-data-finder",
- "qip-entity-resolution",
  "qip-events",
  "qip-evolution",
  "qip-execution-engine",
@@ -518,7 +462,6 @@ dependencies = [
  "qip-market",
  "qip-market-ingestion",
  "qip-mesh",
- "qip-normalization",
  "qip-numerics",
  "qip-observability",
  "qip-opportunity-engine",
@@ -526,13 +469,11 @@ dependencies = [
  "qip-portfolio",
  "qip-portfolio-engine",
  "qip-prediction",
- "qip-quant",
  "qip-quantum",
  "qip-reasoning-engine",
  "qip-risk",
  "qip-risk-engine",
  "qip-simulation-engine",
- "qip-storage",
  "qip-strategy",
  "qip-streaming",
  "qip-training",
@@ -548,13 +489,7 @@ version = "0.1.0"
 dependencies = [
  "qip-ai",
  "qip-core",
- "qip-events",
- "qip-financial",
- "qip-market",
- "qip-numerics",
- "qip-portfolio",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -564,9 +499,8 @@ dependencies = [
  "qip-ai",
  "qip-contracts",
  "qip-core",
- "qip-financial",
- "qip-market",
  "qip-numerics",
+ "qip-observability",
  "qip-simulation-engine",
  "serde",
  "serde_json",
@@ -609,9 +543,6 @@ dependencies = [
  "qip-contracts",
  "qip-core",
  "qip-events",
- "qip-financial",
- "qip-market",
- "qip-numerics",
  "qip-storage",
  "qip-transport",
  "serde",
@@ -624,11 +555,9 @@ version = "0.1.0"
 dependencies = [
  "qip-core",
  "qip-events",
- "qip-financial",
  "qip-market",
  "qip-market-ingestion",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -637,7 +566,6 @@ version = "0.1.0"
 dependencies = [
  "qip-core",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -656,10 +584,7 @@ dependencies = [
  "qip-core",
  "qip-events",
  "qip-financial",
- "qip-market",
  "qip-numerics",
- "qip-quant",
- "qip-world-model",
  "serde",
  "serde_json",
 ]
@@ -669,15 +594,9 @@ name = "qip-optimization-engine"
 version = "0.1.0"
 dependencies = [
  "qip-core",
- "qip-events",
- "qip-financial",
  "qip-numerics",
- "qip-observability",
- "qip-portfolio",
  "qip-quantum",
- "qip-risk",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -686,9 +605,6 @@ version = "0.1.0"
 dependencies = [
  "qip-contracts",
  "qip-core",
- "qip-financial",
- "qip-market",
- "qip-numerics",
  "serde",
  "serde_json",
 ]
@@ -700,9 +616,7 @@ dependencies = [
  "qip-core",
  "qip-events",
  "qip-financial",
- "qip-market",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -710,15 +624,8 @@ name = "qip-portfolio-engine"
 version = "0.1.0"
 dependencies = [
  "qip-core",
- "qip-events",
- "qip-financial",
- "qip-market",
- "qip-numerics",
  "qip-optimization-engine",
- "qip-portfolio",
- "qip-risk",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -727,11 +634,8 @@ version = "0.1.0"
 dependencies = [
  "qip-contracts",
  "qip-core",
- "qip-financial",
  "qip-market",
- "qip-numerics",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -740,9 +644,6 @@ version = "0.1.0"
 dependencies = [
  "qip-contracts",
  "qip-core",
- "qip-financial",
- "qip-market",
- "qip-numerics",
  "serde",
  "serde_json",
 ]
@@ -754,12 +655,9 @@ dependencies = [
  "qip-core",
  "qip-events",
  "qip-financial",
- "qip-market",
  "qip-numerics",
  "qip-portfolio",
- "qip-risk",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -778,15 +676,9 @@ name = "qip-reasoning-engine"
 version = "0.1.0"
 dependencies = [
  "qip-agents",
- "qip-ai",
  "qip-core",
- "qip-events",
- "qip-financial",
- "qip-investment-agents",
- "qip-numerics",
  "qip-world-model",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -794,13 +686,9 @@ name = "qip-risk"
 version = "0.1.0"
 dependencies = [
  "qip-core",
- "qip-events",
- "qip-financial",
- "qip-market",
  "qip-numerics",
  "qip-portfolio",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -808,14 +696,8 @@ name = "qip-risk-engine"
 version = "0.1.0"
 dependencies = [
  "qip-core",
- "qip-events",
- "qip-financial",
- "qip-market",
- "qip-numerics",
- "qip-portfolio",
  "qip-risk",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -824,13 +706,8 @@ version = "0.1.0"
 dependencies = [
  "qip-contracts",
  "qip-core",
- "qip-financial",
  "qip-market",
- "qip-numerics",
- "qip-portfolio",
- "qip-risk",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -839,11 +716,8 @@ version = "0.1.0"
 dependencies = [
  "qip-contracts",
  "qip-core",
- "qip-financial",
- "qip-market",
  "qip-numerics",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -852,13 +726,11 @@ version = "0.1.0"
 dependencies = [
  "qip-contracts",
  "qip-core",
- "qip-events",
  "qip-evolution",
  "qip-financial",
  "qip-market",
  "qip-numerics",
  "qip-portfolio",
- "qip-quant",
  "qip-risk",
  "qip-strategy",
  "serde",
@@ -882,10 +754,6 @@ version = "0.1.0"
 dependencies = [
  "qip-contracts",
  "qip-core",
- "qip-financial",
- "qip-market",
- "qip-numerics",
- "qip-risk",
  "serde",
  "serde_json",
 ]
@@ -950,13 +818,7 @@ dependencies = [
 name = "qip-web"
 version = "0.1.0"
 dependencies = [
- "qip-core",
- "qip-events",
- "qip-financial",
- "qip-portfolio",
- "qip-risk",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -972,7 +834,6 @@ dependencies = [
  "qip-market",
  "qip-numerics",
  "serde",
- "serde_json",
 ]
 
 [[package]]

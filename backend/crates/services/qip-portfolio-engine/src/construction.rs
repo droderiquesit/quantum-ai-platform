@@ -11,7 +11,7 @@
 //! makes the target unreachable, the cap wins, the book is deliberately
 //! under-invested, and the proposal says so in its own compromises.
 
-use crate::proposal::{Proposal, ProposalLeg, ProposalStatus, Side};
+use crate::proposal::{Proposal, ProposalLeg, Side};
 use qip_core::error::{Error, Result};
 use qip_core::ids::{ObjectId, ProposalId};
 use qip_core::time::Timestamp;
@@ -337,27 +337,27 @@ impl PortfolioConstructor {
             ));
         }
 
-        let proposal = Proposal {
+        let proposal = Proposal::draft(
             proposal_id,
-            created_at: now,
+            now,
             as_of,
-            status: ProposalStatus::Draft,
-            legs,
             equity,
-            target_gross,
-            target_net,
-            turnover,
-            estimated_cost_bps: turnover * self.mandate.turnover_cost_bps * 2.0,
-            rationale: format!(
+            legs,
+            format!(
                 "expresses {} approved thesis(es) at {:.1}% gross, sized by {}: {}",
                 theses.len(),
                 target_gross * 100.0,
                 routing.chosen.as_str(),
                 routing.rationale
             ),
-            compromises,
-            checks_passed: Vec::new(),
-        };
+        )
+        .with_targets(
+            target_gross,
+            target_net,
+            turnover,
+            turnover * self.mandate.turnover_cost_bps * 2.0,
+        )
+        .with_compromises(compromises);
         proposal.validate()?;
 
         Ok(ConstructionOutcome { proposal, routing })
@@ -375,21 +375,7 @@ impl PortfolioConstructor {
         now: Timestamp,
         reason: impl Into<String>,
     ) -> Proposal {
-        Proposal {
-            proposal_id,
-            created_at: now,
-            as_of,
-            status: ProposalStatus::Draft,
-            legs: Vec::new(),
-            equity,
-            target_gross: 0.0,
-            target_net: 0.0,
-            turnover: 0.0,
-            estimated_cost_bps: 0.0,
-            rationale: reason.into(),
-            compromises: Vec::new(),
-            checks_passed: Vec::new(),
-        }
+        Proposal::draft(proposal_id, now, as_of, equity, Vec::new(), reason)
     }
 }
 

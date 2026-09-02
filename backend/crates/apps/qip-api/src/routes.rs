@@ -362,6 +362,13 @@ pub struct Api {
     /// the lock order is always platform first, then mesh, and no path takes
     /// them the other way around.
     mesh: Option<Arc<Mutex<crate::mesh::MeshBackbone>>>,
+    /// Where the operator interface reads the last cycle's stages from.
+    ///
+    /// `None` when no interface is mounted alongside this API. When one is,
+    /// this is the only writer: the interface never runs a cycle itself, and
+    /// an API assembled without the handle leaves its overview empty for the
+    /// life of the process — the defect this field exists to close.
+    overview: Option<Arc<crate::web::CycleOverview>>,
     /// The bounds every live connection runs under.
     ///
     /// Held here rather than read from a constant so a test can open a stream
@@ -400,6 +407,7 @@ impl Api {
             cells: Arc::new(CellRegistry::default()),
             archive: None,
             mesh: None,
+            overview: None,
             stream_limits: StreamLimits::default(),
             pulse: Arc::new(HealthPulse::default()),
         }
@@ -435,6 +443,15 @@ impl Api {
     /// a missing one.
     pub fn with_cells(mut self, cells: Arc<CellRegistry>) -> Self {
         self.cells = cells;
+        self
+    }
+
+    /// Record each cycle's stages where the operator interface reads them.
+    ///
+    /// Without this the interface's stage overview stays empty after every
+    /// cycle, which an operator cannot tell from a process that never cycled.
+    pub fn with_cycle_overview(mut self, overview: Arc<crate::web::CycleOverview>) -> Self {
+        self.overview = Some(overview);
         self
     }
 
@@ -592,6 +609,11 @@ impl Api {
             }
             (Method::Post, "/cycle") => {
                 let report = platform.run_cycle(now);
+                // Recorded before anything that can fail below, so the page
+                // shows the cycle even when the archive or the mesh does not.
+                if let Some(overview) = &self.overview {
+                    overview.record(&report);
+                }
                 // The hand-over happens here rather than inside the log's
                 // append, so a disk never sits on the path of an individual
                 // event. What that costs is the events of a cycle that was
@@ -1006,7 +1028,7 @@ fn proposals(platform: &Platform) -> String {
             format!(
                 r#"{{"id":{},"status":{},"legs":{},"gross":{},"turnover":{},"rationale":{}}}"#,
                 json::string(proposal.proposal_id.as_str()),
-                json::string(proposal.status.as_str()),
+                json::string(proposal.status().as_str()),
                 proposal.len(),
                 json::number(proposal.target_gross),
                 json::number(proposal.turnover),
@@ -1554,14 +1576,26 @@ mod tests {
         let mut platform = platform()?;
 
         // The premise, and the defect this endpoint had: a platform that has
-        // recorded nothing serves nothing. It used to serve eight counts
+        // run nothing serves nothing it ran. It used to serve eight counts
         // recomputed from state, so it was never empty and never evidence of
         // anything — a scrape of a process that had done nothing looked
-        // identical to a scrape of one that had.
+        // identical to a scrape of one that had. Since `78026e2` assembly
+        // itself records one fact — the count of instruments the universe
+        // may not trade on — so the honest state before the first cycle is
+        // exactly that gauge and no cycle series, not an empty page.
+        let before = scrape(&platform);
         assert!(
-            scrape(&platform).is_empty(),
-            "a process that has recorded nothing must scrape empty: {}",
-            scrape(&platform)
+            before.contains("\nqip_universe_not_decision_grade 0\n"),
+            "assembly records the unfit-instrument gauge, and the scrape must carry it: {before}"
+        );
+        assert!(
+            !before.contains("qip_cycles_total"),
+            "a process that has run no cycle must not serve a cycle count: {before}"
+        );
+        assert_eq!(
+            before.matches("# TYPE ").count(),
+            1,
+            "before the first cycle the only series is the assembly gauge: {before}"
         );
 
         platform.run_cycle(start());

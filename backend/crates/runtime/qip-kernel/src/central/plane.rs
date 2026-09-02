@@ -36,13 +36,19 @@ use qip_compliance::incident::{HaltScope, Incident, ResponsePolicy};
 use qip_compliance::plane::{CompliancePlane, ComplianceReport};
 use qip_compliance::signing::SigningKey;
 use qip_contracts::governance::{Approval, Severity};
+use qip_contracts::message::BookSide;
 use qip_contracts::signal::StrategyId;
+use qip_contracts::wire::CrossRecord;
 use qip_contracts::{CapitalEnvelope, Utilisation};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, Timestamp};
+use qip_learning_engine::attribution::{Attribution, Attributor, PositionPeriod, split_pro_rata};
+use qip_mesh::delta::DeltaOrder;
+use qip_observability::metrics::{Metrics, labels, names};
 use qip_risk_engine::autonomy::KillSwitch;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// The key id every signature the central plane makes is recorded under.
 ///
@@ -93,7 +99,10 @@ pub struct CentralConfig {
     /// there is for a cell nobody can reach.
     pub envelope_validity: Duration,
     /// How long a cell has to acknowledge a recall before it is treated as
-    /// unreachable.
+    /// unreachable. Must be positive: the recall register refuses a recall
+    /// with no window, and [`CentralPlane::new`] refuses the configuration
+    /// first, because a refusal that surfaced only when a recall was issued
+    /// would surface mid-ingestion, after a cell had already been halted.
     pub recall_acknowledgement: Duration,
     /// Above this gross limit the approval chain demands two different humans.
     pub dual_approval_threshold: Decimal,
@@ -143,10 +152,46 @@ pub struct ReconciliationBreak {
     pub detail: String,
 }
 
+/// Which way a reconciliation break points.
+///
+/// The bounded shape of a break, for a series that must not grow with the
+/// instrument list: a break is the cell holding more than the venue confirms,
+/// the venue confirming more than the cell holds, or — when the quantities
+/// agree — a discrepancy that lives only in the detail. Three arms and no
+/// free text, so the label set is closed by construction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BreakDirection {
+    CellOverVenue,
+    VenueOverCell,
+    DetailOnly,
+}
+
+impl BreakDirection {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CellOverVenue => "cell_over_venue",
+            Self::VenueOverCell => "venue_over_cell",
+            Self::DetailOnly => "detail_only",
+        }
+    }
+}
+
 impl ReconciliationBreak {
     /// Signed gap between the two books.
     pub fn difference(&self) -> Decimal {
         self.cell_quantity - self.external_quantity
+    }
+
+    /// The bounded shape of this break, from the sign of [`Self::difference`].
+    pub fn direction(&self) -> BreakDirection {
+        let difference = self.difference();
+        if difference.is_positive() {
+            BreakDirection::CellOverVenue
+        } else if difference.is_negative() {
+            BreakDirection::VenueOverCell
+        } else {
+            BreakDirection::DetailOnly
+        }
     }
 
     pub fn describe(&self) -> String {
@@ -175,6 +220,17 @@ pub struct CellReport {
     /// What each strategy has committed against its envelope.
     pub utilisation: Vec<(StrategyId, Utilisation)>,
     pub reconciliation_breaks: Vec<ReconciliationBreak>,
+    /// Orders the cell sent since its previous report, each carrying the
+    /// contributor vector the cell netted it from. Incremental, unlike the
+    /// positions above: the centre attributes each one to its contributors'
+    /// books and never sees it again. Defaulted so a report written before
+    /// the field replays.
+    #[serde(default)]
+    pub orders: Vec<DeltaOrder>,
+    /// Internal crosses the cell booked since its previous report (§27.1).
+    /// Incremental for the same reason.
+    #[serde(default)]
+    pub crosses: Vec<CrossRecord>,
 }
 
 impl CellReport {
@@ -185,6 +241,8 @@ impl CellReport {
             positions: Vec::new(),
             utilisation: Vec::new(),
             reconciliation_breaks: Vec::new(),
+            orders: Vec::new(),
+            crosses: Vec::new(),
         }
     }
 
@@ -200,6 +258,16 @@ impl CellReport {
 
     pub fn with_break(mut self, reconciliation_break: ReconciliationBreak) -> Self {
         self.reconciliation_breaks.push(reconciliation_break);
+        self
+    }
+
+    pub fn with_orders(mut self, orders: Vec<DeltaOrder>) -> Self {
+        self.orders = orders;
+        self
+    }
+
+    pub fn with_crosses(mut self, crosses: Vec<CrossRecord>) -> Self {
+        self.crosses = crosses;
         self
     }
 
@@ -221,12 +289,93 @@ pub struct CellIngestion {
     pub crowded: Vec<CrowdedPosition>,
     /// Recalls issued because of a concentration finding.
     pub recalls: Vec<RecallOrder>,
+    /// What the report's orders and crosses did to the strategy books.
+    pub settlement: Settlement,
+}
+
+/// What settling one report's interval to the strategy books produced.
+///
+/// The centre's half of blueprint §43.4's chain: fill → contributor vector →
+/// strategy, pro rata. Every share booked here is a line in the attribution,
+/// and the attribution is exact — [`Attribution::residual`] is zero or the
+/// settlement is refused and counted, never absorbed.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Settlement {
+    /// Contributor shares booked, across every order settled.
+    pub fills_attributed: usize,
+    pub orders_settled: usize,
+    pub crosses_settled: usize,
+    /// Orders and crosses the centre would not settle, each with why. A
+    /// refusal here is a report that carried something the books cannot
+    /// take without guessing — a cross naming two buyers and no sizes, an
+    /// order whose contributors are all on the other side.
+    pub refused: Vec<String>,
+    /// The exact decomposition of everything settled, or `None` where the
+    /// report carried nothing to settle.
+    pub attribution: Option<Attribution>,
+}
+
+impl Settlement {
+    /// The strategy-level P&L the settlement realised, by strategy id.
+    pub fn by_strategy(&self) -> BTreeMap<String, Decimal> {
+        self.attribution
+            .as_ref()
+            .map(Attribution::by_hypothesis)
+            .unwrap_or_default()
+    }
+}
+
+/// One strategy's holding in one instrument at one cell, as the centre's
+/// attribution has moved it.
+///
+/// Average-cost, signed. The book the contributor vector lands on: a fill
+/// attributed pro rata moves each contributor's lot by its share, and an
+/// internal cross moves the buyer's up and the seller's down at the mid, so
+/// the two strategies that disagreed each hold what they intended.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct StrategyLot {
+    /// Negative is short.
+    pub quantity: Decimal,
+    /// Zero when flat.
+    pub average_price: Decimal,
+}
+
+impl StrategyLot {
+    /// Apply a signed trade at a price, average-cost.
+    ///
+    /// Adding in the held direction re-averages; reducing keeps the average
+    /// and realises against it; crossing through flat starts the new lot at
+    /// the trade price. Returns the lot as it stood before, so the caller can
+    /// write the period the attribution grades.
+    fn apply(&mut self, signed: Decimal, price: Decimal) -> Self {
+        let before = *self;
+        let after = before.quantity + signed;
+        let average = if after.is_zero() {
+            Decimal::ZERO
+        } else if before.quantity.is_zero() || before.quantity.signum() == signed.signum() {
+            // The one division on this path. A rounding at the ninth place
+            // moves the average, never the quantity, and the attribution
+            // measures P&L against the average it recorded rather than
+            // against an average it re-derives.
+            (before.quantity * before.average_price + signed * price) / after
+        } else if after.signum() == before.quantity.signum() {
+            before.average_price
+        } else {
+            price
+        };
+        self.quantity = after;
+        self.average_price = average;
+        before
+    }
 }
 
 impl CellIngestion {
     /// Whether this report changed anything an operator needs to look at.
     pub fn is_quiet(&self) -> bool {
-        self.halted.is_none() && self.concentrations.is_empty() && self.recalls.is_empty()
+        self.halted.is_none()
+            && self.concentrations.is_empty()
+            && self.recalls.is_empty()
+            && self.settlement.refused.is_empty()
     }
 }
 
@@ -277,6 +426,13 @@ pub struct CentralPlane {
     key_is_reproducible: bool,
     config: CentralConfig,
     concentration: ConcentrationLimits,
+    /// Where a reconciliation break and the halt it causes are counted, if
+    /// whoever composed the plane gave it a registry. Held by the plane rather
+    /// than by the platform around it because the count has to happen at the
+    /// seam — the instant after the kill switch is tripped — where no later
+    /// refusal in the same ingestion can reach it. Optional for the same
+    /// reason the ledger's is: a missing registry must not stop a halt.
+    metrics: Option<Arc<Metrics>>,
 
     /// The allocator's input per strategy, updated by the learn edge.
     proposals: BTreeMap<StrategyId, StrategyProposal>,
@@ -286,6 +442,13 @@ pub struct CentralPlane {
     utilisation: BTreeMap<(String, StrategyId), Utilisation>,
     envelopes: BTreeMap<(String, StrategyId), CapitalEnvelope>,
     recalls: RecallRegister,
+    /// The strategy books: what each strategy holds in each instrument at
+    /// each cell, as the contributor vectors have moved them. Keyed by cell,
+    /// strategy and instrument, in that order, because a replay that
+    /// reorders is not a replay.
+    books: BTreeMap<(String, StrategyId, String), StrategyLot>,
+    /// Closes every settlement's decomposition, or refuses it.
+    attributor: Attributor,
     /// Incidents raised here, so their ids are a deterministic counter rather
     /// than a generated id: a replay of the same reports produces the same
     /// incident record.
@@ -337,6 +500,21 @@ impl CentralPlane {
                 "an envelope with no validity period grants nothing",
             ));
         }
+        // Refused here rather than clamped, and here rather than where the
+        // recall is issued: the register refuses a non-positive window, and a
+        // plane that carried one would discover it inside `ingest`, after a
+        // reconciliation break had halted a cell and raised an incident. The
+        // error would then propagate out of the one call that was supposed to
+        // record the halt. A configuration that cannot issue a recall is a
+        // configuration this plane will not start with.
+        if config.recall_acknowledgement <= Duration::ZERO {
+            return Err(Error::invalid(format!(
+                "CentralConfig::recall_acknowledgement is {:.0} second(s); a recall needs a \
+                 positive window to be acknowledged in, so set it above zero rather than \
+                 leaving every concentration recall to fail at the moment it is issued",
+                config.recall_acknowledgement.as_secs_f64()
+            )));
+        }
         let key = SigningKey::from_secret(CENTRAL_KEY_ID, signing_secret)?;
         let limits = AllocationLimits::new(
             config.total_budget,
@@ -357,18 +535,32 @@ impl CentralPlane {
             key_is_reproducible,
             config,
             concentration: ConcentrationLimits::default(),
+            metrics: None,
             proposals: BTreeMap::new(),
             positions: BTreeMap::new(),
             exposure: AggregateExposure::default(),
             utilisation: BTreeMap::new(),
             envelopes: BTreeMap::new(),
             recalls: RecallRegister::new(),
+            books: BTreeMap::new(),
+            attributor: Attributor::new(),
             incidents_raised: 0,
         })
     }
 
     pub fn config(&self) -> &CentralConfig {
         &self.config
+    }
+
+    /// Count every strategy move the plane's ledger records, and every
+    /// reconciliation break and cell halt this plane causes, into `metrics`.
+    ///
+    /// Attached after assembly rather than taken by the constructor, because
+    /// the plane a deployment builds is swapped into a platform that already
+    /// owns the registry, and the swap is where the two meet.
+    pub fn attach_metrics(&mut self, metrics: Arc<Metrics>) {
+        self.factory.attach_metrics(Arc::clone(&metrics));
+        self.metrics = Some(metrics);
     }
 
     pub fn factory(&self) -> &StrategyFactory {
@@ -460,6 +652,22 @@ impl CentralPlane {
     }
 
     /// What a strategy has committed against its grant, as the cell last said.
+    /// What one strategy holds in one instrument at one cell, as attributed.
+    pub fn strategy_lot(
+        &self,
+        cell: &str,
+        strategy: &StrategyId,
+        instrument: &str,
+    ) -> Option<&StrategyLot> {
+        self.books
+            .get(&(cell.to_string(), strategy.clone(), instrument.to_string()))
+    }
+
+    /// Every strategy book, in key order.
+    pub fn strategy_books(&self) -> &BTreeMap<(String, StrategyId, String), StrategyLot> {
+        &self.books
+    }
+
     pub fn utilisation(&self, cell: &str, strategy: &StrategyId) -> Option<&Utilisation> {
         self.utilisation.get(&(cell.to_string(), strategy.clone()))
     }
@@ -679,6 +887,12 @@ impl CentralPlane {
                 .insert((report.cell.clone(), strategy.clone()), utilisation.clone());
         }
 
+        // The interval's orders and crosses reach the strategy books whether
+        // or not the report reconciles: they are what the cell did, and a
+        // halt is about what it may do next. Settled before the halt so a
+        // refusal in the recall step cannot leave a fill half-attributed.
+        let settlement = self.settle(&report, now);
+
         let halted = if report.reconciles() {
             None
         } else {
@@ -704,6 +918,16 @@ impl CentralPlane {
                     report.cell
                 ),
             );
+            // Counted here, the instant after the switch is tripped, and not
+            // by the caller on the returned ingestion: the recall step below
+            // can still refuse, and a count that waited for `Ok` would be
+            // un-counted by any error between the trip and the return. The
+            // halt has happened by this line whatever happens after it, so
+            // this is the only place the count is true. The break is keyed on
+            // its direction and the halt on its cause; neither the cell nor
+            // the instrument is a label, because both are dimensions that
+            // grow.
+            self.record_halt(&report.reconciliation_breaks);
         }
 
         let concentrations = self.exposure.concentrations(&self.concentration);
@@ -719,7 +943,267 @@ impl CentralPlane {
             concentrations,
             crowded,
             recalls,
+            settlement,
         })
+    }
+
+    /// Attribute the interval's fills to their contributors and settle the
+    /// crosses, exactly, or say which entries could not be.
+    ///
+    /// A fill is attributed to the contributors *on its own side*, pro rata
+    /// by the magnitude of their signed size. The contributors on the other
+    /// side received their fill in the cross the cell booked before the
+    /// order went out — that is what netting is — so crediting them a share
+    /// of the venue fill too would fill them twice. A netted order that
+    /// crossed nothing has contributors on one side only, where this is the
+    /// plain pro-rata split. An order shipped by a cell older than the
+    /// contributor vector names none, and is attributed whole to the strategy
+    /// the older wire named, counted under its own basis so the two cannot be
+    /// mistaken for each other.
+    ///
+    /// A cross is settled only where its size per strategy is determinable:
+    /// one buyer and one seller, each moved by the crossed quantity at the
+    /// mid the cell recorded, the buyer up and the seller down. A cross
+    /// naming two on a side carries no per-strategy size on the wire, and an
+    /// even split would be a guess in the one record §27.1 calls a
+    /// regulatory expectation; it is refused, counted and reported.
+    ///
+    /// The decomposition is checked, not assumed. The independent total is
+    /// what the books say each touched lot gained at the trade's mark; the
+    /// attributor rebuilds it from the periods and refuses if the two do not
+    /// close to the last unit. A refusal here is counted under
+    /// `qip_central_attribution_failures_total`, which must stay at zero.
+    fn settle(&mut self, report: &CellReport, now: Timestamp) -> Settlement {
+        let mut settlement = Settlement::default();
+        let mut periods: Vec<PositionPeriod> = Vec::new();
+        let mut total = Decimal::ZERO;
+
+        for order in &report.orders {
+            if !order.quantity.is_positive() || !order.price.is_positive() {
+                self.refuse_settlement(
+                    &mut settlement,
+                    "order",
+                    format!(
+                        "order {} has quantity {} at price {}; a fill needs both positive",
+                        order.order_id, order.quantity, order.price
+                    ),
+                );
+                continue;
+            }
+            let direction = order_direction(order.side);
+            let same_side: Vec<(&StrategyId, Decimal)> = order
+                .contributors
+                .iter()
+                .filter(|contributor| contributor.signed_size.signum() == direction.signum())
+                .map(|contributor| (&contributor.strategy, contributor.signed_size.abs()))
+                .collect();
+            let (basis, shares): (&str, Vec<(StrategyId, Decimal)>) = if same_side.is_empty() {
+                if !order.contributors.is_empty() {
+                    self.refuse_settlement(
+                        &mut settlement,
+                        "order",
+                        format!(
+                            "order {} names {} contributor(s) and none on its own side; a {} \
+                             fill cannot be attributed to strategies that intended the opposite",
+                            order.order_id,
+                            order.contributors.len(),
+                            order.side.as_str()
+                        ),
+                    );
+                    continue;
+                }
+                (
+                    "largest_contributor",
+                    vec![(order.strategy.clone(), order.quantity)],
+                )
+            } else {
+                let weights: Vec<Decimal> = same_side.iter().map(|(_, size)| *size).collect();
+                match split_pro_rata(order.quantity, &weights) {
+                    Ok(split) => (
+                        "contributor_vector",
+                        same_side
+                            .iter()
+                            .zip(split)
+                            .map(|((strategy, _), share)| ((*strategy).clone(), share))
+                            .collect(),
+                    ),
+                    Err(error) => {
+                        self.refuse_settlement(
+                            &mut settlement,
+                            "order",
+                            format!(
+                                "order {} could not be split across its contributors: {}",
+                                order.order_id,
+                                error.message()
+                            ),
+                        );
+                        continue;
+                    }
+                }
+            };
+            for (strategy, share) in shares {
+                let (period, gained) = self.book(
+                    &report.cell,
+                    &strategy,
+                    order.object_id.as_str(),
+                    direction * share,
+                    order.price,
+                );
+                periods.push(period);
+                total += gained;
+                settlement.fills_attributed += 1;
+                if let Some(metrics) = &self.metrics {
+                    metrics.count(names::CENTRAL_FILLS_ATTRIBUTED, labels([("basis", basis)]));
+                }
+            }
+            settlement.orders_settled += 1;
+        }
+
+        for cross in &report.crosses {
+            if cross.bought.len() != 1 || cross.sold.len() != 1 {
+                self.refuse_settlement(
+                    &mut settlement,
+                    "cross",
+                    format!(
+                        "the cross of {} {} at {} names {} buyer(s) and {} seller(s); the wire \
+                         carries no per-strategy size, and splitting it evenly would be a guess",
+                        cross.quantity,
+                        cross.object_id,
+                        cross.price,
+                        cross.bought.len(),
+                        cross.sold.len()
+                    ),
+                );
+                continue;
+            }
+            if !cross.quantity.is_positive() || !cross.price.is_positive() {
+                self.refuse_settlement(
+                    &mut settlement,
+                    "cross",
+                    format!(
+                        "the cross of {} {} at {} needs a positive quantity and a positive mid",
+                        cross.quantity, cross.object_id, cross.price
+                    ),
+                );
+                continue;
+            }
+            let instrument = cross.object_id.as_str();
+            let (bought, gained) = self.book(
+                &report.cell,
+                &cross.bought[0],
+                instrument,
+                cross.quantity,
+                cross.price,
+            );
+            periods.push(bought);
+            total += gained;
+            let (sold, gained) = self.book(
+                &report.cell,
+                &cross.sold[0],
+                instrument,
+                -cross.quantity,
+                cross.price,
+            );
+            periods.push(sold);
+            total += gained;
+            settlement.fills_attributed += 2;
+            settlement.crosses_settled += 1;
+            if let Some(metrics) = &self.metrics {
+                metrics.count(names::CENTRAL_CROSSES_SETTLED, labels([]));
+            }
+        }
+
+        if periods.is_empty() {
+            return settlement;
+        }
+        match self
+            .attributor
+            .attribute(&periods, total, Decimal::ZERO, now, now)
+        {
+            Ok(attribution) => settlement.attribution = Some(attribution),
+            Err(error) => {
+                if let Some(metrics) = &self.metrics {
+                    metrics.count(names::CENTRAL_ATTRIBUTION_FAILURES, labels([]));
+                }
+                settlement.refused.push(format!(
+                    "the settlement's decomposition did not close: {}",
+                    error.message()
+                ));
+            }
+        }
+        settlement
+    }
+
+    /// Move one strategy's lot and write the period the attribution grades.
+    ///
+    /// Returns the period and what the lot gained at the trade's mark — the
+    /// independent figure the attributor's decomposition must close to.
+    fn book(
+        &mut self,
+        cell: &str,
+        strategy: &StrategyId,
+        instrument: &str,
+        signed: Decimal,
+        price: Decimal,
+    ) -> (PositionPeriod, Decimal) {
+        let lot = self
+            .books
+            .entry((cell.to_string(), strategy.clone(), instrument.to_string()))
+            .or_default();
+        let before = lot.apply(signed, price);
+        let after = *lot;
+        // Marked at the trade price: what the lot is worth now, less what it
+        // was carried at, less what was paid or received for the trade.
+        let gained =
+            after.quantity * price - before.quantity * before.average_price - signed * price;
+        let period = PositionPeriod {
+            object_id: format!("{cell}/{strategy}/{instrument}"),
+            hypotheses: vec![strategy.as_str().to_string()],
+            opening_quantity: before.quantity,
+            opening_price: before.average_price,
+            closing_quantity: after.quantity,
+            closing_price: price,
+            decision_price: price,
+            traded_quantity: signed,
+            traded_price: price,
+            // The wire carries no costs for a cell's order, and none are
+            // invented: a commission the centre guessed would be exactly the
+            // unexplained line the exact decomposition exists to refuse.
+            commission: Decimal::ZERO,
+            spread_cost: Decimal::ZERO,
+            impact_cost: Decimal::ZERO,
+            income: Decimal::ZERO,
+            financing: Decimal::ZERO,
+            realised_pnl: Decimal::ZERO,
+            factor_returns: BTreeMap::new(),
+            factor_betas: BTreeMap::new(),
+            contract_multiplier: Decimal::ONE,
+        };
+        (period, gained)
+    }
+
+    fn refuse_settlement(&self, settlement: &mut Settlement, kind: &str, reason: String) {
+        if let Some(metrics) = &self.metrics {
+            metrics.count(names::CENTRAL_SETTLEMENTS_REFUSED, labels([("kind", kind)]));
+        }
+        settlement.refused.push(reason);
+    }
+
+    /// Count each break by direction and the halt by its one cause.
+    fn record_halt(&self, breaks: &[ReconciliationBreak]) {
+        let Some(metrics) = &self.metrics else {
+            return;
+        };
+        for reconciliation_break in breaks {
+            metrics.count(
+                names::CENTRAL_RECONCILIATION_BREAKS,
+                labels([("direction", reconciliation_break.direction().as_str())]),
+            );
+        }
+        metrics.count(
+            names::CENTRAL_CELL_HALTS,
+            labels([("cause", "reconciliation")]),
+        );
     }
 
     /// Record the incident a reconciliation break is, and apply the policy.
@@ -820,5 +1304,146 @@ impl CentralPlane {
             }
         }
         cells.into_iter().collect()
+    }
+}
+
+/// The signed direction of an order from the side of the book it takes.
+///
+/// A buy lifts the offer, so the cell records it against the ask — the same
+/// convention `qip_kernel::platform` writes its own placements with, and the
+/// one the contributor vector's sign follows: positive is a buy. Matched
+/// exhaustively so a third side would fail to compile here rather than fall
+/// through to a direction.
+const fn order_direction(side: BookSide) -> Decimal {
+    match side {
+        BookSide::Ask => Decimal::ONE,
+        BookSide::Bid => Decimal::NEG_ONE,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qip_capital::exposure::CellPosition;
+    use qip_contracts::venue::VenueId;
+    use qip_core::{Currency, dec};
+    use qip_financial::asset_class::Sector;
+    use qip_risk_engine::autonomy::AutonomyController;
+
+    const CELL: &str = "cell-lon-1";
+
+    fn now() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    fn plane_with_metrics() -> Result<(CentralPlane, Arc<Metrics>)> {
+        let mut plane = CentralPlane::new(&[7u8; 32], CentralConfig::default())?;
+        let metrics = Arc::new(Metrics::new("test"));
+        plane.attach_metrics(Arc::clone(&metrics));
+        Ok((plane, metrics))
+    }
+
+    /// A live grant at the cell, inserted directly: the point of this module's
+    /// tests is what `ingest` does after the trip, and the ladder that would
+    /// normally issue the grant is somebody else's test.
+    fn live_grant(plane: &mut CentralPlane, strategy: &StrategyId) -> Result<()> {
+        let envelope = CapitalEnvelope::new(
+            strategy.clone(),
+            CELL,
+            dec!("500000"),
+            dec!("50000"),
+            dec!("50000"),
+            vec![VenueId::new("XNYS")],
+            now(),
+            now().saturating_add(Duration::from_hours(8)),
+            "alice.chen",
+            "not-verified-here",
+        )?;
+        plane
+            .envelopes
+            .insert((CELL.to_string(), strategy.clone()), envelope);
+        Ok(())
+    }
+
+    fn position(strategy: &StrategyId) -> CellPosition {
+        CellPosition {
+            cell: CELL.to_string(),
+            strategy: strategy.clone(),
+            instrument: "AAA".to_string(),
+            sector: Sector::InformationTechnology,
+            venue: VenueId::new("XNYS"),
+            currency: Currency::USD,
+            quantity: dec!("10"),
+            price: dec!("100"),
+        }
+    }
+
+    /// A reconciliation break tripped the cell's kill switch and raised an
+    /// incident, and then the same ingestion refused — the recall window was
+    /// zero — so the error propagated out of `ingest` and the caller, which
+    /// counted on the returned ingestion, counted nothing. A halt that had
+    /// fired and an incident that had been raised left no series behind
+    /// them: the exact class the counters exist to close, reopened by a
+    /// configuration value. The constructor now refuses that value, so this
+    /// test reaches past it — the property is that nothing after the trip,
+    /// whatever its cause, can un-count a halt that happened.
+    #[test]
+    fn a_halt_is_counted_even_when_the_same_ingestion_then_refuses() {
+        let (mut plane, metrics) = plane_with_metrics().expect("a default plane assembles");
+        let strategy = StrategyId::new("momentum-lon");
+        live_grant(&mut plane, &strategy).expect("a live grant is well formed");
+        plane.config.recall_acknowledgement = Duration::ZERO;
+        let mut autonomy = AutonomyController::new();
+
+        // One position is the whole book on every axis, so the report breaches
+        // the per-cell share and targets the live grant for a recall.
+        let report = CellReport::new(CELL, now())
+            .with_positions(vec![position(&strategy)])
+            .with_break(ReconciliationBreak {
+                instrument: "AAA".to_string(),
+                cell_quantity: dec!("10"),
+                external_quantity: dec!("4"),
+                detail: "six lots the venue has no record of".to_string(),
+            });
+        let outcome = plane.ingest(report, autonomy.kill_switch_mut(), now());
+
+        // Premise: the ingestion really did refuse after the trip, and the
+        // cell really was halted, so a count keyed on `Ok` would have missed
+        // this halt.
+        assert!(
+            outcome.is_err(),
+            "the zero window should have refused: {outcome:?}"
+        );
+        let error = outcome
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(
+            error.contains("positive window"),
+            "the refusal should be the recall register's: {error}"
+        );
+        assert!(
+            autonomy.kill_switch().is_halted(CELL),
+            "the trip happened before the refusal"
+        );
+        assert!(!plane.may_act(strategy.as_str(), CELL));
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(
+            snapshot.counter(
+                names::CENTRAL_RECONCILIATION_BREAKS,
+                &labels([("direction", "cell_over_venue")])
+            ),
+            1,
+            "the break was counted although the ingestion refused"
+        );
+        assert_eq!(
+            snapshot.counter(
+                names::CENTRAL_CELL_HALTS,
+                &labels([("cause", "reconciliation")])
+            ),
+            1,
+            "the halt was counted although the ingestion refused"
+        );
     }
 }

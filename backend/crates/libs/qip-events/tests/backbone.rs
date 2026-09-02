@@ -673,6 +673,70 @@ fn replay_visits_every_event_in_order() {
 }
 
 #[test]
+fn a_log_fed_back_into_the_bus_that_produced_it_dispatches_nothing_twice() {
+    // The bus once carried `reset_deduplication` "for replay to call". Nothing
+    // called it, and the design is the opposite of what it offered: a replay
+    // runs on a fresh bus (the test below), while the bus that produced the
+    // log has to treat its own events, fed back, as the duplicates they are.
+    // Forgetting the window would run every handler side effect a second
+    // time and append every event to the log again.
+    let (ctx, now) = context();
+    let log = Rc::new(RefCell::new(EventLog::in_memory()));
+    let mut bus = EventBus::new().with_log(log.clone());
+    let delivered = Rc::new(RefCell::new(0usize));
+    let counter = delivered.clone();
+    bus.on_all("observer", move |_, _| {
+        *counter.borrow_mut() += 1;
+        Ok(HandlerOutcome::Handled)
+    });
+    for price in [100.0, 101.0, 102.0] {
+        bus.publish(
+            &ctx,
+            root_lineage("sensor"),
+            now,
+            Tick {
+                symbol: "ACME".into(),
+                price,
+            },
+        )
+        .unwrap();
+    }
+    bus.drain(&ctx).unwrap();
+
+    // Premise: the run produced events, the log holds them and the observer
+    // saw each exactly once.
+    let recorded: Vec<AnyEvent> = log.borrow().events().cloned().collect();
+    assert_eq!(
+        recorded.len(),
+        3,
+        "the run must have produced events to feed back"
+    );
+    assert_eq!(*delivered.borrow(), 3);
+    let suppressed_before = bus.duplicates_suppressed();
+
+    for event in &recorded {
+        bus.publish_raw(event.clone()).unwrap();
+    }
+    bus.drain(&ctx).unwrap();
+
+    assert_eq!(
+        *delivered.borrow(),
+        3,
+        "feeding the log back into its own bus re-ran the handlers"
+    );
+    assert_eq!(
+        bus.duplicates_suppressed(),
+        suppressed_before + 3,
+        "each replayed event must be counted as the duplicate it is"
+    );
+    assert_eq!(
+        log.borrow().events().count(),
+        3,
+        "a replayed event must not be appended to the log a second time"
+    );
+}
+
+#[test]
 fn a_replayed_log_reproduces_the_original_run() {
     let (ctx, now) = context();
     let (original, _) = log_with_chain(&ctx, now);

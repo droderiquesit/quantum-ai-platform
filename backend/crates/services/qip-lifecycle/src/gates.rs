@@ -13,13 +13,23 @@
 //! [`qip_simulation_engine::validation`]. A gate that read a submitted Sharpe
 //! ratio would be checking a spreadsheet.
 //!
+//! The one number the holdout gate cannot recompute from the evidence is the
+//! trial count, and it is the number that decides what the deflated Sharpe
+//! means. So the gate does not take it from the evidence's own run: it reads
+//! the family's lifetime count from the [`TrialAccount`] the ledger's trial
+//! book charged for this evaluation, and an evaluation with no account fails
+//! the `lifetime_trial_count_known` check. Unknown is not zero.
+//!
 //! Missing evidence fails rather than errors. "Not submitted" and "submitted
 //! and inadequate" are the same answer at a gate, and returning an error for
 //! one of them would tempt a caller to treat it as a retryable problem.
 
-use crate::evidence::StrategyEvidence;
+use crate::band::HoldoutBand;
+use crate::evidence::{HoldoutEvidence, StrategyEvidence};
+use crate::trials::TrialAccount;
 use qip_contracts::gate::{GateOutcome, GateStage};
 use qip_contracts::governance::Approval;
+use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, Timestamp};
 use qip_numerics::stats;
 use qip_simulation_engine::validation::{
@@ -39,6 +49,31 @@ pub trait Gate {
 
     /// Run every check and report each one.
     fn evaluate(&self, evidence: &StrategyEvidence, now: Timestamp) -> GateOutcome;
+
+    /// Run every check and hand back what the run produced besides a verdict.
+    ///
+    /// Only the holdout gate produces anything: the [`HoldoutBand`] its
+    /// validation defines. The default is the outcome alone, so a gate that
+    /// produces nothing does not have to say so.
+    fn admit(&self, evidence: &StrategyEvidence, now: Timestamp) -> Admission {
+        Admission {
+            outcome: self.evaluate(evidence, now),
+            band: None,
+        }
+    }
+}
+
+/// A gate's verdict together with what its validation produced.
+///
+/// The ledger takes this rather than a bare [`GateOutcome`] so the holdout
+/// band travels with the admission it belongs to and cannot be recorded
+/// against a different one — or forgotten, since the ledger refuses a holdout
+/// admission without it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Admission {
+    pub outcome: GateOutcome,
+    /// Present only for a holdout admission whose Sharpe was deflated.
+    pub band: Option<HoldoutBand>,
 }
 
 /// Thresholds the holdout rung applies.
@@ -78,6 +113,59 @@ pub struct HoldoutGate {
 impl HoldoutGate {
     pub fn new(policy: HoldoutPolicy) -> Self {
         Self { policy }
+    }
+
+    /// The count this evaluation deflates against, or why it has none.
+    ///
+    /// Three refusals, each naming the act that would clear it. No account:
+    /// the family's lifetime count is unknown, and the gate will not stand in
+    /// for it with the run's own number. An account whose charge disagrees
+    /// with the evidence: one of the two describes a different run. A count
+    /// too large for the deflation arithmetic: refuse rather than truncate.
+    fn charged_trials(holdout: &HoldoutEvidence, account: Option<&TrialAccount>) -> Result<usize> {
+        let account = account.ok_or_else(|| {
+            Error::denied(
+                "the lifetime trial count is unknown: no trial account was charged for this \
+                 evaluation. Enrol the strategy in its family with `TrialBook::enrol` and \
+                 promote through `attempt_promotion`, which charges this run's trials to the \
+                 family's lifetime count before the gate reads it; an unknown count is not zero",
+            )
+        })?;
+        let reported = u64::try_from(holdout.trials).map_err(|_| {
+            Error::numeric(format!(
+                "{} trials does not fit the trial account",
+                holdout.trials
+            ))
+        })?;
+        if account.this_run() != reported {
+            return Err(Error::invalid(format!(
+                "the trial account charged {} trial(s) for this run but the holdout evidence \
+                 reports {}; the account and the evidence describe different runs",
+                account.this_run(),
+                reported
+            )));
+        }
+        usize::try_from(account.lifetime()).map_err(|_| {
+            Error::numeric(format!(
+                "a lifetime count of {} trials cannot be deflated against",
+                account.lifetime()
+            ))
+        })
+    }
+
+    /// The deflated Sharpe exactly as the gate reads it: the holdout series,
+    /// corrected against the family's lifetime trial count.
+    ///
+    /// Public so a caller can see the statistic behind the verdict rather
+    /// than re-deriving it, and so a test can prove the count used was the
+    /// lifetime one.
+    pub fn deflated(&self, evidence: &StrategyEvidence) -> Result<DeflatedSharpe> {
+        let holdout = evidence
+            .holdout
+            .as_ref()
+            .ok_or_else(|| Error::invalid("no holdout evidence was submitted"))?;
+        let trials = Self::charged_trials(holdout, evidence.trial_account.as_ref())?;
+        deflated_sharpe(&holdout.holdout_returns, trials, holdout.periods_per_year)
     }
 
     /// Report what the deflated Sharpe says, respecting the two regimes its
@@ -120,13 +208,20 @@ impl Gate for HoldoutGate {
     }
 
     fn evaluate(&self, evidence: &StrategyEvidence, now: Timestamp) -> GateOutcome {
+        self.admit(evidence, now).outcome
+    }
+
+    fn admit(&self, evidence: &StrategyEvidence, now: Timestamp) -> Admission {
         let outcome = GateOutcome::new(GateStage::Holdout, now);
         let Some(holdout) = evidence.holdout.as_ref() else {
-            return outcome.record(
-                "holdout_evidence_present",
-                false,
-                "no holdout evidence was submitted",
-            );
+            return Admission {
+                outcome: outcome.record(
+                    "holdout_evidence_present",
+                    false,
+                    "no holdout evidence was submitted",
+                ),
+                band: None,
+            };
         };
 
         let observations = holdout.holdout_returns.len();
@@ -139,12 +234,43 @@ impl Gate for HoldoutGate {
             ),
         );
 
-        outcome = match deflated_sharpe(
-            &holdout.holdout_returns,
-            holdout.trials,
-            holdout.periods_per_year,
-        ) {
-            Ok(deflated) => Self::record_deflated(outcome, &deflated),
+        // The count comes from the trial book's charge, never from the run.
+        // Recorded as its own check so a refusal for an unknown count reads
+        // as what it is rather than as a Sharpe that could not be computed.
+        let charged = Self::charged_trials(holdout, evidence.trial_account.as_ref());
+        outcome = outcome.record(
+            "lifetime_trial_count_known",
+            charged.is_ok(),
+            match (&charged, evidence.trial_account.as_ref()) {
+                (Ok(_), Some(account)) => account.describe(),
+                (Ok(_), None) => "no account".to_string(),
+                (Err(error), _) => error.message().to_string(),
+            },
+        );
+
+        // The band is defined from the same statistic the admission rests
+        // on, so the interval the strategy is later held inside of is the
+        // interval this evidence supports and not one written afterwards.
+        let mut band = None;
+        outcome = match charged.and_then(|trials| {
+            deflated_sharpe(&holdout.holdout_returns, trials, holdout.periods_per_year)
+        }) {
+            Ok(deflated) => {
+                let outcome = Self::record_deflated(outcome, &deflated);
+                match HoldoutBand::from_deflated(&deflated, holdout.periods_per_year, now) {
+                    Ok(defined) => {
+                        let outcome =
+                            outcome.record("holdout_band_defined", true, defined.describe());
+                        band = Some(defined);
+                        outcome
+                    }
+                    Err(error) => outcome.record(
+                        "holdout_band_defined",
+                        false,
+                        format!("no holdout band could be defined: {}", error.message()),
+                    ),
+                }
+            }
             Err(error) => outcome
                 .record(
                     "deflated_sharpe_above_selection",
@@ -158,6 +284,11 @@ impl Gate for HoldoutGate {
                     "deflated_sharpe_credible",
                     false,
                     "no deflated Sharpe to read",
+                )
+                .record(
+                    "holdout_band_defined",
+                    false,
+                    "no deflated Sharpe to define a band from",
                 ),
         };
 
@@ -215,7 +346,7 @@ impl Gate for HoldoutGate {
         };
 
         let leakage = &holdout.leakage;
-        outcome.record(
+        let outcome = outcome.record(
             "no_leakage",
             leakage.is_clean(),
             if leakage.timings.is_empty() {
@@ -232,7 +363,8 @@ impl Gate for HoldoutGate {
                     findings.join("; ")
                 }
             },
-        )
+        );
+        Admission { outcome, band }
     }
 }
 
@@ -658,12 +790,11 @@ impl Gate for ScaledGate {
         };
 
         let duration = now.since(scaled.pilot_started_at);
-        let sigma = stats::stddev(&scaled.pilot_returns);
-        let realised_sharpe = if sigma < 1e-12 {
-            0.0
-        } else {
-            stats::mean(&scaled.pilot_returns) / sigma
-        };
+        // The engine's Sharpe, not a local one: the pilot's realised figure
+        // must be on the scale the holdout was validated on, or the two
+        // cannot be compared and the bar means something different here.
+        let realised = crate::scoring::periodic_sharpe(&scaled.pilot_returns);
+        let realised_sharpe = realised.as_ref().copied().unwrap_or(f64::NAN);
 
         let outcome = outcome
             .record(
@@ -680,11 +811,17 @@ impl Gate for ScaledGate {
             )
             .record(
                 "pilot_performance_sustained",
-                realised_sharpe >= self.policy.minimum_pilot_sharpe,
-                format!(
-                    "realised pilot Sharpe {realised_sharpe:.2} against a {:.2} bar",
-                    self.policy.minimum_pilot_sharpe
-                ),
+                realised.is_ok() && realised_sharpe >= self.policy.minimum_pilot_sharpe,
+                match &realised {
+                    Ok(_) => format!(
+                        "realised pilot Sharpe {realised_sharpe:.2} against a {:.2} bar",
+                        self.policy.minimum_pilot_sharpe
+                    ),
+                    Err(error) => format!(
+                        "the pilot Sharpe could not be computed: {}",
+                        error.message()
+                    ),
+                },
             )
             .record(
                 // A pilot that sent no orders produced no live evidence, only

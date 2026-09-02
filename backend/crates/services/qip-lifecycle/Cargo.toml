@@ -9,18 +9,24 @@ repository.workspace = true
 
 [dependencies]
 serde.workspace = true
-serde_json.workspace = true
 qip-core.workspace = true
 qip-numerics.workspace = true
-qip-financial.workspace = true
-qip-market.workspace = true
 qip-contracts.workspace = true
 qip-ai.workspace = true
 # The holdout gate re-runs the validation the simulation engine already
 # implements — deflated Sharpe, purged k-fold, overfitting assessment — rather
 # than trusting numbers a researcher submitted alongside the strategy.
 qip-simulation-engine.workspace = true
+# The ledger records every rung a strategy moves across. A demotion for decayed
+# performance is a capital-affecting action, and one that reached the ledger
+# and no series was invisible to every operator; the registry is an in-memory
+# lib, so the inward dependency direction holds.
+qip-observability.workspace = true
 
+[dev-dependencies]
+# The trial book's tests stand in a store, and the store port speaks
+# `serde_json::Value`; the crate itself never names it.
+serde_json.workspace = true
 
 [lints]
 workspace = true

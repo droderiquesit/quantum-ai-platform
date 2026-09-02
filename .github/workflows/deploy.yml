@@ -1,4 +1,5 @@
-# Build the images, then record their digests in git so Argo CD can reconcile.
+# Build, scan, sign and attest the images, then move each Cloud Run service to
+# the attested digest and prove it serves it.
 #
 # Two rules shape everything below.
 #
@@ -129,6 +130,9 @@ jobs:
   # deploy, and why the others do not, is decided in
   # docs/adr/0010-what-gets-deployed.md rather than here — a reason living only
   # in a matrix comment is a reason only the person editing the matrix reads.
+  # Three of the four become Cloud Run services through catalogue.tf; the
+  # fourth, `qip-edge-node`, is the attested artefact the execution node's
+  # boot image is contracted to be built from, and runs bare under systemd.
   #
   #   * `qip`, from `qip-cli`, is absent on purpose: it is an operator's tool,
   #     run by a person against a cluster rather than scheduled in one.
@@ -141,7 +145,7 @@ jobs:
   # None of that is left as a claim.
   # backend/crates/tests/qip-acceptance/tests/infrastructure.rs checks it in every
   # direction that can be wrong: a binary that appears with no image fails, an
-  # image with no manifest fails, a manifest with no image fails, an exclusion
+  # image nothing runs fails, a workload with no image fails, an exclusion
   # whose reason is not in the decision record fails, and `qip-web` gaining a
   # `main.rs` fails rather than quietly shipping a library nobody serves.
   images:
@@ -271,20 +275,20 @@ jobs:
           prefix="${{ steps.identity.outputs.region }}-docker.pkg.dev/${{ steps.identity.outputs.project }}/qip-${TARGET_ENVIRONMENT}"
           docker push "${prefix}/${{ matrix.binary }}:${DEPLOY_SHA}"
 
-      # Sign it. This is the step that makes the cluster's
-      # `binary_authorization` block mean something.
+      # Sign it. This is the step that makes every service's
+      # `binary_authorization { use_default = true }` mean something.
       #
-      # It was enforcing `PROJECT_SINGLETON_POLICY_ENFORCE` against no policy,
-      # so Google evaluated the implicit one — default rule `ALWAYS_ALLOW` —
-      # and every image in the registry was admissible.
+      # The GKE runtime once enforced against no policy, so Google evaluated
+      # the implicit one — default rule `ALWAYS_ALLOW` — and every image in
+      # the registry was admissible.
       # `infrastructure/terraform/modules/binaryauthorization` makes the
       # default rule deny; this is what puts an image on the other side of it.
       #
       # By digest, never by tag. An attestation names bytes, and Binary
-      # Authorization resolves whatever a manifest asks for to a digest and
-      # looks for an attestation of *that*. The digest is read back from the
-      # registry rather than from the local daemon, because what is signed has
-      # to be what a node will pull.
+      # Authorization evaluates the digest a revision asks for and looks for
+      # an attestation of *that*. The digest is read back from the registry
+      # rather than from the local daemon, because what is signed has to be
+      # what Cloud Run will pull.
       #
       # What this proves is that the pipeline pushed these bytes, and nothing
       # more: not that the source was reviewed, not that the dependencies were
@@ -334,39 +338,59 @@ jobs:
             --attestor-project "${GCP_PROJECT}" \
             --keyversion "${BINAUTHZ_KEY_VERSION}"
 
-  # ── GitOps image-update ────────────────────────────────────────────────
+  # ── Deploy ─────────────────────────────────────────────────────────────
   #
-  # The former `deploy` job applied manifests with kubectl.  That path is
-  # retired: Argo CD is now the sole writer to the cluster.  This job's only
-  # responsibility is to record the freshly-built digests in git so the
-  # reconciler picks them up.
+  # Move each Cloud Run service to the digest the images job just attested,
+  # wait for the revision to serve, prove it is the one asked for, and
+  # record the digest beside the environment's tfvars.
   #
-  # It writes `infrastructure/helm/qip/values-<env>-images.yaml` — the file
-  # the Argo CD Application for that environment reads as a second
-  # valueFiles entry — and pushes the commit to the default branch.  Argo's
-  # automated sync (prune + self-heal) then reconciles the cluster to match.
+  # `gcloud run services update --image` is the whole delivery mechanism
+  # now. There is no reconciler, no chart and no values file to commit for
+  # something else to apply (ADR 0024): the pipeline is the only writer to
+  # a service's image, Terraform creates the service and ignores the image
+  # thereafter (`modules/cloudrun` says why), and `images.tfvars` is written
+  # here so the committed record and the running revision agree again as
+  # soon as the commit lands.
   #
-  # Edge cells are deliberately excluded: bringing one up is a deliberate act
-  # with a runbook (docs/operations/deploying-an-edge-cell.md), not something
-  # a pipeline does unattended.
+  # What this closes: the GitOps cut-over lost the rollout wait, so a build
+  # that crash-looped on boot produced a green pipeline and
+  # docs/operations/gitops-exceptions.md recorded the gap. `services update`
+  # blocks until the new revision is ready and routing, and fails the job
+  # when it is not; the describe afterwards is the second half, proving the
+  # serving revision runs the digest that was signed rather than whatever
+  # was there before. An apply that returns is not a deployment that worked;
+  # a revision that is Ready and serving the attested bytes is.
   #
-  # Cloud Run frontends (if any) are also excluded — they deploy through
-  # `gcloud run deploy` and are not Kubernetes workloads.
-  gitops-update:
-    name: record digests for Argo CD (${{ inputs.environment || 'dev' }})
+  # The execution node is not deployed here in the same sense. It runs a
+  # boot image, not a container, and nothing in this repository bakes one
+  # yet — modules/execution-node/README.md and ADR 0024 record that as the
+  # remaining work. What this job does for a node is the rolling
+  # replacement §41.4 describes, so that a node whose template Terraform
+  # already changed is re-created from it under the group's surge-one,
+  # wait-for-health policy. With `execution_nodes` empty in every
+  # environment the step finds no group and says so.
+  deploy:
+    name: deploy to cloud run (${{ inputs.environment || 'dev' }})
     needs: images
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment || 'dev' }}
     permissions:
+      # To record the deployed digests in images.tfvars.
       contents: write
       id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.DEPLOY_SHA }}
-          # The default GITHUB_TOKEN can push; no PAT needed.
           token: ${{ github.token }}
 
+      # The same derivation as the images job, from the same committed
+      # tfvars, for the same reason: nothing here may depend on a repository
+      # variable. Every value below is fixed by the Terraform that creates
+      # it, so constructing it here cannot drift from what exists:
+      #   service   modules/cloudrun names it qip-<env>-<catalogue name>
+      #   registry  modules/registry names it qip-<env>
+      #   node      modules/execution-node names the group qip-<env>-exec-<id>
       - name: derive the identity from the tfvars
         id: identity
         run: |
@@ -385,14 +409,6 @@ jobs:
             echo "environment '${TARGET_ENVIRONMENT}' is not provisioned." >&2
             exit 1
           fi
-          # The provider and the account are what the next step authenticates
-          # with, and this step is the only thing that can supply them. They
-          # were absent: `authenticate without a key` interpolated two empty
-          # strings, so the one GCP login in this job could never succeed and
-          # the digest resolution below it could never run. The `images` job
-          # writes all six and works; this one wrote two and did not. Derived
-          # identically, from the same committed tfvars, for the same reason —
-          # nothing here may depend on a repository variable.
           {
             echo "project=$project"
             echo "region=$region"
@@ -408,49 +424,133 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
-      # Resolve every digest and write the values file Argo CD reads.
-      - name: write promoted digests
+      # The catalogue's services, by the names catalogue.tf gives them, and
+      # the binary each runs. Read out of the committed catalogue rather than
+      # listed here, so a workload added there is deployed here without a
+      # second edit — and a workload listed here that the catalogue does not
+      # know is refused before anything is moved.
+      - name: read the catalogue
+        id: catalogue
         run: |
           set -euo pipefail
-          prefix="${{ steps.identity.outputs.region }}-docker.pkg.dev/${{ steps.identity.outputs.project }}/qip-${TARGET_ENVIRONMENT}"
-          images_file="infrastructure/helm/qip/values-${TARGET_ENVIRONMENT}-images.yaml"
+          catalogue="infrastructure/terraform/catalogue.tf"
+          # `    name = {` opens an entry; the `binary = "..."` inside it is
+          # the image. Four-space indent is the catalogue's own shape and the
+          # acceptance suite pins it.
+          pairs="$(awk '
+            /^    [a-z][a-z0-9-]* = \{$/ { name=$1 }
+            /^      binary[[:space:]]*=/ { gsub(/"/, "", $3); print name "=" $3 }
+          ' "$catalogue")"
+          [ -n "$pairs" ] || { echo "no workload was read out of $catalogue" >&2; exit 1; }
+          echo "$pairs"
+          echo "pairs=$(echo "$pairs" | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
 
-          cat > "$images_file" <<HEADER
-          # ${TARGET_ENVIRONMENT}'s promoted image digests — written by deploy.yml.
-          #
-          # Argo CD reads this file as a second valueFiles entry; the reconciler
-          # picks up the new digests on its next sync cycle.
-          images:
-          HEADER
-
-          for binary in qip-api qip-fastbrain qip-deepbrain qip-edge-node; do
+      # Move each service, wait for it, prove it.
+      - name: move every service to the attested digest and prove it serves it
+        id: rollout
+        env:
+          GCP_PROJECT: ${{ steps.identity.outputs.project }}
+          GCP_REGION: ${{ steps.identity.outputs.region }}
+          PAIRS: ${{ steps.catalogue.outputs.pairs }}
+        run: |
+          set -euo pipefail
+          prefix="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/qip-${TARGET_ENVIRONMENT}"
+          images_file="infrastructure/environments/${TARGET_ENVIRONMENT}/images.tfvars"
+          {
+            echo "# ${TARGET_ENVIRONMENT}'s deployed image digests — written by .github/workflows/deploy.yml."
+            echo "#"
+            echo "# Not hand-edited. Each digest below was built, scanned, signed and attested"
+            echo "# by run ${GITHUB_RUN_ID} for ${DEPLOY_SHA}, moved onto its Cloud Run service,"
+            echo "# and proven serving before this line was written. Terraform creates a"
+            echo "# service at the digest recorded here and ignores the image thereafter;"
+            echo "# modules/cloudrun says why."
+            echo "image_digests = {"
+          } > "$images_file"
+          for pair in $PAIRS; do
+            name="${pair%%=*}"
+            binary="${pair#*=}"
+            service="qip-${TARGET_ENVIRONMENT}-${name}"
             digest=$(gcloud artifacts docker images describe \
               "${prefix}/${binary}:${DEPLOY_SHA}" \
               --format='value(image_summary.digest)')
             if [ -z "$digest" ]; then
-              echo "no digest for ${binary}:${DEPLOY_SHA}" >&2
+              echo "no digest for ${binary}:${DEPLOY_SHA}; the images job did not push it" >&2
               exit 1
             fi
-            # Helm values key matches the binary name with hyphens.
-            echo "  ${binary}: ${digest}" >> "$images_file"
-          done
+            image="${prefix}/${binary}@${digest}"
 
+            # By digest, never by tag, for the reason the sign step gives:
+            # Binary Authorization evaluates the digest, and the attestation
+            # names bytes. Blocks until the revision is Ready and routing,
+            # and fails otherwise — which is the rollout wait the GitOps
+            # cut-over lost.
+            gcloud run services update "$service" \
+              --project "${GCP_PROJECT}" --region "${GCP_REGION}" \
+              --image "$image" --quiet
+
+            # The second half: the revision that is serving runs the digest
+            # that was signed. `services update` returning is not that; a
+            # traffic split or a previous revision still routing would look
+            # identical from the exit code.
+            serving=$(gcloud run services describe "$service" \
+              --project "${GCP_PROJECT}" --region "${GCP_REGION}" \
+              --format='value(spec.template.spec.containers[0].image)')
+            ready=$(gcloud run services describe "$service" \
+              --project "${GCP_PROJECT}" --region "${GCP_REGION}" \
+              --format='value(status.conditions[0].status)')
+            if [ "$serving" != "$image" ] || [ "$ready" != "True" ]; then
+              echo "${service} is serving '${serving}' with Ready=${ready}; asked for ${image}" >&2
+              exit 1
+            fi
+            echo "${service} serves ${image}"
+            echo "  ${binary} = \"${digest}\"" >> "$images_file"
+          done
+          echo "}" >> "$images_file"
           echo "wrote ${images_file}:"
           cat "$images_file"
 
-      - name: commit and push
+      # The execution nodes: a rolling replacement under the group's own
+      # policy, for every group the environment has. None today — every
+      # environment's `execution_nodes` is empty — and the step says so
+      # rather than inventing a group to update.
+      - name: replace every execution node under its group's rolling policy
+        env:
+          GCP_PROJECT: ${{ steps.identity.outputs.project }}
+        run: |
+          set -euo pipefail
+          groups="$(gcloud compute instance-groups managed list \
+            --project "${GCP_PROJECT}" \
+            --filter="name~^qip-${TARGET_ENVIRONMENT}-exec-" \
+            --format='value(name,zone.basename())')"
+          if [ -z "$groups" ]; then
+            echo "no execution node group exists in ${TARGET_ENVIRONMENT}; nothing to replace."
+            exit 0
+          fi
+          while read -r group zone; do
+            [ -n "$group" ] || continue
+            # Surge one, wait for the health check, retire the old machine —
+            # the group's update policy, which Terraform set and this does
+            # not override.
+            gcloud compute instance-groups managed rolling-action replace "$group" \
+              --project "${GCP_PROJECT}" --zone "$zone" \
+              --max-surge 1 --max-unavailable 0 --quiet
+            echo "replacing ${group} in ${zone} under its rolling policy"
+          done <<< "$groups"
+
+      # Record what was deployed, beside the tfvars that describe the
+      # environment. Nothing to commit means the digests are already current.
+      - name: commit the deployed digests
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "infrastructure/helm/qip/values-${TARGET_ENVIRONMENT}-images.yaml"
-          # Nothing to commit means the digests are already current — success.
+          git add "infrastructure/environments/${TARGET_ENVIRONMENT}/images.tfvars"
           git diff --cached --quiet && {
             echo "digests unchanged for ${TARGET_ENVIRONMENT}; nothing to commit."
             exit 0
           }
-          git commit -m "chore(${TARGET_ENVIRONMENT}): promote digests for ${DEPLOY_SHA}
+          git commit -m "Record the digests ${TARGET_ENVIRONMENT} now serves, from run ${GITHUB_RUN_ID}
 
-          Written by .github/workflows/deploy.yml gitops-update job.
-          Argo CD will reconcile the ${TARGET_ENVIRONMENT} cluster to these images."
+          Written by .github/workflows/deploy.yml after each Cloud Run service was
+          moved to the attested digest for ${DEPLOY_SHA} and proven serving it."
           git push

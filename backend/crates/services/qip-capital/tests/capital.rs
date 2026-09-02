@@ -1097,3 +1097,483 @@ fn an_expired_reservation_cannot_be_committed() -> Result<()> {
     assert_eq!(ledger.free(at_expiry), dec!("1000000"));
     Ok(())
 }
+
+// --- every capital gate rule, both halves -----------------------------------
+//
+// | Rule | Pass fixture | Veto fixture |
+// |---|---|---|
+// | reservation fits the free balance | `a_second_proposal_against_the_same_free_balance_is_refused_while_the_first_holds_it` (release half) | the same test, and `a_reservation_larger_than_the_free_balance_is_refused_rather_than_clamped` |
+// | reservation names an id | `a_reservation_that_names_nothing_is_refused` (premise) | the same test |
+// | reservation holds a positive amount | `a_reservation_for_a_non_positive_amount_is_refused` (premise) | the same test |
+// | reservation has a positive validity | `a_reservation_with_no_validity_is_refused` (premise) | the same test |
+// | one live hold per id | `a_second_reservation_under_the_same_id_is_refused_until_the_first_ends` | the same test |
+// | ledger opens over a non-negative balance | `a_ledger_cannot_open_over_a_negative_balance` | the same test |
+// | commit and release need a live hold | `committing_a_reservation_spends_the_capital_rather_than_returning_it` | `committing_or_releasing_a_reservation_nobody_made_is_refused`, `an_expired_reservation_cannot_be_committed` |
+// | free = equity − holds | `resyncing_free_to_equity_reports_a_shortfall_and_floors_free_at_zero` | the same test |
+// | envelope needs two approvers | `an_allocation_plan_can_be_turned_into_grants_that_together_stay_inside_the_budget` | `issuing_capital_needs_two_approvers` |
+// | envelope validity positive and under the ceiling | `an_envelope_always_expires_and_never_outlives_the_ceiling` | the same test, and `an_envelope_with_no_validity_period_is_refused` |
+// | envelope fractions in (0, 1] | `an_envelope_fraction_outside_zero_to_one_is_refused` (premise) | the same test |
+// | signing key length and id | `an_issuer_with_a_short_key_or_no_key_id_is_refused` (premise) | the same test |
+// | envelope verifies and is live | `an_unsigned_or_tampered_envelope_is_rejected` (genuine half) | the same test, and `an_expired_envelope_does_not_verify` |
+// | per-strategy, per-cell, per-venue and total allocation limits | `allocations_never_sum_above_the_total_budget` | `each_allocation_limit_binds_and_is_named` |
+// | allocation limits are positive and non-negative | `allocation_limits_refuse_a_non_positive_budget_or_a_negative_limit` (premise) | the same test |
+// | edge after uncertainty | `a_strategy_with_a_wider_error_bar_is_allocated_less_than_its_point_estimate_suggests` | `a_strategy_whose_edge_vanishes_under_its_own_uncertainty_is_refused_with_a_reason` |
+// | capacity | `allocation_beyond_modelled_capacity_is_reduced_and_the_capacity_is_named` | the same test, and `a_strategy_with_no_tradeable_volume_has_no_capacity_and_the_bound_is_named` |
+// | drawdown schedule monotone | `a_deeper_drawdown_never_increases_allocation` | `a_drawdown_schedule_that_allocates_more_as_losses_deepen_cannot_be_constructed` |
+// | concentration per axis | `a_diversified_book_produces_no_concentration_finding` | `aggregate_exposure_sums_positions_three_cells_took_independently` |
+// | margin call and room to open | `margin_rises_with_concentration_at_the_same_notional` | the same test |
+// | participation rate for a liquidity assessment | `a_liquidity_assessment_needs_a_participation_rate_in_the_unit_interval` (premise) | the same test |
+// | recall window and acknowledgement target | `a_recall_needs_a_positive_window_and_an_outstanding_order_to_acknowledge` (premise) | the same test |
+
+#[test]
+fn a_reservation_that_names_nothing_is_refused() -> Result<()> {
+    let mut ledger = ReservationLedger::new(dec!("1000000"))?;
+    ledger.reserve("named", dec!("1"), start(), Duration::from_hours(1))?;
+    let refused = ledger
+        .reserve("   ", dec!("1"), start(), Duration::from_hours(1))
+        .expect_err("a nameless reservation was held");
+    assert_eq!(refused.code(), "invalid");
+    assert_eq!(
+        ledger.free(start()),
+        dec!("999999"),
+        "a refusal moved the balance"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_reservation_for_a_non_positive_amount_is_refused() -> Result<()> {
+    let mut ledger = ReservationLedger::new(dec!("1000000"))?;
+    ledger.reserve("positive", dec!("1"), start(), Duration::from_hours(1))?;
+    for amount in [Decimal::ZERO, dec!("-1")] {
+        let refused = ledger
+            .reserve("nothing", amount, start(), Duration::from_hours(1))
+            .expect_err("a reservation of nothing was held");
+        assert_eq!(refused.code(), "invalid");
+    }
+    assert!(ledger.reservation("nothing").is_none());
+    assert_eq!(ledger.free(start()), dec!("999999"));
+    Ok(())
+}
+
+#[test]
+fn a_reservation_with_no_validity_is_refused() -> Result<()> {
+    let mut ledger = ReservationLedger::new(dec!("1000000"))?;
+    ledger.reserve("timed", dec!("1"), start(), Duration::from_secs(1))?;
+    let refused = ledger
+        .reserve("untimed", dec!("1"), start(), Duration::ZERO)
+        .expect_err("a reservation that expires at its own creation was held");
+    assert_eq!(refused.code(), "invalid");
+    assert!(ledger.reservation("untimed").is_none());
+    Ok(())
+}
+
+#[test]
+fn a_second_reservation_under_the_same_id_is_refused_until_the_first_ends() -> Result<()> {
+    let mut ledger = ReservationLedger::new(dec!("1000000"))?;
+    ledger.reserve("p", dec!("1000"), start(), Duration::from_hours(1))?;
+    let refused = ledger
+        .reserve("p", dec!("1000"), start(), Duration::from_hours(1))
+        .expect_err("the same id held twice");
+    assert_eq!(refused.code(), "invalid");
+    assert_eq!(
+        ledger.free(start()),
+        dec!("999000"),
+        "the second hold took capital"
+    );
+    ledger.release("p", start())?;
+    ledger.reserve("p", dec!("1000"), start(), Duration::from_hours(1))?;
+    Ok(())
+}
+
+#[test]
+fn a_ledger_cannot_open_over_a_negative_balance() -> Result<()> {
+    assert_eq!(
+        ReservationLedger::new(dec!("-1"))
+            .expect_err("opened")
+            .code(),
+        "invalid"
+    );
+    // Zero is a ledger that refuses everything, which is the right answer
+    // for an empty book — not an error.
+    let mut empty = ReservationLedger::new(Decimal::ZERO)?;
+    assert!(
+        empty
+            .reserve("p", dec!("1"), start(), Duration::from_hours(1))
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn committing_or_releasing_a_reservation_nobody_made_is_refused() -> Result<()> {
+    let mut ledger = ReservationLedger::new(dec!("1000000"))?;
+    ledger.reserve("real", dec!("1000"), start(), Duration::from_hours(1))?;
+    assert_eq!(
+        ledger
+            .commit("ghost", start())
+            .expect_err("committed nothing")
+            .code(),
+        "denied"
+    );
+    assert_eq!(
+        ledger
+            .release("ghost", start())
+            .expect_err("released nothing")
+            .code(),
+        "denied"
+    );
+    assert_eq!(ledger.committed_total(), Decimal::ZERO);
+    assert_eq!(ledger.free(start()), dec!("999000"));
+    Ok(())
+}
+
+#[test]
+fn resyncing_free_to_equity_reports_a_shortfall_and_floors_free_at_zero() -> Result<()> {
+    let mut ledger = ReservationLedger::new(dec!("1000000"))?;
+    ledger.reserve("p", dec!("600000"), start(), Duration::from_hours(1))?;
+    // Equity above the holds: free is the identity, exactly.
+    ledger.resync_free(dec!("900000"), start())?;
+    assert_eq!(ledger.free(start()), dec!("300000"));
+
+    // A drawdown below the holds: the shortfall is reported, free is zero,
+    // and the next reservation is refused.
+    let shortfall = ledger
+        .resync_free(dec!("500000"), start())
+        .expect_err("holds exceeding equity went unreported");
+    assert_eq!(shortfall.code(), "invalid");
+    assert_eq!(ledger.free(start()), Decimal::ZERO);
+    assert!(
+        ledger
+            .reserve("q", dec!("1"), start(), Duration::from_hours(1))
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn an_envelope_with_no_validity_period_is_refused() -> Result<()> {
+    let issuer = issuer()?;
+    issuer.issue(
+        &terms(dec!("1000000"), Duration::from_hours(1)),
+        &approval(start())?,
+        start(),
+    )?;
+    let refused = issuer
+        .issue(
+            &terms(dec!("1000000"), Duration::ZERO),
+            &approval(start())?,
+            start(),
+        )
+        .expect_err("an envelope that grants nothing was issued");
+    assert_eq!(refused.code(), "invalid");
+    // The contract's constructor refuses an expiry at or before the grant
+    // too, so the code alone cannot tell the issuer's rule from the
+    // contract's; the message can.
+    assert!(refused.message().contains("grants nothing"), "{refused}");
+    Ok(())
+}
+
+#[test]
+fn an_envelope_fraction_outside_zero_to_one_is_refused() -> Result<()> {
+    let issuer = issuer()?;
+    let base = terms(dec!("1000000"), Duration::from_hours(1));
+    // The boundary is inclusive at one: a grant whose single order may be
+    // the whole grant is a legitimate term.
+    issuer.issue(
+        &base.clone().with_order_fraction(Decimal::ONE),
+        &approval(start())?,
+        start(),
+    )?;
+    for (label, terms) in [
+        (
+            "zero order",
+            base.clone().with_order_fraction(Decimal::ZERO),
+        ),
+        (
+            "order above one",
+            base.clone().with_order_fraction(dec!("1.5")),
+        ),
+        (
+            "negative loss",
+            base.clone().with_loss_fraction(dec!("-0.1")),
+        ),
+        ("loss above one", base.clone().with_loss_fraction(dec!("2"))),
+    ] {
+        let refused = issuer
+            .issue(&terms, &approval(start())?, start())
+            .expect_err(label);
+        assert_eq!(refused.code(), "invalid", "{label}");
+    }
+    Ok(())
+}
+
+#[test]
+fn an_issuer_with_a_short_key_or_no_key_id_is_refused() {
+    assert!(EnvelopeIssuer::new(vec![7u8; 32], "k").is_ok());
+    assert_eq!(
+        EnvelopeIssuer::new(vec![7u8; 31], "k")
+            .expect_err("a guessable key was accepted")
+            .code(),
+        "denied"
+    );
+    assert!(EnvelopeIssuer::new(vec![7u8; 32], "  ").is_err());
+}
+
+#[test]
+fn an_expired_envelope_does_not_verify() -> Result<()> {
+    let issuer = issuer()?;
+    let envelope = issuer.issue(
+        &terms(dec!("1000000"), Duration::from_hours(1)),
+        &approval(start())?,
+        start(),
+    )?;
+    issuer.verify(&envelope, start())?;
+    let refused = issuer
+        .verify(&envelope, envelope.expires_at())
+        .expect_err("a grant verified at its own expiry");
+    assert!(refused.message().contains("expired"), "{refused}");
+    Ok(())
+}
+
+#[test]
+fn each_allocation_limit_binds_and_is_named() -> Result<()> {
+    // Deep volume so capacity does not bind and the four capital limits are
+    // the only constraints in play; the premise below checks that.
+    let deep = |name: &str, cell: &str| proposal(name, cell, 2.0, 0.1, 5_000_000_000);
+    let plan = |limits: AllocationLimits, proposals: &[StrategyProposal]| {
+        CapitalAllocator::new(limits, DrawdownSchedule::default()).allocate(proposals, 0.0, start())
+    };
+    let named = |plan: &qip_capital::allocation::AllocationPlan, strategy: &str| -> Vec<String> {
+        plan.for_strategy(&StrategyId::new(strategy))
+            .map(|a| a.binding_constraints.clone())
+            .or_else(|| {
+                plan.refusals
+                    .iter()
+                    .find(|(id, _)| id.as_str() == strategy)
+                    .map(|(_, reason)| vec![reason.clone()])
+            })
+            .unwrap_or_default()
+    };
+
+    // Per strategy: one proposal takes the whole budget and is cut to 30m.
+    let plan_a = plan(limits()?, &[deep("solo", "cell-a")?])?;
+    let solo = plan_a
+        .for_strategy(&StrategyId::new("solo"))
+        .expect("allocated");
+    assert!(solo.indicated > solo.notional, "premise: something bound");
+    assert!(
+        !named(&plan_a, "solo")
+            .iter()
+            .any(|r| r.contains("capacity")),
+        "premise failed: capacity bound, so the limit under test may not have: {:?}",
+        named(&plan_a, "solo")
+    );
+    assert_eq!(solo.notional, dec!("30000000"));
+    assert!(
+        named(&plan_a, "solo")
+            .iter()
+            .any(|r| r.contains("per-strategy"))
+    );
+
+    // Per cell: three in one 60m cell, the third has no headroom.
+    let plan_b = plan(
+        limits()?,
+        &[
+            deep("c1", "cell-a")?,
+            deep("c2", "cell-a")?,
+            deep("c3", "cell-a")?,
+        ],
+    )?;
+    assert_eq!(plan_b.for_cell("cell-a"), dec!("60000000"));
+    assert!(
+        named(&plan_b, "c3")
+            .iter()
+            .any(|r| r.contains("cell cell-a")),
+        "{:?}",
+        named(&plan_b, "c3")
+    );
+
+    // Per venue: four cells at one 90m venue, the fourth has no headroom.
+    let plan_c = plan(
+        limits()?,
+        &[
+            deep("v1", "cell-a")?,
+            deep("v2", "cell-b")?,
+            deep("v3", "cell-c")?,
+            deep("v4", "cell-d")?,
+        ],
+    )?;
+    assert_eq!(plan_c.for_venue(&venue()), dec!("90000000"));
+    assert!(
+        named(&plan_c, "v4").iter().any(|r| r.contains("venue")),
+        "{:?}",
+        named(&plan_c, "v4")
+    );
+
+    // Total: the backstop for the rounding step the module documents. Seven
+    // equal shares of a seventh round up at nine decimals, so the seven
+    // indicated sizes sum to 100,000,000.1 against a 100m budget, and the
+    // seventh is cut by the 0.1 the others already took. With the venue
+    // widened nothing else can bind.
+    let plan_d = plan(
+        limits()?.with_venue_limit(venue(), dec!("200000000")),
+        &[
+            deep("t1", "cell-a")?,
+            deep("t2", "cell-b")?,
+            deep("t3", "cell-c")?,
+            deep("t4", "cell-d")?,
+            deep("t5", "cell-e")?,
+            deep("t6", "cell-f")?,
+            deep("t7", "cell-g")?,
+        ],
+    )?;
+    let t7 = plan_d
+        .for_strategy(&StrategyId::new("t7"))
+        .expect("allocated");
+    assert_eq!(
+        t7.indicated,
+        dec!("14285714.3"),
+        "premise: the share rounded up"
+    );
+    assert_eq!(t7.notional, dec!("14285714.2"));
+    assert!(
+        t7.binding_constraints
+            .iter()
+            .any(|r| r.contains("total budget")),
+        "{:?}",
+        t7.binding_constraints
+    );
+    assert_eq!(plan_d.allocated(), dec!("100000000"));
+    assert!(plan_d.is_within_budget());
+    Ok(())
+}
+
+#[test]
+fn allocation_limits_refuse_a_non_positive_budget_or_a_negative_limit() -> Result<()> {
+    assert!(AllocationLimits::new(dec!("1"), Decimal::ZERO, Decimal::ZERO, Decimal::ZERO).is_ok());
+    assert!(AllocationLimits::new(Decimal::ZERO, dec!("1"), dec!("1"), dec!("1")).is_err());
+    assert!(AllocationLimits::new(dec!("1"), dec!("-1"), dec!("1"), dec!("1")).is_err());
+    assert!(AllocationLimits::new(dec!("1"), dec!("1"), dec!("-1"), dec!("1")).is_err());
+    assert!(AllocationLimits::new(dec!("1"), dec!("1"), dec!("1"), dec!("-1")).is_err());
+    assert!(allocator()?.with_uncertainty_penalty(0.5).is_ok());
+    assert!(allocator()?.with_uncertainty_penalty(-0.5).is_err());
+    assert!(allocator()?.with_uncertainty_penalty(f64::NAN).is_err());
+    Ok(())
+}
+
+#[test]
+fn a_diversified_book_produces_no_concentration_finding() {
+    let sectors = [
+        Sector::InformationTechnology,
+        Sector::Energy,
+        Sector::Financials,
+        Sector::Industrials,
+    ];
+    let positions: Vec<CellPosition> = (0..12)
+        .map(|i| CellPosition {
+            cell: format!("cell-{}", i % 3),
+            strategy: StrategyId::new(format!("s-{i}")),
+            instrument: format!("NAME{i:02}"),
+            sector: sectors[i % 4],
+            venue: VenueId::new(format!("VEN{}", i % 3)),
+            currency: if i % 2 == 0 {
+                Currency::USD
+            } else {
+                Currency::EUR
+            },
+            quantity: dec!("1000"),
+            price: dec!("100"),
+        })
+        .collect();
+    let aggregate = AggregateExposure::of(&positions);
+    // Premise: the book has exposure, and the rule reads it — a tightened
+    // instrument limit produces findings on the same book.
+    assert!(aggregate.gross().is_positive());
+    let tightened = ConcentrationLimits {
+        per_instrument: 0.05,
+        ..ConcentrationLimits::default()
+    };
+    assert!(!aggregate.concentrations(&tightened).is_empty());
+
+    let findings = aggregate.concentrations(&ConcentrationLimits::default());
+    assert!(findings.is_empty(), "{findings:?}");
+}
+
+#[test]
+fn a_liquidity_assessment_needs_a_participation_rate_in_the_unit_interval() -> Result<()> {
+    let positions = crowded_book();
+    let profiles: BTreeMap<String, LiquidityProfile> = ["ACME", "BOREAS", "CYGNUS", "DORADO"]
+        .into_iter()
+        .map(|name| {
+            (
+                name.to_string(),
+                LiquidityProfile::listed(Decimal::from_int(1_000_000), 5.0),
+            )
+        })
+        .collect();
+    assess_liquidity(&positions, &profiles, 0.1)?;
+    for rate in [0.0, -0.1, 1.5, f64::NAN] {
+        assert!(
+            assess_liquidity(&positions, &profiles, rate).is_err(),
+            "a participation rate of {rate} was accepted"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_recall_needs_a_positive_window_and_an_outstanding_order_to_acknowledge() -> Result<()> {
+    let issuer = issuer()?;
+    let envelope = issuer.issue(
+        &terms(dec!("1000000"), Duration::from_hours(6)),
+        &approval(start())?,
+        start(),
+    )?;
+    let mut register = RecallRegister::new();
+    assert!(
+        register
+            .issue(
+                &envelope,
+                RecallReason::Precautionary,
+                "drill",
+                Duration::ZERO,
+                start()
+            )
+            .is_err()
+    );
+    assert!(
+        register.orders().next().is_none(),
+        "a refused recall was recorded"
+    );
+
+    // Acknowledging a recall nobody issued is refused, not invented.
+    assert!(
+        register
+            .acknowledge(
+                "cell-lon-1",
+                &StrategyId::new("momentum-v3"),
+                Decimal::ZERO,
+                start()
+            )
+            .is_err()
+    );
+    register.issue(
+        &envelope,
+        RecallReason::Precautionary,
+        "drill",
+        Duration::from_mins(5),
+        start(),
+    )?;
+    register.acknowledge(
+        "cell-lon-1",
+        &StrategyId::new("momentum-v3"),
+        Decimal::ZERO,
+        start(),
+    )?;
+    assert!(matches!(
+        register.state("cell-lon-1", &StrategyId::new("momentum-v3")),
+        Some(RecallState::Acknowledged { .. })
+    ));
+    Ok(())
+}

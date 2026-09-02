@@ -255,6 +255,53 @@ impl RiskState {
         }
         value.to_f64() / self.equity.to_f64()
     }
+
+    /// Populate the tail figures the given limits will read, from a return
+    /// series.
+    ///
+    /// [`LimitKind::MaxValueAtRisk`] and [`LimitKind::MaxExpectedShortfall`]
+    /// look their figure up in a map keyed by confidence and record nothing
+    /// when the key is absent. Until anything filled those maps, both limits
+    /// shipped in [`LimitSet::conservative_default`] took the `None` arm on
+    /// every book, so every deployment believed it held two controls it did
+    /// not have. A control that cannot fire reads as protection and is not.
+    ///
+    /// The keys are derived from each configured limit's own confidence,
+    /// formatted exactly as the limit formats it when it reads. Computing a
+    /// fixed set of confidences here instead would put the key on one side
+    /// of a rounding boundary and the lookup on the other — `{:.2}` of 0.975
+    /// is `0.97`, and the default expected-shortfall limit uses 0.975 — and
+    /// the limit would go on silently never evaluating.
+    ///
+    /// `returns` are period returns of the whole book, already in `f64`:
+    /// this is the crossing point from the book's [`Decimal`] equity to a
+    /// statistic, and the caller makes it by dividing consecutive equity
+    /// samples. A series shorter than two leaves the maps empty rather than
+    /// recording zero, because a zero that nobody computed would pass the
+    /// limit and look like evidence the book has no tail.
+    pub fn with_tail_risk(mut self, limits: &LimitSet, returns: &[f64]) -> Self {
+        if returns.len() < 2 {
+            return self;
+        }
+        for limit in &limits.limits {
+            match limit.kind {
+                LimitKind::MaxValueAtRisk { confidence, .. } => {
+                    self.value_at_risk.insert(
+                        format!("{confidence:.2}"),
+                        crate::metrics::historical_var(returns, confidence),
+                    );
+                }
+                LimitKind::MaxExpectedShortfall { confidence, .. } => {
+                    self.expected_shortfall.insert(
+                        format!("{confidence:.2}"),
+                        crate::metrics::expected_shortfall(returns, confidence),
+                    );
+                }
+                _ => {}
+            }
+        }
+        self
+    }
 }
 
 /// The outcome of checking a state against a limit set.

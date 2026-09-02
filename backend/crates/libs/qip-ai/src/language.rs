@@ -63,11 +63,6 @@ impl ModelRequest {
         self
     }
 
-    pub fn with_max_tokens(mut self, tokens: u32) -> Self {
-        self.max_output_tokens = tokens;
-        self
-    }
-
     /// Rough token estimate, for budgeting before a call is made.
     ///
     /// Four characters per token is the usual approximation for English; it is
@@ -384,10 +379,6 @@ impl DeterministicModel {
         generator: fn(&ModelRequest) -> Value,
     ) {
         self.templates.insert(schema_name.into(), generator);
-    }
-
-    pub fn registered_schemas(&self) -> Vec<&str> {
-        self.templates.keys().map(String::as_str).collect()
     }
 }
 

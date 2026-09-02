@@ -75,21 +75,6 @@ impl ActiveSpan {
         self.span.attributes.insert(key.into(), value.into());
     }
 
-    pub fn add_event(&mut self, name: impl Into<String>) {
-        let at = self.tracer.clock.now();
-        self.span.events.push(SpanEvent {
-            name: name.into(),
-            at,
-            attributes: BTreeMap::new(),
-        });
-    }
-
-    pub fn set_error(&mut self, message: impl Into<String>) {
-        self.span.status = SpanStatus::Error {
-            message: message.into(),
-        };
-    }
-
     pub fn trace_id(&self) -> &TraceId {
         &self.span.trace_id
     }

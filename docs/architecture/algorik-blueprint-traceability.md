@@ -1,7 +1,11 @@
 # Algorik Master Blueprint v10.1-4 — traceability against this repository
 
 **Scored against the working tree on branch
-`claude/algorik-architecture-refactor-pmp0zy`, from commit `d8b3597`.**
+`claude/algorik-architecture-refactor-pmp0zy`, from commit `d8b3597`; rows
+re-scored at `296e187` say so inline, and every `path:line` in a re-scored
+row is at that commit.** A row that changed keeps what it said before,
+marked as history, because a scorecard that quietly overwrites its own
+findings cannot be audited against.
 
 **This is the live scorecard.** ADR 0022 makes the Algorik Master Blueprint
 v10.1-4 and its companion diagram the architecture of record, so every row
@@ -32,8 +36,8 @@ gates are the reason it matters.
 
 | Gate | Blueprint question | Status | Evidence |
 |---|---|---|---|
-| End of Phase 2 | Does a family survive holdout with honest significance after cumulative trial correction? | **NOT PASSED** | The machinery exists — `qip-simulation-engine/src/validation.rs`, `qip-lifecycle/src/gates.rs`, `qip-lifecycle/src/evidence.rs`. The gate is an empirical question about real market data, and every deployment's data is synthetic or replayed. A family surviving a holdout of data the platform generated is not the gate |
-| End of Phase 3 | Does it survive contact with a live venue, inside its holdout band? | **CANNOT PASS** | Structurally unreachable: paper trading is absolute. See ADR 0021 |
+| End of Phase 2 | Does a family survive holdout with honest significance after cumulative trial correction? | **NOT PASSED** | The machinery exists — `qip-simulation-engine/src/validation.rs`, `qip-lifecycle/src/gates.rs`, `qip-lifecycle/src/evidence.rs` — and since `9332bcb` the correction is cumulative: `qip_lifecycle::trials::TrialBook` keeps one hash-chained journal per family and `lifetime_trial_count_known` (`gates.rs:242`) refuses a promotion whose count is unknown (`lifecycle.rs::a_second_run_is_corrected_against_the_first_runs_trials_as_well`). Two things still stop the gate. The kernel's factory enrols every candidate (`94dd7e2`, `central/factory.rs:281-299`) but its default book is `TrialBook::in_memory` and no composition root supplies a durable one, so across *processes* the count the blueprint forbids losing is lost. And the gate is an empirical question about real market data, and every deployment's data is synthetic or replayed. A family surviving a holdout of data the platform generated is not the gate |
+| End of Phase 3 | Does it survive contact with a live venue, inside its holdout band? | **CANNOT PASS** | Structurally unreachable: paper trading is absolute. See ADR 0021. The band it asks about now exists — `HoldoutBand::from_deflated` at the holdout gate (`gates.rs:260`), carried on the admission and two-sided at the demotion monitor (`d0558b4`) — so when the boundary is opened by ADR 0023's sequence there is something to be inside of; there was not when this row was written |
 | End of Phase 6 | Is calibrated probability better than the market's implied on prediction contracts? | **NOT PASSED** | `qip-prediction` has `market.rs`, `oracle.rs`, `pricing.rs`, `resolution.rs`; no Brier comparison against a live venue's implied probability exists |
 | End of Phase 8 | Does regime-conditional allocation beat unconditional out of sample? | **NOT PASSED** | Regime detection exists (`qip-cost-router/src/context.rs`, `qip-simulation-engine/src/conditions.rs`); no out-of-sample comparison against an unconditional baseline is computed |
 
@@ -60,8 +64,8 @@ nothing in it reads as a gate that was cleared.
 | §2.2, §39 | Quantum output is policy, never a live instruction | No crate that **vetoes, executes, transfers or issues** reaches `qip-quantum`, in either direction; no edge crate does either | PARTIAL | `architecture.rs::nothing_that_vetoes_executes_or_moves_money_can_reach_a_quantum_solver`, `::no_edge_cell_can_reach_a_quantum_solver`, `::a_quantum_solver_cannot_reach_anything_that_vetoes_executes_or_moves_money` | Residual, and deliberate: `qip-portfolio-engine -> qip-optimization-engine -> qip-quantum` is uncovered. See the argued exemption below | Low — sizing from policy is the intended consumption path, not a veto | 15 | `architecture` suite |
 | §2.2, ADR 0006 | A classical baseline runs every time | Computed on every quantum path | ALIGNED | ADR 0006; `services/qip-optimization-engine/src/router.rs` | None | — | 15 | `optimization` tests |
 | §2.2 | Deterministic pre-trade checks never route to a model | `Determinism::Required` returns a type that cannot name a model rung | ALIGNED | `services/qip-cost-router/src/router.rs:404`; `context.rs:27` | None | — | 3 | `cost_router` tests |
-| §2.2 | Risk reads aggregates, never strategy lists | Risk state is aggregate counters | PARTIAL | `libs/qip-risk/src/limits.rs`; `services/qip-risk-engine/` | Assert the O(1)-in-strategy-count property with a test | Low | 10 | A test at two strategy counts |
-| §2.2 | Feasibility precedes profitability | No feasibility gate exists as a named stage | MISSING-CURRENT | `grep -rln "[Ff]easibilit"` returns only `qip-numerics` (LP feasibility) and the optimiser's router — not an execution gate | Backlog. The gate belongs beside the pre-trade path in `qip-execution-engine` | Medium — a control that does not exist cannot fire | 3 | Passing-and-vetoing fixtures |
+| §2.2 | Risk reads aggregates, never strategy lists | Risk state is aggregate counters; since `b9e9e7d` the rule is structural — `qip_risk::aggregate::RiskAggregates` moves running counters on each fill and `LimitSet::check_aggregates` reads book-level figures through the `AggregateFigures` trait, so a test can wrap the book in a probe that counts every figure consulted | ALIGNED — re-scored at `296e187`; was PARTIAL | `libs/qip-risk/src/aggregate.rs`; `qip-risk/tests/aggregate.rs::the_aggregate_check_reads_the_same_fixed_figures_at_eight_strategies_and_at_five_hundred_and_twelve`; the tail figures a limit reads derive from the limit's own confidence through `RiskState::with_tail_risk` (`d94b156`, `990032a`; `platform.rs:4270`) and every `LimitKind` arm has a fixture it admits and one it refuses (`160c4e8`, `qip-risk/tests/limit_fixtures.rs`); at `88eb1e2`, five commits after this re-score, the kernel feeds every desk fill into the aggregate and reads limits from it, so the property is held in production and not only by the lib's own test | None | — | 10 | `aggregate.rs` |
+| §2.2 | Feasibility precedes profitability | At the cell, yes: `Cell::work` judges every intent in place through `admit_feasible` (`cell.rs:860`) before `net` (`:869`) — minimum quantity, minimum notional, lot, tick, depth at the touch, fee floor, gas floor and a malformed policy constraint, eight gate literals in `qip-edge/src/feasibility.rs:76-83`, each a refusal and never a rounding; a cycle short a leg is vetoed whole | PARTIAL — re-scored at `296e187`; was MISSING-CURRENT | `95a4932`; `qip-edge/tests/feasibility.rs::an_off_lot_intent_is_refused_before_netting_and_never_rides_a_feasible_strategys_order`, `::a_sell_is_judged_against_the_bid_side_and_a_buy_against_the_ask`; `arbitrage.rs::an_infeasible_leg_vetoes_the_whole_cycle_and_no_leg_goes_out` | Not ALIGNED for two reasons this row must keep visible: the central pre-trade path in `qip-execution-engine` has no feasibility step, and `qip-edge-node` calls `Cell::work` on no path, so the gate is proven by the cell's tests and reached by no deployed process | Medium — the control exists and fires in tests; nothing deployed walks it | 3 | Passing-and-vetoing fixtures, present |
 | §2.2 | Strategies are compiled, not interpreted | `qip-strategy` evaluates; no shared compiled plan with CSE | PARTIAL | `edge/qip-strategy/` | Backlog | Low at current strategy counts | 10 | Netting-ratio measurement |
 | §2.2 | After-tax return is the only return | No tax engine, no lot selection | MISSING-CURRENT | No `taxlot`/`tax_engine` in the tree | Backlog | Low while paper-only | 3 | — |
 
@@ -74,13 +78,13 @@ argument still holds here.
 
 | Plane | Blueprint responsibility | Implementation | Status | Evidence | Minimal action | Phase |
 |---|---|---|---|---|---|---|
-| 1 Ingestion | Observe world + prices; resolve to entities; pass-through, not accumulation | `qip-market-ingestion`, `qip-normalization`, `qip-entity-resolution`, `qip-data-finder` (licensing posture before use) | PARTIAL | `platform.rs` absorbs 11 record kinds; `Feed::Live` exists at `apps/qip-fastbrain/src/feed.rs:61` and `::live` at `:108` | Prove one live source end to end; no deep-web tier exists | 1, 5 |
-| 2 Cognition | World model, causal graph, episodic memory, belief, counterfactual, self-model, hypotheses | `qip-world-model`, `qip-agents/src/memory.rs`, `qip-twin`, `qip-reasoning-engine/src/hypothesis.rs` | PARTIAL | World model and hypotheses present; counterfactuals in `qip-twin` | **No self-model exists** (`grep -rln "SelfModel"` empty); no dedicated causal graph over drivers; belief is scattered rather than a plane | 7, 8, 9 |
+| 1 Ingestion | Observe world + prices; resolve to entities; pass-through, not accumulation | `qip-market-ingestion`, `qip-normalization`, `qip-entity-resolution`, `qip-data-finder` (licensing posture before use; the registered outcome is sealed behind the legality assessment since `47e9b81`, so a catalogue entry cannot skip the gate) | PARTIAL | `platform.rs` absorbs 11 record kinds; `Feed::Live` exists at `apps/qip-fastbrain/src/feed.rs:61` and `::live` at `:108` | Prove one live source end to end; no deep-web tier exists | 1, 5 |
+| 2 Cognition | World model, causal graph, episodic memory, belief, counterfactual, self-model, hypotheses | `qip-world-model`, `qip-agents/src/memory.rs`, `qip-twin`, `qip-reasoning-engine/src/hypothesis.rs` | PARTIAL | World model and hypotheses present; counterfactuals in `qip-twin`, and since `b9e2242` every refused order is priced through `Platform::evaluate_alternatives` from LEARN (`platform.rs:5028`); since `04738ee` the belief calibration is a Brier score on `qip_belief_brier_score` (`:1708`) rather than a function nothing called | **No self-model exists** (`grep -rln "SelfModel"` empty); no belief *stage* in the cycle — grading theses after the fact is not sizing by belief before the trade | 7, 8, 9 |
 | 3 Valuation | Price what has no price: term structure, credit, vol surface, illiquid, cashflow, corporate actions | Corporate actions absorbed in `platform.rs`; `qip-financial/src/extensions.rs` carries illiquid-adjacent types | MISSING-CURRENT | No term-structure, credit or vol-surface engine | Backlog — Phase 14 | 14 |
-| 4 Intelligence | Train, generate and statistically gate strategies, set risk and corridor policy | `qip-training`, `qip-lifecycle`, `qip-evolution`, `qip-simulation-engine/src/validation.rs` | PARTIAL | Statistical gate, champion/challenger and promotion exist | Corridor policy has no owner because corridors do not exist | 2, 10 |
+| 4 Intelligence | Train, generate and statistically gate strategies, set risk and corridor policy | `qip-training`, `qip-lifecycle`, `qip-evolution`, `qip-simulation-engine/src/validation.rs` | PARTIAL | Statistical gate, champion/challenger and promotion exist; the deflated Sharpe is corrected against the family's lifetime trials (`9332bcb`) with the simulation engine's one Sharpe arithmetic (`436e1fa`), the holdout band is an output of validation and what leaves it is demoted (`d0558b4`), and the kernel's factory enrols every candidate (`94dd7e2`) | Corridor policy has no owner because corridors do not exist; the trial book a deployed process holds is in-memory (`factory.rs:243`), so the lifetime count is per process | 2, 10 |
 | 5 Optimisation | Allocation across families/regimes/horizons; quantum + classical; policy only | `qip-optimization-engine`, `qip-quantum` | PARTIAL | Routing gate and classical baseline present; authority boundary now structural | Family clustering and multi-horizon reconciliation absent | 15 |
-| 6 Execution | Regional nodes, shipped policy, microseconds, local decisions | `qip-edge` (structurally paper-only), `qip-edge-node`, `qip-orderbook`, `qip-routing`, `qip-execution-engine` | PARTIAL | `cell.rs:143-148` — no constructor takes a non-paper ceiling | Runs as a pod, not the blueprint's bare C3. See ADR 0020. No intent netting, no inventory reservation | 3, 16 |
-| 7 Ledger, wallet, treasury | Authoritative money state per user and per strategy; reconcile every holding; move capital in signed corridors | `qip-capital`, `qip-capital-fabric` (`transfer.rs`, `settlement.rs`), hash-chained event log | PARTIAL | Capital allocation, envelopes and exposure exist | **No wallet, no corridor, no transfer gate, no destination registry, no custody engine** — `grep` for each returns nothing. Phase 12, and bounded by ADR 0021 | 12 |
+| 6 Execution | Regional nodes, shipped policy, microseconds, local decisions | `qip-edge` (structurally paper-only), `qip-edge-node`, `qip-orderbook`, `qip-routing`, `qip-arbitrage` (constructed by the cell since `71f9465`) | PARTIAL | No `Cell` constructor takes a non-paper ceiling; policy ships down signed and the cell verifies, applies, narrows and halts on it; intents are judged feasible, netted and crossed, cycles scanned from the cell's own books | Re-scored at `296e187`. Was: "runs as a pod, not the blueprint's bare C3; no intent netting, no inventory reservation". Now: the pod is gone with the cluster's Terraform (`808ca32`) and the node is a Compute Engine module with `execution_nodes = {}` in every environment; netting exists; per-region reservation still does not (F6); and `qip-edge-node` drives no `Cell::work` pass and installs no desk, so everything the cell proves is reached by no deployed process | 3, 16 |
+| 7 Ledger, wallet, treasury | Authoritative money state per user and per strategy; reconcile every holding; move capital in signed corridors | `qip-capital`, `qip-capital-fabric` (`transfer.rs`, `settlement.rs`), hash-chained event log; since `7ef6063` the centre's per-cell, per-strategy, per-instrument books, settled from each cell's report (`central/plane.rs:976`) | PARTIAL | Capital allocation, envelopes and exposure exist; a netted fill is attributed pro rata to its contributors and a cross moves both books at the recorded mid, closing to the last unit or counting `qip_central_attribution_failures_total` (`qip-kernel/tests/attribution.rs`) | **No wallet, no corridor, no transfer gate, no destination registry, no custody engine** — `grep` for each returns nothing. Phase 12, and bounded by ADR 0021. The books are per strategy, not per user | 12 |
 
 ### Plane detail — the format the programme asks for
 
@@ -101,9 +105,11 @@ at current scale, and process proliferation was rejected.
   *State:* bounded working set, licensing posture evaluated before use.
   *Authority:* **none — observes only**, which matches §46.1's requirement that
   the widest external surface reach nothing that moves money; enforced by the
-  absence of an edge to `qip-capital`. *Degradation:* mechanism-level only —
-  a stale book supplies nothing (`edge/qip-edge/src/seam.rs:53-61`). §6.2's
-  capability-level row is typed and unwired. *Tests:* `absorption.rs`,
+  absence of an edge to `qip-capital`. *Degradation:* two levels — a stale
+  book supplies nothing (`edge/qip-edge/src/seam.rs`), and the cell's
+  `narrowing()` reads the payload's ingestion slot and pauses the strategy
+  classes §6.2 names. This bullet used to say the capability row was typed
+  and unwired; that stopped being true with the payload slice. *Tests:* `absorption.rs`,
   `sense.rs`, `rest_feed.rs`. *Separate service justified?* No — one cadence,
   one owner, no isolation argument.
 
@@ -114,10 +120,14 @@ at current scale, and process proliferation was rejected.
   *Placement:* global. *I/O:* events → theses. *State:* bitemporal.
   *Authority:* **none — informs only**, matching §39 layer 3.
   *Degradation:* undefined. *Tests:* `understanding.rs`, `reasoning.rs`.
-  *Gaps:* **no belief stage in the cycle** — `grep -n belief
-  runtime/qip-kernel/src/platform.rs` returns one doc-comment line and no code
-  — and **no self-model at all**. Confidence-weighted sizing per §11.2 is not
-  the mechanism here. *Separate service justified?* Not yet; the split across
+  *Gaps:* **no belief stage in the cycle** and **no self-model at all**.
+  Confidence-weighted sizing per §11.2 is not the mechanism here. What did
+  arrive, at `04738ee`, is the belief *calibration*: `stage_learn` settles each
+  resolved claim against the platform's own series and grades it through
+  `Platform::learn_from` (`platform.rs:1680`), a Brier score over a bounded
+  window on `qip_belief_brier_score` — `qip-kernel/tests/learning.rs::a_cycle_that_resolves_a_thesis_grades_it_and_moves_the_calibration_series`.
+  The grep this bullet once cited (one doc-comment line, no code) is no longer
+  the evidence; the absence of a stage before the trade is. *Separate service justified?* Not yet; the split across
   four crates already provides the isolation, and a fifth process would add
   deployment surface without adding a boundary.
 
@@ -135,8 +145,14 @@ at current scale, and process proliferation was rejected.
   registry, drift reports recorded at `apps/qip-deepbrain/src/learning.rs:279`.
   *Authority:* **promotes within approved families** — §39 layer 2, matches.
   *Degradation:* undefined. *Tests:* `lifecycle.rs`, `evolution.rs`,
-  `training.rs`. *Gap:* corridor policy has no owner because corridors do not
-  exist (Phase 12). *Separate service justified?* Cadence differs from the hot
+  `training.rs`. *Trial accounting:* `TrialBook` (`qip-lifecycle/src/trials.rs`)
+  keeps one hash-chained journal per family, replayed from the store with the
+  chain verified; the holdout gate refuses an unknown lifetime count and the
+  band it produces is what the demotion monitor judges against (`9332bcb`,
+  `d0558b4`, `94dd7e2`). The kernel's factory holds `TrialBook::in_memory`
+  (`central/factory.rs:243`) and `with_trial_book` (`:251`) has no caller in a
+  composition root, so a deployed count is per process. *Gap:* corridor policy
+  has no owner because corridors do not exist (Phase 12). *Separate service justified?* Cadence differs from the hot
   path and it already runs in its own binary, `qip-deepbrain`. Satisfied.
 
 - **[PLANE 5/7 — Optimisation]** *Ownership:* `qip-optimization-engine`,
@@ -152,18 +168,29 @@ at current scale, and process proliferation was rejected.
 
 - **[PLANE 6/7 — Execution]** *Ownership:* `qip-edge` (structurally paper-only,
   `cell.rs:143-148`), `qip-edge-node`, `qip-orderbook`, `qip-routing`,
-  `qip-execution-engine`. *Placement:* regional — three cells in stage tfvars,
-  none in dev, and **as Kubernetes pods rather than the blueprint's bare C3**
-  (ADR 0020). *I/O:* signed capital envelope down, `CellStateDelta` up.
+  `qip-execution-engine`. *Placement:* regional — and re-scored at `296e187`: the
+  cluster's Terraform, the edge-cell module, the chart and the raw manifests
+  are gone (`808ca32`, `67b3e92`, `7d79161`); `modules/execution-node` is a
+  Compute Engine machine per region, wired from the root module, and every
+  environment declares `execution_nodes = {}` because a node needs a venue
+  nobody has recorded. This bullet used to say three cells in stage tfvars as
+  Kubernetes pods; nothing now describes a pod, and nothing has been applied. *I/O:* signed capital envelope down, `CellStateDelta` up.
   *State:* local books, inventory, journal. *Authority:* veto-only gates plus
   placement inside a granted envelope (§39 layers 9–12); a cell cannot mint its
   own capital or promote its own strategy. *Degradation:* stale book supplies
   nothing; venue health in `qip-routing/src/health.rs`; the cell self-halts when
   its fills disagree with the venue drop-copy (`cell.rs:774-786`). *Tests:*
   `e2e.rs`, `resilience.rs`, `chaos.rs`, `apps/qip-edge-node/tests/mesh.rs`.
-  *Gaps:* no feasibility gate, no inventory reservation. Three earlier gaps are
+  *Gaps:* no inventory reservation at the region (F6). Four earlier gaps are
   now closed and are recorded here rather than deleted, because the fix is what
-  the row is evidence of: the halt reaches a cell (`VerifiedHalt`, the policy
+  the row is evidence of: **the feasibility gate exists** (`95a4932`,
+  `admit_feasible` at `cell.rs:860` ahead of `net` at `:869`, eight refusal
+  literals in `feasibility.rs:76-83`) and **the arbitrage desk scans the
+  cell's own books** and sends each cycle's legs by the one order path
+  (`71f9465`, `scan_cycles` at `:851`; a cycle that breaks between legs trips
+  the switch, `place_cycle` at `:1628`) — both proven in `qip-edge/tests/` and
+  reached by no deployed process, because `qip-edge-node` calls `Cell::work`
+  on no path and installs no desk; the halt reaches a cell (`VerifiedHalt`, the policy
   downlink); **intent netting exists** — `Cell::work` builds one `Intent` per
   firing strategy, nets them on instrument, venue and representation, and places
   what survives; and **internal crossing exists** (§27.1) — the matched part of
@@ -180,7 +207,12 @@ at current scale, and process proliferation was rejected.
   and the hash-chained event log. *Placement:* global. *I/O:* approved requests
   → signed grants. *State:* **there is no `Ledger` type** — money state is
   capital allocation plus the log, which is a different shape from §43.3's
-  per-user, per-strategy authoritative ledger. *Authority:* records (§39 layer
+  per-user, per-strategy authoritative ledger. Since `7ef6063` the centre
+  also keeps a per-cell, per-strategy, per-instrument book settled from each
+  cell's report before the halt step (`central/plane.rs:855` → `:976`), the
+  §43.4 chain fill → contributor vector → strategy pro rata, and the API sink
+  carries the interval's orders and crosses onto that report (`7d79161`,
+  `qip-api/tests/mesh.rs::the_orders_a_cell_reports_reach_the_centres_strategy_books`). *Authority:* records (§39 layer
   14); issuance requires two signatures and a fresh credential
   (`qip-compliance/src/approval.rs`). *Degradation:* the log is append-only and
   hash-chained. *Tests:* `truth_loop.rs`, `compliance_proof.rs`.
@@ -236,11 +268,11 @@ each fail named tests.
 
 - **[LAYER 1/7 — Experience]** *Current:* Next.js portal and landing on Cloud Run; blueprint wants one Leptos codebase. *Keep:* the whole surface, maintained — it works, it is the only customer-facing thing there is, and ADR 0022 makes it transitional rather than disposable. *Change:* nothing this pass. *Remove:* nothing. *Defer:* the Leptos replacement boundary, direction settled and execution unauthorised — identify contracts and Playwright coverage first; a vertical slice only if it adds no dependency. *Verification:* `npm run lint`, `npm run build`, Playwright.
 - **[LAYER 2/7 — Public edge and identity]** *Current:* Identity Platform is the only identity store (ADR 0019); sealed-cookie sessions; console reaches the platform over the VPC as viewer (ADR 0018). *Keep:* all of it — it matches §46.1's "Application and identity" zone, including "never a node, a venue, a QPU or a key". *Change:* none. *Remove:* none. *Defer:* passkeys (§51 Phase 0) — not present. *Verification:* `console_route.rs`, `security.rs`.
-- **[LAYER 3/7 — Application and API]** *Current:* `qip-api` composes reads and holds no independent financial state. *Keep.* *Change:* none. *Remove:* none. *Defer:* the typed-intent surface (§40.9). An `Intent` type now exists (`libs/qip-contracts/src/intent.rs`) but it is the *execution* vocabulary, produced and consumed inside one cell; application APIs still raise no intents, they read. The gap is the API surface, not the type. *Verification:* `documentation.rs::every_documented_endpoint_exists`.
-- **[LAYER 4/7 — Domain contracts and control fabric]** *Current:* `qip-contracts` sits at the bottom of everything sharing it; `qip-transport`/`qip-mesh` carry the fabric. *Keep.* *Change:* none this pass. *Remove:* none. *Defer:* the **signed twelve-item payload (§41.5)** — the fabric ships deltas, not a twelve-item verified-then-atomically-swapped payload, and stale-item narrowing per §6.2 is not implemented. This is the largest single structural gap against the blueprint that is *not* future-phase. *Verification:* `spine.rs`, `mesh.rs`, `manifest_wiring.rs`.
+- **[LAYER 3/7 — Application and API]** *Current:* `qip-api` composes reads and holds no independent financial state. *Keep.* *Change:* none. *Remove:* none. *Defer:* the typed-intent surface (§40.9). An `Intent` type now exists (`libs/qip-contracts/src/intent.rs`) but it is the *execution* vocabulary, produced and consumed inside one cell; application APIs still raise no intents, they read. The gap is the API surface, not the type. *Verification:* `documentation.rs::every_documented_endpoint_exists`; and since `827a40e` the boundary itself is executable — `api_boundary.rs::the_application_layer_depends_on_no_execution_venue_capital_or_edge_crate` from `cargo metadata`, `::the_api_uses_only_the_centre_half_of_the_mesh_and_none_of_its_service_clients` from the sources, with the centre's two signatures pinned by exact expression so a third `.signed(` fails until reviewed.
+- **[LAYER 4/7 — Domain contracts and control fabric]** *Current:* `qip-contracts` sits at the bottom of everything sharing it; `qip-transport`/`qip-mesh` carry the fabric. *Keep.* *Change:* none this pass. *Remove:* none. *Defer:* re-scored at `296e187` — this row used to defer the **signed twelve-item payload (§41.5)** as the largest non-future structural gap. The payload landed (PR #3, `61f9392`, `0c91cfa`): the centre ships it signed, the cell verifies, applies it atomically, narrows on stale slots and halts on the signed command; the truth pass's flow 3 is PARTIAL rather than missing. What is still deferred is the *producers* — two of twelve slots have one, and slot 11 (feasibility constraints) has its first consumer at the cell (`95a4932`) and no producer at the centre — and a second, independent halt wire. *Verification:* `spine.rs`, `qip-api/tests/mesh.rs`, `qip-contracts/tests/contracts.rs`; `manifest_wiring.rs`, retargeted at the catalogue at `81dd1cd`.
 - **[LAYER 5/7 — Data and state]** *Current:* bitemporal records; bounded retention; event log hash-chained; `qip-data-finder` evaluates licensing before use. *Keep.* *Change:* none. *Remove:* none. *Defer:* BigQuery derived series and content-hash manifests for external history. *Verification:* `absorption.rs`, `resilience.rs`, `truth_loop.rs`.
-- **[LAYER 6/7 — Cloud and network]** *Current:* GKE + Argo CD + Kargo + Helm + KEDA; frontends on Cloud Run; no GCE instance. The blueprint's target — Cloud Run plus one bare C3, no Kubernetes — is now the architecture of record (ADR 0022), so this layer is a **transitional runtime with a decided direction**. *Keep:* all of it, and maintained rather than merely tolerated — it is what carries the traffic, and transitional does not mean abandoned. *Change:* nothing. *Remove:* **nothing, and not until step 5 of ADR 0020's sequence has both its evidence and recorded human approval.** *Defer:* the entire migration. Direction is settled; **execution is not authorised**, and no step may begin without step-named approval. *Verification:* `terraform fmt -check` and `validate` **NOT RUN — terraform is not installed in this environment**; `infrastructure.rs` suite passed.
-- **[LAYER 7/7 — Security, observability, delivery, reliability]** *Current:* three paper layers intact and re-verified by path this pass; WIF only; CSI-projected secrets; Binary Authorization; telemetry emitted at the seams. *Keep.* *Change:* none. *Remove:* none. *Defer:* OpenTelemetry spans with cross-plane correlation (§47) — the current surface is a Prometheus-style metric registry, not spans; and policy-freshness, belief-calibration and reconciliation signals have nothing to emit yet. *Verification:* `security.rs`, `compliance_proof.rs`, `egress.rs`, `infrastructure.rs`.
+- **[LAYER 6/7 — Cloud and network]** *Current, re-scored at `296e187`:* the root module wires the blueprint runtime — `catalogue.tf` instantiates `modules/cloudrun` once per deployable in its §46.1 zone with the egress sidecar where a workload carries one, `execution_node` per region from `execution_nodes` (empty in every environment), `trust_zones` binding workloads to zones default-deny both ways, and `egress_proxy` publishing the bootstrap (`808ca32`, `c924191`; seventeen `module` blocks in `main.tf`, count `grep -c '^module "' infrastructure/terraform/main.tf`). The GKE cluster, edge-cell and console-ingress modules, the Helm chart, the raw manifests and the Argo CD stack are deleted (`808ca32`, `67b3e92`, `7d79161`); `deploy.yml` moves each Cloud Run service by digest and fails unless the serving revision carries the attested image (`b85684f`). *What this row said before:* GKE + Argo CD + Kargo + Helm + KEDA as a transitional runtime, to be removed only at ADR 0020 step 5 with recorded approval. *What authorised the change:* the owner's instruction — create the new infrastructure while devouring the old — taken by `808ca32` as approval **for the code and not for an apply**. *Keep:* the wired modules. *Change:* nothing further without a plan. *Remove:* nothing further. *Defer:* the apply, and every observation that depends on one. *Verification:* `terraform fmt -check`, `validate` and a plan **NOT RUN — no `terraform` binary exists in this environment**, so every precondition in the new modules is asserted and unexercised; `infrastructure.rs` passed 67 at `808ca32` and `b85684f`, could not pass between `7d79161` and `81dd1cd` because it read the deleted manifests, and passed 59 once `81dd1cd` retargeted it at the runtime that exists — a text scanner's verdict, never a provider's. This layer is CONFIGURED at best and not MEASURED: nothing was applied, and no process has ever been shown to run on either runtime.
+- **[LAYER 7/7 — Security, observability, delivery, reliability]** *Current:* three paper layers intact and re-verified by path this pass; WIF only; CSI-projected secrets; Binary Authorization; telemetry emitted at the seams. *Keep.* *Change:* none. *Remove:* none. *Defer:* OpenTelemetry spans with cross-plane correlation (§47) — the current surface is a Prometheus-style metric registry, not spans. This row used to say policy-freshness, belief-calibration and reconciliation signals had nothing to emit; at `296e187` all three do — `qip_edge_policy_sequence` and `qip_edge_capability_freshness` at the cell, `qip_belief_brier_score` (`04738ee`) and `qip_central_reconciliation_breaks_total` (`de5d042`) at the centre, the kernel's fourteen newer series spelled in `qip-observability/src/metrics.rs` (`296e187`). What none of them has is a collector that has ingested one or an alert that names one. *Verification:* `security.rs`, `compliance_proof.rs`, `api_boundary.rs`; `egress.rs` and `infrastructure.rs`, both retargeted at `81dd1cd` (14 and 59 passed, per its message) after five commits in which they read manifest paths `7d79161` had deleted.
 
 ## Corrections this pass makes to existing documents
 
@@ -320,6 +352,20 @@ requires recorded human approval naming that step, and nothing is migrated,
 decommissioned or provisioned. Direction and authorisation are different
 decisions.
 
+*Re-scored at `296e187`.* The owner's instruction — create the new
+infrastructure while devouring the old — was taken by `808ca32` as approval
+for the **code**: the blueprint runtime is wired into the root module and the
+cluster's Terraform, chart, manifests and Argo CD stack are deleted from the
+tree (`808ca32`, `67b3e92`, `7d79161`). What it was not taken as is approval
+for an apply, and none has happened; no `terraform` binary exists here, so the
+new modules have never been through `fmt`, `validate` or a plan. ADR 0020's
+step 1 — evidence that any GKE workload ever ran — was never gathered and is
+now moot, since there is no cluster in the tree to gather it from. ADR 0024,
+which `b85684f` cites for the reconciler's retirement, was not in `docs/adr/`
+at `296e187`; it landed five commits on, at `2b7e502`, quoting the
+instruction as the authorisation for the code and stating that nothing was
+applied.
+
 ### C3 — experience layer · direction settled, execution NOT authorised
 
 Leptos over shared types (§40) is the target. `frontend/portal` and
@@ -331,16 +377,18 @@ No migration now. The sequencing stays in the backlog: identify contracts and
 Playwright coverage, define the replacement boundary, and only then consider a
 vertical slice — and only if it adds no dependency without an ADR.
 
-### C4 — a stale factual claim in an instruction file · still open
+### C4 — a stale factual claim in an instruction file · CLOSED, and reopened narrower
 
-`.claude/rules/domains/observability.md` states that nothing writes to
-`Telemetry`. The code contradicts it: `qip-kernel/src/platform.rs:1668` counts
-cycles and `:1728-1755` records stage runs, latencies and gauges, served at
-`apps/qip-api/src/routes.rs:910-912`.
+`.claude/rules/domains/observability.md` stated that nothing writes to
+`Telemetry`. It was corrected at `232bc16` and now says both planes emit and
+names the edge series; the row above is history.
 
-**Still the owner's, not an agent's.** `.claude/rules/` is instruction
-configuration, and correcting it is an owner's decision even when the
-correction is a plain matter of fact. Left untouched and flagged.
+What the rule file says at `296e187` that the code no longer does: that
+`Platform::learn_from` "is called by nothing in the tree" and
+`Platform::evaluate_alternatives` "is called only by `qip-kernel`'s own
+tests". Both gained their production caller in LEARN (`04738ee`,
+`platform.rs:4052`; `b9e2242`, `:5028`). Same rule as before: `.claude/rules/`
+is the owner's, and this scorecard flags rather than edits it.
 
 ### C5 — which diagram is authoritative · CLOSED
 
@@ -447,6 +495,20 @@ its own `OrderManager`, and the two order paths never meet. Restoring
 discarding a fact it already held; it did not join the edge's contributors to
 it. That join is a real piece of work and it is not done.
 
+*Closed at `7ef6063` and `7d79161`.* `CentralPlane::ingest`
+(`central/plane.rs:855`) settles the interval's orders and crosses to
+per-cell, per-strategy, per-instrument books (`:976`) before the halt step: a
+fill pro rata to the contributors on its own side through `split_pro_rata`
+(`qip-learning-engine/src/attribution.rs:266`, largest-remainder, asserting
+the shares sum), a cross moving buyer up and seller down at the recorded mid,
+and a decomposition that must close to the last unit or count
+`qip_central_attribution_failures_total`. `qip-kernel/tests/attribution.rs::a_netted_orders_fill_is_attributed_to_its_contributors_with_zero_residual`,
+`::an_internal_cross_moves_both_contributors_books_at_the_mid_and_the_close_out_is_exact`;
+and the API sink carries the interval onto the report
+(`qip-api/src/mesh.rs:1148-1149`), without which a deployed centre would have
+settled nothing. This also answers the paragraph two below: a cross is now
+settled at the *centre's* books; the cell's own journal entry is unchanged.
+
 **A full cancellation is never crossed, by arithmetic.** The matched size is
 `min(buy, sell)` over a denominator of `buy + sell`, so the ratio cannot exceed
 one half and reaches it exactly when two strategies cancel completely. The
@@ -492,3 +554,17 @@ omit — a constructor that only yields no-net intents, or a leg type that canno
 become an `Intent` without carrying its cycle — **in the same change that adds
 the producer**. Adding the producer first and the enforcement afterwards is the
 ordering the guard exists to prevent.
+
+*Closed, in the order this note asked for.* `3632932` made the leg a type
+before the producer existed: `CycleLeg::new` is the only constructor that
+yields `NoNet`, `Intent`'s policy is a private field with no setter, and a
+producer's promise lives in its return type, `Vec<CycleLeg>`. Then `71f9465`
+added the producer — the desk scans the cell's own books and its legs go out
+by the one order path (`qip-edge/tests/arbitrage.rs::a_cycle_on_the_cells_own_books_becomes_its_legs_as_orders_in_one_pass`).
+`LegGroup` still has no call site (`qip-contracts/src/intent.rs:104` says so):
+the cell's `Placer` cannot cancel, so a cycle broken between legs trips the
+switch and journals how far it got (`cell.rs:1628`,
+`::a_cycle_that_breaks_between_legs_halts_the_cell_and_records_the_break`)
+rather than coordinating an unwind it cannot perform. The crossing interval
+(D3) is still undefined — `cell.rs:1773` — so a full cancellation still never
+crosses.

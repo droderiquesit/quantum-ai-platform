@@ -502,20 +502,36 @@ impl MarketSimulator {
             // Forked per instrument off the run seed, in map order, so adding
             // an instrument does not silently redraw the others' paths.
             let mut stream = Xoshiro256::seeded(seed).fork(object_id);
+            // The walk is in `f64` because the shocks are statistics; each
+            // point crosses to `Decimal` here, and that crossing is the gate.
             let mut price = spec.initial_price.to_f64();
             let mut points = Vec::with_capacity(steps.len());
-            for at in &steps {
-                // Refused rather than substituted. Quietly writing the initial
-                // price into a point the generator could not represent puts a
-                // number nobody generated into the middle of a path, and every
-                // fill priced off it inherits it.
-                let decimal = Decimal::from_f64(price).filter(|price| price.is_positive()).ok_or_else(
-                    || {
+            for (index, at) in steps.iter().enumerate() {
+                // Refused rather than substituted. Until this refusal was the
+                // only branch, an overflow below reset the walk to the
+                // initial price and carried on, so a drift or volatility
+                // large enough to blow the path up produced a path that
+                // quietly restarted from the spec's first number partway
+                // through — a price nobody generated in the middle of the
+                // series, and every fill priced off it inherited it. The
+                // comment above the reset said the code did not do this. The
+                // error names the step and the bound so the caller can see
+                // which parameter to reconsider rather than which point
+                // looked odd.
+                let decimal = Decimal::from_f64(price)
+                    .filter(|price| price.is_positive())
+                    .ok_or_else(|| {
                         Error::invalid(format!(
-                            "the generated path for {object_id} left the range a price can be held in at {at}"
+                            "the generated path for {object_id} left the range a price can be held \
+                             in at step {index} of {} ({at}): {price} is not in (0, {}]; the walk \
+                             is drift {} and volatility {} per step, and a path that overflows is \
+                             refused rather than restarted from the initial price",
+                            steps.len(),
+                            Decimal::MAX,
+                            spec.step_drift,
+                            spec.step_volatility
                         ))
-                    },
-                )?;
+                    })?;
                 points.push(PathPoint {
                     at: *at,
                     price: decimal,
@@ -523,9 +539,6 @@ impl MarketSimulator {
                 });
                 let shock = spec.step_drift + spec.step_volatility * stream.normal();
                 price *= shock.exp();
-                if !price.is_finite() || price <= 0.0 {
-                    price = spec.initial_price.to_f64();
-                }
             }
             paths.insert(object_id.clone(), points);
         }

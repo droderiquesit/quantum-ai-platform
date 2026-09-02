@@ -85,7 +85,7 @@ fn a_proposal_expresses_the_theses_it_was_given() -> Result<()> {
     let proposal = build(&theses, Mandate::default(), &BTreeMap::new())?;
 
     assert!(!proposal.is_empty());
-    assert_eq!(proposal.status, ProposalStatus::Draft);
+    assert_eq!(proposal.status(), &ProposalStatus::Draft);
     for leg in &proposal.legs {
         assert!(
             !leg.hypotheses.is_empty(),
@@ -401,12 +401,12 @@ fn the_routing_decision_is_carried_with_the_proposal() -> Result<()> {
 // --- the proposal lifecycle -------------------------------------------------
 
 fn draft() -> Proposal {
-    Proposal {
-        proposal_id: ProposalId::from_string("prop-life"),
-        created_at: now(),
-        as_of: now(),
-        status: ProposalStatus::Draft,
-        legs: vec![ProposalLeg {
+    Proposal::draft(
+        ProposalId::from_string("prop-life"),
+        now(),
+        now(),
+        equity(),
+        vec![ProposalLeg {
             object_id: object("AAA"),
             side: Side::Buy,
             quantity: dec!("1000"),
@@ -416,15 +416,79 @@ fn draft() -> Proposal {
             estimated_cost_bps: 10.0,
             hypotheses: vec!["hyp-1".to_string()],
         }],
-        equity: equity(),
-        target_gross: 0.01,
-        target_net: 0.01,
-        turnover: 0.01,
-        estimated_cost_bps: 0.2,
-        rationale: "expresses one approved thesis".to_string(),
-        compromises: Vec::new(),
-        checks_passed: Vec::new(),
-    }
+        "expresses one approved thesis",
+    )
+    .with_targets(0.01, 0.01, 0.01, 0.2)
+}
+
+/// The two-control approval is held by the type, not by convention.
+///
+/// `status` was a public field until the seam was sealed, so any holder of a
+/// proposal could write `Released` into it and the ACT stage — which filters
+/// on `is_releasable` — would have submitted its legs with neither risk nor
+/// compliance having signed. The compile-fail doctest on `Proposal` proves
+/// the assignment no longer compiles; this test proves the transitions that
+/// remain cannot reach `Released` without an approval, and that a veto is
+/// terminal — nothing re-opens a vetoed proposal, and a veto stands whether
+/// it landed before or after the approval.
+#[test]
+fn a_proposal_cannot_be_released_without_an_approval_and_cannot_be_reopened_after_a_veto() {
+    // Premise: the only constructor produces a draft, and a draft is not
+    // releasable — otherwise every assertion below would be about a proposal
+    // that was already past the gate.
+    let mut proposal = draft();
+    assert_eq!(proposal.status(), &ProposalStatus::Draft);
+    assert!(!proposal.status().is_releasable());
+
+    // No approval, no release. The refusal names the state.
+    let error = proposal.release(now()).unwrap_err();
+    assert!(
+        error.message().contains("is draft and cannot be released"),
+        "{}",
+        error.message()
+    );
+    assert_eq!(proposal.status(), &ProposalStatus::Draft);
+
+    // A veto is terminal: neither approval nor release moves it, and the
+    // record still names the control that vetoed.
+    proposal.veto(now(), "risk-control", "gross exposure limit breached");
+    assert!(
+        matches!(proposal.status(), ProposalStatus::Vetoed { by, .. } if by == "risk-control"),
+        "{:?}",
+        proposal.status()
+    );
+    assert!(
+        proposal
+            .approve(
+                now(),
+                vec!["risk-control".to_string(), "compliance-control".to_string()],
+            )
+            .is_err()
+    );
+    assert!(proposal.release(now()).is_err());
+    assert!(
+        matches!(proposal.status(), ProposalStatus::Vetoed { by, .. } if by == "risk-control"),
+        "a vetoed proposal was re-opened: {:?}",
+        proposal.status()
+    );
+
+    // And the only route to `Released` is approval by both controls followed
+    // by release, on a fresh draft.
+    let mut approved = draft();
+    approved
+        .approve(
+            now(),
+            vec!["risk-control".to_string(), "compliance-control".to_string()],
+        )
+        .unwrap();
+    assert!(matches!(approved.status(), ProposalStatus::Approved { by, .. } if by.len() == 2));
+    approved.release(now()).unwrap();
+    assert!(matches!(approved.status(), ProposalStatus::Released { .. }));
+    // Released is terminal too: a release is not repeatable and a veto does
+    // not rewrite what already reached the market.
+    assert!(approved.release(now()).is_err());
+    approved.veto(now(), "risk-control", "second thoughts");
+    assert!(matches!(approved.status(), ProposalStatus::Released { .. }));
 }
 
 #[test]
@@ -432,7 +496,7 @@ fn a_draft_proposal_cannot_be_released() {
     let mut proposal = draft();
     let error = proposal.release(now()).unwrap_err();
     assert!(error.message().contains("cannot be released"));
-    assert_eq!(proposal.status, ProposalStatus::Draft);
+    assert_eq!(proposal.status(), &ProposalStatus::Draft);
 }
 
 #[test]
@@ -448,8 +512,8 @@ fn a_single_control_cannot_approve_a_proposal_alone() {
         "{}",
         error.message()
     );
-    assert_eq!(proposal.status, ProposalStatus::Draft);
-    assert!(!proposal.status.is_releasable());
+    assert_eq!(proposal.status(), &ProposalStatus::Draft);
+    assert!(!proposal.status().is_releasable());
 }
 
 #[test]
@@ -461,10 +525,10 @@ fn two_controls_approve_and_the_proposal_can_then_be_released() {
             vec!["risk-control".to_string(), "compliance-control".to_string()],
         )
         .unwrap();
-    assert!(proposal.status.is_releasable());
+    assert!(proposal.status().is_releasable());
     assert_eq!(proposal.checks_passed.len(), 2);
     proposal.release(now()).unwrap();
-    assert!(matches!(proposal.status, ProposalStatus::Released { .. }));
+    assert!(matches!(proposal.status(), ProposalStatus::Released { .. }));
 }
 
 #[test]
@@ -478,7 +542,7 @@ fn a_vetoed_proposal_cannot_be_approved_afterwards() {
         )
         .unwrap_err();
     assert!(error.message().contains("cannot be approved"));
-    assert!(!proposal.status.is_releasable());
+    assert!(!proposal.status().is_releasable());
 }
 
 #[test]
@@ -491,10 +555,10 @@ fn a_veto_works_after_approval_and_before_release() {
             vec!["risk-control".to_string(), "compliance-control".to_string()],
         )
         .unwrap();
-    assert!(proposal.status.is_releasable());
+    assert!(proposal.status().is_releasable());
 
     proposal.veto(now(), "compliance-control", "the name was just restricted");
-    assert!(!proposal.status.is_releasable());
+    assert!(!proposal.status().is_releasable());
     assert!(proposal.release(now()).is_err());
 }
 
@@ -511,7 +575,7 @@ fn a_released_proposal_cannot_be_vetoed_retroactively() {
         .unwrap();
     proposal.release(now()).unwrap();
     proposal.veto(now(), "risk-control", "second thoughts");
-    assert!(matches!(proposal.status, ProposalStatus::Released { .. }));
+    assert!(matches!(proposal.status(), ProposalStatus::Released { .. }));
 }
 
 #[test]

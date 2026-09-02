@@ -146,11 +146,6 @@ impl Checkpoint {
         }
     }
 
-    pub fn with_last_fingerprint(mut self, fingerprint: impl Into<String>) -> Self {
-        self.last_fingerprint = Some(fingerprint.into());
-        self
-    }
-
     pub fn to_json(&self) -> Result<String> {
         serde_json::to_string(self)
             .map_err(|error| Error::schema(format!("the checkpoint could not be written: {error}")))

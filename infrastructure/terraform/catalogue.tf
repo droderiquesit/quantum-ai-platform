@@ -1,0 +1,281 @@
+# The Cloud Run catalogue: every warm binary the platform deploys, and where.
+#
+# One entry per workload, and one place. The Helm chart used to spread each
+# workload across a Deployment, a Service, a ConfigMap, a SecretProviderClass
+# and two NetworkPolicies, and every seam between those files was a place the
+# two sides drifted — the acceptance suite's `manifest_wiring.rs` records
+# three cases that shipped. Here a workload is one map entry: the binary it
+# runs, the plane and trust zone it belongs to, whose traffic it carries, the
+# variables it reads, and the secrets it mounts as files. `modules/cloudrun`
+# holds everything that must be true of all of them.
+#
+# Three binaries today, as ADR 0010 records. Roughly seventy is the blueprint's
+# count for the finished catalogue; an entry is added here when the binary
+# exists, and the acceptance suite refuses an entry naming one that does not.
+#
+# What is deliberately not here:
+#
+#   * `qip-edge-node`. It is the execution node, runs bare under systemd on a
+#     C3, and is `modules/execution-node`. `modules/cloudrun` refuses the
+#     `execution` plane by name for that reason.
+#   * `QIP_MESH_CELLS` on the API. The in-tree mesh binds one listener per
+#     cell on its own port, and a Cloud Run service exposes exactly one port.
+#     Unset, `qip-api` builds no mesh and `/api/v1/mesh` answers
+#     `available: false` — which is the honest state, because no execution
+#     node exists to speak it. The blueprint's control fabric is Pub/Sub
+#     (§46.1); wiring the centre-to-node path on this runtime is that work,
+#     recorded in ADR 0024, and not a port that cannot be published.
+#   * A job. The chart carried no CronJob or Job, so there is none to move.
+#     `modules/cloudrun` takes `kind = "job"` for the day there is.
+
+locals {
+  # The listener every workload with a proxy reaches Google APIs through.
+  # Read from the proxy module so the port is written once, in the bootstrap.
+  gcp_endpoint = module.egress_proxy.endpoints["gcp"]
+
+  cloud_run_catalogue = {
+    # The API and the operator interface. Customer traffic, reached only by
+    # the console's identity, in the application-and-identity zone (§46.1):
+    # it may read the ledger and raise intents, and may never reach a node, a
+    # venue, a QPU or a key.
+    api = {
+      binary        = "qip-api"
+      plane         = "experience-and-identity"
+      trust_zone    = "application-identity"
+      traffic_class = "customer"
+      health_path   = "/api/v1"
+      cpu           = "2"
+      memory        = "1Gi"
+      concurrency   = 80
+      # The audit chain's Cloud Storage adapter needs the proxy. Nothing in
+      # `qip-api` reads `QIP_GCP_ENDPOINT` yet — `qip_storage::gcp` does, and
+      # the composition root that constructs it is the change that sets the
+      # variable. The proxy is attached now so that change is one line.
+      egress_proxy = true
+      invokers = compact([
+        module.secrets.console_service_account_email == null ? "" : "serviceAccount:${module.secrets.console_service_account_email}",
+      ])
+      env = {
+        QIP_API_ADDRESS    = "0.0.0.0:8080"
+        QIP_STORAGE_TARGET = var.storage_target
+        # The autonomy ceiling, from the one root variable whose validation
+        # refuses the three live rungs at plan time. Every workload takes it
+        # from here and never from a literal, so lowering or raising it is a
+        # change to one reviewed value that appears in a diff.
+        QIP_AUTONOMY_CEILING = var.autonomy_ceiling
+      }
+      secret_mounts = {
+        token-operator = {
+          secret_id         = module.secrets.secret_ids["qip-token-operator"]
+          file_name         = "token-operator"
+          env_file_variable = "QIP_TOKEN_OPERATOR_FILE"
+        }
+        token-approver = {
+          secret_id         = module.secrets.secret_ids["qip-token-approver"]
+          file_name         = "token-approver"
+          env_file_variable = "QIP_TOKEN_APPROVER_FILE"
+        }
+        token-analyst = {
+          secret_id         = module.secrets.secret_ids["qip-token-analyst"]
+          file_name         = "token-analyst"
+          env_file_variable = "QIP_TOKEN_ANALYST_FILE"
+        }
+        token-viewer = {
+          secret_id         = module.secrets.secret_ids["qip-token-viewer"]
+          file_name         = "token-viewer"
+          env_file_variable = "QIP_TOKEN_VIEWER_FILE"
+        }
+        token-monitor = {
+          secret_id         = module.secrets.secret_ids["qip-token-monitor"]
+          file_name         = "token-monitor"
+          env_file_variable = "QIP_TOKEN_MONITOR_FILE"
+        }
+        # The key this process signs capital envelopes with. Every node
+        # verifies grants against it, so the centre signing with anything
+        # else produces grants no node accepts.
+        capital-envelope-key = {
+          secret_id         = module.secrets.secret_ids["qip-capital-envelope-key"]
+          file_name         = "capital-envelope-key"
+          env_file_variable = "QIP_CAPITAL_ENVELOPE_KEY_FILE"
+        }
+      }
+    }
+
+    # The fast path: market data, microstructure, real-time risk, execution
+    # against the simulator. Trading traffic, reachable from inside the VPC
+    # only, and the one workload that could ever hold the venue credential —
+    # `modules/secrets` binds it to this identity where the ceiling permits,
+    # which no environment a plan can carry does.
+    #
+    # No egress proxy, deliberately. ADR 0008, consequence 3: nothing on the
+    # hot path consults a model. The fast brain links `qip-ai` transitively
+    # through `qip-kernel` and `qip-agents`, so what stops it calling one is
+    # its start-up roster check and the fact that it can reach nothing that
+    # serves one. Port 9102 on the proxy is exactly such a thing.
+    fastbrain = {
+      binary        = "qip-fastbrain"
+      plane         = "capital-and-risk"
+      trust_zone    = "intelligence"
+      traffic_class = "trading"
+      health_path   = "/health"
+      cpu           = "2"
+      memory        = "2Gi"
+      # Holds per-process state: one instance's cycle is its own.
+      concurrency  = 1
+      egress_proxy = false
+      invokers     = []
+      env = merge(
+        {
+          QIP_FASTBRAIN_HEALTH_ADDRESS = "0.0.0.0:8080"
+          QIP_STORAGE_TARGET           = var.storage_target
+          QIP_AUTONOMY_CEILING         = var.autonomy_ceiling
+        },
+        # The live market-data connector, or nothing. Both keys or neither:
+        # `connector_feed` refuses half a configuration by name rather than
+        # falling back, and the root variable's type makes half impossible.
+        # Absent, the node runs the synthetic exchange, which is what every
+        # environment does today — nothing starts fetching a vendor because
+        # this catalogue was applied.
+        var.market_data_connector == null ? {} : {
+          QIP_CONNECTOR_SOURCE   = var.market_data_connector.source
+          QIP_CONNECTOR_BASE_URL = var.market_data_connector.base_url
+        },
+      )
+      secret_mounts = {
+        # The capital-envelope key, as a file. Absent, this process runs on
+        # the seed-derived default — reproducible, mintable by anyone who
+        # knows the seed, and refused outright once the ceiling permits live
+        # trading.
+        capital-envelope-key = {
+          secret_id         = module.secrets.secret_ids["qip-capital-envelope-key"]
+          file_name         = "capital-envelope-key"
+          env_file_variable = "QIP_CAPITAL_ENVELOPE_KEY_FILE"
+        }
+      }
+    }
+
+    # The research workload: world model, discovery, reasoning, simulation,
+    # learning. Cognition zone. It is the one workload that may call a
+    # language model (ADR 0008), hosts the training port that reaches Vertex,
+    # and holds the analytical and evidence stores — so it carries the proxy.
+    # Its zone may hold no external-egress entry at all, so the IBM listeners
+    # its sidecar declares reach nothing; `modules/trust-zones/NOT-ENFORCED-HERE.md`.
+    deepbrain = {
+      binary        = "qip-deepbrain"
+      plane         = "cognition"
+      trust_zone    = "cognition"
+      traffic_class = "platform"
+      health_path   = "/health"
+      cpu           = "4"
+      memory        = "8Gi"
+      concurrency   = 1
+      egress_proxy  = true
+      invokers      = []
+      env = {
+        QIP_DEEPBRAIN_HEALTH_ADDRESS = "0.0.0.0:8080"
+        QIP_STORAGE_TARGET           = var.storage_target
+        QIP_AUTONOMY_CEILING         = var.autonomy_ceiling
+        QIP_CYCLE_INTERVAL_SECONDS   = var.cycle_interval_seconds
+      }
+      secret_mounts = {
+        capital-envelope-key = {
+          secret_id         = module.secrets.secret_ids["qip-capital-envelope-key"]
+          file_name         = "capital-envelope-key"
+          env_file_variable = "QIP_CAPITAL_ENVELOPE_KEY_FILE"
+        }
+      }
+    }
+  }
+
+  # Each zone's identities, for the ledger and fabric grants in
+  # modules/trust-zones: the accounts of the workloads placed there.
+  zone_identities = {
+    for zone in distinct([for workload in local.cloud_run_catalogue : workload.trust_zone]) :
+    zone => sort([for name, workload in module.cloud_run : workload.service_account_email if workload.trust_zone == zone])
+  }
+}
+
+# The plan refuses a catalogue that is not fully placed.
+#
+# Preconditions on a `terraform_data` rather than in the module, because the
+# facts they check are the root's: whether the zone a workload names is one
+# this environment declared a subnet for, and whether the pipeline has ever
+# produced a digest for the binary. A lookup that simply failed would report
+# an invalid index; these report the decision that is missing.
+resource "terraform_data" "catalogue_is_placed" {
+  input = sort(keys(local.cloud_run_catalogue))
+
+  lifecycle {
+    precondition {
+      condition = alltrue([
+        for workload in values(local.cloud_run_catalogue) : contains(keys(var.trust_zones), workload.trust_zone)
+      ])
+      error_message = "A catalogue workload names a trust zone this environment does not declare in `trust_zones`: ${join(", ", distinct([for workload in values(local.cloud_run_catalogue) : workload.trust_zone if !contains(keys(var.trust_zones), workload.trust_zone)]))}. A workload with no zone has no subnet, no tag and no rule; declare the zone's range in the tfvars."
+    }
+
+    precondition {
+      condition = alltrue([
+        for workload in values(local.cloud_run_catalogue) : contains(keys(var.image_digests), workload.binary)
+      ])
+      error_message = "No digest is recorded for ${join(", ", [for workload in values(local.cloud_run_catalogue) : workload.binary if !contains(keys(var.image_digests), workload.binary)])}. A service is created at the digest deploy.yml last attested; run the pipeline for this environment, which writes infrastructure/environments/<env>/images.tfvars."
+    }
+
+    # The fast path carries no proxy. Said here as well as in the catalogue
+    # entry, because the entry is a value somebody edits and this is a plan
+    # that stops.
+    precondition {
+      condition     = !local.cloud_run_catalogue.fastbrain.egress_proxy
+      error_message = "The fast brain has been given the egress proxy. Port 9102 on it is a route to a language model API, and nothing on the hot path may consult a model (ADR 0008)."
+    }
+  }
+}
+
+module "cloud_run" {
+  source   = "./modules/cloudrun"
+  for_each = local.cloud_run_catalogue
+
+  # Nothing here can be created before its API is on. See module "services".
+  depends_on = [module.services]
+
+  project_id  = var.project_id
+  region      = var.region
+  environment = var.environment
+  labels      = local.labels
+
+  name          = each.key
+  kind          = "service"
+  plane         = each.value.plane
+  trust_zone    = each.value.trust_zone
+  traffic_class = each.value.traffic_class
+
+  # Internal, every one of them. The console reaches the API as a named
+  # invoker over the VPC; nothing here has a URL the internet may ask for.
+  ingress_posture = "internal"
+  invokers        = each.value.invokers
+
+  # The image, from the registry the pipeline pushes to, at the digest the
+  # pipeline last attested for this environment. A missing digest is refused
+  # by the module's validation and named by the precondition above.
+  image_digest = "${module.registry.image_prefix}/${each.value.binary}@${lookup(var.image_digests, each.value.binary, "")}"
+
+  # Placed in its trust zone: the zone's subnet is the interface, the zone's
+  # tag is what every rule in modules/trust-zones targets.
+  egress_network = module.network.network_id
+  egress_subnet  = lookup(module.trust_zones.zone_subnets, each.value.trust_zone, null)
+  network_tags   = compact([lookup(module.trust_zones.zone_network_tags, each.value.trust_zone, "")])
+
+  cpu            = each.value.cpu
+  memory         = each.value.memory
+  concurrency    = each.value.concurrency
+  container_port = 8080
+  health_path    = each.value.health_path
+
+  env           = each.value.env
+  secret_mounts = each.value.secret_mounts
+
+  egress_sidecar = each.value.egress_proxy ? module.egress_proxy.sidecar : null
+
+  # deploy.yml moves the service, as this account, and needs to act as the
+  # service's own identity to create a revision.
+  deployer_service_account = module.cicd.service_account_email
+}

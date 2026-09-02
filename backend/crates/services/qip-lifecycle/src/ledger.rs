@@ -20,14 +20,20 @@
 //!   `qip_risk_engine::autonomy`, and for the same reason: a false demotion
 //!   costs a day of missed opportunity and a missed one costs the book.
 
+use crate::band::{BandVerdict, HoldoutBand};
 use crate::evidence::StrategyEvidence;
+use crate::gates::Admission;
+use crate::trials::TrialBook;
 use qip_contracts::gate::{GateOutcome, GateStage, Promotion};
 use qip_contracts::governance::Approval;
 use qip_contracts::signal::StrategyId;
 use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
+use qip_observability::metrics::{Metrics, labels, names};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// A promotion that has already cleared its authority check.
 ///
@@ -116,6 +122,11 @@ pub struct LedgerEntry {
     /// The approval, kept whole rather than reduced to a name, so a review can
     /// read the rationale the approvers gave at the time.
     pub approval: Option<Approval>,
+    /// The band the holdout validation defined. Present on every holdout
+    /// admission and nothing else; the interval the strategy's live
+    /// performance is held inside of, from the evidence that admitted it.
+    #[serde(default)]
+    pub band: Option<HoldoutBand>,
 }
 
 impl LedgerEntry {
@@ -128,11 +139,69 @@ impl LedgerEntry {
 #[derive(Clone, Debug, Default)]
 pub struct LifecycleLedger {
     entries: BTreeMap<StrategyId, Vec<LedgerEntry>>,
+    /// Where each move is counted, if whoever composed the ledger gave it a
+    /// registry. Handed in rather than constructed, because a ledger that
+    /// made its own registry would count into a series nothing scrapes; and
+    /// optional rather than required, because the ledger's job is the record
+    /// and a missing registry must not stop a demotion.
+    metrics: Option<Arc<Metrics>>,
+    /// Where every holdout evaluation is charged, per family, for life.
+    /// Optional for the same reason as the registry — a ledger is built
+    /// before its composition root can hand anything in — but with the
+    /// opposite consequence: a missing registry loses a count, a missing
+    /// book refuses every promotion to holdout, because without it the
+    /// lifetime trial count is unknown and unknown is not zero.
+    trials: Option<TrialBook>,
 }
 
 impl LifecycleLedger {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Charge holdout evaluations to `book` from now on.
+    pub fn with_trial_book(mut self, book: TrialBook) -> Self {
+        self.attach_trial_book(book);
+        self
+    }
+
+    /// Charge holdout evaluations to `book` from now on, for a ledger that
+    /// already exists.
+    pub fn attach_trial_book(&mut self, book: TrialBook) {
+        self.trials = Some(book);
+    }
+
+    pub fn trial_book(&self) -> Option<&TrialBook> {
+        self.trials.as_ref()
+    }
+
+    pub fn trial_book_mut(&mut self) -> Option<&mut TrialBook> {
+        self.trials.as_mut()
+    }
+
+    /// Count moves into `metrics` from now on.
+    pub fn with_metrics(mut self, metrics: Arc<Metrics>) -> Self {
+        self.attach_metrics(metrics);
+        self
+    }
+
+    /// Count moves into `metrics` from now on, for a ledger that already
+    /// exists — which is every ledger a composition root reaches, since the
+    /// plane builds its own before the root can hand anything in.
+    pub fn attach_metrics(&mut self, metrics: Arc<Metrics>) {
+        self.metrics = Some(metrics);
+    }
+
+    /// Count one recorded move. Keyed on the rungs alone: seven, closed, and
+    /// what an alert wants to filter on. Never the strategy, whose number is
+    /// whatever the foundry proposes.
+    fn record_move(&self, series: &str, from: GateStage, to: GateStage) {
+        if let Some(metrics) = &self.metrics {
+            metrics.count(
+                series,
+                labels([("from", from.as_str()), ("to", to.as_str())]),
+            );
+        }
     }
 
     /// Where a strategy stands. An unknown strategy is a candidate: there is
@@ -171,6 +240,33 @@ impl LifecycleLedger {
         self.path(strategy).contains(&stage)
     }
 
+    /// The holdout band a strategy is held inside of: the one its most recent
+    /// holdout admission produced. `None` for a strategy never admitted to
+    /// holdout, which is a strategy with nothing to be inside of.
+    pub fn holdout_band(&self, strategy: &StrategyId) -> Option<&HoldoutBand> {
+        self.history(strategy)
+            .iter()
+            .rev()
+            .filter(|entry| entry.promotion.to == GateStage::Holdout)
+            .find_map(|entry| entry.band.as_ref())
+    }
+
+    /// Judge live returns against the strategy's holdout band.
+    ///
+    /// Refuses when there is no band on record. A strategy with no band
+    /// cannot be "inside" anything, and answering "inside" for it would be
+    /// the Phase 3 gate passing on a criterion nobody defined.
+    pub fn band_verdict(&self, strategy: &StrategyId, live_returns: &[f64]) -> Result<BandVerdict> {
+        let band = self.holdout_band(strategy).ok_or_else(|| {
+            Error::denied(format!(
+                "no holdout band is on record for {strategy}; live performance is judged \
+                 against the band the holdout gate produced, and there is none to be inside \
+                 of. Promote {strategy} through the holdout gate before judging it live"
+            ))
+        })?;
+        band.judge(live_returns)
+    }
+
     /// The gate outcome that admitted a strategy to a rung, most recent first.
     pub fn admission_evidence(
         &self,
@@ -186,18 +282,21 @@ impl LifecycleLedger {
 
     /// Record a promotion that a gate has passed.
     ///
-    /// Four things are checked here that [`AuthorisedPromotion`] cannot check
+    /// Five things are checked here that [`AuthorisedPromotion`] cannot check
     /// on its own, because they are properties of this ledger rather than of
     /// the promotion: the strategy is where the promotion says it is, it has
-    /// not been retired, the outcome belongs to the rung being entered, and
-    /// the outcome passed.
+    /// not been retired, the outcome belongs to the rung being entered, the
+    /// outcome passed, and a holdout admission carries the band its
+    /// validation defined — a strategy admitted without one would later be
+    /// judged live against nothing.
     pub fn record_promotion(
         &mut self,
         strategy: &StrategyId,
         promotion: AuthorisedPromotion,
-        outcome: GateOutcome,
+        admission: Admission,
         rationale: impl Into<String>,
     ) -> Result<Promotion> {
+        let Admission { outcome, band } = admission;
         let current = self.stage_of(strategy);
         if current == GateStage::Retired {
             return Err(Error::denied(format!(
@@ -231,6 +330,24 @@ impl LifecycleLedger {
                 failures.join("; ")
             )));
         }
+        match (promotion.to(), band.as_ref()) {
+            (GateStage::Holdout, None) => {
+                return Err(Error::denied(format!(
+                    "the holdout admission for {strategy} carries no band; a strategy is \
+                     admitted to holdout only with the band its validation produced, because \
+                     live performance is judged against it and a band that does not exist \
+                     cannot be fallen outside of. Admit through `HoldoutGate::admit`"
+                )));
+            }
+            (to, Some(_)) if to != GateStage::Holdout => {
+                return Err(Error::invalid(format!(
+                    "a holdout band belongs to the holdout admission; the {} admission for \
+                     {strategy} must not carry one",
+                    to.as_str()
+                )));
+            }
+            _ => {}
+        }
 
         let record = Promotion {
             from: promotion.from(),
@@ -256,7 +373,9 @@ impl LifecycleLedger {
                 promotion: record.clone(),
                 outcome: Some(outcome),
                 approval: promotion.approval().cloned(),
+                band,
             });
+        self.record_move(names::STRATEGY_PROMOTIONS, record.from, record.to);
         Ok(record)
     }
 
@@ -314,7 +433,9 @@ impl LifecycleLedger {
                 promotion: record.clone(),
                 outcome: None,
                 approval: None,
+                band: None,
             });
+        self.record_move(names::STRATEGY_DEMOTIONS, record.from, record.to);
         Ok(record)
     }
 
@@ -388,6 +509,47 @@ pub fn attempt_promotion(
             promotion.to().as_str()
         ))
     })?;
-    let outcome = gate.evaluate(evidence, now);
-    ledger.record_promotion(strategy, promotion, outcome, rationale)
+    let evidence = charge_holdout_trials(ledger, strategy, evidence, promotion.to(), now)?;
+    let admission = gate.admit(&evidence, now);
+    ledger.record_promotion(strategy, promotion, admission, rationale)
+}
+
+/// Charge this evaluation to the strategy's family before the holdout gate
+/// reads the count, and hand the gate evidence carrying the account.
+///
+/// Charged before the gate runs and whether or not it passes, because a
+/// candidate that failed was still a trial — leaving failures uncounted is
+/// the sweep counting only its winners. Only the holdout rung is charged: it
+/// is the rung that deflates a Sharpe, and the count is meaningless anywhere
+/// else. Whatever account the submitted evidence carried is replaced, so the
+/// number the gate reads is the book's and not the researcher's.
+///
+/// Refuses when the ledger has no book, naming what to attach. The book's own
+/// refusal covers a strategy no family has enrolled.
+fn charge_holdout_trials<'e>(
+    ledger: &mut LifecycleLedger,
+    strategy: &StrategyId,
+    evidence: &'e StrategyEvidence,
+    to: GateStage,
+    now: Timestamp,
+) -> Result<Cow<'e, StrategyEvidence>> {
+    if to != GateStage::Holdout {
+        return Ok(Cow::Borrowed(evidence));
+    }
+    // Without holdout evidence there is nothing to charge and the gate fails
+    // on its first check; charging nothing here keeps that refusal the one
+    // the operator sees.
+    let Some(holdout) = evidence.holdout.as_ref() else {
+        return Ok(Cow::Borrowed(evidence));
+    };
+    let book = ledger.trial_book_mut().ok_or_else(|| {
+        Error::denied(format!(
+            "the lifetime trial count for {strategy} is unknown: this ledger has no trial book. \
+             Attach one with `LifecycleLedger::with_trial_book` — opened on a durable store with \
+             `TrialBook::open` — open the family with `TrialBook::open_family` and enrol \
+             {strategy} with `TrialBook::enrol`; an unknown count is not zero"
+        ))
+    })?;
+    let account = book.charge(strategy, holdout.trials, now)?;
+    Ok(Cow::Owned(evidence.clone().with_trial_account(account)))
 }

@@ -4,7 +4,7 @@
 //! be fast, and anything fast enough to matter cannot wait for a person. The
 //! triggers here run on live observations and push a strategy down themselves.
 //!
-//! Five things end a strategy's run at its current rung, and none of them is a
+//! Six things end a strategy's run at its current rung, and none of them is a
 //! judgement call:
 //!
 //! * **Performance decay** against the pilot baseline. Measured with
@@ -24,6 +24,11 @@
 //!   [`CapitalEnvelope::admit`] refuses once expiry passes — and the central
 //!   plane's record has to agree, or an operator reads a stage that no longer
 //!   describes anything.
+//! * **Live performance outside the holdout band** — the Phase 3 gate's own
+//!   criterion, judged by [`LifecycleLedger::band_verdict`] against the band
+//!   the holdout admission carries. Distinct from decay: decay compares live
+//!   to the pilot, the band compares live to the validation the whole walk
+//!   rests on, and it is two-sided.
 //!
 //! Every trigger demotes to a rung that holds no capital, except performance
 //! decay, which steps down one rung. The reasoning is in
@@ -144,6 +149,14 @@ pub enum DemotionTrigger {
     ModelReviewOverdue { model: String, reason: String },
     /// The grant the cell is trading under has run out.
     CapitalEnvelopeExpired { expired_at: Timestamp },
+    /// Live performance has left the band the holdout validation defined,
+    /// in either direction.
+    OutsideHoldoutBand {
+        live_sharpe: f64,
+        lower: f64,
+        upper: f64,
+        observations: usize,
+    },
 }
 
 impl DemotionTrigger {
@@ -176,6 +189,15 @@ impl DemotionTrigger {
                 "the capital envelope expired at {}",
                 expired_at.to_rfc3339()
             ),
+            Self::OutsideHoldoutBand {
+                live_sharpe,
+                lower,
+                upper,
+                observations,
+            } => format!(
+                "live Sharpe {live_sharpe:.2} over {observations} observation(s) is outside \
+                 the holdout band [{lower:.2}, {upper:.2}]"
+            ),
         }
     }
 
@@ -187,6 +209,7 @@ impl DemotionTrigger {
             Self::KillConditionBreached { .. } => "kill_condition_breached",
             Self::ModelReviewOverdue { .. } => "model_review_overdue",
             Self::CapitalEnvelopeExpired { .. } => "capital_envelope_expired",
+            Self::OutsideHoldoutBand { .. } => "outside_holdout_band",
         }
     }
 
@@ -330,6 +353,13 @@ impl DemotionMonitor {
 
     /// Evaluate the triggers and act on them.
     ///
+    /// Adds the holdout-band trigger to [`Self::triggers`], which cannot see
+    /// the ledger the band lives in, and applies the same observation floor
+    /// to it. A capital-holding strategy with no band on record stops the
+    /// monitor with the ledger's refusal rather than being judged against
+    /// nothing; below capital there is no live performance to judge, and the
+    /// absence is ignored.
+    ///
     /// Demotes to the lowest rung any trigger asks for, in one move, so the
     /// ledger records one demotion with every reason rather than a cascade
     /// that is harder to read back. Returns the triggers and the demotion, or
@@ -343,12 +373,29 @@ impl DemotionMonitor {
         models: Option<&ModelRegistry>,
         now: Timestamp,
     ) -> Result<(Vec<DemotionTrigger>, Option<Promotion>)> {
-        let triggers = self.triggers(baseline, observation, models, now);
+        let mut triggers = self.triggers(baseline, observation, models, now);
+        let current = ledger.stage_of(&baseline.strategy);
+
+        if observation.returns.len() >= self.policy.minimum_live_observations {
+            match ledger.band_verdict(&baseline.strategy, &observation.returns) {
+                Ok(verdict) if !verdict.inside => {
+                    triggers.push(DemotionTrigger::OutsideHoldoutBand {
+                        live_sharpe: verdict.live,
+                        lower: verdict.lower,
+                        upper: verdict.upper,
+                        observations: verdict.observations,
+                    });
+                }
+                Ok(_) => {}
+                Err(error) if current.holds_capital() => return Err(error),
+                Err(_) => {}
+            }
+        }
+
         if triggers.is_empty() {
             return Ok((triggers, None));
         }
 
-        let current = ledger.stage_of(&baseline.strategy);
         let Some(target) = triggers
             .iter()
             .map(|trigger| trigger.demote_to(current))

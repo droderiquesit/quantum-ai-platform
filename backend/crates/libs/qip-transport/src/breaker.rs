@@ -526,11 +526,6 @@ impl CircuitBreaker {
         self.stats
     }
 
-    /// How many circuits are held. Never more than `max_peers`.
-    pub fn tracked_peers(&self) -> usize {
-        self.circuits.len()
-    }
-
     /// This peer's state, without changing anything.
     ///
     /// Reports [`BreakerState::Open`] for a circuit whose cooldown has expired

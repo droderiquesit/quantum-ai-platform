@@ -9,10 +9,7 @@ repository.workspace = true
 
 [dependencies]
 serde.workspace = true
-serde_json.workspace = true
 qip-core.workspace = true
-qip-numerics.workspace = true
-qip-financial.workspace = true
 qip-market.workspace = true
 qip-contracts.workspace = true
 

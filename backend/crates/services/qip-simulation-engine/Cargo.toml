@@ -12,12 +12,10 @@ serde.workspace = true
 serde_json.workspace = true
 qip-core.workspace = true
 qip-numerics.workspace = true
-qip-events.workspace = true
 qip-financial.workspace = true
 qip-market.workspace = true
 qip-portfolio.workspace = true
 qip-risk.workspace = true
-qip-quant.workspace = true
 # The harness evaluates a compiled, grammar-written strategy against bar
 # history — the seam that lets the evolution brain score what it generates.
 # An edge library, so the dependency runs the permitted direction.

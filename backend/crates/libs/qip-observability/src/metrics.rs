@@ -224,12 +224,7 @@ impl Snapshot {
             let label_text = if series.labels.is_empty() {
                 String::new()
             } else {
-                let parts: Vec<String> = series
-                    .labels
-                    .iter()
-                    .map(|(k, v)| format!("{k}=\"{}\"", v.replace('"', "\\\"")))
-                    .collect();
-                format!("{{{}}}", parts.join(","))
+                format!("{{{}}}", render_labels(&series.labels))
             };
             match &series.value {
                 MetricValue::Counter(v) => {
@@ -244,14 +239,10 @@ impl Snapshot {
                         cumulative += h.counts[i];
                         let mut bucket_labels = series.labels.clone();
                         bucket_labels.insert("le".into(), bound.to_string());
-                        let parts: Vec<String> = bucket_labels
-                            .iter()
-                            .map(|(k, v)| format!("{k}=\"{v}\""))
-                            .collect();
                         out.push_str(&format!(
                             "{}_bucket{{{}}} {cumulative}\n",
                             series.name,
-                            parts.join(",")
+                            render_labels(&bucket_labels)
                         ));
                     }
                     out.push_str(&format!("{}_sum{label_text} {}\n", series.name, h.sum));
@@ -417,6 +408,43 @@ impl Metrics {
     }
 }
 
+/// One label set as exposition text, `k="v",k2="v2"`, every value escaped.
+///
+/// Both places that print labels — the plain sample line and the histogram
+/// `_bucket` lines — go through here, because they used to be two separate
+/// `format!` calls and the second escaped nothing at all.
+fn render_labels(labels: &Labels) -> String {
+    let parts: Vec<String> = labels
+        .iter()
+        .map(|(k, v)| format!("{k}=\"{}\"", escape_label_value(v)))
+        .collect();
+    parts.join(",")
+}
+
+/// The Prometheus text-format escaping for a label value: `\` → `\\`,
+/// `"` → `\"`, newline → `\n`.
+///
+/// Label values are not all literals. `cell` and `region` on the edge series
+/// are the process's configuration strings as given, and `venue` is whatever
+/// the venue list said — the same ConfigMap an operator with `kubectl edit`
+/// can rewrite, which is the actor the composition roots' start-up refusal
+/// exists to catch. This used to escape only `"`, and the bucket lines escaped
+/// nothing. A cell id of `eu-1"} 1\nqip_edge_halted{cell="eu-1"} 0\n#` then
+/// closed the label set early and forged a `qip_edge_halted … 0` line for a
+/// halted cell on every scrape; a trailing `\` broke the quoting so the
+/// collector rejected the target whole and the cell disappeared from every
+/// chart. Escaping at the exposition means the export is well-formed whatever
+/// upstream passed, rather than only when every caller remembered to validate.
+///
+/// The backslash goes first: doubling it after the other two would double the
+/// backslashes those two just introduced.
+fn escape_label_value(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+}
+
 fn series_key(name: &str, labels: &Labels) -> String {
     let parts: Vec<String> = labels.iter().map(|(k, v)| format!("{k}={v}")).collect();
     format!("{name}|{}", parts.join(","))
@@ -532,9 +560,6 @@ pub mod names {
     ///     "resyncs that found capital holds exceeding equity, by reason",
     /// );
     /// ```
-    ///
-    /// Until that lands the series exports with an empty `# HELP`, which is
-    /// valid exposition and unreadable documentation.
     pub const RESERVATION_SHORTFALL: &str = "qip_reservation_shortfall";
 
     /// The four names the Cloud Monitoring alert policies in
@@ -549,8 +574,159 @@ pub mod names {
     /// name in common. Renaming any one of these breaks an alert policy that
     /// cannot say why it broke, so change these and the Terraform together or
     /// not at all.
+    /// The edge plane. Every name below is recorded by `qip-edge`'s `Cell`
+    /// into a registry the cell is *given*, and served by `qip-edge-node` at
+    /// `/metrics`.
+    ///
+    /// They are spelled here rather than at the recording sites for the reason
+    /// [`RESERVATION_SHORTFALL`] sets out: a name only the call site knows is
+    /// a name a dashboard query and this module can each spell differently
+    /// without anything noticing. Before these existed the cell knew its own
+    /// halt state, its policy freshness and its netting ratio, and no operator
+    /// could chart any of them — the facts were computed and then formatted
+    /// into a journal string.
+    ///
+    /// **Every label on these series is bounded by something fixed at
+    /// deployment or by an enum.** `cell` and `region` are one value each per
+    /// process; `venue` is bounded by the cell's configured venue set; `gate`
+    /// is bounded by the string literals `Cell::refuse` is called with; and
+    /// `capability`, `source`, `kind` and `outcome` are each bounded by an
+    /// enum. There is deliberately no label for an instrument, a strategy or
+    /// an order id: those are unbounded, and a series per order id is how a
+    /// metric registry becomes a memory leak.
+    pub const EDGE_WORK_PASSES: &str = "qip_edge_work_passes_total";
+    /// Whether the cell is stopped, by `source`. Two halts with two different
+    /// release disciplines, so two series: a single boolean would tell an
+    /// operator that the cell is stopped without saying which door to knock
+    /// on.
+    pub const EDGE_HALTED: &str = "qip_edge_halted";
+    pub const EDGE_REFUSALS: &str = "qip_edge_refusals_total";
+    pub const EDGE_SIGNALS_RAISED: &str = "qip_edge_signals_raised_total";
+    /// How current each §6.2 capability is: `0` fresh, `1` stale, `2`
+    /// unavailable. A numeric severity rather than one series per state so the
+    /// chart an operator wants — "is anything degraded" — is a `max`.
+    pub const EDGE_CAPABILITY_FRESHNESS: &str = "qip_edge_capability_freshness";
+    /// The degradation table's sizing multiplier currently in force. A cell
+    /// sizing at the 0.375 floor is an operator-visible fact.
+    pub const EDGE_SIZING_MULTIPLIER: &str = "qip_edge_sizing_multiplier";
+    /// The sequence of the policy payload this cell has applied, for
+    /// correlation against what the central plane believes it published.
+    pub const EDGE_POLICY_SEQUENCE: &str = "qip_edge_policy_sequence";
+    /// Gross intent over net order volume (blueprint §27) — the best single
+    /// summary of whether the strategy set has genuine diversity. A histogram
+    /// rather than a gauge because it is a per-pass quantity and a gauge would
+    /// report whichever pass happened to be last before the scrape.
+    pub const EDGE_NETTING_RATIO: &str = "qip_edge_netting_ratio";
+    pub const EDGE_ORDERS_PLACED: &str = "qip_edge_orders_placed_total";
+    pub const EDGE_INTENTS_CANCELLED: &str = "qip_edge_intents_cancelled_total";
+    pub const EDGE_INTERNAL_CROSSES: &str = "qip_edge_internal_crosses_total";
+    pub const EDGE_RECONCILIATION_BREAKS: &str = "qip_edge_reconciliation_breaks_total";
+    /// The cell's link to the central plane, recorded by the node from the
+    /// same counters its health body publishes. Charting them is what turns
+    /// "this cell stopped talking to the centre" from a number that stopped
+    /// increasing in a JSON blob nothing collects into a series.
+    pub const EDGE_MESH_DELTAS: &str = "qip_edge_mesh_deltas_total";
+    pub const EDGE_MESH_GRANTS: &str = "qip_edge_mesh_grants_total";
+    pub const EDGE_MESH_POLICY_FRAMES: &str = "qip_edge_mesh_policy_frames_total";
+    /// The uplink circuit to the centre, by `state`: `1` on the state it is
+    /// in and `0` on the others.
+    pub const EDGE_MESH_CIRCUIT: &str = "qip_edge_mesh_circuit";
+
     pub const KILL_SWITCH_TRIPPED: &str = "qip_kill_switch_tripped";
     pub const LIVE_FILLS: &str = "qip_live_fills_total";
     pub const LIMIT_BREACHES: &str = "qip_limit_breaches";
     pub const PERMISSION_DENIALS: &str = "qip_permission_denials_total";
+
+    /// Reconciliation breaks the central plane absorbed from a cell report,
+    /// by `direction`: `cell_over_venue`, `venue_over_cell`, or `detail_only`
+    /// where the quantities agree and the break is in the detail. The
+    /// instrument and the cell are deliberately not labels — one is free
+    /// text and the other is a fleet an operator can grow — so the series
+    /// stays bounded by construction. Distinct from
+    /// [`EDGE_RECONCILIATION_BREAKS`], which is what the cell itself found;
+    /// this is what the centre acted on, and the two differ whenever a report
+    /// was lost in transit.
+    pub const CENTRAL_RECONCILIATION_BREAKS: &str = "qip_central_reconciliation_breaks_total";
+    /// Scoped halts the central plane placed on a cell, by `cause`. The
+    /// highest-consequence thing the plane does: a cell that stops trading
+    /// because its book was wrong used to trip the kill switch and raise an
+    /// incident without writing a series, so the one event an operator most
+    /// needed to see was the one no chart could show.
+    pub const CENTRAL_CELL_HALTS: &str = "qip_central_cell_halts_total";
+
+    /// Strategy moves recorded by the lifecycle ledger, by the rung left
+    /// (`from`) and the rung entered (`to`). Promotions and demotions are two
+    /// series rather than one with a direction label, because an alert on
+    /// demotions is the one that matters and should not have to filter. The
+    /// strategy is not a label: rungs are seven and closed, strategies are
+    /// however many the foundry proposes. A strategy demoted for decayed
+    /// performance used to reach the ledger and no series, which made a
+    /// capital-affecting action invisible to every operator.
+    pub const STRATEGY_PROMOTIONS: &str = "qip_strategy_promotions_total";
+    pub const STRATEGY_DEMOTIONS: &str = "qip_strategy_demotions_total";
+
+    // The learning, counterfactual, attribution, bridge and universe series the
+    // kernel records. They were declared beside the kernel's call sites for one
+    // change and have moved here so the acceptance test that binds every
+    // alert-policy descriptor to a registered name can see them: a name only
+    // the call site knows is a name a dashboard query and the registry can
+    // each spell differently without anything noticing. Labels on every
+    // series below are bounded by an enum or a source-file literal, never by
+    // an instrument, a hypothesis id or an order id.
+    /// The Brier score over the platform's window of resolved theses — when it
+    /// said seventy percent, did it happen seventy percent. A gauge, because it
+    /// is a property of the window as it stands rather than a rate of anything.
+    pub const BELIEF_BRIER_SCORE: &str = "qip_belief_brier_score";
+    /// The factor future confidences would be scaled by to match outcomes. One is
+    /// calibrated; below one the platform is overconfident.
+    pub const BELIEF_CONFIDENCE_ADJUSTMENT: &str = "qip_belief_confidence_adjustment";
+    /// How many informative evaluations the two gauges above rest on. A Brier
+    /// score from three theses is not a Brier score, and this is what says so.
+    pub const BELIEF_EVALUATIONS: &str = "qip_belief_evaluations";
+    /// Theses scored against what was published, by `verdict` — the learning
+    /// engine's six-arm enum, so the label set is closed.
+    pub const THESES_EVALUATED: &str = "qip_theses_evaluated_total";
+
+    /// Declined paths priced by the twin, by the `gate` that declined them — the
+    /// same names `qip_orders_refused_total` carries, from the same function.
+    pub const COUNTERFACTUALS_SCORED: &str = "qip_counterfactuals_scored_total";
+    /// Declined paths that, priced, would have beaten standing aside, by `gate`.
+    /// Blueprint §12.3: a rule that vetoes mostly profitable paths is too tight,
+    /// and this is the numerator of that ratio.
+    pub const COUNTERFACTUAL_REGRETS: &str = "qip_counterfactual_regrets_total";
+    /// Declined paths that were due for pricing and left for a later cycle because
+    /// the per-cycle cap was reached. Counted rather than silently truncated.
+    pub const COUNTERFACTUALS_DEFERRED: &str = "qip_counterfactuals_deferred_total";
+    /// Declined paths that will never be priced, by `reason` — the working set was
+    /// full, or the twin refused the evaluation.
+    pub const COUNTERFACTUALS_UNSCORED: &str = "qip_counterfactuals_unscored_total";
+
+    /// Cell fills the central plane attributed to strategies, by `basis`: the
+    /// contributor vector the cell shipped, or — for a delta written before the
+    /// vector existed — the largest contributor the older wire named.
+    pub const CENTRAL_FILLS_ATTRIBUTED: &str = "qip_central_fills_attributed_total";
+    /// Internal crosses settled to both contributors' books at the mid.
+    pub const CENTRAL_CROSSES_SETTLED: &str = "qip_central_crosses_settled_total";
+    /// Orders and crosses the centre refused to settle, by `kind`. A cross naming
+    /// two buyers carries no per-strategy size, and splitting it evenly would be a
+    /// guess wearing the ledger's clothes.
+    pub const CENTRAL_SETTLEMENTS_REFUSED: &str = "qip_central_settlements_refused_total";
+    /// Attributions whose decomposition did not close. Must stay at zero; a
+    /// non-zero here is unexplained P&L on the strategy books.
+    pub const CENTRAL_ATTRIBUTION_FAILURES: &str = "qip_central_attribution_failures_total";
+
+    /// Bridge transfers the platform failed on its own evidence, by `failure` —
+    /// the bridge ledger's five-arm enum. Today only `source_reorg` is recorded,
+    /// at the instant a reorganisation withdraws the block a transfer's deposit
+    /// sat in; a transfer that kept waiting for finality on a block that no
+    /// longer exists is value the destination could still credit against nothing.
+    pub const BRIDGE_TRANSFERS_FAILED: &str = "qip_bridge_transfers_failed_total";
+
+    /// Instruments in the assembled universe that are unfit to drive a capital
+    /// decision — a licensing class that permits no production decision, a
+    /// non-positive price, incoherent risk characteristics, or data quality
+    /// below the floor. A gauge written once at assembly: the universe does not
+    /// change under a running platform, and a degraded one should be visible
+    /// before it produces a bad trade rather than after.
+    pub const UNIVERSE_NOT_DECISION_GRADE: &str = "qip_universe_not_decision_grade";
 }

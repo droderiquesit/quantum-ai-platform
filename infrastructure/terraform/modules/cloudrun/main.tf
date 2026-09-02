@@ -2,16 +2,10 @@
 #
 # ADR 0022 makes the Algorik blueprint the architecture of record and its
 # §41.6 names roughly seventy Rust binaries on Cloud Run and Cloud Run Jobs,
-# every one of them scaling to zero, across twelve planes. ADR 0020 fixes the
-# order that migration takes and forbids removing anything before the cutover
-# evidence exists. This module is the target shape, built alongside the GKE
-# stack rather than instead of it.
-#
-# **It is not wired into the root module, and that is deliberate.** An unwired
-# module changes no plan, which is what makes it reviewable on its own merits
-# rather than as part of a change that also moves traffic. NOT-WIRED.md says
-# exactly what a later pass has to do, and what evidence ADR 0020 requires
-# before that pass is allowed to happen.
+# every one of them scaling to zero, across twelve planes. ADR 0024 is the
+# owner's instruction to provision that runtime and retire the GKE one, and
+# `infrastructure/terraform/catalogue.tf` is where this module is instantiated,
+# once per workload the platform deploys.
 #
 # Seventy services are seventy chances to get one of them wrong, and the wrong
 # one is the one nobody reads. So the properties that must hold for all of
@@ -22,15 +16,31 @@
 #   * secrets as files, never as environment values;
 #   * the image pinned by digest, with Binary Authorization evaluating the
 #     project policy on every deployment;
-#   * every packet out through the VPC, so the firewall rules and flow logs
-#     are the ones the rest of the platform already has;
+#   * every packet out through the VPC, carrying the trust zone's network
+#     tag, so the zone's firewall rules and flow logs are the ones that apply;
 #   * no ingress from the internet to the workload's own URL, under any input
 #     this module accepts;
-#   * a floor of zero instances unless somebody wrote down why not.
+#   * a floor of zero instances unless somebody wrote down why not;
+#   * the egress proxy, where a workload has one, as a sidecar on loopback
+#     that the workload container waits for — never as an address something
+#     else could reach.
 #
 # What this module is not: the execution node. §41.4's one permitted VM runs
 # bare under systemd on a C3, is always on, and is out of scope here — the
 # `plane` variable refuses to name it for that reason.
+#
+# # Who owns the image
+#
+# Terraform creates the service at the digest the environment's tfvars
+# record, and `.github/workflows/deploy.yml` moves it with `gcloud run
+# services update` after it has built, scanned, signed and attested a new
+# one. The `ignore_changes` on the workload container's image below is what
+# keeps the two from fighting: without it, every apply after a deploy would
+# roll the service back to the digest in the tfvars. The pipeline writes the
+# digest it deployed back into `infrastructure/environments/<env>/images.tfvars`
+# in the same run, so the committed record and the running revision agree
+# again as soon as that commit lands — and `gcloud run services describe`,
+# not the tfvars, is the answer to "what is running" in the window between.
 
 terraform {
   required_providers {
@@ -88,6 +98,18 @@ locals {
       "qip-workload"      = var.name
     },
   )
+
+  # The egress proxy sidecar, when this workload carries one.
+  #
+  # The sidecar's name is what the workload container's `depends_on` names,
+  # so a workload with a proxy is not started until the proxy's health
+  # listener answers. Without that ordering the first outbound call after a
+  # cold start hits a sidecar that is not listening yet, and the adapter
+  # reports a peer that accepted nothing — the least diagnosable error the
+  # client can produce.
+  has_egress_sidecar = var.egress_sidecar != null
+  sidecar_name       = "qip-egress"
+  sidecar_mount      = "/etc/envoy"
 }
 
 # --- the workload's own identity --------------------------------------------
@@ -212,6 +234,22 @@ resource "google_service_account" "workload" {
   }
 }
 
+# Who may deploy a revision as this identity.
+#
+# Cloud Run refuses to create a revision unless the caller may act as the
+# service's account, so the pipeline needs `serviceAccountUser` on this one
+# account — and on this one account only. Granted here, per workload, rather
+# than project-wide in modules/cicd: a project-wide `serviceAccountUser` is
+# the right to act as every identity in the project, the infra account
+# included.
+resource "google_service_account_iam_member" "deployer" {
+  count = var.deployer_service_account == null ? 0 : 1
+
+  service_account_id = google_service_account.workload.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${var.deployer_service_account}"
+}
+
 # The minimum every workload needs beyond its own secrets, and no more.
 #
 # The same two grants `modules/secrets` gives the GKE deployables, for the same
@@ -247,6 +285,24 @@ resource "google_secret_manager_secret_iam_member" "mounted" {
   secret_id = each.value.secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.workload.email}"
+}
+
+# Read the proxy's bootstrap, when this workload carries the proxy.
+#
+# `objectViewer` on the one bucket that holds the allowlist. It is granted
+# here rather than in `modules/egress-proxy` because it is the sidecar's own
+# configuration — a grant for a file this workload cannot start without — and
+# because the alternative is a list of reader identities passed back into that
+# module from the outputs of this one, which is the shape that turns into a
+# module cycle the day either side gains a `depends_on`. The role carries no
+# write and no delete: the allowlist is written by Terraform and by nothing
+# that runs.
+resource "google_storage_bucket_iam_member" "egress_bootstrap" {
+  count = local.has_egress_sidecar ? 1 : 0
+
+  bucket = var.egress_sidecar.bootstrap_bucket
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${google_service_account.workload.email}"
 }
 
 # --- the service ------------------------------------------------------------
@@ -292,6 +348,11 @@ resource "google_cloud_run_v2_service" "workload" {
       network_interfaces {
         network    = var.egress_network
         subnetwork = var.egress_subnet
+        # The trust zone's tag. Every firewall rule `modules/trust-zones`
+        # writes targets a tag, and a Cloud Run instance whose interface
+        # carries none is an instance those rules never see — which reads as
+        # a zone with default deny and is a workload outside every zone.
+        tags = var.network_tags
       }
     }
 
@@ -305,8 +366,15 @@ resource "google_cloud_run_v2_service" "workload" {
     execution_environment            = "EXECUTION_ENVIRONMENT_GEN2"
     encryption_key                   = var.encryption_key
 
+    # The workload. First, because the `ignore_changes` at the foot of this
+    # resource names it by index: the pipeline owns this container's image
+    # and Terraform owns everything else about it.
     containers {
+      name  = var.name
       image = var.image_digest
+
+      # Not started until the proxy answers, where there is one.
+      depends_on = local.has_egress_sidecar ? [local.sidecar_name] : null
 
       ports {
         container_port = var.container_port
@@ -373,6 +441,65 @@ resource "google_cloud_run_v2_service" "workload" {
       }
     }
 
+    # The egress proxy, beside the workload and reachable from nowhere else.
+    #
+    # An Envoy sidecar sharing the instance's network namespace: the workload
+    # dials `http://127.0.0.1:910x` and the proxy originates TLS to the one
+    # host that listener names. It carries no secret volume, no environment,
+    # and no identity of its own — it runs as the service's account because
+    # Cloud Run gives an instance one identity, and it never calls a Google
+    # API on that account's behalf. The bootstrap is the one committed file
+    # `modules/egress-proxy` published, mounted read-only.
+    dynamic "containers" {
+      for_each = local.has_egress_sidecar ? [var.egress_sidecar] : []
+
+      content {
+        name  = local.sidecar_name
+        image = containers.value.image
+
+        args = [
+          "-c",
+          "${local.sidecar_mount}/${containers.value.bootstrap_object}",
+          "--service-cluster",
+          local.sidecar_name,
+          # Warn, not info. An info-level Envoy logs a line per connection,
+          # and the access log in the bootstrap already carries what an
+          # operator needs without a path or a header — which is where a
+          # query string with an API key in it would otherwise land.
+          "--log-level",
+          "warn",
+        ]
+
+        resources {
+          limits = {
+            cpu    = "1"
+            memory = "256Mi"
+          }
+        }
+
+        volume_mounts {
+          name       = "egress-bootstrap"
+          mount_path = local.sidecar_mount
+        }
+
+        # The health listener, on loopback. The workload container's
+        # `depends_on` waits on this probe passing, which is what turns
+        # "the proxy is a sidecar" into "the proxy is up before the first
+        # outbound call".
+        startup_probe {
+          initial_delay_seconds = 1
+          period_seconds        = 2
+          timeout_seconds       = 2
+          failure_threshold     = 15
+
+          http_get {
+            path = "/healthz"
+            port = containers.value.health_port
+          }
+        }
+      }
+    }
+
     # Secrets as files. The value never enters the environment, and the
     # environment carries the path instead.
     dynamic "volumes" {
@@ -396,6 +523,22 @@ resource "google_cloud_run_v2_service" "workload" {
         }
       }
     }
+
+    # The proxy's bootstrap, from the bucket `modules/egress-proxy` publishes
+    # it to. Read-only: the allowlist is decided in a diff and written by
+    # Terraform, and nothing that runs may rewrite it.
+    dynamic "volumes" {
+      for_each = local.has_egress_sidecar ? [var.egress_sidecar] : []
+
+      content {
+        name = "egress-bootstrap"
+
+        gcs {
+          bucket    = volumes.value.bootstrap_bucket
+          read_only = true
+        }
+      }
+    }
   }
 
   # One revision serving, and it is the one that was just deployed. A split
@@ -404,6 +547,15 @@ resource "google_cloud_run_v2_service" "workload" {
   traffic {
     type    = "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST"
     percent = 100
+  }
+
+  # The workload container's image belongs to the pipeline. See the header:
+  # `deploy.yml` moves it after signing and attesting a new digest, and an
+  # apply that reasserted the tfvars digest would roll every deploy back.
+  # Only the image, and only the workload's — the sidecar's image is this
+  # configuration's, and everything else about the revision is too.
+  lifecycle {
+    ignore_changes = [template[0].containers[0].image]
   }
 }
 
@@ -448,10 +600,12 @@ resource "google_cloud_run_v2_job" "workload" {
         network_interfaces {
           network    = var.egress_network
           subnetwork = var.egress_subnet
+          tags       = var.network_tags
         }
       }
 
       containers {
+        name  = var.name
         image = var.image_digest
 
         resources {

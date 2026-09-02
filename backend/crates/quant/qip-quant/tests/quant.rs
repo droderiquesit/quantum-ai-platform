@@ -556,8 +556,9 @@ fn a_restricted_instrument_is_never_targeted() {
 #[test]
 fn an_unpriced_instrument_is_not_tradable() {
     let mut universe = Universe::new();
-    universe.insert(equity("AAA", "100")).unwrap();
-    let prices = BTreeMap::new();
+    let instrument = equity("AAA", "100");
+    let object_id = instrument.object_id.as_str().to_string();
+    universe.insert(instrument).unwrap();
     let signals = SignalSet::new();
     let portfolio = Portfolio::new(
         PortfolioId::from_string("PRT0000000000000000000001"),
@@ -567,6 +568,29 @@ fn an_unpriced_instrument_is_not_tradable() {
         now(),
     );
     let features = BTreeMap::new();
+
+    // Premise: with a price, the same instrument in the same universe is
+    // tradable. An empty answer below would otherwise also be what an empty
+    // universe, a restricted listing or an expired one returns, and the test
+    // would pass for every reason but the one it names.
+    let mut priced = BTreeMap::new();
+    priced.insert(object_id.clone(), dec!("100"));
+    let with_price = StrategyContext {
+        as_of: now(),
+        universe: &universe,
+        portfolio: &portfolio,
+        prices: &priced,
+        signals: &signals,
+        features: &features,
+    };
+    let tradable: Vec<String> = with_price
+        .tradable()
+        .iter()
+        .map(|object| object.object_id.as_str().to_string())
+        .collect();
+    assert_eq!(tradable, vec![object_id], "priced, it is tradable");
+
+    let prices = BTreeMap::new();
     let strategy_context = StrategyContext {
         as_of: now(),
         universe: &universe,

@@ -30,9 +30,12 @@ use qip_lifecycle::demotion::{
 };
 use qip_lifecycle::evidence::{KillCondition, StrategyEvidence};
 use qip_lifecycle::ledger::{LifecycleLedger, attempt_promotion};
+use qip_lifecycle::trials::{StrategyFamily, TrialBook};
+use qip_observability::metrics::Metrics;
 use qip_strategy::compile::CompiledStrategy;
 use qip_strategy::program::Program;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// A strategy the centre is considering, with everything a gate will ask for.
 ///
@@ -45,6 +48,12 @@ use std::collections::BTreeMap;
 pub struct StrategyCandidate {
     compiled: CompiledStrategy,
     program: Program,
+    /// The sweep this candidate came out of — the unit the lifetime trial
+    /// count is kept against. Required at construction rather than attached
+    /// later, because the holdout gate refuses a strategy no family has
+    /// enrolled, and a candidate that could exist without one would be a
+    /// candidate that can never be promoted and does not say so until then.
+    family: StrategyFamily,
     cell: String,
     venue: VenueId,
     evidence: StrategyEvidence,
@@ -64,6 +73,7 @@ impl StrategyCandidate {
     pub fn new(
         compiled: CompiledStrategy,
         program: Program,
+        family: StrategyFamily,
         cell: impl Into<String>,
         venue: VenueId,
         registered_at: Timestamp,
@@ -88,6 +98,7 @@ impl StrategyCandidate {
         Ok(Self {
             compiled,
             program,
+            family,
             cell,
             venue,
             evidence: StrategyEvidence::new(),
@@ -123,6 +134,11 @@ impl StrategyCandidate {
     pub fn with_evidence_artifacts(mut self, references: Vec<String>) -> Self {
         self.evidence_artifacts = references;
         self
+    }
+
+    /// The sweep whose lifetime trial count this candidate is charged to.
+    pub fn family(&self) -> &StrategyFamily {
+        &self.family
     }
 
     pub fn strategy(&self) -> &StrategyId {
@@ -193,7 +209,7 @@ impl StrategyReview {
 }
 
 /// Candidates, their walk up the ladder, and the triggers that push them down.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct StrategyFactory {
     candidates: BTreeMap<StrategyId, StrategyCandidate>,
     ledger: LifecycleLedger,
@@ -201,15 +217,51 @@ pub struct StrategyFactory {
     baselines: BTreeMap<StrategyId, PilotBaseline>,
 }
 
+impl Default for StrategyFactory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StrategyFactory {
+    /// A factory whose ledger charges holdout evaluations to an in-process
+    /// trial book.
+    ///
+    /// `qip-lifecycle` refuses a holdout promotion whose lifetime trial count
+    /// is unknown, and a ledger built by `Default` has no book, so a factory
+    /// built that way could register candidates it could never promote. The
+    /// book here is [`TrialBook::in_memory`]: the kernel composes no
+    /// key-value store — the one the API serves its mesh from lives in the
+    /// composition root — so a durable book cannot be opened from inside this
+    /// constructor. Its lifetime counts are therefore this process's, which
+    /// the book's own documentation names as the per-run accounting the
+    /// blueprint forbids the moment a second process runs. A root holding a
+    /// store hands a durable book in through [`Self::with_trial_book`].
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            candidates: BTreeMap::new(),
+            ledger: LifecycleLedger::new().with_trial_book(TrialBook::in_memory()),
+            monitor: DemotionMonitor::default(),
+            baselines: BTreeMap::new(),
+        }
+    }
+
+    /// Charge holdout evaluations to `book` — the durable one a composition
+    /// root opened on its store — instead of the in-process default.
+    pub fn with_trial_book(mut self, book: TrialBook) -> Self {
+        self.ledger.attach_trial_book(book);
+        self
     }
 
     /// Use a non-default demotion policy.
     pub fn with_demotion_policy(mut self, policy: DemotionPolicy) -> Self {
         self.monitor = DemotionMonitor::new(policy);
         self
+    }
+
+    /// Count every rung the ledger records into `metrics`.
+    pub fn attach_metrics(&mut self, metrics: Arc<Metrics>) {
+        self.ledger.attach_metrics(metrics);
     }
 
     /// Register a candidate.
@@ -226,6 +278,25 @@ impl StrategyFactory {
                  new identity, so its evidence is re-earned rather than inherited"
             )));
         }
+        // Enrolled in its family's trial account at registration, so the
+        // holdout gate finds a lifetime count to deflate by. The family is
+        // opened once — a family reopened at zero is a sweep laundered by
+        // renaming, and the book refuses it — and the enrolment is refused
+        // rather than skipped if the ledger somehow has no book, because a
+        // candidate registered without an account is one the gate will
+        // refuse later with less context than this.
+        let family = candidate.family().clone();
+        let at = candidate.registered_at();
+        let book = self.ledger.trial_book_mut().ok_or_else(|| {
+            Error::denied(format!(
+                "{strategy} cannot be registered: the lifecycle ledger has no trial book to \
+                 enrol it in, so its lifetime trial count would be unknown"
+            ))
+        })?;
+        if book.lifetime_trials(&family).is_none() {
+            book.open_family(&family, at)?;
+        }
+        book.enrol(&strategy, &family, at)?;
         self.candidates.insert(strategy, candidate);
         Ok(())
     }

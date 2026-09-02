@@ -272,22 +272,6 @@ impl Pool {
         to_decimal(raw)
     }
 
-    /// The instrument a taker pays in, on this side.
-    pub fn input_object(&self, taker: BookSide) -> &ObjectId {
-        match taker {
-            BookSide::Ask => &self.quote,
-            BookSide::Bid => &self.base,
-        }
-    }
-
-    /// The instrument a taker receives, on this side.
-    pub fn output_object(&self, taker: BookSide) -> &ObjectId {
-        match taker {
-            BookSide::Ask => &self.base,
-            BookSide::Bid => &self.quote,
-        }
-    }
-
     /// The output for an exact input, fee and price impact included.
     pub fn quote_exact_in(&self, taker: BookSide, amount_in: Decimal) -> Result<SwapQuote> {
         let input = positive_raw(amount_in, "swap input")?;

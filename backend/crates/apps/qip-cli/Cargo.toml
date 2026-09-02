@@ -16,7 +16,6 @@ name = "qip"
 path = "src/main.rs"
 
 [dependencies]
-serde.workspace = true
 serde_json.workspace = true
 qip-core.workspace = true
 qip-events.workspace = true

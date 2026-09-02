@@ -1,11 +1,6 @@
-output "zone_service_accounts" {
-  description = "Each zone's workload identity, keyed by zone. One per zone and never one shared by two."
-  value       = { for name, account in google_service_account.zone : name => account.email }
-}
-
-output "zone_kubernetes_service_accounts" {
-  description = "The Kubernetes service account each zone's workload identity binding names, keyed by zone."
-  value       = { for name, zone in var.zones : name => zone.kubernetes_service_account }
+output "zone_identities" {
+  description = "The service accounts placed in each zone, as the root declared them — the identities every ledger and fabric grant in this module was made to."
+  value       = var.zone_identities
 }
 
 output "zone_subnets" {
@@ -17,10 +12,11 @@ output "zone_network_tags" {
   description = <<-EOT
     The network tag every rule in this module targets, keyed by zone.
 
-    Whoever creates a zone's node pool applies its tag. A firewall rule
-    targeting a tag nothing carries is a rule that does nothing, and it does
-    nothing silently — so this output is the contract between the boundary
-    declared here and the workloads it is supposed to bound.
+    `modules/cloudrun` puts a workload's zone tag on its VPC interface and
+    `modules/execution-node` puts its own on the instance template. A
+    firewall rule targeting a tag nothing carries is a rule that does
+    nothing, and it does nothing silently — so this output is the contract
+    between the boundary declared here and the workloads it bounds.
   EOT
 
   value = local.zone_tag
@@ -30,10 +26,9 @@ output "permitted_paths" {
   description = <<-EOT
     The zone-to-zone paths that exist, as `from->to (mode)`, sorted.
 
-    For the Kubernetes network policy layer to mirror. Two controls rather than
-    one: the firewall bounds the subnet, the network policy bounds the pod, and
-    a policy written from this list cannot drift from the rules that were
-    applied without the drift being visible in a diff.
+    The whole internal adjacency of the deployment in one list, which is the
+    form a review is done on and the form the acceptance suite checks
+    against the sanctioned paths in this module.
   EOT
 
   value = sort([

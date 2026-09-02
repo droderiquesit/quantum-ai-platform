@@ -3,7 +3,6 @@
 use qip_core::error::{Error, Result};
 use qip_core::{Currency, Decimal, ObjectId, PortfolioId, Timestamp};
 use qip_events::{EventBody, Topic};
-use qip_financial::asset_class::{AssetClass, Sector};
 use qip_financial::object::FinancialObject;
 use qip_financial::universe::Universe;
 use serde::{Deserialize, Serialize};
@@ -96,10 +95,6 @@ impl Portfolio {
         self.positions.get(object_id.as_str())
     }
 
-    pub fn position_mut(&mut self, object_id: &ObjectId) -> Option<&mut Position> {
-        self.positions.get_mut(object_id.as_str())
-    }
-
     /// Apply a fill, updating the position and cash.
     ///
     /// Returns the resulting position quantity. Cash moves by exactly the fill
@@ -126,12 +121,6 @@ impl Portfolio {
         self.cumulative_costs += costs;
         self.updated_at = at;
         position.quantity()
-    }
-
-    /// Deposit or withdraw cash.
-    pub fn adjust_cash(&mut self, amount: Decimal, at: Timestamp) {
-        self.cash += amount;
-        self.updated_at = at;
     }
 
     /// Credit a dividend or coupon.
@@ -270,28 +259,6 @@ impl Portfolio {
         }
         let equity = self.value(prices, at).equity;
         equity.to_f64() / self.initial_capital.to_f64() - 1.0
-    }
-
-    /// Positions in a given asset class.
-    pub fn positions_in(&self, universe: &Universe, class: AssetClass) -> Vec<&Position> {
-        self.positions()
-            .filter(|p| {
-                universe
-                    .get(&p.object_id)
-                    .is_some_and(|o| o.asset_class == class)
-            })
-            .collect()
-    }
-
-    /// Positions in a given sector.
-    pub fn positions_in_sector(&self, universe: &Universe, sector: Sector) -> Vec<&Position> {
-        self.positions()
-            .filter(|p| {
-                universe
-                    .get(&p.object_id)
-                    .is_some_and(|o| o.sector == sector)
-            })
-            .collect()
     }
 
     /// Remove flat positions that have no trade history worth keeping.

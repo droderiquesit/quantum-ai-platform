@@ -404,6 +404,12 @@ impl EventBus {
     /// full. Replay is exactly the caller that pushes a long history at once,
     /// so it is the caller that most needs to be told it did not all fit
     /// rather than to discover a short replay afterwards.
+    ///
+    /// Replay runs on a *fresh* bus, whose deduplication window is empty by
+    /// construction. There is deliberately no way to forget the window of a
+    /// bus that is already running: one existed for replay to call, nothing
+    /// called it, and a bus that forgot what it had delivered would, fed its
+    /// own log, run every handler's side effects a second time.
     pub fn publish_raw(&mut self, event: AnyEvent) -> Result<()> {
         if self.queue.len() >= self.max_queue_depth {
             self.publishes_refused = self.publishes_refused.saturating_add(1);
@@ -562,10 +568,6 @@ impl EventBus {
         self.failures_dropped
     }
 
-    pub fn clear_failures(&mut self) {
-        self.failures.clear();
-    }
-
     pub fn duplicates_suppressed(&self) -> u64 {
         self.duplicates_suppressed
     }
@@ -584,12 +586,5 @@ impl EventBus {
     /// Events discarded because a drain hit its ceiling with work still queued.
     pub const fn events_abandoned(&self) -> u64 {
         self.events_abandoned
-    }
-
-    /// Forget the deduplication set. Replay calls this so a replayed log is not
-    /// mistaken for a duplicate of the original run.
-    pub fn reset_deduplication(&mut self) {
-        self.seen.clear();
-        self.seen_order.clear();
     }
 }

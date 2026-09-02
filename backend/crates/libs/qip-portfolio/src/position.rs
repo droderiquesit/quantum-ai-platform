@@ -74,11 +74,6 @@ impl Position {
         self
     }
 
-    pub fn with_lot_method(mut self, method: LotMethod) -> Self {
-        self.lot_method = method;
-        self
-    }
-
     /// Net signed quantity across all lots.
     pub fn quantity(&self) -> Decimal {
         self.lots.iter().map(|l| l.quantity).sum()

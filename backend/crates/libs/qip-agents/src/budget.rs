@@ -63,16 +63,6 @@ impl Budget {
         }
     }
 
-    pub fn with_wall_time(mut self, wall_time: Duration) -> Self {
-        self.wall_time = wall_time;
-        self
-    }
-
-    pub fn with_language_model_calls(mut self, calls: u32) -> Self {
-        self.language_model_calls = calls;
-        self
-    }
-
     pub fn with_tokens(mut self, tokens: u32) -> Self {
         self.tokens = tokens;
         self

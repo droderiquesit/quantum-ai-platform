@@ -693,3 +693,139 @@ fn every_shipped_limit_explains_why_it_exists() {
         );
     }
 }
+
+// --- the tail limits --------------------------------------------------------
+//
+// `.claude/rules/domains/risk-and-execution.md` named `MaxExpectedShortfall`
+// as the template of a control that cannot fire: `RiskState::expected_shortfall`
+// was always empty, so the limit took its `None` arm on every book. These
+// fixtures pin the lib-side derivation that fills the maps from a return
+// series, keyed the way the limit reads them.
+
+/// Mostly small gains, then a run of losses far outside them: the shape
+/// expected shortfall exists to price and a volatility figure reports as
+/// merely elevated.
+fn returns_with_a_tail() -> Vec<f64> {
+    vec![
+        0.004, 0.005, 0.003, 0.003, -0.004, 0.005, 0.004, -0.002, 0.005, -0.09, -0.11, -0.13,
+    ]
+}
+
+fn quiet_returns() -> Vec<f64> {
+    (0..12)
+        .map(|step| 0.001 + f64::from(step) * 0.0001)
+        .collect()
+}
+
+/// The shared fixture with its tail maps emptied, so that a figure found
+/// under a key can only have been put there by the derivation under test.
+/// The first draft of these fixtures inherited the seeded `0.05` and its
+/// "computed, not skipped" premise held with the derivation deleted.
+fn state_with_no_tail_figures() -> RiskState {
+    let mut state = state();
+    state.expected_shortfall.clear();
+    state.value_at_risk.clear();
+    state
+}
+
+#[test]
+fn a_book_whose_expected_shortfall_breaches_the_limit_is_refused() {
+    let limits = LimitSet::conservative_default();
+    let state = state_with_no_tail_figures().with_tail_risk(&limits, &returns_with_a_tail());
+
+    // Premise: the figure exists under the key the default limit reads. If
+    // the map is empty the breach assertion measures nothing — which is the
+    // state this fixture exists to end.
+    let shortfall = state
+        .expected_shortfall
+        .get("0.97")
+        .copied()
+        .unwrap_or_else(|| {
+            panic!(
+                "no expected shortfall under the default limit's key; the map holds {:?}",
+                state.expected_shortfall.keys().collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        shortfall > 0.0,
+        "a book with a tail has a shortfall of {shortfall}"
+    );
+    // And it is expected shortfall, not value at risk under another name: the
+    // mean beyond the threshold is strictly worse than the threshold on this
+    // series. A mutation swapping the two metrics passed until this held.
+    let var = metrics::historical_var(&returns_with_a_tail(), 0.975);
+    assert!(
+        shortfall > var,
+        "shortfall {shortfall} is not beyond value at risk {var}"
+    );
+
+    let check = limits.check(&state);
+    let breach = check
+        .blocking()
+        .into_iter()
+        .find(|b| b.limit_kind == "max_expected_shortfall")
+        .unwrap_or_else(|| panic!("expected shortfall did not bind: {}", check.reason()));
+    assert!(breach.observed > breach.bound);
+    assert!(check.is_blocked());
+}
+
+#[test]
+fn a_book_whose_expected_shortfall_sits_below_the_limit_passes() {
+    let limits = LimitSet::conservative_default();
+    let state = state_with_no_tail_figures().with_tail_risk(&limits, &quiet_returns());
+
+    // Premise: computed, not skipped. A quiet book has a shortfall of zero
+    // under a key the limit finds — the limit evaluated and found nothing.
+    assert!(
+        state.expected_shortfall.contains_key("0.97"),
+        "nothing was computed, so nothing can be said about passing"
+    );
+    let check = limits.check(&state);
+    assert!(
+        !check
+            .breaches
+            .iter()
+            .any(|b| b.limit_kind == "max_expected_shortfall"),
+        "a book that only gained breached the tail limit: {}",
+        check.reason()
+    );
+}
+
+#[test]
+fn value_at_risk_is_keyed_and_bound_the_same_way() {
+    // The same defect, the other limit. VaR shared the empty map.
+    let limits = LimitSet::conservative_default();
+    let state = state_with_no_tail_figures().with_tail_risk(&limits, &returns_with_a_tail());
+    let var = state
+        .value_at_risk
+        .get("0.99")
+        .copied()
+        .unwrap_or_else(|| panic!("no value at risk under the default limit's key"));
+    assert!(
+        var > 0.05,
+        "premise: the tail exceeds the 5% bound, got {var}"
+    );
+    let check = limits.check(&state);
+    assert!(
+        check
+            .blocking()
+            .iter()
+            .any(|b| b.limit_kind == "max_value_at_risk"),
+        "{}",
+        check.reason()
+    );
+}
+
+#[test]
+fn a_series_too_short_to_measure_leaves_the_maps_empty_rather_than_recording_zero() {
+    // A zero nobody computed would pass the limit and read as evidence the
+    // book has no tail.
+    let limits = LimitSet::conservative_default();
+    // Premise: the derivation does fill these maps on a series it can
+    // measure, so an empty map below is a decision and not a no-op.
+    let measurable = state_with_no_tail_figures().with_tail_risk(&limits, &[0.01, -0.02]);
+    assert!(!measurable.expected_shortfall.is_empty());
+    let bare = state_with_no_tail_figures().with_tail_risk(&limits, &[0.01]);
+    assert!(bare.expected_shortfall.is_empty());
+    assert!(bare.value_at_risk.is_empty());
+}

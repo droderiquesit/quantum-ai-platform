@@ -11,7 +11,9 @@
 // assertion is the deliverable, and `?` is what keeps the setup readable.
 #![allow(clippy::panic_in_result_fn)]
 
-use qip_arbitrage::graph::{ArbitrageGraph, Node, PathKind, SyntheticComponent, VenueFacts};
+use qip_arbitrage::graph::{
+    ArbitrageGraph, EdgeKind, Node, PathKind, SyntheticComponent, VenueFacts,
+};
 use qip_arbitrage::liquidity::{LiquiditySource, StaticLiquidity};
 use qip_arbitrage::netedge::{EdgeAssumptions, NetEdgeCalculator};
 use qip_arbitrage::plan::{LegPlanner, PlanSettings};
@@ -1008,5 +1010,197 @@ fn scanning_the_same_market_twice_produces_the_same_answer() -> Result<()> {
     let first = scanner("50000").scan(&graph, &depth, &sizes, at());
     let second = scanner("50000").scan(&graph, &depth, &sizes, at());
     assert_eq!(first, second, "a replay must reproduce the run exactly");
+    Ok(())
+}
+
+// --- legs: from a planned cycle to the netting seam, blueprint §27.2 ---------
+
+use qip_contracts::intent::{Intent, net};
+use qip_contracts::signal::StrategyId;
+
+fn arb() -> StrategyId {
+    StrategyId::new("arb-triangular-1")
+}
+
+fn later() -> Timestamp {
+    at().saturating_add(Duration::from_secs(5))
+}
+
+#[test]
+fn a_planned_cycle_becomes_one_no_net_leg_per_step_in_plan_order() -> Result<()> {
+    let (graph, depth) = liquid_triangular()?;
+    let report = scanner("50000").scan(&graph, &depth, &SizePolicy::uniform(d("10000")), at());
+    let opportunity = &report.opportunities[0];
+    let steps = opportunity.planned.plan.steps();
+    // Premise: the plan has more than one leg and consumes both sides of a
+    // book somewhere, or the sign mapping below is exercised on one side only
+    // and a mapping that returned a constant sign would pass.
+    assert_eq!(steps.len(), 3, "the triangular fixture plans three legs");
+    assert!(steps.iter().any(|step| step.side == BookSide::Ask));
+    assert!(steps.iter().any(|step| step.side == BookSide::Bid));
+
+    let legs = opportunity.cycle_legs(&arb(), at(), later())?;
+    assert_eq!(
+        legs.len(),
+        steps.len(),
+        "a leg per step, no more and no fewer"
+    );
+
+    let cycle_id = opportunity.cycle_id(at());
+    assert!(!cycle_id.is_empty());
+    for (leg, step) in legs.iter().zip(steps) {
+        // Every leg names the same cycle — the whole point of the type — and
+        // sits in the plan's order, which the planner chose for a reason.
+        assert_eq!(leg.cycle_id(), cycle_id);
+        let intent = leg.intent();
+        assert!(
+            !intent.netting().is_nettable(),
+            "a cycle leg came out of the adapter nettable"
+        );
+        assert_eq!(intent.object_id, step.object_id);
+        assert_eq!(intent.venue, step.venue);
+        assert_eq!(intent.reference_price, step.reference_price);
+        assert_eq!(intent.strategy, arb());
+        assert_eq!(intent.valid_until, later());
+        // The sign. A leg's side is the side of the book it consumes, so
+        // consuming offers is a buy and positive — the inverse of the cell's
+        // own order-side rule, and the mapping this test exists to pin.
+        match step.side {
+            BookSide::Ask => assert_eq!(intent.signed_size, step.quantity, "an ask consumed buys"),
+            BookSide::Bid => assert_eq!(intent.signed_size, -step.quantity, "a bid consumed sells"),
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn cycle_legs_never_net_with_directional_flow_on_the_same_key() -> Result<()> {
+    // The end-to-end form of §27.2, through the real seam: the legs and a
+    // directional intent on one of their keys go into `net` together, and
+    // come out apart.
+    let (graph, depth) = liquid_triangular()?;
+    let report = scanner("50000").scan(&graph, &depth, &SizePolicy::uniform(d("10000")), at());
+    let legs = report.opportunities[0].cycle_legs(&arb(), at(), later())?;
+    let first = legs[0].intent().clone();
+    let directional = Intent::new(
+        StrategyId::new("momentum-1"),
+        first.object_id.clone(),
+        first.venue.clone(),
+        first.signed_size,
+        first.reference_price,
+        later(),
+    )?;
+    // Premise: the directional intent really shares the leg's netting key,
+    // so the only thing keeping them apart is the leg's policy.
+    assert_eq!(directional.object_id, first.object_id);
+    assert_eq!(directional.venue, first.venue);
+    assert_eq!(directional.representation, first.representation);
+    assert!(directional.netting().is_nettable());
+
+    let mut intents: Vec<Intent> = legs.into_iter().map(Intent::from).collect();
+    let leg_count = intents.len();
+    intents.push(directional);
+    let nets = net(intents);
+    assert_eq!(
+        nets.len(),
+        leg_count + 1,
+        "a cycle leg was netted with a directional intent on the same key"
+    );
+    let directional_nets: Vec<_> = nets.iter().filter(|n| n.cycle_id.is_none()).collect();
+    assert_eq!(directional_nets.len(), 1);
+    assert_eq!(directional_nets[0].contributors.len(), 1);
+    assert!(
+        nets.iter()
+            .filter(|n| n.cycle_id.is_some())
+            .all(|n| n.contributors.len() == 1),
+        "a leg's net absorbed a contributor"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_cycle_id_replays_at_one_instant_and_separates_two() -> Result<()> {
+    let (graph, depth) = liquid_triangular()?;
+    let sizes = SizePolicy::uniform(d("10000"));
+    let first = scanner("50000").scan(&graph, &depth, &sizes, at());
+    let second = scanner("50000").scan(&graph, &depth, &sizes, at());
+    let (one, two) = (&first.opportunities[0], &second.opportunities[0]);
+    // Same market, same instant: a replay, and the journal must be able to
+    // match the two by name.
+    assert_eq!(one.cycle_id(at()), two.cycle_id(at()));
+    // The same cycle taken again later is a second atomic set, not the same
+    // one, and a journal that gave both one name could not say which leg
+    // belonged to which.
+    assert_ne!(one.cycle_id(at()), one.cycle_id(later()));
+    // The strategy is not part of the name: the cycle is a fact about the
+    // market, and which deployment claims it travels on the intent.
+    let by_a = one.cycle_legs(&arb(), at(), later())?;
+    let by_b = one.cycle_legs(&StrategyId::new("arb-other"), at(), later())?;
+    assert_eq!(by_a[0].cycle_id(), by_b[0].cycle_id());
+    assert_ne!(by_a[0].intent().strategy, by_b[0].intent().strategy);
+    Ok(())
+}
+
+#[test]
+fn legs_that_would_expire_before_the_cycle_opens_are_refused() -> Result<()> {
+    let (graph, depth) = liquid_triangular()?;
+    let report = scanner("50000").scan(&graph, &depth, &SizePolicy::uniform(d("10000")), at());
+    let opportunity = &report.opportunities[0];
+    // Premise: the same call with a deadline after the opening instant
+    // succeeds, so the refusal below is about the deadline and not the
+    // fixture.
+    assert!(opportunity.cycle_legs(&arb(), at(), later()).is_ok());
+    for deadline in [at(), at().saturating_sub(Duration::from_secs(1))] {
+        assert!(
+            opportunity.cycle_legs(&arb(), at(), deadline).is_err(),
+            "legs born expired were produced rather than refused"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_trade_edge_re_quoted_from_a_book_is_what_the_search_then_sees() -> Result<()> {
+    // The failure this prevents: a cell that rebuilt its graph per pass, or
+    // one that refreshed a field the search does not read. The effective
+    // rate is what the search searches on, so that is what is asserted.
+    let (mut graph, _) = liquid_triangular()?;
+    let before = graph
+        .edge(0)
+        .expect("the fixture has a first edge")
+        .effective_rate()?;
+    graph.refresh_trade(0, d("0.0005"), at(), 7)?;
+    let edge = graph.edge(0).expect("the edge is still there");
+    assert_eq!(edge.indicative_rate, d("0.0005"));
+    assert_eq!(edge.observations, 7);
+    assert_ne!(
+        edge.effective_rate()?,
+        before,
+        "the refreshed rate did not reach the rate the search uses"
+    );
+
+    // Zero is how a stale book takes its edge out of the search.
+    graph.refresh_trade(0, Decimal::ZERO, at(), 0)?;
+    assert!(
+        search_candidates(&graph, &SearchSettings::default()).is_empty(),
+        "an edge quoted at zero still closed a cycle"
+    );
+
+    // And what is refused: a negative rate, an index that names nothing,
+    // and an edge that has no book to quote from.
+    assert!(graph.refresh_trade(0, d("-1"), at(), 1).is_err());
+    assert!(graph.refresh_trade(99, d("1"), at(), 1).is_err());
+    let (mut with_transfer, _) = cross_venue_with_a_chain()?;
+    let transfer = with_transfer
+        .edges()
+        .iter()
+        .position(|edge| matches!(edge.kind, EdgeKind::Transfer))
+        .expect("the cross-venue fixture holds a transfer");
+    assert!(
+        with_transfer
+            .refresh_trade(transfer, d("1"), at(), 1)
+            .is_err(),
+        "a transfer was re-quoted as if it had a book"
+    );
     Ok(())
 }

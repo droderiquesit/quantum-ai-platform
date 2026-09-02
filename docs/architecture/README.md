@@ -118,9 +118,9 @@ simulating the circuit costs more than solving the problem it encodes.
 
 ## Reading order, and where the rest lives
 
-This document is the shape of the system. Six companions carry the detail:
+This document is the shape of the system. Seven companions carry the detail:
 
-1. `docs/adr/` — twenty-two numbered decisions. The reasoning is the point, and
+1. `docs/adr/` — twenty-three numbered decisions. The reasoning is the point, and
    several of them are settled: reopening one takes a new ADR, not an argument.
 2. **`docs/architecture/algorik-blueprint-traceability.md` — the live
    scorecard.** ADR 0022 makes the Algorik Master Blueprint v10.1-4 and its
@@ -150,6 +150,11 @@ This document is the shape of the system. Six companions carry the detail:
    companion diagram the architecture of record, and two authoritative
    documents will disagree; this records where, with both locations, rather
    than picking one.
+7. `docs/plan/completion-plan.md` — the living plan: how far the tree is from
+   alignment-done and from blueprint-done, the four gates (none passed), the
+   sequenced backlog in slices, and every decision still waiting on an owner.
+   It aggregates items 2, 5 and 6 and says where they disagree; it replaces
+   none of them.
 
 The rules an agent must follow when changing this architecture are in
 `.claude/rules/architecture/`; the per-area constraints are in

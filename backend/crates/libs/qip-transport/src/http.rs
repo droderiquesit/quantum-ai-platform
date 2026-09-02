@@ -621,10 +621,6 @@ impl HttpClient {
         self.send(&HttpRequest::new(Method::Get, url)?)
     }
 
-    pub fn post_json(&self, url: &str, body: Vec<u8>) -> HttpResult<HttpResponse> {
-        self.send(&HttpRequest::json(Method::Post, url, body)?)
-    }
-
     /// Resolve and connect, with the handshake bounded by
     /// [`ClientLimits::connect_timeout`].
     ///

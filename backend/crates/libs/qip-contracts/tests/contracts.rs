@@ -1215,7 +1215,9 @@ fn two_different_halts_cannot_share_one_signing_string() {
 
 // --- intent netting: blueprint §27 -------------------------------------------
 
-use qip_contracts::intent::{Contributor, Intent, NetIntent, Representation, net, netting_ratio};
+use qip_contracts::intent::{
+    CycleLeg, Intent, NetIntent, NettingPolicy, Representation, net, netting_ratio,
+};
 
 fn intent(strategy: &str, object: &str, venue: &str, size: &str) -> Intent {
     Intent::new(
@@ -1227,6 +1229,21 @@ fn intent(strategy: &str, object: &str, venue: &str, size: &str) -> Intent {
         t(3_600),
     )
     .expect("a non-zero intent")
+}
+
+/// A leg of `cycle`, already converted into the shape the netting seam takes.
+fn cycle_leg(strategy: &str, object: &str, venue: &str, size: &str, cycle: &str) -> Intent {
+    CycleLeg::new(
+        cycle,
+        StrategyId::new(strategy),
+        ObjectId::from_string(object),
+        VenueId::new(venue),
+        Decimal::parse(size).expect("a decimal literal"),
+        dec!("100"),
+        t(3_600),
+    )
+    .expect("a named, non-zero leg")
+    .into()
 }
 
 #[test]
@@ -1295,7 +1312,7 @@ fn a_cycle_leg_is_never_netted_with_a_directional_intent() -> Result<()> {
     // still executes, at sizes that no longer close. The refusal is
     // structural: the leg gets its own group, so there is no code path on
     // which it joins somebody else's net.
-    let leg = intent("arb", "ACME", "XLON", "50").as_cycle_leg("cycle-7");
+    let leg = cycle_leg("arb", "ACME", "XLON", "50", "cycle-7");
     let nets = net(vec![intent("momentum", "ACME", "XLON", "50"), leg]);
     assert_eq!(
         nets.len(),
@@ -1330,12 +1347,108 @@ fn two_legs_of_one_cycle_do_not_net_with_each_other_either() -> Result<()> {
     // directional intent, and a group keyed only on the cycle id would make
     // exactly that mistake.
     let nets = net(vec![
-        intent("arb", "ACME", "XLON", "30").as_cycle_leg("cycle-7"),
-        intent("arb", "ACME", "XLON", "-30").as_cycle_leg("cycle-7"),
+        cycle_leg("arb", "ACME", "XLON", "30", "cycle-7"),
+        cycle_leg("arb", "ACME", "XLON", "-30", "cycle-7"),
     ]);
     assert_eq!(nets.len(), 2, "two legs of one cycle were netted together");
     assert!(nets.iter().all(|net| !net.is_cancelled()));
     Ok(())
+}
+
+#[test]
+fn a_cycle_leg_is_no_net_from_birth_and_only_a_leg_can_be() -> Result<()> {
+    // The review of the netting slice found the defect this closes: the leg
+    // policy used to be a builder method a producer could omit, and a leg
+    // that omitted it was netted against directional flow into an order that
+    // looked correct. Now the policy is fixed by the constructor. Premise
+    // first: the directional constructor really does yield the nettable
+    // policy, so the contrast below is between two constructors and not
+    // between a constructor and a default.
+    let directional = intent("momentum", "ACME", "XLON", "50");
+    assert_eq!(*directional.netting(), NettingPolicy::Nettable);
+    assert_eq!(directional.cycle_id(), None);
+
+    let leg = CycleLeg::new(
+        "cycle-7",
+        StrategyId::new("arb"),
+        ObjectId::from_string("ACME"),
+        VenueId::new("XLON"),
+        dec!("50"),
+        dec!("100"),
+        t(3_600),
+    )?;
+    // The leg knows its cycle before conversion — this is the value the
+    // `Nettable` arm of `CycleLeg::cycle_id` would blank, so it is asserted
+    // rather than assumed.
+    assert_eq!(leg.cycle_id(), "cycle-7");
+    assert_eq!(
+        *leg.intent().netting(),
+        NettingPolicy::NoNet {
+            cycle_id: "cycle-7".to_string()
+        }
+    );
+    // And after: the conversion into the seam's type carries the policy with
+    // it, because it is the same intent and there is no step in between at
+    // which it could be dropped.
+    let as_intent: Intent = leg.into();
+    assert!(
+        !as_intent.netting().is_nettable(),
+        "a cycle leg became nettable on its way into the netting seam"
+    );
+    assert_eq!(as_intent.cycle_id(), Some("cycle-7"));
+    // Its representation and inputs travel the same way a directional
+    // intent's do, so a leg is not a second-class intent anywhere downstream.
+    let with_extras: Intent = CycleLeg::new(
+        "cycle-8",
+        StrategyId::new("arb"),
+        ObjectId::from_string("ACME"),
+        VenueId::new("XLON"),
+        dec!("-5"),
+        dec!("100"),
+        t(3_600),
+    )?
+    .with_representation(Representation::Perpetual)
+    .with_inputs(vec![("basis{}".to_string(), 3)])
+    .into();
+    assert_eq!(with_extras.representation, Representation::Perpetual);
+    assert_eq!(with_extras.inputs, vec![("basis{}".to_string(), 3)]);
+    assert_eq!(with_extras.cycle_id(), Some("cycle-8"));
+    Ok(())
+}
+
+#[test]
+fn a_leg_of_an_unnamed_cycle_is_refused_rather_than_isolated_under_nothing() {
+    // The cycle id is what `net` isolates on and what the journal names the
+    // atomic set by. A leg of the cycle "" would still get its own group —
+    // the index makes sure of that — but nothing afterwards could say which
+    // cycle it belonged to, which is the attribution §27 exists to keep.
+    for unnamed in ["", "   "] {
+        let refused = CycleLeg::new(
+            unnamed,
+            StrategyId::new("arb"),
+            ObjectId::from_string("ACME"),
+            VenueId::new("XLON"),
+            dec!("50"),
+            dec!("100"),
+            t(3_600),
+        );
+        assert!(
+            refused.is_err(),
+            "a leg of the cycle {unnamed:?} was admitted with no cycle to belong to"
+        );
+    }
+    // And the zero-size refusal a directional intent gets applies to a leg
+    // too: a leg that trades nothing is not a leg.
+    let empty = CycleLeg::new(
+        "cycle-7",
+        StrategyId::new("arb"),
+        ObjectId::from_string("ACME"),
+        VenueId::new("XLON"),
+        Decimal::ZERO,
+        dec!("100"),
+        t(3_600),
+    );
+    assert!(empty.is_err(), "a leg of zero size was admitted");
 }
 
 #[test]
@@ -1446,38 +1559,21 @@ fn the_same_fill_splits_identically_however_the_intents_arrived() -> Result<()> 
          tie-break was never exercised"
     );
 
-    // And the tie-break itself, reached directly. `net` sorts contributors by
-    // strategy id, so no vector it builds can exercise the tie — but
-    // `NetIntent` has public fields and a caller may hand `split_fill` a
-    // vector in any order, so the rule has to hold there too. Without the
-    // strategy-id tie-break, a stable sort leaves equal remainders in arrival
-    // order and the leftover unit follows whoever happened to be first.
-    let unsorted = NetIntent {
-        object_id: ObjectId::from_string("ACME"),
-        venue: VenueId::new("XLON"),
-        representation: Representation::Spot,
-        net_size: dec!("3"),
-        gross_size: dec!("3"),
-        contributors: vec![
-            Contributor {
-                strategy: StrategyId::new("gamma"),
-                signed_size: dec!("1"),
-                inputs: Vec::new(),
-            },
-            Contributor {
-                strategy: StrategyId::new("alpha"),
-                signed_size: dec!("1"),
-                inputs: Vec::new(),
-            },
-            Contributor {
-                strategy: StrategyId::new("beta"),
-                signed_size: dec!("1"),
-                inputs: Vec::new(),
-            },
-        ],
-        reference_price: dec!("100"),
-        cycle_id: None,
-    };
+    // And the tie-break itself. `NetIntent` can no longer be assembled by a
+    // caller — construction is sealed to `net` — so the only vectors
+    // `split_fill` will ever see are the ones `net` built, and `net` sorts
+    // them by strategy id. That makes the strategy-id tie-break in
+    // `split_fill` and the sort in `net` two halves of one rule: equal
+    // remainders go to the lowest strategy id whatever order the intents
+    // arrived in. Feed the intents in an order that is not that one, so the
+    // rule is exercised rather than satisfied by accident.
+    let unsorted = net(vec![
+        intent("gamma", "ACME", "XLON", "1"),
+        intent("alpha", "ACME", "XLON", "1"),
+        intent("beta", "ACME", "XLON", "1"),
+    ])
+    .pop()
+    .expect("three intents on one key net to one");
     let split = unsorted.split_fill(dec!("100"));
     let leader = split
         .iter()
@@ -1591,34 +1687,19 @@ fn each_contributor_keeps_the_feature_revisions_its_own_strategy_reasoned_from()
 }
 
 /// Build a net whose contributors have the given signed sizes.
+///
+/// Through `net`, because that is now the only way to build one: the sealed
+/// constructor is the guarantee the netting review asked for, and a fixture
+/// that went round it would be testing a value production cannot produce.
 fn net_of(sizes: &[&str]) -> NetIntent {
-    let contributors: Vec<Contributor> = sizes
+    let intents: Vec<Intent> = sizes
         .iter()
         .enumerate()
-        .map(|(index, size)| Contributor {
-            strategy: StrategyId::new(format!("s{index}")),
-            signed_size: Decimal::parse(size).expect("a decimal literal"),
-            inputs: Vec::new(),
-        })
+        .map(|(index, size)| intent(&format!("s{index}"), "ACME", "XLON", size))
         .collect();
-    let gross = contributors
-        .iter()
-        .map(|c| c.signed_size.abs())
-        .fold(Decimal::ZERO, |a, b| a + b);
-    let net_size = contributors
-        .iter()
-        .map(|c| c.signed_size)
-        .fold(Decimal::ZERO, |a, b| a + b);
-    NetIntent {
-        object_id: ObjectId::from_string("ACME"),
-        venue: VenueId::new("XLON"),
-        representation: Representation::Spot,
-        net_size,
-        gross_size: gross,
-        contributors,
-        reference_price: dec!("100"),
-        cycle_id: None,
-    }
+    let mut nets = net(intents);
+    assert_eq!(nets.len(), 1, "one key must net to exactly one net");
+    nets.pop().expect("one net")
 }
 
 #[test]
@@ -1718,4 +1799,69 @@ fn taking_back_an_excess_is_as_deterministic_as_handing_out_a_shortfall() {
         "the same fill split differently for the same contributors in a \
          different order"
     );
+}
+
+#[test]
+fn a_shortfall_goes_to_the_lowest_strategy_id_however_the_contributors_arrived() {
+    // The hand-out tie-break in `split_fill` was, until this test, held by
+    // nothing: every earlier test reached it through `net`, which pre-sorts
+    // contributors by strategy id, so a stable sort with the tie-break deleted
+    // gave the same answer and the deletion was invisible — as the comment
+    // above the function disclosed and a code review then demonstrated. But
+    // `net` is not the only way a vector reaches `split_fill`: `contributors`
+    // is a public field, and `NetIntent` derives `Deserialize` with only the
+    // seal skipped, so a net read back from a journal or a wire carries
+    // whatever order the bytes do. Both routes are taken here, so the test
+    // fails on the deletion rather than on the fixture happening to be sorted.
+    let forward = net_of(&["1", "1", "1"]);
+    let mut reordered = forward.clone();
+    reordered.contributors.reverse();
+    // Premise: the reordered vector really is in a different order, so a
+    // correct answer below is the tie-break working rather than the sort in
+    // `net` having done its job already.
+    assert_eq!(forward.contributors[0].strategy.as_str(), "s0");
+    assert_eq!(reordered.contributors[0].strategy.as_str(), "s2");
+
+    // The wire route: the reversed order survives a round trip, so a reader of
+    // the journal sees exactly this vector and no sort in between.
+    let json = serde_json::to_string(&reordered).expect("serialisable");
+    let off_the_wire: NetIntent = serde_json::from_str(&json).expect("deserialisable");
+    assert_eq!(
+        off_the_wire.contributors[0].strategy.as_str(),
+        "s2",
+        "the round trip re-sorted the contributors, so the wire route is not \
+         the unsorted one this test exists to exercise"
+    );
+
+    // Premise: 100 over three equal contributors leaves exactly one unit at
+    // the eighth place to hand out, and the three remainders are equal, so
+    // only the tie-break decides who receives it.
+    let fill = dec!("100");
+    let split = off_the_wire.split_fill(fill);
+    assert_eq!(split.len(), 3);
+    let distinct: std::collections::BTreeSet<Decimal> =
+        split.iter().map(|(_, share)| *share).collect();
+    assert_eq!(
+        distinct.len(),
+        2,
+        "the shares were not two values, so either no unit was handed out or \
+         more than one was, and the tie-break was not what decided the split"
+    );
+    let leader = split
+        .iter()
+        .max_by(|left, right| left.1.cmp(&right.1))
+        .expect("a split");
+    assert_eq!(
+        leader.0.as_str(),
+        "s0",
+        "the leftover unit went to {} rather than to the lowest strategy id: \
+         with the contributors reversed, that is arrival order deciding the \
+         split, and the same fill would attribute differently on replay",
+        leader.0.as_str()
+    );
+    let summed = split
+        .iter()
+        .map(|(_, share)| *share)
+        .fold(Decimal::ZERO, |a, b| a + b);
+    assert_eq!(summed, fill);
 }

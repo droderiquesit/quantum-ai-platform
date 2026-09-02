@@ -276,13 +276,6 @@ impl AgentContext {
         Ok(completion)
     }
 
-    /// Whether a language model is configured and usable.
-    pub fn has_language_model(&self) -> bool {
-        self.language_model
-            .as_ref()
-            .is_some_and(|m| m.is_available())
-    }
-
     pub fn accesses(&self) -> &[AccessRecord] {
         &self.accesses
     }

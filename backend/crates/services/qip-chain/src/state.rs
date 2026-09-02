@@ -351,10 +351,6 @@ impl ChainState {
         self.head().map(|block| block.number)
     }
 
-    pub fn block_by_hash(&self, hash: &BlockHash) -> Option<&Block> {
-        self.seen.get(hash)
-    }
-
     /// The canonical chain, oldest retained block first.
     pub fn canonical(&self) -> &[Block] {
         &self.canonical

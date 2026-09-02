@@ -1260,6 +1260,79 @@ fn a_book_with_one_side_is_refused_rather_than_filled_against_nothing() -> Resul
     Ok(())
 }
 
+/// A synthetic path that overflows is refused, naming the step and the bound.
+///
+/// The generator used to reset the walk to the instrument's initial price when
+/// a step overflowed and carry on, so a drift large enough to blow the path up
+/// produced a series that quietly restarted from the spec's first number in
+/// the middle — a price nobody generated, and one every fill priced off it
+/// inherited. The comment above the reset said the code did not do this. It
+/// now refuses, and this test is what keeps it refusing.
+#[test]
+fn a_synthetic_path_that_overflows_is_refused_rather_than_restarted_from_the_initial_price()
+-> Result<()> {
+    let mut shape = spec();
+    // A per-step drift whose exponent alone overflows `f64`, so the second
+    // point of the path cannot be a price whatever the seed draws.
+    shape.step_drift = 800.0;
+    shape.step_volatility = 0.0;
+    shape.validate()?;
+
+    // Premise: this walk does overflow. Without it, a refusal below could be
+    // about something else entirely, and a pass would prove nothing.
+    let first_step = shape.initial_price.to_f64() * shape.step_drift.exp();
+    assert!(
+        !first_step.is_finite(),
+        "the premise no longer holds: a drift of {} per step leaves the price finite at {first_step}",
+        shape.step_drift
+    );
+
+    let market = SyntheticMarket {
+        start: start(),
+        step: step(),
+        steps: 4,
+        venues: vec![VENUE.to_string()],
+        instruments: vec![shape.clone()],
+    };
+    let error = match MarketSimulator::synthetic(market, 5) {
+        Ok(_) => panic!("a path that overflowed was generated rather than refused"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error, qip_core::error::Error::Invalid(_)),
+        "{error}"
+    );
+    let message = error.message();
+    assert!(
+        message.contains(SYMBOL) && message.contains("step 1 of 4"),
+        "the refusal must name the instrument and the step that overflowed: {message}"
+    );
+    assert!(
+        message.contains(&format!("(0, {}]", Decimal::MAX)),
+        "the refusal must name the bound the price left: {message}"
+    );
+    assert!(
+        message.contains("refused rather than restarted"),
+        "the refusal must say what the code used to do instead: {message}"
+    );
+
+    // And the same shape with a drift the range can hold generates, so the
+    // refusal is about the overflow rather than about the parameters at all.
+    shape.step_drift = 0.0;
+    let calm = MarketSimulator::synthetic(
+        SyntheticMarket {
+            start: start(),
+            step: step(),
+            steps: 4,
+            venues: vec![VENUE.to_string()],
+            instruments: vec![shape],
+        },
+        5,
+    )?;
+    assert_eq!(calm.steps().len(), 4);
+    Ok(())
+}
+
 /// The participation limit the cost model documents is the one the fill engine
 /// enforces.
 ///

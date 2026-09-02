@@ -286,6 +286,52 @@ impl ArbitrageGraph {
         Ok(index)
     }
 
+    /// Re-quote a trade edge from what a book says now.
+    ///
+    /// The cell holds the books and the graph holds the cycles they might
+    /// close, and the two change at different rates: the whitelist on policy
+    /// change, the quotes on every message. Rebuilding the graph per pass
+    /// would allocate a graph's worth of nodes and edges on the hot path to
+    /// change three numbers per edge, so the three numbers are changed in
+    /// place. A rate of zero marks the edge unusable — the search already
+    /// refuses a non-positive rate — which is how a book that has gone stale
+    /// or empty takes its edge out of every cycle without removing it.
+    ///
+    /// Refused for an index that names no edge, an edge that is not a trade —
+    /// a transfer's rate is one by definition and a synthetic has no single
+    /// book to quote from — or a negative rate, which no book produces.
+    pub fn refresh_trade(
+        &mut self,
+        index: usize,
+        indicative_rate: Decimal,
+        observed_at: Timestamp,
+        observations: u32,
+    ) -> Result<()> {
+        if indicative_rate.is_negative() {
+            return Err(Error::invalid(format!(
+                "a rate of {indicative_rate} is negative; no book quotes one, so the refresh is \
+                 refused rather than applied"
+            )));
+        }
+        let Some(edge) = self.edges.get_mut(index) else {
+            return Err(Error::not_found(format!(
+                "no conversion at index {index}; the graph holds {}",
+                self.edges.len()
+            )));
+        };
+        if !matches!(edge.kind, EdgeKind::Trade { .. }) {
+            return Err(Error::invalid(format!(
+                "conversion {} is a {} and has no book to re-quote from",
+                edge.label(),
+                edge.kind.as_str()
+            )));
+        }
+        edge.indicative_rate = indicative_rate;
+        edge.observed_at = observed_at;
+        edge.observations = observations;
+        Ok(())
+    }
+
     /// Add a trade against a book at one venue.
     #[allow(clippy::too_many_arguments)]
     pub fn add_trade(

@@ -51,3 +51,27 @@ output "secret_file_paths" {
 
   value = local.secret_files
 }
+
+output "egress_endpoints" {
+  description = <<-EOT
+    The loopback addresses this workload's egress proxy answers on, one per
+    destination listener port, or empty for a workload that carries none.
+
+    Exported so a test can assert that every outbound address a workload is
+    configured with is one of these — an adapter pointed anywhere else is a
+    credential crossing the internet in clear text, or a pod that cannot
+    start, and neither is visible from the configuration alone.
+  EOT
+
+  value = local.has_egress_sidecar ? [for port in var.egress_sidecar.ports : "http://127.0.0.1:${port}"] : []
+}
+
+output "has_egress_proxy" {
+  description = "Whether this workload carries the egress proxy sidecar. The fast path must answer false; see `egress_sidecar`."
+  value       = local.has_egress_sidecar
+}
+
+output "network_tags" {
+  description = "The tags the workload's VPC interface carries — the trust zone's, so the zone's firewall rules see this instance."
+  value       = var.network_tags
+}

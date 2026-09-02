@@ -203,16 +203,6 @@ impl TransportConfig {
         self.capacity = capacity;
         self
     }
-
-    pub fn with_peer(mut self, peer: impl Into<String>) -> Self {
-        self.peer = Some(peer.into());
-        self
-    }
-
-    pub fn with_binding(mut self, binding: PubSubBinding) -> Self {
-        self.binding = Some(binding);
-        self
-    }
 }
 
 /// Build a publisher from configuration.

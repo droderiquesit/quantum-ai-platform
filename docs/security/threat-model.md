@@ -147,7 +147,9 @@ match sits. Every credential carries `expires_at` and expiry is refused.
 under 32 characters. Nothing secret enters the repository: Terraform creates
 secret *containers* and never a version — `no_secret_value_appears_in_the_terraform`
 refuses both `google_secret_manager_secret_version` and `secret_data`, and
-`no_credential_appears_in_a_kubernetes_manifest` covers the manifests;
+`no_credential_appears_in_a_kubernetes_manifest` — the name kept so this
+citation still resolves — now proves no manifest directory exists and scans
+the Cloud Run catalogue that replaced it (ADR 0024);
 [`scripts/check-secrets.sh`](../../scripts/check-secrets.sh) is the CI gate. The
 venue credential's IAM binding does not exist where `autonomy_ceiling =
 "paper_trading"`, so in every shipped environment the credential is unreadable
@@ -162,9 +164,23 @@ tfvars and ops files they do not cover.
 until it expires. Tokens are bearer credentials with no proof of possession, no
 mTLS, no binding to a source address, and no revocation list — rotating means
 restarting the process with new environment variables, and `main.rs` mints them
-with a thirty-day life. Failure lockout is keyed by subject, and the subject is
-only known after a hash match, so an attacker guessing random tokens never
-trips it. The rate limiter also runs *after* authentication, so an
+with a thirty-day life. Brute-force protection is a single fixed-window budget
+of unrecognised tokens — `Authenticator` in `qip-api/src/auth.rs`, ten per
+minute, held as two scalars and keyed on nothing a caller controls, so a guess
+cannot allocate memory. It replaced a per-subject lockout that could never
+fire, because a subject was known only after a hash match. What it buys is
+narrow and should be read narrowly: once the budget is spent, an unrecognised
+token gets a distinct refusal until the window turns over, a valid token is
+unaffected — a budget that also refused valid tokens would let ten wrong
+guesses lock out the operator holding the halt route — and the count is a
+state the process can be asked for (`unrecognised_attempts`). It does not make
+guessing safe. Every presented token is still compared against every
+credential before the budget is consulted, so a *correct* guess inside an
+unspent window authenticates exactly as its owner would, and a spent budget
+does not reduce the comparison work an attacker can cause. Token entropy and
+rotation are the defence against the guess itself; the budget bounds how
+invisible a guessing flood can be, not whether one succeeds. The rate limiter
+also runs *after* authentication, so an
 unauthenticated request flood is bounded only by `ServerLimits::max_concurrent`.
 The in-tree HTTP server speaks no TLS; transport security is assumed to be
 terminated by a proxy this repository does not configure.
@@ -488,12 +504,14 @@ policy — every bound in `CapitalEnvelope` is private with no setter, and
 widening means asking the centre for a new grant. A compromised cell presenting
 a sibling's envelope is refused by the cell check in `VerifiedEnvelope::verify`.
 Halts are scoped, so one cell's reconciliation break does not stop the others.
-The infrastructure half: a default-deny `NetworkPolicy` in the namespace,
-private nodes with no public addresses and a private control plane, a
-per-deployable service account rather than the default compute one, workload
-identity so no key file lives on disk, and `GKE_METADATA` with the legacy
-endpoints disabled so a compromised pod cannot read the node's credentials.
-All of those are asserted structurally in
+The infrastructure half, on the blueprint runtime (ADR 0024): every trust
+zone and every execution node denies by default in both directions at
+priority 65000, a node may egress only to Google APIs, the central plane and
+its own venues — and the venue rule does not exist while the node is in
+shadow mode; every Cloud Run service is internal-ingress; the node has no
+external address and no container runtime; a per-deployable service account
+rather than the default compute one; and no service-account key anywhere,
+so no key file lives on disk. All of those are asserted structurally in
 [`infrastructure.rs`](../../backend/crates/tests/qip-acceptance/tests/infrastructure.rs).
 
 **What does not.** **Halt state is process-local** — a recorded caveat, and the

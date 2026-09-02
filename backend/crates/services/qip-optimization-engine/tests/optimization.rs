@@ -217,6 +217,15 @@ fn the_classical_baseline_is_always_computed() -> Result<()> {
         .with_quantum(provider);
     let decision = router.solve(&discrete(10, 4)?)?;
 
+    // Premise: the quantum path actually ran. Without this the assertion
+    // below is also satisfied by a router that never attempted quantum, and
+    // "the baseline is always computed" would be proven by a run in which
+    // nothing else was.
+    assert!(
+        decision.runs.iter().any(|run| run.solver.is_quantum()),
+        "the quantum provider was attached but never ran: {}",
+        decision.rationale
+    );
     assert!(
         decision.runs.iter().any(|run| !run.solver.is_quantum()),
         "a quantum run without a classical baseline is unusable evidence"

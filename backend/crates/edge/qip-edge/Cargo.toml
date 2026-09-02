@@ -11,9 +11,6 @@ repository.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 qip-core.workspace = true
-qip-numerics.workspace = true
-qip-financial.workspace = true
-qip-market.workspace = true
 qip-contracts.workspace = true
 qip-protocols.workspace = true
 qip-sequencing.workspace = true
@@ -21,9 +18,13 @@ qip-orderbook.workspace = true
 qip-feature-dag.workspace = true
 qip-strategy.workspace = true
 qip-arbitrage.workspace = true
-qip-routing.workspace = true
-qip-risk.workspace = true
-qip-portfolio.workspace = true
+# Named by no source file in this crate: the cell sends through its own
+# `Placer` seam and never constructs the order manager. The edge stays because
+# the architecture suite's `only_the_edge_cell_itself_holds_an_order_manager`
+# uses "the cell reaches qip-execution-engine" as its vacuity guard, and
+# dropping the edge fails that guard rather than the property it guards. The
+# guard needs re-stating against the cell's real order path before this line
+# can go; until then the edge is a pinned claim, not a use.
 qip-execution-engine.workspace = true
 qip-risk-engine.workspace = true
 # The platform's own event envelope, which is what the mesh carries. The cell
@@ -34,6 +35,13 @@ qip-events.workspace = true
 # transport as a `Publisher` is a service and therefore cannot be used from
 # here, which is why this reaches for `MeshPublisher` directly.
 qip-transport.workspace = true
+# The metric registry the cell records into. A library holding an in-memory
+# `BTreeMap` behind a mutex — it exports nothing and opens nothing — so the
+# `libs <- edge` edge this adds is the permitted direction and adds no I/O to a
+# crate whose hot path must not do any. The cell records into a handle it is
+# *given*; where those numbers are served from stays a decision for
+# `qip-edge-node`.
+qip-observability.workspace = true
 
 [lints]
 workspace = true

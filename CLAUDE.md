@@ -32,8 +32,10 @@ being able to say precisely why it did what it did is.
   No async runtime: blocking I/O with explicit timeouts, deliberately.
 - **Next.js + TypeScript** in `frontend/portal/` and `frontend/landing/`
   (their own toolchains — see `frontend/CLAUDE.md`).
-- **Google Cloud**: GKE, Secret Manager CSI, KMS, Binary Authorization,
-  Workload Identity Federation. Terraform 1.9.8, `hashicorp/google ~> 6.12`.
+- **Google Cloud**: Cloud Run for every warm binary and one Compute Engine
+  execution node per region (ADR 0024, never yet applied), secrets mounted
+  as files from Secret Manager, KMS, Binary Authorization, Workload Identity
+  Federation. Terraform 1.9.8, `hashicorp/google ~> 6.12`.
 - **GitHub Actions**: `ci.yml` (gate), `deploy.yml` (build/sign/attest/deploy),
   `infra.yml` (plan/up/down).
 - **IBM Quantum** via Qiskit Runtime for QAOA, with a local steepest-descent
@@ -57,7 +59,7 @@ Four top-level domains, plus the repo-wide concerns (ADR 0016):
 | `frontend/mobile/` | The mobile channel — see its README: the phone app is the portal PWA |
 | `frontend/packages/` | Shared browser packages (brand, design tokens, …) |
 | `data/` | Data domain: local run state, datasets and catalogues when they exist |
-| `infrastructure/` | Terraform modules, environments, Kubernetes manifests, Dockerfile |
+| `infrastructure/` | Terraform root and modules, per-environment tfvars, the egress bootstrap, Dockerfile — no Kubernetes |
 | `vendor/templates/` | Licensed template packages — reference assets (ADR 0015) |
 | `docs/adr/` | Architecture decisions. Read before proposing a change one covers |
 | `docs/ops/` | Threat model, policies, observability notes |

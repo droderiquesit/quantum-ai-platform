@@ -93,6 +93,12 @@ impl Agent for RiskControl {
                 "count",
                 &["risk_state", "limit_set"],
             ))
+            // Gross exposure and drawdown are read from the risk state, but
+            // `RiskState` is the risk engine's aggregate of the book, not a
+            // record from a feed: it carries no as-of instant and no record
+            // id, so an observed stamp would have to invent both. They stay
+            // computed, from the state, until the state can say when it was
+            // valued.
             .fact(computed(
                 ctx,
                 "gross_exposure",

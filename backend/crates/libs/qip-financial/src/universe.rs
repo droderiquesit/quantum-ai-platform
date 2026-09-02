@@ -5,11 +5,11 @@
 //! can mean anything. The registry maintains those indexes and keeps them
 //! consistent on insert and removal.
 
+use qip_core::ObjectId;
 use qip_core::error::{Error, Result};
-use qip_core::{ObjectId, Timestamp};
 use std::collections::{BTreeMap, HashMap};
 
-use crate::asset_class::{AssetClass, InstrumentType, Sector};
+use crate::asset_class::{AssetClass, InstrumentType};
 use crate::identifiers::{IdentifierKind, Identifiers};
 use crate::object::FinancialObject;
 
@@ -105,13 +105,6 @@ impl Universe {
             .unwrap_or_default()
     }
 
-    /// The single object for a symbol on a specific venue.
-    pub fn by_symbol_and_venue(&self, symbol: &str, venue: &str) -> Option<&FinancialObject> {
-        self.by_symbol(symbol)
-            .into_iter()
-            .find(|o| o.venue == venue)
-    }
-
     /// Look up by an external identifier.
     pub fn by_identifier(&self, kind: IdentifierKind, value: &str) -> Option<&FinancialObject> {
         self.by_identifier
@@ -142,40 +135,10 @@ impl Universe {
             .map(|k| ObjectId::from_string(k.clone()))
     }
 
-    pub fn in_asset_class(&self, class: AssetClass) -> Vec<&FinancialObject> {
-        self.by_asset_class
-            .get(&class)
-            .map(|keys| keys.iter().filter_map(|k| self.objects.get(k)).collect())
-            .unwrap_or_default()
-    }
-
     pub fn of_type(&self, instrument_type: InstrumentType) -> Vec<&FinancialObject> {
         self.objects
             .values()
             .filter(|o| o.instrument_type == instrument_type)
-            .collect()
-    }
-
-    pub fn in_sector(&self, sector: Sector) -> Vec<&FinancialObject> {
-        self.objects
-            .values()
-            .filter(|o| o.sector == sector)
-            .collect()
-    }
-
-    /// Derivatives whose underlying is `id`.
-    pub fn derivatives_on(&self, id: &ObjectId) -> Vec<&FinancialObject> {
-        self.objects
-            .values()
-            .filter(|o| o.underlying_object_id.as_ref() == Some(id))
-            .collect()
-    }
-
-    /// Objects that have matured as of `now` and should be retired.
-    pub fn expired_as_of(&self, now: Timestamp) -> Vec<&FinancialObject> {
-        self.objects
-            .values()
-            .filter(|o| o.is_expired(now))
             .collect()
     }
 

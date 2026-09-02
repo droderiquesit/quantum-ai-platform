@@ -23,12 +23,20 @@
 //!   without [`probe::ProbeEvidence`]. A function that must not run on hearsay
 //!   takes the second.
 //! * **A decision without a reason cannot exist.**
-//!   [`decision::RegistrationDecision::new`] refuses empty reasoning, and it
-//!   is the only constructor.
+//!   [`decision::RegistrationDecision::new`] and
+//!   [`decision::RegistrationDecision::registered`] both refuse empty
+//!   reasoning, and they are the only constructors.
+//! * **A source cannot be registered without its legality assessment.**
+//!   [`decision::Registration`] has private fields and no public constructor;
+//!   the `Registered` outcome is built only by
+//!   [`decision::RegistrationDecision::registered`], which takes the
+//!   [`legal::LegalAssessment`] and refuses one that did not permit
+//!   collection. A catalogue entry therefore cannot exist for a source whose
+//!   licence was not read.
 //!
 //! Everything else — rate limits, denylists, drift severity — is advisory in
 //! the sense that a caller could compute the same numbers differently. The
-//! four above are not.
+//! five above are not.
 //!
 //! # What this phase does not do
 //!

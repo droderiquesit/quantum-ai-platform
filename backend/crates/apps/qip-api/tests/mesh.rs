@@ -239,7 +239,9 @@ fn delta(utilisation_orders_sent: u64) -> CellStateDelta {
             strategy: StrategyId::new(STRATEGY),
             object_id: ObjectId::from_string("ACME"),
             venue: VenueId::new("XLON"),
-            side: BookSide::Bid,
+            // Net +60 is a buy, and a buy takes the ask: the side and the
+            // contributor signs agree the way the cell now writes them.
+            side: BookSide::Ask,
             quantity: Decimal::from_int(60),
             price: Decimal::from_int(100),
             simulated: true,
@@ -662,5 +664,53 @@ fn a_cycle_ships_a_signed_payload_the_cell_verifies_and_a_trip_reaches_it() -> R
         .first()
         .expect("the broadcast halt arrived and verified");
     assert!(!halt.reason().is_empty());
+    Ok(())
+}
+
+/// The sink used to build the report from the standing alone and drop the
+/// interval, so the centre attributed no fill and settled no cross however
+/// much the cell traded: every strategy book at the centre stayed flat while
+/// the cell's own journal showed the orders. The premise is asserted first —
+/// no lot for the contributor before the drain — so a plane that already knew
+/// the position could not make this pass.
+#[test]
+fn the_orders_a_cell_reports_reach_the_centres_strategy_books() -> Result<()> {
+    let rig = rig(64)?;
+    let sent = uplink(&rig, "uplink")?.publish(delta(1), start())?;
+    assert!(
+        sent.is_delivered(),
+        "the delta did not reach the inbox: {sent:?}"
+    );
+
+    {
+        let platform = rig
+            .platform
+            .lock()
+            .map_err(|_| Error::invalid("the platform lock is poisoned"))?;
+        assert!(
+            platform
+                .central()
+                .strategy_lot(CELL, &StrategyId::new(STRATEGY), "ACME")
+                .is_none(),
+            "the centre held a lot for the strategy before anything crossed"
+        );
+    }
+
+    let cycle = run_cycle(&rig)?;
+    assert_eq!(cycle["mesh"]["drained"]["absorbed"], 1, "{cycle}");
+
+    let platform = rig
+        .platform
+        .lock()
+        .map_err(|_| Error::invalid("the platform lock is poisoned"))?;
+    let lot = platform
+        .central()
+        .strategy_lot(CELL, &StrategyId::new(STRATEGY), "ACME")
+        .expect("the order the cell reported was not attributed to its contributor");
+    assert_eq!(
+        lot.quantity,
+        Decimal::from_int(60),
+        "the whole fill belongs to the one contributor on the order's side"
+    );
     Ok(())
 }

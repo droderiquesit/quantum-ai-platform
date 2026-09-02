@@ -1256,3 +1256,118 @@ fn a_netted_order_spends_every_contributing_strategy_s_own_envelope() -> Result<
     );
     Ok(())
 }
+
+// --- which way an order goes, proven at the matching engine -----------------
+
+/// The armed book and features, with one strategy of the given kind and no
+/// other, so the pass raises exactly one signal and the venue sees exactly
+/// one order whose direction is the strategy's.
+fn cell_firing_only(kind: SignalKind) -> Result<Cell> {
+    let mut config = CellConfig::new(CELL, "europe-west2");
+    config = config.with_venue(venue("XLON"));
+    let mut cell = Cell::new(config, fed_features("ACME")?)?;
+    cell.track(book_at("XLON", "ACME"));
+    let (compiled, program) = second_strategy("direction-probe", kind, "100")?;
+    cell.deploy(compiled, program, grant_for("direction-probe")?)?;
+    Ok(cell)
+}
+
+/// One pass against a venue seeded on `resting` only, at the cell's mid.
+///
+/// Returns what the venue filled and how many *more* orders it holds open
+/// after the pass than before it. The seeded touch is itself a resting order
+/// and outsizes the cell's, so it rests before and after either way; the
+/// difference is the cell's order alone. A limit order can only fill against
+/// the opposite side, so an order that fills here took the side `resting`
+/// sits on, and one that joins the book is on the same side as it.
+fn pass_against(kind: SignalKind, resting: Side) -> Result<(Decimal, usize, BookSide, Decimal)> {
+    let mut cell = cell_firing_only(kind)?;
+    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    gateway.seed_touch(&object("ACME"), resting, dec!("100"), dec!("500"), t(15))?;
+    let resting_before = gateway.resting_count();
+    assert_eq!(
+        resting_before, 1,
+        "the premise failed: the seeded touch did not rest"
+    );
+
+    let report = cell.work(t(20), &mut gateway)?;
+    // Premise: the signal was the kind asked for and the venue accepted the
+    // one order, so whatever happened next happened to that order.
+    assert_eq!(report.signals.len(), 1, "the strategy did not fire once");
+    assert_eq!(report.signals[0].kind, kind, "the signal was not {kind:?}");
+    assert_eq!(
+        report.orders.len(),
+        1,
+        "no order reached the venue: {:?}",
+        report.refusals
+    );
+    assert_eq!(gateway.submitted_count(), 1);
+    let filled = gateway
+        .drain_drop_copies()
+        .iter()
+        .map(|fill| fill.quantity)
+        .fold(Decimal::ZERO, |a, b| a + b);
+    let order = &report.orders[0];
+    assert!(order.quantity.is_positive(), "the order had no size");
+    let joined = gateway.resting_count() - resting_before;
+    Ok((filled, joined, order.side, order.quantity))
+}
+
+#[test]
+fn an_enter_signal_is_a_buy_at_the_matching_engine_filling_against_offers_and_resting_against_bids()
+-> Result<()> {
+    // The property the whole edge exists to get right, and the one no test
+    // asserted: the direction of an `Enter` where it is finally decided,
+    // which is the venue's own matching. The cell's `BookSide` is read by the
+    // gateway as the side taken, so `Ask` must mean buy *there* — and a buy
+    // is the order that trades with resting offers and sits beside resting
+    // bids. Both halves are asserted because either alone is satisfied by a
+    // venue that fills everything or one that fills nothing.
+    let (filled, joined, side, sent) = pass_against(SignalKind::Enter, Side::Sell)?;
+    assert_eq!(side, BookSide::Ask, "an Enter did not take the ask");
+    assert_eq!(
+        filled, sent,
+        "an Enter did not trade with the resting offer, so it was not a buy"
+    );
+    assert_eq!(joined, 0, "a buy that met an offer was left open");
+
+    let (filled, joined, side, _) = pass_against(SignalKind::Enter, Side::Buy)?;
+    assert_eq!(side, BookSide::Ask);
+    assert_eq!(
+        filled,
+        Decimal::ZERO,
+        "an Enter traded with a resting bid, which only a sell can do"
+    );
+    assert_eq!(
+        joined, 1,
+        "the buy did not rest beside the bid it could not trade with"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_exit_signal_is_a_sell_at_the_matching_engine_filling_against_bids_and_resting_against_offers()
+-> Result<()> {
+    // The mirror image, so the test above cannot pass on a venue that fills
+    // every order against whatever is there.
+    let (filled, joined, side, sent) = pass_against(SignalKind::Exit, Side::Buy)?;
+    assert_eq!(side, BookSide::Bid, "an Exit did not hit the bid");
+    assert_eq!(
+        filled, sent,
+        "an Exit did not trade with the resting bid, so it was not a sell"
+    );
+    assert_eq!(joined, 0, "a sell that met a bid was left open");
+
+    let (filled, joined, side, _) = pass_against(SignalKind::Exit, Side::Sell)?;
+    assert_eq!(side, BookSide::Bid);
+    assert_eq!(
+        filled,
+        Decimal::ZERO,
+        "an Exit traded with a resting offer, which only a buy can do"
+    );
+    assert_eq!(
+        joined, 1,
+        "the sell did not rest beside the offer it could not trade with"
+    );
+    Ok(())
+}

@@ -173,17 +173,7 @@ pub enum CouponFrequency {
     Monthly,
 }
 
-impl CouponFrequency {
-    pub fn payments_per_year(&self) -> f64 {
-        match self {
-            Self::Zero => 0.0,
-            Self::Annual => 1.0,
-            Self::SemiAnnual => 2.0,
-            Self::Quarterly => 4.0,
-            Self::Monthly => 12.0,
-        }
-    }
-}
+impl CouponFrequency {}
 
 /// Day-count convention. Getting this wrong misprices accrued interest, so it
 /// is explicit on every instrument rather than assumed.

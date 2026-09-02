@@ -274,9 +274,4 @@ impl SettlementCalendar {
             days_in_flight_stat: available_at.since(instructed_at).as_days_f64(),
         })
     }
-
-    /// Whether an instruction given now produces funds by an instant.
-    pub fn delivers_by(&self, instructed_at: Timestamp, needed_by: Timestamp) -> Result<bool> {
-        Ok(self.quote(instructed_at)?.arrives_by(needed_by))
-    }
 }

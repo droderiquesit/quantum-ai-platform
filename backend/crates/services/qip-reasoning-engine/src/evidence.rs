@@ -318,11 +318,6 @@ impl EvidenceSet {
             .sum()
     }
 
-    /// Supporting minus contradicting independent weight.
-    pub fn net_weight(&self) -> f64 {
-        self.independent_weight(Stance::Supports) - self.independent_weight(Stance::Contradicts)
-    }
-
     /// Whether any primary source stands behind the claim.
     ///
     /// A thesis resting entirely on news and third-party research is a thesis

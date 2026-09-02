@@ -123,6 +123,43 @@ fn a_halt_overrides_everything_else_in_the_banner() {
 }
 
 #[test]
+fn a_halted_paper_platform_still_says_paper_trading_on_every_surface() {
+    // The halted banner once replaced the posture label instead of adding to
+    // it, so a halted simulator and a halted live book rendered the same
+    // page. The halt is shown, and so is the fact that no order could have
+    // reached a market before it.
+    let model = ViewModel {
+        halted: true,
+        halt_reason: "drawdown limit breached".to_string(),
+        ..ViewModel::default()
+    };
+    assert!(!model.live, "the premise is a halted paper platform");
+    for surface in Surface::all() {
+        let page = render(surface, &model);
+        assert!(page.contains("HALTED"), "{} lost the halt", surface.title());
+        assert!(
+            page.contains("PAPER TRADING"),
+            "{} shows a halted platform without its posture",
+            surface.title()
+        );
+        assert!(!page.contains("LIVE TRADING"), "{page}");
+    }
+
+    // A halted live platform is halted, not paper: the label must not leak
+    // onto a book whose fills were real.
+    let live = ViewModel {
+        live: true,
+        halted: true,
+        halt_reason: "drawdown limit breached".to_string(),
+        ..ViewModel::default()
+    };
+    let page = render(Surface::Overview, &live);
+    assert!(page.contains("HALTED"), "{page}");
+    assert!(!page.contains("PAPER TRADING"), "{page}");
+    assert!(!page.contains("LIVE TRADING"), "{page}");
+}
+
+#[test]
 fn the_banner_appears_on_every_surface() {
     let model = ViewModel::default();
     for surface in Surface::all() {

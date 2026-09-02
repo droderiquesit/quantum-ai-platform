@@ -22,24 +22,6 @@ variable "key_ring_id" {
   type        = string
 }
 
-variable "cluster_id" {
-  description = <<-EOT
-    The cluster the policy pins its rule to, as `<location>.<name>` — for
-    example `europe-west2.qip-production`.
-
-    Binary Authorization matches this string exactly, and a cluster admission
-    rule naming a cluster that does not exist is never evaluated and never
-    reports anything. Pass it from the cluster module's outputs rather than
-    writing the name a second time.
-  EOT
-  type        = string
-
-  validation {
-    condition     = can(regex("^[a-z0-9-]+\\.[a-z0-9-]+$", var.cluster_id))
-    error_message = "The cluster id is <location>.<name>, as Binary Authorization writes it."
-  }
-}
-
 variable "ci_service_account" {
   description = <<-EOT
     The pipeline's service account, which is the identity that signs.

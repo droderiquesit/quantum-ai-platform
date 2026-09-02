@@ -98,10 +98,6 @@ pub enum ReplacementOutcome {
 }
 
 impl ReplacementOutcome {
-    pub fn is_found(&self) -> bool {
-        matches!(self, Self::Found { .. })
-    }
-
     /// The best complete replacement, or `None`. There is deliberately no
     /// method that returns a partial candidate as if it were a replacement.
     pub fn best(&self) -> Option<&RankedReplacement> {

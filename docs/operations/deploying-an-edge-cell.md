@@ -1,137 +1,185 @@
 # Deploying a new edge cell
 
+A cell is one entry in `execution_nodes` in the environment's
+`infrastructure/environments/<env>/terraform.tfvars`
+(`infrastructure/terraform/variables.tf:227-275`), provisioned by
+`infrastructure/terraform/modules/execution-node` as one Compute Engine
+machine running `qip-edge-node` bare under systemd, in shadow mode by a
+literal in `infrastructure/terraform/main.tf:492` that no tfvars value can
+turn off ([ADR 0024](../adr/0024-the-blueprint-runtime-is-provisioned-in-code-and-the-gitops-runtime-is-retired.md)).
+The node id and the cell id are the same string
+(`modules/execution-node/variables.tf:9-25`).
+
 **Before you start:** a cell trades on its own authority, inside a capital
 envelope granted in advance. Bringing one up wrong does not fail loudly — it
 produces a cell that either cannot reach its venue, or can reach more than its
 venue. Both are quiet.
 
 Nothing in this runbook has been executed against a real project. It is written
-from the configuration in `infrastructure/`, and the first person to follow it
-should expect to correct it.
+from the configuration in `infrastructure/`, which has never been applied, and
+the first person to follow it should expect to correct it. Two facts bound what
+it can promise:
+
+* `execution_nodes = {}` in every environment
+  (`environments/{dev,test,stage,prod}/terraform.tfvars`). No node exists
+  anywhere, because a node needs at least one venue and no venue's published
+  ranges are recorded in this repository.
+* Nothing in this repository builds the boot image
+  (`modules/execution-node/README.md`, "No image bake exists"). `deploy.yml`
+  builds and attests a container image of `qip-edge-node`; turning that into a
+  Compute Engine image with the kernel command line the module verifies is a
+  build step nobody has written. Until it exists, step 4 names an image
+  somebody built by hand.
 
 ## Do this
 
-1. **Pick the cell id and the region.** The cell id goes in three places and
-   must be the same string in all of them: the Terraform `edge_cells` key, the
-   `QIP_CELL_ID` environment variable, and the `cell` field of every
-   `CapitalEnvelope` the central plane grants there. A cell refuses an envelope
-   addressed elsewhere, so a mismatch is a cell that starts and then rejects
-   every grant it is sent.
+1. **Pick the node id and the region.** The id goes in three places and must
+   be the same string in all of them: the `execution_nodes` key, which the
+   startup script writes as `QIP_CELL_ID`
+   (`modules/execution-node/templates/startup.sh.tftpl:148`), and the `cell`
+   field of every `CapitalEnvelope` the central plane grants there. A cell
+   refuses an envelope addressed elsewhere, so a mismatch is a cell that starts
+   and then rejects every grant it is sent. The region is chosen for distance to
+   the venue (`variables.tf:27-30`); the zone must be in it, and the module
+   refuses one that is not (`variables.tf:45-48`). The group is zonal on
+   purpose — a compact placement policy is a claim about one zone
+   (`variables.tf:32-43`).
 
-2. **Allocate its addresses.** Cell *n*, counting from one, takes:
+2. **Allocate its subnet.** One range, in the node's region
+   (`modules/execution-node/main.tf:109-130`). It must overlap neither another
+   node's range nor any trust zone's: overlapping ranges route to whichever
+   subnet was created first, silently (`variables.tf:243-245`), and the root
+   refuses two nodes sharing a range (`variables.tf:271-274`). There is no pod
+   or service range any more; the node is one machine with one address on one
+   subnet and no external address (`main.tf:333-345` — no `access_config`).
 
-   | range | value |
-   | --- | --- |
-   | subnet | `10.(16n).0.0/20` |
-   | pods | `10.(16n+4).0.0/14` |
-   | services | `10.(16n+8).0.0/20` |
+3. **Choose the machine.** One of `c3-highcpu-8`, `c3-highcpu-22`,
+   `c3d-highcpu-8`, `c3d-highcpu-16`; the module refuses anything else
+   (`modules/execution-node/variables.tf:90-98`). The isolated core range is
+   derived from the shape (`main.tf:80-87`): on an 8-vCPU machine it is `2-7`
+   and the blueprint's §41.3 thread assignment does not fit, which
+   `terraform output execution_nodes` reports as `isolated_cpus` so a
+   deployment can see which of the two it got.
 
-   So the first cell is `10.16.0.0/20`, `10.20.0.0/14`, `10.24.0.0/20`; the
-   second is `10.32.0.0/20`, `10.36.0.0/14`, `10.40.0.0/20`. The primary subnet
-   (`10.0.0.0/20`, `10.4.0.0/14`, `10.8.0.0/20`) is cell zero in this scheme and
-   is where the central plane lives. Overlapping ranges do not error: they route
-   to whichever subnet was created first.
+4. **Name the boot image by self-link.** Never a family — the module refuses
+   `/family/` (`variables.tf:120-123`). The image is the other half of the
+   node: `isolcpus`, huge pages, no swap, no container runtime,
+   `/usr/local/bin/envoy`, `/usr/local/bin/qip-fetch-secret` and the Ops Agent
+   all belong to it, and the startup script **verifies** each at boot and
+   refuses to start the units when one is missing
+   (`modules/execution-node/README.md`, "What this module cannot enforce").
+   There is no admission controller on a bare machine, so this is what stands
+   between a hand-built image and a trading node.
 
-3. **Add the entry** to `edge_cells` in the environment's
-   `infrastructure/environments/<environment>/terraform.tfvars`. Leave `venues`
-   empty for now.
+5. **Write the venues map from the venue's own connectivity documentation.**
+   It may not be empty — `qip-edge-node` refuses an empty `QIP_VENUES` and the
+   template's precondition refuses the plan first
+   (`main.tf:308-311`) — and it may not be `0.0.0.0/0`
+   (`variables.tf:189-194`). Do not guess a range: a wrong one produces a cell
+   that cannot trade, and a wide one produces a cell that can reach the
+   internet. In shadow mode the node is *configured* for these venues and can
+   *reach* none of them: no venue firewall rule is created at all while
+   `shadow_mode` is true (`main.tf:551-552`).
 
-4. **Apply the Terraform.** This creates the subnet, the service account, the
-   workload identity binding, the egress firewall rules and the IAM the cell
-   needs — object creation on the evidence bucket, read on the registry, read on
-   the capital-envelope verification key, and telemetry.
+6. **Set `create_egress_nat`.** True only when the node's region has no NAT of
+   its own; a second NAT over the same subnetworks in one region is an apply
+   error, not a redundancy (`variables.tf:427-446`). The primary region already
+   has one from `modules/network`.
 
-5. **Tag the cell's nodes.** Every firewall rule constraining the cell targets
-   the tag in `terraform output edge_cells`. A rule targeting a tag nothing
-   carries does nothing, and does it silently. Check with
-   `gcloud compute instances list --filter="tags.items=<tag>"` before going
-   further; an empty result means the cell has unconstrained egress.
+7. **Add the entry.** The shape is in
+   `modules/execution-node/README.md`, "The tfvars entry". Leave everything
+   about shadow mode alone: it is not a field.
 
-6. **Write the verification key.** The `qip-capital-envelope-key` secret is
-   created empty by Terraform, because a value in Terraform is a value in the
-   state file. Write the version out of band. It is the key envelope signatures
-   are checked against — its confidentiality matters less than its integrity,
-   because whoever can replace it can mint envelopes.
+8. **Plan, and read the plan.** `infra.yml`'s `plan` action is a manual
+   dispatch and refuses `prod` (`.github/workflows/infra.yml:43,83-85`);
+   `up` prints the plan before applying. What a correct plan for a new node
+   contains, all from `modules/execution-node/main.tf`: the subnet; one
+   service account with no key (`:174-195`); `secretmanager.secretAccessor` on
+   the capital-envelope key (`:200-205`); `monitoring.metricWriter` and
+   `logging.logWriter` (`:223-233`); `storage.objectCreator` on the evidence
+   bucket (`:238-244`); a placement policy, a health check, an instance
+   template and a managed instance group of one (`:260-465`); and firewall
+   rules named `deny-egress`, `google-apis`, `central-plane`, `health-checks`
+   and `deny-ingress` (`:472-621`).
 
-7. **Render and apply the manifests.** `edge-cell.yaml` is not applied by the
-   deploy pipeline; it is applied here, deliberately, because a workload that
-   trades should not appear unattended.
+   What it must **not** contain: any rule named `…-venue-…`, and any
+   `google_secret_manager_secret_iam_member` on `qip-venue-credential`. Either
+   means `shadow_mode` at `main.tf:492` has been edited or the ceiling refusal
+   in `variables.tf:105-116` has been removed. Stop and ask.
 
-   The image renders to a digest, not a tag. Binary Authorization refuses to
-   evaluate a tag reference at admission — the attestation CI wrote names
-   bytes, `@sha256:…` — so a manifest substituting `<commit sha>` for
-   `IMAGE_TAG` gets its pods denied with "Expected digest with sha256
-   scheme". Resolve the digest the registry holds for the commit first, then
-   render `qip-edge-node:IMAGE_TAG` to `qip-edge-node@<digest>`:
+9. **Apply — a person's decision.** ADR 0024 authorises the code and not an
+   apply; the first plan against a project that ran the old runtime will
+   propose destroying it, and whoever reads that plan decides.
 
-   ```sh
-   prefix="$(terraform output -raw image_prefix)"
-   digest="$(gcloud artifacts docker images describe \
-       "${prefix}/qip-edge-node:<commit sha>" \
-       --format='value(image_summary.digest)')"
-   sed -e "s#__CELL_ID__#london-1#g" \
-       -e "s#__CELL_REGION__#europe-west2#g" \
-       -e "s#CELL_VENUES#<venue ids, comma separated>#g" \
-       -e "s#IMAGE_PREFIX#${prefix}#g" \
-       -e "s#qip-edge-node:IMAGE_TAG#qip-edge-node@${digest}#g" \
-       -e "s#ENVIRONMENT#<environment>#g" \
-       -e "s#PROJECT#<project>#g" \
-       infrastructure/kubernetes/base/edge-cell.yaml | kubectl apply -f -
-   ```
+10. **Confirm the tag is carried.** Every rule constraining the node targets
+    the tag in `terraform output execution_nodes` (`node_tag`), and a rule
+    targeting a tag nothing carries does nothing, silently. Check with
+    `gcloud compute instances list --filter="tags.items=<tag>"`; an empty
+    result means the deny-all egress rule constrains nothing.
 
-   `CELL_VENUES` becomes `QIP_VENUES`, and the node refuses to start without
-   it: a cell that does not know which venues it is for cannot check an
-   envelope's venue scope, and one that started anyway would report itself
-   healthy while being unable to trade. Use the same venue ids as the
-   `venues` map in step 3, even while that map is empty — see the next step
-   for why those two are not the same thing.
+11. **Write the verification key.** The `qip-capital-envelope-key` secret is
+    created empty by Terraform (`infrastructure/terraform/main.tf:201-204`),
+    because a value in Terraform is a value in the state file. Write the
+    version out of band. The startup script fetches it into the unit's run
+    directory and `qip-edge-node` refuses to start without it
+    (`modules/execution-node/main.tf:197-199`). Its confidentiality matters
+    less than its integrity: whoever can replace it can mint envelopes.
 
-8. **Confirm the cell can reach nothing yet.** Two different things are being
-   checked here, and conflating them is how a cell ends up trading before
-   anyone meant it to.
+12. **Confirm the node can reach nothing yet.** The group judges the instance
+    by `GET /health` on port 8080 (`main.tf:282-285`) after a five-minute
+    initial delay (`:456`), and the startup script's last line reads
+    `started in SHADOW mode` (`startup.sh.tftpl:292`) — read it over an
+    OS Login session, which is the only shell the node permits (`main.tf:390-392`;
+    the serial console is off). The state to confirm: the instance is healthy,
+    `terraform output execution_nodes` shows `shadow_mode = true` and
+    `venue_credential_bound = false`, and
+    `gcloud compute firewall-rules list --filter="name~^qip-<env>-exec-<id>-venue-"`
+    is empty. Running, connected to nothing, holding no envelope. That is the
+    state to be in before granting any capital.
 
-   `QIP_VENUES` is what the cell is *configured* for. The Terraform `venues`
-   map — still empty at this point — is what it may *reach*: no entry means no
-   firewall rule and no `allow-edge-egress` rule, so every venue connection
-   fails at the network. The narrower of the two always wins.
+13. **Attach the journal snapshot schedule.** Terraform creates the schedule
+    and cannot attach it, because the disk is created by the group after any
+    apply. Run `terraform -chdir=infrastructure/terraform output -raw journal_snapshot_attachment_command`
+    now and again after every replacement; until then the journal is covered
+    by nothing (`modules/backup/NOT-COVERED.md`). See
+    [disaster recovery](disaster-recovery.md).
 
-   So the state to confirm is: the node starts, logs its cell id, prints the
-   venue endpoints and credentials it is still awaiting, serves `/health`, and
-   opens no venue connection. Running, connected to nothing, holding no
-   envelope. That is the state to be in before granting any capital.
+14. **Know what is still not connected.** The centre-to-node path is unwired
+    on this runtime: `QIP_MESH_PEER` is not set on the node and
+    `QIP_MESH_CELLS` is not set on the API (ADR 0024, "What it costs";
+    `infrastructure/terraform/catalogue.tf:21-27`), so the node starts
+    detached and no envelope, policy or kill-switch scope reaches it. Granting
+    capital through the central plane's approval path is the last step of this
+    runbook in principle, and today there is no path to deliver the grant.
+    The node's Ops Agent receiver scrapes its health port
+    (`startup.sh.tftpl:178-196`), but `workload_metrics_exist` stays false in
+    every environment until a scrape has been observed, so no alert exists for
+    it yet.
 
-   **The pod will only reach that state if the cluster has nodes in the cell's
-   region.** `edge-cell.yaml` carries a `nodeSelector` on
-   `topology.kubernetes.io/region`, so a cell whose region has no node pool
-   sits `Pending` rather than starting. That is deliberate and it is the check
-   working: without it the pod schedules onto the central plane's own nodes,
-   comes up healthy, passes its probes and reports a region it is not in — a
-   cell's whole argument is proximity to a venue, and that failure makes the
-   argument false while every indicator says it holds.
+## Taking a node out of shadow mode
 
-   `modules/cluster` creates one regional node pool, so today only a cell in
-   the cluster's own region can start. A cell elsewhere needs a node pool
-   there, which is the second half of `docs/operations/multi-region.md` and is
-   an architectural decision rather than a step in this runbook. A `Pending`
-   cell here is not a misconfiguration to work around; it is this platform
-   telling you it has nowhere to put that cell.
-
-9. **Add the venues, last.** Put the ranges the venue publishes into the
-   `venues` map, apply, and substitute `VENUE_CIDR` and `VENUE_PORT` in
-   `allow-edge-egress`. Terraform validation refuses `0.0.0.0/0`. Do not guess
-   a range: a wrong one produces a cell that cannot trade, and a wide one
-   produces a cell that can reach the internet.
-
-10. **Grant capital last of all**, through the central plane's approval path.
-    Until an envelope exists the cell can commit nothing, which is the correct
-    state for a cell nobody has watched yet.
+Not a tfvars value. `shadow_mode = true` is a literal at
+`infrastructure/terraform/main.tf:492`, and letting a node out is an edit
+there that a reviewer sees. Turning it off is what creates the one-rule-per-
+venue egress (`modules/execution-node/main.tf:541-572`). The venue credential
+binding additionally requires an autonomy ceiling that permits live trading
+(`main.tf:100-104`), which `infrastructure/terraform/variables.tf:105-116`
+refuses at plan time for every environment — so a node out of shadow mode can
+reach a venue's address and still cannot authenticate to it. ADR 0020 step 3
+is the ordering: observed before it takes anything.
 
 ## To take a cell out
 
-Remove its entry from `edge_cells` and apply. The service account, the subnet
-and the firewall rules go with it, which is the reason a cell's identity lives
-in its own module rather than in the shared account map: an account left behind
-by a removed cell is a credential nobody owns.
+Remove its entry from `execution_nodes` and apply. The subnet, the service
+account, the group and the firewall rules go with it, which is the reason a
+node's identity lives in its own module rather than in a shared map: an
+account left behind by a removed cell is a credential nobody owns.
+`infra.yml`'s `down` action destroys `module.execution_node` alone and refuses
+an untargeted destroy (`.github/workflows/infra.yml:19,223`).
+
+The journal disk is `auto_delete = true` (`main.tf:319-331`): it goes with the
+instance. Its snapshots do not — the schedule keeps them on disk deletion
+(`modules/backup/main.tf:89`) — but only if step 13 was run for that disk.
 
 Let the envelopes expire rather than revoking them, if you can. Every envelope
 expires by construction, and a cell that stops when its grant runs out stops
@@ -139,8 +187,8 @@ cleanly.
 
 ## The seven locations
 
-ADR 0008 calls for at least seven cells; nine are configured. Adding a tenth is one entry in the map
-above — no new module, no new directory.
+ADR 0008 calls for at least seven cells; nine names are reserved. Adding one is
+one entry in the map above — no new module, no new directory.
 
 | cell id | location | region | note |
 | --- | --- | --- | --- |
@@ -158,55 +206,53 @@ Three of the nine are a problem worth reading before building on this table.
 
 Google Cloud has no region in Chicago, none in the New York/New Jersey
 metropolitan area, and none in Dubai. The nearest regions are roughly 400, 300
-and 380 kilometres away respectively, which is several milliseconds of round trip that a cell whose
-whole argument is source-adjacency cannot spend. A cell in `us-central1` is not
-next to CME any more than the central plane is.
+and 380 kilometres away respectively, which is several milliseconds of round
+trip that a cell whose whole argument is source-adjacency cannot spend. A cell
+in `us-central1` is not next to CME any more than the central plane is.
 
 That is an architectural gap rather than a configuration one, and it has three
-honest answers: colocation with a partner interconnect back to the VPC, running
-those two cells somewhere other than Google Cloud, or accepting that the two
-American equity and futures cells are not latency-competitive and saying so.
-ADR 0008 already names the condition under which the whole cell architecture
-should be collapsed back into the central plane, and this is evidence for that
-question rather than against it.
+honest answers: colocation with a partner interconnect back to the VPC
+(`modules/connectivity`, off everywhere, and a circuit nobody has ordered),
+running those cells somewhere other than Google Cloud, or accepting that the
+two American equity and futures cells are not latency-competitive and saying
+so. ADR 0008 already names the condition under which the whole cell
+architecture should be collapsed back into the central plane, and this is
+evidence for that question rather than against it.
 
-## The cell's journal outlives its pod
+## The cell's journal lives on the boot disk
 
-`edge-cell.yaml` is a **StatefulSet**, not a Deployment, and the reason is the
-journal. A cell's hash-chained decision record is what answers "why did this
-cell trade" after the fact, and a record on ephemeral pod storage answers it
-only until the first restart.
-
-Each replica therefore gets its own `journal` volume from a
-`volumeClaimTemplate`, mounted at `/var/lib/qip/journal`. Point
-`QIP_STORAGE_ROOT` at that path and set `QIP_STORAGE_TARGET=engine`. The
-retention policy is `Retain` on both delete and scale-down: a cell that has
-been removed still has to be able to account for what it did while it ran.
+The startup script sets `QIP_STORAGE_TARGET=engine` and
+`QIP_STORAGE_ROOT=/var/lib/qip/journal` (`startup.sh.tftpl:152-153`) and
+creates that directory owned by the node's user (`:215`). The journal is on
+the instance's 100 GB boot disk, labelled `qip_journal=true` so the snapshot
+schedule can find it (`main.tf:326-330`), and that disk is deleted with the
+instance. A replacement under the group's policy is a new machine with a new
+disk — so a cell's hash-chained decision record outlives its machine only as
+snapshots, and only from the moment the schedule was attached. That is the
+intended friction, and it is weaker than the namespace-scoped backup the old
+runtime had; `modules/backup/NOT-COVERED.md` says so in as many words.
 
 `QIP_MIRROR_PATH` used to select the journal's destination on its own. It is no
 longer read, and the node **refuses to start** if it is set rather than
-ignoring it — a cell deployed with the old variable would otherwise write its
-journal nowhere while its configuration still claimed a path. The refusal names
-the two replacements.
+ignoring it (`backend/crates/apps/qip-edge-node/src/main.rs:134-146`) — a cell
+deployed with the old variable would otherwise write its journal nowhere while
+its configuration still claimed a path. The refusal names the two replacements.
 
-Book and feature state stays on `emptyDir`, deliberately. A cell rebuilds its
-books from the feed on start, and state that survived a restart would be state
+Book and feature state is in memory, deliberately. A cell rebuilds its books
+from the feed on start, and state that survived a restart would be state
 nobody reconciled against the venue — the same reasoning that makes a stale
 book serve no price.
 
-Two consequences worth knowing before the first apply:
-
-* **The volumes outlive `kubectl delete statefulset`.** Removing a cell for
-  good means deleting its PVCs deliberately, after its journal has been
-  archived. That is the intended friction.
-* **`kubectl rollout status` needs the kind.** The pipeline's wait loop is
-  kind-qualified for this reason; a bare `deployment/qip-edge-…` would wait on
-  an object that does not exist until it timed out.
-
-
 ## What this runbook does not cover
 
-The cell's node pool. This module creates the cell's subnet and identity, not
-the nodes that run it, and until a node pool exists carrying the cell's tag the
-cell has nowhere to be scheduled. See
-[external dependencies](external-dependencies.md).
+* **The boot image.** Nothing builds it; see above.
+* **The venue decision.** The ranges in step 5 come from the venue, and no
+  venue has been chosen for any environment.
+* **The centre-to-node path.** Step 14. The blueprint's control fabric is
+  Pub/Sub, and building it is work ADR 0024 names and does not do.
+* **A collector or an alert for the node.** The receiver is declared; nothing
+  has been scraped. See `.claude/rules/domains/observability.md`.
+
+See also [external dependencies](external-dependencies.md) — the standing
+list; note that its edge-cell section still describes the retired runtime's
+`modules/edge-cell` and is not corrected here.

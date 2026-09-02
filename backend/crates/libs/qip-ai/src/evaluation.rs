@@ -54,13 +54,7 @@ pub struct CalibrationBin {
     pub observed_rate: f64,
 }
 
-impl CalibrationBin {
-    /// How far the bin is from perfectly calibrated. Positive means
-    /// overconfident.
-    pub fn overconfidence(&self) -> f64 {
-        self.mean_predicted - self.observed_rate
-    }
-}
+impl CalibrationBin {}
 
 /// Calibration assessment over a set of predictions.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -10,18 +10,22 @@
 //! expiring — and the worst it can do while cut off is spend an amount
 //! somebody already approved, for as long as the envelope has left to run.
 
+use crate::arbitrage::ArbitrageDesk;
 use crate::dropcopy::{CellFill, Discrepancy, DropCopyFill, DropCopyReconciler};
 use crate::envelope::VerifiedEnvelope;
+use crate::feasibility::{self, VenueModel};
 use crate::journal::{Decision, Journal, Mirror};
 use crate::mesh::{CellStateDelta, DeltaOrder, DeltaRefusal, StrategyUtilisation};
 use crate::policy::{VerifiedHalt, VerifiedPolicy};
 use crate::seam::CellLiquidity;
+use crate::telemetry::CellMetrics;
+use qip_arbitrage::scan::{Opportunity, RejectionStage};
 use qip_contracts::capital::{CapitalGrant, Utilisation};
 use qip_contracts::degradation::{DegradationState, StrategyClass};
-use qip_contracts::intent::{Contributor, Intent, NetIntent, net, netting_ratio};
+use qip_contracts::intent::{Contributor, CycleLeg, Intent, NetIntent, net, netting_ratio};
 use qip_contracts::message::{BookSide, MarketMessage};
 use qip_contracts::signal::{Signal, SignalKind, StrategyId};
-use qip_contracts::venue::{VenueId, VenueStatus};
+use qip_contracts::venue::{VenueClass, VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, ObjectId, Timestamp};
 use qip_feature_dag::engine::FeatureEngine;
@@ -47,6 +51,11 @@ pub struct CellConfig {
     pub max_staleness: Duration,
     /// The runtime node budget a strategy may not exceed.
     pub strategy_budget: usize,
+    /// What the cell knows about executing at each venue, keyed by venue id
+    /// (blueprint §18.1). A venue absent here is judged for depth alone —
+    /// see [`crate::feasibility`] for why that is stated rather than
+    /// defaulted.
+    pub feasibility: BTreeMap<String, VenueModel>,
 }
 
 impl CellConfig {
@@ -57,11 +66,23 @@ impl CellConfig {
             venues: Vec::new(),
             max_staleness: Duration::from_secs(5),
             strategy_budget: 4_096,
+            feasibility: BTreeMap::new(),
         }
     }
 
     pub fn with_venue(mut self, venue: VenueId) -> Self {
         self.venues.push(venue);
+        self
+    }
+
+    /// Install the feasibility model for a venue.
+    ///
+    /// The model is keyed by the venue's id and read on every intent for that
+    /// venue; installing one for a venue the cell cannot reach is harmless
+    /// and installing none for a venue it can is the depth-only case.
+    #[must_use]
+    pub fn with_feasibility(mut self, venue: &VenueId, model: VenueModel) -> Self {
+        self.feasibility.insert(venue.as_str().to_string(), model);
         self
     }
 }
@@ -129,6 +150,10 @@ pub struct PlacedOrder {
     pub contributors: Vec<Contributor>,
     pub object_id: ObjectId,
     pub venue: VenueId,
+    /// The side of the book the order takes: `Ask` is a buy, `Bid` is a sell.
+    /// Every gateway reads it this way, and so does the sign on each
+    /// contributor below — a positive share bought. Stated here because the
+    /// enum's own names do not say which reading an *order* carries.
     pub side: BookSide,
     pub quantity: Decimal,
     pub price: Decimal,
@@ -189,6 +214,11 @@ pub struct Cell {
     /// flight cannot un-halt the cell it was racing.
     policy_halt_barrier: Option<Timestamp>,
     dropcopy: DropCopyReconciler,
+    /// The arbitrage desk, if the composition root installed one. `None` is
+    /// a cell that runs strategy programs and scans no graph, which is every
+    /// cell before this field existed and every test that does not ask for
+    /// one.
+    desk: Option<ArbitrageDesk>,
     journal: Journal,
     fills: Vec<CellFill>,
     /// Every disagreement between this cell's fills and the venue's own
@@ -202,6 +232,12 @@ pub struct Cell {
     breaks: Vec<String>,
     breaks_omitted: u32,
     order_sequence: u64,
+    /// Where the cell's facts go.
+    ///
+    /// Given, never reached for: a cell assembled without one records into a
+    /// registry nobody reads, which is what every test in the tree does. See
+    /// [`crate::telemetry`] for why nothing here can block or fail the pass.
+    metrics: CellMetrics,
 }
 
 /// How many reconciliation breaks a cell keeps for reporting.
@@ -227,11 +263,13 @@ impl Cell {
             policy_halted: false,
             policy_halt_barrier: None,
             dropcopy: DropCopyReconciler::new(),
+            desk: None,
             journal: Journal::new(),
             fills: Vec::new(),
             breaks: Vec::new(),
             breaks_omitted: 0,
             order_sequence: 0,
+            metrics: CellMetrics::silent(),
             config,
         })
     }
@@ -240,12 +278,90 @@ impl Cell {
         &self.config
     }
 
+    /// Record into the composition root's registry rather than the silent one
+    /// this cell was built with.
+    ///
+    /// Called once, in `qip-edge-node`, with the handle taken from the
+    /// telemetry before it is used anywhere else — exactly as `qip-fastbrain`
+    /// and `qip-deepbrain` install theirs. Taking a second registry here would
+    /// produce a scrape surface that answers empty forever while the cell
+    /// records diligently into one nothing can reach, which is the defect this
+    /// seam exists to close rebuilt one level up.
+    ///
+    /// The halt gauge is written immediately so a cell that starts halted, and
+    /// is scraped before its first pass, does not read as running.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: std::sync::Arc<qip_observability::Metrics>) -> Self {
+        self.metrics = CellMetrics::new(metrics, &self.config.cell_id, &self.config.region);
+        self.record_halt();
+        self
+    }
+
+    /// Install the arbitrage desk this cell scans with.
+    ///
+    /// A builder rather than a constructor argument, like [`Self::with_metrics`],
+    /// so [`Self::new`] stays the one way to assemble a cell and stays
+    /// paper-only. Refused when the desk's envelope names another cell, or
+    /// when its graph reaches a venue this cell may not: a cycle is priced
+    /// against the cell's own books, and a venue absent from the cell's list
+    /// has no book here to price against and no gateway here to send to.
+    pub fn with_arbitrage(mut self, desk: ArbitrageDesk) -> Result<Self> {
+        if desk.envelope().cell() != self.config.cell_id {
+            return Err(Error::denied(format!(
+                "an envelope for cell {} cannot fund the arbitrage desk at {}",
+                desk.envelope().cell(),
+                self.config.cell_id
+            )));
+        }
+        for edge in desk.graph().edges() {
+            for venue in [&edge.from.venue, &edge.to.venue] {
+                if !self.config.venues.contains(venue) {
+                    return Err(Error::denied(format!(
+                        "conversion {} reaches {}, which this cell may not trade; a cycle \
+                         through a venue the cell holds no book for cannot be priced here",
+                        edge.label(),
+                        venue.as_str()
+                    )));
+                }
+            }
+        }
+        self.desk = Some(desk);
+        Ok(self)
+    }
+
+    /// The installed arbitrage desk, if any.
+    pub fn arbitrage(&self) -> Option<&ArbitrageDesk> {
+        self.desk.as_ref()
+    }
+
+    /// Publish the halt state as it now stands.
+    ///
+    /// Called wherever either halt can change, rather than once per pass: a
+    /// cell halted by a reconciliation break stops running passes, so a gauge
+    /// written only inside `work` would never report the halt that stopped it.
+    fn record_halt(&self) {
+        self.metrics.halt(
+            self.autonomy.kill_switch().is_globally_tripped(),
+            self.policy_halted,
+        );
+    }
+
     pub fn protocols_mut(&mut self) -> &mut ProtocolRegistry {
         &mut self.protocols
     }
 
     pub fn journal(&self) -> &Journal {
         &self.journal
+    }
+
+    /// The registry every series this cell records lands in.
+    ///
+    /// Exposed so a composition root's test can prove, by pointer identity,
+    /// that it is the same registry the scrape surface serves. A cell that
+    /// records into one registry while the health thread serves another
+    /// answers every scrape empty forever, and nothing at runtime reports it.
+    pub fn metrics_registry(&self) -> &std::sync::Arc<qip_observability::Metrics> {
+        self.metrics.registry()
     }
 
     pub fn autonomy(&self) -> &AutonomyController {
@@ -341,6 +457,7 @@ impl Cell {
             );
         }
         self.policy_halted = true;
+        self.record_halt();
     }
 
     /// Apply a verified policy payload by atomic swap.
@@ -382,6 +499,7 @@ impl Cell {
                 .policy_halt_barrier
                 .is_some_and(|barrier| verified.payload().issued_at <= barrier);
         let halting = verified.halted() || releasing_too_early;
+        let sequence = verified.sequence();
         let was_halted = self.policy_halted;
         let narrowed: Vec<String> = verified
             .payload()
@@ -441,6 +559,11 @@ impl Cell {
         }
         self.policy_halted = halting;
         self.policy = Some(verified);
+        self.record_halt();
+        // The sequence the cell has *applied*, recorded once the swap has
+        // happened. Recording it before would publish a payload the cell might
+        // still have refused.
+        self.metrics.policy_applied(sequence);
         Ok(())
     }
 
@@ -629,6 +752,11 @@ impl Cell {
             halted: self.is_halted(),
             ..WorkReport::default()
         };
+        // Recorded before the halt check, so a halted cell still counts its
+        // passes. A refusal count with no pass count underneath it cannot tell
+        // "nothing was refused" from "the cell never ran".
+        self.metrics.work_pass();
+        self.record_halt();
 
         if report.halted {
             // Books keep absorbing and the journal keeps recording while
@@ -651,6 +779,11 @@ impl Cell {
         // next pass, never half of this one.
         let narrowing = self.narrowing(now);
         let multiplier = narrowing.sizing_multiplier();
+        // Freshness is a function of `now`, so this is the instant it becomes
+        // known and the only instant at which the recorded value is what the
+        // cell actually sized against. Before this the whole table was
+        // formatted into a journal string and discarded.
+        self.metrics.narrowing(&narrowing);
 
         let vector = self.features.evaluate(now)?;
         let strategy_ids: Vec<String> = self.deployed.keys().cloned().collect();
@@ -701,12 +834,30 @@ impl Cell {
                 },
                 now,
             );
+            self.metrics.signal(signal.kind);
             report.signals.push(signal.clone());
 
             if let Some(intent) = self.intent_for(&signal, multiplier, now, &mut report)? {
                 intents.push(intent);
             }
         }
+
+        // The arbitrage desk, at the seam §27.2 names: after the strategies
+        // have asked and before anything is netted, so that legs and
+        // directional intents meet at one place — and part company there,
+        // because a leg is never netted. Every leg is judged by the same
+        // feasibility gate the directional intents meet below, then held
+        // until the nets have gone out.
+        let cycles = self.scan_cycles(now, multiplier, &narrowing, &mut report)?;
+
+        // The feasibility gate, between collection and netting (§18.1). An
+        // intent that cannot execute at its size never enters the netting
+        // set: a net built from an infeasible contributor would carry that
+        // contributor's share to the venue inside an order whose other
+        // contributors were feasible, and the venue's rejection — or the
+        // fee's bite — would land on all of them. `retain` judges in place,
+        // so the gate allocates nothing per pass.
+        intents.retain(|intent| self.admit_feasible(intent, now, &mut report));
 
         // Phase two. Everything the strategies asked for collapses onto one
         // intent per instrument, venue and representation — so two strategies
@@ -717,10 +868,23 @@ impl Cell {
         // and a pure loss at the same time.
         let nets = net(intents);
         report.netting_ratio = netting_ratio(&nets);
+        // `None` when everything cancelled: the ratio is unbounded there, and
+        // observing a sentinel would put a number nobody computed into the
+        // distribution. The cancellation is counted in `place_net` instead.
+        if let Some(ratio) = report.netting_ratio {
+            self.metrics.netting_ratio(ratio);
+        }
         for net_intent in &nets {
             if let Some(order) = self.place_net(net_intent, now, gateway, &mut report)? {
                 report.orders.push(order);
             }
+        }
+
+        // Cycles go out after the nets. Never through `net`: each leg is
+        // sent by the same order path a net intent uses, one leg after
+        // another in the plan's order, least reversible first.
+        for cycle in &cycles {
+            self.place_cycle(cycle, now, gateway, &mut report)?;
         }
 
         Ok(report)
@@ -898,7 +1062,19 @@ impl Cell {
         // Signed, because netting is addition: a buy is positive, a sell is
         // negative, and two opposing intents of equal size sum to nothing
         // without anybody writing a conditional that could be got backwards.
-        let signed = if matches!(side, BookSide::Bid) {
+        //
+        // `side` names the side of the book the order *takes* — the one
+        // convention every seam past this point shares (`Placer`, the node's
+        // gateways, `sweep_cost`) — so taking the ask is the buy and is the
+        // positive one. This line once read the other way round, and
+        // `place_net` read `is_buy` the other way round to match, so an
+        // `Enter` still reached the venue as a buy while every fact computed
+        // from the sign in between — the cross ledger's `bought` and `sold`,
+        // the contributor shares shipped to the centre, `NetIntent::is_buy`
+        // itself — named the buyer as the seller. Two inversions that cancel
+        // at the venue are not a convention; they are a defect the venue
+        // happens not to see.
+        let signed = if matches!(side, BookSide::Ask) {
             quantity
         } else {
             -quantity
@@ -955,25 +1131,25 @@ impl Cell {
                 },
                 now,
             );
+            self.metrics.intent_cancelled();
             report.cancelled.push(net_intent.clone());
             return Ok(None);
         };
-        let side = if is_buy { BookSide::Bid } else { BookSide::Ask };
+        // A buy takes the ask. See `intent_for` for why this must agree with
+        // the sign there rather than compensate for it.
+        let side = if is_buy { BookSide::Ask } else { BookSide::Bid };
         let quantity = net_intent.order_quantity();
         let price = net_intent.reference_price;
         let venue = net_intent.venue.clone();
 
-        self.order_sequence += 1;
-        let order_id = format!("{}-{}", self.config.cell_id, self.order_sequence);
-        let simulated = gateway.is_simulated();
-        gateway.place(
-            &order_id,
+        let (order_id, simulated) = self.send(
             &net_intent.object_id,
             &venue,
             side,
             quantity,
             price,
             now,
+            gateway,
         )?;
 
         // Only now, past the call that can fail. `gateway.place` propagates its
@@ -994,21 +1170,7 @@ impl Cell {
                 deployed.utilisation.orders_sent += 1;
             }
         }
-        self.fills.push(CellFill {
-            order_id: order_id.clone(),
-            venue: venue.clone(),
-            quantity,
-            price,
-        });
-        self.journal.record(
-            Decision::OrderSent {
-                order_id: order_id.clone(),
-                venue: venue.as_str().to_string(),
-                quantity: quantity.to_string(),
-                simulated,
-            },
-            now,
-        );
+        self.record_sent(&order_id, &venue, quantity, price, simulated, now);
 
         let largest = net_intent
             .contributors
@@ -1032,6 +1194,546 @@ impl Cell {
             price,
             simulated,
         }))
+    }
+
+    /// Number an order and hand it to the venue.
+    ///
+    /// The one place a `Placer` is called. Both the net path and the cycle
+    /// path go through it, so an order that reaches a venue has been numbered
+    /// by the cell's own sequence whichever seam produced it, and a second
+    /// route to `gateway.place` — the shape of a control being bypassed —
+    /// would have to be written in the open.
+    #[allow(clippy::too_many_arguments)]
+    fn send(
+        &mut self,
+        object_id: &ObjectId,
+        venue: &VenueId,
+        side: BookSide,
+        quantity: Decimal,
+        price: Decimal,
+        now: Timestamp,
+        gateway: &mut dyn Placer,
+    ) -> Result<(String, bool)> {
+        self.order_sequence += 1;
+        let order_id = format!("{}-{}", self.config.cell_id, self.order_sequence);
+        let simulated = gateway.is_simulated();
+        gateway.place(&order_id, object_id, venue, side, quantity, price, now)?;
+        Ok((order_id, simulated))
+    }
+
+    /// Record an order the venue accepted: the fill the drop-copy will be
+    /// reconciled against, the chain entry, and the series.
+    fn record_sent(
+        &mut self,
+        order_id: &str,
+        venue: &VenueId,
+        quantity: Decimal,
+        price: Decimal,
+        simulated: bool,
+        now: Timestamp,
+    ) {
+        self.fills.push(CellFill {
+            order_id: order_id.to_string(),
+            venue: venue.clone(),
+            quantity,
+            price,
+        });
+        self.journal.record(
+            Decision::OrderSent {
+                order_id: order_id.to_string(),
+                venue: venue.as_str().to_string(),
+                quantity: quantity.to_string(),
+                simulated,
+            },
+            now,
+        );
+        self.metrics.order_placed(venue);
+    }
+
+    // --- the arbitrage desk --------------------------------------------------
+
+    /// Re-quote the graph from the books, scan it, and admit what survives.
+    ///
+    /// Returns the cycles to send once the nets have gone, each already past
+    /// the feasibility gate and the desk's capital envelope. Everything the
+    /// scan refused is journaled under the stage that refused it, every
+    /// opportunity found is journaled as priced whether or not it is taken,
+    /// and everything past the cap is refused and counted — a scan that
+    /// found nothing and said nothing is indistinguishable from one that did
+    /// not run.
+    ///
+    /// Two narrowings stop the scan outright. The degradation table's pause
+    /// applies to the desk as to any price-only strategy. And a sizing
+    /// multiplier below one opens no cycle at all, rather than a smaller one:
+    /// the scanner prices at the size policy's size, edge is not linear in
+    /// size, and a cycle re-priced narrower is a different cycle whose legs
+    /// no longer close on what was priced. Stopping is the fail-closed
+    /// reading of §6.2 for a family whose trades cannot be scaled after the
+    /// fact.
+    fn scan_cycles(
+        &mut self,
+        now: Timestamp,
+        multiplier: Decimal,
+        narrowing: &DegradationState,
+        report: &mut WorkReport,
+    ) -> Result<Vec<AdmittedCycle>> {
+        let Some((cap, validity, strategy)) = self.desk.as_ref().map(|desk| {
+            (
+                desk.max_cycles_per_pass(),
+                desk.leg_validity(),
+                desk.strategy().clone(),
+            )
+        }) else {
+            return Ok(Vec::new());
+        };
+        if narrowing.pauses(StrategyClass::PriceOnly) {
+            self.refuse(
+                report,
+                "degradation_pause",
+                "the arbitrage desk pauses while its capability is degraded",
+                now,
+            );
+            return Ok(Vec::new());
+        }
+        if multiplier < Decimal::ONE {
+            self.refuse(
+                report,
+                "degradation_sizing",
+                "the arbitrage desk opens no cycle while sizing is narrowed: a cycle re-priced \
+                 at a narrower size is a different cycle, and the scanner priced this one at \
+                 the policy's size",
+                now,
+            );
+            return Ok(Vec::new());
+        }
+
+        let scanned = {
+            // Two fields of `self`, borrowed disjointly: the desk re-quotes
+            // its graph from the liquidity it is handed and never reaches
+            // for it.
+            let Some(desk) = self.desk.as_mut() else {
+                return Ok(Vec::new());
+            };
+            desk.refresh(&self.liquidity)?;
+            desk.scan(&self.liquidity, now)
+        };
+
+        for rejection in &scanned.rejections {
+            self.refuse(
+                report,
+                scan_gate(rejection.stage),
+                &format!(
+                    "{} cycle over edges {:?}: {}",
+                    rejection.candidate.kind.as_str(),
+                    rejection.candidate.edges,
+                    rejection.detail
+                ),
+                now,
+            );
+        }
+
+        // Bounded by the cap, and by what the scan found if that is fewer.
+        let mut cycles: Vec<AdmittedCycle> =
+            Vec::with_capacity(cap.min(scanned.opportunities.len()));
+        // Notional admitted against the desk's envelope so far this pass, so
+        // the second cycle is judged against what the first will spend.
+        let mut pending = Decimal::ZERO;
+        for (position, opportunity) in scanned.opportunities.iter().enumerate() {
+            let cycle_id = opportunity.cycle_id(now);
+            self.journal.record(
+                Decision::EdgePriced {
+                    opportunity: cycle_id.clone(),
+                    net: opportunity.net().to_string(),
+                    positive: true,
+                },
+                now,
+            );
+            if position >= cap {
+                self.refuse(
+                    report,
+                    "arbitrage_cap",
+                    &format!(
+                        "cycle {cycle_id} is opportunity {} of this pass and the cap is {cap}; \
+                         refused and counted rather than dropped, and the next pass will find \
+                         it again if it is still there",
+                        position + 1
+                    ),
+                    now,
+                );
+                continue;
+            }
+            if self.autonomy.level() == AutonomyLevel::Observation {
+                self.refuse(
+                    report,
+                    "autonomy",
+                    "the cell is at observation and sends nothing",
+                    now,
+                );
+                continue;
+            }
+            let legs = match opportunity.cycle_legs(&strategy, now, now.saturating_add(validity)) {
+                Ok(legs) => legs,
+                Err(error) => {
+                    self.refuse(report, "arbitrage_legs", error.message(), now);
+                    continue;
+                }
+            };
+            if let Some(admitted) =
+                self.admit_cycle(opportunity, &cycle_id, legs, pending, now, report)
+            {
+                pending += admitted.notional;
+                cycles.push(admitted);
+            }
+        }
+        Ok(cycles)
+    }
+
+    /// Take every leg of one cycle through the feasibility gate and the
+    /// desk's capital envelope, or veto the cycle whole.
+    ///
+    /// Whole, because a cycle is an atomic set: a leg that cannot execute at
+    /// its size leaves the rest as a position rather than a smaller cycle,
+    /// and a leg the envelope would reduce is the same position by another
+    /// route. The leg's own refusal is recorded by the gate that found it,
+    /// and then the cycle's, so the series counts which rule bound and the
+    /// journal says which cycle it bound.
+    fn admit_cycle(
+        &mut self,
+        opportunity: &Opportunity,
+        cycle_id: &str,
+        legs: Vec<CycleLeg>,
+        pending: Decimal,
+        now: Timestamp,
+        report: &mut WorkReport,
+    ) -> Option<AdmittedCycle> {
+        let mut intents: Vec<Intent> = Vec::with_capacity(legs.len());
+        let mut fixed_cost = Decimal::ZERO;
+        let mut on_chain = false;
+        let mut notional = Decimal::ZERO;
+        for leg in legs {
+            let intent: Intent = leg.into();
+            if !self.admit_feasible(&intent, now, report) {
+                self.veto_cycle(cycle_id, &intent, "is infeasible at its size", now, report);
+                return None;
+            }
+            let cost = {
+                let model = self.config.feasibility.get(intent.venue.as_str());
+                on_chain |= model.is_some_and(|model| {
+                    matches!(model.class(), VenueClass::DecentralisedExchange)
+                });
+                feasibility::fixed_cost_fraction(model, self.feasibility_constraints(), &intent)
+            };
+            match cost {
+                Ok(fraction) => fixed_cost += fraction,
+                Err(infeasible) => {
+                    self.refuse(report, infeasible.gate, &infeasible.reason, now);
+                    self.veto_cycle(
+                        cycle_id,
+                        &intent,
+                        "has no notional to charge against",
+                        now,
+                        report,
+                    );
+                    return None;
+                }
+            }
+            let Some(admitted) = self.admit_leg(&intent, pending + notional, now, report) else {
+                self.veto_cycle(
+                    cycle_id,
+                    &intent,
+                    "is not admitted by the capital envelope",
+                    now,
+                    report,
+                );
+                return None;
+            };
+            notional += admitted;
+            intents.push(intent);
+        }
+
+        // The edge as a fraction of the start size, the unit the summed leg
+        // costs are in. A start quantity the scanner priced at is positive by
+        // construction; a division that fails anyway is a refusal, not a
+        // pass.
+        let edge_fraction = opportunity
+            .net()
+            .checked_div(opportunity.pricing.start_quantity);
+        let Some(edge_fraction) = edge_fraction else {
+            self.refuse(
+                report,
+                "arbitrage_cycle",
+                &format!("cycle {cycle_id} is refused whole: its edge cannot be stated per unit of start size"),
+                now,
+            );
+            return None;
+        };
+        if let Err(infeasible) = feasibility::assess_cycle_cost(fixed_cost, edge_fraction, on_chain)
+        {
+            self.refuse(report, infeasible.gate, &infeasible.reason, now);
+            self.refuse(
+                report,
+                "arbitrage_cycle",
+                &format!("cycle {cycle_id} is refused whole: its fixed costs consume its edge"),
+                now,
+            );
+            return None;
+        }
+        Some(AdmittedCycle {
+            cycle_id: cycle_id.to_string(),
+            net: opportunity.net(),
+            legs: intents,
+            notional,
+        })
+    }
+
+    fn veto_cycle(
+        &mut self,
+        cycle_id: &str,
+        leg: &Intent,
+        why: &str,
+        now: Timestamp,
+        report: &mut WorkReport,
+    ) {
+        self.refuse(
+            report,
+            "arbitrage_cycle",
+            &format!(
+                "cycle {cycle_id} is refused whole: its leg {} of {} at {} {why}, and a cycle \
+                 short one leg is a position rather than a smaller cycle",
+                leg.signed_size,
+                leg.object_id.as_str(),
+                leg.venue.as_str()
+            ),
+            now,
+        );
+    }
+
+    /// One leg through the gates a directional intent meets in `intent_for`
+    /// after pricing: the venue's status, the envelope's life, and capital.
+    ///
+    /// Returns the leg's notional on admission. `pending` is what this pass
+    /// has already admitted against the desk's envelope, added to its
+    /// utilisation for the check so a cycle cannot be admitted leg by leg
+    /// into more than the envelope holds.
+    ///
+    /// A `Reduced` grant is a refusal here where `intent_for` takes the
+    /// reduction: a directional order at a smaller size is a smaller
+    /// position, and a cycle leg at a smaller size is a cycle that no longer
+    /// closes.
+    fn admit_leg(
+        &mut self,
+        intent: &Intent,
+        pending: Decimal,
+        now: Timestamp,
+        report: &mut WorkReport,
+    ) -> Option<Decimal> {
+        let status = self
+            .liquidity
+            .get(&intent.venue, &intent.object_id)
+            .map(VenueState::status);
+        match status {
+            None => {
+                self.refuse(
+                    report,
+                    "book",
+                    "the cell holds no book for the instrument",
+                    now,
+                );
+                return None;
+            }
+            Some(status) if !status.accepts_orders() => {
+                self.refuse(
+                    report,
+                    "venue_status",
+                    &format!("the venue is {}", status.as_str()),
+                    now,
+                );
+                return None;
+            }
+            Some(_) => {}
+        }
+        let Some(notional) = intent.signed_size.abs().checked_mul(intent.reference_price) else {
+            self.refuse(
+                report,
+                "capital",
+                "the leg's notional cannot be represented",
+                now,
+            );
+            return None;
+        };
+
+        let grant = self.desk.as_ref().map(|desk| {
+            if !desk.envelope().is_live(now) {
+                return None;
+            }
+            let mut used = desk.utilisation().clone();
+            used.gross_committed += pending;
+            Some(desk.envelope().admit(&intent.venue, notional, &used, now))
+        });
+        match grant {
+            None => {
+                self.refuse(report, "deployment", "no arbitrage desk is installed", now);
+                None
+            }
+            Some(None) => {
+                self.refuse(
+                    report,
+                    "envelope_expiry",
+                    "the desk's capital envelope has expired; the cell stops rather than continues",
+                    now,
+                );
+                None
+            }
+            Some(Some(CapitalGrant::Full)) => Some(notional),
+            Some(Some(CapitalGrant::Reduced(cap))) => {
+                self.refuse(
+                    report,
+                    "arbitrage_capital",
+                    &format!(
+                        "the envelope would reduce the leg to {cap} notional and a cycle leg cannot \
+                         be reduced: a reduced leg is a position, not a smaller cycle"
+                    ),
+                    now,
+                );
+                None
+            }
+            Some(Some(CapitalGrant::Refused(reason))) => {
+                self.refuse(report, "capital", &reason, now);
+                None
+            }
+        }
+    }
+
+    /// Send every leg of an admitted cycle, in plan order.
+    ///
+    /// # What this cannot promise, and what it does instead
+    ///
+    /// The blueprint's cycle is atomic-or-cancelled. This cell's
+    /// [`Placer`] can place and cannot cancel, and no fill reaches the cell
+    /// until the drop-copy is reconciled, so there is nothing here a
+    /// `LegGroup` could act on: the coordinator in
+    /// `qip-execution-engine::multileg` decides what to unwind from fills it
+    /// is told about, and this seam is told nothing. Building one here would
+    /// be a control with no input.
+    ///
+    /// What the cell can do is refuse to carry on. A leg the venue refuses
+    /// after an earlier leg went out leaves the cell holding a position it
+    /// did not decide to take, which is the state the multi-leg module calls
+    /// the one that "looks, to every downstream report, exactly like a
+    /// position somebody chose". So the break is journaled naming the cycle
+    /// and how many legs were sent, and the kill switch is tripped as a
+    /// reconciliation break trips it: the cell stops until an operator has
+    /// looked, and the error propagates so the caller knows the pass did not
+    /// complete.
+    fn place_cycle(
+        &mut self,
+        cycle: &AdmittedCycle,
+        now: Timestamp,
+        gateway: &mut dyn Placer,
+        report: &mut WorkReport,
+    ) -> Result<()> {
+        let mut orders: Vec<String> = Vec::with_capacity(cycle.legs.len());
+        for (position, leg) in cycle.legs.iter().enumerate() {
+            // A buy takes the ask; the sign was fixed where the leg was made.
+            let side = if leg.signed_size.is_positive() {
+                BookSide::Ask
+            } else {
+                BookSide::Bid
+            };
+            let quantity = leg.signed_size.abs();
+            let price = leg.reference_price;
+            let sent = self.send(
+                &leg.object_id,
+                &leg.venue,
+                side,
+                quantity,
+                price,
+                now,
+                gateway,
+            );
+            let (order_id, simulated) = match sent {
+                Ok(sent) => sent,
+                Err(error) => {
+                    self.break_cycle(
+                        &cycle.cycle_id,
+                        position,
+                        cycle.legs.len(),
+                        &error,
+                        now,
+                        report,
+                    );
+                    return Err(error);
+                }
+            };
+            self.record_sent(&order_id, &leg.venue, quantity, price, simulated, now);
+            if let Some(desk) = self.desk.as_mut() {
+                let utilisation = desk.utilisation_mut();
+                utilisation.gross_committed += quantity * price;
+                utilisation.orders_sent += 1;
+            }
+            orders.push(order_id.clone());
+            report.orders.push(PlacedOrder {
+                order_id,
+                strategy: leg.strategy.clone(),
+                contributors: vec![Contributor {
+                    strategy: leg.strategy.clone(),
+                    signed_size: leg.signed_size,
+                    inputs: leg.inputs.clone(),
+                }],
+                object_id: leg.object_id.clone(),
+                venue: leg.venue.clone(),
+                side,
+                quantity,
+                price,
+                simulated,
+            });
+        }
+        self.journal.record(
+            Decision::CycleCommitted {
+                cycle_id: cycle.cycle_id.clone(),
+                orders,
+                net: cycle.net.to_string(),
+            },
+            now,
+        );
+        Ok(())
+    }
+
+    /// A cycle stopped between legs. Record it and stop the cell.
+    fn break_cycle(
+        &mut self,
+        cycle_id: &str,
+        sent: usize,
+        total: usize,
+        error: &Error,
+        now: Timestamp,
+        report: &mut WorkReport,
+    ) {
+        self.refuse(
+            report,
+            "arbitrage_cycle_broken",
+            &format!(
+                "cycle {cycle_id} stopped after {sent} of {total} legs: {}; the legs already sent \
+                 are a position nobody chose, and the cell halts until an operator has looked",
+                error.message()
+            ),
+            now,
+        );
+        if sent > 0 && !self.is_halted() {
+            self.autonomy.kill_switch_mut().trip_global(
+                now,
+                "arbitrage",
+                "a cycle stopped between legs and left a position the cell did not decide to take",
+            );
+            self.journal.record(
+                Decision::HaltChanged {
+                    halted: true,
+                    reason: format!("cycle {cycle_id} broke after {sent} of {total} legs"),
+                },
+                now,
+            );
+            self.record_halt();
+        }
     }
 
     /// Work out the offsetting part of a net that should be crossed between its
@@ -1218,7 +1920,58 @@ impl Cell {
             },
             now,
         );
+        self.metrics.internal_cross(&cross.venue);
         report.crosses.push(cross);
+    }
+
+    /// Judge one intent against the feasibility gate, refusing and counting
+    /// it under the rule that bound.
+    ///
+    /// The book is read here, at the netting instant, and the gate itself is
+    /// a pure function of what it is handed — so the fact judged is the one
+    /// the journal can replay. The size resting at the touch is read on the
+    /// side the intent *takes*: a buy takes the ask, so it is the ask's size
+    /// that bounds it.
+    fn admit_feasible(&mut self, intent: &Intent, now: Timestamp, report: &mut WorkReport) -> bool {
+        let touch = self
+            .liquidity
+            .get(&intent.venue, &intent.object_id)
+            .and_then(|state| {
+                if intent.signed_size.is_positive() {
+                    state.best_ask()
+                } else {
+                    state.best_bid()
+                }
+            })
+            .map(|level| level.size);
+        let verdict = feasibility::assess(
+            self.config.feasibility.get(intent.venue.as_str()),
+            self.feasibility_constraints(),
+            intent,
+            touch,
+        );
+        match verdict {
+            Ok(()) => true,
+            Err(infeasible) => {
+                self.refuse(report, infeasible.gate, &infeasible.reason, now);
+                false
+            }
+        }
+    }
+
+    /// Item 11 of the applied policy payload, if the centre has produced it.
+    ///
+    /// Read whatever its freshness: a venue's minimum order and tick change
+    /// on the order of months, the slot's own time-to-live is a day, and a
+    /// constraint that has gone stale is still the last thing the centre
+    /// knew rather than nothing. The degradation table already narrows the
+    /// cell's sizing on the slot's staleness; refusing to read the slot as
+    /// well would be a second control on the same fact with a different
+    /// threshold.
+    fn feasibility_constraints(&self) -> Option<&qip_contracts::policy::FeasibilityConstraints> {
+        self.policy
+            .as_ref()
+            .and_then(|policy| policy.payload().feasibility_constraints.value())
     }
 
     fn venue_for(&self, object: &ObjectId) -> Option<VenueId> {
@@ -1234,6 +1987,15 @@ impl Cell {
     }
 
     fn refuse(&mut self, report: &mut WorkReport, gate: &str, reason: &str, now: Timestamp) {
+        // Every gate a *pass* can refuse at funnels through here, so one
+        // recording site covers all of them. `gate` is a string literal at
+        // each call, and that is what bounds this series' cardinality. The
+        // three refusals that journal directly — a replayed halt, a release
+        // that predates its barrier, and a net that cancelled to zero — are
+        // not pass-time gates and are deliberately not counted here: the
+        // first two are control-plane events with no "why was the cell
+        // quiet" reading, and the third is counted as a cancellation.
+        self.metrics.refusal(gate);
         report.refusals.push((gate.to_string(), reason.to_string()));
         self.journal.record(
             Decision::Refused {
@@ -1273,6 +2035,13 @@ impl Cell {
                     utilisation: deployed.utilisation.clone(),
                     envelope_expires_at: deployed.envelope.expires_at(),
                 })
+                // The desk spends an envelope too, and the centre that issued
+                // it hears how much the same way.
+                .chain(self.desk.as_ref().map(|desk| StrategyUtilisation {
+                    strategy: desk.strategy().clone(),
+                    utilisation: desk.utilisation().clone(),
+                    envelope_expires_at: desk.envelope().expires_at(),
+                }))
                 .collect(),
             orders: report
                 .orders
@@ -1360,14 +2129,30 @@ impl Cell {
             )));
         }
         let key = envelope.strategy().as_str().to_string();
+        let approver = envelope.approver().to_string();
+        let expires_at = envelope.expires_at();
+        if let Some(desk) = self.desk.as_mut()
+            && desk.strategy().as_str() == key
+        {
+            // The desk is renewed by the same rules as a strategy: the grant
+            // replaces the old one whole and utilisation carries across.
+            desk.replace_envelope(envelope);
+            self.journal.record(
+                Decision::CapitalRenewed {
+                    strategy: key,
+                    approver,
+                    expires_at,
+                },
+                now,
+            );
+            return Ok(());
+        }
         let Some(deployed) = self.deployed.get_mut(&key) else {
             return Err(Error::not_found(format!(
                 "no strategy {key} is deployed at this cell, so there is nothing for the grant to \
                  fund; a cell does not deploy a strategy because capital arrived for it"
             )));
         };
-        let approver = envelope.approver().to_string();
-        let expires_at = envelope.expires_at();
         deployed.envelope = envelope;
         self.journal.record(
             Decision::CapitalRenewed {
@@ -1407,6 +2192,7 @@ impl Cell {
             } else {
                 self.breaks_omitted = self.breaks_omitted.saturating_add(1);
             }
+            self.metrics.reconciliation_break();
             self.journal
                 .record(Decision::ReconciliationBreak { detail }, now);
         }
@@ -1423,6 +2209,10 @@ impl Cell {
                 },
                 now,
             );
+            // A break halts the cell, which stops it running passes. Without
+            // this the gauge would keep reporting the state of the last pass
+            // that ran, which is the one before the break.
+            self.record_halt();
         }
         breaks
     }
@@ -1445,6 +2235,36 @@ impl Cell {
             watermarks,
             now,
         )
+    }
+}
+
+/// A cycle past every gate and waiting for the nets to go out first.
+#[derive(Clone, Debug)]
+struct AdmittedCycle {
+    cycle_id: String,
+    /// The scanner's net edge, in units of the start instrument.
+    net: Decimal,
+    /// In plan order. Every one carries `NettingPolicy::NoNet` by
+    /// construction, which is what `CycleLeg` exists to guarantee.
+    legs: Vec<Intent>,
+    /// The sum of the legs' notionals, admitted against the desk's envelope.
+    notional: Decimal,
+}
+
+/// The gate literal a scan rejection is counted under.
+///
+/// One literal per stage of the scanner, so §30.1's question — which stage
+/// refuses most of what the search proposes — is a series rather than a
+/// grep of the journal. Bounded by the enum.
+const fn scan_gate(stage: RejectionStage) -> &'static str {
+    match stage {
+        RejectionStage::Unsized => "arbitrage_scan_unsized",
+        RejectionStage::ExactArithmetic => "arbitrage_scan_exact_arithmetic",
+        RejectionStage::Unpriceable => "arbitrage_scan_unpriceable",
+        RejectionStage::Depth => "arbitrage_scan_depth",
+        RejectionStage::Book => "arbitrage_scan_book",
+        RejectionStage::NetEdge => "arbitrage_scan_net_edge",
+        RejectionStage::Plan => "arbitrage_scan_plan",
     }
 }
 
@@ -1577,30 +2397,45 @@ mod crossing_tests {
         Ok(cell)
     }
 
+    /// Net the given `(strategy, signed size)` pairs on the fixture instrument
+    /// through [`net`] itself, every intent stamped with `reference_price`.
+    ///
+    /// Not a literal. `NetIntent` is sealed to `net` so that nobody can
+    /// assemble a vector of contributors `net` would have refused, and these
+    /// tests were the one caller still forging one by hand — a fixture that
+    /// bypasses the seam it is meant to drive is a second construction path
+    /// with a friendlier name. Going through `net` also means the net's own
+    /// reference price is whatever `net` chose, which is what the crossing
+    /// test needs to be sure of before it can claim the mid was chosen over
+    /// it.
+    fn netted(sizes: &[(&str, &str)], reference_price: Decimal) -> NetIntent {
+        let intents = sizes
+            .iter()
+            .map(|(strategy, size)| {
+                Intent::new(
+                    StrategyId::new(*strategy),
+                    object(),
+                    venue(),
+                    Decimal::parse(size).expect("a decimal literal"),
+                    reference_price,
+                    at(60),
+                )
+                .expect("a fixture size is never zero")
+            })
+            .collect();
+        let mut nets = net(intents);
+        assert_eq!(
+            nets.len(),
+            1,
+            "directional intents on one instrument and venue net to one group"
+        );
+        nets.pop().expect("exactly one net was just asserted")
+    }
+
     /// A net of a 100 buy against a 20 sell: 20 crosses, which is a sixth of
     /// the 120 gross and so comfortably under the forty percent cap.
     fn offsetting_net(reference_price: Decimal) -> NetIntent {
-        NetIntent {
-            object_id: object(),
-            venue: venue(),
-            representation: qip_contracts::intent::Representation::Spot,
-            net_size: Decimal::parse("80").expect("a decimal literal"),
-            gross_size: Decimal::parse("120").expect("a decimal literal"),
-            contributors: vec![
-                Contributor {
-                    strategy: StrategyId::new("alpha"),
-                    signed_size: Decimal::parse("100").expect("a decimal literal"),
-                    inputs: Vec::new(),
-                },
-                Contributor {
-                    strategy: StrategyId::new("beta"),
-                    signed_size: Decimal::parse("-20").expect("a decimal literal"),
-                    inputs: Vec::new(),
-                },
-            ],
-            reference_price,
-            cycle_id: None,
-        }
+        netted(&[("alpha", "100"), ("beta", "-20")], reference_price)
     }
 
     #[test]
@@ -1612,8 +2447,15 @@ mod crossing_tests {
         // forbids by name.
         let chosen = Decimal::parse("12345").expect("a decimal literal");
         let net_intent = offsetting_net(chosen);
-        // The premise: the two candidate prices really do differ here, which
-        // is the whole reason this test exists rather than the behavioural one.
+        // The premise, in two halves: the net `net` built really carries the
+        // chosen price — otherwise the assertion below that the cross did not
+        // take it would be true of any implementation — and the two candidate
+        // prices really do differ here, which is the whole reason this test
+        // exists rather than the behavioural one.
+        assert_eq!(
+            net_intent.reference_price, chosen,
+            "the fixture net does not carry the price it was built from"
+        );
         let mid = cell
             .liquidity()
             .get(&venue(), &object())
@@ -1710,23 +2552,10 @@ mod crossing_tests {
         // divergence is asserted rather than merely described in a comment
         // somebody may later delete as stale.
         let mut cell = cell_with_book()?;
-        let opposed = NetIntent {
-            net_size: Decimal::ZERO,
-            gross_size: Decimal::parse("200").expect("a decimal literal"),
-            contributors: vec![
-                Contributor {
-                    strategy: StrategyId::new("alpha"),
-                    signed_size: Decimal::parse("100").expect("a decimal literal"),
-                    inputs: Vec::new(),
-                },
-                Contributor {
-                    strategy: StrategyId::new("beta"),
-                    signed_size: Decimal::parse("-100").expect("a decimal literal"),
-                    inputs: Vec::new(),
-                },
-            ],
-            ..offsetting_net(Decimal::parse("100").expect("a decimal literal"))
-        };
+        let opposed = netted(
+            &[("alpha", "100"), ("beta", "-100")],
+            Decimal::parse("100").expect("a decimal literal"),
+        );
         // Premise: the sides really do cancel, so this is the full-offset case
         // and not merely a large partial one.
         assert!(

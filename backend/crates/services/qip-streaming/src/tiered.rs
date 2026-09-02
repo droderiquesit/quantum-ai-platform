@@ -89,10 +89,6 @@ impl TieredPublisher {
         self.durable.as_ref()
     }
 
-    pub fn durable_mut(&mut self) -> &mut dyn Publisher {
-        self.durable.as_mut()
-    }
-
     /// Both transports, for a start-up log line.
     pub fn descriptors(&self) -> [TransportDescriptor; 2] {
         [self.local.descriptor(), self.durable.descriptor()]

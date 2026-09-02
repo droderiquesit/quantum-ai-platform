@@ -1,171 +1,60 @@
-# Production: the central plane and one cell.
+# Production. Paper trading, like every other environment: the ceiling below
+# is the one line that decides whether the platform can reach a real venue,
+# and raising it is refused at plan time.
 #
-# ADR 0008 calls for cells next to the venues they trade, and
-# `docs/operations/deploying-an-edge-cell.md` allocates nine. Only `london-1`
-# is uncommented here, because a cell is brought up one at a time: step 5 of
-# that runbook fills in `venues` from the venue's own published address
-# ranges, and a cell whose `venues` is empty can reach no venue at all. Nine
-# such cells would be nine regional clusters — at the sizes below, on the
-# order of eighty nodes — that cost production money and trade nothing.
-#
-# `london-1` first because it is the venue whose calendar the platform already
-# models, so its cell is the one whose behaviour can be checked against
-# something.
-#
-# The other eight stay in the file, commented, rather than in a document
-# somewhere: their CIDR allocations are load-bearing (the module refuses two
-# cells sharing a subnet within one apply, but nothing stops a later apply
-# reusing a block a removed cell had), and uncommenting one is how a cell is
-# added. Three of them — `chicago-1`, `newyork-1` and `dubai-1` — are **not in
-# their metropolitan area**: Google Cloud has no region in Chicago, none in
-# NY/NJ and none in Dubai, and the nearest are roughly 400, 300 and 380km
-# away, several milliseconds a cell whose whole argument is source-adjacency
-# cannot spend. The honest options are the ones the runbook names: colocation
-# with a partner interconnect, running those cells outside Google Cloud, or
-# accepting that they are not latency-competitive and saying so. What must not
-# happen is that they are deployed to Council Bluffs, Ashburn and Doha and
-# reported as being in Chicago, New York and Dubai.
+# No node. The nine planned locations and the ranges each would take are in
+# environments/README.md and docs/operations/deploying-an-edge-cell.md, and a
+# node comes up one at a time, in shadow mode, on a venue decision.
 
-# This environment is NOT PROVISIONED, and the marker below is what says so.
-#
-# It used to carry a real project id — the one all four environments shared,
-# on the reasoning that the `environment` prefix kept their resource names
-# apart. Two things retired that arrangement. `dev` moved to its own project
-# (`algorik-dev`), so the premise that all four name one project stopped
-# being true; and the project the other three still named was deleted, so the
-# recorded id pointed at nothing while still looking entirely plausible in a
-# file review.
-#
-# A dead id that looks real is worse than an obvious hole: a plan or a deploy
-# aimed here would fail at authentication with a message about an audience
-# nobody could explain. `unprovisioned` fails immediately instead, in
-# variables.tf at plan time and in deploy.yml before it authenticates, and
-# both refusals name what to do. Provisioning this environment means a real
-# project of its own with its own state bucket — never a project another
-# environment already uses, which `every_environment_names_a_project_of_its_own`
-# in the acceptance suite enforces.
-project_id = "unprovisioned"
-
-# Zero, because there is no project to number. The real value is read from
-# the project at provisioning time and recorded here then.
+# Not provisioned. `unprovisioned` is a valid project-id *shape* that the
+# root refuses by name at plan time, and deploy.yml and vendor.yml refuse it
+# before they authenticate; a plausible-looking id pointing at a deleted
+# project fails much later with an authentication error about an audience
+# nobody can explain. Provisioning this environment means a project of its
+# own — never one another environment already uses — its own state bucket,
+# and the id and number recorded here. See environments/README.md.
+project_id     = "unprovisioned"
 project_number = 0
 
-environment = "prod"
-region      = "europe-west2"
-
-# Paper trading, in production, on purpose. Live trading is enabled by two
-# authenticated approvals at run time, so a tfvars file that could turn it on
-# would turn an infrastructure change into a trading decision.
+environment      = "prod"
+region           = "europe-west2"
 autonomy_ceiling = "paper_trading"
 
-node_count   = 3
-machine_type = "e2-standard-16"
-
-# Three per zone committed, never fewer, up to eight.
+# --- The trust zones (blueprint §46.1) ---------------------------------------
 #
-# Both numbers are **per zone** and this is a regional cluster, so the real
-# range is nine to twenty-four nodes.
-#
-# The floor is not lower than the committed size on purpose. Scaling down means
-# draining, and the quiet period on this platform is a market that has closed
-# followed by one that opens; giving back nodes overnight buys a few hours of a
-# smaller bill and pays for it with cold starts and a wave of rescheduling at
-# the open.
-#
-# The ceiling is what makes `qip-api`'s HorizontalPodAutoscaler a policy rather
-# than a capacity limit — before there was any autoscaling, nothing in the
-# system could add a node, so its `maxReplicas: 6` was a number the cluster
-# could not honour. It is also a bound on the other direction: eight per zone
-# is room for the cells to be rescheduled off a lost node and for an upgrade to
-# surge, and it is not room for a wedged workload to buy nodes all day.
-min_node_count = 3
-max_node_count = 8
-
-# Filled in with the operator ranges that may reach the control plane. Empty
-# means nobody, which fails safe: an unreachable control plane is recoverable
-# and an open one is not.
-authorised_networks = []
-
-edge_cells = {
-  #   "dallas-1" = {
-  #     region       = "us-south1"
-  #     subnet_cidr  = "10.65.0.0/20"
-  #     pod_cidr     = "10.65.16.0/20"
-  #     service_cidr = "10.65.32.0/20"
-  #     venues       = {}
-  #   }
-  #   # Council Bluffs, Iowa — about 400km from the Chicago venues.
-  #   "chicago-1" = {
-  #     region       = "us-central1"
-  #     subnet_cidr  = "10.66.0.0/20"
-  #     pod_cidr     = "10.66.16.0/20"
-  #     service_cidr = "10.66.32.0/20"
-  #     venues       = {}
-  #   }
-  #   # Ashburn, Virginia — about 300km from the NY/NJ venues.
-  #   "newyork-1" = {
-  #     region       = "us-east4"
-  #     subnet_cidr  = "10.67.0.0/20"
-  #     pod_cidr     = "10.67.16.0/20"
-  #     service_cidr = "10.67.32.0/20"
-  #     venues       = {}
-  #   }
-  "london-1" = {
-    region       = "europe-west2"
-    subnet_cidr  = "10.68.0.0/20"
-    pod_cidr     = "10.68.16.0/20"
-    service_cidr = "10.68.32.0/20"
-    venues       = {}
+# The three zones the catalogue places a workload in. Same ranges as dev:
+# each environment is its own project and its own VPC, so the ranges do not
+# collide across environments, and one address plan is one fewer thing to
+# get wrong.
+trust_zones = {
+  "application-identity" = {
+    region      = "europe-west2"
+    subnet_cidr = "10.0.32.0/24"
   }
-  #   "frankfurt-1" = {
-  #     region       = "europe-west3"
-  #     subnet_cidr  = "10.69.0.0/20"
-  #     pod_cidr     = "10.69.16.0/20"
-  #     service_cidr = "10.69.32.0/20"
-  #     venues       = {}
-  #   }
-  #   "singapore-1" = {
-  #     region       = "asia-southeast1"
-  #     subnet_cidr  = "10.70.0.0/20"
-  #     pod_cidr     = "10.70.16.0/20"
-  #     service_cidr = "10.70.32.0/20"
-  #     venues       = {}
-  #   }
-  #   "tokyo-1" = {
-  #     region       = "asia-northeast1"
-  #     subnet_cidr  = "10.71.0.0/20"
-  #     pod_cidr     = "10.71.16.0/20"
-  #     service_cidr = "10.71.32.0/20"
-  #     venues       = {}
-  #   }
-  #   "saopaulo-1" = {
-  #     region       = "southamerica-east1"
-  #     subnet_cidr  = "10.72.0.0/20"
-  #     pod_cidr     = "10.72.16.0/20"
-  #     service_cidr = "10.72.32.0/20"
-  #     venues       = {}
-  #   }
-  #   # Doha, Qatar — about 380km from Dubai.
-  #   "dubai-1" = {
-  #     region       = "me-central1"
-  #     subnet_cidr  = "10.73.0.0/20"
-  #     pod_cidr     = "10.73.16.0/20"
-  #     service_cidr = "10.73.32.0/20"
-  #     venues       = {}
-  #   }
+  "cognition" = {
+    region      = "europe-west2"
+    subnet_cidr = "10.0.33.0/24"
+  }
+  "intelligence" = {
+    region      = "europe-west2"
+    subnet_cidr = "10.0.34.0/24"
+  }
 }
 
-# Off, in production, and this is the line most likely to be changed by
-# somebody who should not.
-#
-# The platform implements three storage targets — memory, local files and the
-# in-tree engine — and refuses these six by name, each naming what it still
-# needs. Turning one on here provisions a healthy, empty, billable instance
-# that no code in this build can open, and the architecture diagram then reads
-# as though the capability exists.
-#
-# Turn one on when its adapter exists and is wired, and confirm with the
-# `enabled_without_an_adapter` output before applying.
+permitted_paths = {}
+external_egress = {}
+public_ingress  = {}
+
+# No execution node. A node must be configured for at least one venue, and
+# no venue's published ranges are recorded anywhere; see
+# modules/execution-node/README.md for the entry when they are.
+execution_nodes = {}
+
+# No image has ever been built for this environment, so there is no digest
+# to create a service at. deploy.yml writes images.tfvars beside this file
+# on its first run against a provisioned project.
+image_digests = {}
+
 enable_bigquery      = false
 enable_cloud_storage = false
 enable_alloydb       = false
@@ -174,26 +63,9 @@ enable_memorystore   = false
 enable_spanner       = false
 enable_vertex_ai     = false
 
-# --- Off, and each is a decision rather than an oversight --------------------
-
-# Confidential VMs on the nodes. Real hardening, and off because
-# `backend/crates/libs/qip-confidential` is statistical disclosure control with no
-# enclave and no attestation — turning this on next to a crate with that name
-# lets the two together imply a guarantee neither provides. It is also never a
-# one-line change: the machine type above is Intel and this needs n2d, c2d or
-# c3d, which the cluster module refuses at plan time.
-enable_confidential_nodes = false
-
-# Security Command Center's project-scoped resources: two custom detectors that
-# watch for a cluster with Binary Authorization enforcement turned off or a
-# public control plane. Off because they only ever evaluate if SCC is activated
-# at the organisation, which is not a project-level act and which nothing here
-# can check. Detectors that are stored and never run read in the console as a
-# project being watched, which is worse than the gap they replace.
+# Off; see dev/terraform.tfvars for why each is a decision rather than an
+# oversight.
 enable_security_command_center = false
 
-# The only repository whose pipeline may deploy into this project. No default
-# exists for this on purpose: a default would name a repository somebody else
-# could be running, and the consequence of getting it wrong is that their
-# pipeline pushes images and applies manifests here.
+# The only repository whose pipeline may deploy into this project.
 github_repository = "droderiquesit/quantum-ai-platform"

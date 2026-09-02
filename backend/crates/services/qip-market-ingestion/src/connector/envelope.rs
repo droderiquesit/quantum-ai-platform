@@ -18,7 +18,9 @@
 //!   envelope it produced live.
 //! * **knowable time** — event time plus the source's dissemination delay: the
 //!   earliest instant a decision could have used this. A record whose knowable
-//!   time is after the poll's horizon is withheld, not published early.
+//!   time is after the poll's horizon is withheld, not published early — by
+//!   the runtime's per-event gate, before an envelope is built; the envelope
+//!   carries the instant as a record of the fact, not as a second gate.
 //!
 //! A source with a fifteen-minute delay produces records whose event time is
 //! in the past and whose knowable time is not yet reached. A backtest that
@@ -170,6 +172,14 @@ impl MarketEventEnvelope {
     }
 
     /// The earliest instant a decision could have used this.
+    ///
+    /// Recorded here, gated elsewhere: `ConnectorRuntime::admit` withholds a
+    /// raw event whose knowable instant is past the poll's horizon before any
+    /// envelope exists, so every envelope a poll admits is already knowable at
+    /// its own `ingest_time`. There is no `is_knowable_at` on the envelope on
+    /// purpose. One existed, nothing consulted it, and at the only handover —
+    /// `ConnectorFeed::poll`, which strips the envelope at the same horizon it
+    /// polled at — it could never have refused anything.
     pub const fn knowable_at(&self) -> Timestamp {
         self.knowable_at
     }
@@ -177,14 +187,6 @@ impl MarketEventEnvelope {
     /// How long the platform took to learn a fact that was already true.
     pub fn ingestion_lag(&self) -> qip_core::Duration {
         self.ingest_time.since(self.event_time)
-    }
-
-    /// Whether this record may be handed over at `horizon`.
-    ///
-    /// Not `event_time <= horizon`: the dissemination delay is what separates
-    /// a record that exists from a record the deployment was entitled to see.
-    pub fn is_knowable_at(&self, horizon: Timestamp) -> bool {
-        self.knowable_at <= horizon
     }
 
     pub const fn provenance(&self) -> &Provenance {

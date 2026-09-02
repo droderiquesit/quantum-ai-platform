@@ -56,13 +56,6 @@ impl Complex {
         }
     }
 
-    pub fn conjugate(self) -> Self {
-        Self {
-            re: self.re,
-            im: -self.im,
-        }
-    }
-
     /// Squared modulus: the measurement probability of this amplitude.
     pub fn norm_squared(self) -> f64 {
         self.re * self.re + self.im * self.im
@@ -164,16 +157,6 @@ impl StateVector {
     /// results that cannot occur.
     pub fn total_probability(&self) -> f64 {
         self.amplitudes.iter().map(|a| a.norm_squared()).sum()
-    }
-
-    /// The most likely basis state, and its probability.
-    pub fn most_likely(&self) -> (usize, f64) {
-        self.amplitudes
-            .iter()
-            .enumerate()
-            .map(|(index, amplitude)| (index, amplitude.norm_squared()))
-            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .unwrap_or((0, 0.0))
     }
 
     /// Hadamard on one qubit.

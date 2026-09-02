@@ -45,9 +45,12 @@ use qip_edge::cell::{Cell, CellConfig, Placer, WorkReport};
 use qip_edge_node::gateway::NodeGateway;
 use qip_edge_node::mesh::{MeshLink, MeshSettings, PEER_VARIABLE};
 use qip_edge_node::mirror::StoreMirror;
+use qip_edge_node::telemetry::{MeshSeries, respond};
 use qip_edge_node::venue::{ACKNOWLEDGEMENT_VARIABLE, ADAPTER_VARIABLE, VenueChoice};
+use qip_edge_node::{NodeAssembly, assemble};
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
+use qip_observability::metrics::Metrics;
 use qip_storage::settings::{ROOT_VARIABLE, StorageSettings, TARGET_VARIABLE};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -207,7 +210,17 @@ fn run() -> Result<()> {
         cell_config = cell_config.with_venue(venue.clone());
     }
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
-    let mut cell = Cell::new(cell_config, features)?;
+
+    // The cell, the mesh series and the registry the scrape serves are wired
+    // together in the library, where a test can prove they are one registry.
+    // Assembled piecewise here, that property was held by a source check on
+    // this file, which a second `Telemetry` inserted between the lines passed.
+    let NodeAssembly {
+        telemetry,
+        mut cell,
+        mesh_series,
+    } = assemble(cell_config, features, Arc::clone(&clock))?;
+    let metrics: &Arc<Metrics> = &telemetry.metrics;
 
     // The venue seam, and the one decision in this binary that is not
     // recoverable if it is wrong. Read before anything is opened and announced
@@ -308,6 +321,8 @@ fn run() -> Result<()> {
         link.as_mut(),
         &clock,
         started,
+        metrics,
+        mesh_series,
     )
 }
 
@@ -373,6 +388,8 @@ fn serve(
     mut link: Option<&mut MeshLink>,
     clock: &Arc<dyn Clock>,
     started: qip_core::Timestamp,
+    metrics: &Arc<Metrics>,
+    mut mesh_series: MeshSeries,
 ) -> Result<()> {
     let address = format!("0.0.0.0:{}", config.health_port);
     let listener = TcpListener::bind(&address)
@@ -410,7 +427,17 @@ fn serve(
                     }
                 }
                 let health = link.as_deref().map(MeshLink::health);
-                if let Err(error) = answer(stream, config, cell, gateway, mirror, health, started) {
+                // The link's counters become a series here, at the one place
+                // in this node that reads them. Before this they reached the
+                // JSON health body and nothing else, so a cell that had
+                // stopped talking to the centre was a number that stopped
+                // increasing where nothing was looking.
+                if let Some(health) = health.as_ref() {
+                    mesh_series.observe(health);
+                }
+                if let Err(error) = answer(
+                    stream, config, cell, gateway, mirror, health, started, metrics,
+                ) {
                     eprintln!("qip-edge-node: health request failed: {}", error.message());
                 }
             }
@@ -429,11 +456,15 @@ fn answer(
     mirror: &StoreMirror,
     mesh: Option<qip_edge_node::mesh::MeshHealth>,
     started: qip_core::Timestamp,
+    metrics: &Metrics,
 ) -> Result<()> {
     let mut buffer = [0u8; 1024];
-    // The content is irrelevant — any request gets the same answer — but the
-    // read has to happen or the client sees a reset instead of a response.
-    let _ = stream.read(&mut buffer);
+    // The read has to happen or the client sees a reset instead of a response.
+    // It is also the only thing that distinguishes a scrape from a probe: this
+    // node answered every request identically until it had something a scraper
+    // could read, and a `/metrics` path that returned a health blob would be
+    // silently unparseable to every collector that asked.
+    let read = stream.read(&mut buffer).unwrap_or(0);
 
     // The mesh block is `null` when no peer is configured, rather than absent
     // or zeroed. A probe that could not tell "detached" from "connected and
@@ -479,8 +510,15 @@ fn answer(
         gateway.unknown_orders(),
         started.as_secs()
     );
+    // Routing lives in the library so it can be tested against the same
+    // registry the cell writes to. See `qip_edge_node::telemetry::respond`.
+    let (content_type, payload) = respond(&buffer[..read], metrics, &body);
+    write_response(stream, content_type, &payload)
+}
+
+fn write_response(mut stream: TcpStream, content_type: &str, body: &str) -> Result<()> {
     let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     stream

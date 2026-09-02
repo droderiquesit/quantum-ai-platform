@@ -662,6 +662,33 @@ fn every_console_view_states_whether_real_money_is_moving() {
 }
 
 #[test]
+fn a_halted_console_still_states_that_it_is_paper_trading() {
+    // The console shares the banner with the surfaces, so the same regression
+    // is checked on its own views: a halted paper console says both.
+    let halted = ConsoleModel {
+        posture: Posture {
+            halted: true,
+            halt_reason: "a book that does not reconcile".to_string(),
+            ..Posture::default()
+        },
+        ..ConsoleModel::default()
+    };
+    assert!(
+        !halted.posture.live,
+        "the premise is a halted paper console"
+    );
+    for view in View::all() {
+        let page = render(view, &halted);
+        assert!(page.contains("HALTED"), "{} lost the halt", view.title());
+        assert!(
+            page.contains("PAPER TRADING"),
+            "{} shows a halted console without its posture",
+            view.title()
+        );
+    }
+}
+
+#[test]
 fn a_quantum_result_is_never_shown_without_the_classical_run_beside_it() {
     let page = render(View::Quantum, &populated());
     assert!(page.contains("Classical solver"), "{page}");

@@ -556,14 +556,17 @@ fn the_platform_reports_its_own_capability_consistently() -> Result<()> {
 fn a_proposal_cannot_reach_execution_without_both_controls() -> Result<()> {
     // The separation the whole organisation is built around, checked at the
     // proposal rather than in the manifests.
-    use qip_portfolio_engine::proposal::{Proposal, ProposalLeg, ProposalStatus, Side as LegSide};
+    use qip_portfolio_engine::proposal::{Proposal, ProposalLeg, Side as LegSide};
 
-    let mut proposal = Proposal {
-        proposal_id: qip_core::ProposalId::from_string("prop-acceptance"),
-        created_at: start(),
-        as_of: start(),
-        status: ProposalStatus::Draft,
-        legs: vec![ProposalLeg {
+    // Built through the one constructor, which admits no status: a draft is
+    // the only state a proposal can start in, and that is now held by the
+    // type rather than by this fixture choosing to write `Draft`.
+    let mut proposal = Proposal::draft(
+        qip_core::ProposalId::from_string("prop-acceptance"),
+        start(),
+        start(),
+        Money::new(dec!("10000000"), Currency::USD),
+        vec![ProposalLeg {
             object_id: object("ACME"),
             side: LegSide::Buy,
             quantity: dec!("1000"),
@@ -573,15 +576,9 @@ fn a_proposal_cannot_reach_execution_without_both_controls() -> Result<()> {
             estimated_cost_bps: 10.0,
             hypotheses: vec!["hyp-acceptance".to_string()],
         }],
-        equity: Money::new(dec!("10000000"), Currency::USD),
-        target_gross: 0.01,
-        target_net: 0.01,
-        turnover: 0.01,
-        estimated_cost_bps: 0.2,
-        rationale: "expresses one approved thesis".to_string(),
-        compromises: Vec::new(),
-        checks_passed: Vec::new(),
-    };
+        "expresses one approved thesis",
+    )
+    .with_targets(0.01, 0.01, 0.01, 0.2);
     let _ = PortfolioId::from_string("pf-acceptance");
 
     // Risk alone is not enough.
@@ -590,7 +587,7 @@ fn a_proposal_cannot_reach_execution_without_both_controls() -> Result<()> {
             .approve(start(), vec!["risk-control".to_string()])
             .is_err()
     );
-    assert!(!proposal.status.is_releasable());
+    assert!(!proposal.status().is_releasable());
 
     // Both controls, and it releases.
     proposal.approve(
@@ -675,7 +672,8 @@ fn the_centre_decodes_a_contributor_vector_out_of_bytes_the_edge_crate_produced(
             strategy: qip_contracts::signal::StrategyId::new("alpha"),
             object_id: ObjectId::from_string("ACME"),
             venue: qip_contracts::venue::VenueId::new("XLON"),
-            side: qip_contracts::message::BookSide::Bid,
+            // Net +60 is a buy, and a buy takes the ask.
+            side: qip_contracts::message::BookSide::Ask,
             quantity: dec!("60"),
             price: dec!("100"),
             simulated: true,

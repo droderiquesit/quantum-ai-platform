@@ -106,11 +106,6 @@ impl FinancialObject {
         self.extension.maturity()
     }
 
-    /// Years to maturity as of `now`; `None` for perpetual instruments.
-    pub fn time_to_maturity_years(&self, now: Timestamp) -> Option<f64> {
-        self.maturity().map(|m| m.since(now).as_years_f64())
-    }
-
     /// Whether the instrument has matured as of `now`.
     pub fn is_expired(&self, now: Timestamp) -> bool {
         self.maturity().is_some_and(|m| m <= now)

@@ -41,21 +41,33 @@ readonly IDENTITY_API_KEY
 
 # --- the console's route to the platform (ADR 0018) ------------------------
 #
-# Read from the environment's tfvars rather than restated here. Terraform
-# reserves this address and the Helm chart's Service claims it; a third literal
-# in a shell script is the copy nobody thinks to change, because it is the only
-# one that is not configuration. `console_route.rs` fails the build if this
-# script ever contains the address instead of reading it.
+# The API is a Cloud Run service (ADR 0024) and its URL is Terraform's to
+# report: `api_internal_base_url` is `module.cloud_run["api"].uri`, internal
+# ingress, answering only the console's identity over the VPC. It is read from
+# `terraform output` rather than restated here, because a literal in a shell
+# script is the copy nobody thinks to change — it is the only one that is not
+# configuration. The GKE runtime reserved an internal-load-balancer address in
+# the tfvars for this (`api_internal_address`); that key is gone with the load
+# balancer, and a script still reading it deployed a console whose upstream
+# was empty. `console_route.rs` fails the build if this script ever carries
+# the address, or reads a key the tfvars no longer set.
+#
+# The subnet the console egresses through is still a tfvars value, because
+# Terraform creates it from that value and nothing else names it.
 readonly TFVARS="${REPO_ROOT}/infrastructure/environments/dev/terraform.tfvars"
+readonly TF_ROOT="${REPO_ROOT}/infrastructure/terraform"
 tfvar() { sed -n "s/^$1[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" "${TFVARS}" | head -1; }
 
-API_ADDRESS="$(tfvar api_internal_address)"
+# `terraform output` reads state, so this needs the same `terraform init`
+# infra.yml performs against the environment's state bucket; it is not a
+# plan and mutates nothing.
+API_BASE_URL="$(terraform -chdir="${TF_ROOT}" output -raw api_internal_base_url 2>/dev/null || true)"
 CONSOLE_SUBNET_CIDR="$(tfvar console_egress_cidr)"
-readonly API_ADDRESS CONSOLE_SUBNET_CIDR
+readonly API_BASE_URL CONSOLE_SUBNET_CIDR
 # Fail closed and say which half is missing. A console deployed without these
 # answers 500 on every gateway call with "QIP_API_BASE_URL is not set" — an
 # honest message, and one that describes a deployment fault as a platform one.
-[[ -n "${API_ADDRESS}" ]] || { echo "api_internal_address is not set in ${TFVARS}; the console would have no platform to read" >&2; exit 1; }
+[[ -n "${API_BASE_URL}" ]] || { echo "terraform output api_internal_base_url is empty; the API's Cloud Run service has not been applied, so the console would have no platform to read" >&2; exit 1; }
 [[ -n "${CONSOLE_SUBNET_CIDR}" ]] || { echo "console_egress_cidr is not set in ${TFVARS}; the console would have no route into the VPC" >&2; exit 1; }
 readonly VPC_NETWORK="qip-dev"
 readonly CONSOLE_SUBNET="qip-dev-console-egress"
@@ -91,7 +103,7 @@ gcloud run deploy algorik-portal \
   --port 8080 --cpu 1 --memory 512Mi --min-instances 0 --max-instances 3 \
   --network "${VPC_NETWORK}" --subnet "${CONSOLE_SUBNET}" \
   --vpc-egress private-ranges-only \
-  --set-env-vars "ALGORIK_ENV=development,ALGORIK_POSTURE=paper,ALGORIK_IDENTITY_PROJECT_ID=${PROJECT},ALGORIK_IDENTITY_API_KEY=${IDENTITY_API_KEY},QIP_API_BASE_URL=http://${API_ADDRESS}:8080,QIP_API_TOKEN_FILE=${TOKEN_MOUNT}" \
+  --set-env-vars "ALGORIK_ENV=development,ALGORIK_POSTURE=paper,ALGORIK_IDENTITY_PROJECT_ID=${PROJECT},ALGORIK_IDENTITY_API_KEY=${IDENTITY_API_KEY},QIP_API_BASE_URL=${API_BASE_URL},QIP_API_TOKEN_FILE=${TOKEN_MOUNT}" \
   --set-secrets "ALGORIK_SESSION_SECRET=algorik-session-secret:latest,${TOKEN_MOUNT}=qip-token-viewer-dev:latest" \
   --quiet
 PORTAL_URL="$(gcloud run services describe algorik-portal --project "${PROJECT}" --region "${REGION}" --format='value(status.url)')"

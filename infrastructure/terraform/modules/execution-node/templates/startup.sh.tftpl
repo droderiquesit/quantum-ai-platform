@@ -8,8 +8,9 @@
 #   1. verifies the image is the one §41.4 describes, and stops if it is not;
 #   2. fetches the node's secrets to a tmpfs, as files, never as environment
 #      variables;
-#   3. writes the unit's configuration;
-#   4. installs and starts one systemd unit.
+#   3. writes the configuration: the binary's, the egress proxy's bootstrap,
+#      and the Ops Agent's scrape of the health port;
+#   4. installs and starts the units — the proxy first, then the node.
 #
 # Every failure below exits non-zero without starting the unit. A machine that
 # came up without isolated cores or without huge pages is a machine that will
@@ -21,7 +22,10 @@ set -euo pipefail
 
 readonly RUN_DIR=/run/qip/secrets
 readonly CONF_DIR=/etc/qip/execution-node
+readonly EGRESS_DIR=/etc/qip/egress
 readonly UNIT=/etc/systemd/system/qip-execution-node.service
+readonly EGRESS_UNIT=/etc/systemd/system/qip-egress.service
+readonly OPS_AGENT_CONF=/etc/google-cloud-ops-agent/config.yaml
 
 log() { echo "qip-execution-node: $*" >&2; }
 fail() { log "REFUSING TO START: $*"; exit 1; }
@@ -86,6 +90,20 @@ fi
 [ -x /usr/local/bin/qip-edge-node ] || fail "/usr/local/bin/qip-edge-node is missing. The binary is part of the image; there is no runtime that could fetch one."
 [ -x /usr/local/bin/qip-fetch-secret ] || fail "/usr/local/bin/qip-fetch-secret is missing. The image must ship a helper that reads a Secret Manager payload and writes it to a file — this script deliberately does not assemble one out of curl and a JSON parser that may not be installed."
 
+# The egress proxy. A static Envoy under systemd, beside the binary: the
+# binary has no TLS stack and refuses `https` by name, so without this every
+# outbound adapter refuses at construction and the node can reach nothing
+# past Secret Manager. It is not a container runtime — nothing sits between
+# the binary and the kernel — and it is the same bootstrap every Cloud Run
+# sidecar mounts.
+[ -x /usr/local/bin/envoy ] || fail "/usr/local/bin/envoy is missing. The image ships the egress proxy as a static binary; a node without one has no outbound HTTPS at all, and this script will not fetch one."
+
+# The Ops Agent, which carries the health port's Prometheus exposition to
+# Cloud Monitoring. A node nothing can see is a node nobody can operate, and
+# the alert policies that name the edge series watch a descriptor nothing
+# ingests until this scrapes.
+systemctl cat google-cloud-ops-agent.service >/dev/null 2>&1 || fail "google-cloud-ops-agent.service is not on this image. Its Prometheus receiver is what carries qip_edge_* to Cloud Monitoring; without it the halt gauge and the reconciliation counters reach nobody."
+
 # --- 2. secrets, as files ---------------------------------------------------
 #
 # On a tmpfs, mode 0400, owned by the service user. Never in the environment: a
@@ -116,8 +134,14 @@ chmod 0400 "$RUN_DIR/venue-credential"
 # --- 3. configuration -------------------------------------------------------
 #
 # Values only. Every credential above is named by path — `qip_core::secret`
-# reads the `_FILE` indirection, exactly as the Secret Manager CSI driver's
-# projection is read in the Kubernetes topology.
+# reads the `_FILE` indirection, exactly as a Cloud Run secret volume is read.
+#
+# No QIP_GCP_ENDPOINT, deliberately. The proxy's Google APIs listener is up
+# at ${egress_endpoint}, but `qip-edge-node` constructs no `qip_storage::gcp`
+# client today — its journal is the local engine — so a value here would be a
+# control that does nothing, and `manifest_wiring` refuses exactly that. The
+# composition root that first constructs the client is the change that adds
+# the line, and the listener is already waiting for it.
 
 install -d -m 0755 "$CONF_DIR"
 cat >"$CONF_DIR/node.env" <<EOF
@@ -128,12 +152,52 @@ QIP_HEALTH_PORT=${health_port}
 QIP_STORAGE_TARGET=engine
 QIP_STORAGE_ROOT=/var/lib/qip/journal
 QIP_CAPITAL_ENVELOPE_KEY_FILE=$RUN_DIR/capital-envelope-key
-QIP_GCP_ENDPOINT=${egress_endpoint}
 QIP_EXECUTION_NODE_SHADOW=${shadow_mode ? "1" : "0"}
 EOF
 chmod 0444 "$CONF_DIR/node.env"
 
-# Two things are deliberately absent from that file.
+# The egress proxy's bootstrap, verbatim from the one committed file. The
+# proxy runs as its own unprivileged user, reads this and the CA bundle, and
+# holds no secret and no identity of its own — it forwards whatever bearer
+# token the binary sends and originates TLS to the one host each listener
+# names.
+id -u qip-egress >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin qip-egress
+install -d -m 0755 "$EGRESS_DIR"
+cat >"$EGRESS_DIR/envoy.yaml" <<'QIP_EGRESS_BOOTSTRAP_EOF'
+${egress_bootstrap}
+QIP_EGRESS_BOOTSTRAP_EOF
+chmod 0444 "$EGRESS_DIR/envoy.yaml"
+
+# What the Ops Agent scrapes: the node's own health port, on loopback, every
+# thirty seconds — longer than a pass, so a scrape cannot sample the same
+# pass twice and report a rate of zero between them. The receiver writes
+# `prometheus.googleapis.com/qip_edge_*` descriptors, which is what the alert
+# policies in modules/observability query.
+install -d -m 0755 "$(dirname "$OPS_AGENT_CONF")"
+cat >"$OPS_AGENT_CONF" <<OPS_AGENT_EOF
+metrics:
+  receivers:
+    qip_edge:
+      type: prometheus
+      config:
+        scrape_configs:
+          - job_name: qip-edge-node
+            scrape_interval: 30s
+            scrape_timeout: 10s
+            metrics_path: /metrics
+            static_configs:
+              - targets: ["127.0.0.1:${health_port}"]
+                labels:
+                  cell: ${node_id}
+                  region: ${region}
+  service:
+    pipelines:
+      qip_edge:
+        receivers: [qip_edge]
+OPS_AGENT_EOF
+chmod 0644 "$OPS_AGENT_CONF"
+
+# Two things are deliberately absent from the node's configuration.
 #
 # `QIP_AUTONOMY_CEILING` is not set. A cell's ceiling is structural —
 # `qip_edge::Cell` has no constructor taking a ceiling other than paper trading
@@ -150,14 +214,43 @@ chmod 0444 "$CONF_DIR/node.env"
 
 install -d -m 0750 -o qip-node -g qip-node /var/lib/qip/journal
 
-# --- 4. one unit ------------------------------------------------------------
+# --- 4. the units -----------------------------------------------------------
+
+# The proxy first. The node's unit requires it, so a proxy that will not
+# start is a node that does not start — which is the correct order: a node
+# with no outbound path would come up, pass its health check, and fail at
+# its first vendor call with an error that reads as the vendor being down.
+cat >"$EGRESS_UNIT" <<EOF
+[Unit]
+Description=qip egress proxy (TLS-terminating, loopback only)
+Documentation=https://github.com/peos/quantum-ai-platform/blob/main/infrastructure/terraform/modules/egress-proxy/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=qip-egress
+Group=qip-egress
+ExecStart=/usr/local/bin/envoy -c $EGRESS_DIR/envoy.yaml --service-cluster qip-egress --log-level warn
+Restart=always
+RestartSec=1
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
 
 cat >"$UNIT" <<EOF
 [Unit]
 Description=qip execution node ${node_id}
 Documentation=https://github.com/peos/quantum-ai-platform/blob/main/infrastructure/terraform/modules/execution-node/README.md
-After=network-online.target
+After=network-online.target qip-egress.service
 Wants=network-online.target
+Requires=qip-egress.service
 
 [Service]
 Type=exec
@@ -193,5 +286,7 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
+systemctl restart google-cloud-ops-agent.service
+systemctl enable --now qip-egress.service
 systemctl enable --now qip-execution-node.service
-log "started in ${shadow_mode ? "SHADOW" : "SESSION-BEARING"} mode with isolcpus=${isolated_cpus}"
+log "started in ${shadow_mode ? "SHADOW" : "SESSION-BEARING"} mode with isolcpus=${isolated_cpus}; egress on ${egress_endpoint}; health port ${health_port} scraped by the Ops Agent"

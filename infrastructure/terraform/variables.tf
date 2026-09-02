@@ -98,10 +98,10 @@ variable "autonomy_ceiling" {
   #
   # This is the earliest of the layers that refuse a live configuration, not
   # the only one: it stops a bad value at `terraform plan`, before it reaches
-  # the qip-config ConfigMap the workloads read. It does not stop `kubectl edit
-  # configmap`, which is why the composition roots refuse the same values at
-  # start-up. Neither layer is redundant — this one catches the reviewed,
-  # committed mistake, and that one catches the unreviewed live edit.
+  # the QIP_AUTONOMY_CEILING every catalogue workload reads. It does not stop
+  # a service updated by hand, which is why the composition roots refuse the
+  # same values at start-up. Neither layer is redundant — this one catches the
+  # reviewed, committed mistake, and that one catches the unreviewed live edit.
   validation {
     condition = !contains([
       "supervised_live",
@@ -116,185 +116,249 @@ variable "autonomy_ceiling" {
   }
 }
 
-variable "subnet_cidr" {
-  description = "The primary subnet range for nodes."
-  type        = string
-  default     = "10.0.0.0/20"
-}
-
-variable "pod_cidr" {
-  description = "The secondary range for pods."
-  type        = string
-  default     = "10.4.0.0/14"
-}
-
-variable "service_cidr" {
-  description = "The secondary range for services."
-  type        = string
-  default     = "10.8.0.0/20"
-}
-
-variable "authorised_networks" {
-  description = <<-EOT
-    Which CIDR blocks may reach the Kubernetes control plane.
-
-    Empty by default, which means nobody: a cluster reachable from anywhere is
-    not a private cluster, and defaulting to the whole internet so that the
-    first apply succeeds is how that happens.
-  EOT
-  type = list(object({
-    cidr_block   = string
-    display_name = string
-  }))
-  default = []
-
-  validation {
-    condition = alltrue([
-      for network in var.authorised_networks :
-      network.cidr_block != "0.0.0.0/0"
-    ])
-    error_message = "0.0.0.0/0 is not an authorised network. Name the ranges that need access."
-  }
-}
-
-variable "node_count" {
-  description = <<-EOT
-    Nodes per zone in the pool **at creation**.
-
-    This used to be the size, full stop. Now it is the starting point and the
-    autoscaler owns the rest: the node pool ignores later changes to it on
-    purpose, because `initial_node_count` forces replacement and editing this
-    line in a tfvars file would otherwise destroy the pool and recreate it,
-    draining every pod in the cluster at once, in a plan whose summary reads
-    "1 to add, 1 to destroy".
-
-    It must sit inside `min_node_count` and `max_node_count`. The cluster
-    module has a precondition that says so at plan time rather than letting the
-    API refuse it after the cluster exists.
-  EOT
-  type        = number
-  default     = 2
-
-  validation {
-    condition     = var.node_count >= 1 && var.node_count <= 20
-    error_message = "The node count must be between 1 and 20."
-  }
-}
-
-# --- Node pool autoscaling --------------------------------------------------
+# --- The runtime (ADR 0022, ADR 0024) ------------------------------------------
 #
-# Both are **per zone**, and this is a regional cluster, so the real range is
-# three times each number. Reading them as regional totals sizes the pool at a
-# third of what was meant.
-#
-# The gap these close: `qip-api` has a HorizontalPodAutoscaler with
-# `maxReplicas: 6` and the pool had a fixed `node_count`, so nothing in the
-# system could add a node. Past the capacity the committed nodes could hold, the
-# autoscaler's answer to load was a pod in `Pending` — which looks like a
-# scheduling fault and is a sizing one.
+# Every warm binary is a Cloud Run service from `catalogue.tf`; the execution
+# node is a Compute Engine machine from `execution_nodes`; both attach to the
+# trust zones declared below. There is no cluster variable left here, and
+# none may return without an ADR: the GKE runtime and everything that
+# configured it were retired under ADR 0024.
 
-variable "min_node_count" {
+variable "image_digests" {
   description = <<-EOT
-    The smallest the pool may shrink to, per zone.
+    The image digest each catalogue binary is deployed at, keyed by binary
+    name, as `sha256:<64 hex>`.
 
-    Two, not zero and not one. Scaling down means draining, and the quiet
-    period on this platform is a market that is closed followed by one that
-    opens. A floor that lets the pool collapse overnight saves a few hours of
-    a smaller bill and pays for it with cold starts and a wave of rescheduling
-    at the open.
+    Written by `.github/workflows/deploy.yml` into
+    `infrastructure/environments/<env>/images.tfvars` after it has built,
+    scanned, signed and attested the image and moved the service to it —
+    never typed by a person. Terraform creates a service at the digest
+    recorded here and thereafter ignores the image, because the pipeline owns
+    it; `modules/cloudrun` says why. A binary with no entry is refused at
+    plan time by `catalogue.tf`, which names the pipeline run that is
+    missing.
+
+    Empty by default: an environment nothing has ever deployed to has no
+    digest to record, and inventing one would be a service created at bytes
+    nobody attested.
   EOT
-  type        = number
-  default     = 2
+
+  type    = map(string)
+  default = {}
 
   validation {
-    condition     = var.min_node_count >= 1 && var.min_node_count <= 20
-    error_message = "The minimum node count must be between 1 and 20, per zone."
+    condition     = alltrue([for digest in values(var.image_digests) : can(regex("^sha256:[a-f0-9]{64}$", digest))])
+    error_message = "Every image digest is `sha256:<64 hex>`. A tag is a name someone can move after the attestation was signed."
   }
 }
 
-variable "max_node_count" {
+variable "trust_zones" {
   description = <<-EOT
-    The largest the pool may grow to, per zone.
+    The trust zones this environment declares, keyed by the thirteen names of
+    blueprint §46.1, each with the region its subnet lives in and its own
+    range. `modules/trust-zones` refuses a name outside the thirteen and a
+    range shared by two zones.
 
-    A ceiling, not a target: nothing scales towards it unless pods cannot be
-    scheduled. It exists because the alternative to a bound is an autoscaler
-    that answers a wedged workload — one stuck in a crash loop requesting four
-    CPUs, say — by buying nodes until somebody reads the bill.
-
-    Six per zone is eighteen regionally against two per zone committed: room
-    for the API to reach its `maxReplicas`, for cells to be rescheduled off a
-    lost node and for an upgrade to surge, without being room for an accident
-    to run all day.
-  EOT
-  type        = number
-  default     = 6
-
-  validation {
-    condition     = var.max_node_count >= 1 && var.max_node_count <= 50
-    error_message = "The maximum node count must be between 1 and 50, per zone."
-  }
-}
-
-variable "maintenance_exclusions" {
-  description = <<-EOT
-    Dated periods during which no cluster maintenance happens at all, keyed by
-    name.
-
-    Empty by default, and necessarily so: a GKE maintenance exclusion is a
-    fixed pair of timestamps rather than a recurring rule, so "never during
-    market hours" cannot be expressed here. The cluster's weekly window already
-    puts ordinary upgrades on a Sunday, when no venue this platform trades is
-    open. This is for the specific dated freeze — a quarterly roll, an exchange
-    migration weekend, the fortnight around a go-live.
-
-    At most three, and `NO_MINOR_OR_NODE_UPGRADES` may not exceed 180 days.
-    `scope` defaults to `NO_MINOR_OR_NODE_UPGRADES`, which freezes the nodes —
-    where the workload is — while still letting the control plane take a patch.
+    Every zone the catalogue places a workload in must be declared here, or
+    the plan refuses with the zone named: a workload with no zone has no
+    subnet, no tag and no rule. Ranges belong in the tfvars, not in a default
+    — an address range chosen as a convenience is the one that collides.
   EOT
 
   type = map(object({
-    start_time = string
-    end_time   = string
-    scope      = optional(string, "NO_MINOR_OR_NODE_UPGRADES")
+    region      = string
+    subnet_cidr = string
   }))
 
   default = {}
 }
 
-variable "enable_confidential_nodes" {
+variable "permitted_paths" {
   description = <<-EOT
-    Whether the cluster's nodes run as Confidential VMs, with memory encrypted
-    by an AMD SEV key the host cannot read.
-
-    **Off, and off is the decision rather than the default.** The hardening is
-    real and defensible. The reason it is not simply on is the name sitting next
-    to it: `backend/crates/libs/qip-confidential` is **not** confidential computing. It
-    is statistical disclosure control — a k-anonymity gate, a monotone privacy
-    budget, calibrated noise — and its own module documentation says in its
-    first paragraph that there is no enclave, no attestation and no hardware
-    isolation.
-
-    Enabling this alongside a crate with that name lets the two together be read
-    as a guarantee neither one makes. Nothing in this platform attests a node,
-    and no decision anywhere is gated on a node having been attested. Turn it on
-    as defence in depth if that is what you want; do not turn it on and conclude
-    that fabric D is now confidential computing.
-
-    It is never a one-line change. The machine family must be AMD — n2d, c2d or
-    c3d — and neither the `n2-standard-4` default nor production's
-    `e2-standard-16` qualifies; the cluster module refuses the combination at
-    plan time. Enabling it also replaces the cluster.
-
-    modules/data/NOT-PROVISIONED.md carries the full argument.
+    The zone-to-zone paths that exist, keyed by a short name. Empty means no
+    zone may reach any other, which is the fail-closed reading. A pair and a
+    mode must both be sanctioned by `modules/trust-zones` or the plan refuses
+    them; see that module's variable for the fields.
   EOT
-  type        = bool
-  default     = false
+
+  type = map(object({
+    from  = string
+    to    = string
+    mode  = string
+    ports = list(number)
+    note  = string
+  }))
+
+  default = {}
 }
 
-variable "machine_type" {
-  description = "The node machine type."
+variable "external_egress" {
+  description = <<-EOT
+    Every destination outside the VPC any zone may reach, one entry per
+    destination. Empty is a platform that reaches nothing external, which is
+    the correct state for connectivity nobody has confirmed. `ibm-quantum`
+    may be declared only for `optimisation`; `modules/trust-zones` refuses
+    every other spelling at plan time.
+  EOT
+
+  type = map(object({
+    zone    = string
+    cidr    = string
+    port    = number
+    purpose = string
+    note    = string
+  }))
+
+  default = {}
+}
+
+variable "public_ingress" {
+  description = "Where a client may arrive: Google's load-balancer ranges to one zone on one port, refused for every zone but the public edge and application-and-identity. Empty by default."
+
+  type = map(object({
+    zone = string
+    port = number
+    note = string
+  }))
+
+  default = {}
+}
+
+variable "execution_nodes" {
+  description = <<-EOT
+    The execution nodes this environment runs, keyed by node id — which is
+    the cell id the binary is configured with.
+
+    Blueprint §41.4 calls for one dedicated C3 per region. This is a map so
+    that the next one is an entry rather than a directory, and it is empty by
+    default and in every environment: a node must be configured for at least
+    one venue, `qip-edge-node` refuses an empty `QIP_VENUES`, and no venue's
+    published address ranges are recorded anywhere in this repository. The
+    first entry is a venue decision and the plan that carries it is the
+    evidence ADR 0020's step 3 asks for.
+
+    Every field is deliberate:
+
+      * `region` and `zone` are chosen for distance to the venues.
+      * `subnet_cidr` must overlap neither another node's nor any trust
+        zone's. Overlapping ranges route to whichever subnet was created
+        first, silently.
+      * `machine_type` is one of the C3/C3D high-CPU shapes §41.4 permits;
+        the module refuses anything else.
+      * `boot_image` is one image by self-link, never a family. The image is
+        the other half of the node — modules/execution-node/README.md.
+      * `venues` is not guessed. It comes from the venue's own connectivity
+        documentation, and in shadow mode the node still cannot reach them.
+      * `create_egress_nat` is true only where the node's region has no NAT
+        of its own; two NATs on one subnet in one region is an apply error.
+  EOT
+
+  type = map(object({
+    region       = string
+    zone         = string
+    subnet_cidr  = string
+    machine_type = string
+    boot_image   = string
+    venues = map(object({
+      cidr = string
+      port = number
+    }))
+    create_egress_nat = optional(bool, false)
+  }))
+
+  default = {}
+
+  validation {
+    condition     = length(distinct([for node in values(var.execution_nodes) : node.subnet_cidr])) == length(var.execution_nodes)
+    error_message = "Two execution nodes share a subnet range. Overlapping ranges route to whichever subnet was created first."
+  }
+}
+
+variable "egress_allowed_upstreams" {
+  description = <<-EOT
+    The hosts the egress proxy may dial, checked at plan time against the
+    hosts `infrastructure/egress/envoy.yaml` actually dials. The two must be
+    the same set, so widening the proxy is an edit to the bootstrap and an
+    edit here, reviewed together. The default is the five hosts the adapters
+    name and the bootstrap declares; an environment that needs fewer narrows
+    the bootstrap, not this list.
+  EOT
+
+  type = list(string)
+  default = [
+    "storage.googleapis.com",
+    "bigquery.googleapis.com",
+    "europe-west2-aiplatform.googleapis.com",
+    "quantum.cloud.ibm.com",
+    "api.quantum.ibm.com",
+  ]
+}
+
+# --- The workloads' shared, non-secret settings ---------------------------------
+#
+# What the `qip-config` ConfigMap carried on GKE. Values only; every credential
+# reaches a workload as a mounted file through `secret_mounts` in catalogue.tf.
+
+variable "storage_target" {
+  description = <<-EOT
+    Which store every central workload uses, read as `QIP_STORAGE_TARGET`.
+
+    `memory` is a statement rather than a placeholder: a Cloud Run instance
+    keeps nothing across a restart and has no volume to keep it on. The three
+    implemented targets are memory, file and engine; the six managed ones are
+    ports that refuse construction, so naming one here stops a service
+    starting rather than upgrading its durability — at
+    `StorageSettings::preflight`, before it serves anything, which is the
+    intended direction.
+  EOT
   type        = string
-  default     = "n2-standard-4"
+  default     = "memory"
+
+  validation {
+    condition     = contains(["memory", "file", "engine"], var.storage_target)
+    error_message = "The storage target is memory, file or engine — the three targets this build implements. A managed store here is a service that refuses to start."
+  }
+}
+
+variable "cycle_interval_seconds" {
+  description = "How often the deep brain runs a cycle, read as `QIP_CYCLE_INTERVAL_SECONDS`. A string because it is an environment value."
+  type        = string
+  default     = "300"
+
+  validation {
+    condition     = can(regex("^[1-9][0-9]*$", var.cycle_interval_seconds))
+    error_message = "The cycle interval is a whole number of seconds."
+  }
+}
+
+variable "market_data_connector" {
+  description = <<-EOT
+    The live market-data connector the fast brain selects, or null for the
+    synthetic exchange every environment runs today.
+
+    Both keys or neither, which the object type makes structural:
+    `connector_feed` refuses half a configuration by name rather than falling
+    back, because the fallback is the synthetic exchange wearing a configured
+    look. `base_url` is the egress proxy's `http://127.0.0.1:<port>` address
+    and never the vendor's — `qip_transport::http` refuses `https` by name —
+    and that proxy reaches only the hosts its bootstrap names, so selecting a
+    source means adding its listener there in the same change. It also means
+    a licensing decision recorded before the source is used
+    (.claude/rules/domains/data-and-streaming.md); this variable does not
+    stand in for one.
+  EOT
+
+  type = object({
+    source   = string
+    base_url = string
+  })
+
+  default = null
+
+  validation {
+    condition     = var.market_data_connector == null || startswith(var.market_data_connector.base_url, "http://127.0.0.1:")
+    error_message = "The connector's base URL is the egress proxy on loopback, http://127.0.0.1:<port>. `qip_transport::http` refuses https by name, and an address off the instance is a route that does not exist."
+  }
 }
 
 variable "notification_channels" {
@@ -317,61 +381,6 @@ variable "github_repository" {
   validation {
     condition     = can(regex("^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$", var.github_repository))
     error_message = "The repository is owner/name, with no scheme and no trailing path."
-  }
-}
-
-variable "edge_cells" {
-  description = <<-EOT
-    The edge cells this environment runs, keyed by cell id.
-
-    ADR 0008 calls for seven, next to the venues they trade. This is a map so
-    that the eighth is an entry rather than a directory: seven copies of a
-    network policy is seven places for one of them to be wrong, and the wrong
-    one is the one nobody reads.
-
-    Empty by default. A cell that has not been asked for is not created, and an
-    environment with no cells is a central plane on its own, which is a working
-    configuration rather than a broken one.
-
-    The seven planned locations, their cell ids and the regions they would run
-    in are in docs/operations/deploying-an-edge-cell.md, together with the two
-    of them that have no Google Cloud region in the right metropolitan area and
-    what that costs.
-
-    Every field is deliberate:
-
-      * `region` is chosen for its distance to the venues, not for convenience.
-      * The three CIDRs must not overlap another cell's. Overlapping ranges
-        route to whichever subnet was created first, silently.
-      * `venues` is empty until somebody has the venue's published address
-        ranges in front of them. An empty map is no venues, not all of them.
-  EOT
-
-  type = map(object({
-    region       = string
-    subnet_cidr  = string
-    pod_cidr     = string
-    service_cidr = string
-    venues = map(object({
-      cidr = string
-      port = number
-    }))
-  }))
-
-  default = {}
-
-  validation {
-    condition = alltrue([
-      for cell in values(var.edge_cells) : alltrue([
-        for venue in values(cell.venues) : venue.cidr != "0.0.0.0/0" && venue.cidr != "::/0"
-      ])
-    ])
-    error_message = "A venue range of the whole internet is not a venue range. Name the ranges the venue publishes."
-  }
-
-  validation {
-    condition     = length(distinct([for cell in values(var.edge_cells) : cell.subnet_cidr])) == length(var.edge_cells)
-    error_message = "Two cells share a subnet range. Overlapping ranges route to whichever subnet was created first."
   }
 }
 
@@ -608,61 +617,6 @@ variable "scc_muted_findings" {
 # right now": it keeps the plan, the key and the retention and suspends the
 # schedule.
 
-variable "backup_location" {
-  description = <<-EOT
-    Where journal backups are stored. Empty means the cluster's own region.
-
-    That default covers a failed disk, a deleted PersistentVolume, a corrupted
-    journal and an operator error — four of the five losses the disaster
-    recovery runbook lists, and not the fifth: a backup held in the same region
-    as the cluster does not survive losing the region.
-
-    Naming another region buys the fifth and costs cross-region transfer on
-    every backup and a slower restore while everyone waits. It is a
-    deployment's call rather than a default, and whichever way it goes, the
-    `journal_backup` output reports which of the two this deployment has.
-  EOT
-  type        = string
-  default     = ""
-}
-
-variable "backup_schedule" {
-  description = <<-EOT
-    When a journal backup is taken, as a UTC cron expression.
-
-    Daily. A volume backup here is a persistent disk snapshot — incremental
-    after the first and taken without pausing the writer — so unlike a node
-    upgrade it is not constrained by market hours.
-
-    The minute is not zero on purpose: everything scheduled on the hour in a
-    Google Cloud project contends with everything else scheduled on the hour.
-
-    Shortening it does not shorten the runbook's stated RPO for the journal,
-    which is the shipping interval to the cell's mirror. This is the durable
-    copy behind that, not a replacement for it.
-  EOT
-  type        = string
-  default     = "17 3 * * *"
-}
-
-variable "backup_paused" {
-  description = "Suspends the backup schedule while keeping the plan, its key and its retention. For a cluster genuinely holding nothing worth keeping — not an off switch for the control."
-  type        = bool
-  default     = false
-}
-
-variable "backup_retain_days" {
-  description = "How long a journal backup is kept. Thirty-five days, so a corruption noticed at a month-end reconciliation still has a clean copy behind it. Deliberately not seven years: the evidence bucket is the long-horizon record, under a locked retention policy."
-  type        = number
-  default     = 35
-}
-
-variable "backup_delete_lock_days" {
-  description = "How long a journal backup cannot be deleted by anyone, including whoever holds the permission to delete it. The window in which an operator error, or an account acting on someone else's behalf, cannot also remove the evidence of what it did."
-  type        = number
-  default     = 7
-}
-
 variable "snapshot_start_time" {
   description = <<-EOT
     When the disk-level journal snapshot schedule runs, as `HH:MM` in UTC.
@@ -689,29 +643,6 @@ variable "snapshot_retain_days" {
   EOT
   type        = number
   default     = 90
-}
-
-variable "node_disk_type" {
-  description = "The central cluster's node boot disk type. See modules/cluster; development uses pd-standard to fit a fresh project's 250GB SSD quota."
-  type        = string
-  default     = "pd-ssd"
-}
-
-variable "node_disk_size_gb" {
-  description = "The central cluster's node boot disk size, per node."
-  type        = number
-  default     = 100
-}
-
-variable "cluster_deletion_protection" {
-  description = <<-EOT
-    Whether the cluster may be destroyed at all — see modules/cluster. True
-    by default; set false in any environment `infra.yml down` tears down
-    between sessions, or the teardown, and any recovery from a tainted
-    cluster, is refused by the provider rather than by this configuration.
-  EOT
-  type        = bool
-  default     = true
 }
 
 variable "workload_metrics_exist" {
@@ -744,28 +675,8 @@ variable "identity_mfa_state" {
   default     = "ENABLED"
 }
 
-variable "enable_console_ingress" {
-  description = "Publish Argo CD and Kargo on a real HTTPS URL behind Identity-Aware Proxy. Off by default: it is the one route into a cluster built to have none."
-  type        = bool
-  default     = false
-}
-
-variable "console_operators" {
-  description = "IAM members permitted through Identity-Aware Proxy to the delivery consoles (user:…, group:…). Empty means the URL exists and nobody may pass it, which is the correct default."
-  type        = list(string)
-  default     = []
-}
-
-# --- The console's route to the platform (ADR 0018) --------------------------
-
 variable "console_egress_cidr" {
   description = "CIDR of the subnet Cloud Run attaches the console to for direct VPC egress. Null means the console has no route to the platform and says so on every page, which is the state this variable exists to end."
-  type        = string
-  default     = null
-}
-
-variable "api_internal_address" {
-  description = "Reserved internal address for qip-api's internal load balancer. Must sit inside subnet_cidr and outside the range GKE allocates node addresses from. Null means no internal load balancer is created."
   type        = string
   default     = null
 }

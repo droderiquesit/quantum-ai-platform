@@ -50,9 +50,11 @@ use qip_lifecycle::evidence::{
     CrossValidationRun, FeatureTiming, HoldoutEvidence, KillCondition, LeakageAudit, PaperEvidence,
     PilotEvidence, ScaledEvidence, ShadowDecision, ShadowEvidence, StrategyEvidence,
 };
+use qip_lifecycle::trials::StrategyFamily;
 use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
+use qip_observability::metrics::{labels, names};
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 use qip_simulation_engine::validation::PurgedSplit;
 use qip_strategy::catalogue::FeatureCatalogue;
@@ -304,13 +306,20 @@ fn proposal(id: &StrategyId, cell: &str) -> Result<StrategyProposal> {
 /// Register a candidate with evidence that passes every gate.
 fn register(plane: &mut CentralPlane, id: &StrategyId, cell: &str) -> Result<()> {
     let (compiled, program) = compile(id.as_str())?;
-    let candidate = StrategyCandidate::new(compiled, program, cell, venue(), start())?
-        .with_evidence(full_evidence(id, cell)?)
-        .with_model("microprice-distilled@3")
-        .with_evidence_artifacts(vec![
-            format!("sha256:holdout-{id}"),
-            format!("sha256:shadow-{id}"),
-        ]);
+    let candidate = StrategyCandidate::new(
+        compiled,
+        program,
+        StrategyFamily::new("central-tests")?,
+        cell,
+        venue(),
+        start(),
+    )?
+    .with_evidence(full_evidence(id, cell)?)
+    .with_model("microprice-distilled@3")
+    .with_evidence_artifacts(vec![
+        format!("sha256:holdout-{id}"),
+        format!("sha256:shadow-{id}"),
+    ]);
     plane.factory_mut().register(candidate)?;
     plane.set_proposal(proposal(id, cell)?);
     Ok(())
@@ -665,6 +674,285 @@ fn a_reconciliation_break_halts_that_cell_and_only_that_cell() -> Result<()> {
     Ok(())
 }
 
+/// A reconciliation break tripped a scoped kill switch and raised an incident
+/// and wrote no series, so the highest-consequence thing the central plane does
+/// was the one thing no operator could chart. The break is counted by its
+/// direction and the halt by its cause; neither the cell nor the instrument is
+/// a label, because both are dimensions that grow.
+///
+/// One asymmetric break at a time, and the mirror only after the first has
+/// been asserted on its own. An earlier version ingested both directions in
+/// one report and asserted `over == 1 && under == 1`, which is also what a
+/// swapped sign produces: anyone "correcting" `difference()` to
+/// `external - cell` would have inverted every dashboard and left the suite
+/// green.
+#[test]
+fn a_reconciliation_break_is_recorded_by_direction_and_the_halt_by_cause() -> Result<()> {
+    let mut platform = platform()?;
+    let id = strategy();
+    let over = labels([("direction", "cell_over_venue")]);
+    let under = labels([("direction", "venue_over_cell")]);
+    let detail_only = labels([("direction", "detail_only")]);
+    let halted = labels([("cause", "reconciliation")]);
+
+    // Premise: a report that reconciles moves nothing.
+    let clean = CellReport::new("cell-nyc-1", start()).with_positions(vec![position(
+        "cell-nyc-1",
+        &id,
+        INSTRUMENT,
+        dec!("10"),
+    )]);
+    let quiet = platform.ingest_cell_report(clean, start())?;
+    assert!(quiet.halted.is_none());
+    let snapshot = platform.telemetry().metrics.snapshot();
+    assert_eq!(
+        snapshot.counter_total(names::CENTRAL_RECONCILIATION_BREAKS),
+        0,
+        "a clean report is not a break"
+    );
+    assert_eq!(snapshot.counter_total(names::CENTRAL_CELL_HALTS), 0);
+
+    // The cell holds more than the venue confirms, and nothing else.
+    let cell_over = CellReport::new(CELL, start())
+        .with_positions(vec![position(CELL, &id, INSTRUMENT, dec!("10"))])
+        .with_break(ReconciliationBreak {
+            instrument: INSTRUMENT.to_string(),
+            cell_quantity: dec!("10"),
+            external_quantity: dec!("4"),
+            detail: "six lots the venue has no record of".to_string(),
+        });
+    let ingestion = platform.ingest_cell_report(cell_over, start())?;
+    assert_eq!(ingestion.halted, Some(HaltScope::Cell(CELL.to_string())));
+
+    let snapshot = platform.telemetry().metrics.snapshot();
+    assert_eq!(
+        snapshot.counter(names::CENTRAL_RECONCILIATION_BREAKS, &over),
+        1,
+        "one break where the cell holds more than the venue confirms"
+    );
+    assert_eq!(
+        snapshot.counter(names::CENTRAL_RECONCILIATION_BREAKS, &under),
+        0,
+        "a cell-over-venue break must not be charted as its mirror"
+    );
+    assert_eq!(
+        snapshot.counter(names::CENTRAL_RECONCILIATION_BREAKS, &detail_only),
+        0
+    );
+    assert_eq!(snapshot.counter(names::CENTRAL_CELL_HALTS, &halted), 1);
+
+    // The mirror, from the other cell: the venue confirms more than the cell
+    // holds. The first series must not move again.
+    let venue_over = CellReport::new("cell-nyc-1", start())
+        .with_positions(vec![position("cell-nyc-1", &id, INSTRUMENT, dec!("1"))])
+        .with_break(ReconciliationBreak {
+            instrument: "BBB".to_string(),
+            cell_quantity: dec!("1"),
+            external_quantity: dec!("3"),
+            detail: "two lots the cell never booked".to_string(),
+        });
+    let ingestion = platform.ingest_cell_report(venue_over, start())?;
+    assert_eq!(
+        ingestion.halted,
+        Some(HaltScope::Cell("cell-nyc-1".to_string()))
+    );
+
+    let snapshot = platform.telemetry().metrics.snapshot();
+    assert_eq!(
+        snapshot.counter(names::CENTRAL_RECONCILIATION_BREAKS, &under),
+        1,
+        "one break where the venue confirms more than the cell holds"
+    );
+    assert_eq!(
+        snapshot.counter(names::CENTRAL_RECONCILIATION_BREAKS, &over),
+        1,
+        "the mirror must not be charted as the first"
+    );
+    assert_eq!(
+        snapshot.counter(names::CENTRAL_RECONCILIATION_BREAKS, &detail_only),
+        0
+    );
+    assert_eq!(
+        snapshot.counter(names::CENTRAL_CELL_HALTS, &halted),
+        2,
+        "one scoped halt per halted cell, whatever the number of breaks behind it"
+    );
+    // Bounded by construction: no label names the cell or the instrument.
+    for series in snapshot.series.iter().filter(|s| {
+        s.name == names::CENTRAL_RECONCILIATION_BREAKS || s.name == names::CENTRAL_CELL_HALTS
+    }) {
+        assert!(
+            !series.labels.contains_key("cell") && !series.labels.contains_key("instrument"),
+            "{} is keyed on an unbounded dimension: {:?}",
+            series.name,
+            series.labels
+        );
+        assert!(
+            !series.help.is_empty(),
+            "{} exports without a description",
+            series.name
+        );
+    }
+    Ok(())
+}
+
+/// The third arm. A break whose quantities agree is still a break — the
+/// discrepancy lives in the detail, a wrong venue or a wrong settlement date —
+/// and it still halts the cell. Nothing exercised the arm before this, so
+/// replacing it with either neighbour left the suite green.
+#[test]
+fn a_break_with_equal_quantities_is_recorded_as_detail_only_and_still_halts() -> Result<()> {
+    let mut platform = platform()?;
+    let id = strategy();
+    let detail_only = labels([("direction", "detail_only")]);
+    let over = labels([("direction", "cell_over_venue")]);
+    let under = labels([("direction", "venue_over_cell")]);
+    let halted = labels([("cause", "reconciliation")]);
+
+    let reconciliation_break = ReconciliationBreak {
+        instrument: INSTRUMENT.to_string(),
+        cell_quantity: dec!("10"),
+        external_quantity: dec!("10"),
+        detail: "the venue books the lot for T+1 and the cell for T+2".to_string(),
+    };
+    // Premise: the quantities agree, so this is the arm neither sign selects.
+    assert_eq!(reconciliation_break.difference(), Decimal::ZERO);
+
+    let report = CellReport::new(CELL, start())
+        .with_positions(vec![position(CELL, &id, INSTRUMENT, dec!("10"))])
+        .with_break(reconciliation_break);
+    let ingestion = platform.ingest_cell_report(report, start())?;
+    assert_eq!(ingestion.halted, Some(HaltScope::Cell(CELL.to_string())));
+    assert!(platform.autonomy().kill_switch().is_halted(CELL));
+
+    let snapshot = platform.telemetry().metrics.snapshot();
+    assert_eq!(
+        snapshot.counter(names::CENTRAL_RECONCILIATION_BREAKS, &detail_only),
+        1,
+        "a break with agreeing quantities is charted as detail-only"
+    );
+    assert_eq!(
+        snapshot.counter(names::CENTRAL_RECONCILIATION_BREAKS, &over),
+        0
+    );
+    assert_eq!(
+        snapshot.counter(names::CENTRAL_RECONCILIATION_BREAKS, &under),
+        0
+    );
+    assert_eq!(
+        snapshot.counter(names::CENTRAL_CELL_HALTS, &halted),
+        1,
+        "agreeing quantities do not make a break less of a halt"
+    );
+    Ok(())
+}
+
+/// `recall_acknowledgement` was a public field with a default and no check.
+/// At zero, the recall register refused the first concentration recall — but
+/// the refusal surfaced inside `ingest`, after a reconciliation break had
+/// already halted the cell and raised the incident, and it propagated out of
+/// the one call meant to record the halt. Refused at construction instead,
+/// naming the field, on both the plane and the platform that carries it.
+#[test]
+fn a_zero_recall_acknowledgement_window_is_refused_at_construction() -> Result<()> {
+    let config = CentralConfig {
+        recall_acknowledgement: Duration::ZERO,
+        ..CentralConfig::default()
+    };
+    // Premise: the default itself is accepted, so the refusal is the window's.
+    CentralPlane::new(&[7u8; 32], CentralConfig::default())?;
+
+    let Err(error) = CentralPlane::new(&[7u8; 32], config.clone()) else {
+        panic!("a plane with no recall window should not assemble");
+    };
+    let message = error.to_string();
+    assert!(
+        message.contains("recall_acknowledgement"),
+        "the refusal should name the field: {message}"
+    );
+
+    let platform_config = PlatformConfig::default().with_central(config);
+    let (context, _clock) = Context::deterministic(start(), platform_config.seed);
+    let Err(error) = Platform::new(
+        platform_config,
+        context,
+        Telemetry::silent(),
+        universe(),
+        limits(),
+    ) else {
+        panic!("a platform carrying a zero recall window should not start");
+    };
+    assert!(
+        error.to_string().contains("recall_acknowledgement"),
+        "the platform's refusal should be the plane's: {error}"
+    );
+    Ok(())
+}
+
+/// The plane a deployment builds arrives through `set_central`, after the
+/// platform already owns the registry. If the swap did not attach it, every
+/// deployed ledger would count its rungs into nothing while the reproducible
+/// plane the tests use counted fine — a silence that begins exactly when the
+/// real key arrives. This test walks the swapped-in plane, not the default.
+#[test]
+fn a_swapped_in_central_plane_counts_its_rungs_into_the_platform_registry() -> Result<()> {
+    let mut platform = platform()?;
+    platform.set_central(plane()?);
+    let id = strategy();
+    register(platform.central_mut(), &id, CELL)?;
+    assert_eq!(
+        platform
+            .telemetry()
+            .metrics
+            .snapshot()
+            .counter_total(names::STRATEGY_PROMOTIONS),
+        0,
+        "registration is not a rung"
+    );
+
+    walk_to(platform.central_mut(), &id, GateStage::Shadow)?;
+    assert_eq!(
+        platform.central().factory().stage_of(&id),
+        GateStage::Shadow
+    );
+    platform.central_mut().factory_mut().demote(
+        &id,
+        GateStage::Paper,
+        "test",
+        "looked wrong",
+        start(),
+    )?;
+
+    let snapshot = platform.telemetry().metrics.snapshot();
+    assert_eq!(
+        snapshot.counter(
+            names::STRATEGY_PROMOTIONS,
+            &labels([("from", "paper"), ("to", "shadow")])
+        ),
+        1
+    );
+    assert_eq!(snapshot.counter_total(names::STRATEGY_PROMOTIONS), 3);
+    assert_eq!(
+        snapshot.counter(
+            names::STRATEGY_DEMOTIONS,
+            &labels([("from", "shadow"), ("to", "paper")])
+        ),
+        1
+    );
+    for series in snapshot
+        .series
+        .iter()
+        .filter(|s| s.name == names::STRATEGY_PROMOTIONS || s.name == names::STRATEGY_DEMOTIONS)
+    {
+        assert!(
+            !series.help.is_empty(),
+            "{} exports undescribed",
+            series.name
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn the_compliance_report_enumerates_all_six_controls_with_its_caveats_intact() -> Result<()> {
     let platform = platform()?;
@@ -774,7 +1062,14 @@ fn the_learn_edge_widens_a_strategys_error_bar_and_never_narrows_it() -> Result<
         .sharpe_standard_error;
 
     let later = start().saturating_add(Duration::from_hours(1));
-    let outcome = CellOutcome::new(id.clone(), CELL, later, good_returns(77, 60, 0.006));
+    // Live beats the baseline by more than the stated error bar and stays
+    // inside the band the holdout validation defined. The drift used to be
+    // twice this, which put the live Sharpe at twenty against a band topping
+    // out near ten — and a strategy performing far *above* its validation is
+    // not the strategy that was validated, which is why the band trips in
+    // either direction. The property under test is the learn edge widening
+    // the error bar on a strategy that did what it said, not the band.
+    let outcome = CellOutcome::new(id.clone(), CELL, later, good_returns(77, 60, 0.0030));
     let report = plane.learn(&[outcome], None, later)?;
     let learning = report
         .learnings

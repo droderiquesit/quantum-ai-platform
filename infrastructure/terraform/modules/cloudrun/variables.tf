@@ -511,3 +511,79 @@ variable "task_timeout_seconds" {
     error_message = "A task timeout is between 1 second and 24 hours."
   }
 }
+
+variable "network_tags" {
+  description = <<-EOT
+    The network tags the workload's VPC interface carries.
+
+    One tag, normally: the trust zone's, from `modules/trust-zones`. Every
+    firewall rule that module writes — the default deny in both directions,
+    the sanctioned paths, the allowlisted external egress — targets a tag, so
+    a Cloud Run instance whose interface carries none is an instance those
+    rules never see. Empty is permitted because the module cannot know which
+    zone a caller meant; the root refuses a catalogue entry whose zone is not
+    declared, which is where the empty case is actually caught.
+  EOT
+
+  type    = list(string)
+  default = []
+
+  validation {
+    condition = alltrue([
+      for tag in var.network_tags : can(regex("^[a-z][a-z0-9-]{0,61}[a-z0-9]$", tag))
+    ])
+    error_message = "A network tag is lower case, starts with a letter, contains only letters, digits and hyphens, and is at most 63 characters."
+  }
+}
+
+variable "egress_sidecar" {
+  description = <<-EOT
+    The TLS-terminating egress proxy to run beside this workload, or null
+    for a workload that reaches nothing outside the VPC.
+
+    The object is `modules/egress-proxy`'s `sidecar` output, passed through
+    unchanged: the mirrored Envoy image by digest, the bucket and object the
+    one committed bootstrap is published to, the destination listener ports,
+    and the health listener the startup probe polls. Nothing in it is typed
+    here twice.
+
+    Null is the default and the safe one. A workload with a proxy has a
+    route to every host the bootstrap dials — Cloud Storage, BigQuery,
+    Vertex, IBM — bounded further only by its trust zone's egress firewall.
+    The fast path carries none, deliberately: ADR 0008, consequence 3, is that
+    nothing on the hot path consults a model, and port 9102 on this proxy is
+    a route to one.
+  EOT
+
+  type = object({
+    image            = string
+    bootstrap_bucket = string
+    bootstrap_object = string
+    ports            = list(string)
+    health_port      = number
+  })
+
+  default = null
+
+  validation {
+    condition     = var.egress_sidecar == null || can(regex("^[a-z0-9][a-z0-9._/-]*[a-z0-9]@sha256:[a-f0-9]{64}$", var.egress_sidecar.image))
+    error_message = "The egress proxy image must be pinned by digest, as repository@sha256:<64 hex>. A tag is a name someone can move after the attestation was signed."
+  }
+
+  validation {
+    condition     = var.egress_sidecar == null || (var.egress_sidecar.health_port > 0 && var.egress_sidecar.health_port <= 65535 && length(var.egress_sidecar.ports) > 0)
+    error_message = "The egress proxy names a health port and at least one destination listener; a proxy with no listener proxies nothing and reads as a route."
+  }
+}
+
+variable "deployer_service_account" {
+  description = <<-EOT
+    The pipeline's account, which moves this service to a new image and must
+    therefore be able to act as the service's identity. Granted on this one
+    account and no other; null grants nobody, which is a service only
+    Terraform can move.
+  EOT
+
+  type    = string
+  default = null
+}

@@ -133,15 +133,6 @@ impl Identifiers {
         }
     }
 
-    pub fn with_provider_key(
-        mut self,
-        provider: impl Into<String>,
-        key: impl Into<String>,
-    ) -> Self {
-        self.provider_keys.insert(provider.into(), key.into());
-        self
-    }
-
     pub fn get(&self, kind: IdentifierKind) -> Option<&str> {
         self.values.get(&kind).map(String::as_str)
     }

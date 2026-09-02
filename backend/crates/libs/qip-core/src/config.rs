@@ -144,16 +144,6 @@ impl Config {
         self.get(key)?.as_f64()
     }
 
-    pub fn require_str(&self, key: &str) -> Result<&str, ConfigError> {
-        self.get(key)
-            .ok_or_else(|| ConfigError::Missing(key.to_string()))?
-            .as_str()
-            .ok_or(ConfigError::Type {
-                key: key.to_string(),
-                expected: "a string",
-            })
-    }
-
     /// Deserialize a subtree into a typed section.
     pub fn section<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Result<T, ConfigError> {
         let value = self
@@ -163,25 +153,9 @@ impl Config {
         serde_json::from_value(value).map_err(|e| ConfigError::Parse(e.to_string()))
     }
 
-    /// Deserialize a subtree, falling back to `T::default()` when absent.
-    pub fn section_or_default<T>(&self, key: &str) -> Result<T, ConfigError>
-    where
-        T: for<'de> Deserialize<'de> + Default,
-    {
-        match self.get(key) {
-            None => Ok(T::default()),
-            Some(value) => serde_json::from_value(value.clone())
-                .map_err(|e| ConfigError::Parse(format!("{key}: {e}"))),
-        }
-    }
-
     pub fn set(&mut self, key: &str, value: Value) {
         let path: Vec<String> = key.split('.').map(|s| s.to_string()).collect();
         set_path(&mut self.root, &path, value);
-    }
-
-    pub fn as_value(&self) -> Value {
-        Value::Object(self.root.clone())
     }
 
     /// A copy with every secret-looking leaf replaced by `"***"`.

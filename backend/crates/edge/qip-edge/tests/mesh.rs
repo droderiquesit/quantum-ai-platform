@@ -436,6 +436,8 @@ fn a_state_delta_a_cell_produced_arrives_at_the_centre_unchanged() -> Result<()>
             // describe an order nobody asked for.
             contributors: vec![qip_contracts::intent::Contributor {
                 strategy: StrategyId::new("mean-reversion-1"),
+                // Negative is a sell, and a sell hits the bid: the fixture
+                // pairs the sign with the side the way the cell now does.
                 signed_size: dec!("-3"),
                 // A real revision pair rather than an empty vector: the delta
                 // now carries these, and a fixture that ships nothing would
@@ -444,7 +446,7 @@ fn a_state_delta_a_cell_produced_arrives_at_the_centre_unchanged() -> Result<()>
             }],
             object_id: object("ACME"),
             venue: VenueId::new("XLON"),
-            side: BookSide::Ask,
+            side: BookSide::Bid,
             quantity: dec!("3"),
             price: dec!("101.5"),
             simulated: true,

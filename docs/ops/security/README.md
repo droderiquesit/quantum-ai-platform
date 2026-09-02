@@ -35,8 +35,9 @@ and requires two people.
 | Numeric provenance | `NumericProvenance` | no third variant exists |
 | Constant-time token comparison | `Authenticator::authenticate` | `constant_time_eq`, no early return |
 | Request limits | `ServerLimits` | enforced while reading |
-| Default-deny network | Kubernetes `NetworkPolicy` | applied before workloads |
-| No root, no escalation, read-only root | pod `securityContext` | pod security standard `restricted` |
+| Default-deny network | per-zone firewall rules in `modules/trust-zones` and `modules/execution-node` | priority 65000 deny in both directions |
+| No root, no shell, empty filesystem | the image: `FROM scratch`, `USER 10001:10001` | Cloud Run runs what the image says |
+| No external address, no container runtime | `modules/execution-node` and its startup script | no `access_config`; the script refuses to start beside a runtime |
 
 Every row is checked by a test. `backend/crates/tests/qip-acceptance/tests/infrastructure.rs`
 covers the infrastructure rows; the rest are covered in their own crates.

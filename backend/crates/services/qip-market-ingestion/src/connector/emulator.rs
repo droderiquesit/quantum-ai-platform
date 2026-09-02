@@ -194,30 +194,10 @@ impl SourceEmulator {
         Ok(Self::new(recorded.exchanges))
     }
 
-    /// Add or replace the answers for one target.
-    pub fn with_exchange(mut self, exchange: RecordedExchange) -> Self {
-        if let Some(index) = self
-            .exchanges
-            .iter()
-            .position(|existing| existing.target == exchange.target)
-        {
-            self.exchanges[index] = exchange;
-            self.hits[index] = 0;
-        } else {
-            self.exchanges.push(exchange);
-            self.hits.push(0);
-        }
-        self
-    }
-
     /// Every target asked for, in order. A test asserting that a health check
     /// did not consume a fetch reads this.
     pub fn calls(&self) -> &[String] {
         &self.calls
-    }
-
-    pub fn call_count(&self) -> usize {
-        self.calls.len()
     }
 
     /// Rewind every script, keeping the fixtures. For a test that runs the

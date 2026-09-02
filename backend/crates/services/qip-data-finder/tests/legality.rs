@@ -235,10 +235,11 @@ fn a_research_only_licence_cannot_produce_a_source_usable_for_trading() -> Resul
     let decision = &decisions[0];
     assert!(decision.is_registered());
 
-    let DecisionOutcome::Registered { entitlements, .. } = decision.outcome() else {
+    let DecisionOutcome::Registered(registration) = decision.outcome() else {
         return Err(Error::invalid("expected a registration"));
     };
-    let trade_entitlement = entitlements
+    let trade_entitlement = registration
+        .entitlements()
         .iter()
         .find(|entitlement| matches!(entitlement, Entitlement::Denied { usage, .. } if *usage == Usage::Trade))
         .ok_or_else(|| Error::not_found("an explicit denial of trading"))?;
@@ -249,6 +250,114 @@ fn a_research_only_licence_cannot_produce_a_source_usable_for_trading() -> Resul
     let entry = decision.catalogue_entry("market-data")?;
     assert!(entry.permits(Usage::Research, now()));
     assert!(!entry.permits(Usage::Trade, now()));
+    Ok(())
+}
+
+/// The `Registered` outcome is built in exactly one place, and that place
+/// takes the legality assessment as an argument.
+///
+/// Until `Registration` had private fields, `DecisionOutcome::Registered` was
+/// a public struct variant: any caller with a routing and a policy in hand
+/// could assemble one, pass it to `RegistrationDecision::new`, and ask for a
+/// catalogue entry — a mesh registration for a source whose licence nobody
+/// had read, produced by a path that never touched the gate. The compile-fail
+/// doctest on `Registration` proves the struct literal no longer compiles
+/// outside the crate; this test proves the one constructor that remains
+/// refuses when the assessment it is handed did not permit collection, and
+/// records the assessment on the decision when it did.
+#[test]
+fn the_registered_outcome_exists_only_on_the_far_side_of_the_legality_assessment() -> Result<()> {
+    use qip_data_finder::decision::{LifecycleStage, Reasoning, RegistrationDecision};
+    use qip_data_finder::legal::{LegalAssessment, SourcePolicy};
+
+    let research_only = licensed_for(&[Usage::Research])?;
+    let refused = LegalAssessment::combine(
+        Legality::permitted("allowlisted"),
+        Legality::permitted("robots.txt allows /"),
+        research_only.legality_for(Usage::Trade, now()),
+        Usage::Trade,
+    );
+    // Premise: asked about trading, the licence said no, and that refusal is
+    // the overall verdict.
+    assert!(refused.licensing().is_forbidden());
+    assert!(refused.overall().is_forbidden());
+
+    // A routing decided against somebody else's permissive verdict — the
+    // mismatched pair a caller that skipped the gate would present.
+    let perfect = SourceScores::new(1.0, 1.0, 1.0, 1.0, 1.0)?;
+    let hot = Routing::decide(
+        &Legality::permitted("a verdict about another source"),
+        &perfect,
+    );
+    assert_eq!(hot.class(), RoutingClass::Hot);
+    let policy = SourcePolicy::assemble("example.com", AGENT, None, None, Vec::new(), true);
+    let mut reasoning = Reasoning::new();
+    reasoning.record(LifecycleStage::AssessLegality, refused.overall().describe());
+
+    let error = RegistrationDecision::registered(
+        "research-feed",
+        refused,
+        hot.clone(),
+        policy.clone(),
+        Vec::new(),
+        reasoning.clone(),
+        now(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, Error::Denied(_)), "{error}");
+    assert!(
+        error.message().contains("research"),
+        "the refusal must name the licence that produced it: {}",
+        error.message()
+    );
+
+    // The routing is checked on its own, not inferred from the assessment: a
+    // permitted assessment paired with a routing that rejected is refused too.
+    let permitted = LegalAssessment::combine(
+        Legality::permitted("allowlisted"),
+        Legality::permitted("robots.txt allows /"),
+        licensed_for(&[Usage::Research, Usage::Trade])?.legality_for(Usage::Trade, now()),
+        Usage::Trade,
+    );
+    assert!(permitted.overall().is_permitted());
+    let rejected = Routing::decide(&Legality::forbidden("robots.txt disallows /"), &perfect);
+    assert_eq!(rejected.class(), RoutingClass::Rejected);
+    let error = RegistrationDecision::registered(
+        "licensed-feed",
+        permitted.clone(),
+        rejected,
+        policy.clone(),
+        Vec::new(),
+        reasoning.clone(),
+        now(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, Error::Denied(_)), "{error}");
+    assert!(
+        error.message().contains("routed to `rejected`"),
+        "{}",
+        error.message()
+    );
+
+    // The same inputs with a permitting assessment register, and the decision
+    // carries the assessment it was built from rather than `None`.
+    let decision = RegistrationDecision::registered(
+        "licensed-feed",
+        permitted,
+        hot,
+        policy,
+        Vec::new(),
+        reasoning,
+        now(),
+    )?;
+    assert!(decision.is_registered());
+    assert!(
+        decision
+            .legality()
+            .is_some_and(|legality| legality.overall().is_permitted()),
+        "a registered decision must carry the assessment that permitted it"
+    );
+    assert!(decision.catalogue_entry("market-data").is_ok());
     Ok(())
 }
 

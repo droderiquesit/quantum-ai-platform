@@ -259,15 +259,6 @@ pub fn ewma(x: &[f64], lambda: f64) -> f64 {
     if total <= 0.0 { 0.0 } else { weighted / total }
 }
 
-/// Exponentially weighted volatility of a return series.
-pub fn ewma_volatility(returns: &[f64], lambda: f64) -> f64 {
-    if returns.len() < 2 {
-        return 0.0;
-    }
-    let squared: Vec<f64> = returns.iter().map(|r| r * r).collect();
-    ewma(&squared, lambda).sqrt()
-}
-
 /// Autocorrelation at `lag`.
 pub fn autocorrelation(x: &[f64], lag: usize) -> f64 {
     if lag == 0 {
@@ -283,16 +274,6 @@ pub fn autocorrelation(x: &[f64], lag: usize) -> f64 {
     }
     let numerator: f64 = (lag..x.len()).map(|i| (x[i] - m) * (x[i - lag] - m)).sum();
     (numerator / denominator).clamp(-1.0, 1.0)
-}
-
-/// Z-scores against the series' own mean and standard deviation.
-pub fn z_scores(x: &[f64]) -> Vec<f64> {
-    let m = mean(x);
-    let sd = stddev(x);
-    if sd <= 0.0 {
-        return vec![0.0; x.len()];
-    }
-    x.iter().map(|v| (v - m) / sd).collect()
 }
 
 /// Robust z-scores built on the median and MAD.

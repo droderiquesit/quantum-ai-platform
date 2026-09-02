@@ -5,7 +5,7 @@
 //! rate at its threshold, which is what lets the engine reason about how much
 //! of its queue is noise instead of discovering it by working through it.
 
-use qip_core::{Duration, ObjectId, Timestamp};
+use qip_core::{Duration, Timestamp};
 use qip_numerics::hmm::GaussianHmm;
 use qip_numerics::stats;
 use serde::{Deserialize, Serialize};
@@ -216,11 +216,6 @@ impl DetectionContext {
     /// — the precondition for ever calling a move unexplained.
     pub fn with_events(mut self, events: Vec<crate::catalyst::MarketEvent>) -> Self {
         self.events = crate::catalyst::KnownEvents::known_by(self.as_of, events);
-        self
-    }
-
-    pub fn with_bar_interval(mut self, interval: Duration) -> Self {
-        self.bar_interval = interval;
         self
     }
 }
@@ -982,11 +977,6 @@ impl DetectorRegistry {
 fn fisher(correlation: f64) -> f64 {
     let r = correlation.clamp(-0.999_999, 0.999_999);
     0.5 * ((1.0 + r) / (1.0 - r)).ln()
-}
-
-/// Convert an object id string back into a typed id.
-pub fn object_id_of(subject: &str) -> ObjectId {
-    ObjectId::from_string(subject.to_string())
 }
 
 /// Default horizon for an anomaly kind.

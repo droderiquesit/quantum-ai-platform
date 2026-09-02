@@ -27,20 +27,26 @@ locals {
     # Every `google_project_iam_member` in the configuration, and the project
     # lookups the provider performs before most of them.
     "cloudresourcemanager.googleapis.com" = "project-level IAM bindings"
-    # The service accounts: nodes, the three deployables, the pipeline, and one
-    # per edge cell.
-    "iam.googleapis.com" = "google_service_account, in secrets/ cicd/ edge-cell/"
+    # The service accounts: one per Cloud Run workload, one per execution
+    # node, the pipeline's two, and the console's.
+    "iam.googleapis.com" = "google_service_account, in cloudrun/ execution-node/ cicd/ secrets/"
     # Short-lived credentials. The pipeline impersonates its account rather
     # than holding a key, and the exchange happens here.
     "iamcredentials.googleapis.com" = "workload identity federation and impersonation"
     # The GitHub OIDC token exchange in modules/cicd. Without it the pool and
     # provider exist and no token can be redeemed against them.
     "sts.googleapis.com" = "the workload identity pool's token exchange"
-    # The VPC, its subnets, every firewall rule, the router and NAT, the
-    # reserved addresses, and the interconnect attachments when they are on.
-    "compute.googleapis.com" = "modules/network, modules/edge-cell, modules/connectivity"
-    # The cluster and its node pool.
-    "container.googleapis.com" = "modules/cluster"
+    # The VPC, its subnets, every firewall rule, the routers and NATs, the
+    # execution nodes' instance templates and groups, and the interconnect
+    # attachments when they are on. Direct VPC egress for Cloud Run is a
+    # Compute interface too, so this is what the catalogue attaches through.
+    "compute.googleapis.com" = "modules/network, modules/trust-zones, modules/execution-node, modules/connectivity, and Cloud Run's direct VPC egress"
+    # Every service in the catalogue, and the jobs when there are any.
+    "run.googleapis.com" = "modules/cloudrun, instantiated from catalogue.tf"
+    # The private zone that sends `*.googleapis.com` to the restricted VIP,
+    # so a workload with no external address reaches Google APIs without a
+    # route to anything else.
+    "dns.googleapis.com" = "the googleapis private zone in modules/network"
     # The key ring and every customer-managed key hanging off it.
     "cloudkms.googleapis.com" = "modules/secrets, and the keys other modules create in its ring"
     # The secrets, created empty.
@@ -48,24 +54,19 @@ locals {
     # The one topic in the platform: Secret Manager will not accept a rotation
     # schedule without somewhere to announce a rotation is due.
     "pubsub.googleapis.com" = "the secret-rotation topic in modules/secrets"
-    # The image repository the pipeline pushes to and the cluster pulls from.
+    # The image repository the pipeline pushes to and Cloud Run pulls from.
     "artifactregistry.googleapis.com" = "modules/registry"
-    # The evidence bucket, and the training and archive buckets when they are
-    # on.
-    "storage.googleapis.com" = "modules/evidence, modules/data, modules/ai"
-    # The alerting policies, and the cluster's own monitoring components.
-    "monitoring.googleapis.com" = "modules/observability, and the cluster's monitoring_config"
-    # The cluster's control-plane and workload logs, and every `logWriter`
-    # binding.
-    "logging.googleapis.com" = "the cluster's logging_config, and the telemetry bindings"
-    # The policy the cluster already enforces. modules/binaryauthorization
-    # documented needing this enabled by hand; this is that documentation
-    # becoming a resource.
-    "binaryauthorization.googleapis.com" = "modules/binaryauthorization"
+    # The evidence bucket, the egress proxy's bootstrap bucket, and the
+    # training and archive buckets when they are on.
+    "storage.googleapis.com" = "modules/evidence, modules/egress-proxy, modules/data, modules/ai"
+    # The alerting policies, and every `metricWriter` binding.
+    "monitoring.googleapis.com" = "modules/observability, and the telemetry bindings"
+    # Every `logWriter` binding, and the execution node's Ops Agent.
+    "logging.googleapis.com" = "the telemetry bindings"
+    # The policy every Cloud Run revision is evaluated against.
+    "binaryauthorization.googleapis.com" = "modules/binaryauthorization, evaluated by every service in catalogue.tf"
     # The note an attestation is attached to. The other half of the same pair.
     "containeranalysis.googleapis.com" = "the Container Analysis note in modules/binaryauthorization"
-    # The backup plan that covers the edge cell journals.
-    "gkebackup.googleapis.com" = "modules/backup"
   }
 
   # Conditional, keyed the same way and merged in only when the flag that
@@ -85,12 +86,6 @@ locals {
     # this enables the project's half of a service whose activation is an
     # organisation-level act.
     var.enable_security_command_center ? { "securitycenter.googleapis.com" = "modules/scc" } : {},
-    # Identity-Aware Proxy, which is what stands in front of the delivery
-    # consoles when they are published. Without it the Ingress would serve
-    # Argo CD's own password login to the whole internet; with it, the
-    # request is authenticated against Google identity before it reaches the
-    # load balancer's backend at all.
-    var.enable_console_ingress ? { "iap.googleapis.com" = "modules/console-ingress" } : {},
   )
 
   services = merge(local.always, local.optional)

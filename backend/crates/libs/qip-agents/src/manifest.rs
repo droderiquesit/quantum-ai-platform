@@ -182,11 +182,6 @@ impl AgentManifest {
         self
     }
 
-    pub fn with_models(mut self, models: Vec<String>) -> Self {
-        self.models = models;
-        self
-    }
-
     pub fn escalating_to(mut self, agent: impl Into<String>) -> Self {
         self.escalation = EscalationPolicy::Delegate;
         self.escalates_to = Some(agent.into());

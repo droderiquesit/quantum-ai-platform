@@ -242,53 +242,59 @@ variable "google_apis_range" {
   }
 }
 
-variable "egress_proxy" {
+variable "egress_bootstrap" {
   description = <<-EOT
-    The TLS-terminating reverse proxy this node's outbound adapters speak to,
-    and the range it answers on. Required, with no default, and the absence of a
-    default is the point.
+    The Envoy bootstrap the node's proxy unit runs, as text: `modules/egress-proxy`
+    publishes the one committed file for the Cloud Run sidecars and the root
+    passes the same content here, so the node and the services cannot carry
+    different allowlists.
 
     The dependency policy permits `serde` and `serde_json`, so
     `qip_transport::http` has no TLS stack and refuses the `https` scheme by
-    name rather than downgrading it. Every outbound adapter in the workspace —
-    `qip_brokers::rest`, `qip_market_ingestion`, `qip_storage::gcp`,
-    `qip_chain::rpc` — therefore needs an `http://host:port` that terminates TLS
-    on its behalf. It must be a *reverse* proxy: `HttpRequest::encode` emits an
-    origin-form request line and never `CONNECT`, so the destination is chosen
-    by which listener the client connects to, not by anything in the request.
+    name. Every outbound adapter in the binary therefore speaks to
+    `http://127.0.0.1:910x`, and this bootstrap is what answers there. It
+    must be a *reverse* proxy: `HttpRequest::encode` emits an origin-form
+    request line and never `CONNECT`, so the destination is chosen by which
+    listener the client connects to and cannot be named in the request.
 
-    **The proxy that exists is Kubernetes-only.**
-    `infrastructure/kubernetes/base/egress.yaml` is the only implementation in
-    this repository, and nothing here provides a non-Kubernetes equivalent. A
-    node on bare GCE has no outbound HTTPS at all until one exists, and this
-    module does not and must not solve that by adding TLS — that is a crypto
-    dependency and an ADR, neither of which belongs in an infrastructure module.
-
-    So this input is required rather than defaulted: a default pointing at the
-    in-cluster service would be a value that resolves to nothing on a machine
-    with no cluster DNS, and the node would fail at its first vendor call
-    instead of at plan time. See README.md, "The unbuilt prerequisite".
+    Required, with no default. A node with no proxy has no outbound HTTPS at
+    all, and this module does not and must not solve that by adding TLS —
+    that is a crypto dependency and an ADR, neither of which belongs here.
   EOT
 
-  type = object({
-    endpoint = string
-    cidr     = string
-    port     = number
-  })
+  type = string
 
   validation {
-    condition     = startswith(var.egress_proxy.endpoint, "http://")
-    error_message = "The endpoint must be an http:// URL. `qip_transport::http` refuses https by name — an https endpoint here is an adapter that refuses at construction, not one that negotiates TLS."
+    condition     = length(var.egress_bootstrap) > 1000 && strcontains(var.egress_bootstrap, "static_resources:")
+    error_message = "The egress bootstrap is not an Envoy configuration. Pass `file(\"../egress/envoy.yaml\")` — the one committed bootstrap — not a path to it."
   }
 
   validation {
-    condition     = var.egress_proxy.cidr != "0.0.0.0/0"
-    error_message = "The proxy is one address, not the whole internet. A node permitted to reach anything on its egress-proxy rule has no egress policy."
+    condition     = !strcontains(var.egress_bootstrap, "address: 0.0.0.0")
+    error_message = "The egress bootstrap binds a listener to 0.0.0.0. On the node every listener is loopback: a proxy reachable from the network is a proxy every neighbour can reach."
+  }
+}
+
+variable "egress_endpoints" {
+  description = <<-EOT
+    The addresses the binary's outbound adapters are configured with, keyed
+    by listener name, from `modules/egress-proxy`. Every value is
+    `http://127.0.0.1:<port>`, and the validation refuses anything else: an
+    `https` endpoint is an adapter that refuses at construction, and an
+    address off the machine is a proxy this node was never given a rule to
+    reach.
+  EOT
+
+  type = map(string)
+
+  validation {
+    condition     = alltrue([for endpoint in values(var.egress_endpoints) : startswith(endpoint, "http://127.0.0.1:")])
+    error_message = "Every egress endpoint is http://127.0.0.1:<port>. `qip_transport::http` refuses https by name, and the proxy lives on this machine."
   }
 
   validation {
-    condition     = var.egress_proxy.port > 0 && var.egress_proxy.port <= 65535
-    error_message = "A proxy port must be a port."
+    condition     = contains(keys(var.egress_endpoints), "gcp")
+    error_message = "The egress endpoints name no `gcp` listener, which is the one QIP_GCP_ENDPOINT is configured from."
   }
 }
 

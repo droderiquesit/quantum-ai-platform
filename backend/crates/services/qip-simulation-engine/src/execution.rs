@@ -517,14 +517,6 @@ impl PlanReport {
             .collect()
     }
 
-    /// The worst adversity across the legs.
-    pub fn worst_adversity_bps(&self) -> f64 {
-        self.legs
-            .iter()
-            .map(ExecutionReport::adversity_bps)
-            .fold(0.0_f64, f64::max)
-    }
-
     pub fn summarise(&self) -> String {
         let mut lines: Vec<String> = self
             .legs

@@ -65,10 +65,6 @@ impl LinearConstraint {
         }
     }
 
-    pub fn is_equality(&self) -> bool {
-        (self.upper - self.lower).abs() < 1e-12
-    }
-
     /// Signed violation of this constraint at `x`: 0.0 when satisfied.
     pub fn violation(&self, x: &[f64]) -> f64 {
         let value = crate::vector::dot(&self.coefficients, x);

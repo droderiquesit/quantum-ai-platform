@@ -1141,7 +1141,12 @@ impl CellDeltaSink for IngestSink<'_> {
             }
         };
 
-        let report = report_from(&decoded.standing);
+        // The interval's orders and crosses ride the report, or the centre
+        // attributes no fill and settles no cross: a sink that drops them
+        // renders every strategy book flat however much the cell traded.
+        let report = report_from(&decoded.standing)
+            .with_orders(decoded.interval.orders.clone())
+            .with_crosses(decoded.interval.crosses.clone());
         // Recorded before the ingest so `/regions` knows the cell spoke even
         // when the plane goes on to halt it — a halted cell that looked
         // silent would be the worst possible rendering of the loudest fact.

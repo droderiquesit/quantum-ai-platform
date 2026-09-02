@@ -6,14 +6,14 @@
 # external address, and cores 2 upwards isolated so that the hot path is never
 # descheduled by something that could have run elsewhere.
 #
-# ADR 0020 is why this module exists and is also why nothing calls it. The
-# repository runs that workload as a Kubernetes Deployment today
-# (`infrastructure/helm/qip/templates/edge-cell.yaml`), the migration is
-# sequenced, and step 3 — standing a node up in shadow mode — requires recorded
-# human approval naming that step before it begins. So this is written,
-# reviewable and inert: `infrastructure/terraform/main.tf` has no `module
-# "execution_node"` block, and adding one is its own change with its own plan
-# and its own evidence. A module that exists is not a node that exists.
+# ADR 0020 sequences the node's arrival and ADR 0024 is the owner's
+# instruction to provision the blueprint runtime in code. The root module
+# instantiates this once per entry in `execution_nodes`, and every
+# environment's tfvars leaves that map empty: a node needs at least one venue
+# to be configured for — the binary refuses an empty `QIP_VENUES` — and no
+# venue's published ranges have been recorded anywhere. An empty map is a
+# working configuration that provisions no machine, which is the honest
+# state until a venue decision exists.
 #
 # # What this module can and cannot enforce
 #
@@ -28,12 +28,11 @@
 #
 # # Binary Authorization has no analogue here
 #
-# The repository requires Binary Authorization on every deployed image, and the
-# enforcement is `evaluation_mode = "PROJECT_SINGLETON_POLICY_ENFORCE"` in
-# `modules/cluster/main.tf` — a GKE admission controller. Cloud Run has an
-# equivalent. A bare Compute Engine instance has none: nothing sits between the
-# image and the boot to evaluate a policy, because §41.4's whole point is that
-# nothing sits between the binary and the kernel.
+# The repository requires Binary Authorization on every deployed image, and
+# every Cloud Run service in the catalogue evaluates the project policy on
+# every revision. A bare Compute Engine instance has no admission controller:
+# nothing sits between the image and the boot to evaluate a policy, because
+# §41.4's whole point is that nothing sits between the binary and the kernel.
 #
 # This module does not enforce it and must not be read as doing so. What it can
 # enforce, and does: an image pinned to one self-link rather than a family
@@ -51,6 +50,18 @@
 # rather than configured not to. Nothing here accepts an autonomy ceiling: the
 # ceiling is decided in three places already (see
 # .claude/rules/01-security-and-safety.md) and a fourth would weaken all three.
+#
+# # The egress proxy is beside the binary, on loopback
+#
+# The same bootstrap `modules/egress-proxy` publishes for the Cloud Run
+# sidecars is rendered into the startup script and run as a second systemd
+# unit, `qip-egress.service`, bound to 127.0.0.1. The binary's outbound
+# adapters are configured with `http://127.0.0.1:910x`, so the node needs no
+# egress rule to a proxy — there is no address to permit — and the image
+# contract gains one line: it ships `/usr/local/bin/envoy`. A second unit is
+# the same category of thing as the first; §41.4's "no container runtime"
+# is about what sits between the binary and the kernel, and a static Envoy
+# under systemd sits beside it.
 
 locals {
   name = "qip-${var.environment}-exec-${var.node_id}"
@@ -311,6 +322,12 @@ resource "google_compute_instance_template" "node" {
     boot         = true
     disk_type    = "pd-balanced"
     disk_size_gb = 100
+
+    # The journal lives on this disk, and `modules/backup`'s snapshot schedule
+    # finds the disks it covers by this label — the attachment command lists
+    # `labels.qip_journal=true`. An unlabelled disk is a journal nothing
+    # snapshots.
+    labels = merge(var.labels, { qip_journal = "true" })
   }
 
   network_interface {
@@ -380,7 +397,8 @@ resource "google_compute_instance_template" "node" {
       region                     = var.region
       venue_ids                  = local.venue_ids
       health_port                = var.health_port
-      egress_endpoint            = var.egress_proxy.endpoint
+      egress_endpoint            = var.egress_endpoints["gcp"]
+      egress_bootstrap           = var.egress_bootstrap
       shadow_mode                = var.shadow_mode
       isolated_cpus              = local.isolated_cpus
       required_hugepages_gb      = var.required_hugepages_gb
@@ -491,26 +509,11 @@ resource "google_compute_firewall" "google_apis" {
   target_tags        = [local.node_tag]
 }
 
-# The TLS-terminating reverse proxy, without which every outbound adapter in
-# the binary refuses at construction. One rule, one address, one port: the
-# proxy chooses the destination, so a wider rule here would not buy the node a
-# single extra host it could ask for.
-resource "google_compute_firewall" "egress_proxy" {
-  project = var.project_id
-  name    = "${local.name}-egress-proxy"
-  network = var.network_id
-
-  direction = "EGRESS"
-  priority  = 1000
-
-  allow {
-    protocol = "tcp"
-    ports    = [tostring(var.egress_proxy.port)]
-  }
-
-  destination_ranges = [var.egress_proxy.cidr]
-  target_tags        = [local.node_tag]
-}
+# No rule for an egress proxy. The proxy is `qip-egress.service` on this
+# machine, bound to loopback, so there is no address for the binary to be
+# permitted to reach; what the proxy itself reaches is the Google APIs rule
+# above, and — for the IBM hosts — nothing, until a venue-style allowlist
+# entry with the counterparty's published ranges is written for this node.
 
 # The central plane: capital envelopes in, evidence and exposure out. A node
 # that has lost this keeps working inside the envelope it already holds, which

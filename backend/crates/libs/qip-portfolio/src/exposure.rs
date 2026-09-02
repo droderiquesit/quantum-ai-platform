@@ -111,18 +111,4 @@ impl ExposureBreakdown {
         }
         self.gross_exposure().to_f64() / equity.to_f64()
     }
-
-    /// The worst concentration across every axis, with the axis named.
-    pub fn worst_concentration(&self) -> (&'static str, f64) {
-        [
-            ("asset_class", self.by_asset_class.concentration()),
-            ("sector", self.by_sector.concentration()),
-            ("country", self.by_country.concentration()),
-            ("currency", self.by_currency.concentration()),
-            ("issuer", self.by_issuer.concentration()),
-        ]
-        .into_iter()
-        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-        .unwrap_or(("asset_class", 0.0))
-    }
 }

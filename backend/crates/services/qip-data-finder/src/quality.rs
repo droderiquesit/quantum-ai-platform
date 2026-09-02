@@ -136,10 +136,6 @@ impl SourceCost {
         self.currency
     }
 
-    pub fn is_free(&self) -> bool {
-        self.monthly_fee.is_zero() && self.per_request.is_zero()
-    }
-
     /// Exact monthly cost at a request volume.
     ///
     /// Exact, not estimated: this figure is what a data budget is checked

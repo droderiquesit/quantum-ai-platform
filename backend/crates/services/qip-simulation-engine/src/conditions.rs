@@ -379,12 +379,6 @@ impl ConditionWindow {
         self
     }
 
-    /// Confine the condition to one instrument.
-    pub fn on_object(mut self, object_id: impl Into<String>) -> Self {
-        self.object_id = Some(object_id.into());
-        self
-    }
-
     /// Confine the condition to one leg of a multi-leg plan.
     ///
     /// Legs are zero-indexed, so "leg two" is `on_leg(1)`.

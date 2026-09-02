@@ -175,11 +175,6 @@ impl BarSeries {
         Self::default()
     }
 
-    pub fn from_bars(mut bars: Vec<Bar>) -> Self {
-        bars.sort_by_key(|b| b.open_time.as_nanos());
-        Self { bars }
-    }
-
     /// Append a bar, keeping the series ordered and replacing a bar with the
     /// same open time (a late correction from the venue).
     pub fn push(&mut self, bar: Bar) {

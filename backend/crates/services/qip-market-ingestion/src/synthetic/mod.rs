@@ -257,12 +257,6 @@ impl SyntheticEnvironment {
         self.scripted.sort_by_key(|e| e.at.as_nanos());
     }
 
-    pub fn schedule_all(&mut self, events: impl IntoIterator<Item = ScriptedEvent>) {
-        for event in events {
-            self.schedule(event);
-        }
-    }
-
     pub fn instruments(&self) -> &[SyntheticInstrument] {
         &self.instruments
     }

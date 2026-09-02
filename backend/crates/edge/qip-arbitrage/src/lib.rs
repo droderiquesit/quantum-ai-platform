@@ -27,6 +27,8 @@
 //!   has to be standing there beforehand, and refuses a plan whose residual
 //!   exposure exceeds its budget.
 //! * [`scan`] runs the lot and keeps the refusals.
+//! * [`legs`] turns a surviving opportunity into the no-net intents the
+//!   cell's netting seam accepts, by a type that cannot be built nettable.
 //!
 //! Two constraints shape all of it. Nothing reads a clock or an ambient random
 //! source: `now` is a parameter everywhere it matters, so a replay produces the
@@ -34,13 +36,17 @@
 //! exact arithmetic — `f64` appears for logarithms, volatility and scores, is
 //! named `_f64` where it does, and never decides anything on its own.
 //!
-//! The order book is not a dependency. `qip-orderbook` is being built
-//! concurrently, and [`liquidity::LiquiditySource`] is the seam it will be
-//! wired in behind; [`liquidity::StaticLiquidity`] stands in until then.
+//! The order book is not a dependency. [`liquidity::LiquiditySource`] is the
+//! seam the edge cell supplies its real books behind — `qip_edge::seam`
+//! implements it over the cell's venue state, and the cell's arbitrage desk
+//! re-quotes this graph from those books before every scan through
+//! [`graph::ArbitrageGraph::refresh_trade`]. [`liquidity::StaticLiquidity`]
+//! remains for tests and for pricing a path away from a live cell.
 
 mod arith;
 
 pub mod graph;
+pub mod legs;
 pub mod liquidity;
 pub mod netedge;
 pub mod plan;
