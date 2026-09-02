@@ -10,6 +10,11 @@ rule files corrected for the deleted runtime), `2b7e502` (ADR 0024) and
 `fca98cc` — and are cited where they change a row; the checkout at `fca98cc`
 is clean apart from this plan and its four sibling documents.
 
+Corrected at `851c0ed`, the merge of PR #6 (`baffcd8`..`b1e709c`, 89
+commits): A2, the full gate, ran at `29ce828` and this plan still said it had
+not. The rows that said so — §2.4, §3, §4(i), §5 D12, §6 and §7 — are
+re-stated below with the figures, and §3 gains the merge.
+
 This document aggregates the repository's own scorecards; it does not replace
 them. Where it disagrees with one of them it says so rather than picking. The
 sources, and what each is authoritative for:
@@ -172,7 +177,7 @@ beside, and two remain the owner's.
 | "C4 — still open; the rule file says nothing writes to `Telemetry`" | Matrix, C4 | Closed. `.claude/rules/domains/observability.md` was corrected at `232bc16` and now says both planes emit and names the edge series. The rule file is right; the matrix row is stale | **Resolved** — the matrix's C4 now records the closure, and flags the rule file's next stale sentence (that `learn_from` and `evaluate_alternatives` have no caller; both do since `04738ee` and `b9e2242`) as the owner's |
 | "The kernel does not consume cell deltas at all" | Matrix, F7 | `Platform::ingest_cell_report` is called from `qip-api/src/mesh.rs`, and `learn_from_cells` feeds outcomes back. Whether the *contributor vector* joins central attribution is a separate question this plan could not settle by reading | **Resolved by code** — the join landed at `7ef6063` and the sink carries the interval at `7d79161`; F7 records both |
 | F8's footgun — a leg that forgets `as_cycle_leg` nets silently | Matrix, F8 | `3632932` and `6053935` landed after the matrix was scored; IMPLEMENTED-UNVERIFIED here | **Resolved** — F8 records `CycleLeg` and the producer (`71f9465`), and the plan's author ran nothing for it: the tests are named in the matrix and were run by their own commits |
-| "Tests: 3,308 passing at `fef0c97`" | `current-state.md` | Thirteen commits later; not re-measured | **Superseded, still stale** — the row now cites 3,355 across 280 binaries from `a4f673c`'s message; thirty-odd commits have landed since. At `fca98cc` the checkout is clean, so the run is possible; it was not made in this series (A2, D12) |
+| "Tests: 3,308 passing at `fef0c97`" | `current-state.md` | Thirteen commits later; not re-measured | **Resolved at `29ce828`** — the full gate ran on a clean checkout: 302 binaries, 3,485 passed, 1 failed, the failure repaired at `397c144` (A2). `current-state.md` carries the figures, the rest of the gate, and a not-clean re-run at `851c0ed` |
 | `NumericFact::observed` has no production caller | `gap-matrix.md` risk register | `480644d` and `125a7de` add an observed-fact constructor; the register's open count of three is likely two | **Resolved** — the register was recounted at `d4dcd44`, `67a584d` and again in this refresh: twenty-four found, twenty-three closed, one open |
 | ADR 0023 step 3 "buildable today" | ADR 0023 | The record is in tension with itself; §5 lists it for the owner | **Overtaken in practice** — the feasibility gate (`95a4932`) and the attribution join (`7ef6063`) were built; the ADR text is unchanged (D10) |
 | Blueprint §48 and rule 77: OpenTofu, Cloud Build, Cloud Deploy | Not scored anywhere | The matrix has no row; the matrix owner's call | **Still open** (D11). `deploy.yml` now moves Cloud Run services by digest itself (`b85684f`), which makes the row easier to write and no less the owner's |
@@ -181,11 +186,14 @@ beside, and two remain the owner's.
 
 ## 3. What landed this session
 
-Grouped by merge. Merge bodies could not be read from this environment (no
-shell; git objects are not readable as text), so PR numbers are inferred from
-the reflog's five fast-forwards of the target branch and from
-`current-state.md`'s citation of "the PR #5 body for `fef0c97`". Commit
-subjects are from `.git/logs/HEAD`.
+Grouped by merge. When first written, merge bodies could not be read from
+this environment (no shell; git objects are not readable as text), so PR
+numbers 1–5 were inferred from the reflog's five fast-forwards of the target
+branch and from `current-state.md`'s citation of "the PR #5 body for
+`fef0c97`", with commit subjects from `.git/logs/HEAD`. PR #6 was read with
+`git show 851c0ed`: its parents are `baffcd8` and `b1e709c`, so the three
+rows below that were labelled unmerged are what it merged, together with
+the fourteen commits after `fca98cc`.
 
 | Merge | Commits | What landed, one line |
 |---|---|---|
@@ -194,9 +202,10 @@ subjects are from `.git/logs/HEAD`.
 | PR #3 — `acfece3` | `9b8df9b`..`0c91cfa`, 9 | The twelve-item payload's wire shape; a cell that verifies, applies, narrows and halts on it; the reservation ledger, then wired into the kernel; the halt as a signed command; the centre shipping policy; the Deep Brain's reference universe and its own exchange; injective signing strings |
 | PR #4 — `7f508cc` | `3be9855`..`db8ce8b`, 21 | One live market source behind the licensing gate, then selectable; `Intent` and netting in the cell, self-trade prevention; the `cloudrun`, `trust-zones` and `execution-node` modules, all unwired; the network module's blueprint notes; GitOps job identity; the console's order ticket deleted; the venue credential refused where the ceiling cannot use it; four unbounded collections bounded; money out of `f64` in risk and execution; the brute-force lockout made able to fire; the safest rung no longer reported live-capable |
 | PR #5 — `baffcd8` | `64b765a`..`fef0c97`, 7 | `egress.rs` able to tell a deployed proxy from a described one; contributor attribution and the uplink schema bump; internal crossing at the mid with the forty-percent cap; the rounding remainder returned; the uplink proven; two scored documents corrected |
-| Unmerged — this branch | `68b7da6`..`de5d042`, 13 | Edge telemetry parked, then finished and proven site by site; the node hands its cell the scraped registry; the observability rule corrected (C4); three Argo CD Applications that could never sync removed; five documents corrected; the reservation shortfall counted under its registered name; observed-fact constructors for agents; a cycle-leg type that cannot be nettable; the arbitrage scanner's leg emitter; a central reconciliation break and its scoped halt recorded and counted |
-| Unmerged — this branch, since the plan was first scored | `de5d042`..`296e187`, 57 | **Risk:** tail figures derived from each limit's own confidence in the risk lib and the kernel (`d94b156`, `990032a`); a pass-and-veto fixture for every `LimitKind` arm (`160c4e8`); the aggregates-never-strategy-lists rule made structural and probed at two counts (`b9e9e7d`). **Lifecycle:** cumulative trials per family (`9332bcb`), one Sharpe arithmetic (`436e1fa`), the holdout band and its demotion (`d0558b4`), factory enrolment (`94dd7e2`). **Sealed seams:** the registered outcome behind the legality assessment (`47e9b81`), a proposal's status private (`6e3aad0`), the synthetic path refusing overflow rather than restarting (`cc92d66`). **The cell:** feasibility ahead of netting (`95a4932`), the arbitrage desk scanning the cell's own books and halting a broken cycle (`71f9465`), buy signed positive where the intent is made (`54d32fd`). **The centre:** LEARN grades every resolved thesis (`04738ee`) and prices every refused order (`b9e2242`); the cycle recorded where the console reads (`cf20457`); netted fills attributed and crosses settled to strategy books, the report carrying the interval (`7ef6063`, `7d79161`); a reorganisation failing the bridged transfer riding on it (`67b3e92`); the not-decision-grade instruments counted at assembly (`78026e2`); fourteen newer series spelled beside the rest (`296e187`). **The sweep:** 99 orphan public functions removed (`a4f673c`), four resolved by removal (`ed69a52`, `68ff891`, `b7d3edc`, `b8a8acd`), 110 then 32 dead dependency edges dropped (`2a74706`, `2753911`), the bench profile and a frontend config reader gone (`a95f702`, `ad9a937`). **Infrastructure:** the first egress proxy that exists, as a co-located sidecar (`c924191`); the blueprint runtime wired into the root module and the cluster's Terraform, chart, manifests and Argo CD stack removed (`808ca32`, `67b3e92`, `7d79161`); `deploy.yml` moving Cloud Run services by digest with the serving revision proven (`b85684f`); the resource-by-resource record (`bcad2d3`) — nothing applied, no `terraform` binary. **Proof of boundaries:** the application layer's reach made executable (`827a40e`); three premise-first test repairs (`08c52a0`, `4916217`, `6dd761b`). **Documents:** the truth pass, current state, gap matrix, traceability matrix and this plan re-scored (this series) |
-| Unmerged — landed while this plan was being re-scored | `296e187`..`fca98cc`, 5 | Every desk fill fed into the risk aggregate and limits read from it, so the O(1) rule is held in production and not only by the lib's test (`88eb1e2`); the three deployment suites retargeted at the runtime that exists, every property kept (`81dd1cd`); the operations documents and two rule files corrected for the deleted runtime (`ecfb0a6`); ADR 0024 (`2b7e502`); the scaling runbook pointed at the catalogue (`fca98cc`) |
+| PR #6 — `851c0ed`, first part (was "unmerged — this branch") | `68b7da6`..`de5d042`, 13 | Edge telemetry parked, then finished and proven site by site; the node hands its cell the scraped registry; the observability rule corrected (C4); three Argo CD Applications that could never sync removed; five documents corrected; the reservation shortfall counted under its registered name; observed-fact constructors for agents; a cycle-leg type that cannot be nettable; the arbitrage scanner's leg emitter; a central reconciliation break and its scoped halt recorded and counted |
+| PR #6 — `851c0ed`, second part (was "unmerged, since the plan was first scored") | `de5d042`..`296e187`, 57 | **Risk:** tail figures derived from each limit's own confidence in the risk lib and the kernel (`d94b156`, `990032a`); a pass-and-veto fixture for every `LimitKind` arm (`160c4e8`); the aggregates-never-strategy-lists rule made structural and probed at two counts (`b9e9e7d`). **Lifecycle:** cumulative trials per family (`9332bcb`), one Sharpe arithmetic (`436e1fa`), the holdout band and its demotion (`d0558b4`), factory enrolment (`94dd7e2`). **Sealed seams:** the registered outcome behind the legality assessment (`47e9b81`), a proposal's status private (`6e3aad0`), the synthetic path refusing overflow rather than restarting (`cc92d66`). **The cell:** feasibility ahead of netting (`95a4932`), the arbitrage desk scanning the cell's own books and halting a broken cycle (`71f9465`), buy signed positive where the intent is made (`54d32fd`). **The centre:** LEARN grades every resolved thesis (`04738ee`) and prices every refused order (`b9e2242`); the cycle recorded where the console reads (`cf20457`); netted fills attributed and crosses settled to strategy books, the report carrying the interval (`7ef6063`, `7d79161`); a reorganisation failing the bridged transfer riding on it (`67b3e92`); the not-decision-grade instruments counted at assembly (`78026e2`); fourteen newer series spelled beside the rest (`296e187`). **The sweep:** 99 orphan public functions removed (`a4f673c`), four resolved by removal (`ed69a52`, `68ff891`, `b7d3edc`, `b8a8acd`), 110 then 32 dead dependency edges dropped (`2a74706`, `2753911`), the bench profile and a frontend config reader gone (`a95f702`, `ad9a937`). **Infrastructure:** the first egress proxy that exists, as a co-located sidecar (`c924191`); the blueprint runtime wired into the root module and the cluster's Terraform, chart, manifests and Argo CD stack removed (`808ca32`, `67b3e92`, `7d79161`); `deploy.yml` moving Cloud Run services by digest with the serving revision proven (`b85684f`); the resource-by-resource record (`bcad2d3`) — nothing applied, no `terraform` binary. **Proof of boundaries:** the application layer's reach made executable (`827a40e`); three premise-first test repairs (`08c52a0`, `4916217`, `6dd761b`). **Documents:** the truth pass, current state, gap matrix, traceability matrix and this plan re-scored (this series) |
+| PR #6 — `851c0ed`, third part (was "unmerged, landed while this plan was being re-scored") | `296e187`..`fca98cc`, 5 | Every desk fill fed into the risk aggregate and limits read from it, so the O(1) rule is held in production and not only by the lib's test (`88eb1e2`); the three deployment suites retargeted at the runtime that exists, every property kept (`81dd1cd`); the operations documents and two rule files corrected for the deleted runtime (`ecfb0a6`); ADR 0024 (`2b7e502`); the scaling runbook pointed at the catalogue (`fca98cc`) |
+| PR #6 — `851c0ed`, last part | `fca98cc`..`b1e709c`, 14 | The four scored documents refreshed (`9aa3b27`, `ba05d1d`, `5734f4f`, `79dbb8b`) and this plan re-scored (`29ce828`); the full gate run at `29ce828` — fmt exit 0, clippy `-D warnings` exit 0, 302 test binaries with 3,485 passed and 1 failed, `all permitted`, `nothing found` — and its one failure, the `qip-api` scrape premise, repaired and mutation-verified (`397c144`); the four delivery-stack scripts retired (`25d066e`); the release-engineer agent file, `CLAUDE.md`, the secrets document, the observability rule file and five runbooks corrected for the runtime the tree holds (`e894198`, `eb0442e`, `033ee11`, `132c1b7`, `94480b4`); the two diagram audits corrected (`ffa3c7a`); the retired-stack allowlist expired to empty (`b1e709c`). Merged with the thirteen checks `ci.yml` declares reported green on `b1e709c` — reported, because there is no `gh` here to read them |
 
 Velocity, for what it is worth: sixty-two commits in roughly thirteen hours of
 reflog (`4541923` at 1788257119 to `de5d042` at 1788304174) when first
@@ -224,17 +233,16 @@ that closes it; the size.
 | # | Item | Blueprint | Line | Depends on | Blocker | Evidence that closes it | Slices |
 |---|---|---|---|---|---|---|---|
 | A1 | ~~**Refresh the matrix and the truth pass for what landed after `fef0c97`**~~ | ADR 0022 | A | — | — | **Done in this series**, at `296e187`: C4, F7, F8, the gates, the constraint and plane rows, Layers 3, 4, 6 and 7; the truth pass's flows 2, 3, 6 and 7 re-traced. Every changed row cites a commit or a test name. What is not done is the OpenTofu/Cloud Build row, which is D11's | 1, spent |
-| A2 | **Re-measure the full gate at HEAD** — `current-state.md` now cites 3,355 across 280 binaries from `a4f673c`, itself thirty-odd commits old | — | A | None | None at `fca98cc`: `81dd1cd` retargeted the three deployment suites and the checkout is clean. Not run in this series, which ran the documentation suite alone | `test result:` lines quoted for every binary under `--no-fail-fast`; clippy zero warnings; `all permitted`; `nothing found` | 1 |
+| A2 | ~~**Re-measure the full gate at HEAD**~~ | — | A | — | — | **Done at `29ce828`**, clean checkout: `cargo fmt --all --check` exit 0; `cargo clippy --workspace --all-targets -- -D warnings` exit 0; `cargo test --workspace --no-fail-fast` 302 binaries, 3,485 passed, 1 failed — the `qip-api` scrape premise, repaired and mutation-verified at `397c144`, after which `cargo test -p qip-api` gives `3 passed; 0 failed` for the module, so 3,486 is implied at `397c144` and was not re-run whole; `dependency policy: 11 third-party package(s), all permitted`; `secret scan: nothing found`; `git diff --check` clean. Terraform not run (no binary); frontend not run (no source changed). The evidence asked for was every binary's `test result:` line; what exists is the summed totals in `397c144`'s message. A second run at `851c0ed` on a not-clean tree is in `current-state.md` | 1, spent |
 | A3 | ~~**Controls that cannot fire, remaining:** `Platform::learn_from`, `Platform::evaluate_alternatives`, `Web::record_cycle`~~ | §47, §12 | A | — | — | **Done, all three wired:** `learn_from` from LEARN (`04738ee`, `learning.rs::a_cycle_that_resolves_a_thesis_grades_it_and_moves_the_calibration_series`); `evaluate_alternatives` from LEARN (`b9e2242`, `::a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate`); `record_cycle` from the cycle route (`cf20457`, `api.rs::a_cycle_run_through_the_router_reaches_the_operator_interfaces_stage_overview`). Two more found and wired since: `BridgeLedger::on_reorg` (`67b3e92`) and `Universe::not_decision_grade` (`78026e2`) | 3, spent |
 | A4 | ~~**Assert the O(1)-in-strategy-count property of risk**~~ | §2.2, rule 11 | A | — | — | **Done** at `b9e9e7d`: `qip-risk/tests/aggregate.rs::the_aggregate_check_reads_the_same_fixed_figures_at_eight_strategies_and_at_five_hundred_and_twelve`, mutation by rewriting the gross figure as a per-strategy sum | 1, spent |
 | A5 | **Settle `qip-arbitrage` and `qip-normalization`** — half done. `qip-arbitrage` is constructed by the cell (`71f9465`, `Cell::with_arbitrage`), so its edge is live; `qip-edge-node` installs no desk (`grep -rn ArbitrageDesk apps/qip-edge-node/src` is empty), so no deployed process holds one. `qip-normalization`'s dead edge from the kernel was dropped at `2a74706`; the crate is now named by no manifest but the acceptance crate's and is constructed by nothing — research-only in fact, recorded as such by nobody | §30, §7.3 | A | D6 for the normaliser's disposition; a venue for the desk | D6 | For the desk: the node constructing it and a gateway test seeing a leg; for the normaliser: an owner's sentence recording it research-only, or a composition root constructing it | 1 each |
 | A6 | **A collector for every emitter, and an alert for `qip_central_` and `qip_belief_` descriptors** — re-stated for the runtime the tree now describes. The execution node's startup template declares an Ops Agent Prometheus receiver on its health port (`808ca32`); no node exists. The Cloud Run services have no collector: the managed-Prometheus sidecar needs a digest mirrored and attested first (`modules/observability/NOT-SCRAPED.md`), and nobody has pinned it. The old `PodMonitoring` left with the cluster | §47 | A | Someone mirroring the sidecar image by digest through `vendored-images.txt` and `vendor.yml` | Binary Authorization admits only attested images, so an unattested sidecar reads as a broken deploy | The sidecar attached in `modules/cloudrun` by digest; an alert policy naming a recorded `qip_central_` or `qip_belief_` descriptor; the names test extended — and, separately, an observed scrape before `workload_metrics_exist` flips | 1 |
-| A7 | **Correct the rules files** — half taken: `ecfb0a6` re-stated `.claude/rules/domains/data-and-streaming.md` against `modules/egress-proxy`. Still open: `.claude/rules/domains/observability.md:83-85` says `Platform::learn_from` and `Platform::evaluate_alternatives` have no production caller; both have had one since `04738ee` and `b9e2242` (C4) | — | A | None | Owner — it is a rules file | The two sentences re-stated against the LEARN callers, with paths | 1 (owner-approved) |
+| A7 | ~~**Correct the rules files**~~ | — | A | — | — | **Done.** `ecfb0a6` re-stated `.claude/rules/domains/data-and-streaming.md` against `modules/egress-proxy`; `132c1b7` re-stated `.claude/rules/domains/observability.md` against the LEARN callers — at `851c0ed` its lines 83-89 name `Platform::learn_from` and `Platform::evaluate_alternatives` as called from LEARN with the `platform.rs` lines and the commits (C4) | 1, spent |
 
-Alignment-done after (i), at `fca98cc`: **A1, A3 and A4 are spent; A2 is
-unblocked and unrun; A6 waits on a mirrored sidecar digest; A5 and the
-remaining half of A7 wait on the owner.** Two to three slices of agent work
-remain, none of them code in the cycle. Layer 6 stays at 0/7 regardless — see
+Alignment-done after (i), at `851c0ed`: **A1, A2, A3, A4 and A7 are spent;
+A6 waits on a mirrored sidecar digest; A5 waits on the owner.** One to two
+slices of agent work remain, none of them code in the cycle. Layer 6 stays at 0/7 regardless — see
 §6.
 
 ### (ii) Phase 0–3 blueprint work
@@ -322,7 +330,7 @@ their authority for the code and not for an apply — that is said.
 | D9 | **The market-data and chain-RPC hostnames and their licensing posture** | B3, B2, B4; a venue for `execution_nodes` | No listener; the adapters stay inert; the blueprint's Phase 1 cannot start | `infrastructure/egress/envoy.yaml:392-492` declares five clusters — storage, BigQuery, Vertex, two IBM Quantum — none a vendor; `execution_nodes = {}` in every environment because a node needs a venue nobody has recorded |
 | D10 | **ADR 0023 step 3 versus the Phase 2 gate** | B12, B15 | — | **Overtaken in practice.** The feasibility gate (`95a4932`), the arbitrage desk (`71f9465`) and the attribution join (`7ef6063`) are execution-side work built before the Phase 2 gate passed, under the same instruction that wired the runtime. ADR 0023's text is unchanged and still lists that under what would make it wrong; reconciling the record with what was done is the owner's |
 | D11 | **Whether the matrix gains rows for §48 / rule 77** (OpenTofu, Cloud Build, Cloud Deploy, third-party source control) and what status they carry | A1's completeness | Unscored; a reader of §48 finds no row and assumes either aligned or ignored | No such row in the matrix's constraint or layer sections |
-| D12 | ~~**A2's shell**~~ | — | — | **Taken by circumstance.** This refresh had a shell and ran the documentation suite; at `fca98cc` the checkout is clean and the three deployment suites are retargeted (`81dd1cd`). What is left of D12 is A2 itself — the run — and nothing blocks it |
+| D12 | ~~**A2's shell**~~ | — | — | **Taken by circumstance.** This refresh had a shell and ran the documentation suite; at `fca98cc` the checkout is clean and the three deployment suites are retargeted (`81dd1cd`). What was left of D12 was A2 itself — the run — which happened at `29ce828` |
 
 ---
 
@@ -371,8 +379,8 @@ shell; the one that re-scored it ran the documentation suite and quotes it in
 the commit. It did not run the full gate: while it worked, the checkout
 carried other owners' uncommitted edits to three acceptance suites, the kernel
 and the risk lib, and by the time those landed (`88eb1e2`, `81dd1cd`) the
-session's remit — five documents — was what it had evidence for. At `fca98cc`
-nothing blocks A2 but the hour it takes.
+session's remit — five documents — was what it had evidence for. The run
+was then made at `29ce828`, on a clean checkout, and §4(i) A2 carries it.
 
 What *can* be proven from here: everything the Rust workspace asserts about
 itself — the paper layers, the authority boundaries, the flow links marked
@@ -385,14 +393,13 @@ base above §2.3's Layer 6, and it is why Layer 6 is the one row at zero.
 ## 7. How far away are we — the honest paragraph, twice
 
 **Alignment-done.** Closer than at `de5d042`, and what is left is not code
-in the cycle. Of the seven alignment items, three are spent — the scorecards
+in the cycle. Of the seven alignment items, five are spent — the scorecards
 are re-scored at `296e187`, the three controls nothing called are called, the
-risk rule has its probe — and two more were found and wired on the way. What
-remains: re-measuring the full gate, unblocked at `fca98cc` and not run in
-this series; a collector for emitters that have none, which needs an attested
-sidecar digest nobody has pinned; and the owner saying what becomes of a
-crate nothing constructs and correcting two sentences in one rules file that
-still say LEARN's two callers do not exist. The boundaries are
+risk rule has its probe, the full gate was measured at `29ce828`, and both
+rules files are corrected — and two more controls were found and wired on the
+way. What remains: a collector for emitters that have none, which needs an
+attested sidecar digest nobody has pinned; and the owner saying what becomes
+of a crate nothing constructs. The boundaries are
 enforced structurally, the application layer's reach is a test rather than a
 reading, and the paper-trading line has three layers and a test on each. What
 alignment-done will *not* mean is that the cloud layer is proven — and that
@@ -400,7 +407,7 @@ sentence has changed shape: the runtime in the tree is now the blueprint's,
 wired into the root module under the owner's instruction and recorded in ADR
 0024, and it has never been seen by a Terraform binary, never planned, never
 applied; no process has ever been shown to run on the old runtime or the new.
-Call it two or three slices from aligned, with one layer that cannot be
+Call it one or two slices from aligned, with one layer that cannot be
 scored above zero from this environment.
 
 **Blueprint-done.** Far, by the blueprint's own reckoning, and the distance is
