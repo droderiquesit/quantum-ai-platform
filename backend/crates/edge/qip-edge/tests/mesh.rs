@@ -451,6 +451,23 @@ fn a_state_delta_a_cell_produced_arrives_at_the_centre_unchanged() -> Result<()>
             price: dec!("101.5"),
             simulated: true,
         }],
+        // The venue's report on one lot of that order, attributed the way
+        // the cell attributes a fill. It travels beside the order and is
+        // asserted beside it below, because the defect this exists to catch
+        // is the centre reading the order as the fill: a delta that carried
+        // the order and dropped the fill would bill nothing, and one that
+        // carried the order *as* the fill would bill three for a fill of one.
+        fills: vec![qip_edge::cell::ConfirmedFill {
+            order_id: "london-1-1".to_string(),
+            venue: VenueId::new("XLON"),
+            object_id: object("ACME"),
+            side: BookSide::Bid,
+            quantity: dec!("1"),
+            price: dec!("101.5"),
+            simulated: true,
+            at: t(19),
+            shares: vec![(StrategyId::new("mean-reversion-1"), dec!("1"))],
+        }],
         refusals: vec![("capital".to_string(), "the envelope refused it".to_string())],
         // A booked cross, so the uplink is asked to carry the one record
         // §27.1 calls a regulatory expectation. It went untested at first: a
@@ -516,6 +533,28 @@ fn a_state_delta_a_cell_produced_arrives_at_the_centre_unchanged() -> Result<()>
         vec![("book_pressure{levels=5}".to_string(), 7)],
         "the feature revisions did not survive the wire, so the fill cannot be \
          attributed to the values that produced it"
+    );
+    assert_eq!(
+        received.fills.len(),
+        1,
+        "the fill stopped at the cell, so the centre has only the order — which \
+         is what it billed for one slice, resting or not"
+    );
+    assert_eq!(received.fills[0].order_id, "london-1-1");
+    assert_eq!(
+        received.fills[0].quantity,
+        dec!("1"),
+        "a fill of one arrived as something else; three is the order, not the fill"
+    );
+    assert_eq!(received.fills[0].shares.len(), 1);
+    assert_eq!(
+        received.fills[0].shares[0].strategy.as_str(),
+        "mean-reversion-1"
+    );
+    assert_eq!(received.fills[0].shares[0].quantity, dec!("1"));
+    assert!(
+        received.fills[0].simulated,
+        "a paper fill crossed the wire as real"
     );
     assert_eq!(
         received.refusals.len(),

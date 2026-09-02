@@ -3244,6 +3244,33 @@ impl Cell {
                     contributors: order.contributors.clone(),
                 })
                 .collect(),
+            // From the fills the venue reported this pass and nothing else.
+            // The list above is what was sent; deriving a fill from it is the
+            // reading that charged the centre for resting orders.
+            fills: report
+                .fills
+                .iter()
+                .map(|fill| qip_contracts::wire::FillRecord {
+                    order_id: fill.order_id.clone(),
+                    object_id: fill.object_id.clone(),
+                    venue: fill.venue.clone(),
+                    side: fill.side,
+                    quantity: fill.quantity,
+                    price: fill.price,
+                    simulated: fill.simulated,
+                    at: fill.at,
+                    shares: fill
+                        .shares
+                        .iter()
+                        .map(|(strategy, quantity)| qip_contracts::wire::FillShare {
+                            strategy: strategy.clone(),
+                            quantity: *quantity,
+                        })
+                        .collect(),
+                })
+                .collect(),
+            // Set by `bound_refusals` below, like the other two counters.
+            fills_omitted: 0,
             refusals: report
                 .refusals
                 .iter()
