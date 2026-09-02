@@ -705,6 +705,23 @@ fn production_licensing_enforcement_refuses_synthetic_sources() {
     let now = start();
     let (context, _clock) = Context::deterministic(now, 1);
     let mut bus = EventBus::new();
+    let at = now.saturating_add(Duration::from_hours(1));
+
+    // Premise: the same environment polled at the same instant publishes
+    // when nothing enforces. Without this, the zero asserted below is also
+    // what a quiet environment produces, and the gate would be proven by
+    // silence rather than by refusal.
+    let mut unenforced = IngestionService::new(Telemetry::silent());
+    unenforced.register(Box::new(environment(1)));
+    let without_enforcement = unenforced
+        .poll_and_publish(&context, &mut EventBus::new(), at)
+        .unwrap();
+    assert!(
+        without_enforcement > 0,
+        "the synthetic environment published nothing even unenforced, so a zero under \
+         enforcement would prove nothing"
+    );
+
     let mut service =
         IngestionService::new(Telemetry::silent()).enforcing_production_licensing(true);
     service.register(Box::new(environment(1)));
@@ -712,13 +729,7 @@ fn production_licensing_enforcement_refuses_synthetic_sources() {
     assert!(!service.is_production_ready());
     assert_eq!(service.non_production_sources().len(), 1);
 
-    let published = service
-        .poll_and_publish(
-            &context,
-            &mut bus,
-            now.saturating_add(Duration::from_hours(1)),
-        )
-        .unwrap();
+    let published = service.poll_and_publish(&context, &mut bus, at).unwrap();
     assert_eq!(
         published, 0,
         "a synthetic source must be refused under enforcement"
