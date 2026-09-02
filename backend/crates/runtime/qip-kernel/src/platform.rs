@@ -111,6 +111,7 @@ use qip_risk::limits::{LimitKind, LimitSet, RiskState};
 use qip_risk_engine::autonomy::AutonomyController;
 use qip_risk_engine::monitor::RiskMonitor;
 use qip_risk_engine::pretrade::PreTradeChecker;
+use qip_simulation_engine::costs::CostModel;
 use qip_streaming::durable::DurableLogTransport;
 use qip_streaming::envelope::{EventFacts, StreamEnvelope};
 use qip_streaming::ports::Publisher;
@@ -120,8 +121,9 @@ use qip_streaming::provenance::{
 use qip_twin::asof::TwinMarket;
 use qip_twin::capture::{Action, Decision, OutcomeCapture, RealisedOutcome};
 use qip_twin::counterfactual::{
-    ActualTrade, AlternativeMenu, CounterfactualEngine, CounterfactualSet,
+    ActualTrade, AlternativeMenu, Counterfactual, CounterfactualEngine, CounterfactualSet,
 };
+use qip_twin::value::Simulated;
 use qip_world_model::WorldModel;
 use qip_world_model::features::{Feature, FeatureValue};
 use qip_world_model::graph::{Node, NodeKind};
@@ -202,6 +204,21 @@ pub struct Platform {
     /// as each cycle's LEARN begins so a cycle that scored nothing journals
     /// nothing rather than the previous cycle's figure.
     cycle_calibration: Option<CalibrationJournal>,
+    /// Bars as observed, per instrument, bounded by [`SERIES_HISTORY`] like
+    /// the price series beside them. The twin prices a declined path against
+    /// these — the bars the platform actually saw, at the instants it saw
+    /// them — rather than against a market rebuilt from the float series,
+    /// which has no timestamps and would be a fabricated tape.
+    bar_history: BTreeMap<String, Vec<Bar>>,
+    /// Orders a control refused and the twin has not yet priced, oldest
+    /// first, bounded by [`DECLINED_HISTORY`].
+    declined: Vec<DeclinedPath>,
+    /// What each priced refusal would have earned, most recent last, bounded
+    /// by [`DECLINED_HISTORY`].
+    declined_scores: Vec<DeclinedScore>,
+    /// What the LEARN stage priced this cycle, for the journal. Cleared as
+    /// each cycle's LEARN begins.
+    cycle_counterfactuals: Option<CounterfactualJournal>,
     /// The durable, hash-chained mirror of the cycle journal.
     journal: DurableLogTransport,
     /// Everything the platform decided, and what came of it — refusals
@@ -380,6 +397,39 @@ const PREDICTION_HISTORY: usize = 1024;
 /// its default, and the registry test that pins this pairing is the one that
 /// would fail if either side moved.
 const VOLATILITY_CLAIM_WINDOW: usize = 20;
+
+/// How many declined paths the LEARN stage prices per cycle.
+///
+/// A cap, and a visible one: the paths it leaves are counted under
+/// `qip_counterfactuals_deferred_total` and priced on a later cycle rather
+/// than dropped. Eight because each evaluation resamples a market of up to
+/// [`SERIES_HISTORY`] bars through every alternative on the menu, and the
+/// stage runs inside the cycle's own latency budget; a backlog is a fact an
+/// operator should see, not a stall the cycle should absorb.
+const COUNTERFACTUALS_PER_CYCLE: usize = 8;
+
+/// How many declined paths wait to be priced, and how many scores are kept.
+///
+/// A working window like [`PROPOSAL_HISTORY`]: a path declined this many
+/// refusals ago and still not priceable is one whose bars never arrived. A
+/// refusal that arrives while the window is full is *not* queued — it is
+/// counted under `qip_counterfactuals_unscored_total{reason="capacity"}` and
+/// reported on the cycle, because evicting the oldest waiting path would
+/// silently choose which veto goes unexamined.
+const DECLINED_HISTORY: usize = 256;
+
+/// Bars the twin estimates liquidity over when pricing a declined path — the
+/// same window the platform's own counterfactual tests price with, so a path
+/// priced here and one priced in a test are priced by the same law.
+const COUNTERFACTUAL_IMPACT_WINDOW: usize = 20;
+
+/// The venue a refused order is recorded against for the twin.
+///
+/// A refusal reached no venue, and the twin's menu compares venues only to
+/// decide whether an alternative venue differs from the one used. A name
+/// that says so beats borrowing the venue the order would have gone to,
+/// which the refusal path never learned.
+const UNROUTED_VENUE: &str = "unrouted";
 
 /// How many price levels per side a book observation sums into the liquidity
 /// topology.
@@ -698,6 +748,59 @@ pub struct CycleJournalEntry {
     /// made. Defaulted so a journal written before the field existed replays.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub calibration: Option<CalibrationJournal>,
+    /// The declined paths LEARN priced this cycle, and how many it left for
+    /// want of capacity. Absent on a cycle that priced nothing and deferred
+    /// nothing. Defaulted so an older journal replays.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub counterfactuals: Option<CounterfactualJournal>,
+}
+
+/// What the LEARN stage's counterfactual pass left in the journal.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CounterfactualJournal {
+    /// Declined paths priced this cycle.
+    pub scored: usize,
+    /// Of those, how many would have beaten standing aside.
+    pub regrets: usize,
+    /// Declined paths due for pricing and left for a later cycle by the cap.
+    pub deferred: usize,
+}
+
+/// One refused order, kept until the twin can price what refusing it cost.
+#[derive(Clone, Debug, PartialEq)]
+struct DeclinedPath {
+    /// The captured refusal, as the twin evaluates against it.
+    decision: Decision,
+    order_id: OrderId,
+    object_id: ObjectId,
+    side: BookSide,
+    quantity: Decimal,
+    /// The control that refused, in the vocabulary `gate_of` gives.
+    gate: String,
+}
+
+/// What a refused order would have done, once the twin has priced it.
+///
+/// Every money figure here is [`Simulated`] and stays that way: a declined
+/// path's earnings are what an alternative world produced, and the type is
+/// what keeps them out of the P&L they are reported next to.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeclinedScore {
+    pub order_id: OrderId,
+    pub object_id: ObjectId,
+    /// The control that refused it — the rule the score is attributed to.
+    pub gate: String,
+    pub declined_at: Timestamp,
+    pub scored_at: Timestamp,
+    /// What the trade as proposed would have earned over the twin's horizon,
+    /// net of the costs the twin charges.
+    pub would_have_earned: Simulated<Decimal>,
+    /// Whether the trade would have beaten standing aside. The bit blueprint
+    /// §12.3 accumulates per rule: a rule that vetoes mostly profitable paths
+    /// is too tight, one that vetoes mostly losing paths is earning its place.
+    pub regret: bool,
+    /// How many alternatives the twin priced.
+    pub alternatives: usize,
 }
 
 /// What the LEARN stage's calibration pass left in the journal.
@@ -1045,6 +1148,10 @@ impl Platform {
             evaluations: Vec::new(),
             last_calibration: None,
             cycle_calibration: None,
+            bar_history: BTreeMap::new(),
+            declined: Vec::new(),
+            declined_scores: Vec::new(),
+            cycle_counterfactuals: None,
             journal: DurableLogTransport::in_memory("kernel-journal"),
             outcomes: OutcomeCapture::new(),
             counterfactuals,
@@ -1235,6 +1342,23 @@ impl Platform {
         metrics.describe(
             series::THESES_EVALUATED,
             "theses scored against what was published, by verdict",
+        );
+        metrics.describe(
+            series::COUNTERFACTUALS_SCORED,
+            "declined paths priced by the twin once their horizon passed, by the gate that \
+             declined them",
+        );
+        metrics.describe(
+            series::COUNTERFACTUAL_REGRETS,
+            "declined paths that, priced, would have beaten standing aside, by gate",
+        );
+        metrics.describe(
+            series::COUNTERFACTUALS_DEFERRED,
+            "declined paths due for pricing and left for a later cycle by the per-cycle cap",
+        );
+        metrics.describe(
+            series::COUNTERFACTUALS_UNSCORED,
+            "declined paths that will never be priced, by reason",
         );
     }
 
@@ -1606,8 +1730,12 @@ impl Platform {
                         bar.close.to_f64(),
                     );
                     push_bounded(
-                        self.volume_history.entry(key).or_default(),
+                        self.volume_history.entry(key.clone()).or_default(),
                         bar.volume.to_f64(),
+                    );
+                    push_bounded_bars(
+                        self.bar_history.entry(key).or_default(),
+                        bar.as_ref().clone(),
                     );
                     bars.push(bar);
                     absorbed += 1;
@@ -2166,6 +2294,7 @@ impl Platform {
             compute_cost: self.last_cycle_cost(),
             summary: report.summarise(),
             calibration: self.cycle_calibration.clone(),
+            counterfactuals: self.cycle_counterfactuals.clone(),
         };
 
         let facts = EventFacts::derived(
@@ -3699,6 +3828,7 @@ impl Platform {
 
     fn stage_learn(&mut self, now: Timestamp) -> StageOutcome {
         self.cycle_calibration = None;
+        self.cycle_counterfactuals = None;
         let (outcome, by_hypothesis) = self.attribute(now);
         // What the platform did and what it declined, side by side. The tally
         // is the answer to the question a report of trades alone cannot
@@ -3732,6 +3862,18 @@ impl Platform {
                     error.message()
                 ));
             }
+        }
+        // Price what the gates declined, now that the world has said what
+        // would have happened. Blueprint §12: a platform that learns only
+        // from the trades it took is learning from a heavily selected
+        // sample, and every veto is a data point until something scores it.
+        let (priced, problems) = self.score_declined(now);
+        if let Some(priced) = priced {
+            let detail = format!("{}; {priced}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in problems {
+            outcome = outcome.with_problem(problem);
         }
         for problem in std::mem::take(&mut self.capture_problems) {
             outcome = outcome.with_problem(problem);
@@ -4161,18 +4303,45 @@ impl Platform {
             self.telemetry
                 .metrics
                 .count(names::ORDERS_REFUSED, labels([("control", gate.as_str())]));
-            self.capture(
+            let refused = self.capture(
                 now,
                 &correlation,
                 object_id.clone(),
                 Action::Rejected {
                     order_id: result.order_id.clone(),
-                    gate,
+                    gate: gate.clone(),
                     reason: reason.clone(),
                 },
                 RealisedOutcome::nothing_happened(now),
                 reason,
             );
+            // Kept for the twin. The refusal record above carries no side and
+            // no size — it says which control said no — and pricing what the
+            // veto cost needs the trade that was proposed. A full window is a
+            // refusal to queue, counted, not an eviction: dropping the oldest
+            // waiting path would silently choose which veto goes unexamined.
+            if let Some(decision) = refused {
+                if self.declined.len() >= DECLINED_HISTORY {
+                    self.telemetry.metrics.count(
+                        series::COUNTERFACTUALS_UNSCORED,
+                        labels([("reason", "capacity")]),
+                    );
+                    self.capture_problems.push(format!(
+                        "refused order {} will not be priced: {DECLINED_HISTORY} declined paths \
+                         are already waiting to be",
+                        result.order_id
+                    ));
+                } else {
+                    self.declined.push(DeclinedPath {
+                        decision,
+                        order_id: result.order_id.clone(),
+                        object_id: object_id.clone(),
+                        side: book_side(side),
+                        quantity,
+                        gate,
+                    });
+                }
+            }
             return;
         };
 
@@ -4601,13 +4770,21 @@ impl Platform {
         &self.counterfactuals
     }
 
-    /// Price every alternative to one order the platform actually sent.
+    /// Price every alternative to one order the platform sent, or to one a
+    /// control refused.
     ///
     /// The market is the caller's, because the twin evaluates against history
-    /// and the platform holds no bar store of its own. Everything the set
-    /// reports is [`qip_twin::Simulated`] and stays that way: there is no
-    /// conversion out of it, so no figure in here can reach
+    /// and the platform holds no bar store of its own beyond the bounded one
+    /// the LEARN stage prices from. Everything the set reports is
+    /// [`qip_twin::Simulated`] and stays that way: there is no conversion out
+    /// of it, so no figure in here can reach
     /// [`qip_twin::capture::OutcomeCapture::realised_pnl`].
+    ///
+    /// For a refused order the "actual" is standing aside — nothing happened,
+    /// nothing was earned — and the `trade` alternative is the order as it
+    /// was proposed. That entry's difference is what the veto cost, which is
+    /// the number blueprint §12 says is otherwise unknowable: whether the
+    /// rule that fired was protective or merely expensive.
     pub fn evaluate_alternatives(
         &self,
         order_id: &OrderId,
@@ -4620,48 +4797,221 @@ impl Platform {
             .find(|entry| match &entry.decision.action {
                 Action::OrderPlaced { order_id: id, .. } => id == order_id,
                 _ => false,
-            })
-            .ok_or_else(|| {
-                Error::not_found(format!(
-                    "no order {order_id} was captured, so there is nothing to counterfact"
-                ))
-            })?;
-        let Action::OrderPlaced {
-            venue,
-            side,
-            quantity,
-            ..
-        } = &placed.decision.action
-        else {
-            return Err(Error::invalid("the captured action is not an order"));
+            });
+        let (decision, actual, realised) = match placed {
+            Some(placed) => {
+                let Action::OrderPlaced {
+                    venue,
+                    side,
+                    quantity,
+                    ..
+                } = &placed.decision.action
+                else {
+                    return Err(Error::invalid("the captured action is not an order"));
+                };
+                // What was realised is the fill's, not the placement's:
+                // placing an order costs nothing on its own, and pricing an
+                // alternative against a zero would make every alternative
+                // look like a regret.
+                let realised = self
+                    .outcomes
+                    .entries()
+                    .iter()
+                    .find(|entry| match &entry.decision.action {
+                        Action::Filled { order_id: id, .. } => id == order_id,
+                        _ => false,
+                    })
+                    .map_or_else(
+                        || RealisedOutcome::nothing_happened(placed.decision.at),
+                        |entry| entry.outcome,
+                    );
+                let actual = ActualTrade::new(
+                    placed.decision.object_id.clone(),
+                    *side,
+                    *quantity,
+                    venue.clone(),
+                    HOME_REGION,
+                    placed.decision.at,
+                )?;
+                (placed.decision.clone(), actual, realised)
+            }
+            None => {
+                let declined = self
+                    .declined
+                    .iter()
+                    .find(|declined| &declined.order_id == order_id)
+                    .ok_or_else(|| {
+                        Error::not_found(format!(
+                            "no order {order_id} was captured, so there is nothing to \
+                             counterfact"
+                        ))
+                    })?;
+                let actual = ActualTrade::new(
+                    declined.object_id.clone(),
+                    declined.side,
+                    declined.quantity,
+                    VenueId::new(UNROUTED_VENUE),
+                    HOME_REGION,
+                    declined.decision.at,
+                )?;
+                (
+                    declined.decision.clone(),
+                    actual,
+                    RealisedOutcome::nothing_happened(declined.decision.at),
+                )
+            }
         };
-
-        // What was realised is the fill's, not the placement's: placing an
-        // order costs nothing on its own, and pricing an alternative against a
-        // zero would make every alternative look like a regret.
-        let realised = self
-            .outcomes
-            .entries()
-            .iter()
-            .find(|entry| match &entry.decision.action {
-                Action::Filled { order_id: id, .. } => id == order_id,
-                _ => false,
-            })
-            .map_or_else(
-                || RealisedOutcome::nothing_happened(placed.decision.at),
-                |entry| entry.outcome,
-            );
-
-        let actual = ActualTrade::new(
-            placed.decision.object_id.clone(),
-            *side,
-            *quantity,
-            venue.clone(),
-            HOME_REGION,
-            placed.decision.at,
-        )?;
         self.counterfactuals
-            .evaluate(market, &placed.decision, &actual, &realised)
+            .evaluate(market, &decision, &actual, &realised)
+    }
+
+    /// What each priced refusal would have done, most recent last.
+    pub fn declined_scores(&self) -> &[DeclinedScore] {
+        &self.declined_scores
+    }
+
+    /// How many refused orders are waiting for their horizon or their bars.
+    pub fn declined_awaiting_score(&self) -> usize {
+        self.declined.len()
+    }
+
+    /// Price the declined paths whose horizon has passed, up to the cap.
+    ///
+    /// The LEARN stage's counterfactual pass, and the production caller of
+    /// [`Platform::evaluate_alternatives`]. A path is due once the twin's
+    /// horizon has elapsed since the refusal *and* the platform has observed
+    /// a bar closing after that instant, because the twin marks the
+    /// alternative at the horizon and a market that ends before it has no
+    /// price to mark at; a path whose bars have not arrived is left waiting,
+    /// not scored on a guess. Anything the twin itself refuses is counted
+    /// under `unscored{reason="refused"}`, reported on the cycle and dropped,
+    /// because a path the twin refused once it will refuse every cycle.
+    ///
+    /// Bounded by [`COUNTERFACTUALS_PER_CYCLE`]. What the cap leaves is
+    /// counted, journaled and priced on a later cycle: the count is what
+    /// makes "the twin is falling behind the gates" a number rather than a
+    /// silence.
+    fn score_declined(&mut self, now: Timestamp) -> (Option<String>, Vec<String>) {
+        let horizon = self.counterfactuals.horizon();
+        let due: Vec<OrderId> = self
+            .declined
+            .iter()
+            .filter(|declined| {
+                let marks_at = declined.decision.at.saturating_add(horizon);
+                marks_at <= now
+                    && self
+                        .bar_history
+                        .get(declined.object_id.as_str())
+                        .and_then(|bars| bars.iter().map(Bar::close_time).max())
+                        .is_some_and(|last_close| last_close >= marks_at)
+            })
+            .map(|declined| declined.order_id.clone())
+            .collect();
+        if due.is_empty() {
+            return (None, Vec::new());
+        }
+
+        let deferred = due.len().saturating_sub(COUNTERFACTUALS_PER_CYCLE);
+        if deferred > 0 {
+            self.telemetry.metrics.increment(
+                series::COUNTERFACTUALS_DEFERRED,
+                labels([]),
+                deferred as u64,
+            );
+        }
+
+        let mut scored = 0usize;
+        let mut regrets = 0usize;
+        let mut problems = Vec::new();
+        for order_id in due.into_iter().take(COUNTERFACTUALS_PER_CYCLE) {
+            let Some(index) = self
+                .declined
+                .iter()
+                .position(|declined| declined.order_id == order_id)
+            else {
+                continue;
+            };
+            let (object_id, gate, declined_at) = {
+                let declined = &self.declined[index];
+                (
+                    declined.object_id.clone(),
+                    declined.gate.clone(),
+                    declined.decision.at,
+                )
+            };
+            let priced = self
+                .bar_history
+                .get(object_id.as_str())
+                .cloned()
+                .ok_or_else(|| Error::not_found(format!("no bars are held for {object_id}")))
+                .and_then(|bars| {
+                    TwinMarket::new(
+                        bars,
+                        CostModel::liquid_equity(),
+                        COUNTERFACTUAL_IMPACT_WINDOW,
+                    )
+                })
+                .and_then(|mut market| self.evaluate_alternatives(&order_id, &mut market));
+            // Priced or refused, the path leaves the queue: what it would
+            // have earned is now known, or the twin has said it cannot be.
+            self.declined.remove(index);
+            match priced {
+                Ok(set) => {
+                    let trade = set.by_kind("trade");
+                    let regret = trade.is_some_and(Counterfactual::favours_the_alternative);
+                    let would_have_earned = trade.map_or(Simulated::ZERO, |entry| {
+                        entry.counterfactual_outcome.simulated_pnl()
+                    });
+                    self.telemetry.metrics.count(
+                        series::COUNTERFACTUALS_SCORED,
+                        labels([("gate", gate.as_str())]),
+                    );
+                    if regret {
+                        regrets += 1;
+                        self.telemetry.metrics.count(
+                            series::COUNTERFACTUAL_REGRETS,
+                            labels([("gate", gate.as_str())]),
+                        );
+                    }
+                    scored += 1;
+                    self.declined_scores.push(DeclinedScore {
+                        order_id,
+                        object_id,
+                        gate,
+                        declined_at,
+                        scored_at: now,
+                        would_have_earned,
+                        regret,
+                        alternatives: set.len(),
+                    });
+                    if self.declined_scores.len() > DECLINED_HISTORY {
+                        let excess = self.declined_scores.len() - DECLINED_HISTORY;
+                        self.declined_scores.drain(..excess);
+                    }
+                }
+                Err(error) => {
+                    self.telemetry.metrics.count(
+                        series::COUNTERFACTUALS_UNSCORED,
+                        labels([("reason", "refused")]),
+                    );
+                    problems.push(format!(
+                        "refused order {order_id} could not be priced: {}",
+                        error.message()
+                    ));
+                }
+            }
+        }
+
+        self.cycle_counterfactuals = Some(CounterfactualJournal {
+            scored,
+            regrets,
+            deferred,
+        });
+        let mut summary = format!("{scored} declined path(s) priced, {regrets} regret(s)");
+        if deferred > 0 {
+            summary.push_str(&format!(", {deferred} deferred by the per-cycle cap"));
+        }
+        (Some(summary), problems)
     }
 
     // --- the capital fabric -------------------------------------------------
@@ -4862,6 +5212,15 @@ fn slippage_bps(arrival: Decimal, achieved: Decimal, side: Side) -> f64 {
 /// meets a series longer than it. Oldest-first, because every consumer of
 /// these series reads recency — a detector fed the newest 512 sees the same
 /// tape it saw unbounded; one fed a hole in the middle would not.
+/// [`push_bounded`] for the bar series, with the same bound and the same
+/// single drain.
+fn push_bounded_bars(series: &mut Vec<Bar>, bar: Bar) {
+    series.push(bar);
+    if series.len() > SERIES_HISTORY {
+        series.drain(..series.len() - SERIES_HISTORY);
+    }
+}
+
 fn push_bounded(series: &mut Vec<f64>, value: f64) {
     series.push(value);
     if series.len() > SERIES_HISTORY {

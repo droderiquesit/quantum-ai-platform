@@ -14,8 +14,10 @@
 #![allow(clippy::panic_in_result_fn)]
 
 use qip_core::error::Result;
+use qip_core::ids::OrderId;
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Decimal, ObjectId, dec};
+use qip_execution_engine::order::Side;
 use qip_financial::asset_class::{InstrumentType, Sector};
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::{DataQuality, Provenance};
@@ -266,6 +268,194 @@ fn a_cycle_that_resolves_a_thesis_grades_it_and_moves_the_calibration_series() -
         "the journal carries {} and the platform {}",
         journaled.brier_score,
         calibration.brier_score
+    );
+    Ok(())
+}
+
+// --- counterfactual scoring of declined paths -------------------------------
+
+/// Offer an order the controls refuse — it traces to no hypothesis — and hand
+/// back its id. The refusal is the premise of every test below.
+fn refuse_one(platform: &mut Platform, proposal: &str, at: Timestamp) -> Result<OrderId> {
+    let order = platform.order_from(
+        object("AAA"),
+        Side::Buy,
+        dec!("1000"),
+        dec!("100"),
+        proposal,
+        Vec::new(),
+        at,
+    );
+    let order_id = order.order_id.clone();
+    assert!(
+        platform.submit_order(order, at).is_err(),
+        "an untraceable order was accepted; the fixture is not a refusal"
+    );
+    Ok(order_id)
+}
+
+/// Daily bars after the refusal, so the twin has somewhere to enter and a
+/// close to mark the horizon at.
+fn bars_after(symbol: &str, from: Timestamp, days: i64) -> Vec<SensedRecord> {
+    (1..=days)
+        .map(|day| {
+            let at = from.saturating_add(Duration::from_days(day));
+            let open = 100.0 + day as f64;
+            bar(symbol, at, open, open + 0.5)
+        })
+        .collect()
+}
+
+#[test]
+fn a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate() -> Result<()> {
+    // The failure this guards: `evaluate_alternatives` priced the paths not
+    // taken and was called only by tests, so every veto the gates recorded
+    // was a data point nothing scored — blueprint §12's "enormous signal
+    // being discarded daily". LEARN now prices each refusal once the world
+    // has said what would have happened, and charges the score to the rule
+    // that refused.
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 90));
+    let order_id = refuse_one(&mut platform, "prop-refused", start())?;
+
+    // Premise: the refusal is on the chain, waiting, and nothing is priced.
+    assert!(
+        !platform.outcomes().refusals().is_empty(),
+        "no refusal was captured; there is nothing to price"
+    );
+    assert_eq!(platform.declined_awaiting_score(), 1);
+    assert_eq!(
+        recorded(&platform).counter_total(series::COUNTERFACTUALS_SCORED),
+        0
+    );
+
+    // Before the horizon has passed, nothing is priced: the twin marks the
+    // alternative at the horizon, and a path scored on the part of the tape
+    // that had happened to print would be a track record manufactured from
+    // whatever suited it.
+    let early = platform.run_cycle(start());
+    assert_eq!(
+        recorded(&platform).counter_total(series::COUNTERFACTUALS_SCORED),
+        0,
+        "a path was priced before its horizon passed:\n{}",
+        early.summarise()
+    );
+    assert_eq!(platform.declined_awaiting_score(), 1);
+
+    platform.observe(bars_after("AAA", start(), 5));
+    let later = platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+    let learn = later.stage(Stage::Learn).expect("learn ran");
+    assert!(
+        learn.detail.contains("declined path(s) priced"),
+        "LEARN did not report pricing anything: {}",
+        learn.detail
+    );
+
+    let snapshot = recorded(&platform);
+    // Charged to the gate, in the same vocabulary `qip_orders_refused_total`
+    // uses, so the ratio §12.3 wants — vetoes that were profitable over
+    // vetoes — can be read off two series with one label.
+    assert_eq!(
+        snapshot.counter(
+            series::COUNTERFACTUALS_SCORED,
+            &labels([("gate", "order-validation")])
+        ),
+        1,
+        "the score is not charged to the gate that refused: {:?}",
+        snapshot
+            .series
+            .iter()
+            .filter(|s| s.name == series::COUNTERFACTUALS_SCORED)
+            .map(|s| s.labels.clone())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        platform.declined_awaiting_score(),
+        0,
+        "a priced path stays queued"
+    );
+    let scores = platform.declined_scores();
+    assert_eq!(scores.len(), 1);
+    assert_eq!(scores[0].order_id, order_id);
+    assert_eq!(scores[0].gate, "order-validation");
+    assert!(
+        scores[0].alternatives > 1,
+        "the twin priced only {} alternative(s)",
+        scores[0].alternatives
+    );
+    // The regret bit and the counter agree, whichever way the tape went.
+    let regrets = snapshot.counter(
+        series::COUNTERFACTUAL_REGRETS,
+        &labels([("gate", "order-validation")]),
+    );
+    assert_eq!(regrets, u64::from(scores[0].regret));
+    // And nothing simulated reached the realised line.
+    assert_eq!(platform.outcomes().realised_pnl(), Decimal::ZERO);
+
+    let entries = platform.journal_entries()?;
+    assert_eq!(entries.len(), 2);
+    assert!(
+        entries[0].counterfactuals.is_none(),
+        "the first cycle journaled a pricing it did not do"
+    );
+    let journaled = entries[1]
+        .counterfactuals
+        .as_ref()
+        .expect("the cycle that priced a path journals it");
+    assert_eq!(journaled.scored, 1);
+    assert_eq!(journaled.deferred, 0);
+    Ok(())
+}
+
+#[test]
+fn declined_paths_past_the_per_cycle_cap_are_counted_as_deferred_and_priced_next_cycle()
+-> Result<()> {
+    // The cap is eight per cycle. Nine refusals due at once must produce
+    // eight scores and one *counted* deferral — not nine scores, which would
+    // mean the cap is decorative, and not eight with the ninth silently
+    // gone, which is the truncation this test exists to refuse.
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 90));
+    for n in 0..9 {
+        refuse_one(&mut platform, &format!("prop-{n}"), start())?;
+    }
+    assert_eq!(
+        platform.declined_awaiting_score(),
+        9,
+        "the premise is nine waiting"
+    );
+
+    platform.observe(bars_after("AAA", start(), 5));
+    let first = platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+    let snapshot = recorded(&platform);
+    assert_eq!(snapshot.counter_total(series::COUNTERFACTUALS_SCORED), 8);
+    assert_eq!(
+        snapshot.counter_total(series::COUNTERFACTUALS_DEFERRED),
+        1,
+        "the ninth path was not counted as deferred:\n{}",
+        first.summarise()
+    );
+    assert_eq!(
+        platform.declined_awaiting_score(),
+        1,
+        "the deferred path must still be waiting"
+    );
+    let journaled = platform.journal_entries()?[0]
+        .counterfactuals
+        .clone()
+        .expect("journaled");
+    assert_eq!((journaled.scored, journaled.deferred), (8, 1));
+
+    // The next cycle prices what the cap left.
+    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+    let snapshot = recorded(&platform);
+    assert_eq!(snapshot.counter_total(series::COUNTERFACTUALS_SCORED), 9);
+    assert_eq!(snapshot.counter_total(series::COUNTERFACTUALS_DEFERRED), 1);
+    assert_eq!(platform.declined_awaiting_score(), 0);
+    assert_eq!(
+        snapshot.counter_total(series::COUNTERFACTUALS_UNSCORED),
+        0,
+        "nothing was refused by the twin, so nothing may be counted as unscorable"
     );
     Ok(())
 }
