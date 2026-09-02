@@ -1,10 +1,14 @@
 # Completion plan — how far from done, what is left, in what order, blocked on whom
 
-**Living document.** Scored on branch `claude/algorik-architecture-refactor-pmp0zy`
-at `de5d042` (the last commit in the reflog when this was written), with three
-agents still editing `qip-edge`, `qip-edge-node`, `qip-arbitrage`,
-`qip-contracts`, `qip-api` and the observability rule file. Anything they land
-after `de5d042` is not scored here.
+**Living document.** First scored on branch
+`claude/algorik-architecture-refactor-pmp0zy` at `de5d042`; re-scored at
+`296e187`, fifty-seven commits later (`git log --oneline de5d042..296e187 |
+wc -l`). Five more landed while the re-scoring was in progress — `88eb1e2`
+(desk fills fed into the risk aggregate), `81dd1cd` (the three deployment
+suites retargeted at the runtime that exists), `ecfb0a6` (documents and two
+rule files corrected for the deleted runtime), `2b7e502` (ADR 0024) and
+`fca98cc` — and are cited where they change a row; the checkout at `fca98cc`
+is clean apart from this plan and its four sibling documents.
 
 This document aggregates the repository's own scorecards; it does not replace
 them. Where it disagrees with one of them it says so rather than picking. The
@@ -16,6 +20,7 @@ sources, and what each is authoritative for:
 | [`../architecture/integration-truth-pass.md`](../architecture/integration-truth-pass.md) | Whether the seven flows connect, and where each breaks |
 | [`../architecture/blueprint-diagram-reconciliation.md`](../architecture/blueprint-diagram-reconciliation.md) | Where the two authoritative references disagree with each other |
 | [`gap-matrix.md`](gap-matrix.md), [`current-state.md`](current-state.md) | The ordered work and the measured state against the earlier diagram |
+| [`../architecture/deployed-vs-blueprint.md`](../architecture/deployed-vs-blueprint.md) | What the committed Terraform would produce if applied, resource by resource, against what the blueprint requires — written at `bcad2d3`, before `808ca32` removed the cluster it describes, so its "deploys today" column is history |
 | [`../adr/0020-two-runtime-topologies-and-the-order-to-resolve-them.md`](../adr/0020-two-runtime-topologies-and-the-order-to-resolve-them.md), [`../adr/0022-the-algorik-blueprint-is-the-architecture-of-record.md`](../adr/0022-the-algorik-blueprint-is-the-architecture-of-record.md), [`../adr/0023-real-trading-is-the-destination-and-the-opening-is-gated.md`](../adr/0023-real-trading-is-the-destination-and-the-opening-is-gated.md) | The migration sequence, the reference, and the opening sequence |
 
 **Vocabulary.** MEASURED (runtime evidence exists) · TESTED (a named passing
@@ -82,8 +87,8 @@ sequence of ADR 0023 to reach step 9. None of those is authorised today.
 
 | Gate | What it requires | Status | The specific blocker |
 |---|---|---|---|
-| End of Phase 2 | A family surviving holdout with honest significance after **cumulative** trial correction, on real data | **NOT PASSED** | No deployment has run on sustained real data (Phase 1 exit unmet — see below). Separately, ADR 0023 "What could not be specified" records that nothing counts trials across runs, so "honest significance" cannot yet be computed even on real data. Two blockers, in series |
-| End of Phase 3 | Thirty days live, inside the holdout band, no unexplained break | **CANNOT PASS as the tree stands** | Structurally unreachable while ADR 0003 and ADR 0021 stand — three paper layers refuse it. ADR 0023 sequences the opening at steps 5–8; none is approved. Also: no holdout band exists to be inside of |
+| End of Phase 2 | A family surviving holdout with honest significance after **cumulative** trial correction, on real data | **NOT PASSED** | No deployment has run on sustained real data (Phase 1 exit unmet — see below). The second blocker this row carried — that nothing counted trials across runs — closed in code at `9332bcb` and `94dd7e2`: `TrialBook` keeps one hash-chained journal per family and the holdout gate refuses an unknown lifetime count. What remains of it is deployment-shaped: the kernel's factory holds `TrialBook::in_memory` (`central/factory.rs:243`) and no composition root supplies a durable book, so a count survives one process and not the next. ADR 0023's "What could not be specified" still describes the old state and is the owner's to amend |
+| End of Phase 3 | Thirty days live, inside the holdout band, no unexplained break | **CANNOT PASS as the tree stands** | Structurally unreachable while ADR 0003 and ADR 0021 stand — three paper layers refuse it. ADR 0023 sequences the opening at steps 5–8; none is approved. The band now exists (`d0558b4`: `HoldoutBand::from_deflated` at `gates.rs:260`, carried on the admission, two-sided at the demotion monitor), so this row no longer also lacks its measuring stick |
 | End of Phase 6 | Calibrated probability beating the market's implied on prediction contracts, Brier-scored | **NOT PASSED** | `qip-prediction` has `market.rs`, `oracle.rs`, `pricing.rs`, `resolution.rs`; no Brier comparison against a live venue exists (matrix, gates table) |
 | End of Phase 8 | Regime-conditional allocation beating unconditional, out of sample | **NOT PASSED** | Regime detection exists (`qip-cost-router/src/context.rs`, `qip-simulation-engine/src/conditions.rs`); no out-of-sample comparison is computed (matrix, gates table) |
 
@@ -91,7 +96,9 @@ The Phase 1 exit — "7 days stable streaming, statistics converged, no raw
 stream retained" — is not a gate but it precedes the first one, and it is
 unmet: one real tick was fetched in-session through a TLS-terminating bridge
 (`gap-matrix.md` item 6), and no deployment has streamed for any duration,
-because no egress proxy runs (§6 below).
+because no egress proxy runs. At `296e187` one exists as Terraform — a
+co-located Envoy sidecar (`c924191`, wired at `808ca32`) — and has never been
+planned, applied or pointed at a vendor (§6 below).
 
 ### 2.2 Per plane — derived from the traceability matrix
 
@@ -113,17 +120,21 @@ the TESTED bar.
 | Plane | Capabilities named in the matrix row / flows | Present (TESTED) | Fraction | Evidence |
 |---|---|---|---|---|
 | 1 Ingestion | absorb records; entity resolution; licensing before use; one live source sustained; deep-web tier | 3 of 5 | 3/5 | `absorption.rs`, `sense.rs`, `qip-fastbrain/src/licensing.rs`; live source is PARTIAL (one tick, no deployment); deep-web tier MISSING |
-| 2 Cognition | world model; causal graph; episodic memory; hypotheses; belief stage in the cycle; counterfactuals with a production caller; self-model | 4 of 7 | 4/7 | `understanding.rs`, `reasoning.rs`, `world.rs:41`, `causal.rs:234`; belief SUBSTITUTED (flow 2); `Platform::evaluate_alternatives` called only by tests (observability rule); no self-model |
+| 2 Cognition | world model; causal graph; episodic memory; hypotheses; belief stage in the cycle; counterfactuals with a production caller; self-model | 5 of 7 | 5/7 | `understanding.rs`, `reasoning.rs`, `world.rs:41`, `causal.rs:234`; belief still SUBSTITUTED (flow 2) though now graded — `learning.rs::a_cycle_that_resolves_a_thesis_grades_it_and_moves_the_calibration_series` (`04738ee`); counterfactuals gained their caller — `learning.rs::a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate` (`b9e2242`), up from 4 of 7; no self-model |
 | 3 Valuation | six engines (§16.1) | 0 of 6 | 0/6 | MISSING-CURRENT; deliberately not scaffolded. Corporate actions are *absorbed* (`platform.rs:1159-1180`) but no engine prices anything |
-| 4 Intelligence | statistical gate; champion/challenger; drift detection; training; corridor policy; cumulative trial accounting across runs | 4 of 6 | 4/6 | `lifecycle.rs`, `evolution.rs`, `training.rs`, `qip-deepbrain/src/learning.rs:279`; corridor policy has no subject (Phase 12); cumulative trial count MISSING (ADR 0023) |
+| 4 Intelligence | statistical gate; champion/challenger; drift detection; training; corridor policy; cumulative trial accounting across runs; holdout band as an output of validation | 5 of 7 | 5/7 | `lifecycle.rs`, `evolution.rs`, `training.rs`, `qip-deepbrain/src/learning.rs:279`; the band — `lifecycle.rs::a_holdout_admission_carries_the_band_its_validation_produced` (`d0558b4`), new since `de5d042`; corridor policy has no subject (Phase 12); cumulative trial accounting is TESTED at the crate (`::a_second_run_is_corrected_against_the_first_runs_trials_as_well`, `9332bcb`) and enrolled by the factory (`94dd7e2`) but counted here as absent, because the deployed book is in-memory and "across runs" is the property |
 | 5 Optimisation | routing gate; classical baseline every time; authority boundary structural; family clustering; multi-horizon reconciliation | 3 of 5 | 3/5 | `optimization.rs`, `architecture.rs` solver tests, ADR 0006 |
-| 6 Execution | paper-only cell; envelope admission; intent netting; internal crossing; contributor vector on the uplink; halt reaching a cell; §6.2 narrowing; feasibility gate; per-region reservation; crossing settled to books; leg producer for cycles | 7 of 11 | 7/11 | `cell.rs:143-148`, `qip-edge/tests/cell.rs`, `qip-edge-node/tests/gateway.rs`, `qip-api/tests/mesh.rs::a_cycle_ships_a_signed_payload_the_cell_verifies_and_a_trip_reaches_it`; feasibility MISSING, reservation CONTRADICTS (F6), crossing booked-not-settled (F7), cycle legs — a type landed at `3632932`/`6053935`, unscored in the matrix, IMPLEMENTED-UNVERIFIED here |
-| 7 Ledger, wallet, treasury | capital allocation; envelope; two-signature approval; reservation ledger in the kernel; per-user per-strategy ledger; wallet; corridor; transfer gate; destination registry; custody | 4 of 10 | 4/10 | `truth_loop.rs`, `compliance_proof.rs`, `platform.rs::a_second_proposal_is_sized_against_what_the_first_still_holds`; the rest are Phase 12 and bounded by ADR 0021 |
+| 6 Execution | paper-only cell; envelope admission; intent netting; internal crossing; contributor vector on the uplink; halt reaching a cell; §6.2 narrowing; feasibility gate; per-region reservation; crossing settled to books; leg producer for cycles | 10 of 11 | 10/11 | `qip-edge/tests/cell.rs`, `qip-edge-node/tests/gateway.rs`, `qip-api/tests/mesh.rs::a_cycle_ships_a_signed_payload_the_cell_verifies_and_a_trip_reaches_it`; three moved since `de5d042`: feasibility — `feasibility.rs::an_off_lot_intent_is_refused_before_netting_and_never_rides_a_feasible_strategys_order` (`95a4932`); crosses settled at the centre's books — `qip-kernel/tests/attribution.rs::an_internal_cross_moves_both_contributors_books_at_the_mid_and_the_close_out_is_exact` (`7ef6063`); the leg producer — `arbitrage.rs::a_cycle_on_the_cells_own_books_becomes_its_legs_as_orders_in_one_pass` (`71f9465`). Reservation still CONTRADICTS (F6). The caveat that weighs on all ten: `qip-edge-node` calls `Cell::work` on no path, so TESTED here means the cell's tests and never a deployed pass |
+| 7 Ledger, wallet, treasury | capital allocation; envelope; two-signature approval; reservation ledger in the kernel; per-user per-strategy ledger; §43.4 attribution chain at the centre (fill → contributor vector → strategy pro rata); wallet; corridor; transfer gate; destination registry; custody | 5 of 11 | 5/11 | `truth_loop.rs`, `compliance_proof.rs`, `platform.rs::a_second_proposal_is_sized_against_what_the_first_still_holds`; the chain — `qip-kernel/tests/attribution.rs::a_netted_orders_fill_is_attributed_to_its_contributors_with_zero_residual` and `qip-api/tests/mesh.rs::the_orders_a_cell_reports_reach_the_centres_strategy_books` (`7ef6063`, `7d79161`), new since `de5d042`; the books are per strategy and not per user, so the §43.3 ledger stays absent; the rest are Phase 12 and bounded by ADR 0021 |
 
-Summed: **25 of 50 named capabilities at the TESTED bar.** That number is
+Summed: **31 of 52 named capabilities at the TESTED bar** (3 + 5 + 0 + 5 +
+3 + 10 + 5 over 5 + 7 + 6 + 7 + 5 + 11 + 11), up from 25 of 50 at `de5d042` —
+two capabilities were added to the list because the blueprint names them and
+the tree now has them, and six moved from absent to TESTED. That number is
 this plan's, not the matrix's, and it double-counts nothing but weights every
 capability equally, which flatters nothing and nothing in particular: a
-missing valuation plane and a missing feasibility gate are both "one".
+missing valuation plane and a missing per-region reservation are both
+"one".
 
 ### 2.3 Per layer — the matrix carries no status cells for layers
 
@@ -137,29 +148,34 @@ constraint rows that bear on it, to items at the TESTED bar. Same caveat as
 |---|---|---|---|---|
 | 1 Experience | sign-up surface; identity call; passkeys; customer mandate; product entitlements; per-user account; Leptos | 1 of 7 | 1/7 | Flow 1: page TESTED, identity IMPLEMENTED-UNVERIFIED, four MISSING; constraint row §2.1 CONTRADICTS (Next.js). Phase 13 |
 | 2 Public edge and identity | one identity store (ADR 0019); sealed sessions; console as VPC viewer (ADR 0018); passkeys | 3 of 4 | 3/4 | `console_route.rs`, `security.rs`; passkeys MISSING (Phase 0 in §51) |
-| 3 Application and API | documented endpoints exist; K3's narrower reach is what is built; per-user API; typed-intent surface (§40.9) | 2 of 4 | 2/4 | `documentation.rs::every_documented_endpoint_exists`; `qip-api` composes reads only; 30 desk-wide endpoints (`routes.rs:73-299`), none per-user |
+| 3 Application and API | documented endpoints exist; K3's narrower reach is what is built; per-user API; typed-intent surface (§40.9) | 2 of 4 | 2/4 | `documentation.rs::every_documented_endpoint_exists`; K3's reach is now a test rather than a reading — `api_boundary.rs::the_application_layer_depends_on_no_execution_venue_capital_or_edge_crate`, `::the_api_uses_only_the_centre_half_of_the_mesh_and_none_of_its_service_clients` (`827a40e`); `qip-api` composes reads only, none per-user |
 | 4 Domain contracts and control fabric | signed payload down; cell verification; atomic swap; §6.2 narrowing wired; outcome return; twelve producers; two independent halt wires; per-region reservation | 5 of 8 | 5/8 | Flow 3 verdict paragraph and `qip-api/tests/mesh.rs`; 2 of 12 payload slots have producers (PARTIAL); halt is mechanism-independent not wire-independent (flow 6); F6 CONTRADICTS |
-| 5 Data and state | source→facts; entity resolution; world event; bitemporal, bounded, hash-chained log; a `Ledger` per §43.3; live source sustained; BigQuery derived series; content-hash manifests | 4 of 8 | 4/8 | Flow 2 links TESTED; `truth_loop.rs`; ledger PARTIAL by naming; the last three deferred |
-| 6 Cloud and network | GKE transitional runtime carrying traffic; `cloudrun` module; `execution-node` module; `trust-zones` module; egress proxy deployed; Terraform validated | 0 of 6 | 0/6 | Runtime is CONFIGURED, and ADR 0020 step 1's evidence that any pod ever ran is absent, so not MEASURED; the three modules exist under `infrastructure/terraform/modules/` and are absent from `main.tf`'s seventeen `module` blocks — IMPLEMENTED-UNVERIFIED; proxy `Deployment` commented out (`egress.yaml:835`); `terraform validate` NOT RUN (§6) |
-| 7 Security, observability, delivery, reliability | three paper layers; LM/quantum authority; WIF only; central telemetry recorded and served; edge telemetry recorded and served; CSI chain exercised live; scrape observed; OTel spans (§47); edge collector and alert; second halt wire; `qip_central_` alerts | 5 of 11 | 5/11 | `security.rs`, `compliance_proof.rs`, `architecture.rs`, `infrastructure.rs`, `qip-edge/tests/telemetry.rs` (per the corrected observability rule); CSI never exercised live (`current-state.md`); `workload_metrics_exist=false` everywhere; the rest MISSING per the observability rule file |
+| 5 Data and state | source→facts; entity resolution; world event; bitemporal, bounded, hash-chained log; a `Ledger` per §43.3; central strategy books settled from cell reports; live source sustained; BigQuery derived series; content-hash manifests | 5 of 9 | 5/9 | Flow 2 links TESTED; `truth_loop.rs`; the books — `qip-kernel/tests/attribution.rs` (`7ef6063`), new since `de5d042`; ledger PARTIAL by naming; the last three deferred |
+| 6 Cloud and network | `cloudrun` module wired; `execution-node` module wired; `trust-zones` module wired; `egress-proxy` module and sidecar wired; `terraform validate` run; a plan run; anything applied and observed | 0 of 7 | 0/7 | Re-scored at `296e187`: the item this row used to lead with — a GKE transitional runtime carrying traffic — is gone from the tree (`808ca32`, `67b3e92`, `7d79161`), and the three modules that were absent from `main.tf` are now four of its seventeen `module` blocks (`main.tf:274`, `:296`, `:467` and `catalogue.tf:234`; `808ca32`, `c924191`). Wired is CONFIGURED; none of it has been seen by a `terraform` binary, so every item is IMPLEMENTED-UNVERIFIED and none reaches the TESTED bar — `infrastructure.rs` is a text scanner, retargeted at the runtime that exists at `81dd1cd` (its message: `test result: ok. 59 passed; 0 failed`). Nothing was applied, and no process has ever been shown to run on the old runtime or the new one (§6) |
+| 7 Security, observability, delivery, reliability | three paper layers; LM/quantum authority; WIF only; central telemetry recorded and served; edge telemetry recorded and served; belief calibration recorded; reconciliation break counted on both planes; secret-mount chain exercised live; scrape observed; OTel spans (§47); edge collector and alert; second halt wire; `qip_central_` alerts | 7 of 13 | 7/13 | `security.rs`, `compliance_proof.rs`, `architecture.rs`, `qip-edge/tests/telemetry.rs`; calibration — `learning.rs::a_cycle_that_resolves_a_thesis_grades_it_and_moves_the_calibration_series` (`04738ee`); the break — `qip-kernel/tests/central.rs::a_reconciliation_break_is_recorded_by_direction_and_the_halt_by_cause` (`de5d042`) and `qip-edge/tests/telemetry.rs`; both new since the first scoring. Never exercised live: the secret mount (CSI then, Cloud Run secret files now); `workload_metrics_exist=false` everywhere; the execution node declares an Ops Agent receiver and no node exists, and the Cloud Run services have no collector attached (`modules/observability/NOT-SCRAPED.md`); the rest MISSING |
 
-Summed: **20 of 48 layer items at the TESTED bar.** Layer 6 at zero is the
-number to notice — everything in it is either transitional or unvalidated, and
-§6 explains why nothing about it can be proven from this environment.
+Summed: **23 of 51 layer items at the TESTED bar** (1 + 3 + 2 + 5 + 5 + 0 +
+7 over 7 + 4 + 4 + 8 + 9 + 7 + 13), up from 20 of 48 at `de5d042`. Layer 6 at
+zero is still the number to notice — and it is a different zero: before, a
+runtime existed in the tree that nothing had been shown to run on; now the
+runtime in the tree is the blueprint's, and nothing has been shown to plan
+it. §6 explains why nothing about it can be proven from this environment.
 
 ### 2.4 Where the scorecards disagree with each other, or with the tree
 
-Recorded, not resolved. Each is a one-slice matrix refresh (§4, item A1).
+The table as first written is kept, with a resolution column added at
+`296e187`; five of seven were closed by the matrix refresh this plan sits
+beside, and two remain the owner's.
 
-| Claim | Where | What the tree says at `de5d042` |
-|---|---|---|
-| "C4 — still open; the rule file says nothing writes to `Telemetry`" | Matrix, C4 | Closed. `.claude/rules/domains/observability.md` was corrected at `232bc16` and now says both planes emit and names the edge series. The rule file is right; the matrix row is stale |
-| "The kernel does not consume cell deltas at all" | Matrix, F7 | `Platform::ingest_cell_report` (`qip-kernel/src/platform.rs:1223`) is called from `qip-api/src/mesh.rs:1149`, and `learn_from_cells` (`:1271`) feeds outcomes back. Whether the *contributor vector* joins central attribution is a separate question this plan could not settle by reading; F7's first gap may be narrower than written |
-| F8's footgun — a leg that forgets `as_cycle_leg` nets silently | Matrix, F8 | `3632932` "Make a cycle leg a type that cannot be nettable" and `6053935` "Give the arbitrage scanner a way to emit legs the netting seam cannot mistake" landed after the matrix was scored. IMPLEMENTED-UNVERIFIED here: the tests were not run in this session and the matrix has no row |
-| "Tests: 3,308 passing at `fef0c97`" | `current-state.md` | Thirteen commits later; not re-measured. The number is stale by construction and says so |
-| `NumericFact::observed` has no production caller | `gap-matrix.md` risk register | `480644d` and `125a7de` add an observed-fact constructor and stamp desk reads with it. Not re-verified here; the register's open count of three is likely two |
-| ADR 0023 step 3 "buildable today" | ADR 0023 | The same record's reversal section forbids "execution infrastructure built before the Phase 2 gate passes", and blueprint §51.1 says "Stop. Do not build execution infrastructure". The record is in tension with itself; §5 lists it for the owner |
-| Blueprint §48 and rule 77: OpenTofu, Cloud Build, Cloud Deploy | Not scored anywhere | The repository runs Terraform 1.9.8 and GitHub Actions. The matrix has no row for this; it is either CONTRADICTS or NOT-APPLICABLE under the transitional runtime, and that is the matrix owner's call, not this plan's |
+| Claim | Where | What the tree said at `de5d042` | At `296e187` |
+|---|---|---|---|
+| "C4 — still open; the rule file says nothing writes to `Telemetry`" | Matrix, C4 | Closed. `.claude/rules/domains/observability.md` was corrected at `232bc16` and now says both planes emit and names the edge series. The rule file is right; the matrix row is stale | **Resolved** — the matrix's C4 now records the closure, and flags the rule file's next stale sentence (that `learn_from` and `evaluate_alternatives` have no caller; both do since `04738ee` and `b9e2242`) as the owner's |
+| "The kernel does not consume cell deltas at all" | Matrix, F7 | `Platform::ingest_cell_report` is called from `qip-api/src/mesh.rs`, and `learn_from_cells` feeds outcomes back. Whether the *contributor vector* joins central attribution is a separate question this plan could not settle by reading | **Resolved by code** — the join landed at `7ef6063` and the sink carries the interval at `7d79161`; F7 records both |
+| F8's footgun — a leg that forgets `as_cycle_leg` nets silently | Matrix, F8 | `3632932` and `6053935` landed after the matrix was scored; IMPLEMENTED-UNVERIFIED here | **Resolved** — F8 records `CycleLeg` and the producer (`71f9465`), and the plan's author ran nothing for it: the tests are named in the matrix and were run by their own commits |
+| "Tests: 3,308 passing at `fef0c97`" | `current-state.md` | Thirteen commits later; not re-measured | **Superseded, still stale** — the row now cites 3,355 across 280 binaries from `a4f673c`'s message; thirty-odd commits have landed since. At `fca98cc` the checkout is clean, so the run is possible; it was not made in this series (A2, D12) |
+| `NumericFact::observed` has no production caller | `gap-matrix.md` risk register | `480644d` and `125a7de` add an observed-fact constructor; the register's open count of three is likely two | **Resolved** — the register was recounted at `d4dcd44`, `67a584d` and again in this refresh: twenty-four found, twenty-three closed, one open |
+| ADR 0023 step 3 "buildable today" | ADR 0023 | The record is in tension with itself; §5 lists it for the owner | **Overtaken in practice** — the feasibility gate (`95a4932`) and the attribution join (`7ef6063`) were built; the ADR text is unchanged (D10) |
+| Blueprint §48 and rule 77: OpenTofu, Cloud Build, Cloud Deploy | Not scored anywhere | The matrix has no row; the matrix owner's call | **Still open** (D11). `deploy.yml` now moves Cloud Run services by digest itself (`b85684f`), which makes the row easier to write and no less the owner's |
 
 ---
 
@@ -178,14 +194,17 @@ subjects are from `.git/logs/HEAD`.
 | PR #3 — `acfece3` | `9b8df9b`..`0c91cfa`, 9 | The twelve-item payload's wire shape; a cell that verifies, applies, narrows and halts on it; the reservation ledger, then wired into the kernel; the halt as a signed command; the centre shipping policy; the Deep Brain's reference universe and its own exchange; injective signing strings |
 | PR #4 — `7f508cc` | `3be9855`..`db8ce8b`, 21 | One live market source behind the licensing gate, then selectable; `Intent` and netting in the cell, self-trade prevention; the `cloudrun`, `trust-zones` and `execution-node` modules, all unwired; the network module's blueprint notes; GitOps job identity; the console's order ticket deleted; the venue credential refused where the ceiling cannot use it; four unbounded collections bounded; money out of `f64` in risk and execution; the brute-force lockout made able to fire; the safest rung no longer reported live-capable |
 | PR #5 — `baffcd8` | `64b765a`..`fef0c97`, 7 | `egress.rs` able to tell a deployed proxy from a described one; contributor attribution and the uplink schema bump; internal crossing at the mid with the forty-percent cap; the rounding remainder returned; the uplink proven; two scored documents corrected |
-| Unmerged — this branch | `68b7da6`..`de5d042`, 13 plus in-flight | Edge telemetry parked, then finished and proven site by site; the node hands its cell the scraped registry; the observability rule corrected (C4); three Argo CD Applications that could never sync removed; five documents corrected; the reservation shortfall counted under its registered name; observed-fact constructors for agents; a cycle-leg type that cannot be nettable; the arbitrage scanner's leg emitter; a central reconciliation break and its scoped halt recorded and counted |
+| Unmerged — this branch | `68b7da6`..`de5d042`, 13 | Edge telemetry parked, then finished and proven site by site; the node hands its cell the scraped registry; the observability rule corrected (C4); three Argo CD Applications that could never sync removed; five documents corrected; the reservation shortfall counted under its registered name; observed-fact constructors for agents; a cycle-leg type that cannot be nettable; the arbitrage scanner's leg emitter; a central reconciliation break and its scoped halt recorded and counted |
+| Unmerged — this branch, since the plan was first scored | `de5d042`..`296e187`, 57 | **Risk:** tail figures derived from each limit's own confidence in the risk lib and the kernel (`d94b156`, `990032a`); a pass-and-veto fixture for every `LimitKind` arm (`160c4e8`); the aggregates-never-strategy-lists rule made structural and probed at two counts (`b9e9e7d`). **Lifecycle:** cumulative trials per family (`9332bcb`), one Sharpe arithmetic (`436e1fa`), the holdout band and its demotion (`d0558b4`), factory enrolment (`94dd7e2`). **Sealed seams:** the registered outcome behind the legality assessment (`47e9b81`), a proposal's status private (`6e3aad0`), the synthetic path refusing overflow rather than restarting (`cc92d66`). **The cell:** feasibility ahead of netting (`95a4932`), the arbitrage desk scanning the cell's own books and halting a broken cycle (`71f9465`), buy signed positive where the intent is made (`54d32fd`). **The centre:** LEARN grades every resolved thesis (`04738ee`) and prices every refused order (`b9e2242`); the cycle recorded where the console reads (`cf20457`); netted fills attributed and crosses settled to strategy books, the report carrying the interval (`7ef6063`, `7d79161`); a reorganisation failing the bridged transfer riding on it (`67b3e92`); the not-decision-grade instruments counted at assembly (`78026e2`); fourteen newer series spelled beside the rest (`296e187`). **The sweep:** 99 orphan public functions removed (`a4f673c`), four resolved by removal (`ed69a52`, `68ff891`, `b7d3edc`, `b8a8acd`), 110 then 32 dead dependency edges dropped (`2a74706`, `2753911`), the bench profile and a frontend config reader gone (`a95f702`, `ad9a937`). **Infrastructure:** the first egress proxy that exists, as a co-located sidecar (`c924191`); the blueprint runtime wired into the root module and the cluster's Terraform, chart, manifests and Argo CD stack removed (`808ca32`, `67b3e92`, `7d79161`); `deploy.yml` moving Cloud Run services by digest with the serving revision proven (`b85684f`); the resource-by-resource record (`bcad2d3`) — nothing applied, no `terraform` binary. **Proof of boundaries:** the application layer's reach made executable (`827a40e`); three premise-first test repairs (`08c52a0`, `4916217`, `6dd761b`). **Documents:** the truth pass, current state, gap matrix, traceability matrix and this plan re-scored (this series) |
+| Unmerged — landed while this plan was being re-scored | `296e187`..`fca98cc`, 5 | Every desk fill fed into the risk aggregate and limits read from it, so the O(1) rule is held in production and not only by the lib's test (`88eb1e2`); the three deployment suites retargeted at the runtime that exists, every property kept (`81dd1cd`); the operations documents and two rule files corrected for the deleted runtime (`ecfb0a6`); ADR 0024 (`2b7e502`); the scaling runbook pointed at the catalogue (`fca98cc`) |
 
 Velocity, for what it is worth: sixty-two commits in roughly thirteen hours of
-reflog (`4541923` at 1788257119 to `de5d042` at 1788304174), of which roughly
-a third are documents and corrections to documents. That
-ratio is the programme working as designed — a scorecard that lags the tree
-is the failure this repository has already named twice — and it is also the
-reason §2's numbers are trustworthy enough to plan on.
+reflog (`4541923` at 1788257119 to `de5d042` at 1788304174) when first
+scored, of which roughly a third were documents and corrections to documents;
+fifty-seven more by `296e187` (committer time 1788310157). That ratio is the
+programme working as designed — a scorecard that lags the tree is the failure
+this repository has already named twice — and it is also the reason §2's
+numbers are trustworthy enough to plan on.
 
 ---
 
@@ -204,16 +223,19 @@ that closes it; the size.
 
 | # | Item | Blueprint | Line | Depends on | Blocker | Evidence that closes it | Slices |
 |---|---|---|---|---|---|---|---|
-| A1 | **Refresh the matrix and the truth pass for what landed after `fef0c97`** — C4 closed, F7's consumer, F8's type, edge telemetry, `qip_central_` counters, `NumericFact::observed`; and add the missing OpenTofu/Cloud Build row as whatever status the owner assigns | ADR 0022 | A | The three in-flight agents finishing | None | `documentation` suite green; every changed row cites a test name; `no_scored_document_denies_the_existence_of_a_type_the_workspace_defines` passes | 1 |
-| A2 | **Re-measure the full gate at HEAD** and correct `current-state.md`'s 3,308 | — | A | A1 | None here beyond a shell | `test result:` lines quoted for every binary under `--no-fail-fast`; clippy zero warnings; `all permitted`; `nothing found` | 1 |
-| A3 | **Controls that cannot fire, remaining:** `Platform::learn_from` (belief calibration, no caller), `Platform::evaluate_alternatives` (called only by tests), `Web::record_cycle` (nothing calls it). Either wire a production caller or delete, per the gap-matrix rule | §47 (belief calibration "the single most important metric"), §12 | A | None | None | A production call site above `#[cfg(test)]` plus a test asserting the record; or the removal with the register recounted | 3, one each |
-| A4 | **Assert the O(1)-in-strategy-count property of risk** | §2.2, rule 11 | A | None | None | A test at two strategy counts that fails when the aggregate is replaced by an iteration | 1 |
-| A5 | **Settle `qip-arbitrage` and `qip-normalization`** — construct each in a composition root or record it research-only and drop the dead dependency edge | §30, §7.3 | A | Owner decision D6 | D6 | For construction: the binary's main constructing it and an acceptance test seeing it; for retirement: `Cargo.toml` edges removed, `architecture.rs` still green | 1 each |
-| A6 | **Edge series get a collector and an alert; `qip_central_` descriptors get an alert** — permitted now that they emit | §47 | A | A1 | None (the observability rule's prohibition no longer bites) | The manifest selecting `qip-edge-node`; the policy naming a recorded descriptor; the test binding both halves to the same names extended | 1 |
-| A7 | **Correct `.claude/rules/domains/data-and-streaming.md`**, which says a vendor call "needs the egress proxy in front" as though one existed | — | A | None | Owner — it is a rules file | The sentence stating the proxy is described and not deployed, with the manifest line | 1 (owner-approved) |
+| A1 | ~~**Refresh the matrix and the truth pass for what landed after `fef0c97`**~~ | ADR 0022 | A | — | — | **Done in this series**, at `296e187`: C4, F7, F8, the gates, the constraint and plane rows, Layers 3, 4, 6 and 7; the truth pass's flows 2, 3, 6 and 7 re-traced. Every changed row cites a commit or a test name. What is not done is the OpenTofu/Cloud Build row, which is D11's | 1, spent |
+| A2 | **Re-measure the full gate at HEAD** — `current-state.md` now cites 3,355 across 280 binaries from `a4f673c`, itself thirty-odd commits old | — | A | None | None at `fca98cc`: `81dd1cd` retargeted the three deployment suites and the checkout is clean. Not run in this series, which ran the documentation suite alone | `test result:` lines quoted for every binary under `--no-fail-fast`; clippy zero warnings; `all permitted`; `nothing found` | 1 |
+| A3 | ~~**Controls that cannot fire, remaining:** `Platform::learn_from`, `Platform::evaluate_alternatives`, `Web::record_cycle`~~ | §47, §12 | A | — | — | **Done, all three wired:** `learn_from` from LEARN (`04738ee`, `learning.rs::a_cycle_that_resolves_a_thesis_grades_it_and_moves_the_calibration_series`); `evaluate_alternatives` from LEARN (`b9e2242`, `::a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate`); `record_cycle` from the cycle route (`cf20457`, `api.rs::a_cycle_run_through_the_router_reaches_the_operator_interfaces_stage_overview`). Two more found and wired since: `BridgeLedger::on_reorg` (`67b3e92`) and `Universe::not_decision_grade` (`78026e2`) | 3, spent |
+| A4 | ~~**Assert the O(1)-in-strategy-count property of risk**~~ | §2.2, rule 11 | A | — | — | **Done** at `b9e9e7d`: `qip-risk/tests/aggregate.rs::the_aggregate_check_reads_the_same_fixed_figures_at_eight_strategies_and_at_five_hundred_and_twelve`, mutation by rewriting the gross figure as a per-strategy sum | 1, spent |
+| A5 | **Settle `qip-arbitrage` and `qip-normalization`** — half done. `qip-arbitrage` is constructed by the cell (`71f9465`, `Cell::with_arbitrage`), so its edge is live; `qip-edge-node` installs no desk (`grep -rn ArbitrageDesk apps/qip-edge-node/src` is empty), so no deployed process holds one. `qip-normalization`'s dead edge from the kernel was dropped at `2a74706`; the crate is now named by no manifest but the acceptance crate's and is constructed by nothing — research-only in fact, recorded as such by nobody | §30, §7.3 | A | D6 for the normaliser's disposition; a venue for the desk | D6 | For the desk: the node constructing it and a gateway test seeing a leg; for the normaliser: an owner's sentence recording it research-only, or a composition root constructing it | 1 each |
+| A6 | **A collector for every emitter, and an alert for `qip_central_` and `qip_belief_` descriptors** — re-stated for the runtime the tree now describes. The execution node's startup template declares an Ops Agent Prometheus receiver on its health port (`808ca32`); no node exists. The Cloud Run services have no collector: the managed-Prometheus sidecar needs a digest mirrored and attested first (`modules/observability/NOT-SCRAPED.md`), and nobody has pinned it. The old `PodMonitoring` left with the cluster | §47 | A | Someone mirroring the sidecar image by digest through `vendored-images.txt` and `vendor.yml` | Binary Authorization admits only attested images, so an unattested sidecar reads as a broken deploy | The sidecar attached in `modules/cloudrun` by digest; an alert policy naming a recorded `qip_central_` or `qip_belief_` descriptor; the names test extended — and, separately, an observed scrape before `workload_metrics_exist` flips | 1 |
+| A7 | **Correct the rules files** — half taken: `ecfb0a6` re-stated `.claude/rules/domains/data-and-streaming.md` against `modules/egress-proxy`. Still open: `.claude/rules/domains/observability.md:83-85` says `Platform::learn_from` and `Platform::evaluate_alternatives` have no production caller; both have had one since `04738ee` and `b9e2242` (C4) | — | A | None | Owner — it is a rules file | The two sentences re-stated against the LEARN callers, with paths | 1 (owner-approved) |
 
-Alignment-done after (i): **A1–A4 and A6 are unblocked, five to seven slices;
-A5 and A7 wait on the owner.** Layer 6 stays at 0/6 regardless — see §6.
+Alignment-done after (i), at `fca98cc`: **A1, A3 and A4 are spent; A2 is
+unblocked and unrun; A6 waits on a mirrored sidecar digest; A5 and the
+remaining half of A7 wait on the owner.** Two to three slices of agent work
+remain, none of them code in the cycle. Layer 6 stays at 0/7 regardless — see
+§6.
 
 ### (ii) Phase 0–3 blueprint work
 
@@ -222,28 +244,31 @@ ahead it is elsewhere. This is the critical path to the first gate.
 
 | # | Item | Blueprint | Line | Depends on | Blocker | Evidence that closes it | Slices |
 |---|---|---|---|---|---|---|---|
-| B1 | **Decide and record the egress path** — ADR 0024 (co-located proxy) or the TLS-dependency reversal of ADR 0002, as the design note weighs them | §46.2 network, §45.1 | P1 (exit) and ADR 0020 steps 0/2/5 | — | **D1** | An accepted ADR; if (d), a dependency ADR and the ADR 0009 test relaxed for `qip-transport` only | 1 (the ADR) |
-| B2 | **Switch the proxy on in the runtime that exists** — the four prerequisites at `egress.yaml:757-809`, a running `qip-egress` pod, and `egress.rs`'s described-vs-deployed test inverted to assert *on* | §46.2 | P1 (exit) | B1 | **D4**, plus a cluster (§6) | A vendor request in the Envoy access log through the allowlist; the test that today asserts "commented out" flipped and mutation-verified against re-commenting | 2 |
-| B3 | **Name the market-data vendor host and record its licensing posture** | §7, rule 40 | P1 | — | **D9** | A `qip-data-finder` posture record and one listener; nothing else in the manifest changes | 1 |
+| B1 | ~~**Decide and record the egress path**~~ | §46.2 network, §45.1 | P1 (exit) | — | — | **Done**: taken in code as the co-located sidecar (`c924191`, D1) and recorded at `2b7e502` — ADR 0024, which quotes the owner's instruction as the authorisation for the code and states that nothing was applied. At `296e187` the record was absent and `b85684f` cited it ahead of its existence; it landed five commits on | 1, spent |
+| B2 | **Plan, apply and observe the sidecar** — this row used to be "switch the GKE proxy on"; that proxy and its manifest are gone (`7d79161`) and D4 with them. Now: `terraform validate` and a plan of `modules/egress-proxy` and the `modules/cloudrun` sidecar, an apply with step-named approval, and a vendor request in the sidecar's access log | §46.2 | P1 (exit) | B1, B3 | A `terraform` binary and a project (§6); apply approval | The plan's preconditions refusing a host outside `egress_allowed_upstreams` and admitting one inside; a request through the allowlist observed. `egress.rs` was refitted from the deleted manifest to the sidecar at `81dd1cd` (14 passed, per its message), so the suite half is done and the observed half is not | 2 |
+| B3 | **Name the market-data vendor host and record its licensing posture** — the bootstrap's five clusters are Google and IBM endpoints (`infrastructure/egress/envoy.yaml:392-492`); no vendor | §7, rule 40 | P1 | — | **D9** | A `qip-data-finder` posture record, a cluster in `envoy.yaml` and its host in `egress_allowed_upstreams`; nothing else changes | 1 |
 | B4 | **Seven days of stable streaming with statistics converged and no raw stream retained** — the Phase 1 exit | §51 Phase 1, rule 32 | P1 (exit) | B2, B3 | A deployment (§6) | Seven days of a scrape series, the feature store's bound held, the licensing posture in the journal | 1 to observe; 0 to build |
-| B5 | **Count trials cumulatively across runs**, per family, for deflated Sharpe | §20.1, rules 24–25; ADR 0023 "what could not be specified" | P2 | None — buildable now | None | `qip-lifecycle` refusing a promotion whose lifetime trial count is unknown; a test that a second run's correction includes the first run's trials | 1–2 |
-| B6 | **Define the holdout band as an output of validation**, so step 9 of ADR 0023 has something to be inside of | §20.1, §51 Phase 3 gate | P2 | B5 | None | A band type produced by `validation.rs` and carried on the promotion record | 1 |
+| B5 | ~~**Count trials cumulatively across runs**~~ — done at the crate and the factory (`9332bcb`, `94dd7e2`: `lifecycle.rs::a_promotion_whose_lifetime_trial_count_is_unknown_is_refused_naming_what_to_do`, `::a_second_run_is_corrected_against_the_first_runs_trials_as_well`, `::a_trial_book_replays_its_journal_from_the_store_and_refuses_a_tampered_one`). **What remains is the durable book:** the factory's default is `TrialBook::in_memory` and `with_trial_book` has no caller in any composition root, so "across runs" holds across cycles of one process and not across processes | §20.1, rules 24–25 | P2 | None — buildable now | None | `qip-deepbrain`'s composition root supplying a store-backed book and a test that a restarted process refuses to forget the first run's trials | 1 |
+| B6 | ~~**Define the holdout band as an output of validation**~~ | §20.1, §51 Phase 3 gate | P2 | — | — | **Done** at `d0558b4`: `HoldoutBand::from_deflated` at the gate, carried on the `Admission`, refused off it, two-sided at the demotion monitor — `lifecycle.rs::a_holdout_admission_carries_the_band_its_validation_produced`, `::live_performance_outside_the_holdout_band_is_demoted_and_counted`, `::judging_or_admitting_without_a_holdout_band_is_refused` | 1, spent |
 | B7 | **Attempt the Phase 2 gate on real data** | §51.1 | P2 (gate) | B4, B5, B6 | Phase 1 evidence (§6) | A family surviving holdout after cumulative correction, recorded in `qip-lifecycle/src/evidence.rs`'s own artefact — or a recorded failure, which the blueprint says is the more likely and the more useful result | 1 to run |
-| B8 | **Passkeys** | §51 Phase 0, §40.3 | P0 | None | None known | An authenticator registration and assertion through Identity Platform; `grep -rn passkey backend/crates` non-empty; Playwright for the browser half | 2 |
+| B8 | **Passkeys** — `grep -rln -i passkey backend/crates frontend/portal/src` is still empty at `296e187` | §51 Phase 0, §40.3 | P0 | None | None known | An authenticator registration and assertion through Identity Platform; the grep non-empty; Playwright for the browser half | 2 |
 | B9 | **PQC keys and real signatures for the payload channel** — depends on the crypto decision | §46.2 keys | P0 | — | **D2** | An ADR admitting a vetted crate, or an ADR declining and amending ADR 0002's reversal clause; then KMS-backed signing in place of `hmac_sha256` (`qip-core/src/hash.rs:163`) on the policy and envelope channels | 1 (ADR) + 2 |
-| B10 | **Feasibility gate ahead of the profitability filter** | §18.1, rule 23 | P3 | — | Owner reading of ADR 0023 step 3 vs the Phase 2 gate (**D12**) | Passing-and-vetoing fixtures beside the pre-trade path in `qip-execution-engine`; minimum, tick, fee floor, gas, depth | 1–2 |
-| B11 | **Join the edge contributor vector to central attribution** and settle a cross to the books (F7's two gaps) | §27.1, §43.4, rule 12 | P3 | A1 (to know how much of the join `ingest_cell_report` already does) | D12 | A netted order's fill attributed per contributor at the centre, `Attribution::residual == 0`; a `CrossedInternally` entry moving both contributors' positions | 2 |
-| B12 | **Per-region reservation table** (F6) | §4.2, §26, §33, rule 21 | P3 | B11 | D12 | A disconnected cell refusing its own second proposal against one envelope; the central ledger unchanged; `apps/qip-edge-node/tests/mesh.rs` extended | 2 |
-| B13 | **Set the internal-crossing interval** so a full cancellation can cross | §27.1 | P3 | — | **D3** | The cap evaluated per instrument per the chosen interval; a test where two strategies cancelling completely are both filled at the mid | 1 |
-| B14 | **Twelve producers for the twelve payload slots** — ten ship unproduced today and narrow the cell | §41.5 | P3 for items 2, 9, 10, 11; later phases for 1, 3–6, 8, 12 | A1 | Most slots have no producing plane yet (belief, episodic, causal digest, self-model are P7–P9) | Per slot: a producer, the cell consuming it, and the §6.2 row it un-narrows | 1 per slot; 4 in P3 |
+| B10 | **Feasibility gate ahead of the profitability filter** — done at the cell (`95a4932`: `admit_feasible` ahead of `net` in `Cell::work`, eight refusal literals, `feasibility.rs::an_off_lot_intent_is_refused_before_netting_and_never_rides_a_feasible_strategys_order`), and slot 11 of the payload is its first consumer with no producer. **Open:** the central pre-trade path in `qip-execution-engine` has no feasibility step, and no deployed process runs a cell pass | §18.1, rule 23 | P3 | — | None in code; D10 in principle, overtaken in practice | The same fixtures beside the central pre-trade path; a producer for slot 11 | 1 |
+| B11 | ~~**Join the edge contributor vector to central attribution** and settle a cross to the books~~ | §27.1, §43.4, rule 12 | P3 | — | — | **Done** at `7ef6063` and `7d79161`: `qip-kernel/tests/attribution.rs::a_netted_orders_fill_is_attributed_to_its_contributors_with_zero_residual`, `::an_internal_cross_moves_both_contributors_books_at_the_mid_and_the_close_out_is_exact`, `::a_cross_naming_two_buyers_is_refused_rather_than_split_evenly`; `qip-api/tests/mesh.rs::the_orders_a_cell_reports_reach_the_centres_strategy_books` | 2, spent |
+| B12 | **Per-region reservation table** (F6) — still absent; `grep -n -i reserv edge/qip-edge/src/cell.rs` finds nothing but the word "preserved" | §4.2, §26, §33, rule 21 | P3 | — | None in code | A disconnected cell refusing its own second proposal against one envelope; the central ledger unchanged; `apps/qip-edge-node/tests/mesh.rs` extended | 2 |
+| B13 | **Set the internal-crossing interval** so a full cancellation can cross — `cell.rs:1773` still records that the blueprint never defines it | §27.1 | P3 | — | **D3** | The cap evaluated per instrument per the chosen interval; a test where two strategies cancelling completely are both filled at the mid | 1 |
+| B14 | **Twelve producers for the twelve payload slots** — ten still ship unproduced and narrow the cell; slot 11 gained its first consumer (`95a4932`) and `grep -rn feasibility_constraints apps/qip-api/src runtime/qip-kernel/src` is still empty | §41.5 | P3 for items 2, 9, 10, 11; later phases for 1, 3–6, 8, 12 | — | Most slots have no producing plane yet (belief, episodic, causal digest, self-model are P7–P9) | Per slot: a producer, the cell consuming it, and the §6.2 row it un-narrows | 1 per slot; 4 in P3 |
 | B15 | **Second, independent halt wire** — a polled flag beside the broadcast | §46.2 kill switches | P3 | None | None in code; a managed store in deployment (§6) | Flow 6 re-traced with two wires that do not share `qip-transport`'s failure | 1–2 |
-| B16 | **ADR 0020 step 1 — establish which GKE workloads have ever run** | §41.4 (as the precondition) | P3 (first C3 node) | — | **D5** and a cluster (§6) | A named cluster, a pod list, a scrape — brought to the owner, not acted on | 1 to gather |
-| B17 | **Wire and validate the three unwired modules** (`cloudrun`, `execution-node`, `trust-zones`) | §41.4, §45.1, §46.1 | P3 (node), P16 (regions) | B1, B16 | **D5** per step; a `terraform` binary (§6) | `terraform validate` output; a plan that refuses a bad value and admits a good one; nothing applied without step-named approval | 1 each to validate; apply is not estimated because it is not authorised |
+| B16 | ~~**ADR 0020 step 1 — establish which GKE workloads have ever run**~~ | §41.4 | — | — | — | **Moot.** The evidence was never gathered, and at `808ca32` there is no cluster in the tree to gather it from; the owner's instruction to devour the old runtime replaced the step. Recorded so nobody reads the step as passed: no process has ever been shown to run on either runtime | 0 |
+| B17 | **Validate the wired modules** — the wiring half is done (`808ca32`: `cloudrun`, `execution-node`, `trust-zones`, `egress-proxy` in the root module; D5 taken for the code); the validating half is not: no `terraform` binary has read any of it | §41.4, §45.1, §46.1 | P3 (node), P16 (regions) | — | A `terraform` binary (§6); apply approval per step | `terraform fmt -check` and `validate` output; a plan that refuses a bad value (an undeclared zone, a missing digest, a host outside the allowlist) and admits a good one; nothing applied without step-named approval | 1 to validate; apply not estimated because it is not authorised |
 
-Phase 0–3 total, excluding what is not authorised: **roughly 25 slices, of
-which about 8 are unblocked today** (B5, B6, B8, B10–B12 pending D12, B15) and
-the rest wait on an owner decision or an environment this session does not
-have.
+Phase 0–3 total at `296e187`, excluding what is not authorised: **roughly
+fourteen slices remain of the twenty-five**, six having been spent (B5's crate
+half, B6, B10's cell half, B11, and B16 and B17's wiring half rendered moot or
+done by the owner's instruction). **About six are unblocked today** — B5's
+durable book, B8, B10's central half, B12, B13 once D3 is answered, B15 —
+and the rest wait on a `terraform` binary, a project, a vendor host, or an
+ADR.
 
 ### (iii) Later phases, gated behind Phase 2 and Phase 3
 
@@ -253,19 +278,19 @@ phase being reached.
 
 | Phase | Deliverable | What exists today | Status | Gate above it |
 |---|---|---|---|---|
-| 4 Counterfactual scoring | Every declined path scored daily | `Platform::evaluate_alternatives`, `qip-twin` — no production caller (A3) | PLANNED, machinery present | Phase 2 gate |
+| 4 Counterfactual scoring | Every declined path scored daily | `Platform::evaluate_alternatives` called from LEARN for every refused order once its horizon passes, eight per cycle with the excess deferred and counted (`b9e2242`) | Ahead of phase; scored per cycle on synthetic or replayed data, never daily on real | Phase 2 gate |
 | 5 Ingestion and world model | Entities above confidence; events linked | World model, causal graph, entity resolution all TESTED (flow 2); no deep-web tier; no source discovery | Ahead of phase in part | Phase 2 gate |
 | 6 Prediction markets | Brier beating implied — **gate** | `qip-prediction` four modules; no venue, no Brier comparison | PLANNED | Phase 3 gate |
-| 7 Episodic and belief | Calibration within tolerance; sizing responds | `qip-agents/src/memory.rs`; `bayes.rs`; no belief stage in the cycle; `learn_from` uncalled | PLANNED; payload slots 3, 4 empty | Phase 3 gate |
+| 7 Episodic and belief | Calibration within tolerance; sizing responds | `qip-agents/src/memory.rs`; `bayes.rs`; the calibration is now a Brier score on `qip_belief_brier_score` (`04738ee`); no belief stage in the cycle, so sizing does not respond | PLANNED; payload slots 3, 4 empty | Phase 3 gate |
 | 8 Causal inference | Regime-conditional beating unconditional — **gate** | Causal graph real (`world.rs:41`); regime detection; no out-of-sample comparison | PLANNED; slot 5 empty | Phase 3 gate |
 | 9 Self-model and exploration | Value of information measured | Nothing (`grep -rln SelfModel` empty) | MISSING, deliberately | Phase 8 gate |
 | 10 Multi-strategy | 500+ strategies; netting ratio above 1.5; attribution exact | Netting at the cell; `qip_edge_netting_ratio` histogram; attribution exact centrally | Ahead of phase; ratio never measured under contention | Phase 3 gate |
-| 11 Arbitrage and market making | Path 2 above 93 percent; quoting net positive | `qip-arbitrage` reachable, unconstructed (D6); leg emitter at `6053935`; `qip-orderbook` | Ahead of phase in code, unwired | Phase 3 gate |
+| 11 Arbitrage and market making | Path 2 above 93 percent; quoting net positive | `qip-arbitrage` constructed by the cell and scanning its own books (`71f9465`); a cycle short a leg vetoed whole; `qip-edge-node` installs no desk; `qip-orderbook` | Ahead of phase in code, reached by no deployed process | Phase 3 gate |
 | 12 Wallet and treasury | Every holding reconciled; zero unauthorised attempts | Nothing beyond internal placement; refused by ADR 0021; ADR 0023 step 10 | MISSING, bounded | Separate owner decision |
 | 13 Web and mobile | Every operational question answerable; kill switch from mobile | Next.js portal and PWA, transitional (C3); Leptos not begun | CONTRADICTS §2.1 | Direction settled, execution unauthorised |
 | 14 Valuation plane | Fixed income and options live | Nothing | MISSING, deliberately | Phase 2 gate |
 | 15 Optimisation at cadence | Solver delta measured | Routing gate, classical baseline, QAOA adapter | Ahead of phase; no delta measured on real capital | Phase 3 gate |
-| 16 Multi-region | Three regions, mirrors live | Three cells in stage tfvars as pods; `execution-node` module unwired; ADR 0020 steps 3–5 | Ahead of phase in tfvars, behind in topology | Phase 3 gate, D5 |
+| 16 Multi-region | Three regions, mirrors live | `execution-node` wired per region from the root module (`808ca32`); `execution_nodes = {}` in every environment because no venue is recorded; the pods this row once counted are gone with the cluster | Wired, unplanned, empty | Phase 3 gate, a venue (D9) |
 | 17 Illiquid and private | Positions marked with method | Nothing | MISSING | Phase 14 |
 | 18 Adversarial and simulation | Simulator calibrated to fills | `qip-simulation-engine` resampling; no adaptive agents | PLANNED | Phase 3 gate |
 | 19 Market creation | Per class, on evidence | Nothing | MISSING, and the blueprint says last | Phases 7, 8, 14 |
@@ -279,50 +304,61 @@ blueprint says to stop and possibly not continue.
 
 ## 5. Owner decisions outstanding
 
-Each verified as still open at `de5d042`. Where a decision has quietly been
-taken by a commit, that is said.
+Each verified at `de5d042` and re-verified at `296e187`. Where a decision has
+been taken by a commit or by the owner's instruction — create the new
+infrastructure while devouring the old, which `808ca32` and `c924191` cite as
+their authority for the code and not for an apply — that is said.
 
 | # | Decision | What it blocks | Default if undecided | Verified how |
 |---|---|---|---|---|
-| D1 | **The egress path** — (a) central Cloud Run proxy, (b) co-located sidecar/systemd unit (the design note's recommendation, needing ADR 0024), (c) managed PSC/SWP (rejected as a substitute, adopted as a complement), (d) a TLS crate in `qip-transport` under ADR 0009's tier, which ADR 0002 names as its own reversal condition | B1, B2, B4, the Phase 1 exit, the Phase 2 gate, ADR 0020 steps 0, 2 and 5 | Nothing outbound runs; every deployed adapter stays inert; `egress.rs:1156` keeps asserting the proxy deploys nothing | No ADR 0024 exists under `docs/adr/`; `qip-transport/src/http.rs:366-367` still refuses `https` |
+| D1 | ~~**The egress path**~~ | — | — | **Taken, in code and recorded:** option (b), the co-located sidecar — `modules/egress-proxy` and the sidecar in `modules/cloudrun` (`c924191`), wired at `808ca32`, with a systemd unit on the execution node; ADR 0024 at `2b7e502`. `qip-transport/src/http.rs` still refuses `https` by name, which is the design |
 | D2 | **In-tree HMAC vs ADR 0009** (F3) — admit a vetted crate by ADR, or decline and amend ADR 0002's reversal clause | B9; §46.2's real signatures and PQC; every further use of `hmac_sha256` | The primitive stays; each new caller restates F3 in its diff | `qip-core/src/hash.rs:151,163` carry `sha256` and `hmac_sha256`; no crypto ADR after 0023 |
 | D3 | **The internal-crossing cap interval** (§27.1 "per instrument per interval") | B13 — a full cancellation can never cross today (F7) | The cap refuses every full cancellation; safe, and less than the blueprint asks | `grep -i interval` in `qip-contracts/src/intent.rs` returns nothing; `cell.rs:1000-1006` documents the refusal |
-| D4 | **Switch the GKE egress proxy on** — a third-party image, a Binary Authorization exemption or a mirrored-and-attested digest, two acceptance exemptions, a `deploy.yml` entry, a service-account map entry | B2, B4 | Off; `qip-egress` Service has no endpoints; four NetworkPolicies select nothing | `egress.yaml:820` and `:835` are `# kind: ServiceAccount` / `# kind: Deployment` in both copies |
-| D5 | **ADR 0020 steps 1–5, each by name** — gather step 1's evidence, run one warm service on both, stand up a shadow C3 node, cut over, retire the chart | B16, B17, Phase 16, Layer 6 leaving 0/6 | Nothing migrates; both topologies documented; `main.tf` keeps seventeen module blocks and none of the three new ones | ADR 0020 "What was open, and what still is": "every single step of it" |
-| D6 | **`qip-arbitrage` and `qip-normalization`** — construct, or record research-only and drop the edge | A5; Phase 11 (arbitrage); Phase 1 normalisation in the runtime path | Both stay UNVERIFIED at the matrix's ceiling, compiled into binaries that never call them | `qip-kernel/Cargo.toml:39` declares `qip-normalization`; `grep qip_normalization qip-kernel/src` is empty. `qip-edge/Cargo.toml:23` declares `qip-arbitrage`; the only use is `seam.rs:14`'s `LiquiditySource` import |
-| D7 | **K3 — what the application zone may reach**: the DOCX's "raise intents only, never a node, venue, QPU or key" or the diagram's wider "reaches Intelligence" | The semantics of `trust-zones` when it is wired (B17); the typed-intent API surface (§40.9) | The narrower reading, which is what is built | `blueprint-diagram-reconciliation.md` K3 unchanged; `qip-api` still composes reads only |
+| D4 | ~~**Switch the GKE egress proxy on**~~ | — | — | **Moot.** Both manifest copies were deleted at `7d79161` with the chart and the raw manifests. The image question survived in a different shape and was answered: the sidecar's digest is read from `infrastructure/egress/vendored-images.txt`, the same one the chart pinned (`c924191`). What replaces this row is B2 |
+| D5 | **ADR 0020 steps 1–5** | B17's validate half, Phase 16, Layer 6 leaving 0/7 | Nothing is applied | **Taken for the code, not for an apply.** `808ca32` reads the owner's instruction as approval to wire the blueprint runtime into the root module and remove the cluster's Terraform; steps 1 and 2 (evidence and a warm comparison) were skipped rather than passed, step 5 (retire the chart) happened in the tree. No plan has run — no `terraform` binary — and no apply is authorised. ADR 0020's text is unchanged and now describes a sequence the tree did not follow; amending it is the owner's |
+| D6 | **`qip-arbitrage` and `qip-normalization`** — partly taken | A5's normaliser half; Phase 1 normalisation in the runtime path | The normaliser stays a crate nothing constructs | **Arbitrage: taken by code** — the cell constructs the desk (`71f9465`, `Cell::with_arbitrage`), so the edge is live; the node installs none. **Normalisation: half taken** — the kernel's dead edge was dropped at `2a74706`, so it is no longer compiled into a binary that never calls it; `grep -rln qip-normalization backend/crates --include=Cargo.toml` names only the crate itself and the acceptance crate. Whether it is research-only or belongs in the runtime path is still unsaid |
+| D7 | **K3 — what the application zone may reach**: the DOCX's "raise intents only, never a node, venue, QPU or key" or the diagram's wider "reaches Intelligence" | The typed-intent API surface (§40.9) | The narrower reading, which is what is built — and since `827a40e` what is tested: `api_boundary.rs` refuses the edge or constructor that would widen it | `blueprint-diagram-reconciliation.md` K3 unchanged; `trust_zones` is now wired (`808ca32`) with the narrower reading in its default-deny |
 | D8 | ~~C4 — correct the observability rule file~~ | — | — | **Taken.** `232bc16` "Stop telling every agent the edge plane cannot emit" corrected `.claude/rules/domains/observability.md`; the reflog does not record who approved a rules-file edit, and that should be confirmed. What remains is A1 (the matrix row) |
-| D9 | **The market-data and chain-RPC hostnames and their licensing posture** | B3, B4 | No listener; the adapters stay inert; the blueprint's Phase 1 cannot start | `egress.yaml:394-499` declares five clusters, none a vendor; the design note §1.6 |
-| D10 | **ADR 0023 step 3 versus the Phase 2 gate** — the record says step 3 is "buildable today" and also lists "execution infrastructure built before the Phase 2 gate passes" under what would make it wrong; blueprint §51.1 says stop | B10, B11, B12, B14's Phase 3 slots, B15 — a quarter of (ii) | Ambiguous; the safe reading is the blueprint's, which idles the most-ready work in the backlog | ADR 0023 lines 82–84 against 194–198; unchanged since `e36dbc1` |
+| D9 | **The market-data and chain-RPC hostnames and their licensing posture** | B3, B2, B4; a venue for `execution_nodes` | No listener; the adapters stay inert; the blueprint's Phase 1 cannot start | `infrastructure/egress/envoy.yaml:392-492` declares five clusters — storage, BigQuery, Vertex, two IBM Quantum — none a vendor; `execution_nodes = {}` in every environment because a node needs a venue nobody has recorded |
+| D10 | **ADR 0023 step 3 versus the Phase 2 gate** | B12, B15 | — | **Overtaken in practice.** The feasibility gate (`95a4932`), the arbitrage desk (`71f9465`) and the attribution join (`7ef6063`) are execution-side work built before the Phase 2 gate passed, under the same instruction that wired the runtime. ADR 0023's text is unchanged and still lists that under what would make it wrong; reconciling the record with what was done is the owner's |
 | D11 | **Whether the matrix gains rows for §48 / rule 77** (OpenTofu, Cloud Build, Cloud Deploy, third-party source control) and what status they carry | A1's completeness | Unscored; a reader of §48 finds no row and assumes either aligned or ignored | No such row in the matrix's constraint or layer sections |
-| D12 | **A2's shell** — someone with a shell must run the full gate, since this plan's author could not | A2; every "not re-measured" cell above | Numbers stay stale by exactly the commits since `fef0c97` | §7 of this document |
+| D12 | ~~**A2's shell**~~ | — | — | **Taken by circumstance.** This refresh had a shell and ran the documentation suite; at `fca98cc` the checkout is clean and the three deployment suites are retargeted (`81dd1cd`). What is left of D12 is A2 itself — the run — and nothing blocks it |
 
 ---
 
 ## 6. Environmental blockers — what can and cannot be proven from here
 
-**No `terraform` binary.** The `cloudrun`, `execution-node` and `trust-zones`
-modules (commits `8c73610`, `6cde5d7`, `b6cca79`) and the network module's
-change (`2402d2e`) have never been run through `terraform fmt -check`,
+**No `terraform` binary** — `which terraform helm kubectl gcloud` finds none
+of the four in this environment. The `cloudrun`, `execution-node`,
+`trust-zones` and `egress-proxy` modules, the root module that now wires them
+(`808ca32`, `c924191`), the catalogue, the reduced network and secrets modules
+and every tfvars have never been run through `terraform fmt -check`,
 `terraform validate` or a plan. What that means for confidence, stated
 precisely: the HCL has been read by `infrastructure.rs`, which is a text
-scanner, and by people; it has not been read by the `hashicorp/google ~> 6.12`
+scanner, by a hand checker that confirmed every brace closes (`808ca32`'s own
+words), and by people; it has not been read by the `hashicorp/google ~> 6.12`
 provider's schema. A misspelt attribute, a wrong block type, or a variable
-validation that never compiles would pass every check that has run. The
-matrix's Layer 6 row already says "NOT RUN — terraform is not installed"; this
-plan scores the three modules IMPLEMENTED-UNVERIFIED for that reason and
-nothing about them may be promoted until a validate has been quoted.
+validation that never compiles would pass every check that has run. Every
+precondition the new modules assert — the catalogue refusing an undeclared
+zone or a missing digest, the bucket refusing a host outside the allowlist —
+is asserted and unexercised. This plan scores all of it IMPLEMENTED-UNVERIFIED
+and nothing about it may be promoted until a validate has been quoted.
 
-**No `helm` binary.** The chart under `infrastructure/helm/qip/` has never
-been rendered in this environment; the Argo CD Application removal (`9b51be2`)
-and the egress template's state are known from reading YAML, not from
-`helm template` output. Same confidence class as above.
+**No `helm` binary, and no longer a chart.** The blocker this paragraph
+recorded is moot: `infrastructure/helm/qip/` was deleted at `7d79161` without
+ever having been rendered here. For five commits the gate carried the
+consequence — `egress.rs`, `infrastructure.rs` and `manifest_wiring.rs` at
+`296e187` read the chart and the raw manifests (`egress.rs:46`, `:1096`) and
+could not pass — until `81dd1cd` retargeted all three at the runtime that
+exists, keeping every property they held (its message: infrastructure 59,
+egress 14, manifest_wiring 11 passed, 28 mutations fired).
 
-**No cluster reachable.** ADR 0020 step 1's evidence (a named cluster, a pod
-list, a scrape) cannot be gathered. Consequently: `workload_metrics_exist`
-cannot be flipped, the Secret Manager CSI chain stays never-exercised-live,
-`infra.yml down` stays never-run, and the proxy cannot be switched on even if
-D4 were decided today.
+**No project reachable.** Nothing can be planned, applied or observed.
+Consequently: `workload_metrics_exist` cannot be flipped, the secret-mount
+chain stays never-exercised-live, `infra.yml down` (now targeting execution
+nodes, `b85684f`) stays never-run, and the sidecar cannot be observed serving
+a request. ADR 0020 step 1's evidence can no longer be gathered at all, since
+the cluster it asked about is not in the tree.
 
 **No live-data deployment.** The Phase 1 exit (seven days streaming) and the
 Phase 2 gate are impossible to attempt from here, whatever code lands. One
@@ -330,51 +366,67 @@ real tick was fetched in-session (`gap-matrix.md` item 6) through a bridge that
 is not the platform's egress path; that is the SENSE half of one cycle and
 nothing more.
 
-**No shell in the session that wrote this document.** The documentation gate
-for this file was not run by its author (§7). The three in-flight agents have
-shells; whoever stages this file must run the gate and quote it.
+**A shell, this time.** The session that first wrote this document had no
+shell; the one that re-scored it ran the documentation suite and quotes it in
+the commit. It did not run the full gate: while it worked, the checkout
+carried other owners' uncommitted edits to three acceptance suites, the kernel
+and the risk lib, and by the time those landed (`88eb1e2`, `81dd1cd`) the
+session's remit — five documents — was what it had evidence for. At `fca98cc`
+nothing blocks A2 but the hour it takes.
 
 What *can* be proven from here: everything the Rust workspace asserts about
 itself — the paper layers, the authority boundaries, the flow links marked
-TESTED, the manifest-to-binary correspondence, the egress manifest's
-commented-out state — because those are tests over source and text, and they
-run without a cloud. That is the whole of the evidence base above §2.3's
-Layer 6, and it is why Layer 6 is the one row at zero.
+TESTED, the application layer's reach — because those are tests over source
+and text, and they run without a cloud. That is the whole of the evidence
+base above §2.3's Layer 6, and it is why Layer 6 is the one row at zero.
 
 ---
 
 ## 7. How far away are we — the honest paragraph, twice
 
-**Alignment-done.** Close, and mostly waiting on decisions rather than on
-work. Of the seven open alignment items, five are one-slice jobs an agent can
-start today — refreshing the two scorecards for the thirteen commits they have
-not seen, re-running the full gate and quoting it, wiring or deleting three
-controls that exist but nothing calls, one missing test, and a collector for
-metrics that now emit. The other two need the owner to say what becomes of two
-crates that are compiled and never constructed, and to approve one sentence in
-a rules file. The boundaries are enforced structurally and re-verified this
-session; the paper-trading line has three layers and a test on each. What
-alignment-done will *not* mean is that the cloud layer is proven: the three
-Terraform modules written this session have never been seen by a Terraform
-binary, no pod has ever been shown to run, and no scrape has ever been
-observed. Call it seven slices from aligned, with one layer that cannot be
+**Alignment-done.** Closer than at `de5d042`, and what is left is not code
+in the cycle. Of the seven alignment items, three are spent — the scorecards
+are re-scored at `296e187`, the three controls nothing called are called, the
+risk rule has its probe — and two more were found and wired on the way. What
+remains: re-measuring the full gate, unblocked at `fca98cc` and not run in
+this series; a collector for emitters that have none, which needs an attested
+sidecar digest nobody has pinned; and the owner saying what becomes of a
+crate nothing constructs and correcting two sentences in one rules file that
+still say LEARN's two callers do not exist. The boundaries are
+enforced structurally, the application layer's reach is a test rather than a
+reading, and the paper-trading line has three layers and a test on each. What
+alignment-done will *not* mean is that the cloud layer is proven — and that
+sentence has changed shape: the runtime in the tree is now the blueprint's,
+wired into the root module under the owner's instruction and recorded in ADR
+0024, and it has never been seen by a Terraform binary, never planned, never
+applied; no process has ever been shown to run on the old runtime or the new.
+Call it two or three slices from aligned, with one layer that cannot be
 scored above zero from this environment.
 
 **Blueprint-done.** Far, by the blueprint's own reckoning, and the distance is
 not mainly code. The tree holds capability from Phase 1 to roughly Phase 15 —
-netting, a cost router, a quantum adapter with its classical baseline, three
-regional cells — and has passed none of the four gates, because every gate is
-a question about real data or a real venue and the platform has never streamed
-real data for a day. The first thing between here and the first gate is an
-egress path that has never been switched on, which is one owner decision and
-two slices; after that, seven days of streaming nobody can run from this
+netting, a feasibility gate, an arbitrage desk, cumulative trials and a
+holdout band, a cost router, a quantum adapter with its classical baseline, a
+per-region node module — and has passed none of the four gates, because every
+gate is a question about real data or a real venue and the platform has never
+streamed real data for a day. Per gate, at `296e187`: Phase 2 waits on real
+data and a durable trial book, the correction itself now being in the tree;
+Phase 3 cannot pass while paper trading is absolute, and now at least has a
+band to be inside of; Phase 6 has no Brier comparison against any venue's
+implied probability; Phase 8 has no out-of-sample comparison against an
+unconditional baseline. The first thing between here and the first gate is
+still an egress path — no longer undecided, now a sidecar written in Terraform
+that no binary here can plan, pointed at no vendor, in a project nothing can
+reach; after that, seven days of streaming nobody can run from this
 environment; after that, the Phase 2 gate, which the blueprint calls the most
 important sentence in the document and expects to fail more often than pass.
-Phases 0 to 3 are roughly twenty-five slices, a third of them blocked on five
-owner decisions. Phases 4 to 19 are well over a hundred more, behind gates
-that may say stop. And the two direction decisions already taken — no
-Kubernetes, Leptos — have every step still unauthorised. The honest unit is
-not weeks; it is gates, and zero of four have passed.
+Phases 0 to 3 are roughly fourteen slices now, six unblocked; the rest wait on
+a Terraform binary, a vendor host, an ADR and a decision on the crossing
+interval. Phases 4 to 19 are well over a hundred more, behind gates that may
+say stop. Of the two direction decisions — no Kubernetes, Leptos — the first
+has been taken for the code and for nothing that runs, and the second has not
+begun. The honest unit is not weeks; it is gates, and zero of four have
+passed.
 
 ---
 
