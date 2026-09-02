@@ -272,7 +272,11 @@ terraform -chdir="${TF_DIR}" init -backend-config="bucket=${STATE_BUCKET}"
 # there the refusal is the right one, so the file is passed only when it
 # exists rather than stubbed.
 tf_var_files=(-var-file="${TFVARS}")
-readonly IMAGES_TFVARS="$(dirname "${TFVARS}")/images.tfvars"
+# Declared and assigned separately: `readonly x="$(cmd)"` takes the exit
+# status of `readonly`, not of the substitution, so a failing `dirname`
+# would leave a plausible-looking path and carry on under `set -e`.
+IMAGES_TFVARS="$(dirname "${TFVARS}")/images.tfvars"
+readonly IMAGES_TFVARS
 if [[ -f "${IMAGES_TFVARS}" ]]; then
   tf_var_files+=(-var-file="${IMAGES_TFVARS}")
   echo "[5/7] applying with the digests in ${IMAGES_TFVARS}"
