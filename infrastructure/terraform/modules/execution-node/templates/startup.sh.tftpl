@@ -171,6 +171,7 @@ QIP_STORAGE_ROOT=/var/lib/qip/journal
 QIP_CAPITAL_ENVELOPE_KEY_FILE=$RUN_DIR/capital-envelope-key
 QIP_HALT_FLAG_PATH=$HALT_DIR/engaged
 QIP_ARBITRAGE_STRATEGY=arbitrage-desk
+QIP_VENUE_FEED=simulated
 QIP_EXECUTION_NODE_SHADOW=${shadow_mode ? "1" : "0"}
 EOF
 chmod 0444 "$CONF_DIR/node.env"
@@ -216,6 +217,15 @@ metrics:
 OPS_AGENT_EOF
 chmod 0644 "$OPS_AGENT_CONF"
 
+# `QIP_VENUE_FEED=simulated` is what makes the node run passes at all. It is
+# the only value the binary accepts: the feed is the in-process venue's own
+# resting depth, read through the simulator's type and no other, and any
+# other value stops the process naming ADR 0003. It is written here rather
+# than defaulted in the binary so that a node running passes is a node whose
+# configuration says so, and a node deployed without the line is one that
+# polls its halt, ships its journal, exchanges with the centre, and never
+# decides — which it announces at start-up.
+#
 # `QIP_ARBITRAGE_STRATEGY` names the strategy whose signed grant funds the
 # cell's arbitrage desk. It is a name, not a control: the desk is built only
 # once the centre has shipped a cycle whitelist with conversions in it *and*

@@ -32,6 +32,13 @@ qip-execution-engine.workspace = true
 # the node names — the peer address, the retry ladder, the socket limits — are
 # configuration this binary reads from the environment.
 qip-transport.workspace = true
+# The feed seam. The simulated feed hands the cell a decoder for the venue's
+# depth and tracks a book for each instrument it publishes, so the node names
+# the decoder trait and the book state the cell already holds through
+# `qip-edge`. Both are workspace crates the edge depends on already, not a
+# third external dependency.
+qip-protocols.workspace = true
+qip-orderbook.workspace = true
 
 [dev-dependencies]
 # The mesh tests frame a capital grant the way the central plane does, so the
@@ -40,7 +47,6 @@ qip-transport.workspace = true
 # the event envelope directly.
 qip-events.workspace = true
 qip-strategy.workspace = true
-qip-orderbook.workspace = true
 qip-financial.workspace = true
 
 [lints]

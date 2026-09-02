@@ -43,7 +43,7 @@ use qip_brokers::connection::ConnectionPhase;
 use qip_brokers::credential::{
     RequirementKind, VenueCredential, requirements_of_kind, standard_requirements,
 };
-use qip_brokers::exchange::{ExchangeSettings, SimulatedExchange};
+use qip_brokers::exchange::{ExchangeSettings, SimulatedDepth, SimulatedExchange};
 use qip_brokers::rest::{RestOrderEntryAdapter, RestOrderStats};
 use qip_contracts::message::BookSide;
 use qip_contracts::venue::VenueId;
@@ -178,6 +178,17 @@ impl SimulatedGateway {
     /// liquidity it happened to seed cannot tell the two apart.
     pub fn resting_count(&self) -> usize {
         self.exchange.resting_count()
+    }
+
+    /// The venue's resting depth for every instrument it lists, from the
+    /// venue itself.
+    ///
+    /// What `crate::feed` publishes to the cell each pass. It exists on the
+    /// simulated gateway alone: a real venue publishes its own feed, and a
+    /// method here that returned depth for one would be this process
+    /// inventing a market.
+    pub fn quotes(&self) -> Vec<SimulatedDepth> {
+        self.exchange.quotes()
     }
 
     fn ensure_listed(
@@ -589,6 +600,19 @@ impl NodeGateway {
         match self {
             Self::Simulated(gateway) => gateway.drain_drop_copies(),
             Self::Live(gateway) => gateway.drain_drop_copies(),
+        }
+    }
+
+    /// The simulated gateway, when that is what was chosen.
+    ///
+    /// The pass loop takes the simulated gateway by its own type, so this is
+    /// the one place the choice is narrowed — and `None` for the live
+    /// gateway is what keeps the simulated feed from ever pricing a real
+    /// order.
+    pub fn simulated_mut(&mut self) -> Option<&mut SimulatedGateway> {
+        match self {
+            Self::Simulated(gateway) => Some(gateway),
+            Self::Live(_) => None,
         }
     }
 

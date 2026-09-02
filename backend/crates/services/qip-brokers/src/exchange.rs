@@ -46,10 +46,25 @@ use qip_execution_engine::order::{Fill, Order, OrderType, Side};
 use qip_financial::asset_class::InstrumentType;
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::Provenance;
+pub use qip_market::book::BookLevel;
 use qip_market::book::OrderBook;
 use qip_market::quote::Quote;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+
+/// One listed instrument's depth, as the simulated venue publishes it.
+///
+/// The venue's own type, so a consumer that wants the simulator's quotes has
+/// to hold the simulator's answer: there is no way to build one of these from
+/// a price somebody else made up.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SimulatedDepth {
+    pub object_id: ObjectId,
+    /// Best first, aggregated by price.
+    pub bids: Vec<BookLevel>,
+    /// Best first, aggregated by price.
+    pub asks: Vec<BookLevel>,
+}
 
 /// A fill with everything an account needs in order to book it.
 ///
@@ -311,6 +326,31 @@ impl SimulatedExchange {
 
     pub fn resting_count(&self) -> usize {
         self.engine.resting_count()
+    }
+
+    /// Every listed instrument's resting depth, as the venue itself holds it.
+    ///
+    /// This is the simulated venue's quote feed: what a cell placing against
+    /// this book would see if the venue published its depth. It is read from
+    /// the matching engine rather than assembled from anything the caller
+    /// said, so a book the cell prices off is the book the venue will match
+    /// against — the one property a paper feed has to hold for a fill to
+    /// mean anything. Listings are walked in id order so two reads of the
+    /// same venue publish in the same order.
+    ///
+    /// An instrument that is listed and has nothing resting is published with
+    /// two empty sides rather than omitted: the cell keeps a book for it and
+    /// a book the feed stopped mentioning would keep serving the last level
+    /// it ever saw.
+    pub fn quotes(&self) -> Vec<SimulatedDepth> {
+        self.listings
+            .values()
+            .map(|listing| SimulatedDepth {
+                object_id: listing.object_id.clone(),
+                bids: self.engine.depth(&listing.object_id, Side::Buy),
+                asks: self.engine.depth(&listing.object_id, Side::Sell),
+            })
+            .collect()
     }
 
     pub fn ledger(&self) -> &AccountLedger {
