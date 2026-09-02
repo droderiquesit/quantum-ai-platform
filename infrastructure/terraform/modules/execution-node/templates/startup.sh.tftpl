@@ -203,8 +203,10 @@ chmod 0644 "$OPS_AGENT_CONF"
 # `qip_edge::Cell` has no constructor taking a ceiling other than paper trading
 # — so there is no value of that variable which could raise it, and setting one
 # here would put a fourth apparent decision point on a boundary that is stronger
-# with three. `edge-cell.yaml` sets it as a governance marker because an
-# acceptance test reads every workload manifest for it; nothing reads this file.
+# with three. The retired chart's edge-cell Deployment set it as a governance
+# marker because an acceptance test read every workload manifest for it; that
+# Deployment is gone (ADR 0024), this node is what replaced it, and the suite
+# now asserts the variable is absent here rather than present.
 #
 # `QIP_EXECUTION_NODE_SHADOW` is a marker and not a control. The binary does not
 # read it today. What actually prevents this node from taking a venue session is
