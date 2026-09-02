@@ -315,3 +315,59 @@ fn a_short_signing_secret_is_refused() {
     assert!(SigningKey::from_secret("weak", &[1u8; 16]).is_err());
     assert!(SigningKey::from_secret("", &[1u8; 32]).is_err());
 }
+
+// --- every approval-chain rule, both halves ---------------------------------
+//
+// | Rule | Pass fixture | Veto fixture |
+// |---|---|---|
+// | approval subject matches the request | `capital_is_granted_only_through_the_approval_chain` | `an_approval_for_a_different_strategy_cannot_be_replayed` |
+// | approval carries a reviewable rationale | `capital_is_granted_only_through_the_approval_chain` | `an_approval_whose_rationale_was_stripped_after_construction_is_refused` |
+// | approval names an approver | `capital_is_granted_only_through_the_approval_chain` | `an_approval_whose_approver_was_blanked_after_construction_is_refused` |
+// | approver is not the requester | `capital_is_granted_only_through_the_approval_chain` | `a_requester_cannot_approve_their_own_request` |
+// | second approver is a different person | `a_grant_above_the_threshold_needs_two_different_people` | `the_same_person_cannot_be_both_approvers` |
+// | second approver is not the requester | `a_grant_above_the_threshold_needs_two_different_people` | `a_second_approver_who_requested_the_capital_does_not_count` |
+// | dual approval above the threshold | `a_grant_above_the_threshold_needs_two_different_people` | the same test |
+// | every approver presents a credential | `capital_is_granted_only_through_the_approval_chain` | `a_named_approver_with_no_credential_at_all_is_refused` |
+// | every credential is fresh | `capital_is_granted_only_through_the_approval_chain` | `a_stale_credential_is_refused` |
+// | readmission verifies the signature | `a_signed_envelope_can_be_readmitted_after_a_restart` | `an_envelope_built_by_hand_cannot_become_approved_capital`, `editing_a_signed_envelopes_limits_invalidates_its_signature` |
+
+#[test]
+fn an_approval_whose_rationale_was_stripped_after_construction_is_refused() -> Result<()> {
+    // `Approval::new` enforces the rationale, but the fields are public and
+    // the type deserialises, so a value can reach the chain without ever
+    // having passed the constructor. The chain re-checks rather than trusts.
+    let mut chain = chain()?;
+    let credentials = [credential("k.almeida", Duration::from_mins(2))?];
+    let mut approval = approval(dec!("500000"), "k.almeida")?;
+    chain.grant(&request(dec!("500000")), &approval, &credentials, now())?;
+    let before = chain.grants().len();
+
+    approval.rationale = "ok".to_string();
+    let refused = chain
+        .grant(&request(dec!("500000")), &approval, &credentials, now())
+        .expect_err("an approval with no rationale granted capital");
+    assert_eq!(refused.code(), "denied");
+    assert!(refused.message().contains("rationale"), "{refused}");
+    assert_eq!(chain.grants().len(), before);
+    assert_eq!(chain.refusals().len(), 1);
+    Ok(())
+}
+
+#[test]
+fn an_approval_whose_approver_was_blanked_after_construction_is_refused() -> Result<()> {
+    let mut chain = chain()?;
+    let credentials = [credential("k.almeida", Duration::from_mins(2))?];
+    let mut approval = approval(dec!("500000"), "k.almeida")?;
+    chain.grant(&request(dec!("500000")), &approval, &credentials, now())?;
+
+    approval.approver = "  ".to_string();
+    let refused = chain
+        .grant(&request(dec!("500000")), &approval, &credentials, now())
+        .expect_err("an approval naming nobody granted capital");
+    assert_eq!(refused.code(), "denied");
+    // Matched on the rule's own words: a blank name also has no credential,
+    // and that refusal mentions "approver" too, so `contains("approver")`
+    // held with the rule under test deleted.
+    assert!(refused.message().contains("names no approver"), "{refused}");
+    Ok(())
+}

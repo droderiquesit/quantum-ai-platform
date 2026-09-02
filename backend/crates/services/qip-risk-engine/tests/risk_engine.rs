@@ -717,3 +717,91 @@ fn every_observation_is_recorded() -> Result<()> {
     assert_eq!(monitor.observations().len(), 4);
     Ok(())
 }
+
+// --- the pre-trade and monitor gate rules, both halves ----------------------
+//
+// | Rule | Pass fixture | Veto fixture |
+// |---|---|---|
+// | order quantity non-zero | `an_order_within_the_limits_is_approved` | `an_order_for_zero_quantity_is_refused` |
+// | order has a usable reference price | `an_order_within_the_limits_is_approved` | `an_order_with_no_usable_reference_price_is_refused` |
+// | order names a scope | `an_order_within_the_limits_is_approved` | `an_order_with_no_scope_is_refused` |
+// | post-trade limits | `an_order_within_the_limits_is_approved` | `the_check_runs_against_the_state_the_order_would_produce`, `an_oversized_single_order_is_refused` |
+// | reduction is opt-in | `reduction_is_opt_in_and_finds_a_permissible_size` | `a_refused_order_permits_nothing_by_default` |
+// | drawdown halt | `a_clean_book_continues` | `a_drawdown_past_the_threshold_halts_everything_immediately` |
+// | daily-loss halt | `a_clean_book_continues` | `a_single_day_loss_past_the_threshold_halts_everything` |
+// | breach count before a scoped halt | `a_first_limit_breach_goes_reduce_only_rather_than_halting` | `a_persistent_breach_escalates_to_a_scoped_halt` |
+// | breach grace period | `a_breach_that_outlives_the_grace_period_halts_before_the_third_reading` (its first half) | the same test's second half |
+// | live breach halts at once | `a_first_limit_breach_goes_reduce_only_rather_than_halting` | `the_same_breach_halts_immediately_at_a_live_autonomy_level` |
+
+#[test]
+fn an_order_with_no_usable_reference_price_is_refused() -> Result<()> {
+    let checker = PreTradeChecker::new(limits());
+    let current = state("10000000", "0");
+    // Premise: the same order at a real price is approved, so the price rule
+    // is the only thing that can refuse it below.
+    assert!(
+        checker
+            .check(&order("AAA", "1000", "100"), &current, now())?
+            .is_approved()
+    );
+
+    for price in ["0", "-100"] {
+        let mut unpriced = order("AAA", "1000", "100");
+        unpriced.reference_price = Decimal::parse(price).unwrap();
+        let error = checker
+            .check(&unpriced, &current, now())
+            .expect_err("an order with no usable price was checked");
+        assert!(
+            error.message().contains("reference price"),
+            "{}",
+            error.message()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_breach_that_outlives_the_grace_period_halts_before_the_third_reading() -> Result<()> {
+    // Two rules escalate a breach to a scoped halt: three consecutive
+    // readings, or one that has persisted past the grace period. The count
+    // rule has its own test; this one isolates the clock, by reading twice
+    // — one short of the count — first inside the grace period and then
+    // beyond it.
+    let policy = MonitorPolicy::default();
+    assert_eq!(
+        policy.breaches_before_halt, 3,
+        "premise: two readings are under the count"
+    );
+    let breached = state("10000000", "20000000");
+
+    // Inside the grace period: still reduce-only on the second reading.
+    let mut inside = RiskMonitor::new(limits(), policy);
+    inside.observe(&breached, "momentum", AutonomyLevel::PaperTrading, now());
+    let second = inside.observe(
+        &breached,
+        "momentum",
+        AutonomyLevel::PaperTrading,
+        now().saturating_add(Duration::from_hours(1)),
+    );
+    assert!(
+        matches!(second, MonitorAction::ReduceOnly { .. }),
+        "{second:?}"
+    );
+
+    // Beyond it: the second reading halts the scope, and the count is still
+    // two, so it was the clock that fired.
+    let mut beyond = RiskMonitor::new(limits(), policy);
+    beyond.observe(&breached, "momentum", AutonomyLevel::PaperTrading, now());
+    let second = beyond.observe(
+        &breached,
+        "momentum",
+        AutonomyLevel::PaperTrading,
+        now().saturating_add(Duration::from_hours(5)),
+    );
+    assert_eq!(beyond.consecutive_breaches(), 2);
+    match second {
+        MonitorAction::HaltScope { scope, .. } => assert_eq!(scope, "momentum"),
+        other => panic!("a breach five hours old was not halted: {other:?}"),
+    }
+    Ok(())
+}

@@ -223,3 +223,145 @@ fn the_incremental_counters_agree_with_a_full_recount() {
         .sum();
     assert_eq!(book.axis_exposures()["sector"]["technology"], technology);
 }
+
+// --- the strategy-level gate, checked before netting ------------------------
+//
+// | Rule | Pass fixture | Veto fixture |
+// |---|---|---|
+// | strategy budget (`admit_contribution`) | `a_contribution_inside_the_strategy_budget_is_admitted` | `a_contribution_beyond_the_strategy_budget_is_dropped_whole` |
+// | a budget of nothing admits nothing | `a_contribution_inside_the_strategy_budget_is_admitted` | `a_budget_that_admits_nothing_refuses_even_a_flat_strategy` |
+// | a contribution is non-zero | `a_contribution_inside_the_strategy_budget_is_admitted` | `a_contribution_of_nothing_is_not_a_contribution` |
+// | a fill names its strategy, instrument and a non-zero notional | `a_well_formed_fill_is_charged` | `a_fill_the_aggregate_cannot_charge_is_refused` |
+// | a mark carries a comparable drawdown | `a_mark_inside_the_unit_interval_is_recorded` | `a_mark_with_a_drawdown_the_halt_cannot_compare_is_refused` |
+// | equity is non-negative at open | `a_well_formed_fill_is_charged` | `an_aggregate_cannot_open_over_negative_equity` |
+
+#[test]
+fn a_contribution_inside_the_strategy_budget_is_admitted() {
+    let book = book(2);
+    // Premise: the strategy holds something, so the budget has a figure to
+    // compare, and the same rule binds when the budget is tightened — which
+    // is the proof it read that figure.
+    assert_eq!(book.strategy_gross("strategy-0000"), dec!("40000"));
+    assert!(
+        book.admit_contribution("strategy-0000", dec!("10000"), dec!("45000"))
+            .is_err()
+    );
+
+    book.admit_contribution("strategy-0000", dec!("10000"), dec!("60000"))
+        .expect("a contribution inside the budget");
+}
+
+#[test]
+fn a_contribution_beyond_the_strategy_budget_is_dropped_whole() {
+    let book = book(2);
+    // Premise: the same rule admits the same contribution under a wider
+    // budget, so it is not refusing everything.
+    book.admit_contribution("strategy-0000", dec!("10000"), dec!("60000"))
+        .expect("premise: a wider budget admits it");
+
+    let refused = book
+        .admit_contribution("strategy-0000", dec!("10000"), dec!("45000"))
+        .expect_err("a contribution past the budget was admitted");
+    assert_eq!(refused.code(), "denied");
+    assert!(
+        refused.message().contains("strategy-0000") && refused.message().contains("dropped"),
+        "{refused}"
+    );
+    // A sale is gross too: a strategy cannot get under its budget by
+    // contributing the other way.
+    assert!(
+        book.admit_contribution("strategy-0000", dec!("-10000"), dec!("45000"))
+            .is_err()
+    );
+}
+
+#[test]
+fn a_budget_that_admits_nothing_refuses_even_a_flat_strategy() {
+    let book = book(1);
+    // Premise: the strategy is flat, so only the ceiling can refuse it.
+    assert_eq!(book.strategy_gross("never-traded"), Decimal::ZERO);
+    book.admit_contribution("never-traded", dec!("1"), dec!("1"))
+        .expect("premise: a positive budget admits a flat strategy");
+    for budget in [Decimal::ZERO, dec!("-1")] {
+        let refused = book
+            .admit_contribution("never-traded", dec!("1"), budget)
+            .expect_err("a budget of nothing admitted a contribution");
+        assert_eq!(refused.code(), "denied");
+    }
+}
+
+#[test]
+fn a_contribution_of_nothing_is_not_a_contribution() {
+    let book = book(1);
+    // Premise: a real contribution under the same budget is admitted, so
+    // the refusal below is the zero rule and not the ceiling.
+    book.admit_contribution("strategy-0000", dec!("1"), dec!("100000"))
+        .expect("premise");
+    let refused = book
+        .admit_contribution("strategy-0000", Decimal::ZERO, dec!("100000"))
+        .expect_err("a contribution of nothing passed the gate");
+    assert_eq!(refused.code(), "invalid");
+}
+
+#[test]
+fn a_well_formed_fill_is_charged() {
+    let mut book = RiskAggregates::new(dec!("100000"), dec!("100000")).expect("open");
+    book.apply_fill("alpha", "AAA", &axes("AAA"), dec!("5000"))
+        .expect("a well-formed fill");
+    assert_eq!(book.fills(), 1);
+    assert_eq!(book.strategy_gross("alpha"), dec!("5000"));
+}
+
+#[test]
+fn a_fill_the_aggregate_cannot_charge_is_refused() {
+    let mut book = RiskAggregates::new(dec!("100000"), dec!("100000")).expect("open");
+    // Premise: the same fill with every field present is accepted.
+    book.apply_fill("alpha", "AAA", &axes("AAA"), dec!("5000"))
+        .expect("premise");
+    let before = book.clone();
+
+    for (strategy, instrument, notional) in [
+        ("", "AAA", dec!("5000")),
+        ("alpha", " ", dec!("5000")),
+        ("alpha", "AAA", Decimal::ZERO),
+    ] {
+        let refused = book
+            .apply_fill(strategy, instrument, &axes("AAA"), notional)
+            .expect_err("a fill with a missing field was charged");
+        assert_eq!(refused.code(), "invalid");
+    }
+    assert_eq!(book, before, "a refused fill changed a counter");
+}
+
+#[test]
+fn a_mark_inside_the_unit_interval_is_recorded() {
+    let mut book = RiskAggregates::new(dec!("100000"), dec!("100000")).expect("open");
+    book.mark(dec!("90000"), 0.1)
+        .expect("a comparable drawdown");
+    assert_eq!(book.equity(), dec!("90000"));
+    assert!((book.drawdown() - 0.1).abs() < 1e-12);
+}
+
+#[test]
+fn a_mark_with_a_drawdown_the_halt_cannot_compare_is_refused() {
+    let mut book = RiskAggregates::new(dec!("100000"), dec!("100000")).expect("open");
+    book.mark(dec!("90000"), 0.1)
+        .expect("premise: a comparable mark");
+    for drawdown in [f64::NAN, f64::INFINITY, -0.1, 1.5] {
+        assert!(
+            book.mark(dec!("90000"), drawdown).is_err(),
+            "a drawdown of {drawdown} was recorded"
+        );
+    }
+    assert!(book.mark(dec!("-1"), 0.1).is_err());
+    assert!(
+        (book.drawdown() - 0.1).abs() < 1e-12,
+        "a refused mark moved the figure"
+    );
+}
+
+#[test]
+fn an_aggregate_cannot_open_over_negative_equity() {
+    assert!(RiskAggregates::new(Decimal::ZERO, Decimal::ZERO).is_ok());
+    assert!(RiskAggregates::new(dec!("-1"), Decimal::ZERO).is_err());
+}

@@ -210,15 +210,22 @@ impl RiskAggregates {
     /// intent at all, so this is asked per contributor and refuses the whole
     /// contribution rather than trimming it: a trimmed contribution is a
     /// trade nobody reviewed. It reads one strategy's counter, never the set.
+    ///
+    /// A contribution of nothing is refused as invalid rather than admitted:
+    /// admitting it would let a caller "pass" the gate with a zero and then
+    /// send something else. There is deliberately no separate rule for a
+    /// non-positive budget — the ceiling refuses every non-zero contribution
+    /// against one, and a second rule that could only fire on a zero
+    /// contribution would be a control that cannot fire.
     pub fn admit_contribution(
         &self,
         strategy: &str,
         additional_notional: Decimal,
         budget: Decimal,
     ) -> Result<()> {
-        if !budget.is_positive() {
-            return Err(Error::denied(format!(
-                "{strategy} has a budget of {budget}, which admits nothing"
+        if additional_notional.is_zero() {
+            return Err(Error::invalid(format!(
+                "{strategy} offered a contribution of nothing; there is nothing to admit"
             )));
         }
         let held = self.strategy_gross(strategy);

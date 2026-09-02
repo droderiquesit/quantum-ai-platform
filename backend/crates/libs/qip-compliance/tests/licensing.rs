@@ -184,3 +184,31 @@ fn asking_whether_a_use_is_permitted_does_not_itself_grant_it() -> Result<()> {
     );
     Ok(())
 }
+
+// The pass half of the trading-usage gate. Every other test here refuses;
+// a gate that refused everything would pass them all, and this is the one
+// that proves data licensed for trading can actually reach a decision.
+#[test]
+fn data_licensed_for_trading_reaches_a_trading_decision() -> Result<()> {
+    let mut registry = EntitlementRegistry::new();
+    let expiry = now().saturating_add(Duration::from_days(30));
+    registry.grant("vendor.prices", Usage::Trade, expiry, now())?;
+    // Premise: the licence is recorded and the rule reads it — the same
+    // dataset is refused for a usage the licence does not cover.
+    assert!(registry.permits("vendor.prices", Usage::Trade, now()));
+    let signal = LicensedData::from_dataset("vendor.prices", 10_150_i64);
+    assert!(
+        signal
+            .open(&mut registry, Usage::Redistribute, now())
+            .is_err()
+    );
+
+    assert_eq!(*signal.open(&mut registry, Usage::Trade, now())?, 10_150);
+    let granted = registry
+        .checks()
+        .iter()
+        .filter(|c| c.granted && c.usage == Usage::Trade)
+        .count();
+    assert_eq!(granted, 1, "the grant was not recorded");
+    Ok(())
+}
