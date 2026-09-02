@@ -61,3 +61,11 @@ pub const CENTRAL_ATTRIBUTION_FAILURES: &str = "qip_central_attribution_failures
 /// sat in; a transfer that kept waiting for finality on a block that no
 /// longer exists is value the destination could still credit against nothing.
 pub const BRIDGE_TRANSFERS_FAILED: &str = "qip_bridge_transfers_failed_total";
+
+/// Instruments in the assembled universe that are unfit to drive a capital
+/// decision — a licensing class that permits no production decision, a
+/// non-positive price, incoherent risk characteristics, or data quality
+/// below the floor. A gauge written once at assembly: the universe does not
+/// change under a running platform, and a degraded one should be visible
+/// before it produces a bad trade rather than after.
+pub const UNIVERSE_NOT_DECISION_GRADE: &str = "qip_universe_not_decision_grade";

@@ -262,6 +262,10 @@ pub struct Platform {
     /// is one answer to "what did this cycle cost" instead of a ledger and a
     /// separate assertion that can disagree with it.
     reason_routing: Option<ReasonRouting>,
+    /// Instruments in the assembled universe that may not drive a capital
+    /// decision, with the reason, in object-id order. Empty is the only
+    /// state a production universe should show.
+    universe_not_decision_grade: Vec<(String, String)>,
     /// The asset class of every instrument this platform was assembled to
     /// trade, taken from the universe at assembly.
     ///
@@ -1062,6 +1066,17 @@ impl Platform {
             .iter()
             .map(|object| (object.object_id.as_str().to_string(), object.asset_class))
             .collect();
+        // What in this universe may not drive a decision, and why, taken here
+        // for the same reason: `Universe::not_decision_grade` said the kernel
+        // logged it at start-up, and nothing did, so a universe assembled
+        // entirely from research-only or synthetic instruments looked exactly
+        // like one fit to trade. Kept as (object, reason) pairs for the
+        // overview and recorded as a gauge once the registry exists below.
+        let not_decision_grade: Vec<(String, String)> = universe
+            .not_decision_grade()
+            .into_iter()
+            .map(|(object, reason)| (object.object_id.as_str().to_string(), reason))
+            .collect();
 
         let desk = Arc::new(Desk::new(
             MarketView {
@@ -1185,6 +1200,7 @@ impl Platform {
             cost_engine: CostEngine::new(DataCostModel::new()),
             cost_router: Router::default(),
             reason_routing: None,
+            universe_not_decision_grade: not_decision_grade,
             asset_classes,
             cycle_ledger: None,
             compute_spend: Decimal::ZERO,
@@ -1233,7 +1249,22 @@ impl Platform {
             proposals_made: 0,
         };
         platform.describe_metrics();
+        // Written once, at assembly, because the universe does not change
+        // under a running platform. A count and not a per-instrument series:
+        // the instrument list is unbounded and the reasons are for the
+        // overview, which reads them from the platform.
+        platform.telemetry.metrics.gauge(
+            series::UNIVERSE_NOT_DECISION_GRADE,
+            labels([]),
+            platform.universe_not_decision_grade.len() as f64,
+        );
         Ok(platform)
+    }
+
+    /// Instruments in the assembled universe unfit to drive a capital
+    /// decision, each with the reason `Universe::not_decision_grade` gave.
+    pub fn universe_not_decision_grade(&self) -> &[(String, String)] {
+        &self.universe_not_decision_grade
     }
 
     /// Say what each metric the loop publishes means, once, here.
@@ -1403,6 +1434,10 @@ impl Platform {
         metrics.describe(
             series::BRIDGE_TRANSFERS_FAILED,
             "bridge transfers failed on the platform's own evidence, by failure",
+        );
+        metrics.describe(
+            series::UNIVERSE_NOT_DECISION_GRADE,
+            "instruments in the assembled universe unfit to drive a capital decision",
         );
     }
 
