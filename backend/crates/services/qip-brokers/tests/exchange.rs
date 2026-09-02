@@ -163,6 +163,86 @@ fn a_partial_fill_and_its_residual_are_the_original_quantity() -> Result<()> {
 }
 
 #[test]
+fn venue_flow_fills_a_resting_client_order_and_the_order_record_and_the_fill_stream_agree()
+-> Result<()> {
+    // A client order resting below the offers, hit by somebody else's
+    // flow. The order record the client would poll and the fill stream the
+    // client's books are built from must both show the trade, at the
+    // resting price, as a buy — and the flow's own remainder must not stay
+    // in the book as liquidity nobody seeded.
+    let mut exchange = live_venue(ExchangeSettings::orderly(), 11)?;
+    let ticket = exchange.ready(start())?;
+    let order = order_at(
+        "maker",
+        Side::Buy,
+        50,
+        OrderType::Limit {
+            price: dec!("99.99"),
+        },
+    );
+    let ack = exchange.submit_order(&ticket, &order, start())?;
+    assert_eq!(
+        ack.remaining,
+        Decimal::from_int(50),
+        "the premise is an order that rests in full"
+    );
+    // Drained so what follows is the flow's fills alone.
+    assert!(exchange.drain_bookable_fills().is_empty());
+    let resting_before = exchange.resting_count();
+
+    let taken = exchange.seed_aggressor(
+        &object(),
+        Side::Sell,
+        dec!("99.99"),
+        Decimal::from_int(130),
+        start(),
+    )?;
+    // The client's fifty at 99.99 is all the flow can take at its price:
+    // the seeded bids are all below it, so the other eighty go nowhere.
+    assert_eq!(
+        taken,
+        Decimal::from_int(50),
+        "the flow did not take the resting order"
+    );
+    assert_eq!(
+        exchange.resting_count(),
+        resting_before - 1,
+        "the flow's remainder rested, or the maker was not consumed"
+    );
+
+    let record = exchange.query_order(&order.order_id)?;
+    assert_eq!(
+        record.filled,
+        Decimal::from_int(50),
+        "the order record was not advanced"
+    );
+    assert_eq!(record.state.as_str(), "filled");
+
+    let fills: Vec<BookableFill> = exchange.drain_bookable_fills();
+    assert_eq!(fills.len(), 1, "{fills:?}");
+    assert_eq!(fills[0].fill.order_id, order.order_id);
+    assert_eq!(
+        fills[0].side,
+        Side::Buy,
+        "the maker was booked on the taker's side"
+    );
+    assert_eq!(fills[0].fill.quantity, Decimal::from_int(50));
+    assert_eq!(
+        fills[0].fill.price,
+        dec!("99.99"),
+        "a maker trades at its own price"
+    );
+    let position = exchange
+        .ledger()
+        .positions()
+        .into_iter()
+        .find(|position| position.object_id == object())
+        .expect("the maker fill was booked");
+    assert_eq!(position.quantity, Decimal::from_int(50));
+    Ok(())
+}
+
+#[test]
 fn an_unpriced_remainder_is_cancelled_rather_than_quietly_filled() -> Result<()> {
     let mut exchange = live_venue(ExchangeSettings::orderly(), 12)?;
     let ticket = exchange.ready(start())?;

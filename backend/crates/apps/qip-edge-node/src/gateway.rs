@@ -45,7 +45,7 @@
 //! [`Cell`]: qip_edge::cell::Cell
 
 use crate::venue::{LiveVenueChoice, VenueChoice};
-use qip_brokers::adapter::VenueAdapter;
+use qip_brokers::adapter::{PositionSnapshot, VenueAdapter};
 use qip_brokers::connection::ConnectionPhase;
 use qip_brokers::credential::{
     RequirementKind, VenueCredential, requirements_of_kind, standard_requirements,
@@ -199,6 +199,31 @@ impl SimulatedGateway {
         self.ensure_listed(object_id, price, at)?;
         self.exchange
             .seed_liquidity(object_id, side, price, quantity, at)
+    }
+
+    /// Take from the book with flow belonging to somebody else, returning
+    /// what traded.
+    ///
+    /// The other half of [`Self::seed_touch`], and the only way a resting
+    /// order of the cell's fills at this venue: seeded liquidity only rests,
+    /// and the cell refuses to trade with itself. Like seeding, this exists
+    /// for a test or a replay and is never on the order path.
+    pub fn seed_aggressor(
+        &mut self,
+        object_id: &ObjectId,
+        side: Side,
+        price: Decimal,
+        quantity: Decimal,
+        at: Timestamp,
+    ) -> Result<Decimal> {
+        self.exchange
+            .seed_aggressor(object_id, side, price, quantity, at)
+    }
+
+    /// The venue's own account of what it holds for the cell, from the
+    /// clearing ledger — the number the cell's position is checked against.
+    pub fn positions(&self) -> Vec<PositionSnapshot> {
+        self.exchange.ledger().positions()
     }
 
     /// Everything the venue has booked to the clearing account since the

@@ -247,6 +247,204 @@ fn a_node_with_the_simulated_feed_runs_a_pass_and_the_pass_time_series_move() ->
     Ok(())
 }
 
+/// The venue's own position in the fixture instrument, from its ledger.
+fn venue_position(gateway: &SimulatedGateway) -> Decimal {
+    gateway
+        .positions()
+        .into_iter()
+        .find(|position| position.object_id == object())
+        .map_or(Decimal::ZERO, |position| position.quantity)
+}
+
+#[test]
+fn a_resting_order_the_venue_fills_on_a_later_pass_is_confirmed_and_the_node_keeps_trading()
+-> Result<()> {
+    // The node's whole reason to exist: pass after pass against a venue,
+    // with what it holds agreeing with what the venue holds. A resting
+    // order from one pass, filled by somebody else's flow in between, must
+    // be confirmed on the next pass through the order-entry channel, match
+    // the venue's clearing account through the drop copy, and leave the
+    // node running. Until fills were venue facts this node halted on the
+    // pass that sent the order, and no later pass ever ran.
+    let (mut node, mut gateway, mut feed) =
+        node_with_feed(PricingPolicy::rest_at_mid(Duration::from_secs(60))?)?;
+    gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
+    gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
+    let mut stats = PassStats::default();
+
+    let first = run_pass(&mut node.cell, &mut gateway, &mut feed, &mut stats, t(10))?;
+    let PassOutcome::Ran { report, breaks, .. } = first else {
+        panic!("a running node reported its pass as halted: {first:?}");
+    };
+    assert_eq!(report.orders.len(), 1, "the premise is one resting order");
+    assert!(
+        report.fills.is_empty(),
+        "the premise is that nothing filled yet"
+    );
+    assert!(breaks.is_empty(), "{breaks:?}");
+    let resting = report.orders[0].clone();
+    assert_eq!(
+        resting.price,
+        dec!("100"),
+        "the premise is an order resting at the mid"
+    );
+    assert_eq!(
+        venue_position(&gateway),
+        Decimal::ZERO,
+        "the premise is a venue holding nothing for the cell yet"
+    );
+
+    // Somebody else sells into the cell's resting buy, between passes.
+    let taken = gateway.seed_aggressor(&object(), Side::Sell, dec!("100"), dec!("400"), t(15))?;
+    assert_eq!(
+        taken, resting.quantity,
+        "the flow did not fill the resting order"
+    );
+    assert_eq!(
+        venue_position(&gateway),
+        resting.quantity,
+        "the venue's own account does not show the fill"
+    );
+
+    let second = run_pass(&mut node.cell, &mut gateway, &mut feed, &mut stats, t(20))?;
+    let PassOutcome::Ran { report, breaks, .. } = second else {
+        panic!("the node halted on the pass after a fill: {second:?}");
+    };
+    let confirmed: Vec<_> = report
+        .fills
+        .iter()
+        .filter(|fill| fill.order_id == resting.order_id)
+        .collect();
+    assert_eq!(
+        confirmed.len(),
+        1,
+        "the fill the venue reported on the resting order was not confirmed on the next pass: {:?}",
+        report.fills
+    );
+    assert_eq!(confirmed[0].quantity, resting.quantity);
+    assert_eq!(
+        confirmed[0].price,
+        dec!("100"),
+        "a maker fills at its own price"
+    );
+    assert_eq!(
+        node.cell.position(&venue(), &object()),
+        venue_position(&gateway),
+        "the cell's position and the venue's disagree"
+    );
+    assert!(
+        breaks.is_empty(),
+        "a fill both channels reported reconciled as a break: {breaks:?}"
+    );
+    assert!(
+        !node.cell.is_halted(),
+        "the node halted after a confirmed fill"
+    );
+    // The pass after the fill still traded: a second resting order went
+    // out on the same side, and the settled first one is gone.
+    assert_eq!(
+        report.orders.len(),
+        1,
+        "the node stopped sending after its first fill"
+    );
+    assert!(
+        node.cell
+            .open_orders()
+            .iter()
+            .all(|order| order.order_id != resting.order_id),
+        "a filled and agreed order was not settled"
+    );
+    assert_eq!(stats.passes, 2);
+    assert_eq!(stats.fills, 1);
+    assert_eq!(stats.breaks, 0);
+
+    let snapshot = node.scrape_registry().snapshot();
+    assert_eq!(
+        snapshot.counter(names::EDGE_ORDERS_PLACED, &by("venue", VENUE)),
+        2,
+        "two passes, two orders placed"
+    );
+    assert_eq!(
+        snapshot.counter(EDGE_FILLS_CONFIRMED, &by("venue", VENUE)),
+        1,
+        "the confirmed fill did not move the fill series the scrape serves"
+    );
+    assert_eq!(
+        snapshot.gauge(names::EDGE_HALTED, &by("source", "kill_switch")),
+        Some(0.0)
+    );
+    Ok(())
+}
+
+#[test]
+fn a_marketable_order_fills_on_the_pass_it_is_sent_once_the_venue_has_a_touch_to_take() -> Result<()>
+{
+    // The other pricing. With nothing on the offer the first pass refuses
+    // rather than rests; once an offer exists the next pass takes it, and
+    // the fill is confirmed, matched and counted on that same pass.
+    let (mut node, mut gateway, mut feed) = node_with_feed(PricingPolicy::Marketable)?;
+    gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
+    let mut stats = PassStats::default();
+
+    let first = run_pass(&mut node.cell, &mut gateway, &mut feed, &mut stats, t(10))?;
+    let PassOutcome::Ran { report, .. } = first else {
+        panic!("{first:?}");
+    };
+    assert_eq!(
+        report.signals.len(),
+        1,
+        "the premise is a strategy that fires"
+    );
+    assert!(
+        report.orders.is_empty(),
+        "an order was sent with nothing to take: {:?}",
+        report.orders
+    );
+    assert!(!node.cell.is_halted());
+
+    gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(15))?;
+    let second = run_pass(&mut node.cell, &mut gateway, &mut feed, &mut stats, t(20))?;
+    let PassOutcome::Ran { report, breaks, .. } = second else {
+        panic!("{second:?}");
+    };
+    assert_eq!(
+        report.orders.len(),
+        1,
+        "no order was sent against the new offer: {:?}",
+        report.refusals
+    );
+    assert_eq!(
+        report.orders[0].price,
+        dec!("101"),
+        "a marketable buy was not sent at the ask"
+    );
+    assert_eq!(
+        report.fills.len(),
+        1,
+        "the fill on acceptance was not confirmed on the pass"
+    );
+    assert_eq!(report.fills[0].quantity, report.orders[0].quantity);
+    assert_eq!(
+        node.cell.position(&venue(), &object()),
+        venue_position(&gateway),
+        "the cell's position and the venue's disagree"
+    );
+    assert!(breaks.is_empty(), "{breaks:?}");
+    assert!(!node.cell.is_halted());
+    assert_eq!(stats.fills, 1);
+
+    let snapshot = node.scrape_registry().snapshot();
+    assert_eq!(
+        snapshot.counter(names::EDGE_ORDERS_PLACED, &by("venue", VENUE)),
+        1
+    );
+    assert_eq!(
+        snapshot.counter(EDGE_FILLS_CONFIRMED, &by("venue", VENUE)),
+        1
+    );
+    Ok(())
+}
+
 #[test]
 fn a_pass_with_nothing_listed_at_the_venue_refuses_under_the_venue_selection_gate() -> Result<()> {
     // The venue lists nothing, so the feed publishes nothing and the cell

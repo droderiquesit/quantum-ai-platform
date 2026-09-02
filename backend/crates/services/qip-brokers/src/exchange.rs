@@ -183,6 +183,9 @@ pub struct SimulatedExchange {
     /// state machine exists for.
     heartbeat_source: bool,
     fill_sequence: u64,
+    /// Numbers the venue's own taking flow, so each sweep has an order id
+    /// the matching engine can hold and withdraw.
+    flow_sequence: u64,
     heartbeats: u64,
     submitted: u64,
     rejected: u64,
@@ -214,6 +217,7 @@ impl SimulatedExchange {
             last_trade: BTreeMap::new(),
             heartbeat_source: true,
             fill_sequence: 0,
+            flow_sequence: 0,
             heartbeats: 0,
             submitted: 0,
             rejected: 0,
@@ -295,6 +299,80 @@ impl SimulatedExchange {
             )));
         }
         self.engine.seed(object_id, side, price, quantity, at)
+    }
+
+    /// Hit the book with flow belonging to somebody else, and return what
+    /// traded.
+    ///
+    /// The taking half of [`Self::seed_liquidity`]. Seeded liquidity only
+    /// rests, so until this existed a client order that rested could fill
+    /// only against another client order — which is the same account
+    /// trading with itself, and exactly what a cell refuses to do. Flow
+    /// that takes is how a resting client order fills as maker, and a
+    /// venue whose resting orders can never fill proves nothing about the
+    /// path that confirms them.
+    ///
+    /// A client maker hit here is booked to the clearing account and its
+    /// order record advanced exactly as when a client taker hits it, so
+    /// the fill stream and `query_order` describe the same trade. What the
+    /// flow cannot take at `price` is withdrawn rather than left resting:
+    /// it is a taker, and a remainder in the book would be liquidity
+    /// nobody seeded.
+    pub fn seed_aggressor(
+        &mut self,
+        object_id: &ObjectId,
+        side: Side,
+        price: Decimal,
+        quantity: Decimal,
+        at: Timestamp,
+    ) -> Result<Decimal> {
+        if !self.is_listed(object_id) {
+            return Err(Error::not_found(format!(
+                "{} does not list {}, so there is no book to take from",
+                self.venue.as_str(),
+                object_id.as_str()
+            )));
+        }
+        if quantity <= Decimal::ZERO {
+            return Err(Error::invalid("venue flow needs a positive quantity"));
+        }
+        if price <= Decimal::ZERO {
+            return Err(Error::invalid("venue flow needs a positive price"));
+        }
+        self.flow_sequence = self.flow_sequence.saturating_add(1);
+        let flow_id = OrderId::from_string(format!(
+            "venue-flow-{}-{}",
+            object_id.as_str(),
+            self.flow_sequence
+        ));
+        let outcome = self.engine.execute(
+            object_id,
+            &flow_id,
+            side,
+            quantity,
+            Some(price),
+            at,
+            Participant::Venue,
+        );
+        let trades = outcome.trades.clone();
+        for trade in &trades {
+            if trade.maker_owner.is_client() {
+                let maker_fill = self.make_fill(
+                    &trade.maker,
+                    object_id,
+                    side.opposite(),
+                    trade.price,
+                    trade.quantity,
+                    at,
+                );
+                self.record(maker_fill)?;
+                self.credit_maker(&trade.maker, trade.quantity, at);
+            }
+        }
+        if outcome.resting {
+            self.engine.cancel(object_id, &flow_id)?;
+        }
+        Ok(outcome.filled)
     }
 
     /// Stop answering heartbeats, without telling anyone.
