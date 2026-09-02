@@ -14,6 +14,9 @@
 #   * an identity per workload, created here, holding telemetry and the
 #     secrets this workload mounts and nothing else;
 #   * secrets as files, never as environment values;
+#   * configuration a workload reads as a file — the committed bytes, mounted
+#     read-only under `/etc/qip` from an object named by their hash, so the
+#     file a revision reads is the file the reviewer read;
 #   * the image pinned by digest, with Binary Authorization evaluating the
 #     project policy on every deployment;
 #   * every packet out through the VPC, carrying the trust zone's network
@@ -87,7 +90,35 @@ locals {
       for key, mount in var.secret_mounts :
       mount.env_file_variable => local.secret_files[key]
     },
+    {
+      for key, file in var.config_files :
+      file.env_file_variable => local.config_files[key]
+    },
   )
+
+  # Configuration files, when this workload reads any: the committed bytes,
+  # as one read-only directory. Every file's path is written here once and
+  # reaches the process in its `_PATH` variable, so nothing has to know the
+  # mount point.
+  has_config_files = length(var.config_files) > 0
+  config_root      = "/etc/qip"
+  config_files = {
+    for key, file in var.config_files :
+    key => "${local.config_root}/${file.file_name}"
+  }
+  config_file_hashes = {
+    for key, file in var.config_files :
+    key => sha256(file.content)
+  }
+
+  # The files' directory is the hash of all of them, in key order, for the
+  # reason the collector's document is named by its hash: a changed file is a
+  # new directory beside the old one, never an overwrite, so publishing needs
+  # no `storage.objects.delete` and every catalogue a revision ever read
+  # stays readable under the name that revision mounted. One directory for
+  # all of them because Cloud Run mounts a volume at a path and the process
+  # reads them from one.
+  config_prefix = substr(sha256(join("\n", [for key in sort(keys(var.config_files)) : local.config_file_hashes[key]])), 0, 16)
 
   labels = merge(
     var.labels,
@@ -409,6 +440,65 @@ resource "google_storage_bucket_iam_member" "collector_config" {
   member = "serviceAccount:${google_service_account.workload.email}"
 }
 
+# --- configuration files ------------------------------------------------------
+
+# The committed configuration this workload reads, published where a Cloud
+# Run volume can carry it. A bucket rather than a secret, as the collector's
+# document is: the content is not confidential — it is a file in the
+# repository — `no_secret_value_appears_in_the_terraform` refuses a secret
+# version written from Terraform, and a bucket object is the one Cloud Run
+# volume type that carries a file Terraform wrote. One bucket per workload,
+# so one workload's configuration is never where another could mount it.
+resource "google_storage_bucket" "config_files" {
+  count = local.has_config_files ? 1 : 0
+
+  project  = var.project_id
+  name     = "qip-config-${var.environment}-${var.name}-${var.project_id}"
+  location = var.region
+
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+  force_destroy               = false
+
+  versioning {
+    enabled = true
+  }
+
+  labels = local.labels
+
+  lifecycle {
+    # Google's limit is 63 characters, enforced at apply — after the image
+    # has been built. Refused at plan instead, naming the length.
+    precondition {
+      condition     = length("qip-config-${var.environment}-${var.name}-${var.project_id}") <= 63
+      error_message = "The configuration bucket name qip-config-${var.environment}-${var.name}-${var.project_id} is ${length("qip-config-${var.environment}-${var.name}-${var.project_id}")} characters; Google allows 63. Shorten the workload name."
+    }
+  }
+}
+
+# One object per file, under the hash-named directory, with exactly the
+# committed content. The object is the file: what the process reads at
+# `/etc/qip/<file_name>` is these bytes, and `config_file_hashes` says which.
+resource "google_storage_bucket_object" "config_files" {
+  for_each = local.has_config_files ? var.config_files : {}
+
+  bucket       = google_storage_bucket.config_files[0].name
+  name         = "${local.config_prefix}/${each.value.file_name}"
+  content      = each.value.content
+  content_type = each.value.content_type
+}
+
+# Read the files, and nothing else. The same narrow role the collector's
+# document and the egress bootstrap are read with, on this workload's own
+# bucket alone.
+resource "google_storage_bucket_iam_member" "config_files" {
+  count = local.has_config_files ? 1 : 0
+
+  bucket = google_storage_bucket.config_files[0].name
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${google_service_account.workload.email}"
+}
+
 # --- the service ------------------------------------------------------------
 
 resource "google_cloud_run_v2_service" "workload" {
@@ -513,6 +603,17 @@ resource "google_cloud_run_v2_service" "workload" {
         content {
           name       = volume_mounts.key
           mount_path = "${local.secret_root}/${volume_mounts.key}"
+        }
+      }
+
+      # The configuration files, at the one directory every `_PATH`
+      # variable above points into.
+      dynamic "volume_mounts" {
+        for_each = local.has_config_files ? [local.config_root] : []
+
+        content {
+          name       = "config-files"
+          mount_path = volume_mounts.value
         }
       }
 
@@ -693,6 +794,23 @@ resource "google_cloud_run_v2_service" "workload" {
         }
       }
     }
+
+    # The configuration files, from the bucket above. Read-only, and mounted
+    # at the hash-named directory alone, so `/etc/qip/<file_name>` is the one
+    # committed file this revision was planned with.
+    dynamic "volumes" {
+      for_each = local.has_config_files ? [local.config_prefix] : []
+
+      content {
+        name = "config-files"
+
+        gcs {
+          bucket        = google_storage_bucket.config_files[0].name
+          read_only     = true
+          mount_options = ["only-dir=${volumes.value}"]
+        }
+      }
+    }
   }
 
   # One revision serving, and it is the one that was just deployed. A split
@@ -786,6 +904,15 @@ resource "google_cloud_run_v2_job" "workload" {
             mount_path = "${local.secret_root}/${volume_mounts.key}"
           }
         }
+
+        dynamic "volume_mounts" {
+          for_each = local.has_config_files ? [local.config_root] : []
+
+          content {
+            name       = "config-files"
+            mount_path = volume_mounts.value
+          }
+        }
       }
 
       dynamic "volumes" {
@@ -803,6 +930,20 @@ resource "google_cloud_run_v2_job" "workload" {
               version = volumes.value.version
               mode    = 256
             }
+          }
+        }
+      }
+
+      dynamic "volumes" {
+        for_each = local.has_config_files ? [local.config_prefix] : []
+
+        content {
+          name = "config-files"
+
+          gcs {
+            bucket        = google_storage_bucket.config_files[0].name
+            read_only     = true
+            mount_options = ["only-dir=${volumes.value}"]
           }
         }
       }

@@ -18,7 +18,7 @@ use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::{Origin, VenueId, VenueStatus};
 use qip_core::error::Result;
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
-use qip_edge::cell::{Cell, CellConfig, CrossingInterval, Placer, WorkReport};
+use qip_edge::cell::{Cell, CellConfig, CrossingInterval, Placer, PricingPolicy, WorkReport};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
@@ -149,7 +149,12 @@ fn cancelling_cell(interval: Option<CrossingInterval>) -> Result<(Cell, Arc<Metr
     cell.track(book()?);
     for (id, kind) in [("alpha", SignalKind::Enter), ("beta", SignalKind::Exit)] {
         let (compiled, program) = firing_strategy(id, kind, "100")?;
-        cell.deploy(compiled, program, signed_envelope(id)?)?;
+        cell.deploy_with_pricing(
+            compiled,
+            program,
+            signed_envelope(id)?,
+            PricingPolicy::Marketable,
+        )?;
     }
     Ok((cell, metrics))
 }

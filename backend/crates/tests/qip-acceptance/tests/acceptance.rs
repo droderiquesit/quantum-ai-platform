@@ -690,6 +690,25 @@ fn the_centre_decodes_a_contributor_vector_out_of_bytes_the_edge_crate_produced(
                 },
             ],
         }],
+        // The venue's report on that order, in the record the centre bills
+        // from. The order above stays the record of what was sent; the two
+        // travel side by side and are proven side by side, because the
+        // defect this closes was the centre reading one as the other.
+        fills: vec![qip_contracts::wire::FillRecord {
+            order_id: "london-1-1".to_string(),
+            object_id: ObjectId::from_string("ACME"),
+            venue: qip_contracts::venue::VenueId::new("XLON"),
+            side: qip_contracts::message::BookSide::Ask,
+            quantity: dec!("25"),
+            price: dec!("100.5"),
+            simulated: true,
+            at: Timestamp::from_secs(1_700_000_001),
+            shares: vec![qip_contracts::wire::FillShare {
+                strategy: qip_contracts::signal::StrategyId::new("alpha"),
+                quantity: dec!("25"),
+            }],
+        }],
+        fills_omitted: 0,
         refusals: Vec::new(),
         refusals_omitted: 0,
         reconciliation_breaks: Vec::new(),
@@ -702,6 +721,24 @@ fn the_centre_decodes_a_contributor_vector_out_of_bytes_the_edge_crate_produced(
     // to match the decoder.
     let frame = delta.to_frame()?;
     let decoded = qip_mesh::delta::decode_cell_delta(&frame)?;
+
+    // The fill arrived as a fill, distinct from the order it names, with the
+    // cell's own attribution: a centre that decoded the order and lost the
+    // fill would bill nothing, and one that lost the field name would bill
+    // the order.
+    assert_eq!(decoded.interval.fills.len(), 1, "the fill did not survive");
+    let fill = &decoded.interval.fills[0];
+    assert_eq!(fill.order_id, "london-1-1");
+    assert_eq!(
+        fill.quantity,
+        dec!("25"),
+        "a partial fill of the sixty sent"
+    );
+    assert_eq!(fill.price, dec!("100.5"));
+    assert_eq!(fill.shares.len(), 1);
+    assert_eq!(fill.shares[0].strategy.as_str(), "alpha");
+    assert_eq!(fill.shares[0].quantity, dec!("25"));
+    assert!(fill.simulated, "a paper fill decoded as real");
 
     assert_eq!(
         decoded.interval.orders.len(),
@@ -753,6 +790,8 @@ fn an_internal_cross_reaches_the_centre_rather_than_stopping_at_the_cell() -> Re
         halted: false,
         utilisation: Vec::new(),
         orders: Vec::new(),
+        fills: Vec::new(),
+        fills_omitted: 0,
         refusals: Vec::new(),
         refusals_omitted: 0,
         reconciliation_breaks: Vec::new(),

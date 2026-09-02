@@ -52,7 +52,7 @@ use qip_core::error::{Error, Result};
 use qip_core::ids::{AgentRunId, HypothesisId, ModelId, ObjectId};
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Currency, Decimal, ManualClock, Money, dec};
-use qip_edge::cell::{Cell, CellConfig, Placer};
+use qip_edge::cell::{Cell, CellConfig, Placer, PricingPolicy};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::journal::Decision;
 use qip_edge::seam::CellLiquidity;
@@ -1471,7 +1471,10 @@ fn a_cell_missing_what_its_strategy_needs_refuses_rather_than_guessing() -> Resu
     config = config.with_venue(venue("XLON"));
     let mut fed = Cell::new(config, features)?;
     fed.track(book_at("XLON", "ACME"));
-    fed.deploy(strategy, program, grant()?)?;
+    // Marketable, because a fixture that names no pricing is refused under
+    // the `pricing` gate since 383d4e7, and this cell exists to prove the
+    // fully-equipped case sends an order.
+    fed.deploy_with_pricing(strategy, program, grant()?, PricingPolicy::Marketable)?;
 
     // The gateway is deliberately one that accepts, because the assertion is
     // that the cell reached it at all.

@@ -25,7 +25,7 @@ use qip_api::web::{Router, Web};
 use qip_core::error::{Error, Result};
 use qip_core::time::Duration;
 use qip_core::{Clock, SystemClock};
-use qip_financial::universe::Universe;
+use qip_kernel::central::ArbitragePolicy;
 use qip_kernel::{Platform, PlatformConfig};
 use qip_observability::Telemetry;
 use qip_risk::limits::LimitSet;
@@ -66,13 +66,27 @@ fn run() -> Result<()> {
     storage.preflight()?;
     let archive = Arc::new(ChainArchive::open(storage.key_value("event-log")?)?);
 
-    let config = PlatformConfig::default().with_live_ceiling(ceiling);
+    // The universe this process sizes against, read and journaled before the
+    // platform exists — see `load_universe` for why an unset path is a
+    // refusal and not an empty universe.
+    let catalogue = load_universe(&storage, now)?;
+
+    // The arbitrage desk's policy, read here because this is the one process
+    // that ships the cycle whitelist down the mesh — see `load_arbitrage_policy`
+    // for why an unset path is an empty whitelist and a set one that does not
+    // read is a refusal. Set on the configuration before the platform exists,
+    // so the plane `harden_central` rebuilds from that configuration carries
+    // it too; a policy attached after the rebuild would be lost in the swap.
+    let (arbitrage, arbitrage_banner) = load_arbitrage_policy()?;
+
+    let mut config = PlatformConfig::default().with_live_ceiling(ceiling);
+    config.central.arbitrage = arbitrage;
     let context = qip_core::Context::new(clock.clone(), config.seed);
     let mut platform = Platform::new(
         config,
         context,
         Telemetry::new("qip-api", clock.clone()),
-        Universe::new(),
+        catalogue.universe,
         LimitSet::conservative_default(),
     )?;
 
@@ -249,6 +263,7 @@ fn run() -> Result<()> {
          clears one"
     );
     println!("  capital trust:    {}", provenance.describe());
+    println!("  arbitrage desk:   {arbitrage_banner}");
     match &mesh {
         Some(mesh) => {
             // The addresses come from the bound sockets rather than from the
@@ -303,6 +318,254 @@ fn run() -> Result<()> {
         println!("{line}");
     }
     println!("  event chain:      {}", archive.describe());
+    println!(
+        "  universe:         {}; sector and country buckets are fed from it. Note ADR 0027: under the \
+         conservative default the first desk order into an empty book is refused by \
+         sector-concentration, and the decision is the risk desk's, not this process's",
+        catalogue.manifest.describe()
+    );
 
     server.serve()
+}
+
+/// The instrument universe, from the committed catalogue the deployment names.
+///
+/// Refused when unset. Every root used to assemble `Universe::new()`, so the
+/// exposure buckets the kernel projects from the universe at assembly —
+/// sector, country, asset class, venue — received nothing in any deployed
+/// process and the two bucket limits in the default set could never fire;
+/// an empty universe is the state that hid that, and a process that fell
+/// back to one on a missing variable would hide it again. The catalogue's
+/// hash is recorded in the `universe` namespace of the same storage the
+/// event log archives to, under its hash and as `current`, so a run can say
+/// which catalogue it sized against.
+fn load_universe(
+    storage: &StorageSettings,
+    now: qip_core::Timestamp,
+) -> Result<qip_financial::LoadedCatalogue> {
+    let path = std::env::var("QIP_UNIVERSE_PATH")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            Error::invalid(
+                "configuration: QIP_UNIVERSE_PATH is not set. Point it at the committed instrument \
+                 catalogue — data/datasets/universe.json in the repository, mounted at \
+                 /etc/qip/universe.json by the deployment; this process does not start on an \
+                 empty universe, because an empty universe feeds no exposure bucket and \
+                 nothing would say so",
+            )
+        })?;
+    let text = std::fs::read_to_string(&path).map_err(|error| {
+        Error::io(format!(
+            "configuration: QIP_UNIVERSE_PATH names {path}, which cannot be read: {error}"
+        ))
+    })?;
+    let catalogue = qip_financial::catalogue::load(&text, now)
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    qip_financial::catalogue::record_manifest(
+        storage.key_value("universe")?.as_ref(),
+        &catalogue.manifest,
+    )?;
+    Ok(catalogue)
+}
+
+/// Where the arbitrage desk's policy is read from: a JSON `ArbitragePolicy`,
+/// mounted the way the universe is. Unset means no desk.
+const ARBITRAGE_POLICY_VARIABLE: &str = "QIP_ARBITRAGE_POLICY_PATH";
+
+/// The arbitrage desk's policy, from the JSON file the deployment names, and
+/// the banner line that says what was read.
+///
+/// `QIP_ARBITRAGE_POLICY_PATH` unset is not a refusal: it is the operator
+/// saying there is no desk, and the platform's answer to that is the
+/// fail-closed one — `CentralConfig::arbitrage` stays `None`, every cycle
+/// whitelist ships empty, and each cell's installer declines by name. Set
+/// and unreadable, or readable and not a policy, is a refusal to start: a
+/// process that fell back to no desk because the file the operator pointed
+/// at was missing would run healthy with the desk silently off, which is the
+/// state that hid the empty universe once already. The content is only
+/// parsed here; whether it says something the cell would refuse is judged
+/// when the plane assembles, which also stops the process, naming the entry.
+fn load_arbitrage_policy() -> Result<(Option<ArbitragePolicy>, String)> {
+    let Some(path) = std::env::var(ARBITRAGE_POLICY_VARIABLE)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok((
+            None,
+            format!(
+                "none ({ARBITRAGE_POLICY_VARIABLE} is not set); every cycle whitelist ships \
+                 empty and no cell installs a desk"
+            ),
+        ));
+    };
+    let text = std::fs::read_to_string(&path).map_err(|error| {
+        Error::io(format!(
+            "configuration: {ARBITRAGE_POLICY_VARIABLE} names {path}, which cannot be read: \
+             {error}. Unset it to run with no desk; a named policy that does not read is not \
+             a desk that is off"
+        ))
+    })?;
+    let policy: ArbitragePolicy = serde_json::from_str(&text).map_err(|error| {
+        Error::invalid(format!(
+            "configuration: {ARBITRAGE_POLICY_VARIABLE} names {path}, which is not an \
+             arbitrage policy: {error}. See docs/operations/arbitrage-policy.md for the fields"
+        ))
+    })?;
+    let banner = format!(
+        "policy from {path}: strategy {}, {} market(s) across {} venue(s), funded in {}; \
+         sized against that strategy's live grant at each cell",
+        policy.strategy,
+        policy.markets.len(),
+        policy.venues.len(),
+        policy.funding_instrument
+    );
+    Ok((Some(policy), banner))
+}
+
+#[cfg(test)]
+mod tests {
+    //! Two things this root pins. The operator page's example policy is one
+    //! the plane accepts, so the page cannot drift from the type it
+    //! documents — a runbook whose example is refused at start-up is worse
+    //! than none. And, pinned but not endorsed: what the committed catalogue
+    //! does to the first desk order under the conservative default. ADR 0027 (proposed) frames
+    //! the decision — whether a share-of-gross concentration cap belongs in
+    //! a pre-trade set at all — and it is the risk desk's, not this root's.
+    //! Until it is taken, the state is that a catalogued universe turns the
+    //! two `MaxConcentration` entries on and they refuse the first order into
+    //! an empty book, because one position is the whole of the axis. This
+    //! test exists so that state is visible in a test name rather than
+    //! discovered in a deployment.
+
+    // The workspace denies `panic_in_result_fn` for production code; in a
+    // test the assertion is the deliverable and `?` keeps the setup readable.
+    #![allow(clippy::panic_in_result_fn)]
+
+    use qip_core::error::{Error, Result};
+    use qip_core::{Context, Timestamp, dec};
+    use qip_kernel::central::ArbitragePolicy;
+    use qip_kernel::{Platform, PlatformConfig};
+    use qip_observability::Telemetry;
+    use qip_risk::AggregateFigures;
+    use qip_risk::limits::LimitSet;
+
+    #[test]
+    fn the_operator_pages_example_policy_is_one_the_plane_accepts() -> Result<()> {
+        let page = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../../docs/operations/arbitrage-policy.md"
+        ))
+        .expect("the operator page is readable");
+        let (_, rest) = page
+            .split_once("```json\n")
+            .ok_or_else(|| Error::not_found("the page's JSON example"))?;
+        let (example, _) = rest
+            .split_once("```")
+            .ok_or_else(|| Error::not_found("the end of the page's JSON example"))?;
+        let policy: ArbitragePolicy = serde_json::from_str(example)?;
+        // Premise: the example says something, so acceptance below is of a
+        // policy and not of an empty object.
+        assert_eq!(policy.markets.len(), 1);
+        policy.validate()?;
+        let mut config = PlatformConfig::default();
+        config.central.arbitrage = Some(policy);
+        let (context, _clock) =
+            Context::deterministic(Timestamp::from_secs(1_760_000_000), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            qip_financial::universe::Universe::new(),
+            LimitSet::conservative_default(),
+        )?;
+        Ok(())
+    }
+
+    const COMMITTED: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../../data/datasets/universe.json"
+    );
+
+    #[test]
+    fn the_first_order_into_a_catalogued_universe_is_refused_by_the_default_concentration_cap_until_adr_0027_is_decided()
+    -> Result<()> {
+        let now = Timestamp::from_civil(2026, 9, 2);
+        let text = std::fs::read_to_string(COMMITTED).expect("the committed catalogue is readable");
+        let catalogue = qip_financial::catalogue::load(&text, now)?;
+        // Premise: the universe is not empty, and the instrument the order
+        // is about carries a sector — the axis the refusal names.
+        let first = catalogue
+            .universe
+            .iter()
+            .find(|object| object.is_decision_grade())
+            .expect("the committed catalogue carries a decision-grade instrument")
+            .clone();
+        assert!(!catalogue.universe.is_empty());
+        assert_ne!(
+            first.sector,
+            qip_financial::asset_class::Sector::Unclassified,
+            "the fixture instrument has no sector to be concentrated in"
+        );
+
+        let config = PlatformConfig::default();
+        let (context, _clock) = Context::deterministic(now, config.seed);
+        let mut platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            catalogue.universe,
+            LimitSet::conservative_default(),
+        )?;
+        // Premise: the kernel projected the sector axis for this instrument,
+        // and the book is empty, so the order below is the first position.
+        let axes = platform.exposure_axes_for(first.object_id.as_str());
+        assert_eq!(
+            axes.get("sector").map(String::as_str),
+            Some(
+                serde_json::to_value(first.sector)?
+                    .as_str()
+                    .expect("sector is a string")
+            ),
+            "the kernel did not project the sector bucket from the catalogue"
+        );
+        assert!(platform.risk_figures().gross_exposure().is_zero());
+        assert_eq!(platform.risk_figures().fills(), 0);
+
+        // The side is read from its wire form because this root deliberately
+        // does not link the execution engine — `api_boundary.rs` holds it to
+        // that — and `Side` is nameable nowhere else.
+        let side = serde_json::from_str("\"buy\"")?;
+        let order = platform.order_from(
+            first.object_id.clone(),
+            side,
+            dec!("10"),
+            first.price,
+            "prop-adr-0027",
+            vec!["hyp-adr-0027".to_string()],
+            now,
+        );
+        let refusal = match platform.submit_order(order, now) {
+            Ok(()) => panic!(
+                "the first order into a catalogued universe was admitted under the conservative \
+                 default; ADR 0027 has been decided and this test should now say how"
+            ),
+            Err(error) => error.message().to_string(),
+        };
+        // The delimited token, not a substring: the refusal names the limit
+        // as `sector-concentration: …`, and a message that merely mentioned
+        // the word would not prove which control fired.
+        assert!(
+            refusal
+                .split_whitespace()
+                .any(|token| token == "sector-concentration:"),
+            "the refusal does not name sector-concentration as the control that fired: {refusal}"
+        );
+        assert_eq!(
+            platform.risk_figures().fills(),
+            0,
+            "the refused order filled"
+        );
+        Ok(())
+    }
 }

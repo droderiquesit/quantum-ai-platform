@@ -52,6 +52,7 @@ use qip_observability::Telemetry;
 use qip_risk::limits::LimitSet;
 use qip_risk_engine::autonomy::AutonomyLevel;
 use qip_storage::ChainArchive;
+use qip_storage::settings::StorageSettings;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
@@ -140,11 +141,15 @@ fn run() -> Result<()> {
         )?);
     let context = qip_core::Context::new(clock.clone(), platform_config.seed);
     let ceiling = platform_config.autonomy_ceiling.to_string();
+    // The universe this node sizes against, read and journaled before the
+    // platform exists — see `load_universe` for why an unset path is a
+    // refusal and not an empty universe.
+    let catalogue = load_universe(&config.storage, started)?;
     let mut platform = Platform::new(
         platform_config,
         context,
         telemetry,
-        Universe::new(),
+        catalogue.universe,
         LimitSet::conservative_default(),
     )?;
 
@@ -185,6 +190,12 @@ fn run() -> Result<()> {
 
     banner(
         provenance, &config, &cleared, &platform, &ceiling, bound, &archive, inherited,
+    );
+    println!(
+        "  universe:         {}; sector and country buckets are fed from it. Note ADR 0027: under the \
+         conservative default the first desk order into an empty book is refused by \
+         sector-concentration, and the decision is the risk desk's, not this process's",
+        catalogue.manifest.describe()
     );
 
     // The evolution engine, and the research node's first data source. The
@@ -338,6 +349,47 @@ fn run() -> Result<()> {
 /// Everything an operator would otherwise have to infer from behaviour: which
 /// guarantee was checked, what this node will not do, whether the run stops on
 /// its own, where the evidence goes, and what a restart takes away.
+/// The instrument universe, from the committed catalogue the deployment names.
+///
+/// Refused when unset. Every root used to assemble `Universe::new()`, so the
+/// exposure buckets the kernel projects from the universe at assembly —
+/// sector, country, asset class, venue — received nothing in any deployed
+/// process and the two bucket limits in the default set could never fire;
+/// an empty universe is the state that hid that, and a process that fell
+/// back to one on a missing variable would hide it again. The catalogue's
+/// hash is recorded in the `universe` namespace of the same storage the
+/// event log archives to, under its hash and as `current`, so a run can say
+/// which catalogue it sized against.
+fn load_universe(
+    storage: &StorageSettings,
+    now: qip_core::Timestamp,
+) -> Result<qip_financial::LoadedCatalogue> {
+    let path = std::env::var("QIP_UNIVERSE_PATH")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            Error::invalid(
+                "configuration: QIP_UNIVERSE_PATH is not set. Point it at the committed instrument \
+                 catalogue — data/datasets/universe.json in the repository, mounted at \
+                 /etc/qip/universe.json by the deployment; this process does not start on an \
+                 empty universe, because an empty universe feeds no exposure bucket and \
+                 nothing would say so",
+            )
+        })?;
+    let text = std::fs::read_to_string(&path).map_err(|error| {
+        Error::io(format!(
+            "configuration: QIP_UNIVERSE_PATH names {path}, which cannot be read: {error}"
+        ))
+    })?;
+    let catalogue = qip_financial::catalogue::load(&text, now)
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    qip_financial::catalogue::record_manifest(
+        storage.key_value("universe")?.as_ref(),
+        &catalogue.manifest,
+    )?;
+    Ok(catalogue)
+}
+
 fn banner(
     provenance: qip_deepbrain::trust::KeyProvenance,
     config: &DeepBrainConfig,

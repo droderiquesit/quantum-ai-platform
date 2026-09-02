@@ -34,6 +34,16 @@ qip-transport.workspace = true
 # maintains. Dev-only: the serving binary never names the edge crate — the
 # composition root's decode goes through `qip_mesh::delta`.
 qip-edge.workspace = true
+# The whitelist tests need a live grant in the plane, and the only door a
+# grant enters by is `CentralPlane::issue` — behind a compiled strategy, a
+# full evidence set and a dual approval. These are the crates that fixture is
+# built from. Dev-only for the same reason as above: the serving binary holds
+# no grant path and constructs no envelope, which `api_boundary.rs` proves.
+qip-strategy.workspace = true
+qip-lifecycle.workspace = true
+qip-compliance.workspace = true
+qip-capital.workspace = true
+qip-simulation-engine.workspace = true
 
 [lints]
 workspace = true

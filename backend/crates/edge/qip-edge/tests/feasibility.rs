@@ -20,7 +20,7 @@ use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
 use qip_core::error::Result;
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
-use qip_edge::cell::{Cell, CellConfig, Placer, WorkReport};
+use qip_edge::cell::{Cell, CellConfig, Placer, PricingPolicy, WorkReport};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::feasibility::{Granularity, VenueModel};
 use qip_edge::policy::VerifiedPolicy;
@@ -175,7 +175,12 @@ fn trading_cell(
     cell.track(book()?);
     for (id, kind, size) in strategies {
         let (compiled, program) = firing_strategy(id, *kind, size)?;
-        cell.deploy(compiled, program, signed_envelope(id)?)?;
+        cell.deploy_with_pricing(
+            compiled,
+            program,
+            signed_envelope(id)?,
+            PricingPolicy::Marketable,
+        )?;
     }
     Ok((cell, metrics))
 }

@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "version": "synthetic-reference-2026.09.01",
+  "as_of": "2026-09-01T00:00:00Z",
+  "source": "qip-reference-catalogue",
+  "instruments": [
+    {
+      "object_id": "OBJ00000000000000000NWSC",
+      "symbol": "NWSC",
+      "name": "Northwind Systems (synthetic)",
+      "instrument_type": "common_stock",
+      "venue": "XNYS",
+      "sector": "information_technology",
+      "geography": "US",
+      "currency": "USD",
+      "price": "142.50",
+      "lot_size": "1",
+      "tick_size": "0.01",
+      "licensing": "internal"
+    },
+    {
+      "object_id": "OBJ00000000000000000VNTG",
+      "symbol": "VNTG",
+      "name": "Vantage Compute (synthetic)",
+      "instrument_type": "common_stock",
+      "venue": "XNYS",
+      "sector": "information_technology",
+      "geography": "US",
+      "currency": "USD",
+      "price": "318.75",
+      "lot_size": "1",
+      "tick_size": "0.01",
+      "licensing": "internal"
+    },
+    {
+      "object_id": "OBJ00000000000000000MRDN",
+      "symbol": "MRDN",
+      "name": "Meridian Energy (synthetic)",
+      "instrument_type": "common_stock",
+      "venue": "XNYS",
+      "sector": "energy",
+      "geography": "US",
+      "currency": "USD",
+      "price": "88.20",
+      "lot_size": "1",
+      "tick_size": "0.01",
+      "licensing": "internal"
+    },
+    {
+      "object_id": "OBJ00000000000000000ATFB",
+      "symbol": "ATFB",
+      "name": "Atlas Federal Bank (synthetic)",
+      "instrument_type": "common_stock",
+      "venue": "XNYS",
+      "sector": "financials",
+      "geography": "US",
+      "currency": "USD",
+      "price": "54.10",
+      "lot_size": "1",
+      "tick_size": "0.01",
+      "licensing": "internal"
+    },
+    {
+      "object_id": "OBJ00000000000000000HLCX",
+      "symbol": "HLCX",
+      "name": "Helix Care (synthetic)",
+      "instrument_type": "common_stock",
+      "venue": "XLON",
+      "sector": "health_care",
+      "geography": "GB",
+      "currency": "GBP",
+      "price": "21.40",
+      "lot_size": "1",
+      "tick_size": "0.01",
+      "licensing": "internal"
+    },
+    {
+      "object_id": "OBJ00000000000000000RSRC",
+      "symbol": "RSRC",
+      "name": "Research Basket (synthetic, research only)",
+      "instrument_type": "common_stock",
+      "venue": "XPAR",
+      "sector": "industrials",
+      "geography": "FR",
+      "currency": "EUR",
+      "price": "63.05",
+      "lot_size": "1",
+      "tick_size": "0.01",
+      "licensing": "synthetic"
+    }
+  ]
+}

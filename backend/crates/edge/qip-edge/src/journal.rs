@@ -51,6 +51,35 @@ pub enum Decision {
         quantity: String,
         simulated: bool,
     },
+    /// The venue reported part or all of an order traded, and the cell
+    /// booked it.
+    ///
+    /// Distinct from [`Self::OrderSent`] on purpose, and the distinction is
+    /// the whole record: an order sent is a request the venue accepted, and
+    /// a fill is a venue fact about what traded. The chain once carried only
+    /// the first and every reader took it for the second. `shares` is the
+    /// pro-rata attribution of this fill's quantity to the strategies whose
+    /// intent the order carried, summing to `quantity` exactly, so the
+    /// journal alone answers who traded what. Decimals as strings, as
+    /// everywhere in this enum.
+    Filled {
+        order_id: String,
+        venue: String,
+        object: String,
+        quantity: String,
+        price: String,
+        simulated: bool,
+        shares: Vec<(String, String)>,
+    },
+    /// A resting order passed its time to live and the cell withdrew what
+    /// remained, `withdrawn` being the venue's own answer to the cancel.
+    /// Whatever filled before this is in its own [`Self::Filled`] entries;
+    /// this closes the order without claiming anything about them.
+    OrderExpired {
+        order_id: String,
+        venue: String,
+        withdrawn: String,
+    },
     /// Something was refused, with the gate that refused it.
     Refused { gate: String, reason: String },
     /// The venue and the cell's book disagree about a fill.
@@ -129,6 +158,8 @@ impl Decision {
             Self::SignalRaised { .. } => "signal_raised",
             Self::EdgePriced { .. } => "edge_priced",
             Self::OrderSent { .. } => "order_sent",
+            Self::Filled { .. } => "filled",
+            Self::OrderExpired { .. } => "order_expired",
             Self::Refused { .. } => "refused",
             Self::ReconciliationBreak { .. } => "reconciliation_break",
             Self::HaltChanged { .. } => "halt_changed",

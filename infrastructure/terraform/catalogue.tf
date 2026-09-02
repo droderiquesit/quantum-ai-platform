@@ -33,6 +33,17 @@ locals {
   # Read from the proxy module so the port is written once, in the bootstrap.
   gcp_endpoint = module.egress_proxy.endpoints["gcp"]
 
+  # The instrument universe the three central roots assemble the desk from,
+  # read at start-up from `QIP_UNIVERSE_PATH`. Configuration, not a secret,
+  # and committed: it is read here with `file()` so the bytes a revision
+  # mounts are the bytes in the reviewed commit, and `modules/cloudrun` names
+  # the object by their hash, so the answer to "which universe did that
+  # revision trade" is in the plan. Read once, here, and handed to every
+  # entry that reads it; the roots' default for the variable is the path the
+  # module writes, `/etc/qip/universe.json`, so a root run outside this
+  # catalogue reads the same file at the same place.
+  universe_catalogue = file("${path.module}/../../data/datasets/universe.json")
+
   cloud_run_catalogue = {
     # The API and the operator interface. Customer traffic, reached only by
     # the console's identity, in the application-and-identity zone (§46.1):
@@ -77,6 +88,14 @@ locals {
         # from here and never from a literal, so lowering or raising it is a
         # change to one reviewed value that appears in a diff.
         QIP_AUTONOMY_CEILING = var.autonomy_ceiling
+      }
+      config_files = {
+        universe = {
+          content           = local.universe_catalogue
+          file_name         = "universe.json"
+          content_type      = "application/json"
+          env_file_variable = "QIP_UNIVERSE_PATH"
+        }
       }
       secret_mounts = {
         token-operator = {
@@ -173,6 +192,14 @@ locals {
           QIP_CONNECTOR_BASE_URL = var.market_data_connector.base_url
         },
       )
+      config_files = {
+        universe = {
+          content           = local.universe_catalogue
+          file_name         = "universe.json"
+          content_type      = "application/json"
+          env_file_variable = "QIP_UNIVERSE_PATH"
+        }
+      }
       secret_mounts = {
         # The capital-envelope key, as a file. Absent, this process runs on
         # the seed-derived default — reproducible, mintable by anyone who
@@ -219,6 +246,14 @@ locals {
         QIP_STORAGE_TARGET           = var.storage_target
         QIP_AUTONOMY_CEILING         = var.autonomy_ceiling
         QIP_CYCLE_INTERVAL_SECONDS   = var.cycle_interval_seconds
+      }
+      config_files = {
+        universe = {
+          content           = local.universe_catalogue
+          file_name         = "universe.json"
+          content_type      = "application/json"
+          env_file_variable = "QIP_UNIVERSE_PATH"
+        }
       }
       secret_mounts = {
         capital-envelope-key = {
@@ -323,6 +358,7 @@ module "cloud_run" {
 
   env           = each.value.env
   secret_mounts = each.value.secret_mounts
+  config_files  = each.value.config_files
 
   egress_sidecar = each.value.egress_proxy ? module.egress_proxy.sidecar : null
 
@@ -336,4 +372,14 @@ module "cloud_run" {
   # deploy.yml moves the service, as this account, and needs to act as the
   # service's own identity to create a revision.
   deployer_service_account = module.cicd.service_account_email
+}
+
+# The hash of the universe every central workload was given, so a person can
+# say which committed catalogue a plan carries without reading the file out
+# of a bucket. Beside the catalogue rather than in outputs.tf because the
+# local it hashes is declared here, and a hash a file away from the bytes it
+# names is a pair that drifts.
+output "universe_catalogue_sha256" {
+  description = "sha256 of the committed instrument universe mounted at /etc/qip/universe.json on the api, fastbrain and deepbrain workloads."
+  value       = sha256(local.universe_catalogue)
 }

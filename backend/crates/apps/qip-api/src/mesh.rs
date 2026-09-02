@@ -69,7 +69,7 @@ use qip_core::time::{Duration, Timestamp};
 use qip_core::{Clock, hash};
 use qip_events::AnyEvent;
 use qip_kernel::Platform;
-use qip_kernel::central::{CellReport, ReconciliationBreak};
+use qip_kernel::central::{BreakOrigin, CellReport, ReconciliationBreak};
 use qip_mesh::delta::{CellStanding, decode_cell_delta};
 use qip_mesh::spine::{
     CapitalDispatch, CapitalDispatcher, CellDeltaReceiver, CellDeltaSink, DispatcherConfig,
@@ -450,9 +450,17 @@ pub struct BackboneCounters {
     /// rather than halting the drain — see the sink for why the two failure
     /// classes part ways.
     pub undecodable: u64,
-    /// Orders reported across all deltas — the incremental half, summed,
-    /// which is the arithmetic that half is for.
+    /// Orders reported *sent* across all deltas — the incremental half,
+    /// summed, which is the arithmetic that half is for. Not fills: the
+    /// two are separate counts so the status surface cannot restate the
+    /// defect where one was read as the other.
     pub orders_reported: u64,
+    /// Fills reported across all deltas — what the centre billed.
+    pub fills_reported: u64,
+    /// Fills the cells said they could not fit on the wire. Each is a
+    /// trade the centre never billed, which is why it is a counter of its
+    /// own rather than folded into the one above.
+    pub fills_omitted: u64,
     /// Refusals reported across all deltas, counting the ones each delta
     /// said it truncated.
     pub refusals_reported: u64,
@@ -578,16 +586,47 @@ pub fn pending_capital(platform: &Platform, now: Timestamp) -> Vec<PendingGrant>
         .collect()
 }
 
+/// One cycle's policy payloads, and the whitelist lines an operator reads.
+///
+/// The lines travel beside the payloads rather than being printed inside
+/// [`pending_policy`], because that function runs under the platform lock
+/// and its caller decides where the account goes — stderr and the cycle
+/// response, today — so the one place a whitelist is described is the one
+/// place it is shipped from.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PendingPolicy {
+    pub payloads: Vec<(String, PolicyPayload)>,
+    /// One line per cell: what its cycle whitelist carries and why, or why
+    /// the slot ships unproduced. `WhitelistIssue::describe` for an issue,
+    /// the producer's refusal for a refusal.
+    pub whitelist: Vec<String>,
+}
+
 /// The policy payloads one cycle should ship, one per configured cell.
 ///
-/// Built from what the platform actually has, which today is two of the
+/// Built from what the platform actually has, which today is three of the
 /// twelve items: the grant manifest — the signatures of every live envelope
-/// for the cell, so a dropped grant becomes visible — and the risk envelope,
-/// as the limit set the monitor really enforces. Every other slot ships
-/// unproduced and reads as unavailable at the cell, which narrows it; that is
-/// the fail-closed design, not an omission. The halted flag mirrors the
-/// central kill switch, so a cell that missed the halt broadcast converges at
-/// the next payload.
+/// for the cell, so a dropped grant becomes visible — the risk envelope, as
+/// the limit set the monitor really enforces, and the cycle whitelist, as
+/// [`Platform::issue_cycle_whitelist`] produces and journals it. Every other
+/// slot ships unproduced and reads as unavailable at the cell, which narrows
+/// it; that is the fail-closed design, not an omission. The halted flag
+/// mirrors the central kill switch, so a cell that missed the halt broadcast
+/// converges at the next payload.
+///
+/// `&mut` because the whitelist is journaled as it is issued: a whitelist
+/// that reached a cell with no record at the centre would be a permission
+/// reproducible from nothing. The caller already holds the platform's lock
+/// mutably for the drain that precedes this, so the borrow costs nothing it
+/// was not already paying.
+///
+/// The whitelist ships as the producer returned it — empty included, and an
+/// empty whitelist is what an unset policy or a missing grant produces,
+/// which the cell's installer declines by name. A *refusal* from the
+/// producer — a policy venue the desk's grant does not permit, a grant that
+/// permits no order — ships the slot unproduced and says why in
+/// [`PendingPolicy::whitelist`]: the cell narrows as an unavailable slot
+/// narrows it, and never receives a whitelist the centre had to guess at.
 ///
 /// The sequence is the issue instant in nanoseconds: strictly increasing
 /// under a monotonic clock, and it survives a restart without persisted
@@ -603,33 +642,45 @@ pub fn pending_capital(platform: &Platform, now: Timestamp) -> Vec<PendingGrant>
 /// refusals climbing with the narrowed set widening; the repair is a fresh
 /// payload once the clock is ahead of the last applied instant.
 pub fn pending_policy(
-    platform: &Platform,
+    platform: &mut Platform,
     cells: impl Iterator<Item = String>,
     now: Timestamp,
-) -> Vec<(String, PolicyPayload)> {
+) -> PendingPolicy {
     let halted = platform.autonomy().kill_switch().is_globally_tripped();
     let limits = serde_json::to_value(platform.risk_limits()).ok();
-    let central = platform.central();
-    cells
-        .map(|cell| {
-            let sequence = now.as_nanos().max(0) as u64;
-            let mut payload = PolicyPayload::unproduced(sequence, &cell, now);
-            payload.halted = halted;
-            let live_grants: Vec<String> = central
+    let mut pending = PendingPolicy::default();
+    for cell in cells {
+        let sequence = now.as_nanos().max(0) as u64;
+        let mut payload = PolicyPayload::unproduced(sequence, &cell, now);
+        payload.halted = halted;
+        let live_grants: Vec<String> = {
+            let central = platform.central();
+            central
                 .factory()
                 .candidates()
                 .filter(|candidate| candidate.cell() == cell)
                 .filter_map(|candidate| central.envelope(candidate.cell(), candidate.strategy()))
                 .filter(|envelope| envelope.is_live(now))
                 .map(|envelope| envelope.signature().to_string())
-                .collect();
-            payload.capital_grants = Slot::produced(GrantManifest { live_grants }, now);
-            if let Some(limits) = limits.clone() {
-                payload.risk_envelope = Slot::produced(RiskEnvelopeSnapshot { limits }, now);
+                .collect()
+        };
+        payload.capital_grants = Slot::produced(GrantManifest { live_grants }, now);
+        if let Some(limits) = limits.clone() {
+            payload.risk_envelope = Slot::produced(RiskEnvelopeSnapshot { limits }, now);
+        }
+        match platform.issue_cycle_whitelist(&cell, now) {
+            Ok(issue) => {
+                pending.whitelist.push(issue.describe());
+                payload.cycle_whitelist = Slot::produced(issue.whitelist, now);
             }
-            (cell, payload)
-        })
-        .collect()
+            Err(error) => pending.whitelist.push(format!(
+                "cycle whitelist for {cell}: not shipped, {}",
+                error.message()
+            )),
+        }
+        pending.payloads.push((cell, payload));
+    }
+    pending
 }
 
 /// The centre's half of the mesh, assembled and serving.
@@ -776,17 +827,16 @@ impl MeshBackbone {
     /// With no trust root configured nothing is sent and the count says so —
     /// an unsigned payload would be refused by every cell, and signing with a
     /// manufactured key would mint a second trust root.
-    pub fn dispatch_policy(
-        &mut self,
-        pending: Vec<(String, PolicyPayload)>,
-        now: Timestamp,
-    ) -> PolicySummary {
-        let mut summary = PolicySummary::default();
+    pub fn dispatch_policy(&mut self, pending: PendingPolicy, now: Timestamp) -> PolicySummary {
+        let mut summary = PolicySummary {
+            whitelist: pending.whitelist,
+            ..PolicySummary::default()
+        };
         let Some(key) = self.policy_key.clone() else {
-            summary.unsigned = pending.len();
+            summary.unsigned = pending.payloads.len();
             return summary;
         };
-        for (cell, payload) in pending {
+        for (cell, payload) in pending.payloads {
             let Some(lane) = self.lanes.get_mut(&cell) else {
                 summary.unserved += 1;
                 continue;
@@ -1039,6 +1089,12 @@ pub struct PolicySummary {
     pub unsigned: usize,
     pub unserved: usize,
     pub errors: Vec<String>,
+    /// What each cell's cycle whitelist carried, or why the slot was not
+    /// produced — the same lines the process logs. In the response so the
+    /// answer to "why does the desk never install" is readable from the
+    /// cycle that shipped the policy, not only from a pod's stderr.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub whitelist: Vec<String>,
 }
 
 pub fn exchange_json(
@@ -1087,6 +1143,7 @@ fn report_from(standing: &CellStanding) -> CellReport {
             cell_quantity: Decimal::ZERO,
             external_quantity: Decimal::ZERO,
             detail: detail.clone(),
+            origin: BreakOrigin::Book,
         });
     }
     if standing.reconciliation_breaks_omitted > 0 {
@@ -1101,6 +1158,7 @@ fn report_from(standing: &CellStanding) -> CellReport {
                 "{} further reconciliation break(s) the cell recorded but no longer retains",
                 standing.reconciliation_breaks_omitted
             ),
+            origin: BreakOrigin::Book,
         });
     }
     report
@@ -1141,11 +1199,14 @@ impl CellDeltaSink for IngestSink<'_> {
             }
         };
 
-        // The interval's orders and crosses ride the report, or the centre
-        // attributes no fill and settles no cross: a sink that drops them
-        // renders every strategy book flat however much the cell traded.
+        // The interval's orders, fills and crosses ride the report, or the
+        // centre attributes no fill and settles no cross: a sink that drops
+        // them renders every strategy book flat however much the cell traded.
+        // The orders travel as what was sent and the fills as what traded;
+        // the plane bills from the second and only registers the first.
         let report = report_from(&decoded.standing)
             .with_orders(decoded.interval.orders.clone())
+            .with_fills(decoded.interval.fills.clone())
             .with_crosses(decoded.interval.crosses.clone());
         // Recorded before the ingest so `/regions` knows the cell spoke even
         // when the plane goes on to halt it — a halted cell that looked
@@ -1155,6 +1216,8 @@ impl CellDeltaSink for IngestSink<'_> {
 
         self.counters.reports_ingested += 1;
         self.counters.orders_reported += decoded.interval.orders.len() as u64;
+        self.counters.fills_reported += decoded.interval.fills.len() as u64;
+        self.counters.fills_omitted += u64::from(decoded.interval.fills_omitted);
         self.counters.refusals_reported +=
             decoded.interval.refusals.len() as u64 + u64::from(decoded.interval.refusals_omitted);
         if ingestion.halted.is_some() {

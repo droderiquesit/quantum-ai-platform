@@ -22,6 +22,7 @@
 
 use super::dna::StrategyDna;
 use super::factory::StrategyFactory;
+use super::whitelist::{ArbitragePolicy, WhitelistIssue, WhitelistOutcome};
 use qip_capital::allocation::{
     Allocation, AllocationLimits, AllocationPlan, CapitalAllocator, DrawdownSchedule,
     StrategyProposal,
@@ -37,17 +38,18 @@ use qip_compliance::plane::{CompliancePlane, ComplianceReport};
 use qip_compliance::signing::SigningKey;
 use qip_contracts::governance::{Approval, Severity};
 use qip_contracts::message::BookSide;
+use qip_contracts::policy::CycleWhitelist;
 use qip_contracts::signal::StrategyId;
-use qip_contracts::wire::CrossRecord;
+use qip_contracts::wire::{CrossRecord, FillRecord};
 use qip_contracts::{CapitalEnvelope, Utilisation};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, Timestamp};
-use qip_learning_engine::attribution::{Attribution, Attributor, PositionPeriod, split_pro_rata};
+use qip_learning_engine::attribution::{Attribution, Attributor, PositionPeriod};
 use qip_mesh::delta::DeltaOrder;
 use qip_observability::metrics::{Metrics, labels, names};
 use qip_risk_engine::autonomy::KillSwitch;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 /// The key id every signature the central plane makes is recorded under.
@@ -110,6 +112,16 @@ pub struct CentralConfig {
     pub minimum_cells_for_crowding: usize,
     /// Treat every incident as at least this severe.
     pub response_floor: Severity,
+    /// What the arbitrage desk may price, or `None` for nothing.
+    ///
+    /// The source of the shipping payload's cycle whitelist (slot 8), stated
+    /// by an operator because the centre holds no pair list and no fee
+    /// schedule of its own — see [`super::whitelist`]. `#[serde(default)]`
+    /// for the same reason [`crate::PlatformConfig::central`] is: a stored
+    /// configuration written before the desk had a producer still reads,
+    /// and reads as the fail-closed empty whitelist.
+    #[serde(default)]
+    pub arbitrage: Option<ArbitragePolicy>,
 }
 
 impl Default for CentralConfig {
@@ -132,6 +144,7 @@ impl Default for CentralConfig {
             dual_approval_threshold: Decimal::ZERO,
             minimum_cells_for_crowding: 3,
             response_floor: Severity::Observation,
+            arbitrage: None,
         }
     }
 }
@@ -150,6 +163,31 @@ pub struct ReconciliationBreak {
     /// What the venue, custodian or clearer says it holds.
     pub external_quantity: Decimal,
     pub detail: String,
+    /// Which record the break was found in. Defaulted so a break sealed
+    /// before the centre kept its own record of sent orders replays as what
+    /// it was: a disagreement between the cell's book and the venue's.
+    #[serde(default)]
+    pub origin: BreakOrigin,
+}
+
+/// Where a reconciliation break was found.
+///
+/// A break's direction is read from the sign of its quantity gap, which is
+/// the right reading for a book that disagrees with a venue and the wrong
+/// one for a fill the centre cannot match to any order it saw sent: there
+/// the "cell quantity" is nothing, so the sign would file it under
+/// `venue_over_cell` and an operator reading the series would go looking
+/// for a custody gap that does not exist. The origin says which record to
+/// open, and the direction is taken from it first.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BreakOrigin {
+    /// The cell's position book against the venue's account of it.
+    #[default]
+    Book,
+    /// A fill the cell reported on an order the centre never saw sent, or
+    /// beyond the quantity it saw sent. Found by [`CentralPlane::ingest`]
+    /// itself while settling, not shipped by the cell.
+    UnsentFill,
 }
 
 /// Which way a reconciliation break points.
@@ -164,6 +202,10 @@ pub enum BreakDirection {
     CellOverVenue,
     VenueOverCell,
     DetailOnly,
+    /// A fill on an order the centre never saw sent, or beyond what was
+    /// sent. The fourth arm: a venue claim with no order of the platform's
+    /// behind it, which is neither book over venue nor venue over book.
+    UnsentFill,
 }
 
 impl BreakDirection {
@@ -172,6 +214,7 @@ impl BreakDirection {
             Self::CellOverVenue => "cell_over_venue",
             Self::VenueOverCell => "venue_over_cell",
             Self::DetailOnly => "detail_only",
+            Self::UnsentFill => "unsent_fill",
         }
     }
 }
@@ -182,8 +225,12 @@ impl ReconciliationBreak {
         self.cell_quantity - self.external_quantity
     }
 
-    /// The bounded shape of this break, from the sign of [`Self::difference`].
+    /// The bounded shape of this break: its origin where the origin is
+    /// specific, and otherwise the sign of [`Self::difference`].
     pub fn direction(&self) -> BreakDirection {
+        if self.origin == BreakOrigin::UnsentFill {
+            return BreakDirection::UnsentFill;
+        }
         let difference = self.difference();
         if difference.is_positive() {
             BreakDirection::CellOverVenue
@@ -220,13 +267,23 @@ pub struct CellReport {
     /// What each strategy has committed against its envelope.
     pub utilisation: Vec<(StrategyId, Utilisation)>,
     pub reconciliation_breaks: Vec<ReconciliationBreak>,
-    /// Orders the cell sent since its previous report, each carrying the
-    /// contributor vector the cell netted it from. Incremental, unlike the
-    /// positions above: the centre attributes each one to its contributors'
-    /// books and never sees it again. Defaulted so a report written before
-    /// the field replays.
+    /// Orders the cell *sent* since its previous report — accepted by the
+    /// venue, not filled — each carrying the contributor vector the cell
+    /// netted it from. Incremental, unlike the positions above. The centre
+    /// registers each as sent, against which later fills are matched, and
+    /// books nothing from it: for one slice it attributed, charged and
+    /// settled every one of these as a fill, for orders still resting or
+    /// already expired. Defaulted so a report written before the field
+    /// replays.
     #[serde(default)]
     pub orders: Vec<DeltaOrder>,
+    /// Fills the venue confirmed since the previous report, each with the
+    /// cell's own attribution. The only thing the centre bills, attributes,
+    /// charges into the risk aggregate and moves positions from. Defaulted
+    /// so a report written before the field replays — as having confirmed
+    /// nothing, which is what it said.
+    #[serde(default)]
+    pub fills: Vec<FillRecord>,
     /// Internal crosses the cell booked since its previous report (§27.1).
     /// Incremental for the same reason.
     #[serde(default)]
@@ -242,6 +299,7 @@ impl CellReport {
             utilisation: Vec::new(),
             reconciliation_breaks: Vec::new(),
             orders: Vec::new(),
+            fills: Vec::new(),
             crosses: Vec::new(),
         }
     }
@@ -263,6 +321,11 @@ impl CellReport {
 
     pub fn with_orders(mut self, orders: Vec<DeltaOrder>) -> Self {
         self.orders = orders;
+        self
+    }
+
+    pub fn with_fills(mut self, fills: Vec<FillRecord>) -> Self {
+        self.fills = fills;
         self
     }
 
@@ -299,11 +362,21 @@ pub struct CellIngestion {
 /// strategy, pro rata. Every share booked here is a line in the attribution,
 /// and the attribution is exact — [`Attribution::residual`] is zero or the
 /// settlement is refused and counted, never absorbed.
+///
+/// Only the report's `fills` are settled. Its `orders` are registered as
+/// sent and counted under [`Self::orders_sent`], and a report carrying
+/// orders and no fills settles nothing — that is a cell with resting
+/// orders, not a break.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Settlement {
-    /// Contributor shares booked, across every order settled.
+    /// Contributor shares booked, across every fill settled.
     pub fills_attributed: usize,
-    pub orders_settled: usize,
+    /// Venue fills booked to the strategy books and charged to the aggregate.
+    pub fills_settled: usize,
+    /// Orders registered as sent — accepted by the venue, not filled — and
+    /// billed nothing. A resting order the venue later fills is billed then,
+    /// from the fill, and never from this count.
+    pub orders_sent: usize,
     pub crosses_settled: usize,
     /// Orders and crosses the centre would not settle, each with why. A
     /// refusal here is a report that carried something the books cannot
@@ -313,16 +386,22 @@ pub struct Settlement {
     /// The exact decomposition of everything settled, or `None` where the
     /// report carried nothing to settle.
     pub attribution: Option<Attribution>,
-    /// Every venue fill the settlement booked, one entry per order settled,
+    /// Every venue fill the settlement booked, one entry per fill settled,
     /// in report order — what the platform charges into its risk aggregate.
     ///
-    /// Recorded at the line that counts the order settled, so what the
+    /// Recorded at the line that counts the fill settled, so what the
     /// aggregate is charged and what the strategy books absorbed are one
     /// list rather than two readings of the report that could disagree.
     /// Crosses are deliberately absent: a cross moves one strategy's lot up
     /// and another's down inside the same cell, so the book's exposure is
     /// unchanged and charging it would be a gross that nobody holds.
     pub absorbed: Vec<AbsorbedFill>,
+    /// Breaks the settlement itself found: fills on orders the centre never
+    /// saw sent, or beyond what it saw sent. Each halts the cell exactly as
+    /// a break the cell shipped does; they are listed here so the caller
+    /// can see which fill was refused and why, and nothing in `absorbed`
+    /// or the books carries them.
+    pub breaks: Vec<ReconciliationBreak>,
 }
 
 /// One venue fill the centre absorbed from a cell's report.
@@ -470,6 +549,10 @@ pub struct CentralPlane {
     books: BTreeMap<(String, StrategyId, String), StrategyLot>,
     /// Closes every settlement's decomposition, or refuses it.
     attributor: Attributor,
+    /// Per cell, the orders it has reported sent and how much of each has
+    /// since filled — what a fill is matched against before it is billed.
+    /// Bounded per cell; see [`SentOrders`].
+    sent: BTreeMap<String, SentOrders>,
     /// Incidents raised here, so their ids are a deterministic counter rather
     /// than a generated id: a replay of the same reports produces the same
     /// incident record.
@@ -536,6 +619,14 @@ impl CentralPlane {
                 config.recall_acknowledgement.as_secs_f64()
             )));
         }
+        // Refused here for the same reason the recall window is: every
+        // refusal in `ArbitragePolicy::validate` is one the cell would make
+        // when the whitelist arrived, and a plane that carried one would ship
+        // a whitelist every few minutes that every cell refused whole, with
+        // the reason in a delta stream rather than at start-up.
+        if let Some(policy) = &config.arbitrage {
+            policy.validate()?;
+        }
         let key = SigningKey::from_secret(CENTRAL_KEY_ID, signing_secret)?;
         let limits = AllocationLimits::new(
             config.total_budget,
@@ -565,12 +656,63 @@ impl CentralPlane {
             recalls: RecallRegister::new(),
             books: BTreeMap::new(),
             attributor: Attributor::new(),
+            sent: BTreeMap::new(),
             incidents_raised: 0,
         })
     }
 
     pub fn config(&self) -> &CentralConfig {
         &self.config
+    }
+
+    /// The cycle whitelist this cell's payload carries at `now` — slot 8 of
+    /// blueprint §41.5 — and why.
+    ///
+    /// Empty, and said so, when no [`CentralConfig::arbitrage`] policy is set
+    /// or the desk's strategy holds no live grant at the cell: the grant's
+    /// order limit is the funding instrument's start size, and a whitelist
+    /// without one is refused by the cell's installer as unsized. An error is
+    /// a policy venue the grant does not permit, or a grant that permits no
+    /// order — refused at the producer, naming the entry, because the cell
+    /// would refuse the whole whitelist for the same reason and say so only
+    /// in its delta stream.
+    ///
+    /// Policy, not an order: this names what the desk may price and how much
+    /// it may commit. Whether any cycle is taken is decided at the cell,
+    /// against its own books.
+    pub fn cycle_whitelist_for(&self, cell: &str, now: Timestamp) -> Result<WhitelistIssue> {
+        let empty = |outcome| WhitelistIssue {
+            cell: cell.to_string(),
+            issued_at: now,
+            whitelist: CycleWhitelist {
+                cycles: BTreeMap::new(),
+                conversions: Vec::new(),
+                start_sizes: BTreeMap::new(),
+            },
+            outcome,
+        };
+        let Some(policy) = &self.config.arbitrage else {
+            return Ok(empty(WhitelistOutcome::NoPolicy));
+        };
+        let Some(envelope) = self
+            .envelopes
+            .get(&(cell.to_string(), policy.strategy.clone()))
+            .filter(|envelope| envelope.is_live(now))
+        else {
+            return Ok(empty(WhitelistOutcome::NoLiveGrant {
+                strategy: policy.strategy.clone(),
+            }));
+        };
+        let whitelist = policy.whitelist_for(envelope)?;
+        Ok(WhitelistIssue {
+            cell: cell.to_string(),
+            issued_at: now,
+            outcome: WhitelistOutcome::Emitted {
+                edges: whitelist.conversions.len(),
+                sized_against: envelope.signature().to_string(),
+            },
+            whitelist,
+        })
     }
 
     /// Count every strategy move the plane's ledger records, and every
@@ -914,14 +1056,23 @@ impl CentralPlane {
         // refusal in the recall step cannot leave a fill half-attributed.
         let settlement = self.settle(&report, now);
 
-        let halted = if report.reconciles() {
+        // The cell's breaks and the settlement's, halted together: a fill on
+        // an order the centre never saw sent is the venue's channel and the
+        // platform's record disagreeing, which is the same failure the cell
+        // halts itself on when its own drop copy finds it.
+        let breaks: Vec<ReconciliationBreak> = report
+            .reconciliation_breaks
+            .iter()
+            .chain(settlement.breaks.iter())
+            .cloned()
+            .collect();
+        let halted = if breaks.is_empty() {
             None
         } else {
-            Some(self.halt_cell(&report, now)?)
+            Some(self.halt_cell(&report.cell, &breaks, now)?)
         };
         if halted.is_some() {
-            let reason = report
-                .reconciliation_breaks
+            let reason = breaks
                 .iter()
                 .map(ReconciliationBreak::describe)
                 .collect::<Vec<_>>()
@@ -934,8 +1085,8 @@ impl CentralPlane {
                 now,
                 "central-plane:reconciliation",
                 format!(
-                    "{} position(s) at {} do not reconcile with the venue: {reason}",
-                    report.reconciliation_breaks.len(),
+                    "{} record(s) at {} do not reconcile with the venue: {reason}",
+                    breaks.len(),
                     report.cell
                 ),
             );
@@ -948,7 +1099,7 @@ impl CentralPlane {
             // its direction and the halt on its cause; neither the cell nor
             // the instrument is a label, because both are dimensions that
             // grow.
-            self.record_halt(&report.reconciliation_breaks);
+            self.record_halt(&breaks);
         }
 
         let concentrations = self.exposure.concentrations(&self.concentration);
@@ -968,19 +1119,32 @@ impl CentralPlane {
         })
     }
 
-    /// Attribute the interval's fills to their contributors and settle the
-    /// crosses, exactly, or say which entries could not be.
+    /// Register the interval's orders as sent, bill its fills to their
+    /// contributors and settle the crosses, exactly, or say which entries
+    /// could not be.
     ///
-    /// A fill is attributed to the contributors *on its own side*, pro rata
-    /// by the magnitude of their signed size. The contributors on the other
-    /// side received their fill in the cross the cell booked before the
-    /// order went out — that is what netting is — so crediting them a share
-    /// of the venue fill too would fill them twice. A netted order that
-    /// crossed nothing has contributors on one side only, where this is the
-    /// plain pro-rata split. An order shipped by a cell older than the
-    /// contributor vector names none, and is attributed whole to the strategy
-    /// the older wire named, counted under its own basis so the two cannot be
-    /// mistaken for each other.
+    /// **Orders bill nothing.** A `DeltaOrder` is what the cell sent and the
+    /// venue accepted; it is registered under its cell and order id, counted
+    /// under `qip_central_orders_sent_total`, and otherwise left alone. For
+    /// one slice this function read the order list as a fill list and
+    /// attributed, charged and settled orders that were still resting or
+    /// had expired unfilled. A report carrying orders and no fills settles
+    /// nothing, and that is a cell with open orders, not a break.
+    ///
+    /// **A fill is billed as the cell attributed it.** The shares on a
+    /// `FillRecord` are the cell's pro-rata split of what the venue reported
+    /// traded, and they sum to the fill or the fill is refused — the centre
+    /// does not re-split on a vector the fill no longer carries, and it does
+    /// not book a fill whose parts do not add up to the whole. Each share
+    /// moves one strategy's lot at the fill price.
+    ///
+    /// **A fill must name an order the centre saw sent**, in this report or
+    /// an earlier one, with enough quantity still unfilled to cover it. One
+    /// that does not is a [`BreakOrigin::UnsentFill`] break: a venue claim
+    /// with no order of the platform's behind it, which the caller halts
+    /// the cell on exactly as it halts on a break the cell shipped. It is
+    /// not booked and not charged, because a position the centre cannot
+    /// trace to an order is a position nobody authorised.
     ///
     /// A cross is settled only where its size per strategy is determinable:
     /// one buyer and one seller, each moved by the crossed quantity at the
@@ -999,88 +1163,104 @@ impl CentralPlane {
         let mut periods: Vec<PositionPeriod> = Vec::new();
         let mut total = Decimal::ZERO;
 
+        // Orders first, so a fill in the same report as its order matches.
         for order in &report.orders {
-            if !order.quantity.is_positive() || !order.price.is_positive() {
+            if !order.quantity.is_positive() {
                 self.refuse_settlement(
                     &mut settlement,
                     "order",
                     format!(
-                        "order {} has quantity {} at price {}; a fill needs both positive",
-                        order.order_id, order.quantity, order.price
+                        "order {} was reported sent for {}; a sent order needs a positive \
+                         quantity to be matched against",
+                        order.order_id, order.quantity
                     ),
                 );
                 continue;
             }
-            let direction = order_direction(order.side);
-            let same_side: Vec<(&StrategyId, Decimal)> = order
-                .contributors
-                .iter()
-                .filter(|contributor| contributor.signed_size.signum() == direction.signum())
-                .map(|contributor| (&contributor.strategy, contributor.signed_size.abs()))
-                .collect();
-            let (basis, shares): (&str, Vec<(StrategyId, Decimal)>) = if same_side.is_empty() {
-                if !order.contributors.is_empty() {
-                    self.refuse_settlement(
-                        &mut settlement,
-                        "order",
-                        format!(
-                            "order {} names {} contributor(s) and none on its own side; a {} \
-                             fill cannot be attributed to strategies that intended the opposite",
-                            order.order_id,
-                            order.contributors.len(),
-                            order.side.as_str()
-                        ),
-                    );
-                    continue;
-                }
-                (
-                    "largest_contributor",
-                    vec![(order.strategy.clone(), order.quantity)],
-                )
-            } else {
-                let weights: Vec<Decimal> = same_side.iter().map(|(_, size)| *size).collect();
-                match split_pro_rata(order.quantity, &weights) {
-                    Ok(split) => (
-                        "contributor_vector",
-                        same_side
-                            .iter()
-                            .zip(split)
-                            .map(|((strategy, _), share)| ((*strategy).clone(), share))
-                            .collect(),
+            let sent = self.sent.entry(report.cell.clone()).or_default();
+            if let Err(reason) = sent.register(&order.order_id, order.quantity) {
+                self.refuse_settlement(&mut settlement, "order", reason);
+                continue;
+            }
+            settlement.orders_sent += 1;
+            if let Some(metrics) = &self.metrics {
+                metrics.count(names::CENTRAL_ORDERS_SENT, labels([]));
+            }
+        }
+
+        for fill in &report.fills {
+            if !fill.quantity.is_positive() || !fill.price.is_positive() {
+                self.refuse_settlement(
+                    &mut settlement,
+                    "fill",
+                    format!(
+                        "fill on order {} has quantity {} at price {}; a fill needs both positive",
+                        fill.order_id, fill.quantity, fill.price
                     ),
-                    Err(error) => {
-                        self.refuse_settlement(
-                            &mut settlement,
-                            "order",
-                            format!(
-                                "order {} could not be split across its contributors: {}",
-                                order.order_id,
-                                error.message()
-                            ),
-                        );
-                        continue;
-                    }
-                }
-            };
-            for (strategy, share) in shares {
+                );
+                continue;
+            }
+            let sent = self.sent.entry(report.cell.clone()).or_default();
+            if let Err(detail) = sent.fill(&fill.order_id, fill.quantity) {
+                // Not refused: refused is for a record the books cannot take
+                // without guessing. This is a record the platform has no order
+                // behind, and the response to that is the halt, not a line in
+                // a list of refusals nobody pages on.
+                settlement.breaks.push(ReconciliationBreak {
+                    instrument: fill.object_id.as_str().to_string(),
+                    cell_quantity: Decimal::ZERO,
+                    external_quantity: fill.quantity,
+                    detail,
+                    origin: BreakOrigin::UnsentFill,
+                });
+                continue;
+            }
+            let shared: Decimal = fill.shares.iter().map(|share| share.quantity).sum();
+            if fill.shares.is_empty()
+                || fill
+                    .shares
+                    .iter()
+                    .any(|share| !share.quantity.is_positive())
+                || shared != fill.quantity
+            {
+                self.refuse_settlement(
+                    &mut settlement,
+                    "fill",
+                    format!(
+                        "fill of {} on order {} carries {} share(s) summing to {}; the shares \
+                         must be positive and sum to the fill exactly, or the difference is a \
+                         quantity nobody is attributed",
+                        fill.quantity,
+                        fill.order_id,
+                        fill.shares.len(),
+                        shared
+                    ),
+                );
+                continue;
+            }
+            let direction = order_direction(fill.side);
+            for share in &fill.shares {
                 let (period, gained) = self.book(
                     &report.cell,
-                    &strategy,
-                    order.object_id.as_str(),
-                    direction * share,
-                    order.price,
+                    &share.strategy,
+                    fill.object_id.as_str(),
+                    direction * share.quantity,
+                    fill.price,
                 );
                 periods.push(period);
                 total += gained;
                 settlement.fills_attributed += 1;
                 if let Some(metrics) = &self.metrics {
-                    metrics.count(names::CENTRAL_FILLS_ATTRIBUTED, labels([("basis", basis)]));
+                    metrics.count(
+                        names::CENTRAL_FILLS_ATTRIBUTED,
+                        labels([("basis", "contributor_vector")]),
+                    );
                 }
             }
-            settlement.orders_settled += 1;
+            settlement.fills_settled += 1;
             settlement.absorbed.push(AbsorbedFill {
-                object_id: order.object_id.as_str().to_string(),
-                signed_notional: direction * order.quantity * order.price,
+                object_id: fill.object_id.as_str().to_string(),
+                signed_notional: direction * fill.quantity * fill.price,
             });
         }
 
@@ -1232,25 +1412,27 @@ impl CentralPlane {
     }
 
     /// Record the incident a reconciliation break is, and apply the policy.
-    fn halt_cell(&mut self, report: &CellReport, now: Timestamp) -> Result<HaltScope> {
+    fn halt_cell(
+        &mut self,
+        cell: &str,
+        breaks: &[ReconciliationBreak],
+        now: Timestamp,
+    ) -> Result<HaltScope> {
         self.incidents_raised += 1;
         let summary = format!(
-            "{} position(s) reported by {} do not reconcile with the venue; every limit that \
+            "{} record(s) reported by {} do not reconcile with the venue; every limit that \
              cell checks locally is being checked against a book that is wrong",
-            report.reconciliation_breaks.len(),
-            report.cell
+            breaks.len(),
+            cell
         );
         let incident = Incident::new(
-            format!(
-                "inc-reconciliation-{}-{}",
-                report.cell, self.incidents_raised
-            ),
+            format!("inc-reconciliation-{}-{}", cell, self.incidents_raised),
             now,
             Severity::Cell,
             "central-plane",
             summary,
             None,
-            Some(report.cell.clone()),
+            Some(cell.to_string()),
         )?;
         Ok(self.compliance.incidents_mut().record(incident))
     }
@@ -1332,6 +1514,93 @@ impl CentralPlane {
     }
 }
 
+/// How many sent orders the centre remembers per cell.
+///
+/// An order leaves the register when its fills sum to what was sent; a
+/// partially filled or expired one stays until it is the oldest of this
+/// many. The bound is generous because the cost of eviction is stated and
+/// severe: a fill arriving for an evicted order is an unsent-fill break and
+/// halts the cell. That is the fail-closed direction — a fill the centre
+/// cannot trace is refused rather than believed — and it is much better
+/// than a register that grows with every order a cell ever sent.
+const MAX_SENT_ORDERS_PER_CELL: usize = 4_096;
+
+/// One order the centre saw a cell send, and how much of it has filled.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SentOrder {
+    quantity: Decimal,
+    filled: Decimal,
+}
+
+/// The orders one cell has reported sent, keyed by order id, bounded.
+///
+/// The map is what a fill is matched against; the deque is the eviction
+/// order, oldest first. Both are kept rather than one because a `BTreeMap`
+/// orders by id and the id carries no age.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct SentOrders {
+    by_id: BTreeMap<String, SentOrder>,
+    arrival: VecDeque<String>,
+}
+
+impl SentOrders {
+    /// Record an order as sent, or say why it cannot be.
+    ///
+    /// The same id reported sent twice is refused rather than summed: an
+    /// order id is the key a fill is matched under, and two sends behind one
+    /// key would make the register's quantity a number neither send said.
+    fn register(&mut self, order_id: &str, quantity: Decimal) -> std::result::Result<(), String> {
+        if self.by_id.contains_key(order_id) {
+            return Err(format!(
+                "order {order_id} was reported sent twice; the first send is kept and this one \
+                 is not added to it, because two sends under one id cannot be matched to fills"
+            ));
+        }
+        self.by_id.insert(
+            order_id.to_string(),
+            SentOrder {
+                quantity,
+                filled: Decimal::ZERO,
+            },
+        );
+        self.arrival.push_back(order_id.to_string());
+        while self.by_id.len() > MAX_SENT_ORDERS_PER_CELL {
+            let Some(oldest) = self.arrival.pop_front() else {
+                break;
+            };
+            self.by_id.remove(&oldest);
+        }
+        Ok(())
+    }
+
+    /// Match a fill against the order it names, or describe why it cannot be.
+    ///
+    /// An order whose fills now sum to its quantity leaves the register, so
+    /// a fill after that is an unsent fill like any other — the venue
+    /// reporting more than the platform asked for.
+    fn fill(&mut self, order_id: &str, quantity: Decimal) -> std::result::Result<(), String> {
+        let Some(order) = self.by_id.get_mut(order_id) else {
+            return Err(format!(
+                "the cell reports a fill of {quantity} on order {order_id} and the centre never \
+                 saw that order sent, in this report or any it retains"
+            ));
+        };
+        let remaining = order.quantity - order.filled;
+        if quantity > remaining {
+            return Err(format!(
+                "the cell reports a fill of {quantity} on order {order_id}, which was sent for {} \
+                 and has {remaining} unfilled; the excess was never sent",
+                order.quantity
+            ));
+        }
+        order.filled += quantity;
+        if order.filled >= order.quantity {
+            self.by_id.remove(order_id);
+        }
+        Ok(())
+    }
+}
+
 /// The signed direction of an order from the side of the book it takes.
 ///
 /// A buy lifts the offer, so the cell records it against the ask — the same
@@ -1390,6 +1659,164 @@ mod tests {
         Ok(())
     }
 
+    /// The refusals `qip-edge-node`'s `graph_from_whitelist` and
+    /// `sizes_from_whitelist` make, mirrored here because this crate cannot
+    /// depend on the node. If the node grows a refusal this does not mirror,
+    /// the producer can emit what the cell refuses, and this test stops
+    /// proving what its name says — so the list is the node's, in its order.
+    fn cell_would_accept(
+        whitelist: &CycleWhitelist,
+        venues: &[VenueId],
+    ) -> std::result::Result<(), String> {
+        const MAX_CONVERSIONS: usize = 256;
+        if whitelist.conversions.is_empty() {
+            return Err("no conversion".to_string());
+        }
+        if whitelist.conversions.len() > MAX_CONVERSIONS {
+            return Err("too many conversions".to_string());
+        }
+        let mut classes = BTreeMap::new();
+        for (position, conversion) in whitelist.conversions.iter().enumerate() {
+            let venue = VenueId::new(conversion.venue.as_str());
+            if !venues.contains(&venue) {
+                return Err(format!(
+                    "conversion {position} names a venue the cell may not trade"
+                ));
+            }
+            if conversion.from == conversion.to {
+                return Err(format!("conversion {position} converts into itself"));
+            }
+            if conversion.cost_fraction.is_negative() || conversion.cost_fraction >= Decimal::ONE {
+                return Err(format!("conversion {position} has a cost outside [0, 1)"));
+            }
+            if let Some(previous) = classes.insert(venue, conversion.venue_class)
+                && previous != conversion.venue_class
+            {
+                return Err(format!("conversion {position} reclassifies its venue"));
+            }
+            if !whitelist.start_sizes.contains_key(&conversion.from) {
+                return Err(format!(
+                    "conversion {position} leaves {} unsized",
+                    conversion.from
+                ));
+            }
+        }
+        for (object, size) in &whitelist.start_sizes {
+            if !size.is_positive() {
+                return Err(format!("{object} has a non-positive size"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Slot 8 shipped unproduced from every payload because nothing in the
+    /// centre produced it, so the desk the edge node could install from it
+    /// installed never. The plane now derives it from the operator's policy
+    /// and the desk's live grant, and what it derives is what the cell's
+    /// `graph_from_whitelist` accepts.
+    #[test]
+    fn a_plane_with_two_venues_and_a_pair_set_emits_a_whitelist_the_cell_would_accept() {
+        use super::super::whitelist::{ArbitragePolicy, WhitelistedMarket, WhitelistedVenue};
+        use qip_contracts::venue::VenueClass;
+
+        let desk = StrategyId::new("arb-desk");
+        let venue = |class, cost| WhitelistedVenue {
+            class,
+            taker_cost: cost,
+        };
+        let market = |venue: &str| WhitelistedMarket {
+            venue: venue.to_string(),
+            market: format!("AAA-USD@{venue}"),
+            base: "AAA".to_string(),
+            quote: "USD".to_string(),
+        };
+        let config = CentralConfig {
+            arbitrage: Some(ArbitragePolicy {
+                strategy: desk.clone(),
+                funding_instrument: "USD".to_string(),
+                venues: BTreeMap::from([
+                    (
+                        "XNYS".to_string(),
+                        venue(VenueClass::Exchange, dec!("0.0005")),
+                    ),
+                    (
+                        "XLON".to_string(),
+                        venue(VenueClass::Exchange, dec!("0.001")),
+                    ),
+                ]),
+                markets: vec![market("XNYS"), market("XLON")],
+                start_sizes: BTreeMap::from([("AAA".to_string(), dec!("100"))]),
+            }),
+            ..CentralConfig::default()
+        };
+        let mut plane = CentralPlane::new(&[7u8; 32], config).expect("the policy is valid");
+        let cell_venues = vec![VenueId::new("XNYS"), VenueId::new("XLON")];
+        let envelope = CapitalEnvelope::new(
+            desk.clone(),
+            CELL,
+            dec!("500000"),
+            dec!("25000"),
+            dec!("50000"),
+            cell_venues.clone(),
+            now(),
+            now().saturating_add(Duration::from_hours(8)),
+            "alice.chen",
+            "sig-arb-desk",
+        )
+        .expect("a well-formed grant");
+        plane
+            .envelopes
+            .insert((CELL.to_string(), desk.clone()), envelope);
+
+        let issue = plane
+            .cycle_whitelist_for(CELL, now())
+            .expect("two permitted venues emit");
+        // Premise: something was emitted, and it says what it was sized by.
+        assert_eq!(
+            issue.outcome,
+            WhitelistOutcome::Emitted {
+                edges: 4,
+                sized_against: "sig-arb-desk".to_string()
+            },
+            "{}",
+            issue.describe()
+        );
+        assert!(!issue.is_empty());
+        if let Err(reason) = cell_would_accept(&issue.whitelist, &cell_venues) {
+            panic!("the cell would refuse: {reason}");
+        }
+        // The funding size is the grant's order limit, and the grant alone
+        // decides it: the policy carried no size for USD.
+        assert_eq!(
+            issue.whitelist.start_sizes.get("USD"),
+            Some(&dec!("25000")),
+            "the funding instrument is sized by the grant"
+        );
+        // Both venues reach the whitelist with their own cost.
+        let costs: BTreeMap<&str, Decimal> = issue
+            .whitelist
+            .conversions
+            .iter()
+            .map(|conversion| (conversion.venue.as_str(), conversion.cost_fraction))
+            .collect();
+        assert_eq!(costs.get("XNYS"), Some(&dec!("0.0005")));
+        assert_eq!(costs.get("XLON"), Some(&dec!("0.001")));
+
+        // The same grant expired is no grant: the desk cannot be sized, and
+        // the whitelist says so instead of shipping stale sizes.
+        let later = now().saturating_add(Duration::from_hours(9));
+        let expired = plane
+            .cycle_whitelist_for(CELL, later)
+            .expect("an expired grant is an empty whitelist, not an error");
+        assert_eq!(
+            expired.outcome,
+            WhitelistOutcome::NoLiveGrant {
+                strategy: desk.clone()
+            }
+        );
+        assert!(expired.is_empty());
+    }
+
     fn position(strategy: &StrategyId) -> CellPosition {
         CellPosition {
             cell: CELL.to_string(),
@@ -1429,6 +1856,7 @@ mod tests {
                 cell_quantity: dec!("10"),
                 external_quantity: dec!("4"),
                 detail: "six lots the venue has no record of".to_string(),
+                origin: BreakOrigin::Book,
             });
         let outcome = plane.ingest(report, autonomy.kill_switch_mut(), now());
 

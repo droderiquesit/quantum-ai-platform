@@ -68,7 +68,7 @@ use qip_contracts::intent::Contributor;
 use qip_contracts::message::BookSide;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
-use qip_contracts::wire::{CrossRecord, MAX_CROSSES_PER_DELTA};
+use qip_contracts::wire::{CrossRecord, FillRecord, MAX_CROSSES_PER_DELTA, MAX_FILLS_PER_DELTA};
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, CorrelationId, Decimal, Id, Lineage, ObjectId, Timestamp};
 use qip_events::envelope::canonical_json;
@@ -168,9 +168,20 @@ pub struct DeltaRefusal {
 /// `qip_kernel`'s `CellReport` gives for carrying whole positions rather than
 /// position deltas, and it is deliberately the same answer.
 ///
-/// [`Self::orders`] and [`Self::refusals`] are **incremental**: they cover the
-/// interval since the previous delta. A receiver that overwrote them would lose
-/// the orders of every interval it did not sample.
+/// [`Self::orders`], [`Self::fills`] and [`Self::refusals`] are
+/// **incremental**: they cover the interval since the previous delta. A
+/// receiver that overwrote them would lose the orders of every interval it
+/// did not sample.
+///
+/// # Orders are what was sent; fills are what traded
+///
+/// [`Self::orders`] is the record of what the cell *sent* and the venue
+/// accepted. [`Self::fills`] is what the venue *reported filled*, and it is
+/// the only list the centre may bill from. For one slice the centre read the
+/// first as the second, and attributed, charged and settled orders that were
+/// still resting or had expired unfilled — two claims about the same fact,
+/// with the louder one wrong. A resting order is an open order and not a
+/// position, and the wire now says which is which.
 ///
 /// # It is not a position book
 ///
@@ -191,7 +202,21 @@ pub struct CellStateDelta {
     /// looks at, and absolute for that reason.
     pub halted: bool,
     pub utilisation: Vec<StrategyUtilisation>,
+    /// Orders the venue accepted this interval. Sent, not filled.
     pub orders: Vec<DeltaOrder>,
+    /// Fills the venue reported this interval, on orders from this interval
+    /// or an earlier one, each with the cell's own attribution — taken from
+    /// the confirmed set, never inferred from `orders`.
+    ///
+    /// `#[serde(default)]` so a delta sealed before the field existed still
+    /// replays, reading as having confirmed nothing — which is what it said.
+    #[serde(default)]
+    pub fills: Vec<FillRecord>,
+    /// Fills that did not fit in [`MAX_FILLS_PER_DELTA`]. Each one is a
+    /// fill the centre will never bill, so the count travels in the same
+    /// delta rather than waiting for a reconciliation to find the gap.
+    #[serde(default)]
+    pub fills_omitted: u32,
     pub refusals: Vec<DeltaRefusal>,
     /// Refusals that did not fit in [`MAX_REFUSALS_PER_DELTA`].
     #[serde(default)]
@@ -280,6 +305,14 @@ impl CellStateDelta {
             let omitted = self.crosses.len() - MAX_CROSSES_PER_DELTA;
             self.crosses.truncate(MAX_CROSSES_PER_DELTA);
             self.crosses_omitted = u32::try_from(omitted).unwrap_or(u32::MAX);
+        }
+        // Fills have their own budget for the same reason, and the stakes
+        // are higher: a fill evicted by a noisy gate would be a trade the
+        // centre never bills, so it must be counted here and not shared.
+        if self.fills.len() > MAX_FILLS_PER_DELTA {
+            let omitted = self.fills.len() - MAX_FILLS_PER_DELTA;
+            self.fills.truncate(MAX_FILLS_PER_DELTA);
+            self.fills_omitted = u32::try_from(omitted).unwrap_or(u32::MAX);
         }
     }
 }
@@ -1212,6 +1245,26 @@ mod tests {
             halted: false,
             utilisation: Vec::new(),
             orders: Vec::new(),
+            // Over the fill bound by a third amount. A fill dropped without a
+            // count is a trade the centre never bills and never hears it
+            // missed.
+            fills: (0..MAX_FILLS_PER_DELTA + 5)
+                .map(|index| FillRecord {
+                    order_id: format!("ord-{index}"),
+                    object_id: ObjectId::from_string("ACME"),
+                    venue: VenueId::new("XLON"),
+                    side: qip_contracts::message::BookSide::Ask,
+                    quantity: Decimal::from_int(1),
+                    price: Decimal::from_int(100),
+                    simulated: true,
+                    at: Timestamp::from_secs(1_000),
+                    shares: vec![qip_contracts::wire::FillShare {
+                        strategy: StrategyId::new("alpha"),
+                        quantity: Decimal::from_int(1),
+                    }],
+                })
+                .collect(),
+            fills_omitted: 0,
             refusals: (0..MAX_REFUSALS_PER_DELTA + 7)
                 .map(|index| DeltaRefusal {
                     gate: format!("gate-{index}"),
@@ -1248,6 +1301,12 @@ mod tests {
             delta.crosses_omitted, 3,
             "a dropped ledger entry the centre is never told about is the one \
              omission an examiner asks about"
+        );
+        assert_eq!(delta.fills.len(), MAX_FILLS_PER_DELTA);
+        assert_eq!(
+            delta.fills_omitted, 5,
+            "a fill dropped from the wire without a count is a trade the centre \
+             never bills and is never told it missed"
         );
     }
 }

@@ -167,7 +167,7 @@ pub use credential::{
     RequirementKind, Secret, VenueCredential, VenueRequirement, describe_missing,
     requirements_of_kind, standard_requirements,
 };
-pub use exchange::{BookableFill, ExchangeSettings, SimulatedExchange};
+pub use exchange::{BookableFill, ExchangeSettings, SimulatedDepth, SimulatedExchange};
 pub use ledger::{AccountLedger, MarginPolicy};
 pub use matching::{ExecutionOutcome, MatchingEngine, Participant, Resting, Trade};
 pub use rest::{

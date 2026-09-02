@@ -28,7 +28,7 @@ use qip_contracts::feature::FeatureKey;
 use qip_contracts::gate::GateStage;
 use qip_contracts::governance::{Approval, Control};
 use qip_contracts::signal::{SignalKind, StrategyId};
-use qip_contracts::venue::VenueId;
+use qip_contracts::venue::{VenueClass, VenueId};
 use qip_contracts::{CapitalEnvelope, Utilisation};
 use qip_core::error::Result;
 use qip_core::rng::{Rng, Xoshiro256};
@@ -40,8 +40,9 @@ use qip_financial::object::FinancialObject;
 use qip_financial::quality::{DataQuality, Provenance as DataProvenance};
 use qip_financial::universe::Universe;
 use qip_kernel::central::{
-    CellOutcome, CellReport, CentralConfig, CentralPlane, IssuedCapital, LearningVerdict,
-    ReconciliationBreak, StrategyCandidate, StrategyDna, capital_subject,
+    ArbitragePolicy, BreakOrigin, CellOutcome, CellReport, CentralConfig, CentralPlane,
+    IssuedCapital, LearningVerdict, ReconciliationBreak, StrategyCandidate, StrategyDna,
+    WhitelistIssue, WhitelistOutcome, WhitelistedMarket, WhitelistedVenue, capital_subject,
 };
 use qip_kernel::config::PlatformConfig;
 use qip_kernel::cycle::Stage;
@@ -61,6 +62,7 @@ use qip_strategy::catalogue::FeatureCatalogue;
 use qip_strategy::compile::{CompiledStrategy, StrategyCompiler};
 use qip_strategy::ir::{Expr, Rule, StrategySpec, Type};
 use qip_strategy::program::Program;
+use std::collections::BTreeMap;
 
 // --- the instants and identities every test shares ---------------------------
 
@@ -652,6 +654,7 @@ fn a_reconciliation_break_halts_that_cell_and_only_that_cell() -> Result<()> {
             cell_quantity: dec!("10"),
             external_quantity: dec!("4"),
             detail: "six lots the venue has no record of".to_string(),
+            origin: BreakOrigin::Book,
         });
     let ingestion = platform.ingest_cell_report(broken, start())?;
 
@@ -720,6 +723,7 @@ fn a_reconciliation_break_is_recorded_by_direction_and_the_halt_by_cause() -> Re
             cell_quantity: dec!("10"),
             external_quantity: dec!("4"),
             detail: "six lots the venue has no record of".to_string(),
+            origin: BreakOrigin::Book,
         });
     let ingestion = platform.ingest_cell_report(cell_over, start())?;
     assert_eq!(ingestion.halted, Some(HaltScope::Cell(CELL.to_string())));
@@ -750,6 +754,7 @@ fn a_reconciliation_break_is_recorded_by_direction_and_the_halt_by_cause() -> Re
             cell_quantity: dec!("1"),
             external_quantity: dec!("3"),
             detail: "two lots the cell never booked".to_string(),
+            origin: BreakOrigin::Book,
         });
     let ingestion = platform.ingest_cell_report(venue_over, start())?;
     assert_eq!(
@@ -814,6 +819,7 @@ fn a_break_with_equal_quantities_is_recorded_as_detail_only_and_still_halts() ->
         cell_quantity: dec!("10"),
         external_quantity: dec!("10"),
         detail: "the venue books the lot for T+1 and the cell for T+2".to_string(),
+        origin: BreakOrigin::Book,
     };
     // Premise: the quantities agree, so this is the arm neither sign selects.
     assert_eq!(reconciliation_break.difference(), Decimal::ZERO);
@@ -1375,5 +1381,256 @@ fn a_platform_signing_with_a_reproducible_secret_says_so_in_its_own_report() -> 
         signing_caveats.len() >= 2,
         "adding the key caveat dropped the ones the compliance plane recorded"
     );
+    Ok(())
+}
+
+// --- the cycle whitelist: slot 8 of the shipping payload -----------------------
+
+/// A policy trading `AAA` against `USD` at each of `venues`, funded in `USD`
+/// by the strategy the ladder tests issue a grant to.
+fn arbitrage_policy(venues: &[&str]) -> ArbitragePolicy {
+    ArbitragePolicy {
+        strategy: strategy(),
+        funding_instrument: "USD".to_string(),
+        venues: venues
+            .iter()
+            .map(|venue| {
+                (
+                    venue.to_string(),
+                    WhitelistedVenue {
+                        class: VenueClass::Exchange,
+                        taker_cost: dec!("0.0005"),
+                    },
+                )
+            })
+            .collect(),
+        markets: venues
+            .iter()
+            .map(|venue| WhitelistedMarket {
+                venue: venue.to_string(),
+                market: format!("AAA-USD@{venue}"),
+                base: "AAA".to_string(),
+                quote: "USD".to_string(),
+            })
+            .collect(),
+        start_sizes: BTreeMap::from([("AAA".to_string(), dec!("100"))]),
+    }
+}
+
+fn plane_with_arbitrage(policy: ArbitragePolicy) -> Result<CentralPlane> {
+    CentralPlane::new(
+        &[7u8; 32],
+        CentralConfig {
+            arbitrage: Some(policy),
+            ..CentralConfig::default()
+        },
+    )
+}
+
+/// The cell's installer reads an empty whitelist as
+/// `Installation::EmptyWhitelist` and installs no desk. That is the state a
+/// deployment is in until an operator sets `CentralConfig::arbitrage`, and
+/// this test is the statement that the default says so rather than shipping
+/// the slot unproduced and leaving the operator to infer it.
+#[test]
+fn an_unset_arbitrage_policy_emits_an_empty_whitelist_that_says_why() -> Result<()> {
+    let plane = plane()?;
+    // Premise: the default carries no policy.
+    assert!(plane.config().arbitrage.is_none());
+    let issue = plane.cycle_whitelist_for(CELL, start())?;
+    assert_eq!(issue.outcome, WhitelistOutcome::NoPolicy);
+    assert!(issue.is_empty(), "{}", issue.describe());
+    assert!(issue.whitelist.start_sizes.is_empty());
+
+    // A policy with no live grant for its strategy at the cell is the other
+    // empty case: nothing sizes the funding instrument, and the cell's
+    // installer would decline with no envelope regardless.
+    let plane = plane_with_arbitrage(arbitrage_policy(&[VENUE]))?;
+    let issue = plane.cycle_whitelist_for(CELL, start())?;
+    assert_eq!(
+        issue.outcome,
+        WhitelistOutcome::NoLiveGrant {
+            strategy: strategy()
+        }
+    );
+    assert!(issue.is_empty(), "{}", issue.describe());
+    Ok(())
+}
+
+/// The grant the ladder issues permits one venue. A policy trading at a
+/// second is refused where the whitelist is made, naming the venue — not at
+/// the cell, whose `graph_from_whitelist` would refuse the whole whitelist
+/// and say so only in its delta stream.
+#[test]
+fn a_policy_venue_the_grant_does_not_permit_is_refused_at_production_not_at_the_cell() -> Result<()>
+{
+    let now = start();
+    let id = strategy();
+
+    // Premise: with only the granted venue, the same grant emits.
+    let mut plane = plane_with_arbitrage(arbitrage_policy(&[VENUE]))?;
+    register(&mut plane, &id, CELL)?;
+    walk_to(&mut plane, &id, GateStage::Pilot)?;
+    let issued = issue(&mut plane, &id, CELL, now)?;
+    assert!(
+        issued.envelope().permits_venue(&venue())
+            && !issued.envelope().permits_venue(&VenueId::new("XLON")),
+        "the ladder grants one venue"
+    );
+    let accepted = plane.cycle_whitelist_for(CELL, now)?;
+    assert_eq!(
+        accepted.outcome,
+        WhitelistOutcome::Emitted {
+            edges: 2,
+            sized_against: issued.envelope().signature().to_string()
+        },
+        "{}",
+        accepted.describe()
+    );
+    assert_eq!(
+        accepted.whitelist.start_sizes.get("USD"),
+        Some(&issued.envelope().order_limit())
+    );
+
+    let mut plane = plane_with_arbitrage(arbitrage_policy(&[VENUE, "XLON"]))?;
+    register(&mut plane, &id, CELL)?;
+    walk_to(&mut plane, &id, GateStage::Pilot)?;
+    issue(&mut plane, &id, CELL, now)?;
+    let Err(error) = plane.cycle_whitelist_for(CELL, now) else {
+        panic!("a venue the grant does not permit should not reach a whitelist");
+    };
+    let message = error.to_string();
+    assert!(
+        message.contains("XLON") && message.contains("does not permit"),
+        "the refusal should name the venue: {message}"
+    );
+    Ok(())
+}
+
+/// A market naming a venue the policy does not describe has no class and no
+/// cost, so no conversion could be made from it. Refused when the plane
+/// assembles, naming the market, rather than when the first payload ships.
+#[test]
+fn a_market_at_an_undescribed_venue_is_refused_when_the_plane_assembles() -> Result<()> {
+    let mut policy = arbitrage_policy(&[VENUE]);
+    // Premise: the policy is accepted before the market is added.
+    plane_with_arbitrage(policy.clone())?;
+    policy.markets.push(WhitelistedMarket {
+        venue: "XPAR".to_string(),
+        market: "AAA-USD@XPAR".to_string(),
+        base: "AAA".to_string(),
+        quote: "USD".to_string(),
+    });
+    let Err(error) = plane_with_arbitrage(policy) else {
+        panic!("a market at an undescribed venue should not assemble");
+    };
+    let message = error.to_string();
+    assert!(
+        message.contains("XPAR") && message.contains("CentralConfig::arbitrage"),
+        "the refusal should name the venue and the field: {message}"
+    );
+    Ok(())
+}
+
+/// The slot's digest is over its serialised bytes, and `conversions` and
+/// `start_sizes` are skipped when empty so old signatures still verify. The
+/// other direction has to hold too: a payload carrying a produced whitelist
+/// must survive the wire and verify at the cell with every conversion intact.
+#[test]
+fn a_signed_payload_carrying_the_whitelist_round_trips_and_verifies() -> Result<()> {
+    use qip_contracts::policy::{PolicyPayload, Slot};
+    use qip_core::hash::to_hex;
+    use qip_core::hmac_sha256;
+
+    let now = start();
+    let id = strategy();
+    let mut plane = plane_with_arbitrage(arbitrage_policy(&[VENUE]))?;
+    register(&mut plane, &id, CELL)?;
+    walk_to(&mut plane, &id, GateStage::Pilot)?;
+    issue(&mut plane, &id, CELL, now)?;
+    let emitted = plane.cycle_whitelist_for(CELL, now)?;
+    // Premise: there is something to carry.
+    assert!(!emitted.is_empty(), "{}", emitted.describe());
+
+    let key = [9u8; 32];
+    let mut payload = PolicyPayload::unproduced(1, CELL, now);
+    payload.cycle_whitelist = Slot::produced(emitted.whitelist.clone(), now);
+    let signed = payload.signed(&key)?;
+
+    let wire = serde_json::to_string(&signed)?;
+    assert!(
+        wire.contains("\"conversions\"") && wire.contains("\"start_sizes\""),
+        "the produced fields must reach the wire"
+    );
+    let received: PolicyPayload = serde_json::from_str(&wire)?;
+    assert_eq!(
+        received.cycle_whitelist.value(),
+        Some(&emitted.whitelist),
+        "every conversion and size survives the wire"
+    );
+    // Verified the way `qip_edge::policy::VerifiedPolicy::verify` does — the
+    // kernel cannot depend on the edge, so the check is recomputed here.
+    let expected = to_hex(&hmac_sha256(&key, received.signing_payload()?.as_bytes()));
+    assert_eq!(
+        received.signature, expected,
+        "the signature verifies after the round trip"
+    );
+
+    // And a whitelist altered in flight does not: the slot digest is in the
+    // signing payload, so one changed cost is a different payload.
+    let mut altered = received.clone();
+    let mut whitelist = emitted.whitelist.clone();
+    whitelist.conversions[0].cost_fraction = dec!("0.5");
+    altered.cycle_whitelist = Slot::produced(whitelist, now);
+    let recomputed = to_hex(&hmac_sha256(&key, altered.signing_payload()?.as_bytes()));
+    assert_ne!(altered.signature, recomputed);
+    Ok(())
+}
+
+/// A whitelist that reached a cell with no record at the centre would be a
+/// permission reproducible from nothing. The platform's entry point journals
+/// every issue — including the empty ones, which are the fact an operator
+/// asking why the desk never installs needs to find.
+#[test]
+fn issuing_a_whitelist_through_the_platform_journals_what_was_issued() -> Result<()> {
+    use qip_events::{EventFilter, Topic};
+
+    let now = start();
+    let id = strategy();
+    let config = PlatformConfig::default().with_central(CentralConfig {
+        arbitrage: Some(arbitrage_policy(&[VENUE])),
+        ..CentralConfig::default()
+    });
+    let (context, _clock) = Context::deterministic(now, config.seed);
+    let mut platform = Platform::new(config, context, Telemetry::silent(), universe(), limits())?;
+    // Premise: nothing has been distributed yet.
+    let distributed = EventFilter::new().topic(Topic::PolicyDistributed);
+    assert!(platform.replay_journal(&distributed)?.is_empty());
+
+    let empty = platform.issue_cycle_whitelist(CELL, now)?;
+    assert_eq!(
+        empty.outcome,
+        WhitelistOutcome::NoLiveGrant {
+            strategy: id.clone()
+        }
+    );
+
+    register(platform.central_mut(), &id, CELL)?;
+    walk_to(platform.central_mut(), &id, GateStage::Pilot)?;
+    issue(platform.central_mut(), &id, CELL, now)?;
+    let emitted = platform.issue_cycle_whitelist(CELL, now)?;
+    assert!(!emitted.is_empty(), "{}", emitted.describe());
+
+    let recorded = platform.replay_journal(&distributed)?;
+    assert_eq!(recorded.len(), 2, "both issues were journaled");
+    let bodies: Vec<WhitelistIssue> = recorded
+        .iter()
+        .map(|event| {
+            event
+                .decode::<WhitelistIssue>()
+                .map(|envelope| envelope.body)
+        })
+        .collect::<Result<_>>()?;
+    assert_eq!(bodies, vec![empty, emitted]);
     Ok(())
 }

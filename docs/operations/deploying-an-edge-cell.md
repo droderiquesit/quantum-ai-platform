@@ -30,6 +30,14 @@ it can promise:
   Compute Engine image with the kernel command line the module verifies is a
   build step nobody has written. Until it exists, step 4 names an image
   somebody built by hand.
+* A node this module boots **runs passes**. The startup script writes
+  `QIP_VENUE_FEED=simulated` (`startup.sh.tftpl:174`), the one value
+  `qip-edge-node` accepts — any other stops the process naming ADR 0003
+  (`backend/crates/apps/qip-edge-node/src/feed.rs:118-131`) — and the loop
+  runs `Cell::work` over an in-process simulated venue's own depth, never
+  over the venues in step 5 (`6340610`). Proven in
+  `backend/crates/apps/qip-edge-node/tests/pass.rs`; run by no deployed
+  node, because of the first bullet.
 
 ## Do this
 
@@ -79,7 +87,8 @@ it can promise:
    that cannot trade, and a wide one produces a cell that can reach the
    internet. In shadow mode the node is *configured* for these venues and can
    *reach* none of them: no venue firewall rule is created at all while
-   `shadow_mode` is true (`main.tf:551-552`).
+   `shadow_mode` is true (`main.tf:551-552`). The passes the node runs in the meantime are priced
+   off the in-process simulator, not off any of these venues.
 
 6. **Set `create_egress_nat`.** True only when the node's region has no NAT of
    its own; a second NAT over the same subnetworks in one region is an apply
@@ -248,6 +257,9 @@ book serve no price.
 * **The boot image.** Nothing builds it; see above.
 * **The venue decision.** The ranges in step 5 come from the venue, and no
   venue has been chosen for any environment.
+* **A venue feed.** `QIP_VENUE_FEED` has one value, `simulated`. A feed from
+  a market is an architecture decision (ADR 0003), not a configuration line,
+  and this runbook does not describe one.
 * **The centre-to-node path.** Step 14. The blueprint's control fabric is
   Pub/Sub, and building it is work ADR 0024 names and does not do.
 * **A collector or an alert for the node.** The receiver is declared; nothing

@@ -479,13 +479,26 @@ fn an_order_the_cell_places_leaves_the_process_and_comes_back_on_the_drop_copy()
         "every submit carries a key derived from the order's terms"
     );
 
-    // And the fill came back on the independent channel, which is what
-    // reconciliation reads.
-    let drop_copies = gateway.drain_drop_copies();
-    assert_eq!(drop_copies.len(), 1, "{drop_copies:?}");
-    assert_eq!(drop_copies[0].order_id, "cell-1");
-    assert_eq!(drop_copies[0].quantity, dec!("10"));
-    assert_eq!(drop_copies[0].venue, venue());
+    // And the fill came back on the order-entry channel — the one the order
+    // went out on — and not on the drop copy, because this gateway holds no
+    // drop-copy session and must not pretend the acknowledgement is one.
+    let reports = gateway.execution_reports();
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert_eq!(reports[0].order_id, "cell-1");
+    assert_eq!(reports[0].quantity, dec!("10"));
+    assert_eq!(reports[0].venue, venue());
+    assert!(
+        gateway.drain_drop_copies().is_empty(),
+        "an acknowledgement was handed to the drop-copy channel, so reconciliation would \
+         compare the venue's answer with itself"
+    );
+    assert!(
+        gateway
+            .required_configuration()
+            .iter()
+            .any(|requirement| requirement.contains("drop-copy session")),
+        "the missing drop copy is not reported as a production requirement"
+    );
     assert_eq!(gateway.submitted_count(), 1);
     assert_eq!(gateway.rejected_count(), 0);
     assert_eq!(
@@ -533,7 +546,7 @@ fn a_submit_the_venue_never_answers_leaves_the_order_unknown_rather_than_rejecte
         "the order the venue never answered about is the one to alert on"
     );
     assert!(
-        gateway.drain_drop_copies().is_empty(),
+        gateway.execution_reports().is_empty() && gateway.drain_drop_copies().is_empty(),
         "an unknown order contributes no fills; inferring one would create a position \
          the venue does not have"
     );

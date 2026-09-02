@@ -648,10 +648,20 @@ impl Api {
                     // Policy is built under the same lock so its grant
                     // manifest and the dispatched grants describe one instant,
                     // and sent after it for the same reason capital is.
+                    // The cycle whitelist is issued and journaled here too,
+                    // under the same lock, which is why the platform is
+                    // borrowed mutably: a whitelist shipped without its
+                    // record would be a permission reproducible from nothing.
                     let cells: Vec<String> = mesh.cells().collect();
                     let policy_pending =
-                        crate::mesh::pending_policy(&platform, cells.into_iter(), now);
+                        crate::mesh::pending_policy(&mut platform, cells.into_iter(), now);
                     drop(platform);
+                    // Said on stderr as well as in the response: an operator
+                    // asking why a desk never installs reads the answer where
+                    // the policy was shipped from, whichever they reach first.
+                    for line in &policy_pending.whitelist {
+                        eprintln!("qip-api: {line}");
+                    }
                     let dispatched = mesh.dispatch(pending, now);
                     let policy = mesh.dispatch_policy(policy_pending, now);
                     crate::mesh::exchange_json(&drained, &dispatched, &policy)

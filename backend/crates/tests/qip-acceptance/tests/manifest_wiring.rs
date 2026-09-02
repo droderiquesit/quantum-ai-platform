@@ -807,6 +807,11 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
         "QIP_MESH_CELLS",
         THE_MESH_HAS_NO_PORT_ON_CLOUD_RUN,
     ),
+    (
+        "qip-api",
+        "QIP_ARBITRAGE_POLICY_PATH",
+        THE_MESH_HAS_NO_PORT_ON_CLOUD_RUN,
+    ),
     ("qip-api", "QIP_MESH_INBOX_CAPACITY", A_BOUND_NOT_A_DIAL),
     ("qip-api", "QIP_MESH_SPOOL_CAPACITY", A_BOUND_NOT_A_DIAL),
     ("qip-api", "QIP_STORAGE_ROOT", NO_VOLUME_TO_ROOT_IT_IN),

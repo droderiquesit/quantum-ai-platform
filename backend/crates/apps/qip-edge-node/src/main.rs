@@ -45,10 +45,12 @@ use qip_core::{Clock, Duration, SystemClock};
 use qip_edge::cell::PolledHalt;
 use qip_edge::cell::{Cell, CellConfig, Placer, WorkReport};
 use qip_edge_node::arbitrage::{ArbitrageInstaller, STRATEGY_VARIABLE};
+use qip_edge_node::feed::{FEED_VARIABLE, FeedChoice, SIMULATED_FEED, SimulatedFeed};
 use qip_edge_node::gateway::NodeGateway;
 use qip_edge_node::halt::{FLAG_VARIABLE, HaltFlag};
 use qip_edge_node::mesh::{MeshLink, MeshSettings, PEER_VARIABLE};
 use qip_edge_node::mirror::StoreMirror;
+use qip_edge_node::pass::{PassOutcome, PassStats, run_pass};
 use qip_edge_node::telemetry::{MeshSeries, respond};
 use qip_edge_node::venue::{ACKNOWLEDGEMENT_VARIABLE, ADAPTER_VARIABLE, VenueChoice};
 use qip_edge_node::{NodeAssembly, assemble};
@@ -102,6 +104,11 @@ struct NodeConfig {
     /// runs one. `None` installs no desk and is named in the production
     /// requirements — see `qip_edge_node::arbitrage`.
     arbitrage_strategy: Option<StrategyId>,
+    /// The feed the pass loop prices from. `None` is a node that runs no
+    /// pass at all — announced, never defaulted — and the only `Some` is the
+    /// simulator; see `qip_edge_node::feed` for why a live feed is refused
+    /// at start rather than read.
+    feed: Option<FeedChoice>,
 }
 
 impl NodeConfig {
@@ -172,6 +179,7 @@ impl NodeConfig {
             Ok(value) if !value.trim().is_empty() => Some(StrategyId::new(value.trim())),
             _ => None,
         };
+        let feed = FeedChoice::from_env()?;
 
         Ok(Self {
             cell_id,
@@ -183,6 +191,7 @@ impl NodeConfig {
             mesh,
             halt_flag,
             arbitrage_strategy,
+            feed,
         })
     }
 }
@@ -267,7 +276,31 @@ fn run() -> Result<()> {
     for line in choice.banner_lines(ceiling.as_str()) {
         println!("{line}");
     }
-    let gateway = NodeGateway::open(&choice, gateway_venue, started)?;
+    let mut gateway = NodeGateway::open(&choice, gateway_venue.clone(), started)?;
+
+    // The feed, bound to the cell before anything is served. Refused here,
+    // and not at the first pass, if the gateway it would price is not the
+    // simulator: a simulated feed on a live gateway would send real orders
+    // priced off a book nobody trades, and the node must not come up to
+    // find that out.
+    let mut feed = match config.feed {
+        Some(FeedChoice::Simulated) => {
+            if gateway.simulated_mut().is_none() {
+                return Err(Error::denied(format!(
+                    "configuration: {FEED_VARIABLE}={SIMULATED_FEED} prices passes off the \
+                     in-process venue, and this node's order entry is {} on {}; a simulated \
+                     feed does not drive a live gateway. Unset {ADAPTER_VARIABLE} or unset \
+                     {FEED_VARIABLE}",
+                    gateway.class(),
+                    gateway.venue()
+                )));
+            }
+            let feed = SimulatedFeed::new(gateway_venue);
+            feed.attach(&mut cell)?;
+            Some(feed)
+        }
+        None => None,
+    };
 
     // The store is opened and proven writable before the health surface binds.
     // A node that started, reported healthy, and only discovered at the first
@@ -331,10 +364,6 @@ fn run() -> Result<()> {
         None => None,
     };
 
-    // No venue connectivity is configured: this build has no credential for
-    // one, and inventing a feed would be worse than serving without it. The
-    // node serves its health surface so an orchestrator can see it, and
-    // reports what production would still have to supply.
     // The desk's installer, when the node is told which strategy funds it.
     // It holds nothing until a grant arrives over the mesh and installs
     // nothing until a whitelist does, so a node with no peer can never grow
@@ -348,6 +377,7 @@ fn run() -> Result<()> {
         config.mesh.is_some(),
         config.halt_flag.is_some(),
         installer.is_some(),
+        config.feed,
         &gateway,
     ) {
         println!("qip-edge-node: awaiting {requirement}");
@@ -362,7 +392,8 @@ fn run() -> Result<()> {
     serve(
         &config,
         &mut cell,
-        &gateway,
+        &mut gateway,
+        feed.as_mut(),
         &mut mirror,
         link.as_mut(),
         installer.as_mut(),
@@ -390,12 +421,27 @@ fn missing_production_requirements(
     has_mesh_peer: bool,
     has_halt_flag: bool,
     has_arbitrage_strategy: bool,
+    feed: Option<FeedChoice>,
     gateway: &NodeGateway,
 ) -> Vec<String> {
     let mut missing = vec![
         "QIP_VENUE_FEED_ENDPOINT and its multicast group or session credential".to_string(),
         "QIP_DROP_COPY_ENDPOINT for the independent fill channel".to_string(),
     ];
+    match feed {
+        // Passes run, and what they price off is said in the same breath:
+        // the simulator's book holds what rests there and nothing from any
+        // market, so an operator reading a non-zero order count knows what
+        // it is a count of.
+        Some(FeedChoice::Simulated) => missing.push(format!(
+            "a market: {FEED_VARIABLE}={SIMULATED_FEED} runs passes priced off the in-process \
+             venue's own resting depth, which holds only what this process rested there"
+        )),
+        None => missing.push(format!(
+            "{FEED_VARIABLE}={SIMULATED_FEED} to run passes at all: without it this node polls \
+             its halt, ships its journal and exchanges with the centre, and never decides"
+        )),
+    }
     if gateway.reaches_a_socket() {
         missing.extend(gateway.required_configuration());
     } else {
@@ -452,7 +498,8 @@ fn missing_production_requirements(
 fn serve(
     config: &NodeConfig,
     cell: &mut Cell,
-    gateway: &NodeGateway,
+    gateway: &mut NodeGateway,
+    mut feed: Option<&mut SimulatedFeed>,
     mirror: &mut StoreMirror,
     mut link: Option<&mut MeshLink>,
     mut installer: Option<&mut ArbitrageInstaller>,
@@ -470,6 +517,12 @@ fn serve(
     // rather than on every probe; an unreadable flag is printed every time,
     // because it is an incident for as long as it lasts.
     let mut last_polled: Option<PolledHalt> = None;
+    // The last pass's report, carried into the next probe's mesh exchange so
+    // the delta the centre receives describes trading that happened rather
+    // than an empty report. One probe behind, and said so: the pass runs
+    // after the exchange, per the order below.
+    let mut last_report = WorkReport::default();
+    let mut stats = PassStats::default();
     for incoming in listener.incoming() {
         match incoming {
             Ok(stream) => {
@@ -512,18 +565,40 @@ fn serve(
                 // tying capital renewal to how often something asks whether the
                 // cell is alive is a compromise, not a design.
                 //
-                // The work report is empty because no venue feed is configured
-                // in this build, so the delta reports the cell's authority and
-                // halt state rather than its trading.
+                // The report is the previous pass's — empty for a node with
+                // no feed, which then reports its authority and halt state
+                // rather than its trading, as it always has.
                 if let Some(link) = link.as_deref_mut() {
-                    let tick = link.exchange_with(
-                        cell,
-                        &WorkReport::default(),
-                        now,
-                        installer.as_deref_mut(),
-                    );
+                    let tick =
+                        link.exchange_with(cell, &last_report, now, installer.as_deref_mut());
                     if !tick.is_quiet() {
                         eprintln!("qip-edge-node: mesh exchange: {tick:?}");
+                    }
+                }
+                // The pass, after the halt poll and the exchange so it runs
+                // under the newest halt and the newest policy this probe
+                // could learn. Only the simulated gateway is ever passed:
+                // `run_pass` is typed to it, and a live gateway was refused
+                // beside the feed at start-up.
+                if let (Some(feed), Some(simulated)) =
+                    (feed.as_deref_mut(), gateway.simulated_mut())
+                {
+                    match run_pass(cell, simulated, feed, &mut stats, now) {
+                        Ok(PassOutcome::Ran { report, breaks, .. }) => {
+                            for detail in &breaks {
+                                eprintln!("qip-edge-node: reconciliation break: {detail}");
+                            }
+                            last_report = report;
+                        }
+                        Ok(PassOutcome::Halted { .. }) => {
+                            last_report = WorkReport::default();
+                        }
+                        // A pass that failed is a fact the journal already
+                        // holds where the cell refused; the loop keeps serving
+                        // so the halt poll and the flush keep running.
+                        Err(error) => {
+                            eprintln!("qip-edge-node: the pass failed: {}", error.message());
+                        }
                     }
                 }
                 let health = link.as_deref().map(MeshLink::health);
@@ -536,7 +611,16 @@ fn serve(
                     mesh_series.observe(health);
                 }
                 if let Err(error) = answer(
-                    stream, config, cell, gateway, mirror, health, started, metrics,
+                    stream,
+                    config,
+                    cell,
+                    gateway,
+                    feed.as_deref(),
+                    &stats,
+                    mirror,
+                    health,
+                    started,
+                    metrics,
                 ) {
                     eprintln!("qip-edge-node: health request failed: {}", error.message());
                 }
@@ -553,6 +637,8 @@ fn answer(
     config: &NodeConfig,
     cell: &Cell,
     gateway: &NodeGateway,
+    feed: Option<&SimulatedFeed>,
+    stats: &PassStats,
     mirror: &StoreMirror,
     mesh: Option<qip_edge_node::mesh::MeshHealth>,
     started: qip_core::Timestamp,
@@ -594,8 +680,29 @@ fn answer(
         ),
         None => "null".to_string(),
     };
+    // The pass loop's state: which feed, if any, and what its passes have
+    // done. `feed` is `null` for a node that runs no pass, so a probe can
+    // tell "never decides" from "decides and refuses everything" — the two
+    // read identically from the order count alone.
+    let pass = match feed {
+        Some(feed) => format!(
+            r#"{{"feed":"{}","instruments":{},"instruments_omitted":{},"passes":{},"halted_turns":{},"refusals":{},"signals":{},"orders":{},"fills":{},"expired":{},"breaks":{}}}"#,
+            SIMULATED_FEED,
+            feed.tracked(),
+            feed.omitted_total(),
+            stats.passes,
+            stats.halted,
+            stats.refusals,
+            stats.signals,
+            stats.orders,
+            stats.fills,
+            stats.expired,
+            stats.breaks,
+        ),
+        None => "null".to_string(),
+    };
     let body = format!(
-        r#"{{"cell":"{}","region":"{}","halted":{},"halt_flag":{halt_flag},"arbitrage_desk":{},"live_capable":{},"venues":{},"strategies":{},"journal_entries":{},"journal_shipped":{},"storage":"{}","durable":{},"gateway":{{"class":"{}","venue":"{}","submitted":{},"rejected":{},"reaches_a_socket":{},"unknown_orders":{}}},"mesh":{mesh},"started_at":{}}}"#,
+        r#"{{"cell":"{}","region":"{}","halted":{},"halt_flag":{halt_flag},"arbitrage_desk":{},"live_capable":{},"venues":{},"strategies":{},"journal_entries":{},"journal_shipped":{},"storage":"{}","durable":{},"gateway":{{"class":"{}","venue":"{}","submitted":{},"rejected":{},"reaches_a_socket":{},"unknown_orders":{}}},"pass":{pass},"mesh":{mesh},"started_at":{}}}"#,
         config.cell_id,
         config.region,
         cell.is_halted(),

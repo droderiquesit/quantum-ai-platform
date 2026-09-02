@@ -5,23 +5,29 @@
 //! what that process is assembled *from*, exposed so the pieces can be tested
 //! against the same types the binary uses rather than against a copy of them.
 //!
-//! Four modules, and all of them are seams: the venue seam, where the cell's
-//! orders meet a matching engine; the *selection* of that venue, which is the
-//! one decision in this binary whose wrong answer is not recoverable; the
-//! durability seam, where the cell's decision record leaves the process; and
-//! the mesh seam, where the cell's state reaches the central plane and the
-//! central plane's signed capital reaches the cell. Each is somewhere the node
+//! Every module is a seam: the venue seam, where the cell's orders meet a
+//! matching engine; the *selection* of that venue, which is the one decision
+//! in this binary whose wrong answer is not recoverable; the feed and the
+//! pass, where the venue's depth reaches the cell and the cell's decision
+//! reaches the venue; the durability seam, where the cell's decision record
+//! leaves the process; and the mesh seam, where the cell's state reaches the
+//! central plane and the central plane's signed capital reaches the cell.
+//! Each is somewhere the node
 //! could look healthy while doing nothing — or, in the venue's case, while
 //! doing something nobody asked for — so each is exercised against the types
 //! the binary actually uses.
 
 /// The arbitrage desk, built from the payload's whitelist once capital arrives.
 pub mod arbitrage;
+/// The simulated venue's quote feed, and the one value it may be configured as.
+pub mod feed;
 pub mod gateway;
 /// The second halt wire: a flag on the node's own filesystem, polled.
 pub mod halt;
 pub mod mesh;
 pub mod mirror;
+/// One pass of the node: feed, decide, act, reconcile.
+pub mod pass;
 /// The node's own metric seam: the mesh link, rendered as a series.
 pub mod telemetry;
 pub mod venue;
