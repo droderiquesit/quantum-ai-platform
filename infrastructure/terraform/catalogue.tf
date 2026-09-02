@@ -47,6 +47,15 @@ locals {
       cpu           = "2"
       memory        = "1Gi"
       concurrency   = 80
+      # Scales, because it is the one workload that can: it cycles only when
+      # asked (`POST /cycle`) and serves stateless reads the rest of the time.
+      # What a second instance costs it — per-process rate-limit counters,
+      # the cell registry — is written down in
+      # docs/operations/scaling-and-availability.md and is a degradation, not
+      # a corruption.
+      min_instances           = 0
+      max_instances           = 4
+      always_on_justification = ""
       # The audit chain's Cloud Storage adapter needs the proxy. Nothing in
       # `qip-api` reads `QIP_GCP_ENDPOINT` yet — `qip_storage::gcp` does, and
       # the composition root that constructs it is the change that sets the
@@ -124,6 +133,20 @@ locals {
       concurrency  = 1
       egress_proxy = false
       invokers     = []
+      # Exactly one instance, always. This binary opens the event log and
+      # runs the cycle on its own clock (`QIP_FASTBRAIN_CYCLE_INTERVAL_MS`);
+      # two instances would each run the cycle and each append to the same
+      # hash-chained log, and a fork in the chain is the corruption the chain
+      # exists to detect, not one it tolerates. The ceiling of one makes that
+      # structural. The floor of one is the other half: nothing calls this
+      # service — no scheduler, no invoker, and `POST /cycle` is the API's
+      # own route — so an instance Cloud Run retired for want of a request
+      # would never be started again and the cycle would simply stop. A
+      # floor also keeps the CPU allocated between requests, which a loop
+      # that never receives one needs.
+      min_instances           = 1
+      max_instances           = 1
+      always_on_justification = "Runs the cycle on its own clock over one hash-chained log; nothing requests it, so a retired instance is a stopped cycle and a second one is a forked chain."
       env = merge(
         {
           QIP_FASTBRAIN_HEALTH_ADDRESS = "0.0.0.0:8080"
@@ -171,6 +194,14 @@ locals {
       concurrency   = 1
       egress_proxy  = true
       invokers      = []
+      # One instance, for the fast brain's reason: this binary opens the
+      # event log and runs its loop on `QIP_CYCLE_INTERVAL_SECONDS` with
+      # nothing to wake it, so a second instance is a second writer of the
+      # same evidence and a zero floor is a research loop that ran until the
+      # first idle retirement and never again.
+      min_instances           = 1
+      max_instances           = 1
+      always_on_justification = "Runs the intelligence loop on its own clock over one hash-chained log; nothing requests it, so a retired instance is a stopped loop and a second one is a forked chain."
       env = {
         QIP_DEEPBRAIN_HEALTH_ADDRESS = "0.0.0.0:8080"
         QIP_STORAGE_TARGET           = var.storage_target
@@ -269,6 +300,14 @@ module "cloud_run" {
   concurrency    = each.value.concurrency
   container_port = 8080
   health_path    = each.value.health_path
+
+  # Instance bounds, from the entry rather than the module's defaults. A
+  # workload that runs the cycle over one journal is pinned to one instance
+  # and kept warm; the module's precondition refuses a floor above zero that
+  # the entry does not justify in writing.
+  min_instances           = each.value.min_instances
+  max_instances           = each.value.max_instances
+  always_on_justification = each.value.always_on_justification
 
   env           = each.value.env
   secret_mounts = each.value.secret_mounts

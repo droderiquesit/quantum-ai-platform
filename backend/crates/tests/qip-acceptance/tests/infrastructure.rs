@@ -2667,6 +2667,109 @@ fn every_cloud_run_container_declares_a_cpu_and_a_memory_limit() {
     }
 }
 
+/// The catalogue workloads whose binary opens the hash-chained event log and
+/// runs the cycle on its own clock, with the value each sets for a scaling
+/// field.
+///
+/// Read from the binaries rather than from a list here: the day a fourth
+/// binary opens the archive and loops on an interval, this finds it, and a
+/// list would not. Two facts make a workload one of these — `main.rs` opens
+/// the `ChainArchive`, and `config.rs` declares a `DEFAULT_CYCLE_INTERVAL` —
+/// because the API opens the archive too and cycles only when asked, which
+/// is a workload that may scale.
+fn workloads_that_run_the_cycle_over_the_journal(field: &str) -> Vec<(String, String)> {
+    catalogue_workloads()
+        .into_iter()
+        .filter(|(_, body)| {
+            let binary = catalogue_field(body, "binary");
+            let main = read(&format!("backend/crates/apps/{binary}/src/main.rs"));
+            let config =
+                repository_root().join(format!("backend/crates/apps/{binary}/src/config.rs"));
+            let config = std::fs::read_to_string(config).unwrap_or_default();
+            main.contains("ChainArchive::open(") && config.contains("DEFAULT_CYCLE_INTERVAL")
+        })
+        .map(|(name, body)| {
+            let value = catalogue_field(&body, field);
+            (name, value)
+        })
+        .collect()
+}
+
+#[test]
+fn every_workload_that_runs_the_cycle_over_the_journal_is_pinned_to_one_warm_instance() {
+    // The module's defaults are a floor of zero and a ceiling of four, sized
+    // for a request-serving workload. The two brains are not that: each runs
+    // the cycle on its own clock and appends to one hash-chained log. A
+    // second instance is a second writer, and two writers of one chain
+    // produce the fork the chain exists to detect — a double-run cycle
+    // reported as corruption rather than tolerated as redundancy. And a zero
+    // floor is a loop that stops: nothing requests these services, so the
+    // instance Cloud Run retires for want of a request is never started
+    // again. Both bounds belong in the catalogue, where a diff shows them,
+    // not in a default sized for something else.
+    let ceilings = workloads_that_run_the_cycle_over_the_journal("max_instances");
+    assert!(
+        !ceilings.is_empty(),
+        "no catalogue workload opens the event log and runs a cycle on its own \
+         clock; the binaries have been reshaped and every bound below is vacuous"
+    );
+    for (name, ceiling) in &ceilings {
+        assert_eq!(
+            ceiling, "1",
+            "{name} runs the cycle over the event log and may scale to {ceiling} \
+             instances; two would each run the cycle and fork the chain"
+        );
+    }
+    for (name, floor) in workloads_that_run_the_cycle_over_the_journal("min_instances") {
+        assert_eq!(
+            floor, "1",
+            "{name} runs the cycle on its own clock with a floor of {floor}; \
+             nothing requests it, so an instance retired for idleness is a \
+             cycle that never runs again"
+        );
+    }
+    for (name, why) in workloads_that_run_the_cycle_over_the_journal("always_on_justification") {
+        assert!(
+            why.len() > 40,
+            "{name} keeps a warm instance with no written reason; the module \
+             refuses that at plan time, and a reviewer should be able to read \
+             why without the plan"
+        );
+    }
+
+    // The API is the workload that may scale, and it still does: pinning it
+    // too would be the opposite mistake, a ceiling copied from the service
+    // next door.
+    let (_, body) = catalogue_workloads()
+        .into_iter()
+        .find(|(name, _)| name == "api")
+        .expect("the catalogue has an api entry");
+    let api_ceiling: u32 = catalogue_field(&body, "max_instances")
+        .parse()
+        .expect("the API's max_instances is a number");
+    assert!(
+        api_ceiling > 1,
+        "the API has been pinned to one instance, which it does not need"
+    );
+
+    // And the values reach the module rather than sitting in the entry: the
+    // catalogue passes each one through and the module applies it to the
+    // service's scaling block.
+    let catalogue = without_comments(&read(CATALOGUE));
+    let module = without_comments(&read(CLOUD_RUN_MODULE));
+    for field in ["min_instances", "max_instances", "always_on_justification"] {
+        assert!(
+            sets(&catalogue, field, &format!("each.value.{field}")),
+            "the catalogue no longer passes {field} to the module, so the entry's value is decoration"
+        );
+    }
+    assert!(
+        sets(&module, "max_instance_count", "var.max_instances")
+            && sets(&module, "min_instance_count", "var.min_instances"),
+        "the module no longer applies its instance bounds to the service"
+    );
+}
+
 /// No Kubernetes manifest exists for a credential to appear in; the property
 /// this test owned moved to the Cloud Run catalogue and is asserted there.
 ///
