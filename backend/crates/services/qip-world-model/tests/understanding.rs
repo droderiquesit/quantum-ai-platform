@@ -268,6 +268,49 @@ fn causal_chain() -> CausalGraph {
 }
 
 #[test]
+fn a_relationship_is_structure_and_never_a_path_a_shock_travels_along() {
+    // `RelationshipKind::transmits_shock` once said which edge kinds could
+    // carry a shock, and nothing consulted it: propagation runs over causal
+    // claims only. This is the rule it restated, asserted where it is held —
+    // a relationship asserted into the graph, however economically plausible,
+    // creates no causal edge and therefore no effect. Were `relate` ever to
+    // mint one, every index membership would read as contagion.
+    let mut world = WorldModel::new();
+    world.relate(
+        Relationship::new(
+            "kestrel",
+            "northwind",
+            RelationshipKind::Supplies,
+            0.9,
+            "filings",
+        ),
+        days_ago(400),
+        days_ago(400),
+        0.9,
+    );
+
+    // Premise: the relationship is in the graph and traversable.
+    let structural = world.graph().neighbours("kestrel", None, now(), now());
+    assert_eq!(structural.len(), 1, "the relationship must be in the graph");
+    assert_eq!(structural[0].relationship.to, "northwind");
+
+    assert!(
+        world.causal().outgoing("kestrel", now()).is_empty(),
+        "asserting a relationship must not claim a causal mechanism"
+    );
+    let result = world.propagate("kestrel", -0.10, 3, now(), now());
+    assert!(
+        result.effects.is_empty(),
+        "a shock travelled along a relationship nobody claimed a mechanism for: {:?}",
+        result.effects
+    );
+    assert_eq!(
+        result.truncated, 0,
+        "nothing was cut; there was nothing to walk"
+    );
+}
+
+#[test]
 fn a_shock_propagates_and_attenuates_with_each_hop() {
     let causal = causal_chain();
     let result = causal.propagate("kestrel", -0.10, 3, 0.001, now(), now());

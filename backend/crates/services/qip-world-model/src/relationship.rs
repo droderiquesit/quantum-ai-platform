@@ -4,8 +4,17 @@ use serde::{Deserialize, Serialize};
 
 /// The kinds of edge the graph carries.
 ///
-/// A closed set: adding one forces every exhaustive match to acknowledge it,
-/// which is how the causal layer stays aware of what it can traverse.
+/// A closed set: adding one forces every exhaustive match to acknowledge it.
+///
+/// A relationship is structure, never a path a shock travels along. The
+/// causal layer does not traverse these edges at all: propagation runs over
+/// [`crate::causal::CausalEdge`]s, each claimed with a mechanism and a
+/// transmission, and an index membership or an officer's seat becomes
+/// contagion only when somebody claims the mechanism by which it would. There
+/// used to be a `transmits_shock` predicate here that said which kinds could
+/// carry a shock; nothing consulted it, because the rule it stated is held
+/// structurally by the causal graph, and a bound nothing consults reads as
+/// protection and is not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RelationshipKind {
@@ -100,28 +109,6 @@ impl RelationshipKind {
     /// Whether the relationship is symmetric.
     pub fn is_symmetric(&self) -> bool {
         matches!(self, Self::Competitor | Self::CounterpartyOf)
-    }
-
-    /// Whether an economic shock can plausibly travel along this edge.
-    ///
-    /// Used to bound causal propagation: a shock does not travel along
-    /// "constituent of" in any economically meaningful direction, and letting
-    /// it would make every index move look causal.
-    pub fn transmits_shock(&self) -> bool {
-        matches!(
-            self,
-            Self::Supplies
-                | Self::Customer
-                | Self::Competitor
-                | Self::SubsidiaryOf
-                | Self::ConsumesCommodity
-                | Self::ProducesCommodity
-                | Self::RevenueExposure
-                | Self::SetsPolicyFor
-                | Self::DerivesFrom
-                | Self::CounterpartyOf
-                | Self::Issues
-        )
     }
 }
 
