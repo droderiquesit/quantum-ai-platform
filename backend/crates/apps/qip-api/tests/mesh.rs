@@ -34,6 +34,7 @@ use qip_contracts::intent::Contributor;
 use qip_contracts::message::BookSide;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
+use qip_contracts::wire::{FillRecord, FillShare};
 use qip_core::error::{Error, Result};
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Clock, Context, Decimal, ManualClock, ObjectId};
@@ -43,6 +44,7 @@ use qip_edge::mesh::{
     UplinkConfig,
 };
 use qip_kernel::{Platform, PlatformConfig};
+use qip_risk::AggregateFigures;
 use qip_storage::kv::MemoryKeyValueStore;
 use qip_transport::retry::{Sleeper, ThreadSleeper};
 use qip_transport::{ClientLimits, MemoryDeadLetters, MeshConfig, RetryPolicy};
@@ -265,6 +267,23 @@ fn delta(utilisation_orders_sent: u64) -> CellStateDelta {
                 },
             ],
         }],
+        // The venue's report on that order, as the cell attributes it. This
+        // is what the centre bills; the order above is only what was sent.
+        fills: vec![FillRecord {
+            order_id: "london-1-1".to_string(),
+            object_id: ObjectId::from_string("ACME"),
+            venue: VenueId::new("XLON"),
+            side: BookSide::Ask,
+            quantity: Decimal::from_int(60),
+            price: Decimal::from_int(100),
+            simulated: true,
+            at: start(),
+            shares: vec![FillShare {
+                strategy: StrategyId::new(STRATEGY),
+                quantity: Decimal::from_int(60),
+            }],
+        }],
+        fills_omitted: 0,
         refusals: Vec::new(),
         refusals_omitted: 0,
         reconciliation_breaks: Vec::new(),
@@ -272,6 +291,13 @@ fn delta(utilisation_orders_sent: u64) -> CellStateDelta {
         crosses: Vec::new(),
         crosses_omitted: 0,
     }
+}
+
+/// The same delta with its order still resting: sent, accepted, unfilled.
+fn unfilled_delta(utilisation_orders_sent: u64) -> CellStateDelta {
+    let mut delta = delta(utilisation_orders_sent);
+    delta.fills.clear();
+    delta
 }
 
 fn signed_grant() -> Result<CapitalEnvelope> {
@@ -677,11 +703,13 @@ fn a_cycle_ships_a_signed_payload_the_cell_verifies_and_a_trip_reaches_it() -> R
 /// The sink used to build the report from the standing alone and drop the
 /// interval, so the centre attributed no fill and settled no cross however
 /// much the cell traded: every strategy book at the centre stayed flat while
-/// the cell's own journal showed the orders. The premise is asserted first —
-/// no lot for the contributor before the drain — so a plane that already knew
-/// the position could not make this pass.
+/// the cell's own journal showed the orders. Then it carried the orders and
+/// the centre billed *those*, resting or not. The delta now carries the fill
+/// the venue confirmed, and it is the fill that reaches the book. The
+/// premise is asserted first — no lot for the contributor before the drain
+/// — so a plane that already knew the position could not make this pass.
 #[test]
-fn the_orders_a_cell_reports_reach_the_centres_strategy_books() -> Result<()> {
+fn the_fills_a_cell_reports_reach_the_centres_strategy_books() -> Result<()> {
     let rig = rig(64)?;
     let sent = uplink(&rig, "uplink")?.publish(delta(1), start())?;
     assert!(
@@ -713,12 +741,78 @@ fn the_orders_a_cell_reports_reach_the_centres_strategy_books() -> Result<()> {
     let lot = platform
         .central()
         .strategy_lot(CELL, &StrategyId::new(STRATEGY), "ACME")
-        .expect("the order the cell reported was not attributed to its contributor");
+        .expect("the fill the cell reported was not attributed to its contributor");
     assert_eq!(
         lot.quantity,
         Decimal::from_int(60),
-        "the whole fill belongs to the one contributor on the order's side"
+        "the whole fill belongs to the one strategy the cell's share names"
     );
+    Ok(())
+}
+
+/// The defect this slice closes, at the seam a deployment uses: a delta
+/// carrying a sent order and no fill used to be billed as a fill of the
+/// order's full size — a strategy book, a risk aggregate and a position for
+/// an order still resting at the venue. Premise first: the delta genuinely
+/// carries the order and no fill, and the centre holds nothing for the
+/// strategy before the drain.
+#[test]
+fn an_order_a_cell_reports_sent_and_unfilled_reaches_no_book_and_charges_nothing() -> Result<()> {
+    let rig = rig(64)?;
+    let resting = unfilled_delta(1);
+    assert_eq!(resting.orders.len(), 1, "the premise is a sent order");
+    assert!(
+        resting.fills.is_empty(),
+        "the premise is that nothing filled"
+    );
+    let sent = uplink(&rig, "uplink")?.publish(resting, start())?;
+    assert!(
+        sent.is_delivered(),
+        "the delta did not reach the inbox: {sent:?}"
+    );
+    {
+        let platform = rig
+            .platform
+            .lock()
+            .map_err(|_| Error::invalid("the platform lock is poisoned"))?;
+        assert!(
+            platform
+                .central()
+                .strategy_lot(CELL, &StrategyId::new(STRATEGY), "ACME")
+                .is_none()
+        );
+        assert!(platform.risk_figures().strategy_gross(CELL).is_zero());
+    }
+
+    let cycle = run_cycle(&rig)?;
+    assert_eq!(
+        cycle["mesh"]["drained"]["absorbed"], 1,
+        "the delta was not absorbed, so nothing below was tested: {cycle}"
+    );
+
+    {
+        // Scoped: the status read below takes the same lock.
+        let platform = rig
+            .platform
+            .lock()
+            .map_err(|_| Error::invalid("the platform lock is poisoned"))?;
+        assert!(
+            platform
+                .central()
+                .strategy_lot(CELL, &StrategyId::new(STRATEGY), "ACME")
+                .is_none(),
+            "a resting order was booked as a position"
+        );
+        assert!(
+            platform.risk_figures().strategy_gross(CELL).is_zero(),
+            "a resting order was charged to the risk aggregate as a fill"
+        );
+    }
+    // And the cell was not halted for it: an open order is not a break.
+    let status = mesh_status(&rig)?;
+    assert_eq!(status["counters"]["orders_reported"], 1, "{status}");
+    assert_eq!(status["counters"]["fills_reported"], 0, "{status}");
+    assert_eq!(status["counters"]["cell_halts"], 0, "{status}");
     Ok(())
 }
 

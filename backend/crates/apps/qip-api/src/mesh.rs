@@ -69,7 +69,7 @@ use qip_core::time::{Duration, Timestamp};
 use qip_core::{Clock, hash};
 use qip_events::AnyEvent;
 use qip_kernel::Platform;
-use qip_kernel::central::{CellReport, ReconciliationBreak};
+use qip_kernel::central::{BreakOrigin, CellReport, ReconciliationBreak};
 use qip_mesh::delta::{CellStanding, decode_cell_delta};
 use qip_mesh::spine::{
     CapitalDispatch, CapitalDispatcher, CellDeltaReceiver, CellDeltaSink, DispatcherConfig,
@@ -450,9 +450,17 @@ pub struct BackboneCounters {
     /// rather than halting the drain — see the sink for why the two failure
     /// classes part ways.
     pub undecodable: u64,
-    /// Orders reported across all deltas — the incremental half, summed,
-    /// which is the arithmetic that half is for.
+    /// Orders reported *sent* across all deltas — the incremental half,
+    /// summed, which is the arithmetic that half is for. Not fills: the
+    /// two are separate counts so the status surface cannot restate the
+    /// defect where one was read as the other.
     pub orders_reported: u64,
+    /// Fills reported across all deltas — what the centre billed.
+    pub fills_reported: u64,
+    /// Fills the cells said they could not fit on the wire. Each is a
+    /// trade the centre never billed, which is why it is a counter of its
+    /// own rather than folded into the one above.
+    pub fills_omitted: u64,
     /// Refusals reported across all deltas, counting the ones each delta
     /// said it truncated.
     pub refusals_reported: u64,
@@ -1135,6 +1143,7 @@ fn report_from(standing: &CellStanding) -> CellReport {
             cell_quantity: Decimal::ZERO,
             external_quantity: Decimal::ZERO,
             detail: detail.clone(),
+            origin: BreakOrigin::Book,
         });
     }
     if standing.reconciliation_breaks_omitted > 0 {
@@ -1149,6 +1158,7 @@ fn report_from(standing: &CellStanding) -> CellReport {
                 "{} further reconciliation break(s) the cell recorded but no longer retains",
                 standing.reconciliation_breaks_omitted
             ),
+            origin: BreakOrigin::Book,
         });
     }
     report
@@ -1189,11 +1199,14 @@ impl CellDeltaSink for IngestSink<'_> {
             }
         };
 
-        // The interval's orders and crosses ride the report, or the centre
-        // attributes no fill and settles no cross: a sink that drops them
-        // renders every strategy book flat however much the cell traded.
+        // The interval's orders, fills and crosses ride the report, or the
+        // centre attributes no fill and settles no cross: a sink that drops
+        // them renders every strategy book flat however much the cell traded.
+        // The orders travel as what was sent and the fills as what traded;
+        // the plane bills from the second and only registers the first.
         let report = report_from(&decoded.standing)
             .with_orders(decoded.interval.orders.clone())
+            .with_fills(decoded.interval.fills.clone())
             .with_crosses(decoded.interval.crosses.clone());
         // Recorded before the ingest so `/regions` knows the cell spoke even
         // when the plane goes on to halt it — a halted cell that looked
@@ -1203,6 +1216,8 @@ impl CellDeltaSink for IngestSink<'_> {
 
         self.counters.reports_ingested += 1;
         self.counters.orders_reported += decoded.interval.orders.len() as u64;
+        self.counters.fills_reported += decoded.interval.fills.len() as u64;
+        self.counters.fills_omitted += u64::from(decoded.interval.fills_omitted);
         self.counters.refusals_reported +=
             decoded.interval.refusals.len() as u64 + u64::from(decoded.interval.refusals_omitted);
         if ingestion.halted.is_some() {
