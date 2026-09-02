@@ -2033,6 +2033,133 @@ fn an_environment_can_be_brought_up_before_anything_has_been_deployed_to_it() {
 }
 
 #[test]
+fn the_workflow_grants_itself_the_reads_before_terraform_refreshes_with_them() {
+    // Terraform refreshes existing state before it applies anything, so a
+    // role this same run would grant declaratively is already too late for
+    // the refresh that needs it. Seven roles have been added to this loop one
+    // failed apply at a time; the last was found by a teardown that issued a
+    // GKE node pool delete, had it accepted, and then could not poll the
+    // operation it was handed:
+    //
+    //   Error waiting for deleting GKE NodePool: googleapi: Error 403:
+    //   Required "container.operations.get" permission(s)
+    //
+    // The delete had happened. The apply reported failure anyway and stopped
+    // with the runtime ADR 0024 retires half torn down.
+    let infra = read(".github/workflows/infra.yml");
+    let steps = job_steps(&infra);
+
+    let position = |needle: &str| {
+        steps
+            .iter()
+            .position(|step| step.contains(needle))
+            .unwrap_or_else(|| panic!("infra.yml has no step containing {needle}"))
+    };
+
+    let grant = position("for role in roles/");
+    let init = position("terraform init");
+
+    // Premise: the loop still grants, and grants to the account that plans.
+    let step = &steps[grant];
+    assert!(
+        step.contains("gcloud projects add-iam-policy-binding")
+            && step.contains("steps.identity.outputs.account"),
+        "the step no longer grants the planning account anything, so what \
+         this test asserts about its roles guards nothing"
+    );
+
+    // Ordering is the whole point: after init, every one of these is too late.
+    assert!(
+        grant < init,
+        "the self-grant runs at step {grant} and terraform init at {init}, so \
+         the refresh that needs these roles happens before they are held"
+    );
+
+    for role in [
+        "roles/cloudkms.publicKeyViewer",
+        "roles/binaryauthorization.attestorsAdmin",
+        "roles/run.admin",
+        "roles/dns.admin",
+        "roles/iap.admin",
+        "roles/identityplatform.admin",
+        // The one the halted teardown needed. Without it a delete that GKE
+        // accepted is reported as a failure, because the poll is denied.
+        "roles/container.clusterViewer",
+    ] {
+        assert!(
+            step.contains(&format!("{role} ")) || step.contains(&format!("{role};")),
+            "the self-grant loop no longer carries {role}, so the read it \
+             permits fails on the refresh ahead of the apply"
+        );
+    }
+
+    // And nothing in this loop may carry a write it does not need: the
+    // account already holds every write it uses, and container.admin would
+    // hand it the cluster-mutating half of the same product for a read.
+    assert!(
+        !step.contains("roles/container.admin"),
+        "the self-grant loop takes container.admin where a read was denied"
+    );
+}
+
+#[test]
+fn the_retired_backup_plan_is_forgotten_rather_than_deleted_with_its_backups() {
+    // The first apply of the Cloud Run runtime planned the GKE-era backup
+    // plan for destruction and the API refused:
+    //
+    //   Error 400: Resource '"...backupPlans/qip-dev-journal"' has nested
+    //   resources. If the API supports cascading delete, set 'force' to true.
+    //
+    // The nested resources are backups of the journal. `force = true` is the
+    // available answer and it deletes the evidence to unblock a migration.
+    let module = read("infrastructure/terraform/modules/backup/main.tf");
+
+    // Premise: the module is still the journal's backup mechanism, so this is
+    // a test about how it retires the old one rather than about a stub.
+    assert!(
+        module.contains("resource \"google_compute_resource_policy\" \"journal_snapshots\""),
+        "modules/backup no longer declares the snapshot schedule, so there is \
+         no mechanism here for the removed blocks to be retiring in favour of"
+    );
+    assert!(
+        !module.contains("resource \"google_gke_backup_backup_plan\""),
+        "modules/backup declares a GKE backup plan again, which ADR 0024 \
+         retired with the cluster"
+    );
+
+    // Forgotten, with the backups left where they are.
+    let forgotten = module
+        .split("removed {")
+        .skip(1)
+        .filter(|block| block.contains("destroy = false"))
+        .collect::<Vec<_>>();
+    assert!(
+        forgotten
+            .iter()
+            .any(|block| block.contains("from = google_gke_backup_backup_plan.journal")),
+        "the backup plan is not forgotten with destroy = false, so the apply \
+         either halts on it again or deletes it"
+    );
+
+    // Nothing anywhere may reach for the cascading delete.
+    for path in files_with_extension("infrastructure", "tf") {
+        // `terraform fmt` aligns the `=` of a block's arguments, so the
+        // literal spacing here is whatever its neighbours make it. This scan
+        // lost a mutation to exactly that before it was written this way.
+        let text = without_comments(&std::fs::read_to_string(&path).expect("readable"))
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            !text.contains("force = true"),
+            "{} sets force = true, which is how a backup plan is deleted \
+             together with the backups under it",
+            path.display()
+        );
+    }
+}
+
+#[test]
 fn the_infrastructure_workflow_reports_no_resource_count_it_did_not_read() {
     // `terraform state list | wc -l` printed `0` for a backend it could not
     // read exactly as it did for an environment holding nothing, so a broken
@@ -2338,6 +2465,30 @@ fn workflow_jobs(workflow: &str) -> Vec<(String, String)> {
 }
 
 /// The steps of one job body, each as its own text.
+// A `removed` block says an instance leaves Terraform's management. It is not
+// a declaration, and a scan looking for declarations must not read it as one.
+fn without_removed_blocks(text: &str) -> String {
+    let mut out = String::new();
+    let mut depth: Option<usize> = None;
+    for line in text.lines() {
+        match depth {
+            None => {
+                if line.trim_start().starts_with("removed ") && line.contains('{') {
+                    depth = Some(line.matches('{').count() - line.matches('}').count());
+                    continue;
+                }
+                out.push_str(line);
+                out.push('\n');
+            }
+            Some(open) => {
+                let next = open + line.matches('{').count() - line.matches('}').count();
+                depth = if next == 0 { None } else { Some(next) };
+            }
+        }
+    }
+    out
+}
+
 fn job_steps(job: &str) -> Vec<String> {
     let mut steps: Vec<Vec<&str>> = Vec::new();
     let mut item_indent: Option<usize> = None;
@@ -3594,8 +3745,16 @@ fn no_kubernetes_manifest_helm_chart_or_gitops_controller_remains() {
     }
 
     // No GKE resource in the Terraform.
+    //
+    // A `removed` block is exempt and has to be: it names the type precisely
+    // because it is telling Terraform to stop managing an instance of it, and
+    // forbidding the name would force the alternative — leaving the resource
+    // in the plan to be destroyed, which for the journal backup plan means
+    // deleting the backups. Only the declaring form is refused here.
     for path in files_with_extension("infrastructure/terraform", "tf") {
-        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        let content = without_removed_blocks(&without_comments(
+            &std::fs::read_to_string(&path).expect("readable"),
+        ));
         for resource in [
             "google_container_cluster",
             "google_container_node_pool",

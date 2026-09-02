@@ -27,6 +27,29 @@ stated plainly: the namespace-scoped plan needed nobody to remember anything,
 and the disk schedule needs an operator to run one command per node. The
 runbook step is the mitigation and it is a weaker one.
 
+The plan itself was not deleted. The first apply of the Cloud Run runtime
+planned it for destruction and the API refused — a backup plan with backups
+under it needs `force = true`, which deletes those backups — so the plan is
+forgotten by Terraform instead (`removed` with `destroy = false` in
+`main.tf`) and its backups remain in the project. **Restoring one now needs a
+grant put back first:** that same apply destroyed the backup service agent's
+`cloudkms.cryptoKeyEncrypterDecrypter` on `qip-<env>-journal-backups` before
+it reached the plan, so the agent can no longer decrypt what it wrote. The
+key survives — `google_kms_crypto_key.backups` carries `prevent_destroy` —
+and the grant is one command:
+
+```
+gcloud kms keys add-iam-policy-binding qip-<env>-journal-backups \
+  --location <region> --keyring qip-<env> --project <project> \
+  --member "serviceAccount:service-<project-number>@gcp-sa-gkebackup.iam.gserviceaccount.com" \
+  --role roles/cloudkms.cryptoKeyEncrypterDecrypter
+```
+
+Nothing in the configuration will do it, deliberately: re-declaring a
+GKE-era grant in a configuration that has no GKE in it would put the
+mechanism back on the map. Whoever needs a pre-ADR-0024 backup runs the
+command, restores, and drops the grant again.
+
 ## Positions and open orders are never restored
 
 By design. `docs/operations/disaster-recovery.md` is explicit that positions
