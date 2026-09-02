@@ -11,11 +11,20 @@ a deployment pointed at BigQuery that quietly served a JSON file would pass its
 smoke tests and lose every write.
 
 This file exists to make the same statement about the infrastructure. The
-Terraform in `infrastructure/terraform` provisions three managed services —
-Artifact Registry, a Cloud Storage evidence bucket, and the KMS keys — and
-deliberately provisions none of the others. Declaring Terraform for a service
-nothing can reach would create infrastructure that costs money, widens the
-attack surface and serves no request.
+Terraform in `infrastructure/terraform` instantiates seventeen modules from
+`main.tf` (`grep -c '^module "' infrastructure/terraform/main.tf`) plus the
+Cloud Run catalogue in `catalogue.tf`: the project APIs, the network, the
+secrets and KMS keys, the egress proxy, the trust zones, observability, the
+pipeline's identity, Artifact Registry, the evidence bucket, the data and AI
+modules, the execution node, Binary Authorization, connectivity, backup,
+Security Command Center and Identity Platform. What it does *not* do is
+provision a managed data or model service that nothing can reach: every
+target in the data-mesh table below sits behind an `enable_*` flag, and every
+environment holds every one of those flags `false`
+(`infrastructure/environments/{dev,test,stage,prod}/terraform.tfvars`, the
+`enable_bigquery` … `enable_vertex_ai` block in each). Declaring Terraform for
+a service nothing can reach would create infrastructure that costs money,
+widens the attack surface and serves no request.
 
 ---
 
@@ -173,10 +182,14 @@ though a control was in place.
 `infrastructure/terraform/modules/binaryauthorization` closes it: an asymmetric
 KMS signing key in the platform's existing key ring, a Container Analysis note,
 an attestor holding the public half, and a policy whose default rule is
-`REQUIRE_ATTESTATION` with `ENFORCED_BLOCK_AND_AUDIT_LOG` — plus the same rule
-pinned to the cluster, so loosening the default later does not quietly loosen
-the cluster that trades. `deploy.yml` signs each image by digest after the
-push. The attestor and key version it signs with are not repository variables
+`REQUIRE_ATTESTATION` with `ENFORCED_BLOCK_AND_AUDIT_LOG`. There is no
+per-cluster rule any more: the GKE runtime carried a second copy of the
+default pinned to the cluster, so that a loosened default could not reach the
+cluster that traded, but Cloud Run evaluates the default rule and nothing
+else, so that one rule is the whole control, and the variable that would
+loosen it, `exempt_image_patterns`, is deliberately not surfaced from the
+root (`modules/binaryauthorization/main.tf:234-240`). `deploy.yml` signs each
+image by digest after the push. The attestor and key version it signs with are not repository variables
 any more: the `derive the identity from the tfvars` step
 (`.github/workflows/deploy.yml:191-224`) constructs both from the
 environment's committed `project_id` and `region`, and
