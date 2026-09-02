@@ -16,11 +16,20 @@
 //! cannot be checked here: subtracting dollars from an edge quoted in units of
 //! a token is a units bug that produces a plausible number, and no assertion in
 //! this crate can tell the two apart.
+//!
+//! # This engine reports; the bounds live in the router
+//!
+//! There is deliberately no "spent so far" figure here for a caller to compare
+//! against the value at stake before escalating. One existed, and nothing
+//! compared it: the bound on cumulative spend is [`crate::Router::escalate`]
+//! refusing past [`crate::EscalationLimits::maximum_spend`], and the bound on a
+//! rung against the value at stake is [`crate::RoutingPolicy::affordable`]
+//! inside [`crate::Router::assess`]. A second figure of the same sum, owned
+//! here and consulted nowhere, read as a control and was not.
 
 use crate::data::{DataCostModel, DataReads};
 use crate::ledger::ComputeLedger;
 use qip_contracts::edge::{Deduction, DeductionKind, NetEdge};
-use qip_core::Decimal;
 use qip_core::error::Result;
 
 /// Turns what a decision spent into what its edge has to survive.
@@ -76,15 +85,5 @@ impl CostEngine {
     ) -> Result<NetEdge> {
         let (compute_deduction, data_deduction) = self.cost_deductions(compute, reads)?;
         Ok(edge.deduct(compute_deduction).deduct(data_deduction))
-    }
-
-    /// What reaching this decision has cost so far, compute and data together.
-    ///
-    /// The figure a caller compares against the value at stake *before*
-    /// escalating. By the time it is a deduction the money is spent, and a
-    /// deduction is only how the loss is reported.
-    pub fn spent_so_far(&self, compute: &ComputeLedger, reads: &DataReads) -> Result<Decimal> {
-        let (data_cost, _) = self.data.charge(reads)?;
-        Ok(compute.total_cost() + data_cost)
     }
 }
