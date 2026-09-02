@@ -1,5 +1,7 @@
 # Disaster recovery
 
+**Written for the retired runtime.** The GKE backup plan this page names left with the cluster under [ADR 0024](../adr/0024-the-blueprint-runtime-is-provisioned-in-code-and-the-gitops-runtime-is-retired.md); what backs up an execution node's journal now is the disk snapshot schedule in `infrastructure/terraform/modules/backup`, and a Cloud Run service holds nothing to back up. The first instruction on this page — reconcile positions from the venue, never from a backup — is unchanged. The rest needs rewriting for the snapshot schedule and is open work.
+
 **Do not restore positions from a backup.** Reconcile them from the venue. Everything
 else on this page is ordinary; that one instruction is the one that matters, and the
 reasoning is at the bottom.

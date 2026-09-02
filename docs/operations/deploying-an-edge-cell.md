@@ -1,5 +1,7 @@
 # Deploying a new edge cell
 
+**Written for the retired runtime.** This runbook brings a cell up as a Kubernetes StatefulSet synced by Argo CD; neither exists any more. Under [ADR 0024](../adr/0024-the-blueprint-runtime-is-provisioned-in-code-and-the-gitops-runtime-is-retired.md) a cell is one entry in `execution_nodes` in the environment's tfvars, provisioned by `infrastructure/terraform/modules/execution-node` as a Compute Engine machine under systemd, in shadow mode until a person takes it out. The nine cell names below still hold; the procedure does not, and rewriting it for the module is open work.
+
 **Before you start:** a cell trades on its own authority, inside a capital
 envelope granted in advance. Bringing one up wrong does not fail loudly — it
 produces a cell that either cannot reach its venue, or can reach more than its

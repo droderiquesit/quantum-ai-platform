@@ -1,5 +1,7 @@
 # Scaling and availability
 
+**Written for the retired runtime.** Replicas, KEDA and the autoscaler this page describes were retired under [ADR 0024](../adr/0024-the-blueprint-runtime-is-provisioned-in-code-and-the-gitops-runtime-is-retired.md). The rule at the top is unchanged and is now enforced by the catalogue: only the API takes `concurrency = 80`; the fast brain and the deep brain run at `concurrency = 1`, and Cloud Run's own scale-to-zero is bounded by `modules/cloudrun`. Rewriting the rest for Cloud Run is open work.
+
 **Only the API scales horizontally. Adding replicas to anything else here is a
 correctness change, not a capacity change.** That one sentence is the whole
 page; the rest is what to do when something makes you want to ignore it.

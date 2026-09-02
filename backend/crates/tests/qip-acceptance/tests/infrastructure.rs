@@ -2838,10 +2838,6 @@ const STILL_MENTIONS_THE_RETIRED_STACK: &[(&str, &str)] = &[
         "opens the Argo CD and Kargo consoles; retire it",
     ),
     (
-        ".claude/rules/domains/data-and-streaming.md",
-        "names the chart's egress.yaml as the proxy's only manifest; point it at infrastructure/egress/envoy.yaml",
-    ),
-    (
         "docs/operations/deploying-an-edge-cell.md",
         "the cell runbook, written for a StatefulSet; rewrite for modules/execution-node",
     ),

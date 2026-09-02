@@ -147,7 +147,9 @@ match sits. Every credential carries `expires_at` and expiry is refused.
 under 32 characters. Nothing secret enters the repository: Terraform creates
 secret *containers* and never a version — `no_secret_value_appears_in_the_terraform`
 refuses both `google_secret_manager_secret_version` and `secret_data`, and
-`no_credential_appears_in_a_kubernetes_manifest` covers the manifests;
+`no_credential_appears_in_a_kubernetes_manifest` — the name kept so this
+citation still resolves — now proves no manifest directory exists and scans
+the Cloud Run catalogue that replaced it (ADR 0024);
 [`scripts/check-secrets.sh`](../../scripts/check-secrets.sh) is the CI gate. The
 venue credential's IAM binding does not exist where `autonomy_ceiling =
 "paper_trading"`, so in every shipped environment the credential is unreadable
@@ -502,12 +504,14 @@ policy — every bound in `CapitalEnvelope` is private with no setter, and
 widening means asking the centre for a new grant. A compromised cell presenting
 a sibling's envelope is refused by the cell check in `VerifiedEnvelope::verify`.
 Halts are scoped, so one cell's reconciliation break does not stop the others.
-The infrastructure half: a default-deny `NetworkPolicy` in the namespace,
-private nodes with no public addresses and a private control plane, a
-per-deployable service account rather than the default compute one, workload
-identity so no key file lives on disk, and `GKE_METADATA` with the legacy
-endpoints disabled so a compromised pod cannot read the node's credentials.
-All of those are asserted structurally in
+The infrastructure half, on the blueprint runtime (ADR 0024): every trust
+zone and every execution node denies by default in both directions at
+priority 65000, a node may egress only to Google APIs, the central plane and
+its own venues — and the venue rule does not exist while the node is in
+shadow mode; every Cloud Run service is internal-ingress; the node has no
+external address and no container runtime; a per-deployable service account
+rather than the default compute one; and no service-account key anywhere,
+so no key file lives on disk. All of those are asserted structurally in
 [`infrastructure.rs`](../../backend/crates/tests/qip-acceptance/tests/infrastructure.rs).
 
 **What does not.** **Halt state is process-local** — a recorded caveat, and the

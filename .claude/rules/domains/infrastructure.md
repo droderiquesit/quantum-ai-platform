@@ -9,7 +9,9 @@
   `infrastructure/environments/<env>/terraform.tfvars`.
 - **Workload Identity Federation only.** No service-account keys anywhere,
   including in examples.
-- Secrets reach pods as files via the Secret Manager CSI driver.
+- Secrets reach a process as files: a Secret Manager volume on a Cloud Run
+  service, a tmpfs the execution node's startup script fetches into. Never an
+  environment value (ADR 0024).
 - Binary Authorization on every deployed image; upstream images pinned by
   digest, never by tag — a policy that trusts a tag trusts whoever can push it.
 - Workflows derive their identity from committed tfvars. A repository variable

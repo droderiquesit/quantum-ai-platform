@@ -1,5 +1,7 @@
 # Enabling live trading
 
+**One reference below is stale.** The `qip-config` ConfigMap this page names left with the cluster under [ADR 0024](../adr/0024-the-blueprint-runtime-is-provisioned-in-code-and-the-gitops-runtime-is-retired.md); every workload now takes its ceiling from the root's `autonomy_ceiling` through `infrastructure/terraform/catalogue.tf`. Nothing else here changes: the plan-time refusal in `variables.tf`, the composition roots' refusal and the cell's constructor are all intact, and this page still authorises nothing.
+
 Four steps, in order. Each is a separate control and none can be skipped.
 
 ## 1. Raise the deployment ceiling

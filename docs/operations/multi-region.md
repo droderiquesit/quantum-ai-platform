@@ -1,5 +1,7 @@
 # Multi-region
 
+**Written for the retired runtime.** Node pools, overlays and the cluster topology this page reasons about were retired under [ADR 0024](../adr/0024-the-blueprint-runtime-is-provisioned-in-code-and-the-gitops-runtime-is-retired.md). The finding still holds — a second region is a property of the binaries, not of configuration — and the shape is now one execution node per region from `execution_nodes`, with the central plane on Cloud Run in one region. Rewriting the evidence for that shape is open work.
+
 **A second region is not a set of manifests.** The central plane cannot be run
 twice, and the cells are not in the regions they name. Both are properties of
 the binaries and the cluster topology, not of the YAML, and no overlay
