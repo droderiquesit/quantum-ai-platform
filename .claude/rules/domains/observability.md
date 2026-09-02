@@ -39,8 +39,10 @@ serves the same handle's snapshot as Prometheus exposition; every other path
 still answers the JSON health body. The series and what each is keyed on:
 
 - `qip_edge_halted{source}` — a gauge per halt discipline (`kill_switch`,
-  `policy`), written wherever either halt can change and at wiring time, so a
-  cell halted before its first pass still reports halted.
+  `policy`, and since `ff86473` `polled`, §46.2's second wire — the flag
+  `qip-edge-node` polls on its own filesystem; `qip-edge/src/telemetry.rs:172-193`),
+  written wherever any halt can change and at wiring time, so a cell halted
+  before its first pass still reports halted.
 - `qip_edge_capability_freshness{capability}` and `qip_edge_sizing_multiplier`
   — the §6.2 table as the pass actually sized against it, recorded per pass.
   Only the three policy-fed capabilities are published; `ingestion` and
