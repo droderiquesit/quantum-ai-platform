@@ -388,22 +388,20 @@ impl DataFinder {
             ),
         );
 
-        RegistrationDecision::new(
+        // The legality assessment is handed to the constructor rather than
+        // attached afterwards: `registered` is the only way to a `Registered`
+        // outcome, and it refuses an assessment that did not permit
+        // collection.
+        RegistrationDecision::registered(
             id,
-            DecisionOutcome::Registered {
-                routing,
-                policy: Box::new(policy),
-                entitlements,
-            },
+            legality,
+            routing,
+            policy,
+            entitlements,
             reasoning,
             now,
         )
-        .map(|decision| {
-            decision
-                .with_legality(legality)
-                .with_scores(scores)
-                .with_lineage(lineage)
-        })
+        .map(|decision| decision.with_scores(scores).with_lineage(lineage))
     }
 
     /// What robots.txt says about this endpoint.

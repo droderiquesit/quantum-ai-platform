@@ -131,16 +131,60 @@ impl Reasoning {
     }
 }
 
+/// The terms a source is collected under.
+///
+/// Fields are private and there is no public constructor: the only code that
+/// can build one is [`RegistrationDecision::registered`], which takes the
+/// [`LegalAssessment`] and refuses unless it permits collection. Before this
+/// type existed the `Registered` outcome had public fields, so any caller
+/// could assemble one from a routing and a policy and ask for a
+/// [`RegistrationDecision::catalogue_entry`] — a catalogue entry for a source
+/// whose licence nobody had read, produced by a path that never touched the
+/// gate this crate exists to hold. The mesh catalogue is what the rest of the
+/// platform consults before it uses a dataset, so an entry that skipped
+/// legality is a research-only feed that trades.
+///
+/// ```compile_fail
+/// use qip_data_finder::decision::{DecisionOutcome, Registration};
+/// use qip_data_finder::legal::SourcePolicy;
+/// use qip_data_finder::scoring::Routing;
+///
+/// fn forge(routing: Routing, policy: SourcePolicy) -> DecisionOutcome {
+///     DecisionOutcome::Registered(Registration {
+///         routing,
+///         policy: Box::new(policy),
+///         entitlements: Vec::new(),
+///     })
+/// }
+/// ```
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Registration {
+    routing: Routing,
+    policy: Box<SourcePolicy>,
+    entitlements: Vec<Entitlement>,
+}
+
+impl Registration {
+    pub fn routing(&self) -> &Routing {
+        &self.routing
+    }
+
+    pub fn policy(&self) -> &SourcePolicy {
+        &self.policy
+    }
+
+    pub fn entitlements(&self) -> &[Entitlement] {
+        &self.entitlements
+    }
+}
+
 /// What the finder decided to do with a source.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum DecisionOutcome {
-    /// Collect it, under this policy and these entitlements.
-    Registered {
-        routing: Routing,
-        policy: Box<SourcePolicy>,
-        entitlements: Vec<Entitlement>,
-    },
+    /// Collect it, under the policy and entitlements in the [`Registration`].
+    /// Only [`RegistrationDecision::registered`] can produce this arm.
+    Registered(Registration),
     /// Do not collect it.
     Rejected { reason: String },
     /// Nothing was decided, because the source could not be reached. Distinct
@@ -171,7 +215,7 @@ impl DecisionOutcome {
 
     pub fn routing_class(&self) -> RoutingClass {
         match self {
-            Self::Registered { routing, .. } => routing.class(),
+            Self::Registered(registration) => registration.routing.class(),
             Self::Rejected { .. } | Self::Deferred { .. } | Self::Quarantined { .. } => {
                 RoutingClass::Rejected
             }
@@ -182,7 +226,10 @@ impl DecisionOutcome {
 /// One source, one decision, and the trail that produced it.
 ///
 /// Fields are private and both constructors demand reasoning, so an
-/// unauditable decision cannot be built.
+/// unauditable decision cannot be built. Of the two, only
+/// [`Self::registered`] can produce the `Registered` outcome, and it takes the
+/// legality assessment as an argument rather than trusting the caller to have
+/// consulted one.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RegistrationDecision {
     source_id: String,
@@ -195,10 +242,13 @@ pub struct RegistrationDecision {
 }
 
 impl RegistrationDecision {
-    /// Record a decision.
+    /// Record a decision not to collect: a rejection, a deferral or a
+    /// quarantine.
     ///
-    /// Refuses empty reasoning. This is the only gate: there is no other way
-    /// to construct the type, and no setter that can empty it afterwards.
+    /// Refuses empty reasoning, and there is no setter that can empty it
+    /// afterwards. A `Registered` outcome cannot reach this constructor from
+    /// outside the crate, because [`Registration`] has no public constructor;
+    /// registering goes through [`Self::registered`].
     pub fn new(
         source_id: impl Into<String>,
         outcome: DecisionOutcome,
@@ -221,6 +271,56 @@ impl RegistrationDecision {
             reasoning,
             decided_at,
         })
+    }
+
+    /// Record a decision to collect.
+    ///
+    /// The legality assessment is an argument, not an afterthought: the
+    /// `Registered` outcome is built here and nowhere else, so a source cannot
+    /// be registered without the licensing, robots and host questions having
+    /// been asked, and cannot be registered when any of them answered no. The
+    /// routing carries the same verdict a second time — [`Routing::decide`]
+    /// rejects on legality — and both are checked, because the two were
+    /// computed separately and a caller that pairs a permitted assessment with
+    /// a routing decided against a different one has made the mistake this
+    /// constructor exists to catch.
+    pub fn registered(
+        source_id: impl Into<String>,
+        legality: LegalAssessment,
+        routing: Routing,
+        policy: SourcePolicy,
+        entitlements: Vec<Entitlement>,
+        reasoning: Reasoning,
+        decided_at: Timestamp,
+    ) -> Result<Self> {
+        let source_id = source_id.into();
+        if !legality.overall().is_permitted() {
+            return Err(Error::denied(format!(
+                "source `{source_id}` cannot be registered: its legality for {} is {}; a source \
+                 whose collection is not permitted has no catalogue entry, whatever its score",
+                legality.usage().as_str(),
+                legality.overall().describe()
+            )));
+        }
+        if !routing.class().is_collected() {
+            return Err(Error::denied(format!(
+                "source `{source_id}` cannot be registered: it was routed to `{}` ({})",
+                routing.class().as_str(),
+                routing.basis()
+            )));
+        }
+        let mut decision = Self::new(
+            source_id,
+            DecisionOutcome::Registered(Registration {
+                routing,
+                policy: Box::new(policy),
+                entitlements,
+            }),
+            reasoning,
+            decided_at,
+        )?;
+        decision.legality = Some(legality);
+        Ok(decision)
     }
 
     pub fn with_legality(mut self, legality: LegalAssessment) -> Self {
@@ -275,7 +375,15 @@ impl RegistrationDecision {
     /// The policy an adapter must obey, where one was issued.
     pub fn policy(&self) -> Option<&SourcePolicy> {
         match &self.outcome {
-            DecisionOutcome::Registered { policy, .. } => Some(policy),
+            DecisionOutcome::Registered(registration) => Some(registration.policy()),
+            _ => None,
+        }
+    }
+
+    /// The terms the source is collected under, where it is collected.
+    pub fn registration(&self) -> Option<&Registration> {
+        match &self.outcome {
+            DecisionOutcome::Registered(registration) => Some(registration),
             _ => None,
         }
     }
@@ -285,8 +393,12 @@ impl RegistrationDecision {
     /// The finder does not keep its own catalogue. It produces the mesh's
     /// registration type, entitlements included, so there is one answer to
     /// "what may this dataset be used for" rather than two that can disagree.
+    ///
+    /// Only a `Registered` outcome has an entry, and only
+    /// [`Self::registered`] produces that outcome, so every entry this returns
+    /// passed the legality assessment.
     pub fn catalogue_entry(&self, owner: &str) -> Result<DatasetRegistration> {
-        let DecisionOutcome::Registered { entitlements, .. } = &self.outcome else {
+        let DecisionOutcome::Registered(Registration { entitlements, .. }) = &self.outcome else {
             return Err(Error::denied(format!(
                 "source `{}` was {} and has no catalogue entry",
                 self.source_id,
