@@ -1,5 +1,21 @@
 # Architecture-diagram audit — code as of 2026-08-24
 
+> **Correction, 2026-09-02 — the runtime this audit scored no longer exists.**
+> Rows below that cite `infrastructure/kubernetes/base/`, an edge-cell
+> StatefulSet, a PDB, an HPA or autoscaler for the API, `journal-storage.yaml`,
+> or say "GKE unchanged" describe the GKE runtime as it stood on 2026-08-24.
+> Under ADR 0024 that runtime was removed from the Terraform in `808ca32` and
+> its manifests, chart and controllers deleted from the tree in `67b3e92` and
+> `7d79161`; the runtime in `infrastructure/terraform/main.tf` is now Cloud Run
+> services from `catalogue.tf` plus one Compute Engine execution node per
+> region from `modules/execution-node`, and none of it has been applied. The
+> rows are left as scored, because they are the record of what was found then;
+> read the verdicts in Layer 2 "×7 regions" and "Resilient & redundant",
+> Layer 6 "High Availability", "Auto-Scaling", "Disaster Recovery" and
+> "Multi-Region Active", and the Technology Stack paragraph, against
+> `docs/operations/{scaling-and-availability,disaster-recovery,multi-region}.md`
+> for the current shape.
+
 Workspace state at audit time: `./scripts/count-tests.sh` reports **2,862 passed, 0 failed** ("the suite is green").
 Prior audit (`docs/architecture/current-state-audit.md`) was measured at 2,086 tests — it is stale and was treated
 only as a list of claims to re-check. Every verdict below was re-derived by grep/read of the current tree.

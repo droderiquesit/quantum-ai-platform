@@ -1,5 +1,19 @@
 # Superseded reconciliation — every earlier-diagram id scored against the tree
 
+> **Correction, 2026-09-02 — the runtime rows describe a runtime that no
+> longer exists.** T.7 (GKE), N.2, N.3 and N.4, BB.1 and L2.9, and backlog item
+> 2 cite `infrastructure/terraform/modules/cluster/`,
+> `infrastructure/kubernetes/base/{api,edge-cell,journal-storage}.yaml`, a PDB,
+> an HPA and an edge-cell StatefulSet. All of that was removed under ADR 0024:
+> the cluster's Terraform in `808ca32`, the manifests in `67b3e92` and
+> `7d79161`. The runtime in `infrastructure/terraform/main.tf` is now Cloud Run
+> services from `catalogue.tf` and one Compute Engine execution node per region
+> from `modules/execution-node`, never applied. Backlog item 2's action — set
+> `QIP_MESH_CELLS` and `QIP_MESH_PEER` in the manifests — has no manifest to
+> land in; ADR 0024 records the centre-to-node path as unwired on the new
+> runtime and names the reason (`catalogue.tf:21-27`). The rows are left as
+> scored at `9854ec7`, for the reason the note below gives.
+>
 > **This scores a superseded reference.** ADR 0022 makes the Algorik Master
 > Blueprint v10.1-4 the architecture of record; the live scorecard is
 > [`algorik-blueprint-traceability.md`](algorik-blueprint-traceability.md).
