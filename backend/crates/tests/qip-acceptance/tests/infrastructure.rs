@@ -2926,6 +2926,76 @@ fn the_metrics_collector_runs_only_under_a_digest_pinned_image_and_nothing_claim
     }
 }
 
+const EDGE_TELEMETRY: &str = "backend/crates/edge/qip-edge/src/telemetry.rs";
+const OBSERVABILITY_MODULE: &str = "infrastructure/terraform/modules/observability/main.tf";
+
+/// The `source` labels `CellMetrics::halt` writes `qip_edge_halted` under,
+/// read from the one place they are literals.
+///
+/// Brittle on purpose: the walk stops at the next `pub fn`, so a halt method
+/// reshaped to take its sources some other way returns nothing, and the
+/// caller's premise check fails loudly rather than the policy text being
+/// compared against an empty list.
+fn edge_halt_sources() -> Vec<String> {
+    let telemetry = read(EDGE_TELEMETRY);
+    let body = telemetry
+        .split("pub fn halt(")
+        .nth(1)
+        .and_then(|rest| rest.split("pub fn ").next())
+        .expect("CellMetrics has a `halt` method");
+    body.split("self.with(\"source\", \"")
+        .skip(1)
+        .filter_map(|rest| rest.split('"').next())
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn the_edge_halt_alert_names_every_halt_discipline_the_cell_records() {
+    // The policy fires on `qip_edge_halted{source} > 0` and its text tells
+    // the person paged what each `source` means. The cell gained a third
+    // discipline — the polled flag on the node's own filesystem — and the
+    // text went on naming two, so an operator woken by `source="polled"`
+    // was reading a runbook that said no such source existed. This binds the
+    // text to the literals the cell writes, so the next discipline cannot
+    // land without its sentence.
+    let sources = edge_halt_sources();
+    // Premise: the walk found the disciplines the cell is known to have,
+    // including the one that was missing from the text.
+    for known in ["kill_switch", "policy", "polled"] {
+        assert!(
+            sources.iter().any(|source| source == known),
+            "CellMetrics::halt no longer writes source=\"{known}\"; found {sources:?}. The walk \
+             has stopped reading the literals and every check below is vacuous"
+        );
+    }
+
+    let module = read(OBSERVABILITY_MODULE);
+    let policies = terraform_resources(&module, "google_monitoring_alert_policy");
+    let (_, halted) = policies
+        .iter()
+        .find(|(name, _)| name == "edge_halted")
+        .expect("the observability module declares the edge_halted alert policy");
+    assert!(
+        halted.contains("max by (cell, source) (qip_edge_halted) > 0"),
+        "the edge_halted policy no longer groups on `source`; a text naming the sources \
+         would describe a label the alert does not carry"
+    );
+    let documentation = halted
+        .split("content   = <<-EOT")
+        .nth(1)
+        .and_then(|rest| rest.split("EOT").next())
+        .expect("the edge_halted policy carries documentation");
+    for source in &sources {
+        assert!(
+            documentation.contains(&format!("`{source}`")),
+            "the edge_halted policy's documentation does not name `{source}`, which \
+             CellMetrics::halt writes as a source; an operator paged on it has no sentence \
+             saying what stopped the node"
+        );
+    }
+}
+
 /// No Kubernetes manifest exists for a credential to appear in; the property
 /// this test owned moved to the Cloud Run catalogue and is asserted there.
 ///

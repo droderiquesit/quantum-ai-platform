@@ -167,9 +167,9 @@ resource "google_monitoring_alert_policy" "permission_violation" {
 # (`modules/execution-node/templates/startup.sh.tftpl`) is what carries them
 # to Cloud Monitoring. Three of those series are the ones a person must see.
 
-# A cell halted, by either discipline. `qip_edge_halted{source}` is a gauge
-# written wherever a halt can change and at wiring time, so a node halted
-# before its first pass still reports halted. Any value above zero means the
+# A cell halted, by any of its three disciplines. `qip_edge_halted{source}`
+# is a gauge written wherever a halt can change and at wiring time, so a node
+# halted before its first pass still reports halted. Any value above zero means the
 # node is refusing to trade, and a node refusing to trade is either right —
 # in which case the reason is the incident — or wrong, in which case the halt
 # is. Both are worth a person now.
@@ -196,7 +196,10 @@ resource "google_monitoring_alert_policy" "edge_halted" {
     content   = <<-EOT
       An execution node reports itself halted. The `source` label says which
       discipline stopped it: `kill_switch` is an operator or the platform
-      tripping the switch, `policy` is the cell refusing on its own envelope.
+      tripping the switch, `policy` is the cell refusing on its own envelope,
+      and `polled` is the halt flag the node polls on its own filesystem —
+      the second wire of §46.2, so a node cut off from the centre can still
+      be stopped by hand on the machine.
 
       A halt is the correct response to whatever caused it. Find the cause in
       the node's journal before clearing anything; clearing a halt whose
