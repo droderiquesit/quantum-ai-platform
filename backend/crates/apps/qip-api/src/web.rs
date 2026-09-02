@@ -165,7 +165,7 @@ impl Web {
                 .iter()
                 .map(|proposal| ProposalRow {
                     id: proposal.proposal_id.as_str().to_string(),
-                    status: proposal.status.as_str().to_string(),
+                    status: proposal.status().as_str().to_string(),
                     legs: proposal.len(),
                     rationale: proposal.rationale.clone(),
                 })

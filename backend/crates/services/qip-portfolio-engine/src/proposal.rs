@@ -108,13 +108,32 @@ impl ProposalStatus {
 }
 
 /// A proposed change to the book.
+///
+/// The status is private and moves only through [`Self::approve`],
+/// [`Self::veto`], [`Self::release`] and [`Self::withdraw`]. Every proposal
+/// starts as a draft, because [`Self::draft`] is the only constructor. While
+/// the field was public the two-control approval was a convention: any code
+/// holding a proposal could write `Released` into it and hand it to the ACT
+/// stage without a risk or a compliance signature ever having been asked for,
+/// and nothing in the type would have said so. The stage that releases
+/// filters on [`ProposalStatus::is_releasable`], so a status written directly
+/// is an order placed without either control having ruled.
+///
+/// ```compile_fail
+/// use qip_core::Timestamp;
+/// use qip_portfolio_engine::proposal::{Proposal, ProposalStatus};
+///
+/// fn skip_the_controls(proposal: &mut Proposal, at: Timestamp) {
+///     proposal.status = ProposalStatus::Released { at };
+/// }
+/// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Proposal {
     pub proposal_id: ProposalId,
     pub created_at: Timestamp,
     /// The point in time the sizing reasoned as of.
     pub as_of: Timestamp,
-    pub status: ProposalStatus,
+    status: ProposalStatus,
     pub legs: Vec<ProposalLeg>,
     /// Equity the weights are fractions of.
     pub equity: Money,
@@ -134,6 +153,65 @@ pub struct Proposal {
 }
 
 impl Proposal {
+    /// A proposal in the only state one can start in.
+    ///
+    /// Exposure, turnover, cost and compromises are set through
+    /// [`Self::with_targets`] and [`Self::with_compromises`] after
+    /// construction; they are public fields because they describe the
+    /// proposal rather than gate it. The status is not, and there is no
+    /// argument here that sets it.
+    pub fn draft(
+        proposal_id: ProposalId,
+        created_at: Timestamp,
+        as_of: Timestamp,
+        equity: Money,
+        legs: Vec<ProposalLeg>,
+        rationale: impl Into<String>,
+    ) -> Self {
+        Self {
+            proposal_id,
+            created_at,
+            as_of,
+            status: ProposalStatus::Draft,
+            legs,
+            equity,
+            target_gross: 0.0,
+            target_net: 0.0,
+            turnover: 0.0,
+            estimated_cost_bps: 0.0,
+            rationale: rationale.into(),
+            compromises: Vec::new(),
+            checks_passed: Vec::new(),
+        }
+    }
+
+    /// The exposure the proposal would produce and what it costs to get there.
+    pub fn with_targets(
+        mut self,
+        target_gross: f64,
+        target_net: f64,
+        turnover: f64,
+        estimated_cost_bps: f64,
+    ) -> Self {
+        self.target_gross = target_gross;
+        self.target_net = target_net;
+        self.turnover = turnover;
+        self.estimated_cost_bps = estimated_cost_bps;
+        self
+    }
+
+    pub fn with_compromises(mut self, compromises: Vec<String>) -> Self {
+        self.compromises = compromises;
+        self
+    }
+
+    /// Where the proposal is in its life. Read-only: the transitions are
+    /// [`Self::approve`], [`Self::veto`], [`Self::release`] and
+    /// [`Self::withdraw`].
+    pub fn status(&self) -> &ProposalStatus {
+        &self.status
+    }
+
     pub fn is_empty(&self) -> bool {
         self.legs.is_empty()
     }

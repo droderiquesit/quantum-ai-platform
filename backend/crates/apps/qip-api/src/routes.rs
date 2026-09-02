@@ -1028,7 +1028,7 @@ fn proposals(platform: &Platform) -> String {
             format!(
                 r#"{{"id":{},"status":{},"legs":{},"gross":{},"turnover":{},"rationale":{}}}"#,
                 json::string(proposal.proposal_id.as_str()),
-                json::string(proposal.status.as_str()),
+                json::string(proposal.status().as_str()),
                 proposal.len(),
                 json::number(proposal.target_gross),
                 json::number(proposal.turnover),
