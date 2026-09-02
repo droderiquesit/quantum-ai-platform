@@ -94,15 +94,19 @@ impl Representation {
 /// read an intent off a wire knows it has to check.
 ///
 /// **What produces a leg today.** `qip_arbitrage::Opportunity::cycle_legs`
-/// turns a planned cycle into `Vec<CycleLeg>`. It is called by that crate's
-/// tests and by nothing deployed: a placement audit found the scanner is
-/// constructed by no composition root, and the leg coordinator that would
-/// execute a cycle, `qip_execution_engine::multileg::LegGroup`, has zero call
-/// sites. Wiring the scanner into the cell's intent seam is the next slice.
-/// This refusal therefore guards a path the type system closes and nothing
-/// yet walks — which is the right order: the guard has to be true on the day
-/// the producer is wired, not added to a netting engine that has been quietly
-/// combining legs with directional intents in the meantime.
+/// turns a planned cycle into `Vec<CycleLeg>`, and `qip_edge::Cell::work`
+/// calls it at the seam after the strategy loop and before netting: the
+/// cell's `ArbitrageDesk` scans its own books, every leg passes the
+/// feasibility gate, and an admitted cycle is sent by the same placer as
+/// every other order, never through `net()`. A placement audit once found
+/// the scanner constructed by no composition root; that is the state this
+/// refusal was written against, and the wiring since landed is what it
+/// guards. `qip_execution_engine::multileg::LegGroup` still has no call
+/// site, deliberately: the cell's placer cannot cancel, so a cycle broken
+/// between legs is journaled and halts the cell rather than being
+/// coordinated. `qip-edge-node` installs no desk yet, because the payload's
+/// cycle whitelist carries strings and not a graph — so a deployed node
+/// walks this path only once that source exists.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "policy", rename_all = "snake_case")]
 pub enum NettingPolicy {
