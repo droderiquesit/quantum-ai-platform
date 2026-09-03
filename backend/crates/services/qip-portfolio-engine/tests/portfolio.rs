@@ -360,6 +360,43 @@ fn an_inconsistent_mandate_is_refused_at_construction() {
 }
 
 #[test]
+fn a_negative_risk_aversion_is_refused_rather_than_silently_rewarding_variance() {
+    // `0.5 * risk_aversion * variance - expected_return`, minimised: a
+    // negative coefficient makes higher variance *lower* the objective, so
+    // the solver would hunt for the riskiest feasible book under a mandate
+    // that is supposed to be risk-averse. That must be refused up front, not
+    // discovered downstream in a book nobody asked for.
+    let inverted = Mandate {
+        risk_aversion: -1.0,
+        ..Mandate::default()
+    };
+    let error = PortfolioConstructor::new(inverted, ComputeRouter::classical(1)).unwrap_err();
+    assert!(
+        error.message().contains("reward variance"),
+        "{}",
+        error.message()
+    );
+}
+
+#[test]
+fn a_negative_turnover_cost_is_refused_rather_than_reported_as_a_negative_cost() {
+    // Unchecked, a negative rate switches off the turnover penalty in the
+    // optimiser (only applied when positive) while still landing in the
+    // proposal's own `estimated_cost_bps`, so the decision record would claim
+    // the book was paid to trade.
+    let paid_to_trade = Mandate {
+        turnover_cost_bps: -5.0,
+        ..Mandate::default()
+    };
+    let error = PortfolioConstructor::new(paid_to_trade, ComputeRouter::classical(1)).unwrap_err();
+    assert!(
+        error.message().contains("cannot be negative"),
+        "{}",
+        error.message()
+    );
+}
+
+#[test]
 fn nothing_to_do_is_a_normal_state_rather_than_an_error() -> Result<()> {
     let proposal = constructor(Mandate::default())?.nothing_to_do(
         ProposalId::from_string("prop-empty"),
