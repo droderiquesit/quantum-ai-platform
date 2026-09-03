@@ -273,9 +273,28 @@ variable "egress_bootstrap" {
     error_message = "The egress bootstrap is not an Envoy configuration. Pass `file(\"../egress/envoy.yaml\")` — the one committed bootstrap — not a path to it."
   }
 
+  # `health` is the one listener that binds 0.0.0.0, so that Cloud Run's
+  # sidecar startup probe — issued from outside the container's network
+  # namespace — can reach it; a loopback bind there answers nothing and the
+  # instance never starts. This one bootstrap is shared by both renderings
+  # (this module's own doc comment above says so), so the node inherits that
+  # bind whether or not its own check needs it.
+  #
+  # It does not need it, and is not weakened by carrying it. The node's
+  # proxy unit is checked locally — "on the execution node the unit's health
+  # check does the same", i.e. systemd on the same host — and
+  # `google_compute_firewall.deny_ingress` in `main.tf` denies all inbound
+  # from `0.0.0.0/0` except `var.health_port` (the binary's own health
+  # endpoint, checked from Google's health-check ranges). Port 9900 is on no
+  # allow list, so what stops a neighbour in the subnet reaching the wide
+  # bind is the firewall, not the socket. Any listener other than `health`
+  # binding wide would still be a mistake this validation exists to catch.
   validation {
-    condition     = !strcontains(var.egress_bootstrap, "address: 0.0.0.0")
-    error_message = "The egress bootstrap binds a listener to 0.0.0.0. On the node every listener is loopback: a proxy reachable from the network is a proxy every neighbour can reach."
+    condition = alltrue([
+      for line in regexall("- name: ([a-z-]+)\n\s+address:\n\s+socket_address: \{ address: ([0-9.]+),", var.egress_bootstrap) :
+      line[1] == "127.0.0.1" || line[0] == "health"
+    ])
+    error_message = "The egress bootstrap binds a listener other than `health` to something other than loopback. On the node every traffic listener must stay loopback: a proxy reachable from the network is a proxy every neighbour can reach. `health` is the sole named exception, and it is covered by the firewall instead."
   }
 }
 

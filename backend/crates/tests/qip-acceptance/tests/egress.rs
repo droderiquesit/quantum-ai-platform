@@ -1292,3 +1292,45 @@ fn the_health_listener_is_the_only_wide_bind_and_it_forwards_nowhere() {
          what the wide bind reaches is no longer a fixed reply.\n{health}"
     );
 }
+
+#[test]
+fn the_node_module_admits_the_same_named_exception_it_shares_the_bootstrap_with() {
+    // Run 23 of infra.yml found this the hard way: fixing
+    // `modules/egress-proxy`'s bind gate was not enough, because
+    // `modules/execution-node` reads the same committed bootstrap and
+    // carried its own validation refusing any 0.0.0.0 listener outright —
+    //
+    //   Error: Invalid value for variable
+    //   The egress bootstrap binds a listener to 0.0.0.0. On the node every
+    //   listener is loopback...
+    //   This was checked by the validation rule at
+    //   modules/execution-node/variables.tf:276,3-13.
+    //
+    // — on `main.tf line 506`, which passes this same file to both modules.
+    // One file, two independent gates; fixing one and not the other still
+    // refuses the plan.
+    let node_variables = read(NODE_VARIABLES);
+
+    // Premise: the module still takes the bootstrap as a string variable
+    // with validations on it, so this is a test about which validations.
+    assert!(
+        node_variables.contains("variable \"egress_bootstrap\""),
+        "modules/execution-node no longer declares egress_bootstrap; this \
+         test's premise needs rewriting"
+    );
+
+    // It no longer refuses 0.0.0.0 outright...
+    assert!(
+        !node_variables.contains("!strcontains(var.egress_bootstrap, \"address: 0.0.0.0\")"),
+        "the node module still refuses any 0.0.0.0 listener outright, which \
+         refuses the health listener's own bootstrap and blocks every apply"
+    );
+    // ...and the replacement names `health` as the one exception, matching
+    // the shape `modules/egress-proxy` uses for the same file.
+    assert!(
+        node_variables.contains("line[0] == \"health\""),
+        "the node module's replacement validation does not name `health` as \
+         the exception, so either nothing is admitted (blocking every \
+         apply) or every listener is (admitting a real mistake)"
+    );
+}
