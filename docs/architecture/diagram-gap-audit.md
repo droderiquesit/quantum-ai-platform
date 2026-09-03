@@ -15,6 +15,18 @@
 > "Multi-Region Active", and the Technology Stack paragraph, against
 > `docs/operations/{scaling-and-availability,disaster-recovery,multi-region}.md`
 > for the current shape.
+>
+> **Second correction, 2026-09-03 — the trade path this audit scored as dead
+> is wired.** "The single most important composition fact" below originally
+> found three reasons the deployed composition could not place an order.
+> Items 1 and 2 (`stage_decide` hardwired to nothing-to-do; `submit_order`
+> test-only) are corrected in place, with citations, where they are stated;
+> item 3 (`Cell::deploy` test-only) is corrected at its own paragraph and at
+> every row that repeated it. Ranked finding 1 is corrected the same way. The
+> rows in between were not individually re-walked for this correction — a
+> full re-score is tracked work — so a row still describing a fill,
+> attribution or capital-demand outcome as reachable "only by tests" should
+> be treated as unverified rather than as re-confirmed.
 
 Workspace state at audit time: `./scripts/count-tests.sh` reports **2,862 passed, 0 failed** ("the suite is green").
 Prior audit (`docs/architecture/current-state-audit.md`) was measured at 2,086 tests — it is stale and was treated
@@ -29,21 +41,39 @@ only as a list of claims to re-check. Every verdict below was re-derived by grep
 - **ABSENT** — no code.
 - **DIVERGED** — deliberately replaced, with the ADR named.
 
-**The single most important composition fact**, established first because it colors every layer:
-the three central binaries construct `Platform` (`backend/crates/apps/qip-fastbrain/src/main.rs:104`,
-`backend/crates/apps/qip-deepbrain/src/main.rs:124`, `backend/crates/apps/qip-api/src/main.rs:66`), and the cycle they run is real —
-but **the deployed composition cannot place an order**:
+**The single most important composition fact, corrected 2026-09-03 — this no longer holds as scored.**
+This section originally claimed the deployed composition could not place an order, on three grounds. The
+first two are now false, read against the current tree rather than the tree this audit scored:
 
-1. `stage_decide` unconditionally emits a `nothing_to_do` proposal — there is no code path that expresses an
-   approved thesis as a trade (`backend/crates/runtime/qip-kernel/src/platform.rs:1321-1330`; the only call is
-   `self.constructor.nothing_to_do(...)`, reason string hardcoded).
-2. `Platform::submit_order` (the full control path: pre-trade risk, autonomy, kill switch, capture) is called only
-   by tests (`backend/crates/runtime/qip-kernel/tests/kernel.rs:294-366`, `tests/platform_outcomes.rs:147`); `qip-api`
-   exposes only `GET /orders` (`backend/crates/apps/qip-api/src/routes.rs:370`), no submit/approve/release endpoint.
-3. `Cell::deploy` (the only way a strategy enters the hot path) is called exclusively in tests
-   (`backend/crates/edge/qip-edge/tests/*.rs`, `backend/crates/tests/qip-acceptance/tests/{stress,e2e,e2e_live,chaos}.rs`);
-   `qip-edge-node/src/main.rs` assembles the cell, gateway, mesh link and journal but never deploys a strategy —
-   it prints `cell.deployed_strategies().len()` (main.rs:442), which is 0 in every deployment.
+1. **`stage_decide` no longer unconditionally emits a `nothing_to_do` proposal.** It drains
+   `self.pending_theses` and, when the queue is non-empty, calls `self.construct_from(&theses, now)` to size
+   a real proposal from the approved theses; `nothing_to_do` is now the *empty-queue and sizing-failure* arm,
+   not the only arm (`backend/crates/runtime/qip-kernel/src/platform.rs:3846-3900`).
+2. **`stage_act` now signs off and releases proposals into real orders.** Once a proposal is releasable, the
+   risk monitor and the compliance report must both permit new risk before it is signed by both controls
+   (`platform.rs:3970-4062`); a signed, non-empty proposal is then walked leg by leg into an `Order` and
+   handed to `self.submit_order` — the same full control path (pre-trade risk, autonomy, kill switch,
+   capture) — inside `stage_act` itself (`platform.rs:4157-4200`). This is a unit-tested path beside the code:
+   `a_sized_proposal_is_signed_by_two_controls_and_released_as_orders` (`platform.rs`, `#[cfg(test)]` module at
+   `:5894`). Because `stage_act` runs inside `Platform::run_cycle`, and `qip-api`'s `POST /cycle` route calls
+   `platform.run_cycle(now)` directly (`qip-api/src/routes.rs`, pinned by
+   `api_boundary.rs::every_mutating_route_is_one_of_three_and_each_raises_a_typed_intent`), a cycle that clears
+   the action bar, signs off and releases is reachable from a running `qip-api` process, not only from a test.
+   What remains true of the original finding: nothing in the synthetic/replay-only data path (Layer 1) reliably
+   clears the action bar, so the seam is wired rather than proven busy in any deployment — the rows below that
+   describe fills, attribution and capital demand as reachable only from tests should be re-read against this,
+   not taken as still accurate; a full re-score of every downstream row is tracked work this correction does not
+   itself perform. `qip-api` still exposes only `GET /orders` (`routes.rs:370`) and no direct submit/approve/
+   release endpoint — release happens only as a consequence of `POST /cycle`, never as its own call.
+3. `Cell::deploy`/`Cell::deploy_with_pricing` were called exclusively in tests until wave 5 (`da0789d`,
+   2026-09-02): `qip-edge-node/src/strategies.rs`'s `StrategyInstaller` now reads a compiled plan from a
+   file the node is configured with, verifies its digest against the signed payload's compiled-plan slot,
+   and calls `cell.deploy_with_pricing` (`strategies.rs:366`) from the composed binary's own serve loop, on
+   every health-probe tick, through `link.exchange_with_installers(..., Some(&mut *strategies))`
+   (`main.rs:619-624`). It is no longer test-only reachability — but it is still config-gated and unreached
+   in any deployment: it fires only once `QIP_STRATEGY_PLAN_PATH`, `QIP_DEFAULT_PRICING` and a mesh peer are
+   all set (`main.rs:501-514`), and `execution_nodes = {}` in every environment means no node exists to set
+   them on. See `qip-edge-node/tests/strategies.rs` for the composed-binary-level tests.
 
 ---
 
@@ -82,7 +112,7 @@ but **the deployed composition cannot place an order**:
 | Market Understanding | BUILT+WIRED | `stage_understand` (platform.rs:993 "world model covers N instrument(s)"), orderbook/features in the cell (`FeatureEngine` built in `qip-edge-node/src/main.rs:190`). |
 | Anomaly Detection | BUILT+WIRED | `DetectorRegistry::scan` runs every cycle in `stage_discover` (platform.rs — `self.opportunities.scan(&detection, ...)`); 12 anomaly kinds (`qip-opportunity-engine/src/detector.rs`). Runs in each brain node's loop, not per-edge-cell. |
 | Liquidity & Impact | PARTIAL | Square-root impact + transaction cost models wired (`qip-financial/src/costs.rs`, used by twin and constructor). The venue-level liquidity map is unwired — see Layer 3 Liquidity Topology. |
-| Local Alpha & Arbitrage | BUILT, dormant | `qip-arbitrage` (2-leg, triangular, N-leg: `scan.rs`, `netedge.rs`) reachable through the cell seam (`qip-edge/src/seam.rs:14`) — but no strategy is ever deployed into a running cell, so the path executes for no one. |
+| Local Alpha & Arbitrage | BUILT, dormant | `qip-arbitrage` (2-leg, triangular, N-leg: `scan.rs`, `netedge.rs`) reachable through the cell seam (`qip-edge/src/seam.rs:14`). Since wave 5 (`da0789d`), `qip-edge-node`'s own serve loop can deploy a compiled plan into a running cell (`StrategyInstaller`, `strategies.rs:366`) — but only when `QIP_STRATEGY_PLAN_PATH`/`QIP_DEFAULT_PRICING` are configured, which no environment does (`execution_nodes = {}`), so the path still executes for no one deployed. |
 | Cash & Inventory | PARTIAL | Capital envelopes + utilisation wired end-to-end on the central side (`CentralPlane` envelopes/recalls, `/capital` route, routes.rs:997-1063); per-location balances exist only as planning types (`qip-capital-fabric`). No cell inventory module (zero "inventory" hits in `qip-edge/src`). |
 | Risk & Limits | BUILT+WIRED | `PreTradeChecker` in OMS submit path; cell autonomy ceiling gates live venues (`qip-edge-node/src/main.rs:200-208`); `LimitSet` with expected-shortfall limits (`qip-risk/src/limits.rs:97,234,499`). |
 | Ultra-Fast Decisioning | BUILT+WIRED | fastbrain refuses to host any agent that could call a language model or exceed 50ms (`qip-fastbrain/src/roster.rs` — `FAST_PATH_AGENTS`, `MAXIMUM_BUDGET = 50ms`, checked before assembly). |
@@ -145,10 +175,10 @@ but **the deployed composition cannot place an order**:
 |---|---|---|
 | Counterfactual Simulation | PARTIAL | Capture side wired: every fill and every refusal lands on `OutcomeCapture`'s hash chain (submit path, platform.rs:1533-1650; risk refusals in stage_act:1392-1407). The counterfactual side — `CounterfactualEngine`, `Platform::evaluate_alternatives` (platform.rs:1972-2045), `TwinMarket` as-of replay (`qip-twin/src/asof.rs`) — has no callers outside `qip-kernel/tests/platform_outcomes.rs`. |
 | Model Training (Vertex AI) | DIVERGED (ADR 0011) + PORT + BUILT-UNWIRED | ADR 0011: Vertex → in-tree `qip-training` (ridge, boosted stumps, distillation). The Vertex adapter remains a PORT (`qip-training/src/vertex.rs:40-65, 227-245` — refuses without token; needs a TLS proxy). Nothing runs training: `central/models.rs register_fit` is called only in `qip-kernel/tests/models.rs:19`; API `/runs` answers `NO_TRAINING_SERVICE` (missing.rs:46). |
-| Strategy Engine | BUILT+WIRED (engine), dormant (content) | `qip-strategy` typed IR with bounded runtime, compiled into `Cell::deploy` — which nothing calls in a deployed binary. |
+| Strategy Engine | BUILT+WIRED (engine), dormant (content) | `qip-strategy` typed IR with bounded runtime, compiled into `Cell::deploy_with_pricing`, which `qip-edge-node`'s serve loop calls since wave 5 (`da0789d`) when a plan and a pricing policy are configured — unconfigured in every environment (`execution_nodes = {}`). |
 | Backtest Engine | PARTIAL | As-of twin replay (`qip-twin/src/asof.rs`), scenario library (`qip-simulation-engine/src/scenario.rs`), evolution challenger/holdouts (`qip-evolution/src/challenger.rs`, foundry `HoldoutInputs`) — all reachable only from tests (foundry unwired). No standalone backtest binary/route. |
 | Model Validation & Backtesting | PARTIAL | Distillation fidelity is enforced by construction (`qip-training/src/distill.rs` — `approved_student` re-checks a `FidelityPolicy` on every call); lifecycle gates require scenario evidence (`qip-lifecycle/src/gates.rs` uses the simulation engine). Same unwired drivers. |
-| Deploy to All (small models) | ABSENT (as a path) | The pieces exist — `DistilledModel`, `StrategyDna` sealing (`central/dna.rs:136`), `Cell::deploy` — but there is **no distribution channel**: the mesh downlink carries capital envelopes only (`qip-edge-node/src/mesh.rs` — "an uplink that publishes state deltas and a downlink that pulls signed capital envelopes"; no DNA/strategy frame in `qip-mesh/src/spine.rs`), and `Cell::deploy` is test-only. |
+| Deploy to All (small models) | ABSENT (as a path) | The pieces exist — `DistilledModel`, `StrategyDna` sealing (`central/dna.rs:136`) — but there is **no distribution channel for either**: the mesh downlink still carries capital envelopes only (`qip-edge-node/src/mesh.rs`; no DNA/strategy frame in `qip-mesh/src/spine.rs` or `qip-mesh/src/delta.rs`). A distinct, narrower channel now exists since wave 5 (`da0789d`): the signed twelve-item payload's compiled-plan slot names a plan by digest, and `qip-edge-node`'s `StrategyInstaller` deploys the typed `StrategySpec` IR it names into a running cell when configured (`strategies.rs:132,366`) — so `Cell::deploy` is no longer test-only, but what travels is a compiled strategy program, not a `DistilledModel` or sealed `StrategyDna`. |
 | IBM Quantum Optimization | PORT (+ simulated wired behind a default-off flag) | `qip-quantum/src/provider.rs` hosted adapter: refuses without token, requires a TLS-terminating egress proxy ("qip_transport::http has no TLS stack… IBM Quantum is https only", provider.rs:71-77), never falls back to the simulator. `IbmQuantumSolver` reports unavailable (solver.rs:24). `SimulatedProvider` attaches to the compute router only when `quantum_enabled` (default `false`, `qip-kernel/src/config.rs:157,237`). API `/jobs`: `NO_QUANTUM_JOBS` (missing.rs:51). Per ADR 0011, IBM Quantum is *the only permitted external integration* — and the build's own transport cannot reach it without a proxy. |
 | Hard problems (portfolio opt, N-leg search, allocation, scenario search) | PARTIAL | `qip-optimization-engine` solves with a classical baseline always (ADR 0006; `router.rs:290 solve`), wired into `PortfolioConstructor` (platform.rs:446-448,521) — which only ever emits nothing-to-do. N-leg search lives in the dormant arbitrage crate; scenario search in the unwired foundry. |
 
@@ -232,10 +262,20 @@ ADR; terraform out of audit scope). Dataflow/Cloud Storage: covered by the diver
 
 Ranked by the gap between what the box promises and what runs — not by effort to fix.
 
-1. **The system cannot trade.** Layer 4's "Trade/No-Trade Decision" and all of Layer 5's execution promises sit on
-   three dead ends: `stage_decide` is hardwired to nothing-to-do (platform.rs:1321-1330), `submit_order` is
-   test-only, and no deployed cell ever receives a strategy (`Cell::deploy` test-only; edge-node deploys none).
-   Every downstream box — fills, P&L, slippage, attribution, capital demand learning — starves on this.
+1. **Corrected 2026-09-03 — "the system cannot trade" no longer holds as stated.** This finding claimed
+   `stage_decide` was hardwired to nothing-to-do and `submit_order` was test-only. Neither is true of the
+   current tree: `stage_decide` sizes a real proposal from approved theses when the queue is non-empty, and
+   `stage_act` signs a releasable proposal with both controls and walks it into `submit_order` — the full
+   control path — inside `run_cycle` itself (`platform.rs:3846-3900,3970-4200`; see the correction at
+   "the single most important composition fact" above for the exact citations and the unit test that pins it).
+   What survives of the original finding, narrowed rather than repeated: no deployed data path (Layer 1 is
+   synthetic or replay-only) is shown to produce a thesis that reliably clears the action bar, so the release
+   path is wired and unit-tested but not demonstrated busy against anything a running binary observes — a
+   distinct and much narrower claim than "cannot trade." The strategy-deployment half of the original finding
+   is separately corrected at the "single most important composition fact" item 3 above (wave 5, `da0789d`).
+   Every row below that still describes fills, P&L, attribution or capital-demand learning as reachable "only
+   by tests" was written against the pre-correction tree and needs re-reading against this, which a full
+   re-score — tracked work, not performed here — would resolve row by row.
 2. **"Global Knowledge Graph" is constructed and never written.** All of Layer 3's graph-shaped boxes (knowledge
    graph, relationship discovery, opportunity graph search, liquidity topology) exist as tested code that the
    composed loop feeds nothing: `observe` discards every non-bar record, and the acceptance suite itself certifies
