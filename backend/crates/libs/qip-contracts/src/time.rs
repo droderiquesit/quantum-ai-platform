@@ -18,6 +18,19 @@ pub struct Stamped<T> {
     value: T,
     valid_at: Timestamp,
     known_at: Timestamp,
+    /// Whether `known_at` was moved forward by [`Stamped::new`] because a feed
+    /// claimed a known-time before its valid-time.
+    ///
+    /// Kept as its own field rather than derived from `known_at == valid_at`:
+    /// a fact that was genuinely known the instant it became true —
+    /// [`Stamped::immediate`], or a `new` call whose known-time already
+    /// equalled valid-time — has that same equality and is not evidence of a
+    /// clock or parsing bug. `was_clamped` read that equality directly before
+    /// this field existed, so every immediate stamp reported itself as
+    /// clamped, and nothing distinguished "arrived instantaneously" from
+    /// "arrived late and was corrected".
+    #[serde(default)]
+    clamped: bool,
 }
 
 impl<T> Stamped<T> {
@@ -28,14 +41,12 @@ impl<T> Stamped<T> {
     /// message on the floor, and the clamp is visible through
     /// [`Stamped::was_clamped`].
     pub fn new(value: T, valid_at: Timestamp, known_at: Timestamp) -> Self {
+        let clamped = known_at < valid_at;
         Self {
             value,
             valid_at,
-            known_at: if known_at < valid_at {
-                valid_at
-            } else {
-                known_at
-            },
+            known_at: if clamped { valid_at } else { known_at },
+            clamped,
         }
     }
 
@@ -45,6 +56,7 @@ impl<T> Stamped<T> {
             value,
             valid_at: at,
             known_at: at,
+            clamped: false,
         }
     }
 
@@ -77,8 +89,13 @@ impl<T> Stamped<T> {
     }
 
     /// Whether known-time had to be clamped to valid-time on construction.
+    ///
+    /// Not `known_at == valid_at`: a fact stamped [`Stamped::immediate`], or
+    /// constructed with an already-equal known-time, has that same equality
+    /// without a clamp ever happening, and reporting it as clamped would name
+    /// a clock or parsing bug that did not occur.
     pub fn was_clamped(&self) -> bool {
-        self.known_at == self.valid_at
+        self.clamped
     }
 
     pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Stamped<U> {
@@ -86,6 +103,7 @@ impl<T> Stamped<T> {
             value: f(self.value),
             valid_at: self.valid_at,
             known_at: self.known_at,
+            clamped: self.clamped,
         }
     }
 }

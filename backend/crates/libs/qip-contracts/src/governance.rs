@@ -101,6 +101,26 @@ impl Entitlement {
         }
     }
 
+    /// Whether the grant is active at `now`, given a caller-supplied instant
+    /// the agreement is known to have taken effect.
+    ///
+    /// [`Entitlement::is_granted`] only ever checked the upper bound —
+    /// `expires_at` — so a check made about an instant *before* the licence
+    /// existed passed as granted, the same gap fixed for
+    /// `qip_data_finder::SourceLicense` with an opt-in `effective_from`
+    /// field. `Entitlement::Granted`'s fields are public and every crate that
+    /// builds one does so as a bare struct literal (`qip-compliance`,
+    /// `qip-mesh`, `qip-data-finder`, `qip-acceptance` — grep
+    /// `Entitlement::Granted` across the workspace), so retrofitting the same
+    /// field here would not compile at any of those call sites; Rust has no
+    /// default-value syntax for an enum struct variant's literal. A caller
+    /// that knows when its agreement took effect passes it here instead of
+    /// `is_granted`, so a check about an instant before the agreement existed
+    /// is refused rather than silently granted.
+    pub fn is_granted_after(&self, now: Timestamp, effective_from: Timestamp) -> bool {
+        self.is_granted(now) && now >= effective_from
+    }
+
     pub fn dataset(&self) -> &str {
         match self {
             Self::Granted { dataset, .. } | Self::Denied { dataset, .. } => dataset,

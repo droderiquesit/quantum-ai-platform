@@ -58,6 +58,35 @@ fn a_point_in_time_read_filters_on_known_time_not_valid_time() {
 }
 
 #[test]
+fn a_fact_known_the_instant_it_was_true_was_not_clamped() {
+    // `was_clamped` once read `known_at == valid_at`, which is also true of a
+    // fact that arrived instantaneously and was never corrected. Reporting
+    // that as clamped would name a clock or parsing bug that did not happen.
+    let immediate = Stamped::immediate("a price", t(100));
+    assert_eq!(
+        immediate.known_at(),
+        immediate.valid_at(),
+        "premise: known-time and valid-time coincide, the condition the old \
+         check mistook for a clamp"
+    );
+    assert!(
+        !immediate.was_clamped(),
+        "a fact known the moment it was true was reported as clamped"
+    );
+
+    // The same coincidence reached through `new` rather than `immediate`
+    // must read the same way: no clamp happened, because known-time was
+    // already at or after valid-time.
+    let already_equal = Stamped::new("a price", t(100), t(100));
+    assert!(!already_equal.was_clamped());
+
+    // The genuine clamp still reports itself, so the accessor is not simply
+    // hard-coded to `false`.
+    let clamped = Stamped::new("a price", t(100), t(50));
+    assert!(clamped.was_clamped());
+}
+
+#[test]
 fn a_watermark_promises_contiguity_and_never_retreats() {
     // A watermark that can go backwards is not a promise, and whoever trusted
     // the earlier value has already acted on it.
@@ -587,6 +616,39 @@ fn a_licence_for_research_does_not_licence_a_trade() -> Result<()> {
     assert!(trading.describe().contains("not licensed"));
     assert_eq!(research.dataset(), trading.dataset());
     Ok(())
+}
+
+#[test]
+fn a_grant_checked_before_it_took_effect_is_not_granted() {
+    // `is_granted` only ever checked the upper bound. A caller that knows
+    // when its agreement took effect must be able to refuse an instant
+    // before that, the same gap already closed for
+    // `qip_data_finder::SourceLicense`.
+    let grant = Entitlement::Granted {
+        dataset: "vendor-alpha".to_string(),
+        usage: Usage::Research,
+        expires_at: t(3600),
+    };
+
+    // Premise: the plain check reads this instant as granted, so the
+    // assertions below are about the lower bound and not about the grant
+    // being refused for some other reason.
+    assert!(
+        grant.is_granted(t(-100)),
+        "premise failed: is_granted must accept the pre-effective instant \
+         for the lower-bound check below to be testing anything"
+    );
+
+    assert!(
+        !grant.is_granted_after(t(-100), t(0)),
+        "an instant before the agreement took effect was read as granted"
+    );
+    assert!(
+        grant.is_granted_after(t(10), t(0)),
+        "an instant within the effective window was refused"
+    );
+    // The upper bound still applies: a lower bound does not waive the expiry.
+    assert!(!grant.is_granted_after(t(3600), t(0)));
 }
 
 #[test]
