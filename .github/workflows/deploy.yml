@@ -505,6 +505,20 @@ jobs:
 
           prefix="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/qip-${TARGET_ENVIRONMENT}"
           images_file="infrastructure/environments/${TARGET_ENVIRONMENT}/images.tfvars"
+          # `terraform fmt` aligns the `=` of every attribute in a block to the
+          # longest key, and `ci.yml` runs `terraform fmt -check`. A file this
+          # step writes unaligned therefore fails the gate on the very next
+          # push — which is exactly what happened the first time this step
+          # succeeded: run 33780092495 recorded three digests, `qip-api` was
+          # six characters shorter than its neighbours, and the branch went
+          # red on formatting alone with every service correctly deployed.
+          # Computed from PAIRS rather than hardcoded, so adding a binary
+          # cannot silently reintroduce it.
+          key_width=0
+          for pair in $PAIRS; do
+            binary="${pair#*=}"
+            [ "${#binary}" -gt "$key_width" ] && key_width="${#binary}"
+          done
           {
             echo "# ${TARGET_ENVIRONMENT}'s deployed image digests — written by .github/workflows/deploy.yml."
             echo "#"
@@ -627,7 +641,7 @@ jobs:
               fi
               echo "${service} serves ${image} from ${revision}"
             done
-            echo "  ${binary} = \"${digest}\"" >> "$images_file"
+            printf '  %-*s = "%s"\n' "$key_width" "$binary" "$digest" >> "$images_file"
           done
           echo "}" >> "$images_file"
           echo "wrote ${images_file}:"
