@@ -17,7 +17,7 @@
 use crate::evidence::{EvidenceKind, Stance};
 use crate::hypothesis::{Hypothesis, HypothesisStatus};
 use qip_core::ids::ChallengeId;
-use qip_core::time::Timestamp;
+use qip_core::time::{Duration, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -456,8 +456,14 @@ impl RedTeam {
 
         if let Some(latest) = hypothesis.evidence.latest_known_at() {
             let age = hypothesis.as_of.since(latest);
-            let limit = hypothesis.horizon * 2;
-            if age > limit && self.policy.staleness_limit > 0.0 {
+            // `staleness_limit` is a multiplier on the horizon, not a flag: a
+            // policy tightened to 1.0 must actually tighten the check, not
+            // just keep the hardcoded `horizon * 2` this once computed and
+            // then ignored the field's magnitude for.
+            let limit = Duration::from_nanos(
+                (hypothesis.horizon.as_nanos() as f64 * self.policy.staleness_limit) as i64,
+            );
+            if self.policy.staleness_limit > 0.0 && age > limit {
                 raise(
                     ChallengeKind::StaleEvidence,
                     Severity::Serious,
