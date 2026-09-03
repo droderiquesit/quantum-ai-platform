@@ -49,6 +49,7 @@ const PROXY_MODULE: &str = "infrastructure/terraform/modules/egress-proxy/main.t
 const PROXY_VARIABLES: &str = "infrastructure/terraform/modules/egress-proxy/variables.tf";
 const PROXY_OUTPUTS: &str = "infrastructure/terraform/modules/egress-proxy/outputs.tf";
 const CLOUD_RUN_MODULE: &str = "infrastructure/terraform/modules/cloudrun/main.tf";
+const CLOUD_RUN_VARIABLES: &str = "infrastructure/terraform/modules/cloudrun/variables.tf";
 const NODE_MODULE: &str = "infrastructure/terraform/modules/execution-node/main.tf";
 const NODE_VARIABLES: &str = "infrastructure/terraform/modules/execution-node/variables.tf";
 const NODE_STARTUP: &str =
@@ -106,6 +107,21 @@ const ALLOWED_UPSTREAMS: [(&str, &str); 5] = [
          crates/services/qip-optimization-engine/tests/optimization.rs",
     ),
 ];
+
+/// Whether a configuration sets a setting to a value.
+///
+/// Compares with whitespace collapsed, so a `terraform fmt` that realigns the
+/// equals signs does not break a check reading this. Matches
+/// `infrastructure.rs`'s own `sets` exactly; each test binary in this suite
+/// reads Terraform as text independently, and duplicating the four-line
+/// helper is cheaper than a shared dependency between two acceptance suites
+/// that otherwise have nothing to say to each other.
+fn sets(content: &str, setting: &str, value: &str) -> bool {
+    content.lines().any(|line| {
+        let collapsed: String = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        collapsed == format!("{setting} = {value}")
+    })
+}
 
 /// A configuration with its comments removed.
 ///
@@ -305,16 +321,23 @@ fn vendored_envoy() -> (String, String) {
     (repository.to_string(), digest.to_string())
 }
 
-/// The vendored OpenObserve line is well-formed and pinned by digest, and —
-/// the file's own comment's claim, checked rather than trusted — nothing in
-/// `infrastructure/terraform/**` references its destination path yet. A
-/// mirrored-but-undeployed image is a deliberate, named state (two decisions
-/// — a new workload category, a storage credential this platform's own
-/// no-static-keys rule forbids — still need a human), not a stray line an
-/// apply could silently start acting on; this fails the day it does, so
-/// whoever wires it has to touch this test and account for that on purpose.
+/// The vendored OpenObserve line is well-formed and pinned by digest, and the
+/// two decisions the vendoring comment once named as still needing a human —
+/// a new top-level workload category, and how storage is authenticated
+/// without a static key — are visibly made rather than defaulted past:
+/// `modules/cloudrun` carries the `source = "vendored"` branch ADR 0028
+/// decision 3 describes, and `catalogue.tf` wires it up on ephemeral,
+/// ZO_S3_*-free storage per decision 4, gated on
+/// `vendored_openobserve_image_digest` naming a digest.
+///
+/// This test used to assert the opposite of its second half — that nothing
+/// in `infrastructure/terraform/**` referenced `vendor/openobserve` at all —
+/// as a deliberate tripwire for the day OpenObserve stopped being merely
+/// mirrored. That day is this commit, and the honest update named by the old
+/// test's own comment is this one: assert the wiring is real and correct
+/// instead of asserting its absence.
 #[test]
-fn the_vendored_openobserve_image_is_pinned_and_nothing_deploys_it_yet() {
+fn the_vendored_openobserve_image_is_pinned_and_now_deployed_through_the_vendored_source_path() {
     let list = read(VENDORED);
     let entries: Vec<&str> = list
         .lines()
@@ -340,19 +363,80 @@ fn the_vendored_openobserve_image_is_pinned_and_nothing_deploys_it_yet() {
         .split_once("@sha256:")
         .unwrap_or_else(|| panic!("{} is not pinned by digest", fields[0]));
 
-    for path in qip_acceptance::files_with_extension("infrastructure/terraform", "tf") {
-        let module = without_comments(
-            &std::fs::read_to_string(&path)
-                .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display())),
+    // The module's own vendored-source branch exists: a `source` input, a
+    // `vendored_image_digest` input, and the digest lookup actually reads
+    // the second one rather than always falling back to `image_digest`.
+    let cloud_run_variables = without_comments(&read(CLOUD_RUN_VARIABLES));
+    assert!(
+        cloud_run_variables.contains("variable \"source\"")
+            && cloud_run_variables.contains("variable \"vendored_image_digest\""),
+        "modules/cloudrun no longer declares source and vendored_image_digest; ADR 0028 \
+         decision 3's branch has been removed or renamed"
+    );
+    let cloud_run_module = without_comments(&read(CLOUD_RUN_MODULE));
+    assert!(
+        cloud_run_module.contains(
+            "effective_image_digest = var.source == \"vendored\" ? var.vendored_image_digest : var.image_digest"
+        ),
+        "modules/cloudrun no longer branches the image lookup on source; a vendored workload \
+         would run whatever image_digest happens to hold"
+    );
+
+    // The catalogue deploys OpenObserve through that branch, not by folding
+    // it into the built-workload for_each: it names `source = "vendored"`
+    // and composes `vendored_image_digest` from the registry prefix and the
+    // root's own digest variable, the same shape the metrics collector's
+    // digest is composed with.
+    let catalogue = without_comments(&read(CATALOGUE));
+    assert!(
+        catalogue.contains("module \"openobserve\""),
+        "catalogue.tf no longer declares the OpenObserve workload"
+    );
+    let openobserve_block = catalogue
+        .split("module \"openobserve\" {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}\n").next())
+        .expect(
+            "catalogue.tf declares module \"openobserve\" with a closing brace on its own line",
         );
+    assert!(
+        openobserve_block.contains("source = \"vendored\"")
+            && openobserve_block.contains(
+                "vendored_image_digest = \"${module.registry.image_prefix}/vendor/openobserve@${var.vendored_openobserve_image_digest}\""
+            ),
+        "the OpenObserve workload does not use the vendored source path with a digest composed \
+         from the environment's own registry: {openobserve_block}"
+    );
+    assert!(
+        openobserve_block.contains("ingress_posture = \"internal\""),
+        "OpenObserve is not internal-only; ADR 0028 decision 5 makes no public-edge decision here"
+    );
+    assert!(
+        openobserve_block.contains("ZO_LOCAL_MODE_STORAGE")
+            && !openobserve_block.contains("ZO_S3_"),
+        "OpenObserve is not configured for ephemeral storage, or names an S3 destination — \
+         ADR 0028 decision 4 accepts the ephemeral cost specifically to avoid the static GCS \
+         HMAC key durable storage would need"
+    );
+
+    // The root's digest variable stays closed by default: setting it is what
+    // creates the service, and no environment forces it.
+    let root_variables = without_comments(&read(ROOT_VARIABLES));
+    assert!(
+        root_variables.contains("variable \"vendored_openobserve_image_digest\"")
+            && sets(&root_variables, "default", "null"),
+        "the root no longer declares vendored_openobserve_image_digest with a null default"
+    );
+    for environment in ["dev", "test", "stage", "prod"] {
+        let tfvars = read(&format!(
+            "infrastructure/environments/{environment}/terraform.tfvars"
+        ));
         assert!(
-            !module.contains("vendor/openobserve"),
-            "{} references vendor/openobserve; OpenObserve is now deployed and this test's \
-             premise (mirrored but not wired) is stale — update or remove it deliberately, and \
-             confirm the two decisions this file's comment names (a new top-level workload \
-             category, and how storage is authenticated without a static key) were actually \
-             made rather than defaulted past",
-            path.display()
+            !tfvars.lines().any(|line| line
+                .trim_start()
+                .starts_with("vendored_openobserve_image_digest")),
+            "{environment} pins an OpenObserve digest; no digest has been reviewed for this \
+             environment and this test does not know one that should be"
         );
     }
 }

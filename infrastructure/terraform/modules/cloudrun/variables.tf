@@ -202,7 +202,8 @@ variable "invokers" {
 
 variable "image_digest" {
   description = <<-EOT
-    The image to run, pinned by digest.
+    The image to run when `source` is `built`, pinned by digest. Ignored, and
+    may be left null, when `source` is `vendored` — see `vendored_image_digest`.
 
     A tag is a name somebody may move. Pinning by digest is what makes "the
     bytes that were tested" and "the bytes that are running" the same
@@ -211,13 +212,70 @@ variable "image_digest" {
     digest. The validation below refuses anything without `@sha256:`, which
     includes the shape that looks safest and is not — a tag that happens to be
     a commit hash.
+
+    Null by default so a vendored workload's caller does not have to invent a
+    value for the half of the lookup it does not use; the precondition on
+    `google_service_account.workload` refuses a built workload that left this
+    null instead.
   EOT
 
-  type = string
+  type    = string
+  default = null
 
   validation {
-    condition     = can(regex("^[a-z0-9][a-z0-9._/-]*[a-z0-9]@sha256:[a-f0-9]{64}$", var.image_digest))
-    error_message = "The image must be pinned by digest, as repository@sha256:<64 hex>. A tag is a name someone can move after the attestation was signed."
+    condition     = var.image_digest == null || can(regex("^[a-z0-9][a-z0-9._/-]*[a-z0-9]@sha256:[a-f0-9]{64}$", var.image_digest))
+    error_message = "The image must be pinned by digest, as repository@sha256:<64 hex>, or null. A tag is a name someone can move after the attestation was signed."
+  }
+}
+
+variable "source" {
+  description = <<-EOT
+    Where this workload's image comes from (ADR 0028, decision 3).
+
+      * `built`    — this platform's own build→sign→attest pipeline. The
+        digest is `image_digest`, which `catalogue.tf` composes from
+        `var.image_digests` — itself written by `.github/workflows/deploy.yml`
+        into `infrastructure/environments/<env>/images.tfvars`. The service's
+        image is then owned by the pipeline: see the `ignore_changes` at the
+        foot of `google_cloud_run_v2_service.workload`, which exists so an
+        apply after a deploy does not roll the service back to the digest the
+        tfvars still name.
+      * `vendored` — a third-party image mirrored and attested by
+        `.github/workflows/vendor.yml` from a reviewed line in
+        `infrastructure/egress/vendored-images.txt`. The digest is
+        `vendored_image_digest`. There is no pipeline moving this image after
+        Terraform creates the revision, so nothing here fights an apply over
+        it — the `ignore_changes` rule does not apply to a vendored workload,
+        and Terraform owns the image outright.
+
+    Default `built`, so every workload this module deployed before this input
+    existed — the whole catalogue, as of ADR 0028 — is unaffected.
+  EOT
+
+  type    = string
+  default = "built"
+
+  validation {
+    condition     = contains(["built", "vendored"], var.source)
+    error_message = "source is built or vendored."
+  }
+}
+
+variable "vendored_image_digest" {
+  description = <<-EOT
+    The image to run when `source` is `vendored`, pinned by digest. Ignored,
+    and may be left null, when `source` is `built` — see `image_digest`.
+
+    The same pinning rule as `image_digest`, for the same reason: a tag is a
+    name somebody may move after the mirror was reviewed and attested.
+  EOT
+
+  type    = string
+  default = null
+
+  validation {
+    condition     = var.vendored_image_digest == null || can(regex("^[a-z0-9][a-z0-9._/-]*[a-z0-9]@sha256:[a-f0-9]{64}$", var.vendored_image_digest))
+    error_message = "The vendored image must be pinned by digest, as repository@sha256:<64 hex>, or null. A tag is a name someone can move after the attestation was signed."
   }
 }
 

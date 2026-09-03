@@ -695,6 +695,38 @@ variable "metrics_collector_image_digest" {
   }
 }
 
+variable "vendored_openobserve_image_digest" {
+  description = <<-EOT
+    The digest of OpenObserve — the platform's metrics, logs and traces
+    backend (ADR 0028) — as `sha256:<64 hex>`, or null to deploy nothing.
+
+    The same adoption shape `metrics_collector_image_digest` uses, for the
+    same reason: Binary Authorization admits only what the platform's own
+    attestor signed, so a third-party image is adopted by mirroring it —
+    a reviewed line in `infrastructure/egress/vendored-images.txt`, copied
+    and attested by `vendor.yml` — rather than by exempting its upstream
+    repository from the policy. `catalogue.tf` composes the value with the
+    registry prefix and passes it to `modules/cloudrun` as
+    `vendored_image_digest` on the one workload whose `source` is
+    `"vendored"`, so the upstream repository cannot be named here and an
+    unmirrored image cannot reach a plan.
+
+    Null by default and null is the closed state: no OpenObserve service, in
+    any environment, until an operator has reviewed the mirrored digest for
+    that environment and named it here. Unlike the metrics collector, this is
+    not a sidecar attached to an existing workload — it is its own top-level
+    Cloud Run service, created only once this is set.
+  EOT
+
+  type    = string
+  default = null
+
+  validation {
+    condition     = var.vendored_openobserve_image_digest == null || can(regex("^sha256:[a-f0-9]{64}$", var.vendored_openobserve_image_digest))
+    error_message = "The OpenObserve digest is `sha256:<64 hex>` or null. A tag is a name someone can move after the attestation was signed."
+  }
+}
+
 variable "enable_identity_platform" {
   description = "Run Google Cloud Identity Platform for customer sign-in in this environment. Customer identity only — the admin surface uses IAP and workforce identity, a separate trust model on purpose."
   type        = bool

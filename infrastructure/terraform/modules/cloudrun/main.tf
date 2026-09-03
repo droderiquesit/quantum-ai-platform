@@ -177,6 +177,15 @@ locals {
   # `storage.objects.delete` and every configuration that ever scraped
   # stays readable under the name the revision that ran it mounted.
   collector_prefix = substr(sha256(local.collector_config), 0, 16)
+
+  # The one branch ADR 0028 decision 3 adds: which of the two digests this
+  # workload actually runs at. `built` is every workload this module deployed
+  # before the branch existed; `vendored` is read from a different variable
+  # because it is written by a different pipeline (vendor.yml, not
+  # deploy.yml) into a different file (vendored-images.txt, not
+  # images.tfvars). The precondition on `google_service_account.workload`
+  # refuses the half of this that was left null.
+  effective_image_digest = var.source == "vendored" ? var.vendored_image_digest : var.image_digest
 }
 
 # --- the workload's own identity --------------------------------------------
@@ -286,6 +295,22 @@ resource "google_service_account" "workload" {
         !startswith(mount.secret_id, "qip-venue-credential")
       ])
       error_message = "A customer-facing workload may not read the venue credential. Customer traffic and trading traffic share no credential; the workload that needs it is in the trading class and is reached over the VPC."
+    }
+
+    # `source` names which digest this workload runs at, and only one of the
+    # two variables that could carry it is ever read (see
+    # `local.effective_image_digest`). Left null, the unread half is a caller
+    # bug that would otherwise surface as Cloud Run refusing an empty image
+    # string at apply — after the image was built — rather than at plan time,
+    # naming which half was forgotten.
+    precondition {
+      condition     = var.source != "built" || var.image_digest != null
+      error_message = "source is \"built\" but image_digest is null. A built workload's digest comes from images.tfvars, composed by the caller into image_digest; pass it through."
+    }
+
+    precondition {
+      condition     = var.source != "vendored" || var.vendored_image_digest != null
+      error_message = "source is \"vendored\" but vendored_image_digest is null. A vendored workload's digest comes from vendored-images.txt, composed by the caller into vendored_image_digest; pass it through."
     }
 
     # Two mounts producing the same file path silently leave one of the two
@@ -561,11 +586,13 @@ resource "google_cloud_run_v2_service" "workload" {
     encryption_key                   = var.encryption_key
 
     # The workload. First, because the `ignore_changes` at the foot of this
-    # resource names it by index: the pipeline owns this container's image
-    # and Terraform owns everything else about it.
+    # resource names it by index: for a built workload, the pipeline owns
+    # this container's image and Terraform owns everything else about it — a
+    # vendored workload has no such pipeline, so `ignore_changes` does not
+    # apply to it and Terraform owns the image too.
     containers {
       name  = var.name
-      image = var.image_digest
+      image = local.effective_image_digest
 
       # Not started until the proxy answers, where there is one.
       depends_on = local.has_egress_sidecar ? [local.sidecar_name] : null
@@ -833,13 +860,21 @@ resource "google_cloud_run_v2_service" "workload" {
     percent = 100
   }
 
-  # The workload container's image belongs to the pipeline. See the header:
-  # `deploy.yml` moves it after signing and attesting a new digest, and an
-  # apply that reasserted the tfvars digest would roll every deploy back.
-  # Only the image, and only the workload's — the sidecar's image is this
-  # configuration's, and everything else about the revision is too.
+  # The workload container's image belongs to the pipeline, for a built
+  # workload. See the header: `deploy.yml` moves it after signing and
+  # attesting a new digest, and an apply that reasserted the tfvars digest
+  # would roll every deploy back. Only the image, and only the workload's —
+  # the sidecar's image is this configuration's, and everything else about
+  # the revision is too.
+  #
+  # A vendored workload (ADR 0028 decision 3) has no such pipeline to fight
+  # with: `vendor.yml` writes a reviewed line in vendored-images.txt, not a
+  # running revision, so there is nothing here for Terraform to lose a race
+  # against. The empty list is a real absence of the rule, not a no-op —
+  # Terraform owns this container's image outright for as long as `source`
+  # says `vendored`.
   lifecycle {
-    ignore_changes = [template[0].containers[0].image]
+    ignore_changes = var.source == "vendored" ? [] : [template[0].containers[0].image]
   }
 }
 
@@ -890,7 +925,7 @@ resource "google_cloud_run_v2_job" "workload" {
 
       containers {
         name  = var.name
-        image = var.image_digest
+        image = local.effective_image_digest
 
         resources {
           limits = {
