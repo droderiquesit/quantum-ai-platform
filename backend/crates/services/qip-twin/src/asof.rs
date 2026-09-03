@@ -66,9 +66,15 @@ impl TwinMarket {
     /// the action taken for the same reason a backtest does.
     pub fn new(bars: Vec<Bar>, costs: CostModel, impact_window: usize) -> Result<Self> {
         costs.validate()?;
-        if impact_window == 0 {
+        // A window of one bar can never estimate a volatility: sample variance
+        // has no deviation to measure from a single point, so `liquidity`
+        // would return `None` from the moment the market opened to the moment
+        // it closed. A configuration that can never produce a liquidity
+        // estimate is a defect the constructor should refuse, not a value the
+        // caller discovers is never usable.
+        if impact_window < 2 {
             return Err(Error::invalid(
-                "a liquidity estimate needs at least one bar of window",
+                "a liquidity estimate needs at least two bars of window; one bar cannot estimate a volatility",
             ));
         }
         Ok(Self {
@@ -186,15 +192,30 @@ impl DecisionView<'_> {
 
     /// How much the market was absorbing, estimated from the trailing window.
     ///
-    /// `None` when nothing had printed: a counterfactual on an instrument with
-    /// no history is not a conservative estimate, it is a guess, and the caller
-    /// should be told rather than handed a default.
+    /// `None` when nothing had printed, or when fewer than two bars had: a
+    /// counterfactual on an instrument with no history, or with only one
+    /// bar's worth, is not a conservative estimate, it is a guess, and the
+    /// caller should be told rather than handed a default.
+    ///
+    /// The two-bar floor is not cosmetic. `qip_numerics::stats::stddev`
+    /// returns exactly `0.0` for fewer than two observations (there is no
+    /// deviation to measure from one point), and `CostModel::cost_of` treats
+    /// a non-positive volatility as "skip the impact term" — `impact_bps`
+    /// becomes `0.0` rather than an error. Before this guard, a counterfactual
+    /// priced from a single-bar window paid commission and spread but no
+    /// market impact at all, silently, for exactly the estimate the
+    /// `observations` field exists to warn a reader about: the alternative
+    /// looked cheapest precisely when the twin knew the least about the
+    /// market it was trading into.
     pub fn liquidity(&self, object_id: &ObjectId) -> Option<Liquidity> {
         let bars = self.inner.bars(object_id);
         if bars.is_empty() {
             return None;
         }
         let window = &bars[bars.len().saturating_sub(self.window)..];
+        if window.len() < 2 {
+            return None;
+        }
         let volumes: Vec<f64> = window.iter().map(|bar| bar.volume.to_f64()).collect();
         let returns: Vec<f64> = window.iter().map(Bar::return_pct).collect();
         Some(Liquidity {
@@ -235,5 +256,90 @@ impl DecisionView<'_> {
     /// around it.
     pub fn reads(&self) -> usize {
         self.inner.read_count()
+    }
+}
+
+#[cfg(test)]
+// The workspace denies `panic_in_result_fn` for production code. In a test
+// the assertion is the deliverable, and `?` is what keeps the setup readable.
+#[allow(clippy::panic_in_result_fn)]
+mod tests {
+    use super::*;
+    use qip_financial::quality::DataQuality;
+    use qip_market::bar::Interval;
+
+    fn day(n: i64) -> Timestamp {
+        Timestamp::from_civil(2025, 1, 1).saturating_add(qip_core::time::Duration::from_days(n))
+    }
+
+    fn bar(index: i64, open: i64, close: i64) -> Bar {
+        let open_price = Decimal::from_int(open);
+        let close_price = Decimal::from_int(close);
+        Bar {
+            object_id: ObjectId::from_string("obj-alpha"),
+            venue: "XTST".to_string(),
+            interval: Interval::Day,
+            open_time: day(index),
+            open: open_price,
+            high: open_price.max(close_price) + Decimal::ONE,
+            low: open_price.min(close_price) - Decimal::ONE,
+            close: close_price,
+            volume: Decimal::from_int(60_000),
+            vwap: None,
+            trade_count: 0,
+            quality: DataQuality::clean(),
+        }
+    }
+
+    /// One closed bar cannot estimate a deviation from anything: sample
+    /// variance is defined with denominator `n - 1`, so `stats::stddev`
+    /// returns exactly `0.0` for a single point, and `CostModel::cost_of`
+    /// treats a non-positive volatility as "no impact term". Before the
+    /// two-bar floor in `liquidity`, a decision this early in a history
+    /// received a `Liquidity` anyway, and every counterfactual settled from
+    /// it paid commission and spread but never impact — the alternative
+    /// looked cheapest exactly when the estimate behind it was worth least.
+    #[test]
+    fn a_single_closed_bar_is_not_a_liquidity_estimate() -> Result<()> {
+        let object_id = ObjectId::from_string("obj-alpha");
+        let mut market = TwinMarket::new(vec![bar(0, 100, 101)], CostModel::default(), 10)?;
+        let view = market.view_at(day(1))?;
+        assert!(
+            view.liquidity(&object_id).is_none(),
+            "a single-bar window produced a liquidity estimate nobody should trust"
+        );
+        Ok(())
+    }
+
+    /// The second bar is what turns a guess into an estimate: two closed
+    /// bars give `stats::stddev` one return to measure a deviation from, so
+    /// `liquidity` starts answering `Some` at exactly the point the sample
+    /// variance stops being definitionally zero. Pinning `observations == 2`
+    /// here, not just `is_some()`, is what would catch a future off-by-one
+    /// that let a one-bar window back in.
+    #[test]
+    fn two_closed_bars_are_enough_to_estimate_liquidity() -> Result<()> {
+        let object_id = ObjectId::from_string("obj-alpha");
+        let mut market = TwinMarket::new(
+            vec![bar(0, 100, 101), bar(1, 101, 103)],
+            CostModel::default(),
+            10,
+        )?;
+        let view = market.view_at(day(2))?;
+        let liquidity = view
+            .liquidity(&object_id)
+            .expect("two closed bars should estimate a liquidity");
+        assert_eq!(liquidity.observations, 2);
+        Ok(())
+    }
+
+    /// A window that can never hold two bars can never estimate a liquidity,
+    /// so the constructor refuses it up front rather than letting every
+    /// `liquidity` call downstream silently return `None` forever.
+    #[test]
+    fn a_window_of_one_bar_is_refused_at_construction() {
+        let error = TwinMarket::new(vec![bar(0, 100, 101)], CostModel::default(), 1)
+            .expect_err("an impact window that can never estimate a volatility was accepted");
+        assert!(error.message().contains("two bars"), "{error}");
     }
 }
