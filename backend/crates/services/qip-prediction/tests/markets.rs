@@ -70,7 +70,8 @@ fn binary_market(fees: FeeSchedule) -> EventMarket {
         VenueId::new("PREDICT-A"),
         VenueClass::PredictionMarket,
         proposition(rate_criteria(Comparison::AtMost, -25)),
-        MarketKind::binary(yes, OutcomeId::new("no"), ObjectId::from_string("NO")),
+        MarketKind::binary(yes, OutcomeId::new("no"), ObjectId::from_string("NO"))
+            .expect("distinct yes/no ids"),
         fees,
     )
     .expect("a well-formed binary market")
@@ -197,6 +198,30 @@ fn a_binary_markets_no_outcome_is_the_exact_complement_of_its_yes() {
 }
 
 #[test]
+fn a_binary_market_whose_no_id_collides_with_its_yes_id_is_refused() {
+    // The failure this prevents: `MarketKind::binary` used to accept any
+    // `no_id`, including one equal to the yes outcome's own id. Nothing
+    // rejects `MarketKind::Binary` afterwards the way `categorical` rejects a
+    // duplicate id at construction, so a market built that way would carry
+    // two outcomes indistinguishable by id — `outcome(id)` and any lookup
+    // keyed on `OutcomeId` (a book fed to `set_arbitrage`, for one) would
+    // silently answer with whichever of the two it found first.
+    let yes = Outcome::new(
+        OutcomeId::new("yes"),
+        "a cut of at least 25bp",
+        ObjectId::from_string("YES"),
+        rate_criteria(Comparison::AtMost, -25),
+    );
+    let error = MarketKind::binary(yes, OutcomeId::new("yes"), ObjectId::from_string("NO"))
+        .expect_err("the no outcome must not share the yes outcome's id");
+    assert_eq!(error.code(), "invalid");
+    assert!(
+        error.message().contains("yes"),
+        "the refusal should name the colliding id, got {error}"
+    );
+}
+
+#[test]
 fn a_categorical_market_whose_outcomes_share_criteria_is_refused() {
     let duplicate = || {
         Outcome::new(
@@ -227,7 +252,8 @@ fn a_market_on_a_venue_that_is_not_a_prediction_market_is_refused() {
         VenueId::new("XNYS"),
         VenueClass::Exchange,
         proposition(rate_criteria(Comparison::AtMost, -25)),
-        MarketKind::binary(yes, OutcomeId::new("no"), ObjectId::from_string("NO")),
+        MarketKind::binary(yes, OutcomeId::new("no"), ObjectId::from_string("NO"))
+            .expect("distinct yes/no ids"),
         FeeSchedule::FREE,
     )
     .expect_err("an exchange does not list event contracts on these terms");

@@ -91,7 +91,8 @@ fn market(
             yes,
             OutcomeId::new("no"),
             ObjectId::from_string(format!("{venue}-NO")),
-        ),
+        )
+        .expect("distinct yes/no ids"),
         fees,
     )
     .expect("a well-formed market")
@@ -481,6 +482,53 @@ fn a_pair_resolving_from_different_authorities_needs_a_stated_haircut_before_it_
 }
 
 #[test]
+fn a_haircut_stated_on_a_pair_with_no_source_divergence_is_refused() {
+    // The failure this prevents: `with_source_haircut` used to accept a
+    // positive value regardless of whether the pair actually diverged on
+    // source. Applied to a same-source pair, the walk still recorded an
+    // `Uncertainty` deduction with the stated (non-zero) amount, but under
+    // the basis text reserved for "no divergence" — "none: both venues
+    // resolve from the same source on identical criteria" — so the one
+    // record meant to explain where the edge went contradicted its own
+    // amount. There is nothing a same-source haircut is the price of, so
+    // stating one is refused rather than silently recorded.
+    let left = market(
+        "PREDICT-A",
+        "release",
+        -25,
+        resolves_at(),
+        FeeSchedule::FREE,
+    );
+    let right = market(
+        "PREDICT-B",
+        "release",
+        -25,
+        resolves_at(),
+        FeeSchedule::FREE,
+    );
+    let pair = CrossMarketPair::new(&left, &right).expect("the same proposition");
+    assert!(
+        pair.source_divergence().is_none(),
+        "premise: this pair must not diverge on source, or the refusal below proves nothing"
+    );
+
+    let error = pair
+        .with_source_haircut(price("0.01"))
+        .expect_err("a same-source pair has nothing for a haircut to price");
+    assert_eq!(error.code(), "invalid");
+    assert!(
+        error.message().contains("same source"),
+        "the refusal should say why, got {error}"
+    );
+
+    // A zero haircut is not a claim about divergence and remains legal.
+    CrossMarketPair::new(&left, &right)
+        .expect("the same proposition")
+        .with_source_haircut(Decimal::ZERO)
+        .expect("stating no haircut is always legal");
+}
+
+#[test]
 fn a_cross_venue_spread_is_sized_against_the_thinner_of_the_two_books() {
     let left = market(
         "PREDICT-A",
@@ -824,7 +872,8 @@ fn the_same_outcome_is_matched_across_venues_by_its_criteria_not_by_its_label() 
             renamed,
             OutcomeId::new("NO-EASING"),
             ObjectId::from_string("PREDICT-B-NO-EASING"),
-        ),
+        )
+        .expect("distinct yes/no ids"),
         FeeSchedule::FREE,
     )
     .expect("a well-formed market");
