@@ -947,6 +947,117 @@ fn a_halted_venue_never_appears_in_a_candidate() -> Result<()> {
 }
 
 #[test]
+fn a_synthetic_with_a_component_at_a_halted_venue_never_appears_in_a_candidate() -> Result<()> {
+    // The failure this prevents: `edge_is_tradable` once checked only the
+    // edge's own two endpoints. A basket held at one venue can be built from
+    // names that trade at another, and a component sitting on a halted venue
+    // is exactly the "path through a halted venue" the check exists to keep
+    // out of the search — the gap would have let the desk propose an order
+    // to a venue that will refuse it, discovered by the order rather than by
+    // this check.
+    let xnas = venue("XNAS");
+    let nyse = venue("NYSE");
+    let mut graph = ArbitrageGraph::new();
+    graph.register_venue(
+        xnas.clone(),
+        VenueFacts::new(VenueClass::Exchange, VenueStatus::Open),
+    );
+    graph.register_venue(
+        nyse.clone(),
+        VenueFacts::new(VenueClass::Exchange, VenueStatus::Open),
+    );
+
+    let components = vec![
+        SyntheticComponent {
+            object: object("ALPHA"),
+            venue: xnas.clone(),
+            units_per_unit: d("2"),
+            unwind_side: BookSide::Bid,
+        },
+        SyntheticComponent {
+            object: object("BETA"),
+            venue: nyse.clone(),
+            units_per_unit: d("1"),
+            unwind_side: BookSide::Bid,
+        },
+    ];
+    graph.add_synthetic(
+        node("USD", "XNAS"),
+        node("BASKET", "XNAS"),
+        d("0.025"),
+        d("0.0005"),
+        object("BASKET"),
+        components,
+        at(),
+        12,
+    )?;
+    graph.add_trade(
+        node("BASKET", "XNAS"),
+        node("USD", "XNAS"),
+        d("40.70"),
+        d("0.0005"),
+        object("BASKET"),
+        BookSide::Bid,
+        at(),
+        12,
+    )?;
+
+    let depth = StaticLiquidity::new()
+        .with_book(
+            xnas.clone(),
+            book(
+                "ALPHA",
+                "XNAS",
+                &[("9.95", "10000")],
+                &[("10.05", "10000")],
+                at(),
+            ),
+            12,
+        )
+        .with_book(
+            nyse.clone(),
+            book(
+                "BETA",
+                "NYSE",
+                &[("19.90", "10000")],
+                &[("20.10", "10000")],
+                at(),
+            ),
+            12,
+        )
+        .with_book(
+            xnas,
+            book(
+                "BASKET",
+                "XNAS",
+                &[("40.60", "1000")],
+                &[("40.80", "1000")],
+                at(),
+            ),
+            12,
+        );
+
+    // Premise: with NYSE open, the basket is a real, found cycle — the
+    // refusal below is about NYSE's status and not about the fixture.
+    assert_eq!(
+        search_candidates(&graph, &SearchSettings::default()).len(),
+        1
+    );
+
+    graph.register_venue(
+        nyse,
+        VenueFacts::new(VenueClass::Exchange, VenueStatus::Halted),
+    );
+    assert!(
+        search_candidates(&graph, &SearchSettings::default()).is_empty(),
+        "a component resting on a halted venue was still proposed as tradable"
+    );
+    let report = scanner("100000").scan(&graph, &depth, &SizePolicy::uniform(d("10000")), at());
+    assert!(report.opportunities.is_empty());
+    Ok(())
+}
+
+#[test]
 fn a_venue_with_no_recorded_class_is_treated_as_unusable() -> Result<()> {
     let mut graph = ArbitrageGraph::new();
     graph.add_trade(
