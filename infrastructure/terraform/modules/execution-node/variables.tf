@@ -291,7 +291,7 @@ variable "egress_bootstrap" {
   # binding wide would still be a mistake this validation exists to catch.
   validation {
     condition = alltrue([
-      for line in regexall("- name: ([a-z-]+)\n\s+address:\n\s+socket_address: \{ address: ([0-9.]+),", var.egress_bootstrap) :
+      for line in regexall("- name: ([a-z-]+)\n\\s+address:\n\\s+socket_address: \\{ address: ([0-9.]+),", var.egress_bootstrap) :
       line[1] == "127.0.0.1" || line[0] == "health"
     ])
     error_message = "The egress bootstrap binds a listener other than `health` to something other than loopback. On the node every traffic listener must stay loopback: a proxy reachable from the network is a proxy every neighbour can reach. `health` is the sole named exception, and it is covered by the firewall instead."

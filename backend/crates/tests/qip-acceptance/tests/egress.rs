@@ -1334,3 +1334,43 @@ fn the_node_module_admits_the_same_named_exception_it_shares_the_bootstrap_with(
          apply) or every listener is (admitting a real mistake)"
     );
 }
+
+#[test]
+fn the_node_variable_s_regex_uses_escapes_hcl_actually_accepts() {
+    // Run 24 of infra.yml found this: the fix above swapped a blanket
+    // refusal for a `regexall` over the bootstrap text, but HCL's own
+    // string-escaping rules are not the regex engine's. `\n` is a real HCL
+    // escape (a literal newline) and passed straight through, but `\s` and
+    // `\{` are not on HCL's short list of valid escapes — `terraform init`
+    // refused the module outright:
+    //
+    //   Error: Invalid escape sequence
+    //   The symbol "s" is not a valid escape sequence selector.
+    //
+    // A backslash meant to reach the regex engine has to survive HCL's own
+    // parse first, which means writing it doubled (`\\s`, `\\{`) so HCL
+    // emits one literal backslash for `regexall` to see. A parenthesised
+    // capture (`\(`) is not this class — the fixture below asserts on the
+    // two cases the previous fix actually broke, not on every metacharacter.
+    let node_variables = read(NODE_VARIABLES);
+    let regexall_line = node_variables
+        .lines()
+        .find(|line| line.contains("for line in regexall("))
+        .expect(
+            "the validation's regexall call moved or was rewritten; this \
+             test's premise needs rewriting",
+        );
+
+    assert!(
+        regexall_line.contains("\\\\s+address"),
+        "the regex uses a bare \\s for whitespace, which HCL parses as an \
+         invalid escape sequence and refuses at `terraform init` before any \
+         plan runs — every apply is blocked, not just a bad value admitted.\n\
+         {regexall_line}"
+    );
+    assert!(
+        regexall_line.contains("\\\\{ address"),
+        "the regex uses a bare \\{{ for the literal brace, which HCL parses \
+         as an invalid escape sequence for the same reason.\n{regexall_line}"
+    );
+}
