@@ -482,3 +482,60 @@ fn the_backlog_stays_in_order_past_the_first_digit_boundary() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn a_recovered_sink_continues_the_sequence_rather_than_counting_what_remains() -> Result<()> {
+    // `DurableDeadLetters::open` used to resume numbering from how many
+    // letters were still present, not from the highest key ever assigned. A
+    // released letter in the middle of the run then made the surviving count
+    // undercount the true high-water mark, and the next letter recorded after
+    // a restart landed on a key an earlier, still-held letter already
+    // occupied — silently overwriting it. This is the released-in-the-middle
+    // case: three letters recorded, the *first* released (not the last), so
+    // the count (2) disagrees with the true next sequence (3).
+    let disk = disk();
+    {
+        let mut sink = DurableDeadLetters::open(Arc::clone(&disk), "cell-london")?;
+        sink.record(letter("london:1")?);
+        sink.record(letter("london:2")?);
+        sink.record(letter("london:3")?);
+        assert_eq!(sink.len(), 3);
+        assert!(
+            sink.release("london:1")?,
+            "the first letter was not there to release"
+        );
+        assert_eq!(
+            sink.len(),
+            2,
+            "releasing the first letter did not leave the other two"
+        );
+    } // <- the pod dies here, with 2 letters held and 3 ever recorded.
+
+    let mut recovered = DurableDeadLetters::open(Arc::clone(&disk), "cell-london")?;
+    assert_eq!(
+        recovered.len(),
+        2,
+        "the restart lost or gained a letter that was still held"
+    );
+    recovered.record(letter("london:4")?);
+
+    assert_eq!(
+        recovered.len(),
+        3,
+        "the newly recorded letter overwrote one still held from before the restart"
+    );
+    let keys: Vec<String> = recovered
+        .letters()?
+        .into_iter()
+        .map(|letter| letter.key)
+        .collect();
+    assert!(
+        keys.contains(&"london:2".to_string()) && keys.contains(&"london:3".to_string()),
+        "a letter recorded before the restart disappeared: {keys:?}"
+    );
+    assert!(
+        keys.contains(&"london:4".to_string()),
+        "the letter recorded after the restart is missing: {keys:?}"
+    );
+    Ok(())
+}
