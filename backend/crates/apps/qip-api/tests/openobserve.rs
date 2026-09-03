@@ -24,11 +24,20 @@ use std::time::Duration as StdDuration;
 // without being asked. Every test here talks to an actual socket for that
 // reason, the same choice `qip-transport`'s own HTTP client tests make.
 
+/// One request the server actually received. The authorization header is kept
+/// because the property under test is *where* the credential travelled: a test
+/// that only sees the path cannot tell a header from a query string.
+#[derive(Clone, Debug)]
+struct Captured {
+    path: String,
+    authorization: Option<String>,
+}
+
 struct TestServer {
     address: String,
     stop: Arc<AtomicBool>,
     served: Arc<AtomicUsize>,
-    paths: Arc<Mutex<Vec<String>>>,
+    requests: Arc<Mutex<Vec<Captured>>>,
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -46,22 +55,22 @@ impl TestServer {
 
         let stop = Arc::new(AtomicBool::new(false));
         let served = Arc::new(AtomicUsize::new(0));
-        let paths = Arc::new(Mutex::new(Vec::new()));
+        let requests = Arc::new(Mutex::new(Vec::new()));
 
         let thread_stop = stop.clone();
         let thread_served = served.clone();
-        let thread_paths = paths.clone();
+        let thread_requests = requests.clone();
         let handle = std::thread::spawn(move || {
             while !thread_stop.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((stream, _)) => {
                         let _ = stream.set_nonblocking(false);
                         let _ = stream.set_read_timeout(Some(StdDuration::from_secs(5)));
-                        if let Some(path) = read_request_path(&stream) {
-                            thread_paths
+                        if let Some(captured) = read_request(&stream) {
+                            thread_requests
                                 .lock()
                                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                                .push(path);
+                                .push(captured);
                         }
                         thread_served.fetch_add(1, Ordering::SeqCst);
                         write_response(stream, status);
@@ -78,7 +87,7 @@ impl TestServer {
             address,
             stop,
             served,
-            paths,
+            requests,
             handle: Some(handle),
         }
     }
@@ -91,11 +100,18 @@ impl TestServer {
         self.served.load(Ordering::SeqCst)
     }
 
-    fn paths(&self) -> Vec<String> {
-        self.paths
+    fn requests(&self) -> Vec<Captured> {
+        self.requests
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+
+    fn paths(&self) -> Vec<String> {
+        self.requests()
+            .iter()
+            .map(|request| request.path.clone())
+            .collect()
     }
 }
 
@@ -120,7 +136,7 @@ fn address_with_no_listener() -> String {
     format!("http://{address}")
 }
 
-fn read_request_path(stream: &TcpStream) -> Option<String> {
+fn read_request(stream: &TcpStream) -> Option<Captured> {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     if reader.read_line(&mut line).ok()? == 0 {
@@ -150,7 +166,10 @@ fn read_request_path(stream: &TcpStream) -> Option<String> {
     if declared > 0 {
         reader.read_exact(&mut body).ok()?;
     }
-    Some(path)
+    Some(Captured {
+        path,
+        authorization: headers.get("authorization").cloned(),
+    })
 }
 
 fn write_response(mut stream: TcpStream, status: u16) {
@@ -237,6 +256,87 @@ fn a_spawned_drain_thread_wakes_on_its_configured_interval_without_being_polled(
     );
     drop(handle);
     Ok(())
+}
+
+#[test]
+fn the_credential_travels_in_the_authorization_header_and_never_in_the_url() -> Result<()> {
+    // The credential is a distinctive literal so the assertions can look for
+    // it in the one place it belongs and in the one place it must never be.
+    // A credential in a path is a credential in the collector's access log,
+    // in every proxy between here and it, and in this process's own logs.
+    const CREDENTIAL: &str = "Basic cWlwLWRyYWluOmEtdGVzdC1zZWNyZXQ";
+
+    let server = TestServer::always(200);
+    let telemetry = Telemetry::silent();
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    let config = qip_api::OpenObserveConfig::parse(
+        &server.url(),
+        Some("qip"),
+        Some("1"),
+        Some(CREDENTIAL.to_string()),
+    )?;
+
+    assert_eq!(server.served(), 0, "the premise: no request has landed yet");
+    qip_api::openobserve::export_once(&telemetry, &client(), &config, clock.now())?;
+
+    let requests = server.requests();
+    assert_eq!(
+        requests.len(),
+        2,
+        "the premise: one pass posts both signals, so there are two requests to inspect"
+    );
+    for request in &requests {
+        assert_eq!(
+            request.authorization.as_deref(),
+            Some(CREDENTIAL),
+            "the credential did not travel in the authorization header: {request:?}"
+        );
+        assert!(
+            !request.path.contains("cWlw"),
+            "the credential reached the request line, where it lands in every access log \
+             between here and the collector: {}",
+            request.path
+        );
+    }
+    Ok(())
+}
+
+/// The premise behind `OpenObserveConfig::parse` refusing a credential that
+/// carries a line break: the transport does not refuse it, it *repairs* it,
+/// and the repaired value is what the collector sees. Proven over a real
+/// socket because `HttpRequest`'s headers are private — nothing short of the
+/// wire can show what was actually sent.
+#[test]
+fn a_credential_with_a_line_break_would_reach_the_collector_mutilated_rather_than_rejected() {
+    let server = TestServer::always(200);
+    let configured = "Bearer abc\r\nx-injected: 1";
+    let request = qip_transport::HttpRequest::json(
+        qip_transport::Method::Post,
+        &format!("{}/api/qip/traces", server.url()),
+        b"{}".to_vec(),
+    )
+    .expect("a well-formed URL builds a request")
+    .with_header("authorization", configured);
+
+    let response = client().send(&request).expect("the send was not refused");
+    assert!(
+        response.is_success(),
+        "the premise: the transport sent it rather than failing on the line break"
+    );
+
+    let received = server
+        .requests()
+        .first()
+        .and_then(|captured| captured.authorization.clone())
+        .expect("the server saw an authorization header");
+    assert_ne!(
+        received, configured,
+        "the premise: what reached the collector is not what was configured"
+    );
+    assert_eq!(
+        received, "Bearer abcx-injected: 1",
+        "the transport strips the CR and the LF and sends the rest, silently"
+    );
 }
 
 #[test]
