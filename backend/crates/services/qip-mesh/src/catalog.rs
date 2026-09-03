@@ -126,8 +126,21 @@ impl DatasetRegistration {
         self
     }
 
-    /// Whether this dataset is licensed for a usage right now.
+    /// Whether this dataset is licensed for a usage at `now`.
+    ///
+    /// Bounded below by [`Self::registered_at`] as well as above by each
+    /// entitlement's own expiry. Without the lower bound, a query about an
+    /// instant before the dataset was ever registered into the mesh would
+    /// answer exactly as it would for today — an entitlement granted after
+    /// the fact would read as having covered a moment nobody could yet have
+    /// used the dataset for, which is retroactive leakage in the licensing
+    /// domain's own terms. `registered_at` is already recorded on every
+    /// registration, so this is not an opt-in a caller can forget: nothing
+    /// stops the mesh knowing about a dataset before the mesh knew about it.
     pub fn permits(&self, usage: Usage, now: Timestamp) -> bool {
+        if now < self.registered_at {
+            return false;
+        }
         self.entitlements.iter().any(|e| match e {
             Entitlement::Granted { usage: u, .. } => *u == usage && e.is_granted(now),
             Entitlement::Denied { .. } => false,
@@ -306,6 +319,14 @@ impl Catalog {
             return Err(Error::guard(format!(
                 "dataset `{dataset}` is {} and may not be read",
                 entry.quality.describe()
+            )));
+        }
+        if now < entry.registered_at {
+            return Err(Error::denied(format!(
+                "dataset `{dataset}` was not registered until {}, and {now} is before that; \
+                 a registration made today cannot retroactively cover an instant before it \
+                 existed",
+                entry.registered_at
             )));
         }
         if !entry.permits(usage, now) {

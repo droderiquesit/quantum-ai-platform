@@ -259,3 +259,39 @@ fn quarantining_without_a_reason_is_refused() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn a_dataset_grants_nothing_for_an_instant_before_it_was_registered() -> Result<()> {
+    // The wave-6 finding: `permits` had no lower bound at all, so a query
+    // about an instant before the dataset was ever registered into the mesh
+    // answered exactly as it would for today. An entitlement cannot cover a
+    // moment before the registration that carries it existed.
+    let registered = now();
+    let before = registered.saturating_sub(qip_core::Duration::from_days(1));
+    let registration = DatasetRegistration::new(
+        "vendor.prices",
+        "market-data",
+        MeshPort::Lakehouse,
+        registered,
+    )?
+    .licensed(Entitlement::Granted {
+        dataset: "vendor.prices".to_string(),
+        usage: Usage::Research,
+        expires_at: registered.saturating_add(Duration::from_days(30)),
+    });
+
+    // Assert the premise: at (and after) registration, the very same
+    // entitlement does permit the usage, so the refusal below is about the
+    // instant and not about a licence that was never granted at all.
+    assert!(registration.permits(Usage::Research, registered));
+    assert!(!registration.permits(Usage::Research, before));
+
+    let mut catalog = Catalog::new();
+    catalog.register(registration)?;
+    let error = catalog
+        .usable_for("vendor.prices", Usage::Research, before)
+        .expect_err("a dataset cannot be usable before it was registered");
+    assert!(error.message().contains("vendor.prices"));
+    assert!(error.message().contains("before it existed"));
+    Ok(())
+}
