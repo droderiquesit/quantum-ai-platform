@@ -143,8 +143,19 @@ impl TierVerdict {
 /// Carries no rung, and that absence is the guarantee: there is nowhere in this
 /// type to record that a model was consulted, so a value of it is proof that
 /// none was. It is what [`Router::select`] returns for a decision that requires
-/// determinism, and also what it returns when deterministic code was simply the
-/// cheapest rung that could answer.
+/// determinism — nothing else.
+///
+/// A decision that tolerates an estimate ([`Determinism::NotRequired`]) never
+/// produces this type, even when [`IntelligenceTier::DeterministicCode`] turns
+/// out to be the cheapest rung that answers it. That is not the same fact
+/// dressed up twice: `DeterministicCode`'s resolving power against a judgement
+/// question is a coin flip (see
+/// [`IntelligenceTier::resolving_power_f64`]), so landing there because a weak
+/// confidence bar tolerates a coin flip is still an estimate that could be
+/// wrong, and it stays a [`JudgedRouting`] — escalatable, and honest about
+/// carrying a tier that answered rather than a rule that computed. Only a
+/// decision that was never allowed to be estimated in the first place gets the
+/// stronger claim this type makes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DeterministicRouting {
     rationale: String,
