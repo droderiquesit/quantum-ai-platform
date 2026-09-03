@@ -286,8 +286,9 @@ impl Normalizer {
 
             // A record stamped in the future is a clock or unit error upstream;
             // clamping it is safer than letting it poison a point-in-time view.
-            if record.occurred_at() > received_at {
-                clamp_timestamp(&mut record, received_at);
+            // `clamp_timestamp` reports whether it actually changed anything —
+            // the report must never claim a correction that did not happen.
+            if record.occurred_at() > received_at && clamp_timestamp(&mut record, received_at) {
                 report.timestamps_corrected += 1;
             }
 
@@ -412,13 +413,56 @@ fn apply_conversion(record: &mut SensedRecord, conversion: &UnitConversion) -> b
     true
 }
 
-fn clamp_timestamp(record: &mut SensedRecord, at: Timestamp) {
+/// Force a future-stamped record's occurred-at back to the moment it was
+/// received. Returns whether the record was actually changed.
+///
+/// Only record kinds whose occurred-at is an observation of something that
+/// has already happened are handled: a tick, quote, trade, book snapshot, bar
+/// close or a news item's publication can never legitimately be in the
+/// future, so a future stamp on one of those is a clock or unit error
+/// upstream. A corporate action's ex-date, a reference-data effective-from
+/// date, a fundamental's period end and a macro series's reference date are
+/// routinely announced or scheduled ahead of when they take effect — forcing
+/// those to "now" would destroy exactly the information they exist to carry
+/// — so this leaves them untouched and returns `false`.
+///
+/// The bug this prevents: the caller used to increment
+/// `NormalizationReport::timestamps_corrected` unconditionally whenever
+/// `occurred_at() > received_at`, including for the record kinds this match
+/// falls through on (`_ => {}`, a no-op). The report then claimed a
+/// correction — the exact defect a downstream consumer would rely on to
+/// believe the record's timestamp was safe — that never happened, and a
+/// future-dated `Bar` in particular passed through completely unclamped
+/// despite being counted as fixed.
+fn clamp_timestamp(record: &mut SensedRecord, at: Timestamp) -> bool {
     match record {
-        SensedRecord::Tick(t) => t.at = at,
-        SensedRecord::Quote(q) => q.at = at,
-        SensedRecord::Trade(t) => t.at = at,
-        SensedRecord::Book(b) => b.at = at,
-        SensedRecord::News(n) => n.published_at = at,
-        _ => {}
+        SensedRecord::Tick(t) => {
+            t.at = at;
+            true
+        }
+        SensedRecord::Quote(q) => {
+            q.at = at;
+            true
+        }
+        SensedRecord::Trade(t) => {
+            t.at = at;
+            true
+        }
+        SensedRecord::Book(b) => {
+            b.at = at;
+            true
+        }
+        SensedRecord::News(n) => {
+            n.published_at = at;
+            true
+        }
+        SensedRecord::Bar(b) => {
+            // `Bar::close_time` is derived from `open_time + interval`, so
+            // clamping the close requires pushing `open_time` back by the
+            // bar's own duration rather than assigning a field directly.
+            b.open_time = at.saturating_sub(b.interval.duration());
+            true
+        }
+        _ => false,
     }
 }

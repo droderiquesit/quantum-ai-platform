@@ -3,6 +3,7 @@
 use qip_core::testing::approx_eq;
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_market::bar::{Bar, Interval};
+use qip_market::corporate_action::{CorporateAction, CorporateActionKind};
 use qip_market::quote::{Quote, Trade, TradeCondition};
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_normalization::contract::{DataContract, FieldRule, check_all};
@@ -242,6 +243,83 @@ fn a_record_stamped_in_the_future_is_clamped() {
     let (records, report) = normalizer.normalise("feed", vec![future], now());
     assert_eq!(report.timestamps_corrected, 1);
     assert_eq!(records[0].occurred_at(), now());
+}
+
+#[test]
+fn a_future_stamped_bar_is_actually_clamped_not_merely_counted() {
+    // The bug this prevents: `clamp_timestamp`'s match fell through to `_ =>
+    // {}` for `Bar`, a no-op, while the caller incremented
+    // `timestamps_corrected` unconditionally on every kind whenever
+    // `occurred_at() > received_at`. The report said the bar's timestamp was
+    // fixed while `records[0].occurred_at()` was still 30 days in the future
+    // — a false claim about what ran, exactly the failure Principle 6 names.
+    // Premise asserted first: the bar's close time is genuinely in the future
+    // relative to `received_at`, so a passing test cannot be trivial.
+    let received_at = now();
+    let bar = SensedRecord::Bar(Box::new(Bar {
+        object_id: object(),
+        venue: "XNYS".into(),
+        interval: Interval::Day,
+        open_time: received_at.saturating_add(Duration::from_days(30)),
+        open: dec!("100"),
+        high: dec!("101"),
+        low: dec!("99"),
+        close: dec!("100.5"),
+        volume: Decimal::from_int(1_000),
+        vwap: None,
+        trade_count: 10,
+        quality: Default::default(),
+    }));
+    assert!(
+        bar.occurred_at() > received_at,
+        "premise: the bar must actually be future-stamped"
+    );
+
+    let normalizer = Normalizer::new();
+    let (records, report) = normalizer.normalise("feed", vec![bar], received_at);
+    assert_eq!(
+        report.timestamps_corrected, 1,
+        "a genuinely future bar must be counted as corrected"
+    );
+    assert_eq!(
+        records[0].occurred_at(),
+        received_at,
+        "the bar's close time must actually move, not just the counter"
+    );
+}
+
+#[test]
+fn a_corporate_action_announced_ahead_of_its_ex_date_is_left_alone() {
+    // A split is routinely announced weeks before its ex-date; that ex-date is
+    // legitimately later than `received_at` and is not a clock error. Forcing
+    // it to "now" would destroy the one fact the record exists to carry —
+    // when the entitlement actually takes effect — so normalisation must
+    // neither rewrite it nor report a correction that did not happen.
+    let received_at = now();
+    let action = SensedRecord::CorporateAction(Box::new(CorporateAction {
+        object_id: object(),
+        ex_date: received_at.saturating_add(Duration::from_days(14)),
+        record_date: None,
+        payment_date: None,
+        kind: CorporateActionKind::Split { ratio: dec!("2") },
+        announced_at: received_at,
+    }));
+    assert!(
+        action.occurred_at() > received_at,
+        "premise: the ex-date must genuinely be ahead of received_at"
+    );
+
+    let normalizer = Normalizer::new();
+    let (records, report) = normalizer.normalise("feed", vec![action], received_at);
+    assert_eq!(
+        report.timestamps_corrected, 0,
+        "a legitimately future ex-date must not be reported as a correction"
+    );
+    assert_eq!(
+        records[0].occurred_at(),
+        received_at.saturating_add(Duration::from_days(14)),
+        "the ex-date itself must be untouched"
+    );
 }
 
 // --- contracts --------------------------------------------------------------
