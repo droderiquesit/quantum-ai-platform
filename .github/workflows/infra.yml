@@ -133,6 +133,25 @@ jobs:
             --member="serviceAccount:${{ steps.identity.outputs.account }}" \
             --role="roles/storage.objectAdmin" --quiet >/dev/null
 
+      # Run 25 found the second bucket this same reasoning applies to: every
+      # rendering of the egress bootstrap (envoy.yaml, keyed by its own
+      # content hash) is a new object in `modules/egress-proxy`'s bucket, and
+      # a changed bootstrap makes Terraform delete the old one —
+      #
+      #   Error deleting contents of object envoy-16bc4c53e18e7501.yaml:
+      #   googleapi: Error 403: ...does not have storage.objects.delete
+      #   access to the Google Cloud Storage object.
+      #
+      # The state bucket grant above does not cover this bucket; it is a
+      # second bucket with the same missing permission, not a wider deny that
+      # one grant already closed. Idempotent, same shape as the grant above.
+      - name: the egress bootstrap bucket grant
+        run: |
+          gcloud storage buckets add-iam-policy-binding \
+            "gs://qip-egress-${{ inputs.environment }}-${{ steps.identity.outputs.project }}" \
+            --member="serviceAccount:${{ steps.identity.outputs.account }}" \
+            --role="roles/storage.objectAdmin" --quiet >/dev/null
+
       # Terraform refreshes existing state — reading the attestor's public
       # key, the attestor resource itself — before it applies anything, so a
       # role this same apply would grant declaratively is too late for the
