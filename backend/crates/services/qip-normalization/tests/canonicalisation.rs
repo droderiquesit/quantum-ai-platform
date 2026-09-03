@@ -2,6 +2,7 @@
 
 use qip_core::testing::approx_eq;
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
+use qip_financial::quality::DataQuality;
 use qip_market::bar::{Bar, Interval};
 use qip_market::corporate_action::{CorporateAction, CorporateActionKind};
 use qip_market::quote::{Quote, Trade, TradeCondition};
@@ -353,6 +354,54 @@ fn the_standard_contracts_pass_a_well_formed_record() {
     let contracts = DataContract::standard();
     let violations = check_all(&contracts, &quote("XNYS", "100", "100.1"), now());
     assert!(violations.is_empty(), "{violations:?}");
+}
+
+#[test]
+fn a_record_below_the_contracts_quality_floor_is_refused_even_when_every_field_is_in_range() {
+    // The bug this prevents: every standard contract carries `minimum_quality`
+    // ("minimum acceptable data-quality score" per its doc comment) but
+    // `DataContract::check` never read a record's own `DataQuality` against
+    // it — a limit that cannot fire reads as protection and is not. A feed
+    // that degraded to a coin-flip confidence while every numeric field
+    // stayed inside its sane range would pass every contract silently.
+    let contracts = DataContract::standard();
+
+    // Premise: the same well-formed quote used elsewhere in this file does
+    // clear quote-sanity's 0.5 floor at its default, clean quality.
+    let clean = quote("XNYS", "100", "100.1");
+    assert!(
+        check_all(&contracts, &clean, now()).is_empty(),
+        "premise: a clean record must pass"
+    );
+
+    // Two recorded validation failures halve confidence twice: 1.0 -> 0.5 ->
+    // 0.25, which is below quote-sanity's 0.5 floor while every bid/ask/size
+    // field is still perfectly in range.
+    let mut degraded = clean.clone();
+    match &mut degraded {
+        SensedRecord::Quote(q) => {
+            q.quality = DataQuality::clean()
+                .with_issue("stale reference price")
+                .with_issue("crossed book on the prior tick");
+        }
+        other => panic!("expected a quote, got {other:?}"),
+    }
+    let score = match &degraded {
+        SensedRecord::Quote(q) => q.quality.score(),
+        _ => unreachable!(),
+    };
+    assert!(
+        score < 0.5,
+        "premise: the degraded record's own score ({score}) must actually be below the floor"
+    );
+
+    let violations = check_all(&contracts, &degraded, now());
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.detail.contains("data-quality score")),
+        "a record below the contract's quality floor must be flagged: {violations:?}"
+    );
 }
 
 #[test]
