@@ -22,7 +22,14 @@
 //! * **Checkpoints bound the log.** When the log outgrows its trigger the
 //!   whole index is written to a new `checkpoint.<generation>`, a fresh empty
 //!   log is created beside it, and `MANIFEST` is atomically flipped to name
-//!   the new generation. The previous pair is then deleted.
+//!   the new generation. The previous pair is then deleted. When this compaction
+//!   is triggered inline by a commit and cannot complete — it needs roughly the
+//!   size of the whole dataset in free space, which the triggering write did
+//!   not — that commit still returns `Ok`: its own record was already appended
+//!   and `fsync`ed before the checkpoint was attempted, and reporting the write
+//!   as failed would invite a caller to retry a write that had already landed.
+//!   [`EngineStats::checkpoint_failures`] counts the attempt instead, and the
+//!   next commit past the trigger tries again.
 //!
 //! # The durability guarantee, exactly
 //!
@@ -343,6 +350,14 @@ pub struct EngineStats {
     pub last_sequence: u64,
     /// Live generation.
     pub generation: u64,
+    /// Checkpoints [`DurableStore::commit`] tried to take inline and could not
+    /// complete. The write that triggered the attempt still committed — its
+    /// record is on disk and `fsync` returned before the checkpoint was ever
+    /// attempted — so this does not count a lost write. Non-zero means the
+    /// log is growing past its trigger every commit without being compacted,
+    /// which is worth an operator's attention before the directory runs out
+    /// of room for the next attempt.
+    pub checkpoint_failures: u64,
 }
 
 impl EngineStats {
@@ -631,6 +646,20 @@ impl DurableStore {
     /// The order matters and is the whole guarantee: the index is updated only
     /// after `fsync` returns, so no reader can observe a value that a crash
     /// would take back.
+    ///
+    /// A checkpoint triggered by *this* commit is not allowed to turn the
+    /// commit's own success into a reported failure. By the time
+    /// [`Self::checkpoint_locked`] runs below, the record has already been
+    /// appended and `fsync`ed and the index already updated — the durability
+    /// guarantee this module documents has already been met. A checkpoint is
+    /// compaction, not the commit; if it cannot complete — most plausibly
+    /// because it needs roughly the size of the whole dataset free and the
+    /// commit that tripped the trigger did not — the caller must not be told
+    /// `put` or `delete` failed. A caller that believes an acknowledged write
+    /// was lost has exactly one sound response: retry it, and a retried write
+    /// that in fact already landed is the duplicate this crate exists to
+    /// prevent, not produce. The log simply keeps the record it already has
+    /// and stays past its trigger; the next commit tries the checkpoint again.
     fn commit_locked(&self, writer: &mut Writer, operations: Vec<Operation>) -> Result<u64> {
         let sequence = writer.sequence + 1;
         let commit = Commit {
@@ -654,8 +683,14 @@ impl DurableStore {
             apply(&mut index, &commit.operations);
         }
 
-        if writer.wal.frame_bytes() >= writer.checkpoint_trigger {
-            self.checkpoint_locked(writer)?;
+        if writer.wal.frame_bytes() >= writer.checkpoint_trigger
+            && self.checkpoint_locked(writer).is_err()
+        {
+            // Counted, not propagated: see the doc comment above. A caller
+            // reading `EngineStats::checkpoint_failures` learns the log is not
+            // being compacted; a caller of `put`/`delete`/`commit` learns
+            // nothing false about the write it just made.
+            writer.stats.checkpoint_failures += 1;
         }
         Ok(sequence)
     }

@@ -667,6 +667,70 @@ fn a_checkpoint_retires_the_generation_it_replaces() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A commit whose own record is durable must not be reported as failed just
+/// because the checkpoint it triggered could not be written.
+///
+/// The failure this guards against: `commit_locked` used to propagate a
+/// checkpoint error with `?`, so a caller of `put` received `Err` for a write
+/// whose record had already been appended to the write-ahead log and
+/// `fsync`ed — durable and already visible through `get`. A caller that
+/// trusts an `Err` to mean "not written" and retries duplicates the write;
+/// one that trusts it to mean "lost" may re-derive and store a different
+/// value under the belief the first was discarded. Either is exactly the
+/// class of bug this crate's durability guarantee exists to make impossible.
+///
+/// The checkpoint is made to fail without relying on filesystem permissions —
+/// this suite may run as root, under which permission bits are not
+/// enforced. Instead, `checkpoint.<generation>` (the exact name the next
+/// checkpoint will try to publish) is pre-created *as a directory*. The
+/// checkpoint's scratch file is written and flushed under a different,
+/// counter-suffixed name and only then `rename`d onto the published name —
+/// see `checkpoint_locked` — and `rename(2)` refuses to replace a directory
+/// with a regular file for anyone, root included. The write-ahead log the
+/// triggering commit appends to is a separate, already-open file untouched by
+/// any of this.
+#[test]
+fn a_commit_whose_triggered_checkpoint_fails_still_reports_success_and_keeps_the_write() {
+    let dir = temp_dir("checkpoint-failure-does-not-fail-commit");
+    // Clamped to one frame's worth of bytes by `with_checkpoint_after_bytes`,
+    // which is small enough that the very first commit's own frame already
+    // crosses it — the first commit after open already tries to checkpoint.
+    let store = DurableStore::open(&dir, config().with_checkpoint_after_bytes(1)).unwrap();
+
+    // Generation 0 is what `open` on a fresh directory always starts at (see
+    // `initialise`), so the checkpoint the first commit triggers publishes
+    // under generation 1. Blocking that one name is enough regardless of how
+    // many commits it takes to cross the trigger.
+    let blocked_checkpoint = dir.join(format!("checkpoint.{:020}", 1));
+    std::fs::create_dir(&blocked_checkpoint).unwrap();
+
+    let outcome = store.put("key-000", record(0));
+
+    assert!(
+        outcome.is_ok(),
+        "a write whose own record was already fsynced must not be reported as \
+         failed by a checkpoint attempt that came after it: {outcome:?}"
+    );
+    assert_eq!(
+        store.get("key-000").unwrap(),
+        Some(record(0)),
+        "the write must be visible even though the checkpoint it triggered could not complete"
+    );
+    assert!(
+        store.stats().checkpoint_failures >= 1,
+        "the failed checkpoint must be counted somewhere, or an operator has no way to learn \
+         the log has stopped being compacted"
+    );
+    assert_eq!(
+        store.stats().generation,
+        0,
+        "the checkpoint that could not publish must not have advanced the live generation"
+    );
+
+    drop(store);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // --- integrity --------------------------------------------------------------
 
 #[test]
