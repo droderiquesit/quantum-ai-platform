@@ -10,7 +10,8 @@
 mod common;
 
 use common::{
-    AGENT, candidate, licensed_for, now, permissive_robots, probe_for, robots_absent, robots_served,
+    AGENT, QUOTE_PAYLOAD, candidate, licensed_for, now, ok_head, permissive_robots, probe_for,
+    robots_absent, robots_served, sample,
 };
 use qip_contracts::governance::{Entitlement, Usage};
 use qip_core::error::{Error, Result};
@@ -96,6 +97,14 @@ fn an_undetermined_legality_is_refused_rather_than_read_as_permission() -> Resul
         "the record must say why absence is not consent: {}",
         legality.robots().reason()
     );
+    // An undetermined verdict must not leave a trace in the finder's own
+    // registry either: `registry()` backs the uniqueness score of every
+    // later candidate and is what `Platform::data_finder` counts as
+    // "currently collected" sources, so a source sitting there with no
+    // registered decision behind it would be consulted as though it had
+    // passed the gate this crate exists to hold.
+    assert!(finder.registry().is_empty());
+    assert!(finder.registered("no-robots").is_none());
     Ok(())
 }
 
@@ -182,6 +191,7 @@ fn a_denylisted_host_is_never_contacted_at_all() -> Result<()> {
             .any(|finding| finding.contains("not probed")),
         "the record must show that no request was made"
     );
+    assert!(finder.registry().is_empty());
     Ok(())
 }
 
@@ -439,6 +449,10 @@ fn a_probe_that_cannot_reach_a_source_defers_rather_than_rejecting_it() -> Resul
         DecisionOutcome::Deferred { .. }
     ));
     assert!(!decisions[0].reasoning().is_empty());
+    // A deferral is a fact about the crawler, not the source, but it must
+    // still leave nothing in the registry: legality was never assessed for
+    // a source the probe never reached.
+    assert!(finder.registry().is_empty());
     Ok(())
 }
 
@@ -491,5 +505,193 @@ fn an_absent_robots_file_is_still_recorded_with_the_status_that_produced_it() ->
     };
     assert!(forbidden_robots.policy().is_none());
     assert!(forbidden_robots.describe().contains("403"));
+    Ok(())
+}
+
+#[test]
+fn ambiguous_licensing_terms_leave_the_registry_empty_too() -> Result<()> {
+    // "Ambiguous" and "undetermined" reach `require_permitted` by different
+    // roads (a lawyer versus a fetch) but must land in the same place here:
+    // neither may leave a trace in what the finder considers collected.
+    let mut finder = finder(Usage::Trade)?;
+    let candidate = candidate(
+        "ambiguous-terms",
+        "https://example.com/data/prices.json",
+        LicensingPosture::ambiguous("a terms page that names no usage"),
+        &["EU0001"],
+    )?;
+    let mut probe = probe_for(
+        "https://example.com/data/prices.json",
+        "example.com",
+        permissive_robots(),
+    );
+
+    let decisions = finder.assess(vec![candidate], &mut probe, now())?;
+    assert!(!decisions[0].is_registered());
+    assert!(finder.registry().is_empty());
+    assert!(finder.registered("ambiguous-terms").is_none());
+    Ok(())
+}
+
+/// Enumerates every way `assess_one` can decline to register a source and
+/// proves each one leaves the finder's registry untouched, in a single
+/// finder instance so a leak on one candidate cannot be masked by an
+/// unrelated successful registration clearing state in between.
+///
+/// This is the adversarial sweep: rather than trusting that the code path
+/// which inserts into the registry is only reachable after
+/// `RegistrationDecision::registered` has already agreed, it drives every
+/// declining branch (denylisted host, forbidden robots, undetermined robots,
+/// a licence that does not cover the required usage, ambiguous terms, an
+/// unreachable probe, and a score below the collection floor) through the
+/// same registry and checks none of them left anything behind — and that a
+/// source which *does* pass every gate is the only one that appears.
+#[test]
+fn no_declining_branch_of_the_lifecycle_leaves_a_source_in_the_finders_registry() -> Result<()> {
+    let config = FinderConfig::new(AGENT, Usage::Trade, "market-data", 7)?
+        .with_host_rules(HostRules::new(Vec::new(), ["denied.example".to_string()]));
+    let mut finder = DataFinder::new(config);
+
+    // 1. Denylisted host: refused before any request is made.
+    let denylisted = candidate(
+        "denylisted-host",
+        "https://denied.example/data/prices.json",
+        licensed_for(&[Usage::Trade])?,
+        &["EU0001"],
+    )?;
+    // 2. robots.txt names the exact path forbidden.
+    let robots_forbidden = candidate(
+        "robots-forbidden",
+        "https://a.example/data/prices.json",
+        licensed_for(&[Usage::Trade])?,
+        &["EU0002"],
+    )?;
+    // 3. No robots.txt at all: undetermined, not permission.
+    let robots_undetermined = candidate(
+        "robots-undetermined",
+        "https://b.example/data/prices.json",
+        licensed_for(&[Usage::Trade])?,
+        &["EU0003"],
+    )?;
+    // 4. A licence that covers Research but was asked about Trade.
+    let wrong_usage = candidate(
+        "wrong-usage",
+        "https://c.example/data/prices.json",
+        licensed_for(&[Usage::Research])?,
+        &["EU0004"],
+    )?;
+    // 5. Terms exist but were never mapped to a usage.
+    let ambiguous = candidate(
+        "ambiguous-usage",
+        "https://d.example/data/prices.json",
+        LicensingPosture::ambiguous("no usage grant stated"),
+        &["EU0005"],
+    )?;
+    // 6. Permitted on every legal question, but the source passes.
+    let admitted = candidate(
+        "admitted",
+        "https://e.example/data/prices.json",
+        licensed_for(&[Usage::Trade])?,
+        &["EU0006"],
+    )?;
+
+    let mut probe = InMemoryProbe::new()
+        .with_head("https://a.example/data/prices.json", ok_head())
+        .with_sample("https://a.example/data/prices.json", sample(QUOTE_PAYLOAD))
+        .with_robots(
+            "a.example",
+            robots_served("User-agent: *\nAllow: /\nDisallow: /data/\n"),
+        )
+        .with_head("https://b.example/data/prices.json", ok_head())
+        .with_sample("https://b.example/data/prices.json", sample(QUOTE_PAYLOAD))
+        .with_robots("b.example", robots_absent())
+        .with_head("https://c.example/data/prices.json", ok_head())
+        .with_sample("https://c.example/data/prices.json", sample(QUOTE_PAYLOAD))
+        .with_robots("c.example", permissive_robots())
+        .with_head("https://d.example/data/prices.json", ok_head())
+        .with_sample("https://d.example/data/prices.json", sample(QUOTE_PAYLOAD))
+        .with_robots("d.example", permissive_robots())
+        .with_head("https://e.example/data/prices.json", ok_head())
+        .with_sample("https://e.example/data/prices.json", sample(QUOTE_PAYLOAD))
+        .with_robots("e.example", permissive_robots());
+    // "unreachable" is deliberately given no scripted response: the probe
+    // must refuse rather than invent one, which is what turns the outcome
+    // into a deferral.
+    let unreachable = candidate(
+        "unreachable",
+        "https://f.example/data/prices.json",
+        licensed_for(&[Usage::Trade])?,
+        &["EU0007"],
+    )?;
+
+    let decisions = finder.assess(
+        vec![
+            denylisted,
+            robots_forbidden,
+            robots_undetermined,
+            wrong_usage,
+            ambiguous,
+            admitted,
+            unreachable,
+        ],
+        &mut probe,
+        now(),
+    )?;
+
+    let by_id = |id: &str| decisions.iter().find(|decision| decision.source_id() == id);
+
+    assert!(!by_id("denylisted-host").unwrap().is_registered());
+    assert!(!by_id("robots-forbidden").unwrap().is_registered());
+    assert!(!by_id("robots-undetermined").unwrap().is_registered());
+    assert!(!by_id("wrong-usage").unwrap().is_registered());
+    assert!(!by_id("ambiguous-usage").unwrap().is_registered());
+    assert!(!by_id("unreachable").unwrap().is_registered());
+    assert!(by_id("admitted").unwrap().is_registered());
+
+    // The only entry the registry may hold is the one source that actually
+    // cleared every gate.
+    assert_eq!(
+        finder.registry().keys().collect::<Vec<_>>(),
+        vec!["admitted"],
+        "a declining branch left a source in the registry: {:?}",
+        finder.registry().keys().collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_licence_that_has_not_taken_effect_yet_does_not_retroactively_permit_an_earlier_instant()
+-> Result<()> {
+    // A licence agreed today has a beginning. Asked about a usage at an
+    // instant before that beginning, the honest answer is that the terms did
+    // not yet apply — not that today's terms silently cover the past, which
+    // is exactly the kind of point-in-time leakage a bitemporal feature store
+    // exists to refuse.
+    let signed_at = now();
+    let before_signing = signed_at.saturating_sub(qip_core::Duration::from_days(30));
+
+    let license =
+        SourceLicense::new("vendor-terms-2026", [Usage::Trade])?.effective_from(signed_at);
+
+    assert!(license.permits_at(Usage::Trade, signed_at));
+    assert!(!license.permits_at(Usage::Trade, before_signing));
+
+    let posture = LicensingPosture::declared(license);
+    let too_early = posture.legality_for(Usage::Trade, before_signing);
+    assert!(too_early.is_forbidden());
+    assert!(
+        too_early.reason().contains("does not take effect"),
+        "the refusal must name why: {}",
+        too_early.reason()
+    );
+
+    let after_signing = posture.legality_for(Usage::Trade, signed_at);
+    assert!(after_signing.is_permitted());
+
+    // A licence with no stated effective date keeps behaving exactly as
+    // before: this is additive, not a change of default for every existing
+    // caller that never states one.
+    let undated = SourceLicense::new("undated-terms", [Usage::Trade])?;
+    assert!(undated.permits_at(Usage::Trade, before_signing));
     Ok(())
 }
