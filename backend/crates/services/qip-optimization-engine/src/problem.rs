@@ -36,15 +36,6 @@ impl Objective {
             Self::TrackTarget => "track_target",
         }
     }
-
-    /// Whether the objective is a convex quadratic, which decides whether the
-    /// classical solver finds the global optimum or merely a good point.
-    pub const fn is_convex_quadratic(&self) -> bool {
-        matches!(
-            self,
-            Self::MeanVariance | Self::MinimumVariance | Self::TrackTarget
-        )
-    }
 }
 
 /// A constraint the optimiser must respect.
