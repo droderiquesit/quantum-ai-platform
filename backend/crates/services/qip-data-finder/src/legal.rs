@@ -127,6 +127,13 @@ pub struct SourceLicense {
     permits: BTreeSet<Usage>,
     attribution_required: bool,
     expires_at: Option<Timestamp>,
+    /// The instant this licence's terms began to apply. `None` means the
+    /// caller has not stated one, which this crate reads as "unbounded in
+    /// the past" for backward compatibility with every existing caller —
+    /// callers that construct a licence to describe a real, dated agreement
+    /// should call [`Self::effective_from`] so a check made about an instant
+    /// before the agreement existed is refused rather than silently granted.
+    effective_from: Option<Timestamp>,
 }
 
 impl SourceLicense {
@@ -160,6 +167,7 @@ impl SourceLicense {
             permits: permits.into_iter().collect(),
             attribution_required: false,
             expires_at: None,
+            effective_from: None,
         })
     }
 
@@ -170,6 +178,21 @@ impl SourceLicense {
 
     pub fn expiring_at(mut self, at: Timestamp) -> Self {
         self.expires_at = Some(at);
+        self
+    }
+
+    /// State the instant this licence's terms took effect.
+    ///
+    /// Without this, [`Self::permits_at`] has no lower bound at all: asked
+    /// about a usage at an instant before the agreement was ever signed, it
+    /// answers exactly as it would for today, because nothing about the type
+    /// records that the agreement has a beginning. That is retroactive
+    /// leakage in the licensing domain's own terms — a posture that became
+    /// knowable today being read back onto an instant before it existed —
+    /// and stating the effective date closes it for any licence built with
+    /// one.
+    pub fn effective_from(mut self, at: Timestamp) -> Self {
+        self.effective_from = Some(at);
         self
     }
 
@@ -189,10 +212,20 @@ impl SourceLicense {
         self.expires_at
     }
 
-    /// Whether the licence grants `usage` and has not lapsed.
+    /// The instant this licence's terms took effect, if stated.
+    pub fn takes_effect_at(&self) -> Option<Timestamp> {
+        self.effective_from
+    }
+
+    /// Whether the licence grants `usage`, has not lapsed, and has begun.
     pub fn permits_at(&self, usage: Usage, now: Timestamp) -> bool {
         if let Some(expiry) = self.expires_at
             && now >= expiry
+        {
+            return false;
+        }
+        if let Some(effective_from) = self.effective_from
+            && now < effective_from
         {
             return false;
         }
@@ -289,6 +322,17 @@ impl LicensingPosture {
                     Legality::forbidden(format!(
                         "licence `{}` expired before {now}",
                         license.identifier()
+                    ))
+                } else if license
+                    .takes_effect_at()
+                    .is_some_and(|effective_from| now < effective_from)
+                {
+                    Legality::forbidden(format!(
+                        "licence `{}` does not take effect until {}, and {now} is before that; \
+                         a licence agreed today cannot retroactively cover an instant before it \
+                         existed",
+                        license.identifier(),
+                        license.takes_effect_at().unwrap_or(now)
                     ))
                 } else {
                     Legality::forbidden(format!(

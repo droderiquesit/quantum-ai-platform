@@ -376,32 +376,50 @@ impl DataFinder {
             .unwrap_or_default();
         let lineage = SourceLineage::new(&source, now);
 
-        self.registry.insert(
-            id.clone(),
-            RegisteredSource::new(
-                source,
-                routing.clone(),
-                policy.clone(),
-                lineage.clone(),
-                entitlements.clone(),
-                now,
-            ),
-        );
-
         // The legality assessment is handed to the constructor rather than
         // attached afterwards: `registered` is the only way to a `Registered`
         // outcome, and it refuses an assessment that did not permit
-        // collection.
-        RegistrationDecision::registered(
-            id,
+        // collection. This finder's own registry is populated *after* that
+        // constructor succeeds, and from the pieces it actually accepted
+        // (`registration.routing()`, `.policy()`, `.entitlements()`) rather
+        // than from the locals computed before the call. A source that
+        // reaches `self.registry` is a source `RegistrationDecision::registered`
+        // has already agreed to register — never one this function merely
+        // hoped would pass, which is what inserting first and deciding after
+        // would leave standing on an error path. `self.registry` backs
+        // `DataFinder::registered`, `DataFinder::registry`, and the
+        // uniqueness term in `score`, all of which the rest of the platform
+        // (via `Platform::data_finder`) reads as "currently collected" — so a
+        // premature insert here is not a bookkeeping nicety, it is a second,
+        // ungated path onto the same effective catalogue this crate exists
+        // to gate.
+        let decision = RegistrationDecision::registered(
+            id.clone(),
             legality,
             routing,
             policy,
             entitlements,
             reasoning,
             now,
-        )
-        .map(|decision| decision.with_scores(scores).with_lineage(lineage))
+        )?
+        .with_scores(scores)
+        .with_lineage(lineage.clone());
+
+        if let Some(registration) = decision.registration() {
+            self.registry.insert(
+                id,
+                RegisteredSource::new(
+                    source,
+                    registration.routing().clone(),
+                    registration.policy().clone(),
+                    lineage,
+                    registration.entitlements().to_vec(),
+                    now,
+                ),
+            );
+        }
+
+        Ok(decision)
     }
 
     /// What robots.txt says about this endpoint.
