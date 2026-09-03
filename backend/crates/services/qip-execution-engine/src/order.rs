@@ -362,6 +362,20 @@ impl Order {
         if fill.quantity <= Decimal::ZERO {
             return Err(Error::invalid("a fill for zero quantity is not a fill"));
         }
+        // A redelivered venue report — the same fill_id arriving twice over a
+        // retried connection — would otherwise double-book: nothing above
+        // checks identity, only total quantity, and a second copy of a fill
+        // that still fits inside what remains passes the over-fill guard
+        // below and quietly doubles the position. The fill_id exists
+        // precisely so a duplicate can be told apart from a second, distinct
+        // print at the same price and size.
+        if self.fills.iter().any(|f| f.fill_id == fill.fill_id) {
+            return Err(Error::invalid(format!(
+                "fill {} was already applied to order {}; a redelivered report is not a new fill",
+                fill.fill_id.as_str(),
+                self.order_id.as_str()
+            )));
+        }
         // Over-filling is a venue error or a bug, and accepting it would put
         // the book out of step with reality in a way nothing else would catch.
         if fill.quantity > self.remaining_quantity() {

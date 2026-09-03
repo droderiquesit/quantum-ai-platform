@@ -698,6 +698,53 @@ fn an_overfill_is_refused() -> Result<()> {
 }
 
 #[test]
+fn a_redelivered_fill_report_does_not_double_book_the_order() -> Result<()> {
+    // A retried connection can redeliver the same venue report. Nothing
+    // upstream of `apply_fill` can tell that apart from a second, genuinely
+    // distinct print at the same size and price, so the check has to live
+    // here: the same fill id applied twice must not double the quantity
+    // booked against the order.
+    let mut order = order("AAA", Side::Buy, "1000");
+    order.transition(OrderState::RiskApproved { at: now() }, now())?;
+    order.transition(
+        OrderState::Working {
+            at: now(),
+            venue: "v".to_string(),
+        },
+        now(),
+    )?;
+
+    let fill = Fill {
+        fill_id: qip_core::ids::FillId::from_string("fill-once"),
+        order_id: order.order_id.clone(),
+        at: now(),
+        quantity: dec!("400"),
+        price: dec!("100"),
+        costs: dec!("1"),
+        venue: "v".to_string(),
+        simulated: true,
+    };
+    // The premise: the first application succeeds and books the quantity.
+    order.apply_fill(fill.clone())?;
+    assert_eq!(order.filled_quantity(), dec!("400"));
+
+    let error = order
+        .apply_fill(fill)
+        .expect_err("the same fill id was applied twice without complaint");
+    assert!(
+        error.message().contains("already applied"),
+        "the refusal does not name the duplicate: {}",
+        error.message()
+    );
+    assert_eq!(
+        order.filled_quantity(),
+        dec!("400"),
+        "a redelivered report doubled the booked quantity"
+    );
+    Ok(())
+}
+
+#[test]
 fn partial_fills_accumulate_and_complete() -> Result<()> {
     let mut order = order("AAA", Side::Buy, "1000");
     order.transition(OrderState::RiskApproved { at: now() }, now())?;
