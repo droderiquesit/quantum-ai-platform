@@ -149,11 +149,17 @@ impl Position {
         at: Timestamp,
         order_id: Option<String>,
     ) -> Decimal {
+        // `total_costs` and `updated_at` are recorded before the early return
+        // below: a zero-quantity, cost-only fill (a standalone fee, or a
+        // requested quantity so small it rounds to zero at the decimal's
+        // fixed scale) still moves cash by `-costs`, and a position whose
+        // `total_costs` did not move to match would silently understate what
+        // was actually paid against it.
+        self.updated_at = at;
+        self.total_costs += costs;
         if quantity.is_zero() {
             return -costs;
         }
-        self.updated_at = at;
-        self.total_costs += costs;
         if self.opened_at.is_none() {
             self.opened_at = Some(at);
         }
