@@ -22,7 +22,7 @@ use crate::adapter::{DataAdapter, SensedRecord, SourceDescriptor};
 use crate::connector::runtime::{ConnectorRuntime, RuntimeConfig};
 use crate::connector::transport::{HttpSourceTransport, SourceTransport};
 use crate::connector::{SourceConnector, manifest::SourceManifest};
-use crate::connectors::CoinbaseTickerConnector;
+use crate::connectors::{CoinbaseTickerConnector, FrankfurterRatesConnector};
 use qip_core::error::{Error, Result};
 use qip_core::{ObjectId, Timestamp};
 use qip_events::Topic;
@@ -32,7 +32,30 @@ use qip_events::Topic;
 /// A closed set, deliberately: opening a source is preceded by a licensing
 /// evaluation, and an evaluation must name the thing it evaluated. A string
 /// that could name any URL would let configuration reach past the catalogue.
-pub const KNOWN_SOURCES: &[&str] = &[CoinbaseTickerConnector::SOURCE_ID];
+pub const KNOWN_SOURCES: &[&str] = &[
+    CoinbaseTickerConnector::SOURCE_ID,
+    FrankfurterRatesConnector::SOURCE_ID,
+];
+
+/// The topic a named source's records are published under.
+///
+/// A [`SourceDescriptor`] that claimed [`Topic::MarketTick`] for a connector
+/// that actually emits [`crate::adapter::SensedRecord::Macro`] would tell a
+/// consumer reading the descriptor to expect a topic that never arrives —
+/// the mistake this function exists to make impossible to copy-paste into a
+/// second connector, which is exactly how it reached this bridge in the
+/// first place: [`Self::over_transport`] used to hard-code
+/// [`Topic::MarketTick`] for every source.
+fn topic_for(source_id: &str) -> Result<Topic> {
+    match source_id {
+        CoinbaseTickerConnector::SOURCE_ID => Ok(Topic::MarketTick),
+        FrankfurterRatesConnector::SOURCE_ID => Ok(Topic::MacroUpdated),
+        other => Err(Error::invalid(format!(
+            "{other:?} names no connector this build carries; the known sources are: {}",
+            KNOWN_SOURCES.join(", ")
+        ))),
+    }
+}
 
 /// The licensing class a named source's shipped manifest declares.
 ///
@@ -44,6 +67,9 @@ pub fn shipped_class(source_id: &str) -> Result<qip_financial::quality::Licensin
     match source_id {
         CoinbaseTickerConnector::SOURCE_ID => {
             Ok(CoinbaseTickerConnector::shipped_manifest()?.licensing)
+        }
+        FrankfurterRatesConnector::SOURCE_ID => {
+            Ok(FrankfurterRatesConnector::shipped_manifest()?.licensing)
         }
         other => Err(Error::invalid(format!(
             "{other:?} names no connector this build carries; the known sources are: {}",
@@ -90,6 +116,11 @@ impl ConnectorFeed {
                 )?;
                 (Box::new(connector), manifest)
             }
+            FrankfurterRatesConnector::SOURCE_ID => {
+                let manifest = FrankfurterRatesConnector::shipped_manifest()?;
+                let connector = FrankfurterRatesConnector::new(manifest.clone())?;
+                (Box::new(connector), manifest)
+            }
             other => {
                 return Err(Error::invalid(format!(
                     "{other:?} names no connector this build carries. The known sources are: {}. \
@@ -119,11 +150,12 @@ impl ConnectorFeed {
         seed: u64,
         at: Timestamp,
     ) -> Result<Self> {
+        let topic = topic_for(&manifest.source_id)?;
         let descriptor = SourceDescriptor {
             name: manifest.source_id.clone(),
             provider: manifest.provider.clone(),
             licensing: manifest.licensing,
-            topics: vec![Topic::MarketTick],
+            topics: vec![topic],
             expected_latency: manifest.poll_interval(),
             production_requirement: None,
         };

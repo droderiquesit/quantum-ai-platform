@@ -66,6 +66,14 @@ pub struct FrankfurterRatesConnector {
 }
 
 impl FrankfurterRatesConnector {
+    /// The manifest's own `source_id`, named as a constant so
+    /// [`crate::connector_feed`]'s bridge and any licensing catalogue that
+    /// admits this source can refer to it without retyping a string that
+    /// would silently drift from the manifest if the two were ever edited
+    /// apart — the same discipline [`crate::connectors::CoinbaseTickerConnector::SOURCE_ID`]
+    /// already keeps.
+    pub const SOURCE_ID: &str = "frankfurter-ecb-reference-rates";
+
     /// The region every observation carries.
     ///
     /// The euro area, because that is who publishes the series — not the
