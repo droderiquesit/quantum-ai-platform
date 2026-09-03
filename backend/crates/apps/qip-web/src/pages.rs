@@ -112,7 +112,12 @@ pub fn render(surface: Surface, model: &ViewModel) -> String {
                     Element::new("title")
                         .text(format!("{} — Quantum Investment Platform", surface.title())),
                 )
-                .child(Element::new("style").text(STYLESHEET)),
+                // `.raw`, not `.text`: `<style>` is HTML5's "raw text"
+                // content model, so a browser never decodes an entity inside
+                // one and escaping the stylesheet here shipped broken CSS —
+                // `"SF Mono"` as `&quot;SF Mono&quot;`, every `/* */` comment
+                // as `&#47;* *&#47;`. See `Element::raw`.
+                .child(Element::new("style").raw(STYLESHEET)),
         )
         .child(
             Element::new("body")
