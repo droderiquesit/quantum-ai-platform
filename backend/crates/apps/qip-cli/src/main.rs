@@ -46,7 +46,7 @@ fn main() {
         }
         "status" => status(),
         "demo" => demo(&arguments[1..]),
-        "cycle" => cycle(arguments.get(1).and_then(|n| n.parse().ok()).unwrap_or(1)),
+        "cycle" => cycle_count(arguments.get(1)).and_then(cycle),
         "agents" => agents(),
         "governance" => governance(),
         "limits" => limits_command(),
@@ -188,6 +188,23 @@ fn status() -> Result<()> {
     Ok(())
 }
 
+/// The `cycle` subcommand's count argument, refused rather than guessed.
+///
+/// `arguments.get(1).and_then(|n| n.parse().ok()).unwrap_or(1)` used to sit
+/// here, so `qip cycle abc` silently ran one cycle instead of telling the
+/// operator the argument was not a number — the same class of bug the house
+/// rule against clamping exists to catch, just aimed at a CLI argument
+/// instead of a domain value. A missing argument still means one cycle: that
+/// is the documented default, not a value corrected from something else.
+fn cycle_count(argument: Option<&String>) -> Result<u64> {
+    match argument {
+        None => Ok(1),
+        Some(text) => text
+            .parse::<u64>()
+            .map_err(|_| Error::invalid(format!("{text:?} is not a number of cycles"))),
+    }
+}
+
 fn cycle(count: u64) -> Result<()> {
     if count == 0 || count > 1000 {
         return Err(Error::invalid("run between 1 and 1000 cycles"));
@@ -327,4 +344,50 @@ fn limits_command() -> Result<()> {
         println!();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cycle_count;
+
+    #[test]
+    fn a_missing_cycle_count_defaults_to_one() {
+        assert_eq!(
+            cycle_count(None).expect("no argument is a legal invocation"),
+            1
+        );
+    }
+
+    #[test]
+    fn a_numeric_cycle_count_is_accepted_as_written() {
+        let text = "7".to_string();
+        assert_eq!(
+            cycle_count(Some(&text)).expect("7 is a legal cycle count"),
+            7
+        );
+    }
+
+    #[test]
+    fn a_cycle_count_that_is_not_a_number_is_refused_rather_than_silently_run_once() {
+        // Before this fix `qip cycle abc` ran one cycle without telling the
+        // operator the argument was ignored — the exact failure mode the
+        // house rule against clamping an invalid input exists to prevent.
+        let text = "abc".to_string();
+        let error =
+            cycle_count(Some(&text)).expect_err("a non-numeric cycle count was silently accepted");
+        assert!(
+            error.message().contains("abc"),
+            "the refusal does not name the argument that was rejected: {}",
+            error.message()
+        );
+    }
+
+    #[test]
+    fn a_negative_cycle_count_is_refused_rather_than_silently_run_once() {
+        let text = "-3".to_string();
+        assert!(
+            cycle_count(Some(&text)).is_err(),
+            "a negative cycle count parsed as a u64 or was silently defaulted"
+        );
+    }
 }
