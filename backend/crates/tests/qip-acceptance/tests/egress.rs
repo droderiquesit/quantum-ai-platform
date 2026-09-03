@@ -60,6 +60,8 @@ const ROOT_VARIABLES: &str = "infrastructure/terraform/variables.tf";
 /// Where every listener binds, and the only address a co-located adapter is
 /// ever configured with.
 const LOOPBACK: &str = "127.0.0.1";
+/// The one address the bootstrap opens wider, and only for `health`.
+const WILDCARD: &str = "0.0.0.0";
 
 /// The trust store every upstream is verified against.
 ///
@@ -318,7 +320,7 @@ fn the_egress_proxy_dials_only_the_vendor_hosts_the_adapters_named() {
     // proxy will connect out to.
     let (bound, dialled): (Vec<String>, Vec<String>) = addresses
         .into_iter()
-        .partition(|address| address == LOOPBACK);
+        .partition(|address| address == LOOPBACK || address == WILDCARD);
 
     assert!(
         bound.len() >= 5,
@@ -640,13 +642,21 @@ fn every_listener_binds_loopback_and_only_the_destination_listeners_are_exposed(
     let ports = listener_ports();
     let bootstrap = bootstrap();
     for (name, body) in entries_of(&listeners_block(&bootstrap)) {
+        // `health` is the one exception and it is named, not matched by a
+        // predicate: Cloud Run issues the sidecar's startup probe from
+        // outside the container's network namespace, so a loopback bind
+        // answers nothing at all and the instance never starts —
+        // "STARTUP HTTP probe failed 15 times consecutively ...
+        // ERROR_CONNECTION_FAILED", with Envoy up and this file loaded.
+        // Every listener that carries traffic still binds loopback.
+        let expected = if name == "health" { WILDCARD } else { LOOPBACK };
         assert_eq!(
             values_of(&body, "address"),
-            vec![LOOPBACK.to_string()],
-            "the listener {name} binds {:?}. Anything but loopback is reachable \
-             by whatever shares the network, which on Cloud Run is nothing and \
-             on the node is everything in the subnet — and the property has to \
-             hold in both.",
+            vec![expected.to_string()],
+            "the listener {name} binds {:?} and should bind {expected}. A \
+             traffic listener on anything but loopback is reachable by \
+             whatever shares the network, which on the node is everything in \
+             the subnet.",
             values_of(&body, "address")
         );
     }
@@ -659,8 +669,11 @@ fn every_listener_binds_loopback_and_only_the_destination_listeners_are_exposed(
     // The module's own gate says the same, at plan time.
     let module = without_comments(&read(PROXY_MODULE));
     assert!(
-        module.contains("listener.address == \"127.0.0.1\""),
-        "the proxy module no longer refuses a listener bound to an interface address"
+        module.contains("listener.address == (name == \"health\" ? \"0.0.0.0\" : \"127.0.0.1\")"),
+        "the proxy module no longer refuses, at plan time, a traffic listener \
+         bound to an interface address — or it no longer names `health` as \
+         the single exception, which is how a second wide bind would arrive \
+         without a reviewer seeing it"
     );
 
     // And what it exposes to a workload is every listener but the health one.
@@ -1216,5 +1229,66 @@ fn the_vendor_workflow_attests_every_platform_manifest_and_not_only_the_index() 
         signing[sign_at..loop_end].contains("--artifact-url \"${artifact}\""),
         "sign-and-create names something other than the digest the loop is \
          on, so every iteration attests the same reference"
+    );
+}
+
+#[test]
+fn the_health_listener_is_the_only_wide_bind_and_it_forwards_nowhere() {
+    // The trade this file makes, held in one place. `health` binds 0.0.0.0
+    // because Cloud Run probes it from outside the container's namespace, and
+    // that is the only listener here reachable by anything but the co-located
+    // workload. What it may answer with is therefore the whole of the
+    // exposure: a constant, and no route out.
+    //
+    // `modules/egress-proxy` cannot check this — it parses each listener's
+    // name, address and port and never sees a body — so the property lives
+    // here rather than as an unvalidatable regex in the plan path.
+    let bootstrap = bootstrap();
+    let listeners = entries_of(&listeners_block(&bootstrap));
+
+    // Premise: there are several listeners and one is `health`, so what
+    // follows compares a real exception against real neighbours.
+    assert!(
+        listeners.len() >= 5,
+        "only {} listener(s) were read out of the bootstrap; the block has \
+         been reshaped and this test is comparing nothing",
+        listeners.len()
+    );
+    let (_, health) = listeners
+        .iter()
+        .find(|(name, _)| name == "health")
+        .expect("the bootstrap has a listener named `health`");
+
+    // Exactly one wide bind, and it is this one.
+    let wide: Vec<&String> = listeners
+        .iter()
+        .filter(|(_, body)| values_of(body, "address") == vec![WILDCARD.to_string()])
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(
+        wide,
+        vec!["health"],
+        "the listeners bound to {WILDCARD} are {wide:?}. Exactly one may be, \
+         and it is the one that answers a probe with a constant."
+    );
+
+    // And it forwards to nothing. A `cluster` here would be an
+    // unauthenticated way out of the network at the one address opened wider.
+    // Comments stripped first: an entry's body runs to the next `- name:`,
+    // so it carries the prose introducing the listener after it — and the
+    // paragraph above `gcp` explains that it is "the only listener here with
+    // more than one cluster behind it". Reading that as configuration failed
+    // this assertion on a bootstrap that was correct.
+    let configured = without_comments(health);
+    assert!(
+        !configured.contains("cluster"),
+        "the health listener names a cluster: it is the only listener bound \
+         to an interface address, and it may answer with a constant and \
+         nothing else.\n{configured}"
+    );
+    assert!(
+        health.contains("direct_response"),
+        "the health listener no longer answers with a direct response, so \
+         what the wide bind reaches is no longer a fixed reply.\n{health}"
     );
 }

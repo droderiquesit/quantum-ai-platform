@@ -123,10 +123,31 @@ resource "google_storage_bucket_object" "bootstrap" {
       error_message = "The bootstrap dials ${join(", ", sort(local.dialled))} and the allowlist this deployment declares is ${join(", ", sort(var.allowed_upstreams))}. A destination added in one place and not the other is a destination nobody reviewed."
     }
 
+    # Every listener that carries traffic binds loopback. The health listener
+    # is the one exception and is named here rather than excluded by a
+    # predicate, so adding a second wide bind is an edit a reviewer sees.
+    #
+    # It has to be wide: Cloud Run issues the sidecar's startup probe from
+    # outside the container's network namespace, so against a loopback bind
+    # the probe gets no connection at all and the instance never starts. The
+    # listener answers 200 on `/healthz`, 404 on everything else, and routes
+    # to no cluster, so what the wider bind reaches is a fixed reply and no
+    # path out.
     precondition {
-      condition     = alltrue([for listener in values(local.listeners) : listener.address == "127.0.0.1"])
-      error_message = "A listener binds something other than loopback: ${join(", ", [for name, listener in local.listeners : "${name}=${listener.address}" if listener.address != "127.0.0.1"])}. The proxy is co-located with the workload it serves and reachable from nowhere else; an interface bind is an address every neighbour can reach."
+      condition = alltrue([
+        for name, listener in local.listeners :
+        listener.address == (name == "health" ? "0.0.0.0" : "127.0.0.1")
+      ])
+      error_message = "A listener binds an address it may not: ${join(", ", [for name, listener in local.listeners : "${name}=${listener.address}" if listener.address != (name == "health" ? "0.0.0.0" : "127.0.0.1")])}. Every listener that carries traffic binds loopback — the proxy is co-located with the workload it serves and reachable from nowhere else, and an interface bind is an address every neighbour can reach. `health` binds 0.0.0.0 alone, because Cloud Run probes it from outside the container's namespace, and it forwards to no cluster."
     }
+
+    # That the health listener stays a fixed reply — no cluster, no route out
+    # at the one address this file opens wider — is held by
+    # `the_health_listener_is_the_only_wide_bind_and_it_forwards_nowhere` in
+    # the egress suite, which parses the listener's body. This module reads
+    # only each listener's name, address and port, so it cannot see a body to
+    # check, and inventing a local to fake one would put an unvalidatable
+    # regex in the plan path.
 
     precondition {
       condition     = length(local.admin_binds) == 1 && local.admin_binds[0] == "127.0.0.1"
