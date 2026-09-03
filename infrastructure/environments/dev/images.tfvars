@@ -1,19 +1,12 @@
-# dev's promoted image digests — written by .github/workflows/deploy.yml.
+# dev's deployed image digests — written by .github/workflows/deploy.yml.
 #
-# Not hand-edited. The pipeline moves each Cloud Run service to a digest it
-# has built, scanned, signed and attested, waits for the revision to serve,
-# and then records that digest here in the same run — so what this file names
-# is always something a numbered run attested and Cloud Run admitted.
-# Terraform creates a service at the digest recorded here and ignores the
-# image thereafter; `modules/cloudrun` says why.
-#
-# These three are the digests the GKE runtime's last reconciled values file
-# carried, which Binary Authorization admitted on that cluster: the same
-# bytes, in the same registry, at the same digest. Nothing here has been
-# deployed to Cloud Run — see ADR 0024 — so the first pipeline run overwrites
-# this file with what it actually moved the services to.
+# Not hand-edited. Each digest below was built, scanned, signed and attested
+# by run 33780092495 for c3140aff007a629f9fc0d654efde6cfd7e339f5a, moved onto its Cloud Run service,
+# and proven serving before this line was written. Terraform creates a
+# service at the digest recorded here and ignores the image thereafter;
+# modules/cloudrun says why.
 image_digests = {
-  qip-api       = "sha256:f66c1578f5cb80918db30d9520d5cdbfe16b3fc2877fefaf1f6ee9e0802a45e3"
-  qip-deepbrain = "sha256:319d4eb32dfcc66cf19485281e3ae012087c03698755ccd6eba1279b406bfb3e"
-  qip-fastbrain = "sha256:1daf48d4ac04042f5ca3abbf809248cec9b0a646b1a63d3d3b1565ca305bcd87"
+  qip-api = "sha256:6e432a5a1770127bb9ef03bb32b93d35f93b1029a6fbf738546939975c5af565"
+  qip-fastbrain = "sha256:8607d52c528877fce4545b1d45613c72afde8025bf99aa20c5b195de8ea1f797"
+  qip-deepbrain = "sha256:aaf7cc5a644bfd6cd13df70a0bc461e9c3107963405cab214865a9021b63786e"
 }
