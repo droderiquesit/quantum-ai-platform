@@ -172,6 +172,35 @@ fn the_banner_appears_on_every_surface() {
     }
 }
 
+// --- the stylesheet -----------------------------------------------------------
+
+#[test]
+fn the_inlined_stylesheet_reaches_the_page_as_css_rather_than_as_escaped_text() {
+    // `<style>` is a "raw text" element in the HTML5 parsing model: a browser
+    // never decodes an entity reference inside one. Routing the stylesheet
+    // through the same escaping path as page content shipped broken CSS on
+    // every surface — a quoted font-family became the literal characters
+    // `&quot;SF Mono&quot;`, and every `/* ... */` comment became
+    // `&#47;* ... *&#47;`, which is not a comment to a CSS parser.
+    let page = render(Surface::Overview, &ViewModel::default());
+    assert!(
+        page.contains("\"SF Mono\""),
+        "the quoted font name was HTML-escaped: {page}"
+    );
+    assert!(
+        page.contains("/* A panel with nothing behind it."),
+        "a CSS comment delimiter was HTML-escaped: {page}"
+    );
+    assert!(
+        !page.contains("&quot;SF Mono&quot;"),
+        "the stylesheet is still escaped: {page}"
+    );
+    assert!(
+        !page.contains("&#47;*"),
+        "a CSS comment delimiter is still escaped: {page}"
+    );
+}
+
 // --- the surfaces -----------------------------------------------------------
 
 #[test]

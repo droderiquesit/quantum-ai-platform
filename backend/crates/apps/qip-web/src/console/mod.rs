@@ -147,7 +147,11 @@ pub fn render(view: View, model: &ConsoleModel) -> String {
                 // Inlined rather than linked: the policy permits
                 // `style-src 'self'`, and one small stylesheet is not worth a
                 // second round trip.
-                .child(Element::new("style").text(STYLESHEET)),
+                //
+                // `.raw`, not `.text`: `<style>` is a raw-text element in the
+                // HTML5 parsing model, so nothing inside it is entity-decoded
+                // and escaping shipped broken CSS. See `Element::raw`.
+                .child(Element::new("style").raw(STYLESHEET)),
         )
         .child(
             Element::new("body")
