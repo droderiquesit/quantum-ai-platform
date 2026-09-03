@@ -252,11 +252,24 @@ impl PreTradeChecker {
         }
 
         if let Some(counterparty) = &order.counterparty {
+            // Netted the same way as `gross_exposure` and `axis_exposures`
+            // above, and for the same reason: `counterparty_exposures` is
+            // documented in `qip-risk` as *gross exposure per counterparty*,
+            // read back through `abs()` by `MaxCounterpartyExposure`, not a
+            // running total of notional ever traded through that
+            // counterparty. The form this carried before added
+            // `order.notional()` unconditionally, so every order — closing or
+            // opening — only ever increased the recorded exposure; a book
+            // flattened to zero through the same counterparty still showed
+            // whatever volume had ever passed through it, and a limit read
+            // against that number could only ratchet toward a permanent
+            // block instead of describing the counterparty relationship as
+            // it stands after the trade.
             let entry = projected
                 .counterparty_exposures
                 .entry(counterparty.clone())
                 .or_insert(Decimal::ZERO);
-            *entry += order.notional();
+            *entry = *entry - existing.abs() + updated.abs();
         }
 
         projected.order_notional = Some(order.notional());
