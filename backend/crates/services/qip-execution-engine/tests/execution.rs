@@ -17,6 +17,7 @@ use qip_core::{Decimal, dec};
 use qip_execution_engine::broker::{
     Broker, LiveBroker, LiveVenueConfig, SimulatedBroker, SimulationSettings,
 };
+use qip_execution_engine::feasibility;
 use qip_execution_engine::oms::{OrderManager, RefusalReason, order_type_for};
 use qip_execution_engine::order::{Fill, Order, OrderState, OrderType, Side};
 use qip_risk::limits::{Limit, LimitKind, LimitSet, RiskState};
@@ -219,6 +220,99 @@ fn a_live_venue_refuses_to_submit_even_if_called_directly() {
             .cancel(&order("AAA", Side::Buy, "1000"), now())
             .is_err()
     );
+}
+
+// --- feasibility at the central path -----------------------------------------
+
+#[test]
+fn an_off_lot_order_is_refused_at_the_venue_gate_before_it_ever_reaches_the_broker() {
+    // The central path used to have no equivalent of `qip-edge`'s
+    // feasibility gate: a well-formed order rode the kill switch, the
+    // autonomy gate and pre-trade risk straight to the venue with no check
+    // that the venue's own grid could accept it. Lot size 2 here, so a
+    // quantity of 3 is off it.
+    let mut manager = manager().with_venue_feasibility(
+        "simulated-venue",
+        feasibility::VenueFeasibility::new(dec!("2"), None, dec!("0"), dec!("0"))
+            .expect("a valid model"),
+    );
+    let mut broker = simulator();
+    let autonomy = AutonomyController::new();
+
+    // Premise: nothing has reached the broker yet, so a zero count after the
+    // refusal is evidence the gate stopped it rather than an artefact of an
+    // empty run.
+    assert_eq!(broker.submitted_count(), 0);
+
+    let result = submit(
+        &mut manager,
+        order("AAA", Side::Buy, "3"),
+        &mut broker,
+        &autonomy,
+    );
+
+    assert!(!result.accepted);
+    assert!(result.fills.is_empty());
+    match result.refusal.as_ref().unwrap() {
+        // The gate reports through `Malformed` rather than a variant of its
+        // own — see the module comment on why — naming the gate literal in
+        // the detail text instead of a structured field.
+        RefusalReason::Malformed { detail } => {
+            let expected_prefix = format!("infeasible ({}):", feasibility::GATE_LOT);
+            assert!(detail.starts_with(&expected_prefix), "{detail}");
+            assert!(detail.contains("not a whole number of lots"), "{detail}");
+        }
+        other => panic!("expected a malformed (infeasible) refusal, got {other:?}"),
+    }
+    // The broker was never asked: the gate refused before submission, not
+    // after a rejected send.
+    assert_eq!(broker.submitted_count(), 0);
+}
+
+#[test]
+fn an_order_on_the_venues_grid_still_reaches_it_once_a_feasibility_model_is_installed() {
+    // The other half of the same fixture family: installing a grid must not
+    // become a blanket refusal, or the gate would be indistinguishable from
+    // one that rejects everything.
+    let mut manager = manager().with_venue_feasibility(
+        "simulated-venue",
+        feasibility::VenueFeasibility::new(dec!("2"), None, dec!("0"), dec!("0"))
+            .expect("a valid model"),
+    );
+    let mut broker = simulator();
+    let autonomy = AutonomyController::new();
+
+    let result = submit(
+        &mut manager,
+        order("AAA", Side::Buy, "4"),
+        &mut broker,
+        &autonomy,
+    );
+
+    assert!(result.accepted, "{:?}", result.refusal);
+    assert!(!result.fills.is_empty());
+    assert_eq!(broker.submitted_count(), 1);
+}
+
+#[test]
+fn a_venue_with_no_feasibility_model_installed_enforces_no_grid() {
+    // Stated in the module comment: a venue nobody has modelled is checked
+    // for nothing, rather than the gate inventing a grid to enforce. An
+    // order at a size no plausible grid would admit (a fraction of a share)
+    // still reaches the venue when no model was installed for it.
+    let mut manager = manager();
+    let mut broker = simulator();
+    let autonomy = AutonomyController::new();
+
+    let result = submit(
+        &mut manager,
+        order("AAA", Side::Buy, "3.7"),
+        &mut broker,
+        &autonomy,
+    );
+
+    assert!(result.accepted, "{:?}", result.refusal);
+    assert_eq!(broker.submitted_count(), 1);
 }
 
 // --- the kill switch in the execution path ----------------------------------

@@ -4,22 +4,41 @@
 //! the platform's safety controls converge. In order:
 //!
 //! 1. The order must be well formed and trace to a proposal and a hypothesis.
-//! 2. The kill switch must not be tripped for its scope.
-//! 3. The autonomy level must permit execution at all.
-//! 4. A live venue additionally requires a live autonomy level *and* an
+//! 2. If the destination venue has a [`crate::feasibility::VenueFeasibility`]
+//!    installed through [`OrderManager::with_venue_feasibility`], the order
+//!    must sit on its lot and tick grids and clear its minimums. This is
+//!    `qip-edge`'s feasibility gate mirrored onto the central path: an
+//!    off-lot or below-minimum order is a strategy that does not know the
+//!    venue's grid, and it is refused here rather than allowed to ride a
+//!    profitable strategy's order through pre-trade risk and out to a venue
+//!    that would reject it, or silently trade a size nobody reasoned about.
+//!    It reports through [`RefusalReason::Malformed`] rather than a variant
+//!    of its own, naming the gate in the detail text: `RefusalReason` is
+//!    matched exhaustively in `qip-kernel`, outside this crate's own scope,
+//!    and a fourth field there is the same shape of defect a guessed grid
+//!    would be — a fact invented at the point of use instead of asked for
+//!    where it is owned. An infeasible order *is* malformed for the venue it
+//!    named, which is the same reading the edge crate gives its own vetoes.
+//! 3. The kill switch must not be tripped for its scope.
+//! 4. The autonomy level must permit execution at all.
+//! 5. A live venue additionally requires a live autonomy level *and* an
 //!    available venue. Neither implies the other.
-//! 5. Pre-trade risk must approve it, against the state it would produce.
+//! 6. Pre-trade risk must approve it, against the state it would produce.
 //!
 //! Every one of those is a refusal path, and each records why. A rejected
 //! order that left no trace is indistinguishable from one that was never sent,
 //! and the difference matters when reconstructing why a position was not put on.
 //!
-//! The ordering is deliberate: the kill switch is checked before the autonomy
-//! level so that a stopped platform stays stopped even if the level is
-//! misconfigured, and risk runs last so that its expensive projection is not
-//! computed for an order that was never going to be sent.
+//! The ordering is deliberate: feasibility runs right after well-formedness
+//! because it is the cheapest question with a venue-specific answer — the
+//! same reasoning §18.1 gives for putting the edge crate's feasibility gate
+//! ahead of its profitability filter — the kill switch is checked before the
+//! autonomy level so that a stopped platform stays stopped even if the level
+//! is misconfigured, and risk runs last so that its expensive projection is
+//! not computed for an order that was never going to be sent.
 
 use crate::broker::Broker;
+use crate::feasibility::{self, VenueFeasibility};
 use crate::order::{Fill, Order, OrderState, OrderType};
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
@@ -35,7 +54,11 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "reason", rename_all = "snake_case")]
 pub enum RefusalReason {
-    /// The order was not well formed.
+    /// The order was not well formed — including, since `qip-edge`'s
+    /// feasibility gate was mirrored onto this path, an order that cannot be
+    /// expressed at the venue: off its lot or tick grid, or below a minimum
+    /// it states. `detail` is prefixed `infeasible (<gate>):` in that case,
+    /// naming the same `feasibility_*` gate literal the edge crate uses.
     Malformed { detail: String },
     /// The kill switch is tripped.
     Halted { scope: String, detail: String },
@@ -78,7 +101,10 @@ impl RefusalReason {
     /// Whether the refusal is a safety control rather than a transient fault.
     ///
     /// Distinguished because a safety refusal must never be retried
-    /// automatically, and a transient one may be.
+    /// automatically, and a transient one may be. `Malformed` — including a
+    /// feasibility veto — is not a safety control by the same reasoning it
+    /// already carried: the order itself needs to change, not the platform's
+    /// posture, so there is nothing here for an automatic retry to trip over.
     pub const fn is_safety_control(&self) -> bool {
         matches!(
             self,
@@ -136,6 +162,11 @@ pub struct OrderManager {
     refusals: Vec<SubmissionResult>,
     /// Every venue/book disagreement seen, so a monitor can halt on one.
     reconciliation_breaks: Vec<String>,
+    /// Feasibility grids by venue name, keyed on [`Broker::name`]. A venue
+    /// with no entry is checked for nothing here — see
+    /// `crate::feasibility`'s module comment for why that is the honest
+    /// answer rather than a gap.
+    feasibility: BTreeMap<String, VenueFeasibility>,
     sequence: u64,
 }
 
@@ -146,8 +177,25 @@ impl OrderManager {
             checker,
             refusals: Vec::new(),
             reconciliation_breaks: Vec::new(),
+            feasibility: BTreeMap::new(),
             sequence: 0,
         }
+    }
+
+    /// Install the lot/tick/minimum grid for one venue, keyed on the exact
+    /// string a [`Broker::name`] returns.
+    ///
+    /// Opt in per venue rather than a single default: a grid guessed at for a
+    /// venue nobody has modelled is a rounding rule wearing a refusal's
+    /// clothes, and this platform refuses only what it actually knows.
+    #[must_use]
+    pub fn with_venue_feasibility(
+        mut self,
+        venue: impl Into<String>,
+        model: VenueFeasibility,
+    ) -> Self {
+        self.feasibility.insert(venue.into(), model);
+        self
     }
 
     /// Every venue/book disagreement recorded since assembly.
@@ -243,8 +291,27 @@ impl OrderManager {
             return result;
         }
 
-        // 2. The kill switch, checked first so a stopped platform stays
-        //    stopped even if the autonomy level is misconfigured.
+        // 2. Feasibility, before anything spends effort on an order that
+        //    cannot be expressed at this venue at all. Opt in per venue: a
+        //    venue with no grid installed is checked for nothing, which
+        //    mirrors `qip-edge`'s stated behaviour for a venue it has not
+        //    modelled either.
+        if let Some(model) = self.feasibility.get(broker.name())
+            && let Err(infeasible) = feasibility::assess(model, &order)
+        {
+            let result = refuse(
+                &order,
+                RefusalReason::Malformed {
+                    detail: format!("infeasible ({}): {}", infeasible.gate, infeasible.reason),
+                },
+            );
+            self.record_refusal(order, at, result.clone());
+            return result;
+        }
+
+        // 3. The kill switch, checked first among the safety controls so a
+        //    stopped platform stays stopped even if the autonomy level is
+        //    misconfigured.
         if autonomy.kill_switch().is_halted(&order.scope) {
             let detail = autonomy
                 .kill_switch()
@@ -263,7 +330,7 @@ impl OrderManager {
             return result;
         }
 
-        // 3. Execution must be permitted at all.
+        // 4. Execution must be permitted at all.
         let level = autonomy.level();
         if !level.executes() {
             let result = refuse(
@@ -277,7 +344,7 @@ impl OrderManager {
             return result;
         }
 
-        // 4. A live venue needs a live level *and* an available venue. Neither
+        // 5. A live venue needs a live level *and* an available venue. Neither
         //    implies the other, and treating either as sufficient is how an
         //    order reaches a market nobody intended it to reach.
         if !broker.is_simulated() {
@@ -305,7 +372,7 @@ impl OrderManager {
             }
         }
 
-        // 5. Pre-trade risk, against the state the order would produce.
+        // 6. Pre-trade risk, against the state the order would produce.
         let proposed = ProposedOrder {
             object_id: order.object_id.clone(),
             quantity: order.quantity * Decimal::from_int(i64::from(order.side.sign())),
