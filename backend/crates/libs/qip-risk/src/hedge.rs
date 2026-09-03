@@ -60,10 +60,14 @@
 //! * It does not net across policies. Two policies hedging overlapping
 //!   exposures will each propose in full; approval is where netting judgement
 //!   lives.
-//! * Its pre-trade projection covers notional, position, leverage, net and
-//!   concentration limits. It does not project volatility, VaR or expected
-//!   shortfall — those need a return series a proposal-time check does not
-//!   have, and pre-trade risk re-checks the order anyway.
+//! * Its pre-trade projection covers notional, position, leverage and net
+//!   limits. It does not project the per-axis bucket caps: `project_hedge`
+//!   moves gross exposure and not `axis_exposures`, so a hedge's own bucket
+//!   weight is invisible to a proposal-time check. It does not project
+//!   volatility, VaR or expected shortfall either — those need a return
+//!   series a proposal-time check does not have. Pre-trade risk re-checks the
+//!   order against the full set anyway, which is where a bucket cap actually
+//!   holds.
 //! * It does not track whether past hedges worked. Effectiveness is an
 //!   attribution question, answered elsewhere from realised outcomes.
 

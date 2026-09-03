@@ -135,9 +135,13 @@ execution_nodes = {
       "sim-1" = { cidr = "203.0.113.0/24", port = 443 }
     }
     create_egress_nat = true   # its region has no NAT of its own
+    instances         = 0      # provisioned, not running
   }
 }
 ```
+
+`instances` is 0 by default. The instance template still names `boot_image`, so
+a group of zero does not remove the image requirement — it removes the bill.
 
 The root passes `shadow_mode = true` unconditionally: the first node is
 observed before it takes anything, per ADR 0020 step 3, and letting a node out

@@ -128,8 +128,8 @@ variable "boot_image" {
 
 variable "node_count" {
   description = <<-EOT
-    How many instances the group holds. One, per §41.4 — a single dedicated
-    machine per region.
+    How many instances the group holds. Zero or one, per §41.4 — a single
+    dedicated machine per region, or none while the node is only provisioned.
 
     Blue-green replacement does not need a second permanent instance: the
     update policy below surges one, proves it, and retires the old one. A
@@ -141,8 +141,16 @@ variable "node_count" {
   default = 1
 
   validation {
-    condition     = var.node_count >= 1 && var.node_count <= 2
-    error_message = "An execution node group holds one instance, or two only while a replacement is being observed."
+    # Zero is "provisioned, not running", and it was previously refused. That
+    # refusal made a reviewable node and a billing node the same act: the only
+    # way to see a node's real surface in a plan — subnet, identity, four IAM
+    # bindings, template, health check, five firewall rules — was to start a
+    # machine that then runs continuously whether or not anyone is reading it.
+    # The `ignore_changes = [target_size]` below is what makes zero stable: an
+    # operator's resize to one for a bounded soak is a deployment decision, not
+    # drift for the next apply to undo.
+    condition     = var.node_count >= 0 && var.node_count <= 2
+    error_message = "An execution node group holds zero instances (provisioned, not running), one, or two only while a replacement is being observed."
   }
 }
 
@@ -521,11 +529,18 @@ variable "strategy_plan_path" {
   default = ""
 
   validation {
-    condition     = var.strategy_plan_path == "" || startswith(var.strategy_plan_path, "/")
+    # The path is interpolated into an unquoted heredoc that writes node.env
+    # (templates/startup.sh.tftpl:164 and :183). `startswith("/")` alone
+    # admitted a value containing a newline, which writes a second variable
+    # nobody reviewed, and one containing $(...) or a backtick, which the shell
+    # expands as root at boot. A character class, not just a prefix.
+    condition     = var.strategy_plan_path == "" || can(regex("^/[A-Za-z0-9._/-]*$", var.strategy_plan_path))
     error_message = <<-EOT
-      strategy_plan_path must be absolute. The node's working directory is
-      systemd's, not the one whoever wrote the path had in mind, and a
-      relative path would resolve somewhere nobody chose.
+      strategy_plan_path must be absolute and may contain only letters, digits,
+      dot, underscore, dash and slash. The node's working directory is
+      systemd's, so a relative path resolves somewhere nobody chose; and the
+      value is written verbatim into node.env by an unquoted heredoc, so a
+      newline or a command substitution in it is an injection, not a path.
     EOT
   }
 }

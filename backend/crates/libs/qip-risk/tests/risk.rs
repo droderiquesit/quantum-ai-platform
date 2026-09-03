@@ -546,7 +546,7 @@ fn a_leverage_breach_blocks_and_forces_reduction() {
 }
 
 #[test]
-fn a_concentration_breach_names_the_offending_bucket() {
+fn an_axis_weight_breach_names_the_offending_bucket() {
     let mut state = state();
     state.axis_exposures.insert(
         "sector".to_string(),
@@ -563,11 +563,39 @@ fn a_concentration_breach_names_the_offending_bucket() {
     let breach = check
         .blocking()
         .into_iter()
-        .find(|b| b.limit_kind == "max_concentration")
-        .expect("a concentration breach");
+        .find(|b| b.limit_kind == "max_axis_weight")
+        .expect("a sector-weight breach");
     assert_eq!(breach.subject.as_deref(), Some("information_technology"));
-    assert!(breach.observed > 0.9);
+    // 850k of a million in equity. The exact value, not `> 0.9`: the old
+    // assertion held only because the denominator was the axis total (900k),
+    // and a loose inequality would have survived the denominator changing
+    // under it without anyone noticing which number was being read.
+    assert!((breach.observed - 0.85).abs() < 1e-9, "{}", breach.observed);
     assert!(breach.detail.contains("sector"));
+}
+
+#[test]
+fn no_limit_in_the_default_set_divides_by_a_number_the_order_itself_moves() {
+    let limits = LimitSet::conservative_default();
+    // Premise: the set is not empty, so an empty filter below would not be
+    // mistaken for a set that satisfies the property.
+    assert!(limits.len() >= 12);
+    let offenders: Vec<&str> = limits
+        .limits
+        .iter()
+        .filter(|limit| limit.kind.denominator_moves_with_the_order())
+        .map(|limit| limit.name.as_str())
+        .collect();
+    // `sector-concentration` and `country-concentration` were share-of-gross
+    // caps here until ADR 0027, and a share of gross is 100% for the first
+    // position in an empty book — so the shipped set refused the first order
+    // of every deployment that fed it a catalogue. This is the assertion that
+    // would have caught it before a deployment did.
+    assert!(
+        offenders.is_empty(),
+        "the shipped set holds a pre-trade veto whose answer does not depend on \
+         the order's size: {offenders:?}"
+    );
 }
 
 #[test]

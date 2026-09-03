@@ -81,7 +81,7 @@ const CA_BUNDLE: &str = "/etc/ssl/certs/ca-certificates.crt";
 ///
 /// Each entry names where it came from, because "why is this host here" is the
 /// question a reviewer of the *next* entry will need answered by example.
-const ALLOWED_UPSTREAMS: [(&str, &str); 5] = [
+const ALLOWED_UPSTREAMS: [(&str, &str); 6] = [
     (
         "storage.googleapis.com",
         "qip_storage::gcp::storage — its own requirement string names the host, \
@@ -106,7 +106,27 @@ const ALLOWED_UPSTREAMS: [(&str, &str); 5] = [
         "the HostedConfig in crates/libs/qip-quantum/tests/quantum.rs and in \
          crates/services/qip-optimization-engine/tests/optimization.rs",
     ),
+    (
+        "api.frankfurter.app",
+        "the shipped manifest of frankfurter-ecb-reference-rates, in \
+         crates/services/qip-market-ingestion/src/connectors/manifests/, which \
+         connector_feed.rs's bridge opens by name; licensing class `public`, \
+         evaluated in qip-fastbrain/src/licensing.rs before the source can open",
+    ),
 ];
+
+/// The shipped manifest the market-data listener is derived from.
+///
+/// Read rather than restated: a route checked against a literal this test
+/// carried itself would agree with a connector that had been repointed.
+const FRANKFURTER_MANIFEST: &str = "backend/crates/services/qip-market-ingestion/src/\
+                                    connectors/manifests/frankfurter-ecb-reference-rates.json";
+const FRANKFURTER_TRANSPORT: &str =
+    "backend/crates/services/qip-market-ingestion/src/connector/transport.rs";
+const FRANKFURTER_LICENSING: &str = "backend/crates/apps/qip-fastbrain/src/licensing.rs";
+const FRANKFURTER_LISTENER: &str = "frankfurter";
+const FRANKFURTER_HOST: &str = "api.frankfurter.app";
+const FRANKFURTER_CLUSTER: &str = "api_frankfurter_app";
 
 /// Whether a configuration sets a setting to a value.
 ///
@@ -195,7 +215,7 @@ fn bootstrap() -> String {
 /// One block of the bootstrap, bounded by the block that follows it.
 ///
 /// Bounded rather than open-ended, and the difference is not cosmetic: a check
-/// reading "the listeners" that ran on past `clusters:` would read the five
+/// reading "the listeners" that ran on past `clusters:` would read the six
 /// upstream port 443s as listener ports. Both ends must be found, so a
 /// reshaped bootstrap fails here rather than quietly widening what a caller is
 /// looking at.
@@ -259,8 +279,8 @@ fn listener_ports() -> Vec<(String, String)> {
     let listeners = entries_of(&listeners_block(&bootstrap));
     assert_eq!(
         listeners.len(),
-        5,
-        "{:?} listeners were read; there are four destination listeners and \
+        6,
+        "{:?} listeners were read; there are five destination listeners and \
          the health listener, and a listener this check cannot see is a port \
          nothing below constrains",
         listeners.iter().map(|(name, _)| name).collect::<Vec<_>>()
@@ -453,11 +473,11 @@ fn the_egress_proxy_dials_only_the_vendor_hosts_the_adapters_named() {
     let bootstrap = bootstrap();
 
     // Premise. Every address in this file is written inside a flow mapping;
-    // six binds and five upstreams is eleven, and fewer than ten means the
-    // socket addresses have moved and this check is looking at nothing.
+    // seven binds and six upstreams is thirteen, and fewer than twelve means
+    // the socket addresses have moved and this check is looking at nothing.
     let addresses = values_of(&bootstrap, "address");
     assert!(
-        addresses.len() >= 10,
+        addresses.len() >= 12,
         "only {addresses:?} were read out of the bootstrap; the socket_address \
          blocks have been reshaped and this check is filtering an empty list"
     );
@@ -471,7 +491,7 @@ fn the_egress_proxy_dials_only_the_vendor_hosts_the_adapters_named() {
         .partition(|address| address == LOOPBACK || address == WILDCARD);
 
     assert!(
-        bound.len() >= 5,
+        bound.len() >= 6,
         "only {bound:?} bind addresses were found beside {dialled:?}; the rule \
          that tells a bind from a dial has stopped telling them apart"
     );
@@ -538,6 +558,241 @@ fn the_egress_proxy_dials_only_the_vendor_hosts_the_adapters_named() {
 }
 
 #[test]
+fn the_market_data_listener_reaches_one_vendor_on_one_path_and_widening_it_fails_here() {
+    // The first market-data egress path this platform has had, and the first
+    // destination in this bootstrap that is neither Google nor IBM. The risk
+    // it carries is not that it is wrong today; it is that "we already have a
+    // vendor listener" is the sentence that precedes a second route on it, a
+    // catch-all prefix, or a SAN matcher widened to a suffix. Each of those is
+    // a separate assertion below, and each is a route to the internet out of a
+    // process that holds trading state.
+    //
+    // Everything is derived from the shipped manifest rather than restated, so
+    // a connector repointed at another path or another host fails here instead
+    // of being agreed with.
+    let manifest: serde_json::Value = serde_json::from_str(&read(FRANKFURTER_MANIFEST))
+        .expect("the frankfurter manifest is JSON");
+    let manifest_host = manifest["provider"]
+        .as_str()
+        .expect("the manifest names its provider");
+    let manifest_path = manifest["endpoint"]["path"]
+        .as_str()
+        .expect("the manifest names the path it requests");
+
+    // Premise, twice over. A manifest whose path were "/" or empty would make
+    // the prefix comparison below vacuous — it would admit the catch-all this
+    // test exists to refuse — and a manifest that stopped naming the host
+    // would leave the allowlist entry with no provenance.
+    assert!(
+        manifest_path.starts_with('/') && manifest_path.len() > 1,
+        "the manifest requests {manifest_path:?}; a path that is empty or a \
+         bare `/` cannot distinguish a narrow route from a catch-all, and \
+         every check below would pass on a proxy that forwards everything"
+    );
+    assert!(
+        manifest_host.contains(FRANKFURTER_HOST),
+        "the manifest's provider no longer names {FRANKFURTER_HOST}; the \
+         allowlist entry for that host has lost the source it was derived from"
+    );
+
+    let bootstrap = bootstrap();
+    let listeners = entries_of(&listeners_block(&bootstrap));
+    let (_, listener) = listeners
+        .iter()
+        .find(|(name, _)| name == FRANKFURTER_LISTENER)
+        .unwrap_or_else(|| {
+            panic!(
+                "no `{FRANKFURTER_LISTENER}` listener in the bootstrap, but \
+                 {FRANKFURTER_HOST} is on the allowlist. An upstream declared \
+                 with no listener in front of it is a host the proxy may dial \
+                 and no reviewed route reaches — the widening without the use."
+            )
+        });
+
+    // Loopback, and one port. The port is the whole destination selector here:
+    // there is no host header a caller controls, so a wider bind is a route
+    // anything on the network can take to a rewritten authority.
+    assert_eq!(
+        values_of(listener, "address"),
+        vec![LOOPBACK.to_string()],
+        "the {FRANKFURTER_LISTENER} listener does not bind {LOOPBACK} alone"
+    );
+    let ports = values_of(listener, "port_value");
+    assert_eq!(
+        ports.len(),
+        1,
+        "the {FRANKFURTER_LISTENER} listener binds {ports:?}; one listener, \
+         one port is what makes the port a destination selector"
+    );
+
+    // One route. Not "every route points at Frankfurter" — one. A second route
+    // on this listener is a second thing reachable through an address whose
+    // whole review was "it is the rates feed".
+    let routed = values_of(listener, "cluster");
+    assert_eq!(
+        routed,
+        vec![FRANKFURTER_CLUSTER.to_string()],
+        "the {FRANKFURTER_LISTENER} listener routes to {routed:?}. One vendor, \
+         one cluster: this listener was reviewed as a path to the ECB's \
+         reference rates and to nothing else."
+    );
+    assert_eq!(
+        values_of(listener, "host_rewrite_literal"),
+        vec![FRANKFURTER_HOST.to_string()],
+        "the {FRANKFURTER_LISTENER} listener rewrites the authority to \
+         something other than {FRANKFURTER_HOST}"
+    );
+
+    // One prefix, and it is the one the connector actually builds. This is the
+    // assertion that refuses `prefix: "/"`: a catch-all makes the listener a
+    // forward proxy to whatever the rewritten authority serves, which for a
+    // vendor with more than one product is a different API entirely.
+    assert_eq!(
+        values_of(listener, "prefix"),
+        vec![manifest_path.to_string()],
+        "the {FRANKFURTER_LISTENER} listener's routes do not match exactly \
+         {manifest_path:?}, the one path the shipped manifest requests. A \
+         prefix wider than the manifest is a route nothing in this workspace \
+         asks for."
+    );
+    assert!(
+        !without_comments(listener).contains("regex"),
+        "the {FRANKFURTER_LISTENER} listener matches with a regex; a route \
+         whose extent a reviewer has to simulate is not a reviewed route"
+    );
+
+    // GET and only GET. Asserting the method at the proxy is what makes "this
+    // path cannot carry an order" a property of the boundary rather than of
+    // the vendor's product range: an order is a POST, and a POST to this port
+    // gets a 404 before a socket is opened upstream.
+    assert_eq!(
+        values_of(listener, "exact"),
+        vec!["GET".to_string()],
+        "the {FRANKFURTER_LISTENER} listener no longer restricts the method to \
+         GET. The connector transport issues Method::Get and only that; a \
+         listener that forwards a POST forwards something this platform does \
+         not send."
+    );
+    let transport = read(FRANKFURTER_TRANSPORT);
+    assert!(
+        transport.contains("Method::Get"),
+        "{FRANKFURTER_TRANSPORT} no longer issues Method::Get, so the route's \
+         method matcher above now describes a request nobody makes"
+    );
+    for method in [
+        "Method::Post",
+        "Method::Put",
+        "Method::Delete",
+        "Method::Patch",
+    ] {
+        assert!(
+            !transport.contains(method),
+            "{FRANKFURTER_TRANSPORT} issues {method}; the connector transport \
+             has gained a write path, and a write path to a market-data vendor \
+             is a decision nobody recorded"
+        );
+    }
+
+    // The converse. Without this, a route added to the `gcp` listener naming
+    // this cluster passes every check above, because every check above reads
+    // only this listener.
+    for (name, body) in &listeners {
+        if name == FRANKFURTER_LISTENER {
+            continue;
+        }
+        assert!(
+            !values_of(body, "cluster").contains(&FRANKFURTER_CLUSTER.to_string()),
+            "the {name} listener routes to {FRANKFURTER_CLUSTER}. The vendor is \
+             reachable from one reviewed port, or it is reachable from anywhere \
+             a route was added without one."
+        );
+        assert!(
+            !values_of(body, "host_rewrite_literal").contains(&FRANKFURTER_HOST.to_string()),
+            "the {name} listener rewrites the authority to {FRANKFURTER_HOST}"
+        );
+    }
+
+    // The cluster: one host, one certificate name, matched exactly. A matcher
+    // widened from `exact` to `suffix` accepts any certificate under the
+    // domain, which on a proxy that terminates TLS means a DNS answer is
+    // enough to redirect the request.
+    let clusters = entries_of(&clusters_block(&bootstrap));
+    let (_, cluster) = clusters
+        .iter()
+        .find(|(name, _)| name == FRANKFURTER_CLUSTER)
+        .unwrap_or_else(|| panic!("no `{FRANKFURTER_CLUSTER}` cluster is declared"));
+    assert_eq!(
+        values_of(cluster, "address"),
+        vec![FRANKFURTER_HOST.to_string()],
+        "{FRANKFURTER_CLUSTER} dials somewhere other than {FRANKFURTER_HOST}"
+    );
+    assert_eq!(
+        values_of(cluster, "sni"),
+        vec![FRANKFURTER_HOST.to_string()],
+        "{FRANKFURTER_CLUSTER}'s SNI is not {FRANKFURTER_HOST}"
+    );
+    assert_eq!(
+        values_of(cluster, "exact"),
+        vec![FRANKFURTER_HOST.to_string()],
+        "{FRANKFURTER_CLUSTER} does not match the certificate name exactly"
+    );
+    for loose in ["suffix", "contains", "safe_regex", "ignore_case"] {
+        assert_eq!(
+            key_count(cluster, loose),
+            0,
+            "{FRANKFURTER_CLUSTER}'s certificate matcher carries `{loose}`. A \
+             name matched loosely is every host that can obtain a certificate \
+             under it, and this connection carries a request the platform acts \
+             on."
+        );
+    }
+    assert_eq!(
+        values_of(cluster, "filename"),
+        vec![CA_BUNDLE.to_string()],
+        "{FRANKFURTER_CLUSTER} verifies against a trust store other than {CA_BUNDLE}"
+    );
+
+    // The manifest's own two claims first, then the cross-file drift check.
+    // The order is deliberate: these two are self-contained, and putting the
+    // check that reads another crate's source ahead of them would mean a
+    // catalogue that had not been written yet masked a manifest that had
+    // silently changed class.
+    assert_eq!(
+        manifest["licensing"].as_str(),
+        Some("public"),
+        "the manifest's licensing class is no longer `public`; the argument \
+         for admitting this host ahead of every other candidate was that \
+         `public` is the one posture already evaluated"
+    );
+    assert_eq!(
+        manifest["auth"]["scheme"].as_str(),
+        Some("none"),
+        "the frankfurter connector now authenticates. This proxy terminates \
+         TLS and its clients speak plaintext to it, so a credential on this \
+         path is a credential in the sidecar's clear text — a different review \
+         from the one this listener had."
+    );
+
+    // Licensing was evaluated before the source became reachable, which is the
+    // ordering .claude/rules/domains/data-and-streaming.md requires. This is a
+    // drift check on the catalogue's text, not a proof that admit() runs —
+    // that proof lives in qip-fastbrain's own tests. What it catches is a
+    // listener landing here for a source the catalogue never grew an entry for.
+    let licensing = read(FRANKFURTER_LICENSING);
+    let source_id = manifest["source_id"]
+        .as_str()
+        .expect("the manifest has a source_id");
+    assert!(
+        licensing.contains(source_id),
+        "{FRANKFURTER_LICENSING} carries no entry for {source_id}, so the \
+         bootstrap reaches a vendor whose terms nobody wrote down. \
+         licensing::admit refuses an uncatalogued source, so this listener \
+         would be a route the fast brain is denied — the widening without the \
+         use, again."
+    );
+}
+
+#[test]
 fn the_proxy_rewrites_the_authority_to_a_host_on_the_same_allowlist() {
     // The clients send an origin-form request line with `host:` naming
     // loopback, so every request has to have its authority rewritten before it
@@ -581,7 +836,7 @@ fn every_route_names_a_cluster_the_bootstrap_actually_declares() {
 
     let routed = values_of(&listeners, "cluster");
     assert!(
-        routed.len() >= 5,
+        routed.len() >= 6,
         "only {routed:?} routes were read; the route blocks have been reshaped"
     );
     assert!(
@@ -892,8 +1147,8 @@ fn no_workload_is_configured_with_an_address_that_leaves_the_instance_except_thr
         .collect();
     assert_eq!(
         ports.len(),
-        4,
-        "four destination listeners were expected, found {ports:?}"
+        5,
+        "five destination listeners were expected, found {ports:?}"
     );
 
     let mut checked = 0usize;
@@ -1397,7 +1652,7 @@ fn the_health_listener_is_the_only_wide_bind_and_it_forwards_nowhere() {
     // Premise: there are several listeners and one is `health`, so what
     // follows compares a real exception against real neighbours.
     assert!(
-        listeners.len() >= 5,
+        listeners.len() >= 6,
         "only {} listener(s) were read out of the bootstrap; the block has \
          been reshaped and this test is comparing nothing",
         listeners.len()

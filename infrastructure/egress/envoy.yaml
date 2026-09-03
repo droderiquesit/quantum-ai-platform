@@ -99,6 +99,13 @@
 #   * `api.quantum.ibm.com` — the endpoint the same `HostedConfig` carries in
 #     `backend/crates/libs/qip-quantum/tests/quantum.rs` and in
 #     `backend/crates/services/qip-optimization-engine/tests/optimization.rs`.
+#   * `api.frankfurter.app` — named by the shipped manifest of the
+#     `frankfurter-ecb-reference-rates` connector,
+#     `backend/crates/services/qip-market-ingestion/src/connectors/manifests/frankfurter-ecb-reference-rates.json`,
+#     which `connector_feed.rs`'s bridge can open by name. The first
+#     destination here that is a vendor rather than a cloud this platform
+#     already runs on. Reached through `QIP_CONNECTOR_BASE_URL` on the
+#     `frankfurter` listener, path `/latest`, method GET.
 #
 # ## What is deliberately absent, which matters more than what is present
 #
@@ -106,11 +113,21 @@
 #     submission path, and every environment's ceiling is `paper_trading`.
 #     Adding one is a decision for whoever owns the execution path, taken with
 #     `docs/operations/enabling-live-trading.md` open.
-#   * **No market-data vendor, no chain RPC, no prediction venue.** There is
-#     no vendor host anywhere in the workspace to derive, and inventing one
-#     would put a hostname nobody has a licence for into a security control.
-#     `.claude/rules/domains/data-and-streaming.md` requires the licensing
-#     posture evaluated before a source is used.
+#   * **No chain RPC and no prediction venue.** One market-data vendor is
+#     present — `api.frankfurter.app` above — and the bar it cleared is the
+#     bar for the next one, not a precedent for skipping it: a shipped
+#     manifest in this workspace names the host, so nothing was guessed, and
+#     its licensing posture was evaluated before the source could be used
+#     (`qip-fastbrain/src/licensing.rs`), which is the ordering
+#     `.claude/rules/domains/data-and-streaming.md` requires. Putting a
+#     hostname nobody has read the licence for into a security control is
+#     still the failure this paragraph exists to prevent.
+#   * **Not `api.exchange.coinbase.com`**, the other connector this build
+#     carries. Its licensing class is `internal` rather than `public`, and
+#     the host contains the substring `exchange`, which
+#     `modules/egress-proxy/variables.tf` refuses at plan time as a host
+#     naming a venue. Configuring that connector is an architecture question
+#     about what this proxy may reach, not an edit to this file.
 #
 # ## One file, every rendering
 #
@@ -384,9 +401,79 @@ static_resources:
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
 
+    # --- Frankfurter, ECB euro reference rates ---------------------------
+    #
+    # The first market-data path this platform has had. Chosen for what it
+    # does not drag onto the boundary: licensing class `public` and
+    # `auth: { scheme: none }`, so nothing crosses this clear-text proxy that
+    # a credential could be read out of, and admitting it needed no secret
+    # mount. The proxy sees every request in clear text — that is what
+    # terminating TLS means — and this is the one upstream where that costs
+    # nothing.
+    #
+    # One route, one prefix. The connector builds exactly one request,
+    # `/latest?base=EUR&symbols=USD,GBP,JPY`, from `endpoint.path` and
+    # `endpoint.query` in
+    # `connectors/manifests/frankfurter-ecb-reference-rates.json`, and its
+    # `health_path` is the same `/latest`. There is deliberately no catch-all
+    # here — unlike the two IBM listeners, whose `prefix: "/"` predates this
+    # discipline — so the rest of the vendor's surface, `/currencies` and the
+    # dated endpoints, 404s at the boundary instead of being forwarded
+    # somewhere nobody intended.
+    #
+    # The `:method` matcher is what makes "this path cannot carry an order" a
+    # property of the proxy rather than of the vendor's product range.
+    # `HttpSourceTransport` issues `Method::Get` and only that
+    # (`connector/transport.rs`), so anything else arriving on 9105 is
+    # not this connector, and it gets a 404 before a socket is opened
+    # upstream. If a legitimate GET ever 404s here, the matcher is the first
+    # thing to read — the failure direction is loud and at the boundary,
+    # which is the safe one.
+    #
+    # 30s, matching the Google listeners rather than IBM's 60s: nothing is
+    # queued behind this call. It is a single unauthenticated GET of a table
+    # the vendor regenerates once a day, polled hourly against a four-day
+    # freshness SLA, so an answer abandoned here costs one poll, whereas a
+    # long timeout is a thread parked on a vendor nobody has an SLA with.
+    - name: frankfurter
+      address:
+        socket_address: { address: 127.0.0.1, port_value: 9105 }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: frankfurter
+                access_log:
+                  - name: envoy.access_loggers.stdout
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                      log_format:
+                        text_format_source:
+                          inline_string: "egress %UPSTREAM_CLUSTER% %RESPONSE_CODE% %RESPONSE_FLAGS% %DURATION%ms %BYTES_RECEIVED%/%BYTES_SENT%\n"
+                route_config:
+                  name: frankfurter
+                  virtual_hosts:
+                    - name: frankfurter
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            prefix: "/latest"
+                            headers:
+                              - name: ":method"
+                                string_match: { exact: GET }
+                          route:
+                            cluster: api_frankfurter_app
+                            host_rewrite_literal: api.frankfurter.app
+                            timeout: 30s
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
   # --- the destinations ---------------------------------------------------
   #
-  # Five clusters, five hosts, and nothing reachable that is not one of
+  # Six clusters, six hosts, and nothing reachable that is not one of
   # them. Each carries its own `UpstreamTlsContext`: without one Envoy
   # speaks plaintext to port 443 and every request fails, which is the safe
   # direction for a missing block to fail in.
@@ -525,3 +612,28 @@ static_resources:
               match_typed_subject_alt_names:
                 - san_type: DNS
                   matcher: { exact: api.quantum.ibm.com }
+
+    - name: api_frankfurter_app
+      type: LOGICAL_DNS
+      dns_lookup_family: V4_ONLY
+      connect_timeout: 5s
+      load_assignment:
+        cluster_name: api_frankfurter_app
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: api.frankfurter.app, port_value: 443 }
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+          sni: api.frankfurter.app
+          common_tls_context:
+            tls_params:
+              tls_minimum_protocol_version: TLSv1_2
+            validation_context:
+              trusted_ca: { filename: /etc/ssl/certs/ca-certificates.crt }
+              match_typed_subject_alt_names:
+                - san_type: DNS
+                  matcher: { exact: api.frankfurter.app }

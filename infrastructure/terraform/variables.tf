@@ -286,9 +286,18 @@ variable "egress_allowed_upstreams" {
     The hosts the egress proxy may dial, checked at plan time against the
     hosts `infrastructure/egress/envoy.yaml` actually dials. The two must be
     the same set, so widening the proxy is an edit to the bootstrap and an
-    edit here, reviewed together. The default is the five hosts the adapters
+    edit here, reviewed together. The default is the six hosts the adapters
     name and the bootstrap declares; an environment that needs fewer narrows
     the bootstrap, not this list.
+
+    Five of the six are Google's or IBM's — infrastructure this platform runs
+    on. `api.frankfurter.app` is the first that is neither: a market-data
+    vendor, reached on one path by one connector whose licensing posture is
+    evaluated in `qip-fastbrain`'s catalogue before the feed opens. It is
+    listed here rather than folded in silently because it is the entry that
+    changes what this list *is* — no longer only the platform's own
+    dependencies — and the acceptance suite fails if this set and the
+    bootstrap disagree in either direction.
   EOT
 
   type = list(string)
@@ -298,6 +307,7 @@ variable "egress_allowed_upstreams" {
     "europe-west2-aiplatform.googleapis.com",
     "quantum.cloud.ibm.com",
     "api.quantum.ibm.com",
+    "api.frankfurter.app",
   ]
 }
 

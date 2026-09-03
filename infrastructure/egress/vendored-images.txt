@@ -23,12 +23,43 @@
 # Two entries. Argo CD, Kargo, KEDA, cert-manager and redis were vendored for
 # the GKE runtime and left with it (ADR 0024); nothing else third-party runs.
 #
-# The third adoption is pending: Google's managed-Prometheus collector for
-# Cloud Run (`cloud-run-gmp-sidecar`), which modules/cloudrun runs beside the
-# two brains once `metrics_collector_image_digest` names a digest mirrored
-# from a line here as `vendor/cloud-run-gmp-sidecar`. No digest has been
-# reviewed, so there is no line, no mirror and no sidecar —
-# modules/observability/NOT-SCRAPED.md records the state.
+# The third adoption is resolved but not reviewed: Google's managed-Prometheus
+# collector for Cloud Run (`cloud-run-gmp-sidecar`), which modules/cloudrun
+# runs beside the two brains once `metrics_collector_image_digest` names a
+# digest mirrored from a line here as `vendor/cloud-run-gmp-sidecar`. The
+# digest below was resolved from the registry v2 API and confirmed two ways —
+# the `docker-content-digest` header for tag 1.9.2, and the sha256 of the
+# manifest bytes that header names, which are equal — and the image was
+# confirmed to be Google's own by reading
+# `github.com/GoogleCloudPlatform/run-gmp-sidecar/confgenerator` and
+# `confgenerator.Version=1.9.2` out of the entrypoint binary in its third
+# layer. Unlike the two entries below it is a single
+# application/vnd.docker.distribution.manifest.v2+json manifest, not a
+# multi-arch index, so vendor.yml's child-manifest loop signs exactly one
+# digest and the index/child admission failure recorded in that workflow
+# cannot recur here.
+#
+# It stays commented because this file's review surface is the commit that
+# adds a line, and resolving bytes is not reviewing them. A human uncomments
+# it after re-running the command below and reading what it names; that
+# commit is the review. Note when uncommenting: the line must be
+# single-space separated, because modules/egress-proxy/main.tf splits on a
+# literal single space even though vendor.yml's `read` tolerates more.
+#
+#   curl -sSI -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+#     https://us-docker.pkg.dev/v2/cloud-ops-agents-artifacts/cloud-run-gmp-sidecar/cloud-run-gmp-sidecar/manifests/1.9.2 \
+#     | grep -i docker-content-digest
+#
+# Expected: sha256:ff1fc68871118f1032a3ce17e2b0abd703292e883989d220244330ebdf522fd1
+#
+# Pinning the digest is necessary and not sufficient: the collector reads
+# `/etc/rungmp/config.yaml` — the only such literal in its entrypoint binary,
+# with no argument naming another — so modules/cloudrun must publish its
+# configuration document at that path before a mirrored image would scrape
+# anything a person chose. modules/observability/NOT-SCRAPED.md records both
+# halves.
+#
+# us-docker.pkg.dev/cloud-ops-agents-artifacts/cloud-run-gmp-sidecar/cloud-run-gmp-sidecar@sha256:ff1fc68871118f1032a3ce17e2b0abd703292e883989d220244330ebdf522fd1 vendor/cloud-run-gmp-sidecar 1.9.2
 #
 # A fourth is scoped, not yet wired: OpenObserve (self-hosted metrics/logs/
 # traces) as its own standalone Cloud Run service, requested this session.

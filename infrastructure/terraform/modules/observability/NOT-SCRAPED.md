@@ -39,7 +39,7 @@ and writes to Cloud Monitoring. What is now in the Terraform:
   after the workload container is ready, with a `RunMonitoring` document
   scraping `/metrics` on the workload's own port every 30 seconds with a
   10-second timeout — the same cadence as the node's receiver. The document
-  is published to a bucket named by its hash, mounted read-only, so the
+  is published to a bucket and mounted read-only at `/etc/rungmp`, so the
   target and the interval are in a diff. The sidecar carries no secret, no
   environment and no identity; it writes on the `metricWriter` grant every
   workload already holds, and nothing was widened for it.
@@ -57,9 +57,32 @@ What is not:
   Binary Authorization admits only what the platform's attestor signed, so
   the sidecar has to be mirrored by digest through
   `infrastructure/egress/vendored-images.txt` and `vendor.yml` before any
-  revision carrying it can be admitted, and nobody has reviewed that digest.
-  Attaching an unattested image would produce a revision Binary Authorization
-  refuses, which reads as a broken deploy rather than as a missing collector.
+  revision carrying it can be admitted. A candidate now sits in that file —
+  `cloud-run-gmp-sidecar` at the digest tag `1.9.2` resolved to, confirmed
+  against the manifest bytes it names — but it is **commented out**, so
+  `vendor.yml` parses past it, no copy exists in any environment's registry,
+  and nothing is attested. Resolving bytes is not reviewing them: the review
+  is the commit that uncomments the line. Attaching an unattested image would
+  produce a revision Binary Authorization refuses, which reads as a broken
+  deploy rather than as a missing collector.
+- **The document does not yet land where the collector reads.** The sidecar
+  reads exactly one path, `/etc/rungmp/config.yaml` — the only `/etc/rungmp*`
+  literal in its entrypoint binary, and its `Cmd` names
+  `/etc/rungmpcol/config.yaml`, which is the OpenTelemetry configuration it
+  *generates* from ours rather than one it reads. `modules/cloudrun` mounts
+  the whole bucket, because the GA provider has no `mount_options` on a Cloud
+  Run GCS volume and so `only-dir` is unavailable, and it names the object
+  `${local.collector_prefix}/config.yaml` — a content hash used as a
+  directory, on the reasoning that a changed configuration should sit beside
+  the old one rather than overwrite it. Under this mount that document lands
+  at `/etc/rungmp/<hash>/config.yaml`, where nothing looks. Pin the digest on
+  top of that layout and the collector starts, finds no document, falls back
+  to its own built-in default and scrapes a target nobody chose — with every
+  alert policy still gated off, so nobody would see it. The object must be
+  named `config.yaml` at the bucket root before a digest is pinned, and the
+  fixed name costs one bucket-scoped `storage.objects.delete` because an
+  overwrite needs it. That change is to `modules/cloudrun`, not to this
+  module, and has not been made.
 - **Nothing has been applied.** ADR 0024 records that no plan has been
   produced on any environment; a declared sidecar is a statement about a
   configuration.
@@ -73,10 +96,12 @@ emitted, scrapable, collector declared, not scraped.
 
 ## What would change this file
 
-- A `cloud-run-gmp-sidecar` digest reviewed and added to the vendored-images
-  list as `vendor/cloud-run-gmp-sidecar`, mirrored and attested by
-  `vendor.yml`, and recorded as `metrics_collector_image_digest` in an
-  environment's tfvars.
+- `modules/cloudrun` publishing the collector's document as `config.yaml` at
+  the root of its bucket, which is the one path the sidecar reads.
+- A `cloud-run-gmp-sidecar` digest reviewed — the candidate line in the
+  vendored-images list uncommented — mirrored and attested by `vendor.yml` as
+  `vendor/cloud-run-gmp-sidecar`, and recorded as
+  `metrics_collector_image_digest` in an environment's tfvars.
 - A plan read and applied by a person, and both brains' revisions admitted
   carrying the sidecar.
 - A node applied from a non-empty `execution_nodes`, and a
