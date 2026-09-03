@@ -538,6 +538,61 @@ fn a_reducing_order_shrinks_gross_exposure_rather_than_growing_it() -> Result<()
 }
 
 #[test]
+fn closing_a_position_through_a_counterparty_flattens_that_counterparty_exposure_rather_than_doubling_it()
+-> Result<()> {
+    // `counterparty_exposures` is documented in `qip-risk` as *gross exposure
+    // per counterparty* — a current balance, not a running total of notional
+    // ever routed through that counterparty. Projecting it by adding
+    // `order.notional()` unconditionally, the way `gross_exposure` is
+    // deliberately *not* computed a few lines above this in `project`, meant
+    // a trade that fully closes a position still added to the recorded
+    // exposure instead of removing it: a book flattened to zero through one
+    // counterparty would report double the true exposure, and a
+    // `MaxCounterpartyExposure` limit reading that number could never be
+    // satisfied by closing the position that caused the breach.
+    let checker = PreTradeChecker::new(limits());
+    let mut current = state("10000000", "1000000");
+    current
+        .position_notionals
+        .insert(object("AAA").as_str().to_string(), dec!("1000000"));
+    current
+        .counterparty_exposures
+        .insert("prime-broker".to_string(), dec!("1000000"));
+
+    // A sale that exactly flattens the existing long.
+    let close = ProposedOrder {
+        object_id: object("AAA"),
+        quantity: dec!("-10000"),
+        reference_price: dec!("100"),
+        axes: BTreeMap::new(),
+        counterparty: Some("prime-broker".to_string()),
+        scope: "momentum".to_string(),
+    };
+    let projected = checker.project(&close, &current);
+
+    // Premise: the position is actually closed to flat, so there is no
+    // remaining exposure of any kind left to report.
+    assert_eq!(
+        *projected
+            .position_notionals
+            .get(object("AAA").as_str())
+            .unwrap(),
+        Decimal::ZERO,
+        "the close must flatten the position for this test to mean anything"
+    );
+    assert_eq!(
+        *projected
+            .counterparty_exposures
+            .get("prime-broker")
+            .unwrap(),
+        Decimal::ZERO,
+        "a position closed to flat must show zero exposure to the counterparty that closed it, \
+         not the sum of the open and the closing trade"
+    );
+    Ok(())
+}
+
+#[test]
 fn an_order_with_no_scope_is_refused() {
     let checker = PreTradeChecker::new(limits());
     let mut unscoped = order("AAA", "1000", "100");
