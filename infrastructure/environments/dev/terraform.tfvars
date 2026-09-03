@@ -107,6 +107,16 @@ github_repository = "droderiquesit/quantum-ai-platform"
 # every service's `metrics_collected` output is false.
 # metrics_collector_image_digest = "sha256:<the mirrored collector's digest>"
 
+# OpenObserve (ADR 0028): the platform's metrics, logs and traces backend,
+# mirrored to infrastructure/egress/vendored-images.txt as `vendor/openobserve`
+# but not deployed anywhere until this names the digest. Unlike the metrics
+# collector, setting this creates a whole new top-level Cloud Run service
+# (catalogue.tf's `module.openobserve`), not a sidecar on an existing one —
+# and that service also needs a `management` entry in `trust_zones` above,
+# which this environment does not declare today; the plan refuses the digest
+# without it, naming exactly that.
+# vendored_openobserve_image_digest = "sha256:<the mirrored OpenObserve digest>"
+
 # --- Customer identity ------------------------------------------------------
 # Identity Platform for customer sign-in, activated once real hostnames
 # existed to authorize. The domains are the Cloud Run URLs a deploy actually

@@ -223,6 +223,15 @@ module "secrets" {
     # here either: the adapter reads it from the environment at start-up and
     # redacts it from every Debug rendering.
     "qip-market-data-key",
+    # OpenObserve's own root login (ADR 0028), not a cloud credential: the
+    # email and password `catalogue.tf` mounts as files on the OpenObserve
+    # workload, generated and written out of band the same as every other
+    # secret here. Created in every environment for the same reason the venue
+    # credential is — a uniform deployment — even though the workload that
+    # mounts it exists only once `vendored_openobserve_image_digest` names a
+    # digest.
+    "qip-openobserve-root-email",
+    "qip-openobserve-root-password",
   ]
 
   # The venue credential is readable only by an environment that could use it,
@@ -363,7 +372,10 @@ module "registry" {
   # Cloud Run pulls as its own service agent, which the project grants
   # without a line here. The workloads are listed so a component can read the
   # digest of the image it is running, which is what makes a provenance claim
-  # checkable from inside the process.
+  # checkable from inside the process. OpenObserve is not: it is a vendored
+  # binary this platform does not build, and nothing inside it ever calls
+  # this platform's registry API to check its own provenance — the same
+  # reason it carries no `deployer_service_account` in catalogue.tf.
   pull_service_accounts = [for workload in module.cloud_run : workload.service_account_email]
 }
 
