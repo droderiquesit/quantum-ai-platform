@@ -212,7 +212,17 @@ impl Agent for LearningAttribution {
                 "ratio",
                 &["episodes"],
             ));
-            let _ = count;
+            // The sample size behind the rate, not just the rate itself: a
+            // hit rate reported without the count it rests on cannot be told
+            // apart from one backed by ten episodes or a thousand, and the
+            // reviewer downstream needs the count to weigh the claim.
+            builder = builder.fact(computed(
+                ctx,
+                &format!("hit_rate_{agent_id}_episode_count"),
+                *count as f64,
+                "count",
+                &["episodes"],
+            ));
         }
 
         builder.build()

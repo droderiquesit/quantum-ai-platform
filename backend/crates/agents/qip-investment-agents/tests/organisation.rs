@@ -1384,6 +1384,92 @@ fn the_learning_agent_cannot_score_an_unresolved_episode() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn the_learning_agent_reports_the_sample_size_behind_each_hit_rate() -> Result<()> {
+    use qip_investment_agents::learning::LearningAttribution;
+
+    // A hit rate on its own cannot be told apart from one resting on ten
+    // episodes or a thousand. The count was computed and then thrown away
+    // (`let _ = count;`), so the finding reported a rate with nothing behind
+    // it to weigh the claim against.
+    let mut memory = ResearchMemory::new();
+    let resolved = 12;
+    let correct = 8;
+    for i in 0..resolved {
+        memory.record_episode(Episode {
+            run_id: AgentRunId::from_string(format!("run-{i}")),
+            agent_id: "macro-analyst".to_string(),
+            occurred_at: now().saturating_sub(Duration::from_days(30 - i)),
+            question: "will spreads widen".to_string(),
+            conclusion: "yes".to_string(),
+            evidence: vec!["doc-1".to_string()],
+            conviction: 0.7,
+            outcome: Some(EpisodeOutcome {
+                resolved_at: now().saturating_sub(Duration::from_days(20 - i)),
+                correct: i < correct,
+                realised_bps: Some(40.0),
+                explanation: "the print landed".to_string(),
+            }),
+        });
+    }
+
+    let desk = Arc::new(Desk::new(
+        MarketView {
+            snapshot: MarketSnapshot::new(now()),
+            universe: Universe::new(),
+        },
+        WorldModel::new(),
+        BookView {
+            portfolio: Portfolio::new(
+                PortfolioId::from_string("pf-1"),
+                "t",
+                Currency::USD,
+                dec!("1"),
+                now(),
+            ),
+            marks: BTreeMap::new(),
+        },
+        RiskView {
+            state: RiskState::default(),
+            limits: LimitSet::conservative_default(),
+        },
+        ComplianceView::default(),
+        memory,
+        SearchIndex::new(),
+    ));
+
+    let agent = LearningAttribution::new(manifests::learning_attribution(now()), desk);
+    let record = AgentHost::new(1).run(
+        &agent,
+        &brief(),
+        now(),
+        lineage(),
+        AgentRunId::from_string("run-15"),
+    );
+    let finding = record.finding.expect("a finding");
+    // Premise: enough episodes resolved that the agent actually computed a
+    // per-agent hit rate rather than withholding it.
+    let rate = finding
+        .fact("hit_rate_macro-analyst")
+        .unwrap_or_else(|| panic!("premise: a hit rate was reported: {:?}", finding.facts));
+    assert!(
+        (rate.value - (correct as f64 / resolved as f64)).abs() < 1e-9,
+        "{}",
+        rate.value
+    );
+
+    let count = finding
+        .fact("hit_rate_macro-analyst_episode_count")
+        .expect("the sample size behind the hit rate must be reported alongside it");
+    assert!(
+        (count.value - resolved as f64).abs() < f64::EPSILON,
+        "{} resolved episodes backed the rate, but the fact says {}",
+        resolved,
+        count.value
+    );
+    Ok(())
+}
+
 // --- determinism ------------------------------------------------------------
 
 #[test]
