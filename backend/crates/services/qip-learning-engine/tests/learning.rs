@@ -247,6 +247,46 @@ fn a_period_that_ends_before_it_starts_is_refused() {
     );
 }
 
+#[test]
+fn a_non_finite_factor_return_is_refused_rather_than_silently_costed_as_zero() {
+    // A NaN factor return must not be swallowed to zero and reappear,
+    // unexplained, inside the idiosyncratic residual: that is exactly the
+    // failure mode `Attribution::residual` exists to catch, reintroduced
+    // through the one term that still touches a float before crossing back
+    // to `Decimal`. Premise first: a finite return does attribute cleanly.
+    let mut clean = position("AAA", "100", "105");
+    clean.factor_returns = BTreeMap::from([("market".to_string(), 0.02)]);
+    assert!(
+        Attributor::new()
+            .attribute(
+                &[clean.clone()],
+                total_of(&[clean.clone()]),
+                dec!("1000000"),
+                start(),
+                end(),
+            )
+            .is_ok(),
+        "the fixture must attribute cleanly before proving the NaN case is refused"
+    );
+
+    let mut poisoned = clean;
+    poisoned.factor_returns = BTreeMap::from([("market".to_string(), f64::NAN)]);
+    let error = Attributor::new()
+        .attribute(
+            &[poisoned.clone()],
+            total_of(&[poisoned]),
+            dec!("1000000"),
+            start(),
+            end(),
+        )
+        .unwrap_err();
+    assert!(
+        error.message().contains("does not convert to a decimal"),
+        "{}",
+        error.message()
+    );
+}
+
 // --- thesis evaluation ------------------------------------------------------
 
 fn claim(id: &str, expected_bps: f64, confidence: f64) -> ThesisClaim {
