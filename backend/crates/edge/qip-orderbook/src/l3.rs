@@ -212,8 +212,15 @@ impl L3Book {
         if remaining.is_zero() {
             return self.remove(order_ref);
         }
-        self.ladder_mut(order.side)
-            .resize_level(order.price, remaining - order.quantity);
+        if !self
+            .ladder_mut(order.side)
+            .resize_level(order.price, remaining - order.quantity)
+        {
+            return Err(Error::invalid(format!(
+                "order {order_ref} was indexed at {} but no level rests there",
+                order.price
+            )));
+        }
         if let Some(resting) = self.orders.get_mut(&order_ref) {
             resting.quantity = remaining;
         }
@@ -254,8 +261,15 @@ impl L3Book {
 
         let keeps_priority = price == existing.price && quantity <= existing.quantity;
         if keeps_priority {
-            self.ladder_mut(existing.side)
-                .resize_level(existing.price, quantity - existing.quantity);
+            if !self
+                .ladder_mut(existing.side)
+                .resize_level(existing.price, quantity - existing.quantity)
+            {
+                return Err(Error::invalid(format!(
+                    "order {order_ref} was indexed at {} but no level rests there",
+                    existing.price
+                )));
+            }
         } else {
             if !self.ladder_mut(existing.side).detach_order(
                 existing.price,
