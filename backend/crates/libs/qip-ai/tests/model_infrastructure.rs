@@ -224,6 +224,28 @@ fn a_query_matching_nothing_returns_nothing() {
 }
 
 #[test]
+fn matched_terms_do_not_repeat_a_query_term_that_recurs_non_adjacently() {
+    // "revenue" appears twice in the query with "guidance" between the two
+    // occurrences, so a dedup that only collapses adjacent duplicates would
+    // leave "revenue" twice in `matched_terms`. The field is documented as
+    // the terms the document contains, not one entry per query occurrence.
+    let index = corpus();
+    let results = index.search("revenue guidance revenue", 3);
+    assert!(!results.is_empty());
+    let top = &results[0];
+    let occurrences = top
+        .matched_terms
+        .iter()
+        .filter(|t| t.as_str() == "revenue")
+        .count();
+    assert_eq!(
+        occurrences, 1,
+        "revenue must be listed once, not once per occurrence in the query: {:?}",
+        top.matched_terms
+    );
+}
+
+#[test]
 fn similar_documents_exclude_the_query_document() {
     let index = corpus();
     let similar = index.similar_to("doc-guidance", 3);
@@ -397,6 +419,34 @@ fn a_hosted_model_reports_itself_unavailable_and_says_what_is_missing() {
             .contains("docs/operations/external-dependencies.md")
     );
     assert!(model.requirement().contains("ANTHROPIC_API_KEY"));
+}
+
+#[test]
+fn a_remote_model_resolves_its_credential_through_the_shared_secret_reader() {
+    // `RemoteModel::new` once read `std::env::var` directly, which would
+    // report a credential mounted only as `<VAR>_FILE` by the Secret Manager
+    // CSI driver as absent — an operator would be sent chasing a missing
+    // variable that was in fact supplied correctly. Routing through
+    // `qip_core::secret` is what makes the `_FILE` indirection work here the
+    // same way it does everywhere else credential material is read.
+    let config = RemoteModelConfig {
+        provider: "anthropic".into(),
+        model: "claude-test".into(),
+        credential_env: "QIP_AI_TEST_UNSET_CREDENTIAL_7f3a1".into(),
+        endpoint: None,
+    };
+    let model = RemoteModel::new(config).expect("an absent credential must not be an error");
+    assert!(
+        !model.is_available(),
+        "no TLS transport exists in this build regardless of credential state"
+    );
+    let error = model
+        .complete(&ModelRequest::new("s", "p"), now())
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("no credential is configured"),
+        "the resolver must have found the variable genuinely absent: {error}"
+    );
 }
 
 #[test]

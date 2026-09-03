@@ -326,7 +326,13 @@ impl SearchIndex {
         let frequencies = &self.term_frequencies[position];
 
         let mut score = 0.0;
-        let mut matched = Vec::new();
+        // A `BTreeSet` rather than a `Vec` with `dedup()`: `dedup()` only
+        // collapses adjacent duplicates, so a query repeating a term with
+        // something else between the repeats — "revenue growth revenue" —
+        // left the same term twice in `matched_terms`, understating that the
+        // field is meant to name which *distinct* query terms the document
+        // contains.
+        let mut matched = std::collections::BTreeSet::new();
         for term in query_terms {
             let Some(frequency) = frequencies.get(term) else {
                 continue;
@@ -337,10 +343,9 @@ impl SearchIndex {
             let tf = f64::from(*frequency);
             score += idf * (tf * (K1 + 1.0))
                 / (tf + K1 * (1.0 - B + B * length / self.average_length.max(1.0)));
-            matched.push(term.clone());
+            matched.insert(term.clone());
         }
-        matched.dedup();
-        (score, matched)
+        (score, matched.into_iter().collect())
     }
 }
 

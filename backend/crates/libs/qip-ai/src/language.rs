@@ -465,13 +465,20 @@ pub struct RemoteModel {
 }
 
 impl RemoteModel {
-    pub fn new(config: RemoteModelConfig) -> Self {
+    /// Read the credential through [`qip_core::secret`], the one resolver that
+    /// supports the `_FILE` indirection the Secret Manager CSI driver
+    /// projects. Reading `std::env` directly here would report a credential
+    /// mounted only as a file as absent, sending an operator chasing a
+    /// missing variable that was in fact supplied correctly, and would accept
+    /// the variable and the file being set at once instead of refusing the
+    /// ambiguity.
+    pub fn new(config: RemoteModelConfig) -> Result<Self> {
         let credential_present =
-            std::env::var(&config.credential_env).is_ok_and(|v| !v.trim().is_empty());
-        Self {
+            qip_core::secret::from_environment(&config.credential_env)?.is_some();
+        Ok(Self {
             config,
             credential_present,
-        }
+        })
     }
 
     /// Construct without consulting the environment, for tests.
