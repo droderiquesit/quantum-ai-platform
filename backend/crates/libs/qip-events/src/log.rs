@@ -199,6 +199,12 @@ impl EventLog {
                         line_number + 1
                     ))
                 })?;
+                // Same duplicate-id refusal as a live append: a file that
+                // reused an id (corruption, a hand edit, two processes
+                // appending to the same path) must fail to load rather than
+                // load with `by_event_id` silently pointing at only the
+                // later of the two records.
+                log.reject_duplicate_event_id(record.event.event_id.as_str())?;
                 // Make room before indexing, so loading a file larger than the
                 // ceiling never puts the whole file in memory first — which is
                 // the failure the ceiling exists to prevent, arriving at
@@ -279,11 +285,25 @@ impl EventLog {
 
     /// Append an event, assigning its sequence number and chain hash.
     ///
-    /// Refuses when retention is full of records that may not be evicted. The
-    /// refusal comes before the file write, so a refused append leaves no
-    /// half-recorded event: nothing in memory, nothing on disk, and a caller
-    /// that knows its event was not recorded.
+    /// Refuses when retention is full of records that may not be evicted, and
+    /// refuses when `event.event_id` is already indexed. The latter is not a
+    /// courtesy check: `index` keys `by_event_id` with a plain map `insert`,
+    /// so a second record arriving under an id already in the log would
+    /// silently overwrite that mapping — [`EventLog::get`] would then return
+    /// the newer record for a lookup naming the older one's id, with no error
+    /// and no signal that the first record became unreachable by identity.
+    /// The record itself would still sit in the hash chain (a second append
+    /// always gets a new sequence and a new `record_hash`, so the two can
+    /// never be byte-identical the way a retried block can), so
+    /// `verify_chain` would keep passing while the audit index quietly lied
+    /// about which content a given id names — the same shape of gap as a
+    /// chain-position hash reused for different contents, one layer up, in
+    /// the index rather than the chain. The refusal comes before the file
+    /// write, so a refused append leaves no half-recorded event: nothing in
+    /// memory, nothing on disk, and a caller that knows its event was not
+    /// recorded.
     pub fn append(&mut self, event: &AnyEvent) -> Result<u64> {
+        self.reject_duplicate_event_id(event.event_id.as_str())?;
         self.make_room(event.topic)?;
         let sequence = self.next_sequence();
         let previous_hash = self.last_hash.clone();
@@ -320,6 +340,25 @@ impl EventLog {
 
     fn next_sequence(&self) -> u64 {
         self.last_sequence.saturating_add(1)
+    }
+
+    /// Refuse an event id already present in the index.
+    ///
+    /// Called on every append and on every record loaded from a file, so a
+    /// collision is caught at the same seam whether it arrives live or is
+    /// discovered replaying disk — a corrupt or tampered file that reused an
+    /// id must fail to load rather than load with a silently shadowed record.
+    fn reject_duplicate_event_id(&self, event_id: &str) -> Result<()> {
+        if self.by_event_id.contains_key(event_id) {
+            return Err(Error::invalid(format!(
+                "event id {event_id} is already recorded in this log; a second record cannot \
+                 reuse it, because doing so would silently replace the lookup index's only path \
+                 to the first record while both remained in the hash chain — mint a new event id \
+                 for genuinely new content, or if this is a redelivery, suppress it before it \
+                 reaches the log"
+            )));
+        }
+        Ok(())
     }
 
     fn index(&mut self, record: LogRecord) {
