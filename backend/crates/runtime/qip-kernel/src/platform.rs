@@ -1471,6 +1471,16 @@ impl Platform {
     /// Append the universe record to the event log and publish it to the
     /// journal, exactly as a cycle's entry is.
     fn record_universe_assembled(&mut self, now: Timestamp) -> Result<()> {
+        // `context.ids()` is seeded purely from `config.seed`, so a process
+        // resuming this log and a from-scratch process both starting at the
+        // same instant would otherwise mint the exact same id for this
+        // record — deliberate determinism turned into a genuine collision,
+        // because the resumed run's record sits at a different position in
+        // a longer chain than a from-scratch run's does. Advancing the
+        // stream by what this run inherited moves it off that shared
+        // starting point; a from-scratch assembly (`inherited_through == 0`)
+        // draws nothing extra and is unaffected.
+        self.context.ids().advance(self.inherited_through);
         let correlation_id = self
             .context
             .ids()

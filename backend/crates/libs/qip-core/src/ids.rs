@@ -155,6 +155,27 @@ impl IdGenerator {
         let raw = ((millis & 0xFFFF_FFFF_FFFF) << 80) | (entropy & ((1u128 << 80) - 1));
         Id::from_string(encode_base32(raw))
     }
+
+    /// Discard `draws` outputs from the entropy stream without minting an id.
+    ///
+    /// A generator is seeded purely from a configured seed, so two
+    /// generators built from the same seed and asked for an id stamped with
+    /// the same millisecond produce the same id — deliberate, since it is
+    /// what makes a replay reproducible. That guarantee turns into a
+    /// collision the moment a caller resumes an existing log rather than
+    /// starting one from scratch: the resumed run's first id would coincide
+    /// with the id a from-scratch run at the same instant would have minted,
+    /// even though the resumed run's record sits at a different position in
+    /// a longer chain. Advancing the stream by however much history was
+    /// already inherited moves a resumed run's entropy off that fresh-run
+    /// starting point, while a from-scratch caller (nothing to advance past)
+    /// is unaffected and keeps minting exactly the ids it always has.
+    pub fn advance(&self, draws: u64) {
+        let mut rng = self.rng.lock().unwrap_or_else(|e| e.into_inner());
+        for _ in 0..draws {
+            let _ = rng.next_u64();
+        }
+    }
 }
 
 /// Encode 128 bits as 26 Crockford base-32 characters, most significant first.
