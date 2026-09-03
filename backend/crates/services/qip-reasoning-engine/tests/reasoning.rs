@@ -724,6 +724,44 @@ fn a_thesis_whose_mechanism_is_slower_than_its_horizon_is_rejected() {
 }
 
 #[test]
+fn tightening_the_staleness_limit_actually_tightens_the_check() {
+    // Regression: the staleness check computed its limit as a hardcoded
+    // `horizon * 2` and used `ReviewPolicy::staleness_limit` only as an
+    // on/off switch (`> 0.0`), discarding the configured multiplier itself.
+    // A desk that tightened the policy from 2.0 to 0.5 got no stricter
+    // behaviour at all — the number was calculated into the policy and then
+    // ignored, which looks like a control and is not one.
+    let mut d = draft(well_supported(), sound_chain());
+    d.as_of = now().saturating_add(Duration::from_days(50));
+    d.formed_at = d.as_of;
+    let hypothesis = Hypothesis::form(d).unwrap();
+
+    let mut lenient = RedTeam::new(ReviewPolicy::default()); // staleness_limit 2.0 -> 120-day limit
+    let lenient_outcome = lenient.review(&hypothesis, Some(0.1), hypothesis.as_of, &mut ids());
+    assert!(
+        !lenient_outcome
+            .kinds()
+            .contains(&ChallengeKind::StaleEvidence),
+        "50-day-old evidence must pass the default 120-day limit: {:?}",
+        lenient_outcome.kinds()
+    );
+
+    let strict_policy = ReviewPolicy {
+        staleness_limit: 0.5, // must tighten the limit to 30 days
+        ..ReviewPolicy::default()
+    };
+    let mut strict = RedTeam::new(strict_policy);
+    let strict_outcome = strict.review(&hypothesis, Some(0.1), hypothesis.as_of, &mut ids());
+    assert!(
+        strict_outcome
+            .kinds()
+            .contains(&ChallengeKind::StaleEvidence),
+        "a staleness_limit tightened to 0.5 must actually tighten the check: {:?}",
+        strict_outcome.kinds()
+    );
+}
+
+#[test]
 fn a_thesis_resting_entirely_on_rumour_is_rejected() {
     let gossip = EvidenceSet::from_items(vec![
         evidence(
