@@ -228,7 +228,13 @@ variable "image_digest" {
   }
 }
 
-variable "source" {
+# Named `image_source` and not `source`: Terraform reserves `source` inside a
+# module block for the module's own address, so `variable "source"` is refused
+# outright with "The variable name "source" is reserved due to its special
+# meaning inside module blocks" — and a caller could never pass it. ADR 0028
+# decision 3 was written naming it `source`; it could not have worked, and the
+# ADR carries the correction.
+variable "image_source" {
   description = <<-EOT
     Where this workload's image comes from (ADR 0028, decision 3).
 
@@ -243,10 +249,14 @@ variable "source" {
       * `vendored` — a third-party image mirrored and attested by
         `.github/workflows/vendor.yml` from a reviewed line in
         `infrastructure/egress/vendored-images.txt`. The digest is
-        `vendored_image_digest`. There is no pipeline moving this image after
-        Terraform creates the revision, so nothing here fights an apply over
-        it — the `ignore_changes` rule does not apply to a vendored workload,
-        and Terraform owns the image outright.
+        `vendored_image_digest`.
+
+    This input selects which digest is read, and nothing else. It does *not*
+    vary the `ignore_changes` rule: ADR 0028 decision 3 said a vendored
+    workload would skip it, and Terraform cannot express that — `ignore_changes`
+    takes a static list, so a value that branches on an input is refused with
+    "A static list expression is required". What that costs a vendored workload
+    is written at the rule itself.
 
     Default `built`, so every workload this module deployed before this input
     existed — the whole catalogue, as of ADR 0028 — is unaffected.
@@ -256,8 +266,8 @@ variable "source" {
   default = "built"
 
   validation {
-    condition     = contains(["built", "vendored"], var.source)
-    error_message = "source is built or vendored."
+    condition     = contains(["built", "vendored"], var.image_source)
+    error_message = "image_source is built or vendored."
   }
 }
 

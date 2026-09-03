@@ -325,7 +325,7 @@ fn vendored_envoy() -> (String, String) {
 /// two decisions the vendoring comment once named as still needing a human —
 /// a new top-level workload category, and how storage is authenticated
 /// without a static key — are visibly made rather than defaulted past:
-/// `modules/cloudrun` carries the `source = "vendored"` branch ADR 0028
+/// `modules/cloudrun` carries the `image_source = "vendored"` branch ADR 0028
 /// decision 3 describes, and `catalogue.tf` wires it up on ephemeral,
 /// ZO_S3_*-free storage per decision 4, gated on
 /// `vendored_openobserve_image_digest` naming a digest.
@@ -363,27 +363,27 @@ fn the_vendored_openobserve_image_is_pinned_and_now_deployed_through_the_vendore
         .split_once("@sha256:")
         .unwrap_or_else(|| panic!("{} is not pinned by digest", fields[0]));
 
-    // The module's own vendored-source branch exists: a `source` input, a
+    // The module's own vendored-source branch exists: an `image_source` input, a
     // `vendored_image_digest` input, and the digest lookup actually reads
     // the second one rather than always falling back to `image_digest`.
     let cloud_run_variables = without_comments(&read(CLOUD_RUN_VARIABLES));
     assert!(
-        cloud_run_variables.contains("variable \"source\"")
+        cloud_run_variables.contains("variable \"image_source\"")
             && cloud_run_variables.contains("variable \"vendored_image_digest\""),
-        "modules/cloudrun no longer declares source and vendored_image_digest; ADR 0028 \
+        "modules/cloudrun no longer declares image_source and vendored_image_digest; ADR 0028 \
          decision 3's branch has been removed or renamed"
     );
     let cloud_run_module = without_comments(&read(CLOUD_RUN_MODULE));
     assert!(
         cloud_run_module.contains(
-            "effective_image_digest = var.source == \"vendored\" ? var.vendored_image_digest : var.image_digest"
+            "effective_image_digest = var.image_source == \"vendored\" ? var.vendored_image_digest : var.image_digest"
         ),
-        "modules/cloudrun no longer branches the image lookup on source; a vendored workload \
+        "modules/cloudrun no longer branches the image lookup on image_source; a vendored workload \
          would run whatever image_digest happens to hold"
     );
 
     // The catalogue deploys OpenObserve through that branch, not by folding
-    // it into the built-workload for_each: it names `source = "vendored"`
+    // it into the built-workload for_each: it names `image_source = "vendored"`
     // and composes `vendored_image_digest` from the registry prefix and the
     // root's own digest variable, the same shape the metrics collector's
     // digest is composed with.
@@ -400,7 +400,7 @@ fn the_vendored_openobserve_image_is_pinned_and_now_deployed_through_the_vendore
             "catalogue.tf declares module \"openobserve\" with a closing brace on its own line",
         );
     assert!(
-        openobserve_block.contains("source = \"vendored\"")
+        openobserve_block.contains("image_source = \"vendored\"")
             && openobserve_block.contains(
                 "vendored_image_digest = \"${module.registry.image_prefix}/vendor/openobserve@${var.vendored_openobserve_image_digest}\""
             ),
@@ -1520,5 +1520,56 @@ fn the_node_variable_s_regex_uses_escapes_hcl_actually_accepts() {
         regexall_line.contains("\\\\{ address"),
         "the regex uses a bare \\{{ for the literal brace, which HCL parses \
          as an invalid escape sequence for the same reason.\n{regexall_line}"
+    );
+}
+
+/// `ignore_changes` names a static list, and nothing computed from an input.
+///
+/// This is not hypothetical. ADR 0028 decision 3 said a vendored workload
+/// would skip the rule, and the module was written to do exactly that:
+///
+///   ignore_changes = var.source == "vendored" ? [] : [template[0].containers[0].image]
+///
+/// Terraform refuses that outright — "A static list expression is required" —
+/// so `terraform validate` failed on every commit carrying it, the deploy
+/// gate correctly refused to ship an unvalidated tree, and nothing reached
+/// dev until it was made uniform. The rule is now the same for both sources
+/// and the cost to a vendored workload is written at the rule itself.
+///
+/// A whole-file scan, not a scan of one known line: a second `lifecycle`
+/// block added later with the same conditional shape would break the plan the
+/// same way, and this test is the thing that has to notice.
+#[test]
+fn the_cloud_run_lifecycle_rule_is_a_static_list_terraform_will_accept() {
+    let module = without_comments(&read(CLOUD_RUN_MODULE));
+    let rules: Vec<&str> = module
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("ignore_changes"))
+        .collect();
+
+    // Assert the premise before asserting the property: a module that had
+    // stopped declaring the rule at all would otherwise pass this test by
+    // having nothing to check, while every deploy quietly rolled back to the
+    // digest images.tfvars still names.
+    assert_eq!(
+        rules.len(),
+        1,
+        "{CLOUD_RUN_MODULE} declares {} ignore_changes rules; expected exactly one, on \
+         google_cloud_run_v2_service.workload: {rules:?}",
+        rules.len()
+    );
+    let rule = rules[0];
+
+    assert!(
+        rule.contains("[template[0].containers[0].image]"),
+        "the lifecycle rule no longer ignores the workload container's image, so an apply \
+         would reassert the tfvars digest and roll back whatever deploy.yml last moved the \
+         service to:\n{rule}"
+    );
+    assert!(
+        !rule.contains('?') && !rule.contains("var."),
+        "ignore_changes is computed from an input; terraform refuses this with \"A static \
+         list expression is required\" and every commit carrying it fails validate:\n{rule}"
     );
 }

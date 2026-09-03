@@ -185,7 +185,7 @@ locals {
   # deploy.yml) into a different file (vendored-images.txt, not
   # images.tfvars). The precondition on `google_service_account.workload`
   # refuses the half of this that was left null.
-  effective_image_digest = var.source == "vendored" ? var.vendored_image_digest : var.image_digest
+  effective_image_digest = var.image_source == "vendored" ? var.vendored_image_digest : var.image_digest
 }
 
 # --- the workload's own identity --------------------------------------------
@@ -297,20 +297,20 @@ resource "google_service_account" "workload" {
       error_message = "A customer-facing workload may not read the venue credential. Customer traffic and trading traffic share no credential; the workload that needs it is in the trading class and is reached over the VPC."
     }
 
-    # `source` names which digest this workload runs at, and only one of the
+    # `image_source` names which digest this workload runs at, and only one of the
     # two variables that could carry it is ever read (see
     # `local.effective_image_digest`). Left null, the unread half is a caller
     # bug that would otherwise surface as Cloud Run refusing an empty image
     # string at apply — after the image was built — rather than at plan time,
     # naming which half was forgotten.
     precondition {
-      condition     = var.source != "built" || var.image_digest != null
-      error_message = "source is \"built\" but image_digest is null. A built workload's digest comes from images.tfvars, composed by the caller into image_digest; pass it through."
+      condition     = var.image_source != "built" || var.image_digest != null
+      error_message = "image_source is \"built\" but image_digest is null. A built workload's digest comes from images.tfvars, composed by the caller into image_digest; pass it through."
     }
 
     precondition {
-      condition     = var.source != "vendored" || var.vendored_image_digest != null
-      error_message = "source is \"vendored\" but vendored_image_digest is null. A vendored workload's digest comes from vendored-images.txt, composed by the caller into vendored_image_digest; pass it through."
+      condition     = var.image_source != "vendored" || var.vendored_image_digest != null
+      error_message = "image_source is \"vendored\" but vendored_image_digest is null. A vendored workload's digest comes from vendored-images.txt, composed by the caller into vendored_image_digest; pass it through."
     }
 
     # Two mounts producing the same file path silently leave one of the two
@@ -860,21 +860,39 @@ resource "google_cloud_run_v2_service" "workload" {
     percent = 100
   }
 
-  # The workload container's image belongs to the pipeline, for a built
-  # workload. See the header: `deploy.yml` moves it after signing and
-  # attesting a new digest, and an apply that reasserted the tfvars digest
-  # would roll every deploy back. Only the image, and only the workload's —
-  # the sidecar's image is this configuration's, and everything else about
-  # the revision is too.
+  # The workload container's image belongs to the pipeline. See the header:
+  # `deploy.yml` moves it after signing and attesting a new digest, and an
+  # apply that reasserted the tfvars digest would roll every deploy back.
+  # That is not hypothetical — it is the state right now: run 33711008893
+  # moved qip-dev-api to cb4eb9f7… and its digest-recording commit was
+  # rejected, so images.tfvars still names f66c1578…. Without this rule the
+  # next apply would serve the older image. Only the image, and only the
+  # workload's — the sidecar's image is this configuration's, and everything
+  # else about the revision is too.
   #
-  # A vendored workload (ADR 0028 decision 3) has no such pipeline to fight
-  # with: `vendor.yml` writes a reviewed line in vendored-images.txt, not a
-  # running revision, so there is nothing here for Terraform to lose a race
-  # against. The empty list is a real absence of the rule, not a no-op —
-  # Terraform owns this container's image outright for as long as `source`
-  # says `vendored`.
+  # ADR 0028 decision 3 said a vendored workload would skip this rule,
+  # because `vendor.yml` writes a reviewed line in vendored-images.txt rather
+  # than a running revision and so has no race to lose. Terraform cannot
+  # express that: `ignore_changes` takes a static list and refuses any value
+  # computed from an input ("A static list expression is required"), so the
+  # rule is uniform and the ADR carries the correction rather than this
+  # module carrying an expression that never validated.
+  #
+  # What that costs a vendored workload, stated rather than discovered: the
+  # first apply creates the service at `vendored_image_digest` (this rule
+  # does not affect creation), but a later digest bump in vendored-images.txt
+  # is then ignored on apply, and the service keeps serving the old image
+  # with no diff to show why. The remedy is explicit and belongs in the
+  # vendoring runbook, not in a plan someone hopes will notice:
+  #
+  #   terraform apply -replace='module.openobserve[0].google_cloud_run_v2_service.workload[0]'
+  #
+  # Nothing vendored is deployed today — `vendored_openobserve_image_digest`
+  # defaults to null and no environment sets it — so the exposure is zero
+  # until someone pins that digest, which is the point at which this comment
+  # is the thing they need to have read.
   lifecycle {
-    ignore_changes = var.source == "vendored" ? [] : [template[0].containers[0].image]
+    ignore_changes = [template[0].containers[0].image]
   }
 }
 

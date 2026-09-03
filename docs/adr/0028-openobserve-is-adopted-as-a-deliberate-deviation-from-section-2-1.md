@@ -73,15 +73,38 @@ with its cost, not defaulted into silently.
    OpenObserve's digest instead comes from
    `infrastructure/egress/vendored-images.txt`, mirrored and attested by
    `vendor.yml` — a different lifecycle the module has no input for today.
-   The module gains a `source = "built" | "vendored"` input (default
+   The module gains an `image_source = "built" | "vendored"` input (default
    `"built"`, so every existing workload is unaffected) that, when
    `"vendored"`, reads the digest from a `vendored_image_digest` variable
-   instead of `images.tfvars`, and skips the `ignore_changes` lifecycle rule
-   `deploy.yml`'s update path relies on for built images (a vendored image
-   has no such pipeline to fight with). This is the minimal shape: one new
-   input, one new branch in the digest lookup, nothing else about the
-   module's secret-file-mounting, network-tag, or ingress-posture behaviour
-   changes for a vendored workload.
+   instead of `images.tfvars`. This is the minimal shape: one new input, one
+   new branch in the digest lookup, nothing else about the module's
+   secret-file-mounting, network-tag, or ingress-posture behaviour changes
+   for a vendored workload.
+
+   **Corrected after the fact, in two places, and the correction is the
+   point.** As first written this decision named the input `source` and said
+   a vendored workload would also *skip* the `ignore_changes` lifecycle rule
+   `deploy.yml`'s update path relies on, reasoning that a vendored image has
+   no such pipeline to fight with. The reasoning is sound; neither half
+   survives contact with Terraform:
+
+   - `variable "source"` is refused outright — the name is reserved for a
+     module block's own address — so no caller could ever have passed it.
+   - `ignore_changes` takes a static list. A value that branches on an input
+     is refused with "A static list expression is required", so the skip
+     cannot be expressed at all.
+
+   Both shipped, `terraform validate` failed on every commit carrying them,
+   and the deploy gate refused to ship an unvalidated tree — the gate
+   working, not failing. The rule is now uniform. What that costs a vendored
+   workload is stated at the rule itself in `modules/cloudrun/main.tf`: the
+   first apply creates the service at `vendored_image_digest`, but a later
+   digest bump is then ignored on apply and needs an explicit
+   `terraform apply -replace=...` naming the service. Nothing vendored is
+   deployed today, so the exposure is zero until someone pins that digest.
+   Should a hands-off upgrade path for vendored images become worth its
+   machinery, that is a new decision — not a silent reinterpretation of this
+   one.
 
 4. **Storage is ephemeral, on purpose, as instructed.** OpenObserve's only
    persistent-storage backend is S3-compatible (`ZO_S3_*`; confirmed against

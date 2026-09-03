@@ -457,7 +457,7 @@ module "openobserve" {
   ingress_posture = "internal"
   invokers        = []
 
-  source = "vendored"
+  image_source = "vendored"
   # Composed from the registry prefix and the bare digest the root names, so
   # the only image a plan can carry is the mirrored, attested copy — the
   # same composition `collector_image_digest` below uses, for the same
