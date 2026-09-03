@@ -422,7 +422,7 @@ fn a_venue_rejecting_most_of_its_orders_is_taken_out_of_rotation() -> Result<()>
 #[test]
 fn the_thresholds_a_deployment_sets_are_the_ones_that_are_used() -> Result<()> {
     let record = |policy: HealthPolicy| {
-        let mut health = HealthTracker::new(policy);
+        let mut health = HealthTracker::new(policy).expect("test policy is valid");
         for _ in 0..20 {
             health.record_sent(&venue("AAA"));
         }
@@ -970,4 +970,84 @@ fn routing_the_same_market_twice_produces_the_same_decision() -> Result<()> {
     )?;
     assert_eq!(first, second, "a replay must reproduce the run exactly");
     Ok(())
+}
+
+#[test]
+fn a_quarantine_threshold_below_the_degraded_threshold_is_refused() {
+    // `VenueHealth::assess` checks quarantine before degraded, so a
+    // quarantine bar set below the degraded bar makes the degraded verdict
+    // dead code: any reject rate that would degrade a venue would already
+    // have quarantined it first. That is the same defect class the
+    // expected-shortfall limit once was — a control nothing can reach.
+    let policy = HealthPolicy {
+        degraded_reject_rate_f64: 0.10,
+        quarantine_reject_rate_f64: 0.05,
+        ..HealthPolicy::default()
+    };
+    let error = policy
+        .validate()
+        .expect_err("quarantine below degraded must be refused, not silently accepted");
+    assert!(error.message().contains("quarantine reject rate"));
+
+    // The gate admits a good value too: swapping the two the right way round
+    // must not also be refused, or this would be a check that rejects
+    // everything rather than one that rejects the specific defect.
+    let corrected = HealthPolicy {
+        degraded_reject_rate_f64: 0.05,
+        quarantine_reject_rate_f64: 0.10,
+        ..HealthPolicy::default()
+    };
+    corrected
+        .validate()
+        .expect("a quarantine bar at or above the degraded bar is a coherent policy");
+}
+
+#[test]
+fn a_latency_multiple_at_or_below_one_is_refused() {
+    // `latency_excess_f64 >= multiple - 1.0` is the degrading test; a
+    // multiple of one or less makes that threshold zero or negative, so any
+    // latency at all — even none in excess of typical — would read as
+    // degrading forever.
+    let policy = HealthPolicy {
+        latency_multiple_f64: 1.0,
+        ..HealthPolicy::default()
+    };
+    let error = policy
+        .validate()
+        .expect_err("a latency multiple of one must be refused");
+    assert!(error.message().contains("latency multiple"));
+
+    let below_one = HealthPolicy {
+        latency_multiple_f64: 0.5,
+        ..HealthPolicy::default()
+    };
+    assert!(below_one.validate().is_err());
+}
+
+#[test]
+fn a_zero_minimum_sample_count_is_refused() {
+    // The doc comment on `min_samples` says a reject-out-of-one is a hundred
+    // percent reject rate and no evidence at all; a policy that sets the
+    // floor to zero contradicts that promise instead of upholding it.
+    let policy = HealthPolicy {
+        min_samples: 0,
+        ..HealthPolicy::default()
+    };
+    let error = policy
+        .validate()
+        .expect_err("a minimum sample count of zero must be refused");
+    assert!(error.message().contains("minimum sample count"));
+}
+
+#[test]
+fn health_tracker_construction_refuses_an_incoherent_policy() {
+    // The validation has to actually be reached from construction, not just
+    // exist on the policy type unused.
+    let policy = HealthPolicy {
+        degraded_reject_rate_f64: 0.10,
+        quarantine_reject_rate_f64: 0.05,
+        ..HealthPolicy::default()
+    };
+    assert!(HealthTracker::new(policy).is_err());
+    assert!(HealthTracker::new(HealthPolicy::default()).is_ok());
 }
