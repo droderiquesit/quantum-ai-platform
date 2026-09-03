@@ -728,6 +728,15 @@ fn state_with_no_tail_figures() -> RiskState {
     state
 }
 
+/// The shared fixture with `volatility` reset to zero, so a nonzero figure
+/// found after `with_tail_risk` can only have come from the derivation under
+/// test rather than the `0.18` the fixture otherwise carries.
+fn state_with_no_volatility_figure() -> RiskState {
+    let mut state = state();
+    state.volatility = 0.0;
+    state
+}
+
 #[test]
 fn a_book_whose_expected_shortfall_breaches_the_limit_is_refused() {
     let limits = LimitSet::conservative_default();
@@ -974,5 +983,87 @@ fn a_book_nobody_has_ever_marked_leaves_the_liquidity_map_untouched_rather_than_
         state.liquidatable_within.is_empty(),
         "an unmarked book recorded a liquidity fraction nobody measured: {:?}",
         state.liquidatable_within
+    );
+}
+
+// --- volatility --------------------------------------------------------
+//
+// `RiskState::volatility` had exactly the defect
+// `RiskState::expected_shortfall` once had, just without a map to make the
+// absence visible: `RiskState::from_figures` never touches it and
+// `PreTradeChecker::project` says outright that it leaves volatility as it
+// stands, so `MaxVolatility` shipped in `LimitSet::conservative_default` and
+// took the seeded default on every book that never happened to set the
+// field by hand. `RiskState::with_tail_risk` now derives it from the same
+// return series it already uses for value at risk and expected shortfall.
+
+#[test]
+fn a_book_whose_volatility_breaches_the_limit_is_refused() {
+    let limits = LimitSet::conservative_default();
+    let state = state_with_no_volatility_figure().with_tail_risk(&limits, &returns_with_a_tail());
+
+    // Premise: the derivation actually computed something, and it is well
+    // past the default 25% annualised bound — not a value the fixture's
+    // zeroed starting point could have produced by accident.
+    assert!(
+        state.volatility > 0.25,
+        "a tail this sharp should annualise well past the default bound, got {}",
+        state.volatility
+    );
+
+    let check = limits.check(&state);
+    let breach = check
+        .blocking()
+        .into_iter()
+        .find(|b| b.limit_kind == "max_volatility")
+        .unwrap_or_else(|| panic!("volatility did not bind: {}", check.reason()));
+    assert!(breach.observed > breach.bound);
+    assert!(check.is_blocked());
+}
+
+#[test]
+fn a_book_whose_volatility_sits_below_the_limit_passes() {
+    let limits = LimitSet::conservative_default();
+    let state = state_with_no_volatility_figure().with_tail_risk(&limits, &quiet_returns());
+
+    // Premise: computed, not left at the zero the fixture was reset to, and
+    // still comfortably under the bound.
+    assert!(
+        state.volatility > 0.0,
+        "nothing was computed, so nothing can be said about passing"
+    );
+    assert!(state.volatility < 0.25);
+
+    let check = limits.check(&state);
+    assert!(
+        !check
+            .breaches
+            .iter()
+            .any(|b| b.limit_kind == "max_volatility"),
+        "a quiet book breached the volatility limit: {}",
+        check.reason()
+    );
+}
+
+#[test]
+fn a_volatility_series_too_short_to_measure_leaves_the_field_untouched() {
+    // A zero nobody computed would pass the limit and read as evidence the
+    // book is calm, the same failure a recorded-zero tail figure would be.
+    let limits = LimitSet::conservative_default();
+    let seeded = state_with_no_volatility_figure();
+    assert_eq!(
+        seeded.volatility, 0.0,
+        "premise: the fixture starts at zero"
+    );
+
+    let measurable = seeded
+        .clone()
+        .with_tail_risk(&limits, &returns_with_a_tail());
+    assert!(measurable.volatility > 0.0);
+
+    let bare = seeded.with_tail_risk(&limits, &[0.01]);
+    assert_eq!(
+        bare.volatility, 0.0,
+        "a series too short to measure must leave the field alone, not record zero"
     );
 }
