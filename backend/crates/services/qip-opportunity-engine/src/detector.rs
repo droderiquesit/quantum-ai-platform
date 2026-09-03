@@ -756,6 +756,12 @@ impl Detector for CorrelationBreakdownDetector {
 /// Flags spread widening.
 #[derive(Debug, Clone)]
 pub struct LiquidityDetector {
+    /// How many recent observations the "typical" spread is drawn from.
+    ///
+    /// The baseline must be a *recent* one: a spread that widened months ago
+    /// and has stayed wide is the new normal, not today's news, and a stale
+    /// all-history baseline would either bury a fresh widening inside an old
+    /// calm regime's statistics or keep flagging a permanent shift forever.
     pub window: usize,
     pub threshold: f64,
 }
@@ -788,7 +794,10 @@ impl Detector for LiquidityDetector {
             if spreads.len() < self.window + 5 {
                 continue;
             }
-            let history = &spreads[..spreads.len() - 1];
+            // Bounded to the last `window` observations before the latest —
+            // matching every other windowed detector in this file — so a
+            // stale regime cannot dilute or manufacture today's z-score.
+            let history = &spreads[spreads.len() - self.window - 1..spreads.len() - 1];
             let latest = spreads[spreads.len() - 1];
             let centre = stats::median(history);
             let scale = stats::median_absolute_deviation(history);

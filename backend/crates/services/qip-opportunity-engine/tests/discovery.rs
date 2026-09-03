@@ -261,6 +261,40 @@ fn the_liquidity_detector_fires_on_widening_but_not_tightening() {
 }
 
 #[test]
+fn the_liquidity_detector_judges_widening_against_the_recent_regime_not_all_history() {
+    // Forty observations from a stale, permanently-elevated regime (the
+    // "old normal"), followed by thirty from a genuinely tight, current
+    // regime (the "new normal"), then a fresh widening.
+    //
+    // A baseline drawn from the *whole* series is dominated by the larger,
+    // stale cluster: its median sits near the old regime and its MAD is
+    // wide enough that the latest reading looks like a *tightening* against
+    // it (z is negative), so the detector never fires — a false negative on
+    // a real, current widening. A baseline bounded to the detector's own
+    // `window` sits in the current tight regime instead, where the same
+    // reading is enormously anomalous.
+    let old_regime = [38.0, 40.0, 42.0, 40.0].repeat(10); // 40 points, stale
+    let new_regime = [4.75, 5.0, 5.25, 5.0].repeat(10); // 30 points, current
+    let mut spreads = old_regime;
+    spreads.extend(new_regime);
+    spreads.push(20.0); // today's widening: 4x the current regime's typical spread
+
+    let anomalies = LiquidityDetector::default()
+        .detect(&DetectionContext::new(now()).with_spreads("STALE", spreads));
+
+    assert_eq!(
+        anomalies.len(),
+        1,
+        "a spread quadrupling against its current regime is a real widening"
+    );
+    assert_eq!(anomalies[0].kind, AnomalyKind::LiquidityDeterioration);
+    assert!(
+        anomalies[0].z_score > 0.0,
+        "widening must report a positive z-score, not the negative one a stale baseline gives"
+    );
+}
+
+#[test]
 fn the_observation_detector_finds_a_surprise() {
     let mut surprises = vec![
         0.01, -0.02, 0.005, 0.0, -0.01, 0.015, -0.005, 0.02, 0.0, -0.015, 0.01, 0.0,
