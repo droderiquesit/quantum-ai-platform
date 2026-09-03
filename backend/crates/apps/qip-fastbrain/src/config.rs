@@ -215,12 +215,32 @@ impl FastBrainConfig {
         }
 
         let max_cycles = number(vars, "QIP_FASTBRAIN_MAX_CYCLES")?;
-        let max_runtime = number(vars, "QIP_FASTBRAIN_MAX_RUNTIME_SECS")?
-            .map(|seconds| Duration::from_secs(seconds.min(i64::MAX as u64) as i64));
+        let max_runtime = match number(vars, "QIP_FASTBRAIN_MAX_RUNTIME_SECS")? {
+            Some(seconds) => Some(Duration::from_secs(i64::try_from(seconds).map_err(
+                |_| {
+                    Error::invalid(format!(
+                        "configuration: QIP_FASTBRAIN_MAX_RUNTIME_SECS is {seconds}, too large \
+                         to express as a duration"
+                    ))
+                },
+            )?)),
+            None => None,
+        };
 
-        let breach_tolerance = number(vars, "QIP_FASTBRAIN_BREACH_TOLERANCE")?
-            .map(|value| u32::try_from(value).unwrap_or(u32::MAX))
-            .unwrap_or(defaults.breach_tolerance);
+        // Refused rather than clamped: a tolerance too large for `u32` is a
+        // typo an operator would want back, not a value this node should
+        // silently treat as "never leave rotation for breaches" by rounding
+        // it down to `u32::MAX` — which is what capping it here would do in
+        // effect, since no run breaches four billion consecutive cycles.
+        let breach_tolerance = match number(vars, "QIP_FASTBRAIN_BREACH_TOLERANCE")? {
+            Some(value) => u32::try_from(value).map_err(|_| {
+                Error::invalid(format!(
+                    "configuration: QIP_FASTBRAIN_BREACH_TOLERANCE is {value}, too large to \
+                     express as a breach count"
+                ))
+            })?,
+            None => defaults.breach_tolerance,
+        };
 
         let shutdown_budget =
             millis(vars, "QIP_FASTBRAIN_SHUTDOWN_BUDGET_MS")?.unwrap_or(defaults.shutdown_budget);
@@ -415,7 +435,20 @@ fn number(vars: &BTreeMap<String, String>, name: &str) -> Result<Option<u64>> {
 }
 
 fn millis(vars: &BTreeMap<String, String>, name: &str) -> Result<Option<Duration>> {
-    Ok(number(vars, name)?.map(|value| Duration::from_millis(value.min(i64::MAX as u64) as i64)))
+    let Some(value) = number(vars, name)? else {
+        return Ok(None);
+    };
+    // Refused rather than clamped: a value too large to express as a signed
+    // millisecond count is a caller mistake (a stray digit, a units error),
+    // and silently capping it at `i64::MAX` milliseconds — nearly three
+    // hundred million years — would hide that mistake behind a number nobody
+    // asked for.
+    let millis = i64::try_from(value).map_err(|_| {
+        Error::invalid(format!(
+            "configuration: {name} is {value}, too large to express as a millisecond duration"
+        ))
+    })?;
+    Ok(Some(Duration::from_millis(millis)))
 }
 
 #[cfg(test)]
@@ -471,6 +504,64 @@ mod tests {
         let refusal = FastBrainConfig::parse(&vars(&[("QIP_FASTBRAIN_CYCLE_INTERVAL_MS", "0")]))
             .expect_err("a zero interval is not a schedule");
         assert!(refusal.message().contains("spin"), "{}", refusal.message());
+    }
+
+    #[test]
+    fn a_cycle_interval_too_large_to_express_as_a_signed_duration_is_refused_rather_than_capped() {
+        // One past `i64::MAX`: a real number, parseable as `u64`, that the
+        // duration this config produces cannot hold without silently
+        // rounding it down to `i64::MAX` milliseconds. A cap here would be a
+        // caller's typo surviving as "run forever, near enough" instead of
+        // being refused.
+        let asked = (i64::MAX as u64) + 1;
+        let refusal = FastBrainConfig::parse(&vars(&[(
+            "QIP_FASTBRAIN_CYCLE_INTERVAL_MS",
+            &asked.to_string(),
+        )]))
+        .expect_err("a millisecond count beyond i64::MAX was accepted and silently capped");
+        assert!(
+            refusal
+                .message()
+                .contains("QIP_FASTBRAIN_CYCLE_INTERVAL_MS")
+                && refusal.message().contains("too large"),
+            "the refusal does not name the variable or the size problem: {}",
+            refusal.message()
+        );
+    }
+
+    #[test]
+    fn a_max_runtime_too_large_to_express_as_a_signed_duration_is_refused_rather_than_capped() {
+        let asked = (i64::MAX as u64) + 1;
+        let refusal = FastBrainConfig::parse(&vars(&[(
+            "QIP_FASTBRAIN_MAX_RUNTIME_SECS",
+            &asked.to_string(),
+        )]))
+        .expect_err("a runtime bound beyond i64::MAX seconds was accepted and silently capped");
+        assert!(
+            refusal.message().contains("QIP_FASTBRAIN_MAX_RUNTIME_SECS")
+                && refusal.message().contains("too large"),
+            "the refusal does not name the variable or the size problem: {}",
+            refusal.message()
+        );
+    }
+
+    #[test]
+    fn a_breach_tolerance_too_large_to_express_as_a_u32_is_refused_rather_than_capped() {
+        // One past `u32::MAX`. Capping this to `u32::MAX` would read as
+        // "never leave rotation for consecutive breaches", a materially
+        // different policy than the one asked for, chosen silently.
+        let asked = (u32::MAX as u64) + 1;
+        let refusal = FastBrainConfig::parse(&vars(&[(
+            "QIP_FASTBRAIN_BREACH_TOLERANCE",
+            &asked.to_string(),
+        )]))
+        .expect_err("a breach tolerance beyond u32::MAX was accepted and silently capped");
+        assert!(
+            refusal.message().contains("QIP_FASTBRAIN_BREACH_TOLERANCE")
+                && refusal.message().contains("too large"),
+            "the refusal does not name the variable or the size problem: {}",
+            refusal.message()
+        );
     }
 
     #[test]
