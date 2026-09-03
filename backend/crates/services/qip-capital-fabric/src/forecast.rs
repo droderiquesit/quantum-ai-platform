@@ -403,6 +403,28 @@ impl DemandForecaster {
                 "a demand forecast needs a positive horizon to reach into",
             ));
         }
+        // Point-in-time leakage: an observation dated after `as_of` is demand
+        // this forecast could not have known about at the instant it claims to
+        // be fitted from. The production loop only ever appends an observation
+        // once a fill has actually happened, so it never has one to leak — but
+        // a backtest that builds `history` once from a full run and then
+        // replays `as_of` backwards over it does, and a forecaster that fits on
+        // it anyway reports a lane it "knew" a shortfall was coming for, which
+        // is exactly the confidence this crate's interval discipline exists to
+        // deny. Refused rather than silently dropped: a caller with a
+        // future-dated observation in `history` has a bug in how the slice was
+        // built, and dropping it quietly would hide that bug in every backtest
+        // that has one.
+        if let Some(future) = history.iter().find(|o| o.at > as_of) {
+            return Err(Error::invalid(format!(
+                "an observation for {} at {} dated {} is after the forecast's as-of instant \
+                 {}; a forecast cannot be fitted on demand it could not yet have observed",
+                kind.as_str(),
+                location,
+                future.at.to_rfc3339(),
+                as_of.to_rfc3339()
+            )));
+        }
 
         let mut sorted: Vec<DemandObservation> = history.to_vec();
         sorted.sort_by_key(|o| o.at.as_nanos());
