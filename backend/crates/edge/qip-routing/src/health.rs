@@ -16,6 +16,7 @@
 //! sentence somebody has to be able to finish.
 
 use qip_contracts::venue::VenueId;
+use qip_core::error::{Error, Result};
 use qip_core::time::{Duration, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -62,6 +63,76 @@ impl Default for HealthPolicy {
             min_samples: 10,
             quarantine_for: Duration::from_secs(300),
         }
+    }
+}
+
+impl HealthPolicy {
+    /// Refuse a policy whose numbers cannot mean what the type claims.
+    ///
+    /// Every sibling policy in this crate ([`crate::reprice::RepricePolicy`],
+    /// [`crate::venue::VenueProfile`]) validates its own invariants at
+    /// construction rather than trusting the caller; this one had not, and a
+    /// caller-supplied policy could silently make a threshold unreachable
+    /// instead of failing loudly. Two failures this catches by name:
+    ///
+    /// * a `quarantine_reject_rate_f64` set *below* `degraded_reject_rate_f64`
+    ///   makes the degraded verdict dead code — `VenueHealth::assess` checks
+    ///   quarantine first, so any reject rate that would degrade a venue
+    ///   would already have quarantined it, and the milder verdict can never
+    ///   fire. That is the same defect class as a risk limit that cannot
+    ///   trigger.
+    /// * a `latency_multiple_f64` at or below one makes the degrading
+    ///   threshold (`multiple - 1.0`) zero or negative, so any latency at
+    ///   all — even none — reads as degraded forever.
+    pub fn validate(&self) -> Result<()> {
+        if !(0.0..=1.0).contains(&self.degraded_reject_rate_f64) {
+            return Err(Error::invalid(format!(
+                "a degraded reject rate of {} is not a probability",
+                self.degraded_reject_rate_f64
+            )));
+        }
+        if !(0.0..=1.0).contains(&self.quarantine_reject_rate_f64) {
+            return Err(Error::invalid(format!(
+                "a quarantine reject rate of {} is not a probability",
+                self.quarantine_reject_rate_f64
+            )));
+        }
+        if self.quarantine_reject_rate_f64 < self.degraded_reject_rate_f64 {
+            return Err(Error::invalid(format!(
+                "the quarantine reject rate ({}) is below the degraded reject rate ({}); \
+                 assessment checks quarantine first, so the degraded verdict could never fire",
+                self.quarantine_reject_rate_f64, self.degraded_reject_rate_f64
+            )));
+        }
+        if !self.requote_cost_bps_f64.is_finite() || self.requote_cost_bps_f64 < 0.0 {
+            return Err(Error::invalid(
+                "the requote cost must be a non-negative finite number of basis points",
+            ));
+        }
+        if !self.latency_multiple_f64.is_finite() || self.latency_multiple_f64 <= 1.0 {
+            return Err(Error::invalid(format!(
+                "a latency multiple of {} is at or below one, which would mark any latency at \
+                 all as degrading; the multiple has to be greater than one to mean anything",
+                self.latency_multiple_f64
+            )));
+        }
+        if !self.latency_penalty_bps_f64.is_finite() || self.latency_penalty_bps_f64 < 0.0 {
+            return Err(Error::invalid(
+                "the latency penalty must be a non-negative finite number of basis points",
+            ));
+        }
+        if self.min_samples == 0 {
+            return Err(Error::invalid(
+                "a minimum sample count of zero would act on a venue's first order, which is no \
+                 evidence at all — the reason this field exists",
+            ));
+        }
+        if self.quarantine_for.as_nanos() <= 0 {
+            return Err(Error::invalid(
+                "a quarantine that lasts zero time is not a quarantine",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -250,18 +321,21 @@ impl VenueHealth {
 }
 
 /// Health for every venue the router knows about.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct HealthTracker {
     policy: HealthPolicy,
     venues: BTreeMap<VenueId, VenueHealth>,
 }
 
 impl HealthTracker {
-    pub fn new(policy: HealthPolicy) -> Self {
-        Self {
+    /// Refuses a policy whose own numbers contradict each other — see
+    /// [`HealthPolicy::validate`] for the two shapes that fail here.
+    pub fn new(policy: HealthPolicy) -> Result<Self> {
+        policy.validate()?;
+        Ok(Self {
             policy,
             venues: BTreeMap::new(),
-        }
+        })
     }
 
     pub fn policy(&self) -> &HealthPolicy {
@@ -308,12 +382,6 @@ impl HealthTracker {
         self.venues
             .entry(venue.clone())
             .or_insert_with(|| VenueHealth::new(venue.clone()))
-    }
-}
-
-impl Default for HealthTracker {
-    fn default() -> Self {
-        Self::new(HealthPolicy::default())
     }
 }
 
