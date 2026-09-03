@@ -281,6 +281,15 @@ fn run() -> Result<()> {
             println!("{}", outcome.report.summarise());
             if let Some(round) = &outcome.evolution {
                 println!("  {}", round.describe());
+                // The champion/challenger contest, computed every round `turn`
+                // runs and until now never printed: an operator watching the
+                // cycle line saw candidates registered but never learned
+                // whether any of them displaced the strategy that speaks for
+                // an instrument, which is the question the succession desk
+                // exists to answer.
+                if let Some(challenge) = &round.challenge {
+                    println!("  {}", challenge.describe());
+                }
             }
             if let Some(round) = &outcome.learning {
                 println!("  {}", round.describe());
