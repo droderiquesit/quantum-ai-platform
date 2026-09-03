@@ -220,6 +220,37 @@ fn deep_chain(length: usize) -> Expr {
     expr
 }
 
+/// A balanced tree of additions, `2^depth` leaves wide, whose leaves are all
+/// distinct feature reads so nothing about it folds or dedupes at compile
+/// time.
+///
+/// Unlike [`wide_tree`] — every leaf of which is the same feature read, so
+/// the compiler interns the whole tree down to two nodes — and unlike a tree
+/// of literal leaves, which the constant folder collapses to a single node
+/// however wide it is written, this one really does cost what its node count
+/// says: `2 * 2^depth - 1` reachable nodes, at a call-stack depth of only
+/// `depth`. `next` must start at `0` and the same sequence of keys must be
+/// declared into the catalogue the tree is compiled against.
+fn distinct_wide_tree(depth: usize, subject: &ObjectId, next: &mut u64) -> Expr {
+    if depth == 0 {
+        let key = FeatureKey::new("leaf", subject.clone()).with("index", *next);
+        *next += 1;
+        return Expr::feature(key);
+    }
+    let left = distinct_wide_tree(depth - 1, subject, next);
+    let right = distinct_wide_tree(depth - 1, subject, next);
+    left.plus(right)
+}
+
+/// Every leaf key [`distinct_wide_tree`] reads for a given `depth`, in the
+/// same order it reads them — so a caller can declare them all before
+/// compiling.
+fn distinct_wide_tree_leaves(depth: usize, subject: &ObjectId) -> Vec<FeatureKey> {
+    (0..(1u64 << depth))
+        .map(|index| FeatureKey::new("leaf", subject.clone()).with("index", index))
+        .collect()
+}
+
 #[test]
 fn a_strategy_whose_worst_case_cost_exceeds_the_budget_is_refused() {
     let refused = compiler()
@@ -625,6 +656,57 @@ fn the_runtime_budget_is_enforced() {
 
     let mut mean = StrategyRuntime::with_budget(program, 2).unwrap();
     let refused = mean.run(&compiled, &vector, at).unwrap_err();
+    assert_eq!(refused.code(), "guard", "{refused}");
+    assert!(refused.to_string().contains("budget"), "{refused}");
+}
+
+/// A budget drawn from the program's own size is not a bound: a strategy's
+/// reachable cost is always a subset sum of the nodes the arena holds, so it
+/// can never exceed a ceiling computed from that same arena. Compile with
+/// limits wide enough to admit a strategy above the compiler's *default*
+/// ceiling, then hand the resulting program — and nothing else — to
+/// `StrategyRuntime::new`. If the runtime's default budget were derived from
+/// this program (its total cost, say) the oversized strategy would sail
+/// through, because its cost and the ceiling would be the same number.
+#[test]
+fn the_default_runtime_budget_does_not_grow_with_the_program_it_is_given() {
+    // Depth 10 gives 1024 leaves and 2047 reachable nodes — comfortably above
+    // the compiler's default ceiling of 512 — at a call-stack depth of 10.
+    let depth = 10;
+    let generous_limits = CompilerLimits {
+        max_nodes: 4096,
+        max_depth: 32,
+    };
+    let mut catalogue = catalogue();
+    for key in distinct_wide_tree_leaves(depth, &subject()) {
+        catalogue.declare(key, Type::Statistic).unwrap();
+    }
+    let mut compiler = StrategyCompiler::with_limits(catalogue, generous_limits);
+    let mut next = 0u64;
+    let tree = distinct_wide_tree(depth, &subject(), &mut next);
+    let compiled = compiler
+        .compile(&spec_with(
+            "oversized",
+            tree.greater_than(Expr::Statistic(0.0)),
+        ))
+        .unwrap();
+    // Assert the premise: this fixture must actually exceed the default
+    // ceiling, or a refusal below would prove nothing about the fix.
+    assert!(
+        compiled.cost() > CompilerLimits::default().max_nodes,
+        "fixture cost {} does not exceed the default ceiling of {}",
+        compiled.cost(),
+        CompilerLimits::default().max_nodes,
+    );
+    let program = compiler.into_program();
+
+    // `StrategyRuntime::new` takes no budget from the caller, so this is the
+    // exact scenario the default has to protect against: a program built
+    // with limits the compiler's own default would have refused.
+    let mut runtime = StrategyRuntime::new(program).unwrap();
+    let at = Timestamp::from_secs(1_700_000_000);
+    let empty = FeatureVector::new(at);
+    let refused = runtime.run(&compiled, &empty, at).unwrap_err();
     assert_eq!(refused.code(), "guard", "{refused}");
     assert!(refused.to_string().contains("budget"), "{refused}");
 }

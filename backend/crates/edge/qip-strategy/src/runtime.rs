@@ -7,11 +7,22 @@
 //! where the proof was written is a budget that stops applying the moment
 //! anything else builds a program.
 //!
+//! That second check has to come from somewhere the program being checked
+//! cannot reach: a default budget derived from the program's own size — its
+//! total cost, say — is not a bound at all, because a strategy's reachable
+//! cost can never exceed the cost of every node the arena holds. Whatever the
+//! program contained would always fit under a ceiling drawn from its own
+//! shape, which is exactly the case ([`Program::from_nodes`] skipping the
+//! compiler's own `max_nodes`) this check exists to catch. The default here
+//! is [`CompilerLimits::default`]'s own ceiling instead — the same figure the
+//! compiler enforces on every strategy it accepts, independent of whatever
+//! program a caller hands the runtime.
+//!
 //! Evaluation cost does not depend on the market. Every node the strategy
 //! reaches is computed, whichever way its conditions go, so the latency of a
 //! decision is a property of the strategy rather than of the news.
 
-use crate::compile::CompiledStrategy;
+use crate::compile::{CompiledStrategy, CompilerLimits};
 use crate::program::{Op, Program, evaluate_op};
 use qip_contracts::{Conviction, FeatureValue, FeatureVector, Signal};
 use qip_core::Timestamp;
@@ -30,9 +41,17 @@ pub struct StrategyRuntime {
 impl StrategyRuntime {
     /// A runtime over a compiled program, refusing one that could not be
     /// evaluated in bounded time.
+    ///
+    /// The default budget is [`CompilerLimits::default`]'s `max_nodes` —
+    /// fixed, and independent of `program`. Deriving it from the program
+    /// instead (its total cost, say) would make the check a tautology: every
+    /// strategy's reachable cost is a subset sum of the program's own nodes,
+    /// so it can never exceed a ceiling drawn from that same program, and the
+    /// refusal below could never fire. Use [`Self::with_budget`] to state a
+    /// different one.
     pub fn new(program: Program) -> Result<Self> {
         program.validate()?;
-        let budget = program.total_cost().max(1);
+        let budget = CompilerLimits::default().max_nodes;
         let values = vec![None; program.len()];
         Ok(Self {
             program,
