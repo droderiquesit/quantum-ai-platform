@@ -20,15 +20,36 @@
 # in the target environment's registry. The tag is for humans browsing the
 # registry; everything that matters references the digest.
 #
-# One entry. Argo CD, Kargo, KEDA, cert-manager and redis were vendored for
+# Two entries. Argo CD, Kargo, KEDA, cert-manager and redis were vendored for
 # the GKE runtime and left with it (ADR 0024); nothing else third-party runs.
 #
-# The second adoption is pending: Google's managed-Prometheus collector for
+# The third adoption is pending: Google's managed-Prometheus collector for
 # Cloud Run (`cloud-run-gmp-sidecar`), which modules/cloudrun runs beside the
 # two brains once `metrics_collector_image_digest` names a digest mirrored
 # from a line here as `vendor/cloud-run-gmp-sidecar`. No digest has been
 # reviewed, so there is no line, no mirror and no sidecar —
 # modules/observability/NOT-SCRAPED.md records the state.
+#
+# A fourth is scoped, not yet wired: OpenObserve (self-hosted metrics/logs/
+# traces) as its own standalone Cloud Run service, requested this session.
+# Its digest is mirrored below so the reviewed bytes exist in the registry,
+# but nothing deploys it yet — two decisions still need a human, not this
+# session: (1) OpenObserve is not another sidecar on an existing workload,
+# it is a new *kind* of top-level workload this module was never built to
+# host (every service `modules/cloudrun` deploys today gets its digest from
+# this platform's own build→sign→attest pipeline via `images.tfvars`; a
+# vendored image's digest comes from this file instead, a different
+# lifecycle the module has no input for) — the kind of choice
+# `.claude/rules/architecture/00-boundaries.md` says gets an ADR, not a
+# same-session unilateral build; (2) OpenObserve's only persistent-storage
+# backend is S3-compatible (`ZO_S3_*`, confirmed against its own docs) —
+# there is no workload-identity-native GCS path, so durable storage means a
+# GCS HMAC access/secret key pair, a class of static credential
+# `.claude/rules/01-security-and-safety.md` says never to use ("Workload
+# Identity Federation only... No downloaded service-account keys, ever").
+# Ephemeral local storage avoids that but loses everything on every cold
+# start, which is not a serious observability backend. Both are named here
+# rather than one being picked silently.
 
 # Envoy v1.38.3, distroless. The TLS-terminating egress proxy in
 # infrastructure/egress/envoy.yaml runs this image as a Cloud Run sidecar
@@ -39,3 +60,14 @@
 # reads this digest back out of this file, so the plan and this list cannot
 # disagree about which proxy runs.
 docker.io/envoyproxy/envoy@sha256:574348fada8eb1130b448132287d76626dfb07525b16668075382f8e154a45a8 vendor/envoy distroless-v1.38.3
+
+# OpenObserve v0.92.2. The multi-arch index digest for
+# docker.io/openobserve/openobserve@sha256:88fb692ac791d3eaff69653a4a4686f1c7eceb9e105491d58d29ac2739560b3b,
+# resolved directly from Docker Hub's registry v2 API (not from the floating
+# `latest` tag, which happened to name the identical digest at review time —
+# confirmed by cross-checking both resolve to the same bytes) and confirmed
+# against the tags list as v0.92.2, the newest plain-version release as of
+# this review. Mirrored so the reviewed bytes are available; not deployed —
+# see the note above this file's second paragraph for the two decisions
+# still outstanding before it can be.
+docker.io/openobserve/openobserve@sha256:88fb692ac791d3eaff69653a4a4686f1c7eceb9e105491d58d29ac2739560b3b vendor/openobserve v0.92.2

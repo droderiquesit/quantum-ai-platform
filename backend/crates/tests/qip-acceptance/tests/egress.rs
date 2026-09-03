@@ -265,6 +265,14 @@ fn listener_ports() -> Vec<(String, String)> {
 }
 
 /// The `vendor/envoy` line of the vendored-images list, as source and digest.
+///
+/// Selects by destination rather than by position: a second entry
+/// (`vendor/openobserve`, mirrored so its reviewed bytes exist in the
+/// registry but not yet deployed — see the file's own comment on the two
+/// decisions still outstanding before it can be) means "exactly one line"
+/// stopped being a fact about this file the moment it was reviewed, but
+/// "the envoy line is still the distroless proxy image" has to remain true
+/// regardless of how many other images this platform goes on to adopt.
 fn vendored_envoy() -> (String, String) {
     let list = read(VENDORED);
     let entries: Vec<&str> = list
@@ -272,25 +280,81 @@ fn vendored_envoy() -> (String, String) {
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .collect();
-    assert_eq!(
-        entries.len(),
-        1,
-        "{VENDORED} carries {entries:?}; one image is vendored on this platform and a second is a decision"
+    assert!(
+        !entries.is_empty(),
+        "{VENDORED} carries no entries; the egress proxy has to be vendored from somewhere"
     );
-    let fields: Vec<&str> = entries[0].split_whitespace().collect();
+    let envoy_lines: Vec<&&str> = entries
+        .iter()
+        .filter(|line| line.split_whitespace().nth(1) == Some("vendor/envoy"))
+        .collect();
+    assert_eq!(
+        envoy_lines.len(),
+        1,
+        "{VENDORED} carries {entries:?}; expected exactly one vendor/envoy line"
+    );
+    let fields: Vec<&str> = envoy_lines[0].split_whitespace().collect();
     assert_eq!(
         fields.len(),
         3,
         "{VENDORED} line is not `<source@digest> <dest> <tag>`: {entries:?}"
     );
-    assert_eq!(
-        fields[1], "vendor/envoy",
-        "the vendored image is not the egress proxy"
-    );
     let (repository, digest) = fields[0]
         .split_once("@sha256:")
         .unwrap_or_else(|| panic!("{} is not pinned by digest", fields[0]));
     (repository.to_string(), digest.to_string())
+}
+
+/// The vendored OpenObserve line is well-formed and pinned by digest, and —
+/// the file's own comment's claim, checked rather than trusted — nothing in
+/// `infrastructure/terraform/**` references its destination path yet. A
+/// mirrored-but-undeployed image is a deliberate, named state (two decisions
+/// — a new workload category, a storage credential this platform's own
+/// no-static-keys rule forbids — still need a human), not a stray line an
+/// apply could silently start acting on; this fails the day it does, so
+/// whoever wires it has to touch this test and account for that on purpose.
+#[test]
+fn the_vendored_openobserve_image_is_pinned_and_nothing_deploys_it_yet() {
+    let list = read(VENDORED);
+    let entries: Vec<&str> = list
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+    let openobserve_lines: Vec<&&str> = entries
+        .iter()
+        .filter(|line| line.split_whitespace().nth(1) == Some("vendor/openobserve"))
+        .collect();
+    assert_eq!(
+        openobserve_lines.len(),
+        1,
+        "{VENDORED} carries {entries:?}; expected exactly one vendor/openobserve line"
+    );
+    let fields: Vec<&str> = openobserve_lines[0].split_whitespace().collect();
+    assert_eq!(
+        fields.len(),
+        3,
+        "{VENDORED} line is not `<source@digest> <dest> <tag>`: {entries:?}"
+    );
+    fields[0]
+        .split_once("@sha256:")
+        .unwrap_or_else(|| panic!("{} is not pinned by digest", fields[0]));
+
+    for path in qip_acceptance::files_with_extension("infrastructure/terraform", "tf") {
+        let module = without_comments(
+            &std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display())),
+        );
+        assert!(
+            !module.contains("vendor/openobserve"),
+            "{} references vendor/openobserve; OpenObserve is now deployed and this test's \
+             premise (mirrored but not wired) is stale — update or remove it deliberately, and \
+             confirm the two decisions this file's comment names (a new top-level workload \
+             category, and how storage is authenticated without a static key) were actually \
+             made rather than defaulted past",
+            path.display()
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
