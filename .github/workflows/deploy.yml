@@ -663,6 +663,20 @@ jobs:
 
       # Record what was deployed, beside the tfvars that describe the
       # environment. Nothing to commit means the digests are already current.
+      #
+      # The checkout above is pinned to `${{ env.DEPLOY_SHA }}` — a commit,
+      # not a branch — so the working tree is a detached HEAD here. `git
+      # push` alone has nothing to push *to* and fails with "You are not
+      # currently on a branch"; the deployment this step is recording had
+      # already succeeded when that happened, which is a worse failure to
+      # read than an honest one, since the run ends red over bookkeeping
+      # after doing the thing that mattered. `GITHUB_REF_NAME` is the branch
+      # this workflow was actually asked to run against — set by GitHub for
+      # both triggers this file has: the branch a person chose in
+      # `workflow_dispatch`, or the branch `ci` just ran on for the
+      # automatic path — so pushing `HEAD` to it names the real target
+      # explicitly instead of asking git to infer one from a detached state
+      # that carries no branch to infer.
       - name: commit the deployed digests
         run: |
           set -euo pipefail
@@ -677,4 +691,4 @@ jobs:
 
           Written by .github/workflows/deploy.yml after each Cloud Run service was
           moved to the attested digest for ${DEPLOY_SHA} and proven serving it."
-          git push
+          git push origin "HEAD:refs/heads/${GITHUB_REF_NAME}"
