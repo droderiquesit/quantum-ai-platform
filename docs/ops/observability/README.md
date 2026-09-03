@@ -56,7 +56,10 @@ Every descriptor named is one `qip-observability` registers, and
 policy naming one it does not. All seven stay gated on
 `workload_metrics_exist = false` until something is observed scraping a
 process: the execution node's Ops Agent receiver is declared, and the Cloud
-Run services have no collector yet
+Run services carry a managed-Prometheus sidecar declared in
+`modules/cloudrun` — rendered only once `metrics_collector_image_digest`
+names a mirrored, attested image, which no environment does yet, so nothing
+has been scraped there either
 (`infrastructure/terraform/modules/observability/NOT-SCRAPED.md`).
 
 ## What to watch that is not an alert
