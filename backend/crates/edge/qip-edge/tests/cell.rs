@@ -583,6 +583,100 @@ fn agreement_produces_no_discrepancy_at_all() -> Result<()> {
     Ok(())
 }
 
+// --- the hot path: ingest ----------------------------------------------------
+
+/// A decoder whose `Diagnostics` accumulate exactly like a real one's:
+/// cumulative since construction, never reset between calls. Standing in for
+/// the real wire decoders so the test controls precisely how many messages
+/// each call reports as skipped, without needing a malformed capture to
+/// produce one.
+#[derive(Debug, Default)]
+struct SkippingDecoder {
+    diagnostics: qip_protocols::decoder::Diagnostics,
+}
+
+impl qip_protocols::decoder::Decoder for SkippingDecoder {
+    fn decode(
+        &mut self,
+        bytes: &[u8],
+        captured_at: Timestamp,
+    ) -> Result<Vec<qip_contracts::MarketMessage>> {
+        // One skip per byte handed in, so the test dials up a distinct,
+        // known count per call rather than depending on a real protocol's
+        // parsing.
+        for _ in 0..bytes.len() {
+            self.diagnostics
+                .record_skip(qip_protocols::decoder::SkipRecord {
+                    protocol: "test".to_string(),
+                    reason: qip_protocols::decoder::SkipReason::NoMarketFact {
+                        code: "heartbeat".to_string(),
+                    },
+                    offset: 0,
+                    at: captured_at,
+                });
+        }
+        Ok(Vec::new())
+    }
+
+    fn protocol(&self) -> &str {
+        "test"
+    }
+
+    fn consumed(&self) -> usize {
+        0
+    }
+
+    fn diagnostics(&self) -> &qip_protocols::decoder::Diagnostics {
+        &self.diagnostics
+    }
+}
+
+#[test]
+fn a_second_ingest_on_the_same_feed_reports_only_what_it_itself_skipped() -> Result<()> {
+    // `Diagnostics::messages_skipped` is cumulative for the life of the
+    // decoder, and the decoder is registered once per feed and lives for the
+    // cell's lifetime — so a naive read of the counter after every
+    // `on_bytes` call reports the feed's whole history each time, not what
+    // that call skipped. A second batch quieter than the first would still
+    // read as carrying the first batch's skips forward, which is exactly the
+    // reading that makes a quiet pass after a noisy one look noisy too.
+    use qip_edge::cell::{Cell, CellConfig};
+    use qip_feature_dag::engine::FeatureEngine;
+    use qip_feature_dag::state::MarketState;
+    use qip_protocols::registry::FeedKey;
+
+    let config = CellConfig::new(CELL, "europe-west2").with_venue(VenueId::new("XLON"));
+    let engine = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, engine)?;
+    let venue = VenueId::new("XLON");
+    cell.protocols_mut().register(
+        venue.clone(),
+        "feed-a",
+        Box::new(SkippingDecoder::default()),
+    )?;
+    let feed = FeedKey::new(venue, "feed-a");
+
+    cell.on_bytes(&feed, &[0u8; 3], t(0))?;
+    cell.on_bytes(&feed, &[0u8; 2], t(1))?;
+
+    let skipped: Vec<usize> = cell
+        .journal()
+        .entries()
+        .iter()
+        .filter_map(|entry| match &entry.decision {
+            Decision::Ingested { skipped, .. } => Some(*skipped),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        skipped,
+        vec![3, 2],
+        "the second call's skip count should be what it alone skipped, not the decoder's whole \
+         lifetime total"
+    );
+    Ok(())
+}
+
 // --- the cell's own configuration -------------------------------------------
 
 #[test]

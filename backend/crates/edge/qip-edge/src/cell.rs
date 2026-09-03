@@ -502,6 +502,19 @@ pub struct Cell {
     /// the oldest sample is dropped and the cap refuses until the window
     /// drains — see the constant for why refusing is the only honest answer.
     crossing_history: BTreeMap<String, VecDeque<CrossingSample>>,
+    /// The decoder's cumulative `messages_skipped` as of the last call to
+    /// [`Self::on_bytes`] for this feed, keyed by [`FeedKey::label`].
+    ///
+    /// [`qip_protocols::decoder::Diagnostics`] counts "since the decoder was
+    /// created", not "this call" — the decoder is registered once per feed
+    /// and lives for the process, so a second and third call to `on_bytes`
+    /// read the same growing total. Without this baseline the journal's
+    /// `Decision::Ingested.skipped` would report the feed's whole lifetime
+    /// skip count on every batch, making a quiet batch after a noisy one read
+    /// as noisy too, and an operator reading the chain would over-count how
+    /// much a feed had actually skipped by exactly the amount already
+    /// reported.
+    skip_baseline: BTreeMap<String, u64>,
     /// Where the cell's facts go.
     ///
     /// Given, never reached for: a cell assembled without one records into a
@@ -544,6 +557,7 @@ impl Cell {
             order_sequence: 0,
             pass: 0,
             crossing_history: BTreeMap::new(),
+            skip_baseline: BTreeMap::new(),
             metrics: CellMetrics::silent(),
             config,
         })
@@ -1229,14 +1243,21 @@ impl Cell {
     /// precisely so that this call's cost is arithmetic and memory, never a
     /// storage system's availability.
     pub fn on_bytes(&mut self, feed: &FeedKey, bytes: &[u8], now: Timestamp) -> Result<usize> {
-        let (decoded, skipped) = {
+        let (decoded, cumulative_skipped) = {
             let decoder = self.protocols.decoder_mut(&feed.venue, &feed.feed)?;
             let decoded = decoder.decode(bytes, now)?;
-            // Read the counter after decoding: it is cumulative, and the
-            // difference is what this call actually skipped.
-            let skipped = usize::try_from(decoder.diagnostics().messages_skipped).unwrap_or(0);
-            (decoded, skipped)
+            (decoded, decoder.diagnostics().messages_skipped)
         };
+        let label = feed.label();
+        // The decoder's counter is cumulative since it was registered, not
+        // since the last call, so what this call skipped is the difference
+        // against the total this cell last saw for the feed — computed here
+        // rather than assumed, because a decoder that has never been read
+        // from before and one mid-session both have to produce the right
+        // delta rather than the whole lifetime total.
+        let previous = self.skip_baseline.insert(label, cumulative_skipped);
+        let skipped =
+            usize::try_from(cumulative_skipped.saturating_sub(previous.unwrap_or(0))).unwrap_or(0);
         let count = decoded.len();
         self.journal.record(
             Decision::Ingested {
