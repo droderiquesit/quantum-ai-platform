@@ -362,7 +362,7 @@ fn a_promotion_that_skips_a_rung_cannot_be_constructed() -> Result<()> {
     let evidence = full_evidence(start(), start())?;
     let promotion = AuthorisedPromotion::advance(GateStage::Paper, None, start())?;
     assert_eq!(promotion.to(), GateStage::Shadow);
-    let outcome = ShadowGate::default().evaluate(&evidence, start());
+    let outcome = ShadowGate::default().evaluate(&strategy(), &evidence, start());
     let admission = Admission {
         outcome,
         band: None,
@@ -425,7 +425,8 @@ fn a_strategy_failing_one_check_is_not_promoted_however_strong_the_rest() -> Res
     });
     let evidence = StrategyEvidence::new().with_holdout(holdout);
 
-    let outcome = HoldoutGate::default().evaluate(&charged(evidence.clone())?, start());
+    let outcome =
+        HoldoutGate::default().evaluate(&strategy(), &charged(evidence.clone())?, start());
     assert!(!outcome.passed, "one leaking feature fails the gate");
 
     let passing = outcome.findings.iter().filter(|(_, ok, _)| *ok).count();
@@ -470,7 +471,7 @@ fn a_cross_validation_run_that_did_not_purge_is_caught_by_reconstruction() -> Re
     holdout.cross_validation.embargoed = 0;
     let evidence = charged(StrategyEvidence::new().with_holdout(holdout))?;
 
-    let outcome = HoldoutGate::default().evaluate(&evidence, start());
+    let outcome = HoldoutGate::default().evaluate(&strategy(), &evidence, start());
     assert!(!outcome.passed);
     assert!(
         outcome
@@ -500,7 +501,7 @@ fn a_sub_threshold_deflated_sharpe_is_read_as_a_failure_rather_than_a_score() ->
         .with_holdout(holdout)
         .with_trial_account(account);
 
-    let outcome = HoldoutGate::default().evaluate(&evidence, start());
+    let outcome = HoldoutGate::default().evaluate(&strategy(), &evidence, start());
     let credible = outcome
         .findings
         .iter()
@@ -526,7 +527,7 @@ fn a_paper_run_that_pays_more_than_the_backtest_assumed_is_refused() {
     paper.realised_cost_bps = paper.realised_cost_bps.iter().map(|c| c * 2.4).collect();
     let evidence = StrategyEvidence::new().with_paper(paper);
 
-    let outcome = PaperGate::default().evaluate(&evidence, start());
+    let outcome = PaperGate::default().evaluate(&strategy(), &evidence, start());
     assert!(!outcome.passed);
     assert!(
         outcome
@@ -544,7 +545,7 @@ fn a_shadow_run_whose_orders_reached_a_venue_is_not_a_shadow_run() {
     shadow.orders_reached_a_venue = true;
     let evidence = StrategyEvidence::new().with_shadow(shadow);
 
-    let outcome = ShadowGate::default().evaluate(&evidence, start());
+    let outcome = ShadowGate::default().evaluate(&strategy(), &evidence, start());
     assert!(!outcome.passed);
     assert!(
         outcome
@@ -568,7 +569,7 @@ fn shadow_decisions_diverging_from_the_backtest_block_the_rung() {
     assert!(shadow.agreement_rate() < 0.98);
     let evidence = StrategyEvidence::new().with_shadow(shadow);
 
-    let outcome = ShadowGate::default().evaluate(&evidence, start());
+    let outcome = ShadowGate::default().evaluate(&strategy(), &evidence, start());
     assert!(
         outcome
             .failures()
@@ -590,7 +591,11 @@ fn a_pilot_without_kill_conditions_or_a_bound_does_not_pass_its_gate() -> Result
         envelope: None,
         kill_conditions: Vec::new(),
     };
-    let outcome = PilotGate::default().evaluate(&StrategyEvidence::new().with_pilot(bare), start());
+    let outcome = PilotGate::default().evaluate(
+        &strategy(),
+        &StrategyEvidence::new().with_pilot(bare),
+        start(),
+    );
     assert!(!outcome.passed);
     let failed: Vec<&str> = outcome
         .failures()
@@ -610,7 +615,11 @@ fn scaling_on_the_pilots_own_approval_is_refused_because_scaling_is_a_new_decisi
     // Reuse the pilot's approval verbatim: nobody looked at the pilot results.
     scaled.scaling_approval = scaled.pilot_approval.clone();
 
-    let outcome = ScaledGate::default().evaluate(&StrategyEvidence::new().with_scaled(scaled), now);
+    let outcome = ScaledGate::default().evaluate(
+        &strategy(),
+        &StrategyEvidence::new().with_scaled(scaled),
+        now,
+    );
     assert!(!outcome.passed);
     assert!(
         outcome
@@ -630,7 +639,11 @@ fn scaling_beyond_modelled_capacity_is_refused() -> Result<()> {
     let mut scaled = strong_scaled(pilot_start, now)?;
     scaled.proposed_notional = scaled.modelled_capacity;
 
-    let outcome = ScaledGate::default().evaluate(&StrategyEvidence::new().with_scaled(scaled), now);
+    let outcome = ScaledGate::default().evaluate(
+        &strategy(),
+        &StrategyEvidence::new().with_scaled(scaled),
+        now,
+    );
     assert!(
         outcome
             .failures()
@@ -706,7 +719,7 @@ fn retirement_is_terminal_and_a_retired_strategy_must_be_re_proposed_as_a_new_ca
     // strategy, so a stale `from` cannot resurrect it.
     let evidence = charged(full_evidence(start(), start())?)?;
     let promotion = AuthorisedPromotion::advance(GateStage::Candidate, None, start())?;
-    let admission = HoldoutGate::default().admit(&evidence, start());
+    let admission = HoldoutGate::default().admit(&strategy(), &evidence, start());
     let error = ledger
         .record_promotion(&strategy(), promotion, admission, "trying again")
         .expect_err("a retired strategy cannot be walked back up");
@@ -1194,7 +1207,7 @@ fn every_gate_reports_each_check_it_ran_so_a_reviewer_can_see_the_whole_test() -
         Box::new(ShadowGate::default()),
         Box::new(PilotGate::default()),
     ] {
-        let outcome: GateOutcome = gate.evaluate(&evidence, start());
+        let outcome: GateOutcome = gate.evaluate(&strategy(), &evidence, start());
         assert_eq!(outcome.stage, gate.stage());
         assert!(
             outcome.findings.len() >= 3,
@@ -1340,7 +1353,7 @@ fn a_promotion_whose_lifetime_trial_count_is_unknown_is_refused_naming_what_to_d
 
     // The gate itself, handed evidence with no account, fails the named check
     // rather than reading the run's own twelve.
-    let outcome = HoldoutGate::default().evaluate(&evidence, start());
+    let outcome = HoldoutGate::default().evaluate(&strategy(), &evidence, start());
     assert!(!outcome.passed);
     let known = outcome
         .findings
@@ -1358,8 +1371,64 @@ fn a_promotion_whose_lifetime_trial_count_is_unknown_is_refused_naming_what_to_d
         outcome.findings
     );
     let error = HoldoutGate::default()
-        .deflated(&evidence)
+        .deflated(&strategy(), &evidence)
         .expect_err("no account, no statistic");
+    assert_eq!(error.code(), "denied");
+    Ok(())
+}
+
+/// A trial account is a fact about the strategy it was charged for, not a
+/// bearer instrument redeemable by trial count alone. Without this check, a
+/// strategy searched hard within a large family could attach an account
+/// charged to a barely-tried strategy in a small family — matching only on
+/// `this_run` — and deflate its Sharpe against a lifetime count that was
+/// never its own, laundering exactly the understated count blueprint rule 25
+/// exists to prevent.
+#[test]
+fn a_holdout_gate_refuses_a_trial_account_charged_to_a_different_strategy() -> Result<()> {
+    let holdout = strong_holdout()?;
+    let decoy = StrategyId::new("momentum-v3-decoy");
+    let decoy_family = StrategyFamily::new("decoy")?;
+    let mut book = opened_book()?;
+    book.open_family(&decoy_family, start())?;
+    book.enrol(&decoy, &decoy_family, start())?;
+    // The decoy's own family has nothing else charged against it, so its
+    // account carries a far smaller lifetime count than momentum's.
+    let borrowed = book.charge(&decoy, holdout.trials, start())?;
+    assert_eq!(borrowed.strategy(), &decoy, "premise: charged to the decoy");
+    assert_eq!(
+        borrowed.this_run(),
+        holdout.trials as u64,
+        "premise: same run size"
+    );
+
+    let evidence = StrategyEvidence::new()
+        .with_holdout(holdout)
+        .with_trial_account(borrowed);
+
+    let outcome = HoldoutGate::default().evaluate(&strategy(), &evidence, start());
+    assert!(
+        !outcome.passed,
+        "a borrowed account must not carry the gate: {:?}",
+        outcome.findings
+    );
+    let known = outcome
+        .findings
+        .iter()
+        .find(|(name, _, _)| name == "lifetime_trial_count_known")
+        .ok_or_else(|| Error::not_found("lifetime_trial_count_known"))?;
+    assert!(!known.1, "a mismatched strategy must fail this check");
+    assert!(
+        known
+            .2
+            .contains("cannot be attached to another strategy's evidence"),
+        "{}",
+        known.2
+    );
+
+    let error = HoldoutGate::default()
+        .deflated(&strategy(), &evidence)
+        .expect_err("a borrowed account must not produce a statistic");
     assert_eq!(error.code(), "denied");
     Ok(())
 }
@@ -1786,7 +1855,11 @@ fn every_sharpe_this_crate_reports_is_the_simulation_engines_sharpe() -> Result<
     let scaled = strong_scaled(pilot_start, now)?;
     let expected = periodic_sharpe(&scaled.pilot_returns)?;
     assert!(expected >= 0.5, "premise: the fixture clears the bar");
-    let outcome = ScaledGate::default().evaluate(&StrategyEvidence::new().with_scaled(scaled), now);
+    let outcome = ScaledGate::default().evaluate(
+        &strategy(),
+        &StrategyEvidence::new().with_scaled(scaled),
+        now,
+    );
     let detail = outcome
         .findings
         .iter()
@@ -1841,7 +1914,7 @@ fn a_holdout_admission_carries_the_band_its_validation_produced() -> Result<()> 
 
     // It is the band the gate itself produced from this evidence, and the
     // admission says so in a finding a reviewer can read.
-    let admission = HoldoutGate::default().admit(&charged(evidence.clone())?, start());
+    let admission = HoldoutGate::default().admit(&strategy(), &charged(evidence.clone())?, start());
     assert_eq!(admission.band, Some(band));
     let entry = ledger
         .history(&strategy())
@@ -2044,7 +2117,7 @@ fn judging_or_admitting_without_a_holdout_band_is_refused() -> Result<()> {
 
     // The same evidence admits with its band and is refused without it.
     let evidence = charged(StrategyEvidence::new().with_holdout(strong_holdout()?))?;
-    let admission = HoldoutGate::default().admit(&evidence, start());
+    let admission = HoldoutGate::default().admit(&strategy(), &evidence, start());
     assert!(
         admission.outcome.passed && admission.band.is_some(),
         "premise"
@@ -2073,8 +2146,11 @@ fn judging_or_admitting_without_a_holdout_band_is_refused() -> Result<()> {
     let band = *ledger
         .holdout_band(&strategy())
         .ok_or_else(|| Error::not_found("band"))?;
-    let paper =
-        PaperGate::default().evaluate(&StrategyEvidence::new().with_paper(strong_paper()), start());
+    let paper = PaperGate::default().evaluate(
+        &strategy(),
+        &StrategyEvidence::new().with_paper(strong_paper()),
+        start(),
+    );
     let promotion = AuthorisedPromotion::advance(GateStage::Holdout, None, start())?;
     let error = ledger
         .record_promotion(
