@@ -447,16 +447,51 @@ fn the_vendored_openobserve_image_is_pinned_and_now_deployed_through_the_vendore
             && sets(&root_variables, "default", "null"),
         "the root no longer declares vendored_openobserve_image_digest with a null default"
     );
+    // An environment may pin one, and if it does it must be the digest this
+    // repository reviewed. This used to assert that no environment pinned
+    // anything at all, which was true until dev did, and was a tripwire for
+    // exactly this moment rather than a rule. The rule it becomes is the
+    // stronger half: `vendored-images.txt` is the review surface — its git
+    // history is the answer to "which foreign code runs here" — so a digest
+    // in a tfvars that appears nowhere in that file is bytes nobody read,
+    // and Binary Authorization would refuse them at apply having already
+    // let them through review.
+    let vendored = read(VENDORED);
+    let reviewed: Vec<String> = vendored
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter(|line| line.split_whitespace().nth(1) == Some("vendor/openobserve"))
+        .filter_map(|line| line.split_whitespace().next())
+        .filter_map(|source| source.split_once("@").map(|(_, digest)| digest.to_string()))
+        .collect();
+
     for environment in ["dev", "test", "stage", "prod"] {
         let tfvars = read(&format!(
             "infrastructure/environments/{environment}/terraform.tfvars"
         ));
+        let Some(pinned) = tfvars
+            .lines()
+            .map(str::trim)
+            .find(|line| line.starts_with("vendored_openobserve_image_digest"))
+        else {
+            continue;
+        };
+        // The premise, asserted before the property: a review surface with no
+        // OpenObserve line would make every pin below unreviewable, and an
+        // empty `reviewed` would otherwise fail each one with a message about
+        // the wrong file.
         assert!(
-            !tfvars.lines().any(|line| line
-                .trim_start()
-                .starts_with("vendored_openobserve_image_digest")),
-            "{environment} pins an OpenObserve digest; no digest has been reviewed for this \
-             environment and this test does not know one that should be"
+            !reviewed.is_empty(),
+            "{VENDORED} carries no active vendor/openobserve line, so {environment}'s pinned \
+             digest cannot be checked against anything: {pinned}"
+        );
+        assert!(
+            reviewed
+                .iter()
+                .any(|digest| pinned.contains(digest.as_str())),
+            "{environment} pins an OpenObserve digest that {VENDORED} has not reviewed. The \
+             reviewed digests are {reviewed:?} and the pin is: {pinned}"
         );
     }
 }

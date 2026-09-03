@@ -50,6 +50,16 @@ trust_zones = {
     region      = "us-east4"
     subnet_cidr = "10.0.34.0/24"
   }
+  # Declared for OpenObserve (ADR 0028 decision 5), which is the only
+  # workload in this zone and reaches nothing: it receives OTLP from the
+  # API's drain and serves an operator who holds a binding. No entry in
+  # `permitted_paths`, `external_egress` or `public_ingress` names it, so
+  # the zone is default-deny in both directions like every other, and the
+  # zone existing is not the same as anything being able to reach it.
+  "management" = {
+    region      = "us-east4"
+    subnet_cidr = "10.0.35.0/24"
+  }
 }
 
 # No path between zones, no external egress, no public ingress. The API is
@@ -113,9 +123,14 @@ github_repository = "droderiquesit/quantum-ai-platform"
 # collector, setting this creates a whole new top-level Cloud Run service
 # (catalogue.tf's `module.openobserve`), not a sidecar on an existing one —
 # and that service also needs a `management` entry in `trust_zones` above,
-# which this environment does not declare today; the plan refuses the digest
-# without it, naming exactly that.
-# vendored_openobserve_image_digest = "sha256:<the mirrored OpenObserve digest>"
+# which this environment now declares.
+#
+# The digest is the one `vendored-images.txt` reviewed and vendor.yml run
+# 33789488338 mirrored into this environment's registry and attested, so
+# Binary Authorization admits it. Confirmed independently before it was set
+# here: `crane digest docker.io/openobserve/openobserve:v0.92.2` answers this
+# same sha256, so the tag had not moved under the reviewed line.
+vendored_openobserve_image_digest = "sha256:88fb692ac791d3eaff69653a4a4686f1c7eceb9e105491d58d29ac2739560b3b"
 
 # --- Customer identity ------------------------------------------------------
 # Identity Platform for customer sign-in, activated once real hostnames
