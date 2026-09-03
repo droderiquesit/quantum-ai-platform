@@ -247,8 +247,22 @@ impl SequenceTracker {
     }
 
     /// The highest contiguous position, or `None` before the first message.
+    ///
+    /// Falls back to `expected_start - 1` when nothing has been accepted yet:
+    /// `expecting()` establishes that floor without touching `contiguous`
+    /// itself (`contiguous` means "confirmed by an actual accept"), but a
+    /// caller resuming a fetch from this position — the reason `expecting()`
+    /// exists at all — needs the floor immediately, before the first message
+    /// has arrived. Without this, a resumed stream reported `None` until its
+    /// first increment, which callers reasonably read as "resume from
+    /// nothing" and re-requested from the beginning of the stream. `0` still
+    /// yields `None` here (`checked_sub` on the boundary), the same
+    /// unresolvable ambiguity `position()` already had for a stream that
+    /// numbers from zero — resolved internally via `expected_start`, but a
+    /// `u64` return has no way to say "at zero" apart from "unknown".
     pub fn position(&self) -> Option<u64> {
         self.contiguous
+            .or_else(|| self.expected_start.and_then(|start| start.checked_sub(1)))
     }
 
     /// Whether a hole is currently open.
