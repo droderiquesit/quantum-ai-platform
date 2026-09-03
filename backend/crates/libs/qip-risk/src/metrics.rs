@@ -328,6 +328,26 @@ impl RiskMetrics {
     }
 }
 
+/// Annualised volatility of a return series, standard deviation scaled by the
+/// square root of time.
+///
+/// The same construction [`RiskMetrics::compute`] uses for
+/// `annualised_volatility`, pulled out so [`crate::limits::RiskState::with_tail_risk`]
+/// can fill [`crate::limits::LimitKind::MaxVolatility`]'s input from the same
+/// return series it already carries for value at risk and expected shortfall,
+/// rather than leaving the field at whatever a caller happened to set — which,
+/// until this existed, was never, so the shipped volatility limit took the
+/// same always-empty path the tail limits once did.
+///
+/// A series shorter than two returns nothing meaningful to annualise, so this
+/// returns zero rather than a standard deviation of one sample.
+pub fn annualised_volatility(returns: &[f64]) -> f64 {
+    if returns.len() < 2 {
+        return 0.0;
+    }
+    stats::stddev(returns) * TRADING_DAYS.sqrt()
+}
+
 /// Beta of a return series against a benchmark.
 pub fn beta(returns: &[f64], benchmark: &[f64]) -> f64 {
     let variance = stats::variance(benchmark);

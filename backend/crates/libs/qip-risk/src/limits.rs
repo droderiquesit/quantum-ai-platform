@@ -266,19 +266,29 @@ impl RiskState {
     /// every book, so every deployment believed it held two controls it did
     /// not have. A control that cannot fire reads as protection and is not.
     ///
-    /// The keys are derived from each configured limit's own confidence,
-    /// formatted exactly as the limit formats it when it reads. Computing a
-    /// fixed set of confidences here instead would put the key on one side
-    /// of a rounding boundary and the lookup on the other — `{:.2}` of 0.975
-    /// is `0.97`, and the default expected-shortfall limit uses 0.975 — and
-    /// the limit would go on silently never evaluating.
+    /// [`LimitKind::MaxVolatility`] read the same way: no key, just
+    /// `RiskState::volatility` itself, which no production caller ever set —
+    /// `RiskState::from_figures` does not touch it and `PreTradeChecker::project`
+    /// deliberately leaves it alone, so the shipped volatility limit was the
+    /// same defect under a different name, just without a map to expose it.
+    /// It is filled here because this is the one place a return series and the
+    /// limit set that needs it are already both in hand.
+    ///
+    /// The value-at-risk and expected-shortfall keys are derived from each
+    /// configured limit's own confidence, formatted exactly as the limit
+    /// formats it when it reads. Computing a fixed set of confidences here
+    /// instead would put the key on one side of a rounding boundary and the
+    /// lookup on the other — `{:.2}` of 0.975 is `0.97`, and the default
+    /// expected-shortfall limit uses 0.975 — and the limit would go on
+    /// silently never evaluating.
     ///
     /// `returns` are period returns of the whole book, already in `f64`:
     /// this is the crossing point from the book's [`Decimal`] equity to a
     /// statistic, and the caller makes it by dividing consecutive equity
-    /// samples. A series shorter than two leaves the maps empty rather than
-    /// recording zero, because a zero that nobody computed would pass the
-    /// limit and look like evidence the book has no tail.
+    /// samples. A series shorter than two leaves the maps empty and the
+    /// volatility field untouched rather than recording zero, because a zero
+    /// nobody computed would pass every one of these limits and look like
+    /// evidence the book has no risk at all.
     pub fn with_tail_risk(mut self, limits: &LimitSet, returns: &[f64]) -> Self {
         if returns.len() < 2 {
             return self;
@@ -296,6 +306,9 @@ impl RiskState {
                         format!("{confidence:.2}"),
                         crate::metrics::expected_shortfall(returns, confidence),
                     );
+                }
+                LimitKind::MaxVolatility { .. } => {
+                    self.volatility = crate::metrics::annualised_volatility(returns);
                 }
                 _ => {}
             }
