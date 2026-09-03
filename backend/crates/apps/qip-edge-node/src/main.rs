@@ -73,6 +73,22 @@ use std::sync::Arc;
 /// deployed wrong" from "this node broke", and stop restarting the first.
 const EX_CONFIG: i32 = 78;
 
+/// How long one health request may take to arrive, and its answer to be
+/// written, before the node gives up on it.
+///
+/// `qip-fastbrain` and `qip-deepbrain` bound their health sockets because a
+/// held thread makes every later probe time out, which reads as a dead node.
+/// Here the consequence is larger and specific to this binary: [`serve`] polls
+/// the halt flag, flushes the journal, exchanges with the central plane and
+/// runs `Cell::work` on the **same** thread that accepts and reads a
+/// connection. An unbounded read is therefore not a slow probe — it is a cell
+/// that has stopped deciding, stopped halting and stopped shipping its record
+/// for exactly as long as any client holds a socket open without sending, and
+/// a cell that decides alone (ADR 0008) has nobody to notice on its behalf.
+/// Two seconds is far longer than a loopback probe or the Ops Agent's scrape
+/// needs, and far shorter than either one's own timeout.
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 fn main() {
     match run() {
         Ok(()) => {}
@@ -696,6 +712,10 @@ fn answer(
     started: qip_core::Timestamp,
     metrics: &Metrics,
 ) -> Result<()> {
+    // Bounded before a byte is read, because this is the thread the cell
+    // decides on. See [`REQUEST_TIMEOUT`].
+    bound(&stream, REQUEST_TIMEOUT)?;
+
     let mut buffer = [0u8; 1024];
     // The read has to happen or the client sees a reset instead of a response.
     // It is also the only thing that distinguishes a scrape from a probe: this
@@ -788,6 +808,18 @@ fn answer(
     write_response(stream, content_type, &payload)
 }
 
+/// Put a deadline on both halves of one health exchange.
+///
+/// Separated from [`answer`] so a test can drive the exact call the binary
+/// makes with a timeout it does not have to wait out, rather than a copy of
+/// two lines kept in a test file where it could drift from what ships.
+fn bound(stream: &TcpStream, timeout: std::time::Duration) -> Result<()> {
+    stream
+        .set_read_timeout(Some(timeout))
+        .and_then(|()| stream.set_write_timeout(Some(timeout)))
+        .map_err(|error| Error::io(format!("cannot bound the health request: {error}")))
+}
+
 fn write_response(mut stream: TcpStream, content_type: &str, body: &str) -> Result<()> {
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -799,4 +831,60 @@ fn write_response(mut stream: TcpStream, content_type: &str, body: &str) -> Resu
     stream
         .flush()
         .map_err(|error| Error::io(format!("cannot flush the health response: {error}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    /// The failure this prevents: a client that connects to the health port
+    /// and never sends a byte holding the one thread this node polls its halt
+    /// flag, ships its journal, talks to the centre and runs `Cell::work` on.
+    /// Not hypothetical — every accepted socket in this binary was unbounded
+    /// until this test, while `qip-fastbrain` and `qip-deepbrain` had bounded
+    /// theirs for a smaller consequence.
+    ///
+    /// The read runs on its own thread and reports through a channel so that a
+    /// regression fails on a deadline instead of hanging the test binary: an
+    /// unbounded read never returns, and a test that never returns reports
+    /// nothing at all.
+    #[test]
+    fn a_client_that_sends_nothing_does_not_hold_the_thread_the_cell_decides_on() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
+        let address = listener.local_addr().expect("the listener has an address");
+
+        // Held open for the whole test, sending nothing. Dropping it would
+        // close the connection and the read would return zero bytes on end of
+        // file, which is a different event from the one under test.
+        let _silent_client = TcpStream::connect(address).expect("connect to the listener");
+
+        let (sender, receiver) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("the client connected");
+            bound(&stream, std::time::Duration::from_millis(50)).expect("the socket can be bound");
+            let mut buffer = [0u8; 16];
+            let outcome = (&stream).read(&mut buffer).map_err(|error| error.kind());
+            let _ = sender.send(outcome);
+        });
+
+        let outcome = receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect(
+                "the read from a silent client never returned: the health socket is unbounded and \
+                 this is the thread the cell decides on",
+            );
+        // Asserting the premise as well as the property: an `Ok` here would
+        // mean the client sent something after all, and the test would have
+        // proved nothing about a timeout.
+        let kind = outcome.expect_err("a client that sent nothing produced readable bytes");
+        assert!(
+            matches!(
+                kind,
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ),
+            "the read failed for a reason that is not the deadline: {kind:?}"
+        );
+        reader.join().expect("the reading thread finished");
+    }
 }
