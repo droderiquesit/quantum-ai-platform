@@ -8,6 +8,7 @@
 
 use qip_core::{Duration, Timestamp};
 use qip_events::Topic;
+use qip_financial::quality::DataQuality;
 use qip_market_ingestion::adapter::SensedRecord;
 use serde::{Deserialize, Serialize};
 
@@ -161,6 +162,31 @@ impl DataContract {
             }
         }
 
+        // The bug this prevents: `minimum_quality` was carried on every
+        // standard contract and documented as "minimum acceptable
+        // data-quality score", but nothing ever read it back against the
+        // record's own `DataQuality` — a limit that cannot fire reads as
+        // protection and is not (the same defect the risk domain names for
+        // `MaxExpectedShortfall`). A record whose completeness or confidence
+        // had collapsed to near zero still passed every contract as long as
+        // its numeric fields happened to sit inside range, because quality
+        // was never compared to the floor the contract itself declared.
+        if self.minimum_quality > 0.0
+            && let Some(quality) = record_quality(record)
+            && !quality.meets(self.minimum_quality)
+        {
+            violations.push(ContractViolation {
+                contract: self.name.clone(),
+                topic: self.topic.name().to_string(),
+                subject: record.subject(),
+                detail: format!(
+                    "data-quality score {:.3} is below the minimum {:.3}",
+                    quality.score(),
+                    self.minimum_quality
+                ),
+            });
+        }
+
         if violations.is_empty() {
             RuleOutcome::Passed
         } else {
@@ -295,6 +321,28 @@ fn extract_fields(record: &SensedRecord) -> Vec<(String, f64)> {
         ],
         SensedRecord::AlternativeData(a) => vec![("value".to_string(), a.value)],
         _ => Vec::new(),
+    }
+}
+
+/// The data-quality assessment attached to a record, when its kind carries
+/// one. Reference-quality kinds (a corporate action, an order-book snapshot,
+/// reference data) carry no `DataQuality` today, so a contract with a
+/// `minimum_quality` on one of those topics has nothing to compare against
+/// and is silently a no-op on that dimension — the numeric-field and
+/// staleness rules still apply.
+fn record_quality(record: &SensedRecord) -> Option<&DataQuality> {
+    match record {
+        SensedRecord::Quote(q) => Some(&q.quality),
+        SensedRecord::Trade(t) => Some(&t.quality),
+        SensedRecord::Tick(t) => Some(&t.quality),
+        SensedRecord::Bar(b) => Some(&b.quality),
+        SensedRecord::News(n) => Some(&n.quality),
+        SensedRecord::Fundamental(f) => Some(&f.quality),
+        SensedRecord::Macro(m) => Some(&m.quality),
+        SensedRecord::AlternativeData(a) => Some(&a.quality),
+        SensedRecord::Book(_)
+        | SensedRecord::CorporateAction(_)
+        | SensedRecord::ReferenceData(_) => None,
     }
 }
 
