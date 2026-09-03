@@ -332,6 +332,29 @@ fn a_split_adjusts_lots_without_changing_value() {
     assert_eq!(position.unrealised_pnl(dec!("100")), Decimal::ZERO);
 }
 
+#[test]
+fn a_zero_quantity_fee_only_fill_still_moves_the_positions_own_total_costs() {
+    // A fee-only event (or a requested quantity that rounds to zero at the
+    // decimal's fixed scale) takes the early-return branch in
+    // `Position::apply_fill`. Cash always moved by `-costs` through the
+    // return value; `total_costs` must move with it, or the position's own
+    // record of what it paid drifts from what the caller actually paid on
+    // its behalf.
+    let mut position = Position::new(ObjectId::from_string("obj"), "AAPL", now());
+    let cash_flow = position.apply_fill(Decimal::ZERO, dec!("50"), dec!("3"), now(), None);
+    assert_eq!(cash_flow, dec!("-3"), "cash still moves by the fee");
+    assert_eq!(
+        position.total_costs,
+        dec!("3"),
+        "the position's own cost ledger must record the fee it was charged"
+    );
+    assert!(position.lots.is_empty(), "no lot was opened");
+    assert!(
+        position.opened_at.is_none(),
+        "a fee alone does not open a position"
+    );
+}
+
 // --- the portfolio ----------------------------------------------------------
 
 #[test]
