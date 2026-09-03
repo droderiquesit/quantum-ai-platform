@@ -473,6 +473,23 @@ fn fit_tree_student(
     if max_depth == 0 {
         return Err(Error::invalid("a distilled tree needs at least one level"));
     }
+    // Zero is not "no minimum" and refusing it is the point: a caller that
+    // passed zero either meant one and should say so, or built the value from
+    // something upstream that computed zero by mistake — clamping either case
+    // to a working default would distil a student from a configuration
+    // nobody asked for.
+    if min_samples_leaf == 0 {
+        return Err(Error::invalid(
+            "a minimum leaf size of zero admits a split that isolates a single row into its own \
+             leaf; every split this crate fits requires at least one observation on each side",
+        ));
+    }
+    if candidate_splits == 0 {
+        return Err(Error::invalid(
+            "a tree with zero candidate splits considers no threshold at all, so it can never \
+             split; that is a caller error, not a configuration to fall back from",
+        ));
+    }
     let indices: Vec<usize> = (0..data.len()).collect();
     let mut nodes = Vec::new();
     grow(
@@ -480,8 +497,8 @@ fn fit_tree_student(
         &indices,
         0,
         max_depth,
-        min_samples_leaf.max(1),
-        candidate_splits.max(2),
+        min_samples_leaf,
+        candidate_splits,
         &mut nodes,
     );
     DistilledModel::tree(name, data.arity(), nodes)

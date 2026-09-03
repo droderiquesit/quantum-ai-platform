@@ -665,7 +665,22 @@ fn fit_boosted(
             "a learning rate of {learning_rate} is outside (0, 1]"
         )));
     }
-    let min_samples_leaf = min_samples_leaf.max(1);
+    // Zero is not "no minimum" and refusing it is the point: a caller that
+    // passed zero either meant one and should say so, or built the value from
+    // something upstream that computed zero by mistake — clamping either case
+    // to one would fit a model on a configuration nobody asked for.
+    if min_samples_leaf == 0 {
+        return Err(Error::invalid(
+            "a minimum leaf size of zero admits a split that isolates a single row into its own \
+             leaf; every split this crate fits requires at least one observation on each side",
+        ));
+    }
+    if candidate_splits == 0 {
+        return Err(Error::invalid(
+            "a round with zero candidate splits considers no threshold at all, so it can never \
+             split; that is a caller error, not a configuration to fall back from",
+        ));
+    }
     if data.len() < 2 * min_samples_leaf {
         return Err(Error::invalid(format!(
             "{} observation(s) cannot be split with {min_samples_leaf} either side",
@@ -678,8 +693,7 @@ fn fit_boosted(
     let mut stumps = Vec::with_capacity(rounds);
 
     for _ in 0..rounds {
-        let Some(stump) = best_stump(data, &residuals, min_samples_leaf, candidate_splits.max(2))
-        else {
+        let Some(stump) = best_stump(data, &residuals, min_samples_leaf, candidate_splits) else {
             // No split removes any residual variance. Adding rounds past this
             // point adds cost and no fit.
             break;
