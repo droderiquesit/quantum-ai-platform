@@ -236,7 +236,14 @@ fn is_secret_key(key: &str) -> bool {
 
 fn redact_object(obj: &mut Map<String, Value>) {
     for (k, v) in obj.iter_mut() {
-        if is_secret_key(k) && !v.is_object() {
+        if is_secret_key(k) {
+            // The whole subtree is masked, not just a scalar leaf. A key
+            // named `api_key` whose value happens to be an object — say
+            // `{"live": "...", "test": "..."}` — used to fall through to the
+            // plain recursion below, which only masks a *nested* key that
+            // independently looks secret; `live` and `test` do not, so both
+            // credentials were serialized in full into `/system/config`.
+            // Once the key name says secret, nothing under it survives.
             *v = Value::String("***".into());
         } else if let Value::Object(inner) = v {
             redact_object(inner);
