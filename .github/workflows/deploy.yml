@@ -691,4 +691,24 @@ jobs:
 
           Written by .github/workflows/deploy.yml after each Cloud Run service was
           moved to the attested digest for ${DEPLOY_SHA} and proven serving it."
-          git push origin "HEAD:refs/heads/${GITHUB_REF_NAME}"
+
+          # `origin/${GITHUB_REF_NAME}` moves whenever anything else lands on
+          # this branch while a deploy is mid-run — this repo pushes crate
+          # fixes to it continuously, and a deploy takes minutes. The first
+          # `git push` failing with a non-fast-forward rejection is that race,
+          # not a real conflict: this commit only ever touches one generated
+          # file (images.tfvars) and its own predecessor's content, so
+          # rebasing onto whatever landed in the meantime is always safe.
+          # Retry a bounded number of times rather than once, since a branch
+          # under continuous push traffic can move again between the rebase
+          # and the retry.
+          for attempt in 1 2 3 4 5; do
+            if git push origin "HEAD:refs/heads/${GITHUB_REF_NAME}"; then
+              exit 0
+            fi
+            echo "push rejected (attempt ${attempt}/5); rebasing onto origin/${GITHUB_REF_NAME} and retrying"
+            git fetch origin "${GITHUB_REF_NAME}"
+            git rebase "origin/${GITHUB_REF_NAME}"
+          done
+          echo "::error::commit the deployed digests: push kept losing the race after 5 attempts"
+          exit 1
