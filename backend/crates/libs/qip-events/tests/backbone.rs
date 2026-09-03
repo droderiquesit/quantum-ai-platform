@@ -1546,3 +1546,95 @@ fn evicting_the_last_retained_record_restarts_neither_sequence_nor_chain() {
         qip_events::log::GENESIS_HASH
     );
 }
+
+#[test]
+fn a_reused_event_id_is_refused_rather_than_silently_shadowing_the_earlier_record() {
+    // by_event_id is a plain map keyed on event id. Before this test's
+    // subject existed, a second append reusing an id already in the log
+    // would overwrite that map entry with no error: EventLog::get would then
+    // return the *second* record's content for a lookup naming the id of the
+    // first, even though the first record was still sitting in the hash
+    // chain, unreachable by identity. That is the same shape of gap as a
+    // chain-position hash reused for different contents and silently
+    // treated as a duplicate — just one layer up, in the lookup index rather
+    // than the chain itself.
+    let (ctx, now) = context();
+    let mut log = EventLog::in_memory();
+    let shared_id = ctx.ids().generate(now);
+
+    let first = Envelope::new(
+        shared_id.clone(),
+        now,
+        now,
+        root_lineage("feed"),
+        tick("T1"),
+    )
+    .erase()
+    .unwrap();
+    log.append(&first).unwrap();
+
+    // Premise: the first record is indexed and reachable by its own id
+    // before the second append happens at all.
+    assert_eq!(log.len(), 1);
+    assert_eq!(
+        log.get(&shared_id).map(|e| e.payload["symbol"].clone()),
+        Some(serde_json::json!("T1"))
+    );
+
+    let second = Envelope::new(
+        shared_id.clone(),
+        now,
+        now,
+        root_lineage("feed"),
+        tick("T2"),
+    )
+    .erase()
+    .unwrap();
+    let result = log.append(&second);
+
+    assert!(
+        result.is_err(),
+        "reusing an id already in the log must be refused, not silently indexed over"
+    );
+    assert_eq!(log.len(), 1, "the refused append must write nothing");
+    assert_eq!(
+        log.get(&shared_id).map(|e| e.payload["symbol"].clone()),
+        Some(serde_json::json!("T1")),
+        "the first record's content must still be the one this id resolves to"
+    );
+}
+
+#[test]
+fn a_file_with_a_reused_event_id_fails_to_load_rather_than_shadowing_the_earlier_record() {
+    // The live-append refusal only helps if the same check runs when a log
+    // is reconstructed from disk — otherwise a hand-edited or corrupted file
+    // that duplicated an id would load cleanly with the index silently
+    // pointing at the later record only.
+    let dir = std::env::temp_dir().join(format!("qip-dup-event-id-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("events.jsonl");
+
+    let (ctx, now) = context();
+    {
+        let mut log = EventLog::open(&path).unwrap();
+        log.append(&erased(&ctx, now, tick("T1"))).unwrap();
+        assert!(log.verify_chain().is_ok());
+    }
+
+    // Duplicate the one stored line, changing only its payload and leaving
+    // its own hashes internally consistent — the corruption under test is
+    // the reused event id, not a broken chain link.
+    let text = std::fs::read_to_string(&path).unwrap();
+    let mut record: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+    record["event"]["payload"]["symbol"] = serde_json::json!("T2");
+    let duplicate_line = serde_json::to_string(&record).unwrap();
+    std::fs::write(&path, format!("{}\n{duplicate_line}\n", text.trim())).unwrap();
+
+    let reopened = EventLog::open(&path);
+    assert!(
+        reopened.is_err(),
+        "a file that reuses an event id across two records must fail to load"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
