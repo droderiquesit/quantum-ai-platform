@@ -829,3 +829,150 @@ fn a_series_too_short_to_measure_leaves_the_maps_empty_rather_than_recording_zer
     assert!(bare.expected_shortfall.is_empty());
     assert!(bare.value_at_risk.is_empty());
 }
+
+// --- liquidity horizons ------------------------------------------------------
+//
+// `LimitKind::MinLiquidity` reads `liquidatable_within`, keyed by horizon,
+// exactly the way `MaxExpectedShortfall` read `expected_shortfall` before
+// `RiskState::with_tail_risk` existed — and nothing filled it.
+// `LimitSet::conservative_default` has shipped a `liquidity` limit since
+// before `with_liquidity_horizons` existed. These fixtures pin the
+// derivation that fills the map from `days_to_liquidate` and
+// `position_notionals`, keyed the way the limit reads them.
+
+/// The shared fixture with its liquidity map emptied, so a figure found
+/// under a key can only have been put there by the derivation under test.
+fn state_with_no_liquidity_figures() -> RiskState {
+    let mut state = state();
+    state.liquidatable_within.clear();
+    state
+}
+
+#[test]
+fn a_book_whose_liquidity_falls_below_the_default_floor_is_refused_once_marked() {
+    let limits = LimitSet::conservative_default();
+    // AAPL (80k) exits in a day; MSFT (60k) has no declared exit time at
+    // all, which must count against the floor rather than drop out of it.
+    let mut state = state_with_no_liquidity_figures();
+    state.days_to_liquidate = BTreeMap::from([("AAPL".to_string(), 1.0)]);
+    let state = state.with_liquidity_horizons(&limits);
+
+    // Premise: the figure exists under the key the default limit reads. If
+    // the map is empty the breach assertion below measures nothing.
+    let fraction = state
+        .liquidatable_within
+        .get("5")
+        .copied()
+        .unwrap_or_else(|| {
+            panic!(
+                "no liquidatable fraction under the default limit's key; the map holds {:?}",
+                state.liquidatable_within.keys().collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        (fraction - (80_000.0 / 140_000.0)).abs() < 1e-9,
+        "80k of 140k is liquid inside 5 days, MSFT has no declared exit time: got {fraction}"
+    );
+    assert!(
+        fraction < 0.80,
+        "premise: the fraction sits below the default 80% floor, got {fraction}"
+    );
+
+    let check = limits.check(&state);
+    let breach = check
+        .blocking()
+        .into_iter()
+        .find(|b| b.limit_kind == "min_liquidity")
+        .unwrap_or_else(|| panic!("liquidity did not bind: {}", check.reason()));
+    assert!(breach.observed < breach.bound, "a floor binds from below");
+    assert!(check.is_blocked());
+}
+
+#[test]
+fn a_book_whose_liquidity_sits_above_the_default_floor_passes() {
+    let limits = LimitSet::conservative_default();
+    // Both names exit well inside the 5-day horizon the default limit uses.
+    let mut state = state_with_no_liquidity_figures();
+    state.days_to_liquidate =
+        BTreeMap::from([("AAPL".to_string(), 1.0), ("MSFT".to_string(), 2.0)]);
+    let state = state.with_liquidity_horizons(&limits);
+
+    // Premise: computed, not skipped.
+    assert!(
+        state.liquidatable_within.contains_key("5"),
+        "nothing was computed, so nothing can be said about passing"
+    );
+    let check = limits.check(&state);
+    assert!(
+        !check
+            .breaches
+            .iter()
+            .any(|b| b.limit_kind == "min_liquidity"),
+        "a fully liquid book breached the liquidity floor: {}",
+        check.reason()
+    );
+}
+
+#[test]
+fn an_instrument_with_no_declared_exit_time_counts_against_the_floor_not_outside_it() {
+    let limits = LimitSet::new("fixture").with(Limit::new(
+        "liquidity",
+        LimitKind::MinLiquidity {
+            days: 5.0,
+            fraction: 0.80,
+        },
+    ));
+    // AAPL and MSFT are equal-sized (80k, 60k in the shared fixture is
+    // uneven, so use a state where the split is exact): two 50k positions,
+    // one with a declared exit time inside the horizon and one without.
+    let mut state = state_with_no_liquidity_figures();
+    state.position_notionals = BTreeMap::from([
+        ("AAPL".to_string(), Decimal::from_int(50_000)),
+        ("MSFT".to_string(), Decimal::from_int(50_000)),
+    ]);
+    state.days_to_liquidate = BTreeMap::from([("AAPL".to_string(), 1.0)]);
+    let state = state.with_liquidity_horizons(&limits);
+
+    let fraction = state.liquidatable_within["5"];
+    // Had the undeclared name been dropped from both sides instead of
+    // counted illiquid, this would read 1.0 — fully liquid on half the
+    // information. Fail-closed keeps it at one half.
+    assert!(
+        (fraction - 0.5).abs() < 1e-9,
+        "an unmeasured exit time was not counted against the floor: {fraction}"
+    );
+}
+
+#[test]
+fn an_empty_book_leaves_the_liquidity_map_untouched() {
+    let limits = LimitSet::conservative_default();
+    let mut state = state_with_no_liquidity_figures();
+    state.position_notionals = BTreeMap::new();
+    let state = state.with_liquidity_horizons(&limits);
+    assert!(
+        state.liquidatable_within.is_empty(),
+        "a book with no positions recorded a liquidity fraction nobody measured"
+    );
+}
+
+#[test]
+fn a_book_nobody_has_ever_marked_leaves_the_liquidity_map_untouched_rather_than_all_illiquid() {
+    // Held positions, but `days_to_liquidate` is empty: nobody has run a
+    // liquidity model over this book yet. That must read as "not measured",
+    // not as "everything is illiquid" — the latter would breach the default
+    // floor on every unmarked book in the platform, which is a much louder
+    // and much wronger failure than the one this derivation exists to fix.
+    let limits = LimitSet::conservative_default();
+    let mut state = state_with_no_liquidity_figures();
+    state.days_to_liquidate = BTreeMap::new();
+    assert!(
+        !state.position_notionals.is_empty(),
+        "premise: the book holds positions, so a wrongly-fired floor has something to bind on"
+    );
+    let state = state.with_liquidity_horizons(&limits);
+    assert!(
+        state.liquidatable_within.is_empty(),
+        "an unmarked book recorded a liquidity fraction nobody measured: {:?}",
+        state.liquidatable_within
+    );
+}

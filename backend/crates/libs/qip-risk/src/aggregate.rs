@@ -54,6 +54,16 @@ pub trait AggregateFigures {
     fn strategies(&self) -> Vec<&str>;
     /// Gross notional one strategy has contributed.
     fn strategy_gross(&self, strategy: &str) -> Decimal;
+
+    /// Per-instrument days to liquidate, as the caller's liquidity model has
+    /// marked it — see [`RiskAggregates::mark_liquidity`]. Defaulted to
+    /// empty rather than required, so an implementor written before this
+    /// method existed still compiles; an aggregate that has never been
+    /// marked has no opinion on how fast a position could be exited, and
+    /// reporting one anyway would be a guess wearing a measurement's name.
+    fn days_to_liquidate(&self) -> BTreeMap<String, f64> {
+        BTreeMap::new()
+    }
 }
 
 /// The running counters, updated per fill.
@@ -77,6 +87,11 @@ pub struct RiskAggregates {
     strategy_positions: BTreeMap<String, BTreeMap<String, Decimal>>,
     /// Gross per strategy.
     strategy_gross: BTreeMap<String, Decimal>,
+    /// Per-instrument days to liquidate, as marked by [`Self::mark_liquidity`].
+    /// Empty until marked, exactly as `cash` starts at what the caller opened
+    /// with rather than a computed figure — this crate has no average daily
+    /// volume or market depth to derive it from.
+    liquidity_horizon: BTreeMap<String, f64>,
     /// Fills applied, so a snapshot says how much history it summarises.
     fills: u64,
 }
@@ -104,6 +119,7 @@ impl RiskAggregates {
             axis_exposures: BTreeMap::new(),
             strategy_positions: BTreeMap::new(),
             strategy_gross: BTreeMap::new(),
+            liquidity_horizon: BTreeMap::new(),
             fills: 0,
         })
     }
@@ -143,6 +159,30 @@ impl RiskAggregates {
     /// mark that refused it would hide the breach.
     pub fn mark_cash(&mut self, cash: Decimal) {
         self.cash = cash;
+    }
+
+    /// Record the book's per-instrument days to liquidate, as the caller's
+    /// liquidity model computes it.
+    ///
+    /// Like [`Self::mark_cash`], this is the caller's figure and not one
+    /// derived from fills: how fast a position can be unwound depends on
+    /// average daily volume and market depth, neither of which a fill
+    /// carries. A negative or non-finite day count is refused rather than
+    /// floored — it cannot mean anything, and floors bury the caller's bug
+    /// instead of surfacing it. Replaces the whole map: a caller re-marks on
+    /// its own cadence and a stale entry for a position that has since
+    /// closed should not linger and be read as still open.
+    pub fn mark_liquidity(&mut self, days_to_liquidate: BTreeMap<String, f64>) -> Result<()> {
+        for (instrument, days) in &days_to_liquidate {
+            if !days.is_finite() || *days < 0.0 {
+                return Err(Error::invalid(format!(
+                    "days to liquidate {instrument} must be a non-negative, finite number, not \
+                     {days}"
+                )));
+            }
+        }
+        self.liquidity_horizon = days_to_liquidate;
+        Ok(())
     }
 
     /// Apply one fill: a constant number of counter updates.
@@ -294,14 +334,20 @@ impl AggregateFigures for RiskAggregates {
             .copied()
             .unwrap_or(Decimal::ZERO)
     }
+
+    fn days_to_liquidate(&self) -> BTreeMap<String, f64> {
+        self.liquidity_horizon.clone()
+    }
 }
 
 impl RiskState {
     /// The state the aggregate checks evaluate, from the book-level figures.
     ///
-    /// Reads exactly seven figures and neither strategy-level accessor. The
-    /// tail maps are left for [`RiskState::with_tail_risk`], which needs the
-    /// return series the aggregate does not hold.
+    /// Reads exactly eight figures and neither strategy-level accessor. The
+    /// tail maps are left for [`RiskState::with_tail_risk`] and the liquidity
+    /// map for [`RiskState::with_liquidity_horizons`], which need the return
+    /// series and the configured horizons respectively — neither of which
+    /// the aggregate holds.
     pub fn from_figures(figures: &impl AggregateFigures) -> Self {
         Self {
             equity: figures.equity(),
@@ -315,6 +361,7 @@ impl RiskState {
                 .collect(),
             axis_exposures: figures.axis_exposures().clone(),
             drawdown: figures.drawdown(),
+            days_to_liquidate: figures.days_to_liquidate(),
             ..Self::default()
         }
     }
@@ -325,9 +372,15 @@ impl LimitSet {
     ///
     /// `returns` is the book's return series, so the tail limits are filled
     /// in the same call and cannot be forgotten by a caller that builds the
-    /// state by hand. Consults a fixed set of book-level figures regardless
-    /// of how many strategies contributed; `tests/aggregate.rs` counts them.
+    /// state by hand, and the liquidity floor is filled from whatever the
+    /// aggregate has been marked with via [`RiskAggregates::mark_liquidity`].
+    /// Consults a fixed set of book-level figures regardless of how many
+    /// strategies contributed; `tests/aggregate.rs` counts them.
     pub fn check_aggregates(&self, figures: &impl AggregateFigures, returns: &[f64]) -> LimitCheck {
-        self.check(&RiskState::from_figures(figures).with_tail_risk(self, returns))
+        self.check(
+            &RiskState::from_figures(figures)
+                .with_tail_risk(self, returns)
+                .with_liquidity_horizons(self),
+        )
     }
 }
