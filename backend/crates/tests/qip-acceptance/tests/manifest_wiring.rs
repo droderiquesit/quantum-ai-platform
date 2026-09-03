@@ -801,6 +801,26 @@ const THE_MESH_HAS_NO_PORT_ON_CLOUD_RUN: &str = "The in-tree mesh binds one \
      path on this runtime is that work, recorded in ADR 0024, not a port that \
      cannot be published. The entry ends when the fabric exists.";
 
+/// The OpenObserve drain (ADR 0028), which nothing has vendored or applied
+/// yet.
+const NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET: &str = "ADR 0028 adopts \
+     OpenObserve as the platform's metrics, logs and traces backend, but only \
+     names the shape: `source = \"vendored\"` on `modules/cloudrun` does not \
+     exist in any `.tf` yet, no digest is pinned in \
+     `infrastructure/egress/vendored-images.txt`, and ADR 0028 §5 keeps \
+     ingress internal-only for this first pass with no load balancer, backend \
+     service or URL map in the tree. A catalogue value here would point \
+     `qip-api`'s drain thread at a URL nothing serves, and \
+     `OpenObserveConfig::parse` would build a client that dials it every \
+     interval for no reason a revision's health check would ever surface — \
+     the drain fails closed (principle 10) rather than stopping the process, \
+     so a wrong or absent target reads as quiet rather than as a boot \
+     refusal, which is exactly why the value must not be set until there is a \
+     real collector to point it at. The entry ends when the vendored image is \
+     pinned and attested and the catalogue gains the input to carry it, which \
+     is infrastructure work with its own evidence requirement, not a value \
+     added here as a side effect.";
+
 const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     (
         "qip-api",
@@ -811,6 +831,26 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
         "qip-api",
         "QIP_ARBITRAGE_POLICY_PATH",
         THE_MESH_HAS_NO_PORT_ON_CLOUD_RUN,
+    ),
+    (
+        "qip-api",
+        "QIP_OPENOBSERVE_URL",
+        NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET,
+    ),
+    (
+        "qip-api",
+        "QIP_OPENOBSERVE_ORG",
+        NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET,
+    ),
+    (
+        "qip-api",
+        "QIP_OPENOBSERVE_INTERVAL_SECS",
+        NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET,
+    ),
+    (
+        "qip-api",
+        "QIP_OPENOBSERVE_AUTHORIZATION",
+        NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET,
     ),
     ("qip-api", "QIP_MESH_INBOX_CAPACITY", A_BOUND_NOT_A_DIAL),
     ("qip-api", "QIP_MESH_SPOOL_CAPACITY", A_BOUND_NOT_A_DIAL),

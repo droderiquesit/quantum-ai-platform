@@ -211,6 +211,98 @@ impl Snapshot {
         }
     }
 
+    /// OTLP/JSON `ResourceMetrics`, for the OpenObserve drain thread (ADR
+    /// 0028) to POST to `/api/{org}/v1/metrics`.
+    ///
+    /// A sibling of [`Self::to_prometheus`], not a replacement — ADR 0028
+    /// keeps the Prometheus exposition this platform already scrapes and adds
+    /// this encoding beside it, because nothing says a metric may only be
+    /// represented one way. Pure JSON construction: no socket, no clock read,
+    /// matching this crate's rule that it performs no I/O. `now_unix_nanos`
+    /// is the one fact a `Snapshot` cannot supply on its own — it carries no
+    /// clock — so the composition root passes it in from the
+    /// `qip_core::Clock` it already holds.
+    ///
+    /// Follows OTLP's protobuf-JSON mapping (ADR 0026's Option (b) names this
+    /// quirk explicitly): 64-bit integer fields — `asInt`, `count`,
+    /// `bucketCounts`, `startTimeUnixNano`, `timeUnixNano` — are JSON
+    /// *strings*, because proto3's JSON mapping represents `int64`/`fixed64`
+    /// as strings to avoid the precision a JSON number loses above 2^53.
+    /// Doubles (`asDouble`, `sum`, `explicitBounds`) stay JSON numbers, and a
+    /// histogram's bucket counts are the per-bucket counts `Histogram`
+    /// already stores — not the cumulative counts `to_prometheus` renders —
+    /// because OTLP's `bucketCounts` is defined as per-bucket, unlike
+    /// Prometheus's `_bucket` lines.
+    pub fn to_otlp_metrics(&self, now_unix_nanos: i64) -> serde_json::Value {
+        let now = now_unix_nanos.to_string();
+        let metrics: Vec<serde_json::Value> = self
+            .series
+            .iter()
+            .map(|series| {
+                let attributes = otlp_attributes(&series.labels);
+                let mut metric = serde_json::json!({
+                    "name": series.name,
+                    "description": series.help,
+                    "unit": "",
+                });
+                match &series.value {
+                    MetricValue::Counter(v) => {
+                        metric["sum"] = serde_json::json!({
+                            "dataPoints": [{
+                                "attributes": attributes,
+                                "startTimeUnixNano": "0",
+                                "timeUnixNano": now,
+                                "asInt": v.to_string(),
+                            }],
+                            "aggregationTemporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                            "isMonotonic": true,
+                        });
+                    }
+                    MetricValue::Gauge(v) => {
+                        metric["gauge"] = serde_json::json!({
+                            "dataPoints": [{
+                                "attributes": attributes,
+                                "timeUnixNano": now,
+                                "asDouble": v,
+                            }],
+                        });
+                    }
+                    MetricValue::Histogram(h) => {
+                        let bucket_counts: Vec<String> =
+                            h.counts.iter().map(u64::to_string).collect();
+                        metric["histogram"] = serde_json::json!({
+                            "dataPoints": [{
+                                "attributes": attributes,
+                                "startTimeUnixNano": "0",
+                                "timeUnixNano": now,
+                                "count": h.count.to_string(),
+                                "sum": h.sum,
+                                "bucketCounts": bucket_counts,
+                                "explicitBounds": h.bounds,
+                            }],
+                            "aggregationTemporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                        });
+                    }
+                }
+                metric
+            })
+            .collect();
+
+        serde_json::json!({
+            "resourceMetrics": [{
+                "resource": {
+                    "attributes": [
+                        {"key": "service.name", "value": {"stringValue": self.service}}
+                    ]
+                },
+                "scopeMetrics": [{
+                    "scope": {"name": "qip-observability"},
+                    "metrics": metrics,
+                }]
+            }]
+        })
+    }
+
     /// Prometheus text exposition, for scraping.
     pub fn to_prometheus(&self) -> String {
         let mut out = String::new();
@@ -420,6 +512,18 @@ impl Metrics {
             .series
             .clear();
     }
+}
+
+/// One label set as OTLP `KeyValue` attributes, for [`Snapshot::to_otlp_metrics`].
+///
+/// No escaping is needed here the way [`escape_label_value`] is needed for
+/// the Prometheus text format: `serde_json` already produces a well-formed
+/// JSON string for any Rust `&str`, whatever bytes it holds.
+fn otlp_attributes(labels: &Labels) -> Vec<serde_json::Value> {
+    labels
+        .iter()
+        .map(|(k, v)| serde_json::json!({"key": k, "value": {"stringValue": v}}))
+        .collect()
 }
 
 /// One label set as exposition text, `k="v",k2="v2"`, every value escaped.
@@ -752,4 +856,14 @@ pub mod names {
     /// change under a running platform, and a degraded one should be visible
     /// before it produces a bad trade rather than after.
     pub const UNIVERSE_NOT_DECISION_GRADE: &str = "qip_universe_not_decision_grade";
+
+    /// The OpenObserve drain thread's own account of itself (ADR 0028), by
+    /// `signal` (`metrics` or `traces`). Principle 10, "degrade, do not
+    /// fail": a collector that is unreachable must not crash the process that
+    /// noticed, and it must not do so *silently* either — a POST that fails
+    /// and leaves no series behind is indistinguishable from a POST that
+    /// never happened, and an operator would only find out from the graph
+    /// that never filled in.
+    pub const TELEMETRY_EXPORT_ATTEMPTS: &str = "qip_observability_export_attempts_total";
+    pub const TELEMETRY_EXPORT_FAILURES: &str = "qip_observability_export_failures_total";
 }
