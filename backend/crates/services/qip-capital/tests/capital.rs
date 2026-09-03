@@ -1036,6 +1036,74 @@ fn releasing_a_reservation_returns_its_capital_to_the_free_balance() -> Result<(
 }
 
 #[test]
+fn a_committed_reservation_cannot_be_committed_or_released_a_second_time() -> Result<()> {
+    // The failure this guards: `commit` removing the reservation on success is
+    // what makes a second commit impossible. If a future change made `commit`
+    // leave the entry in place (say, to preserve it for an audit read), the
+    // same id would spend its capital twice — once per call — while
+    // `committed_total` silently doubled and the free balance never noticed.
+    let mut ledger = ReservationLedger::new(dec!("1000000"))?;
+    ledger.reserve(
+        "proposal-1",
+        dec!("600000"),
+        start(),
+        Duration::from_hours(1),
+    )?;
+    let first = ledger.commit("proposal-1", start())?;
+    assert_eq!(first, dec!("600000"));
+    assert_eq!(ledger.committed_total(), dec!("600000"));
+
+    // Premise held: the hold is gone and the capital already left the ledger.
+    assert!(ledger.reservation("proposal-1").is_none());
+
+    let second_commit = ledger
+        .commit("proposal-1", start())
+        .expect_err("committed the same capital twice");
+    assert_eq!(second_commit.code(), "denied");
+    let second_release = ledger
+        .release("proposal-1", start())
+        .expect_err("released capital that was never held free again");
+    assert_eq!(second_release.code(), "denied");
+
+    // Neither refused call moved a single unit: one commit's worth stayed
+    // committed, and nothing came back to free.
+    assert_eq!(ledger.committed_total(), dec!("600000"));
+    assert_eq!(ledger.free(start()), dec!("400000"));
+    Ok(())
+}
+
+#[test]
+fn a_released_reservation_cannot_be_committed_or_released_a_second_time() -> Result<()> {
+    // The mirror of the commit case: `release` also removes the entry on
+    // success, so a second release or a late commit against the same id finds
+    // nothing rather than crediting the free balance twice.
+    let mut ledger = ReservationLedger::new(dec!("1000000"))?;
+    ledger.reserve(
+        "proposal-1",
+        dec!("600000"),
+        start(),
+        Duration::from_hours(1),
+    )?;
+    let first = ledger.release("proposal-1", start())?;
+    assert_eq!(first, dec!("600000"));
+    assert_eq!(ledger.free(start()), dec!("1000000"));
+
+    let second_release = ledger
+        .release("proposal-1", start())
+        .expect_err("released the same capital twice");
+    assert_eq!(second_release.code(), "denied");
+    let second_commit = ledger
+        .commit("proposal-1", start())
+        .expect_err("committed a hold that had already been released");
+    assert_eq!(second_commit.code(), "denied");
+
+    // Still exactly the one credit the first release made — not two.
+    assert_eq!(ledger.free(start()), dec!("1000000"));
+    assert_eq!(ledger.committed_total(), Decimal::ZERO);
+    Ok(())
+}
+
+#[test]
 fn an_unclaimed_reservation_returns_its_capital_at_expiry() -> Result<()> {
     let mut ledger = ReservationLedger::new(dec!("1000000"))?;
     ledger.reserve(
