@@ -539,6 +539,80 @@ fn a_view_deeper_than_the_retained_history_is_refused_rather_than_guessed() {
 }
 
 #[test]
+fn a_block_hash_may_not_be_reused_for_different_contents() {
+    // `block.hash` is the key `ChainState` retains history under. If a
+    // second block arrives claiming an already-recorded hash but carrying
+    // different transactions, treating it as a harmless duplicate would let
+    // sealed history be silently rewritten by whichever version happened to
+    // arrive second — or silently discarded if it arrived first — with
+    // nothing in the returned `Applied` value to say so. A genuine replay
+    // (the identical block seen twice) must still be a no-op `Duplicate`.
+    let mut state = ChainState::new(chain(), 64);
+    let pool = pool_id("pool");
+    let genesis = block_hash("genesis", 0);
+    let one = block(
+        "a",
+        1,
+        genesis,
+        vec![creation(
+            0,
+            &pool,
+            Decimal::from_int(1_000),
+            Decimal::from_int(2_000_000),
+        )],
+    );
+    state.apply(one.clone()).expect("the first block applies");
+
+    // The identical block seen again is a genuine replay: a no-op.
+    assert_eq!(
+        state.apply(one.clone()).expect("a true replay is accepted"),
+        Applied::Duplicate,
+        "the same block applied twice must be reported as a duplicate"
+    );
+
+    // A different block claiming the same hash (same label and number, so
+    // `block_hash` collides, but a different transaction set) must be
+    // refused rather than silently swapped in for or dropped behind the
+    // original.
+    let tampered = block(
+        "a",
+        1,
+        genesis,
+        vec![creation(
+            0,
+            &pool,
+            Decimal::from_int(999_999),
+            Decimal::from_int(2_000_000),
+        )],
+    );
+    assert_eq!(
+        tampered.hash, one.hash,
+        "the test premise requires the two blocks to collide on hash"
+    );
+    assert_ne!(
+        tampered.transactions, one.transactions,
+        "the test premise requires the two blocks to actually differ"
+    );
+    let error = state
+        .apply(tampered)
+        .expect_err("a hash collision with different contents must be refused");
+    assert_eq!(error.code(), "invalid");
+    assert!(
+        error.message().contains("already recorded"),
+        "the error should say the hash was already recorded, got: {error}"
+    );
+
+    // The original, untampered state must still be exactly what was applied.
+    let view = state.view(Confirmations::AT_RISK).expect("head view");
+    let pool_state = view.state().pool(&pool).expect("the pool exists");
+    assert_eq!(
+        pool_state.reserve_base,
+        Decimal::from_int(1_000),
+        "the refused tamper must not have touched derived state"
+    );
+}
+
+#[test]
 fn a_synthetic_chain_replays_identically_from_the_same_seed() {
     let start = Timestamp::from_secs(1_700_000_000);
     let render = |seed: u64| {

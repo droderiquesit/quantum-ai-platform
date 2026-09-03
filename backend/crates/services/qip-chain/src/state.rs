@@ -370,8 +370,23 @@ impl ChainState {
             )));
         }
         block.validate()?;
-        if self.seen.contains_key(&block.hash) {
-            return Ok(Applied::Duplicate);
+        if let Some(existing) = self.seen.get(&block.hash) {
+            // A hash identifies a block's contents, not just its slot in the
+            // chain. Treating any second arrival under the same hash as a
+            // harmless duplicate — without checking it actually matches what
+            // is already recorded — would let a corrupted or malicious
+            // resend silently replace sealed history with different
+            // transactions while every caller still sees the same hash and
+            // believes nothing changed. Two different blocks are never
+            // allowed to share a hash; a genuine duplicate must be
+            // bit-for-bit identical to what this state already retained.
+            if existing == &block {
+                return Ok(Applied::Duplicate);
+            }
+            return Err(Error::invalid(format!(
+                "block {} was already recorded with different contents; a hash may not be reused for different data",
+                block.hash
+            )));
         }
         let hash = block.hash;
         let number = block.number;
