@@ -166,10 +166,28 @@ impl TransactionCostModel {
 
     /// The participation rate at which expected impact eats `alpha_bps` of
     /// expected alpha — the point past which trading faster destroys the trade.
+    ///
+    /// Inverts the same square-root law `impact_bps` prices, so it has to
+    /// respect the same cap: `impact_bps` never lets modelled impact climb
+    /// past `impact_coefficient_bps * 2.0` (participation capped at `4.0`,
+    /// four full days of volume in one day), because a pathological
+    /// participation figure must not produce a nonsensical cost. A budget
+    /// at or beyond that ceiling is never actually reached by trading
+    /// faster — impact stops climbing before it gets there — so the
+    /// uncapped inverse-square would name a participation rate several
+    /// multiples of a day's total volume as "the" breakeven, and a caller
+    /// sizing capacity off it (`qip-capital`'s `TradeCapacity::capacity`)
+    /// would be handed a bound the cost model itself never priced. Once
+    /// this was found reporting 582% of average daily volume as a
+    /// breakeven whose actual modelled impact was capped at a fifth of the
+    /// alpha it claimed to exhaust.
     pub fn breakeven_participation(&self, alpha_bps: f64) -> f64 {
         let budget = alpha_bps - self.commission_bps - self.tax_bps - self.half_spread_bps;
         if budget <= 0.0 || self.impact_coefficient_bps <= 0.0 {
             return 0.0;
+        }
+        if budget >= self.impact_coefficient_bps * 2.0 {
+            return 4.0;
         }
         (budget / self.impact_coefficient_bps).powi(2)
     }
