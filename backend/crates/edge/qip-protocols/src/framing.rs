@@ -90,6 +90,12 @@ impl Framing {
                     check_frame_bound(PROTOCOL, bytes.len())?;
                     return Ok(None);
                 };
+                // The bound has to apply here too, not only in the "no newline
+                // yet" branch above: a single read can carry a delimiter far
+                // enough out that the frame it closes is already corruption by
+                // itself, and checking only the no-newline case would let that
+                // frame straight through the one guard this format has.
+                check_frame_bound(PROTOCOL, newline)?;
                 let mut end = newline;
                 if end > 0 && bytes.get(end - 1) == Some(&b'\r') {
                     end -= 1;

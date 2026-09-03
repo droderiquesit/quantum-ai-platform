@@ -346,3 +346,39 @@ fn a_message_with_no_sending_time_is_refused_rather_than_stamped_with_the_captur
         .expect_err("a fabricated venue timestamp would corrupt every bitemporal read");
     assert!(error.message().contains("SendingTime"), "{error}");
 }
+
+#[test]
+fn a_sending_time_with_more_than_nine_fractional_digits_is_refused_rather_than_truncated() {
+    // FIX 4.4 caps SendingTime's fraction at nine digits (fff[fff[fff]]).
+    // The nine-digit case must still parse to the exact nanosecond count;
+    // asserting that first proves the ten-digit refusal below is about the
+    // extra digit and not a change to how any fraction is read.
+    let nine = qip_protocols::fix::parse_sending_time("20240102-15:04:05.123456789")
+        .expect("nine fractional digits is within the FIX 4.4 grammar");
+    assert_eq!(
+        nine.as_nanos() % qip_core::time::NANOS_PER_SEC,
+        123_456_789,
+        "nine digits of fraction must be read as exact nanoseconds, not rounded"
+    );
+
+    assert!(
+        qip_protocols::fix::parse_sending_time("20240102-15:04:05.1234567890").is_none(),
+        "a tenth fractional digit is not a higher-precision timestamp, it is a malformed \
+         field — silently dropping it would misplace the message in time"
+    );
+}
+
+#[test]
+fn a_message_whose_sending_time_has_ten_fractional_digits_is_refused() {
+    let bytes = framed(&[
+        (35, "W"),
+        (34, "301"),
+        (52, "20240102-15:04:05.1234567890"),
+        (55, "AAPL"),
+        (268, "0"),
+    ]);
+    let error = decoder()
+        .decode(&bytes, at())
+        .expect_err("a malformed SendingTime must not be accepted as if it were valid");
+    assert!(error.message().contains("SendingTime"), "{error}");
+}
