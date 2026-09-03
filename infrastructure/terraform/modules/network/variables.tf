@@ -25,10 +25,18 @@ variable "console_egress_cidr" {
   description = "CIDR for the console's Cloud Run direct-VPC-egress subnet, or null for none."
 
   validation {
-    # A /26 is the smallest Google accepts for direct VPC egress. Refusing a
-    # smaller one here rather than at apply time keeps the failure attached to
-    # the value that caused it.
     condition     = var.console_egress_cidr == null || can(cidrnetmask(var.console_egress_cidr))
     error_message = "console_egress_cidr must be a CIDR block, for example 10.0.16.0/26."
+  }
+
+  validation {
+    # A /26 is the smallest Google accepts for direct VPC egress. Refusing a
+    # smaller one here rather than at apply time keeps the failure attached to
+    # the value that caused it. Split into its own validation because the
+    # prefix cannot be read out of a value the syntax check above has not
+    # already proven well-formed — `split` on a malformed string would be the
+    # error the reader sees instead of the one they caused.
+    condition     = var.console_egress_cidr == null || tonumber(split("/", var.console_egress_cidr)[1]) <= 26
+    error_message = "console_egress_cidr must be a /26 or larger (a prefix of /26 or lower). Google refuses direct VPC egress on anything smaller, and reserves addresses in it as instances scale."
   }
 }
