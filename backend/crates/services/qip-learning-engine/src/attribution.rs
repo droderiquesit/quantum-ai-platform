@@ -427,7 +427,10 @@ impl Attributor {
 
             let total = gross + period.income - period.financing - costs;
 
-            // Factor contribution, on the average notional held.
+            // Factor contribution, on the average notional held. Betas and
+            // returns are statistics, so the multiplication happens in f64;
+            // the result crosses back to `Decimal` immediately below, because
+            // everything downstream of this line is money.
             let average = period.average_notional();
             let factor_total: f64 = period
                 .factor_betas
@@ -436,8 +439,17 @@ impl Attributor {
                     beta * period.factor_returns.get(factor).copied().unwrap_or(0.0)
                 })
                 .sum();
-            let factor_pnl =
-                Decimal::from_f64(average.to_f64() * factor_total).unwrap_or(Decimal::ZERO);
+            // A NaN or out-of-range factor return would otherwise be swallowed
+            // to zero here and reappear, unexplained, inside the idiosyncratic
+            // residual below — the exact failure mode `Attribution::residual`
+            // exists to surface, reintroduced through the one term that still
+            // touched a float. Refuse instead of guessing.
+            let factor_pnl = Decimal::from_f64(average.to_f64() * factor_total).ok_or_else(|| {
+                Error::numeric(format!(
+                    "position {} has a factor contribution that does not convert to a decimal (average notional {average}, factor total {factor_total}); the input factor betas or returns are not finite",
+                    period.object_id
+                ))
+            })?;
 
             components.insert(Source::Commission.as_str().to_string(), -period.commission);
             components.insert(Source::Spread.as_str().to_string(), -period.spread_cost);
