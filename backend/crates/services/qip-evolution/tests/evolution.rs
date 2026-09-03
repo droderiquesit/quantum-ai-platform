@@ -756,6 +756,52 @@ fn a_context_with_no_fills_has_nothing_to_propose() {
     assert!(calibration.propose_all().is_empty());
 }
 
+#[test]
+fn a_correction_nobody_could_check_forward_is_refused_rather_than_quietly_applied() -> Result<()> {
+    // The module documentation promises that an update which does not help
+    // out of sample is "refused, not quietly applied". `corrected_by` is the
+    // one place a bias actually reaches a return series, so it is the one
+    // place that promise has to hold structurally, not just as a predicate a
+    // caller might remember to check.
+    let few = calibration(5, 3.0).propose("nyse/small")?;
+    assert!(few.out_of_sample_improvement_bps.is_none());
+    assert!(!few.is_worth_applying(1));
+
+    let gross = vec![0.01; 5];
+    let modelled: Vec<f64> = (0..5).map(|index| 5.0 + (index % 7) as f64 * 0.5).collect();
+    let error = NetReturns::corrected_by(&gross, &modelled, &few, 1)
+        .expect_err("a bias with no out-of-sample evidence must not correct a score");
+    assert_eq!(error.code(), "guard");
+    assert!(
+        error
+            .message()
+            .contains("has not earned the right to be applied")
+    );
+    Ok(())
+}
+
+#[test]
+fn a_correction_that_earned_its_keep_is_the_one_actually_applied() -> Result<()> {
+    let update = calibration(500, 3.0).propose("nyse/small")?;
+    assert!(update.is_worth_applying(100));
+
+    let gross = vec![0.01; 500];
+    let modelled: Vec<f64> = (0..500)
+        .map(|index| 5.0 + (index % 7) as f64 * 0.5)
+        .collect();
+    let net = NetReturns::corrected_by(&gross, &modelled, &update, 100)?;
+    assert_eq!(net.len(), 500);
+    // Computed from the bias field directly, not by calling `corrected`
+    // again, so a mutation that broke `corrected` itself could not also
+    // slip past this assertion by construction.
+    assert!(update.applied_bias_bps.abs() > 1e-9);
+    for (index, value) in net.as_slice().iter().enumerate() {
+        let expected_charge = (modelled[index] + update.applied_bias_bps) / 10_000.0;
+        assert!((gross[index] - expected_charge - value).abs() < 1e-12);
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Feature discovery: the same correction in a different currency
 // ---------------------------------------------------------------------------

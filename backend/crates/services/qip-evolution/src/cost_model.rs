@@ -357,11 +357,31 @@ impl NetReturns {
     /// The path from [`CostModelUpdate`] to a score: the modelled charge with
     /// the calibration's shrunken bias applied, so a strategy is scored against
     /// what execution actually costs rather than what the backtest assumed.
+    ///
+    /// Refuses an update that has not earned the right to be applied by
+    /// [`CostModelUpdate::is_worth_applying`]. The module documentation
+    /// promises that a correction which does not help out of sample is
+    /// "refused, not quietly applied" — this is the one place in the crate
+    /// where a bias actually reaches a return series, so it is the one place
+    /// that promise has to be kept structurally rather than left to a caller
+    /// who remembers to check first. Without this, a bias fitted on five
+    /// fills with no out-of-sample evidence at all could still be baked into
+    /// the series a challenger is scored against, which is the same failure
+    /// this crate refuses everywhere else: a number that has not earned its
+    /// keep, applied anyway.
     pub fn corrected_by(
         gross: &[f64],
         modelled_bps: &[f64],
         update: &CostModelUpdate,
+        minimum_observations: u32,
     ) -> Result<Self> {
+        if !update.is_worth_applying(minimum_observations) {
+            return Err(Error::guard(format!(
+                "{} has not earned the right to be applied: {}",
+                update.context,
+                update.summarise()
+            )));
+        }
         let corrected: Vec<f64> = modelled_bps
             .iter()
             .map(|modelled| update.corrected(*modelled))
