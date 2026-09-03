@@ -41,6 +41,24 @@ fn counters_accumulate_per_label_set() {
 }
 
 #[test]
+fn a_counter_at_the_maximum_saturates_instead_of_wrapping_to_a_small_number() {
+    // A counter that wraps past u64::MAX reads on a dashboard as a process
+    // restart — the exact failure a monotonic counter exists to distinguish
+    // from an actual restart. Saturating keeps it pinned at the ceiling and
+    // truthful about having lost count, rather than fabricating history.
+    let metrics = Metrics::new("test");
+    metrics.increment(names::ORDERS_FILLED, labels([]), u64::MAX);
+    metrics.increment(names::ORDERS_FILLED, labels([]), 5);
+
+    let snapshot = metrics.snapshot();
+    assert_eq!(
+        snapshot.counter(names::ORDERS_FILLED, &labels([])),
+        u64::MAX,
+        "a counter must saturate at its ceiling, not wrap past it"
+    );
+}
+
+#[test]
 fn gauges_hold_the_latest_value() {
     let metrics = Metrics::new("test");
     metrics.gauge(names::PORTFOLIO_LEVERAGE, labels([]), 1.4);
@@ -87,6 +105,28 @@ fn histograms_ignore_non_finite_observations() {
     histogram.observe(f64::NAN);
     histogram.observe(f64::INFINITY);
     assert_eq!(histogram.count, 1);
+}
+
+#[test]
+fn a_histogram_bucket_at_the_maximum_saturates_instead_of_wrapping() {
+    // Same failure class as the counter above, one layer down: the bucket
+    // and total counts inside a Histogram are u64 and would silently wrap
+    // rather than staying pinned, understating the busiest bucket in the
+    // series.
+    let mut histogram = Histogram::with_bounds(vec![1.0]);
+    histogram.counts[0] = u64::MAX;
+    histogram.count = u64::MAX;
+    histogram.observe(0.5);
+    assert_eq!(
+        histogram.counts[0],
+        u64::MAX,
+        "a bucket count must saturate, not wrap past its ceiling"
+    );
+    assert_eq!(
+        histogram.count,
+        u64::MAX,
+        "the total observation count must saturate, not wrap past its ceiling"
+    );
 }
 
 #[test]

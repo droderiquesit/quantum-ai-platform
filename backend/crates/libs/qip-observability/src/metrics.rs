@@ -78,9 +78,13 @@ impl Histogram {
             .iter()
             .position(|b| value <= *b)
             .unwrap_or(self.bounds.len());
-        self.counts[index] += 1;
+        // Saturating for the same reason as `Metrics::increment`: a bucket
+        // count wrapping past `u64::MAX` would silently understate a series
+        // that has in fact seen more observations than any other bucket,
+        // rather than pinning at the ceiling and staying honest about it.
+        self.counts[index] = self.counts[index].saturating_add(1);
         self.sum += value;
-        self.count += 1;
+        self.count = self.count.saturating_add(1);
         self.min = self.min.min(value);
         self.max = self.max.max(value);
     }
@@ -288,9 +292,19 @@ impl Metrics {
     }
 
     /// Increment a counter.
+    ///
+    /// Saturates rather than wrapping. `u64::MAX += 1` is `0` under Rust's
+    /// default release profile — this workspace sets no `overflow-checks`,
+    /// so the checked panic only fires in `cfg(debug_assertions)` builds —
+    /// and a counter that wraps back near zero looks exactly like a process
+    /// restart to anything charting it: the one event a monotonic counter
+    /// exists to make visible would be indistinguishable from the failure
+    /// mode it is supposed to rule out. Saturating pins the series at the
+    /// ceiling instead, which stays monotonic and honestly reports "we lost
+    /// count" rather than fabricating a small number with history behind it.
     pub fn increment(&self, name: &str, labels: Labels, by: u64) {
         self.upsert(name, labels, |value| match value {
-            MetricValue::Counter(v) => *v += by,
+            MetricValue::Counter(v) => *v = v.saturating_add(by),
             other => *other = MetricValue::Counter(by),
         });
     }
