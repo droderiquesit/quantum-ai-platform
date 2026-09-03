@@ -393,7 +393,16 @@ impl AgentHost {
                     None,
                 ),
             },
-            Err(_) if ctx.ledger.exhausted().is_some() => (
+            // Escalate only when the error the agent actually returned *is*
+            // the budget exhaustion (`Error::Guard`, raised solely by
+            // `BudgetLedger::exceed`) and the ledger confirms it. Matching
+            // on `ctx.ledger.exhausted().is_some()` alone was wrong: that
+            // flag never clears once set, so an agent that hit a budget
+            // limit, absorbed the refusal, and then failed for an unrelated
+            // reason later in the same run — a numeric fault, a bad input —
+            // had that real error discarded and replaced with "escalated:
+            // ran out of budget", which is a false record of what happened.
+            Err(error) if matches!(error, Error::Guard(_)) && ctx.ledger.exhausted().is_some() => (
                 RunStatus::Escalated {
                     policy: manifest.escalation,
                     to: manifest.escalates_to.clone(),
