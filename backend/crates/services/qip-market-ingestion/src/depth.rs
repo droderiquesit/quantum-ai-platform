@@ -1270,9 +1270,29 @@ fn decode_body(feed: &str, symbol: &str, wire: &WireBody) -> Result<MessageBody>
         } => MessageBody::Trade {
             price: *price,
             quantity: *size,
+            // An absent condition is refused for the same reason an unreadable
+            // one is, and for the same reason `rest.rs` refuses it on a
+            // top-of-book trade: the only value that could stand in for it is
+            // `Regular`, and `TradeCondition::updates_last` and
+            // `::counts_toward_volume` are both true for `Regular`. A late
+            // report or an off-exchange cross whose condition the vendor left
+            // out would otherwise move the book's last-sale price and session
+            // volume as an ordinary continuous print, and nothing downstream
+            // could tell the difference. This decoder cannot tell "the vendor
+            // says this printed normally" from "the vendor said nothing", so
+            // it declines to guess.
             condition: match condition.as_deref() {
                 Some(code) => trade_condition_from_code(code)?,
-                None => TradeCondition::Regular,
+                None => {
+                    return Err(Error::schema(format!(
+                        "{feed}: {symbol} sent a trade at {price} for {size} with no condition, \
+                         and this decoder will not read that as {:?}: an unstated condition is \
+                         not a regular print, and regular is the one condition that updates the \
+                         last sale and counts toward volume. Have the vendor send a condition, or \
+                         map its feed to one.",
+                        TradeCondition::Regular
+                    )));
+                }
             },
             aggressor: aggressor.as_deref().map(side_from_code).transpose()?,
         },

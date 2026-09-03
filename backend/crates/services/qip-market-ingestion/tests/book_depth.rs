@@ -1199,6 +1199,36 @@ fn a_trade_condition_this_decoder_cannot_name_is_refused_rather_than_read_as_reg
 }
 
 #[test]
+fn a_trade_with_no_stated_condition_is_refused_rather_than_read_as_regular() {
+    // The failure this guards: an off-exchange or late-reported print whose
+    // condition the vendor omitted must not silently become `Regular`, which
+    // is the one condition that moves the last-sale price and counts toward
+    // session volume (`TradeCondition::updates_last`,
+    // `::counts_toward_volume`). `rest.rs` refuses the same omission on a
+    // top-of-book trade for the identical reason.
+    const NO_CONDITION: &str = r#"{"updates": [
+      {"sequence": 1001, "at": "2026-08-24T14:59:55Z", "type": "trade",
+       "price": "101.01", "size": "100"}
+    ]}"#;
+    let server = vendor(vec![SNAPSHOT], vec![NO_CONDITION]);
+    let mut adapter = adapter_for(&server);
+    let text = adapter
+        .poll(poll_instant())
+        .expect_err("a trade stating no condition is refused")
+        .to_string();
+    assert!(text.contains("no condition"), "{text}");
+
+    // The premise: had this been admitted, it would have moved the session
+    // state. Assert the refusal actually left it untouched, so this test does
+    // not just check an error string against a change that happened anyway.
+    let state = adapter
+        .venue_state("NWSC")
+        .expect("the instrument has venue state");
+    assert_eq!(state.session_volume(), dec!("0"));
+    assert_eq!(state.last_trade().map(|trade| trade.price), None);
+}
+
+#[test]
 fn a_print_the_venue_reported_updates_the_session_without_touching_the_levels() {
     const WITH_TRADE: &str = r#"{"updates": [
       {"sequence": 1001, "at": "2026-08-24T14:59:55Z", "type": "trade",
