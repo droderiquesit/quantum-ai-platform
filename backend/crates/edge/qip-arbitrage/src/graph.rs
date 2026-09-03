@@ -218,9 +218,23 @@ impl ArbitrageGraph {
         self.venues.get(venue).copied()
     }
 
-    /// Whether orders may be sent to both ends of an edge.
+    /// Whether orders may be sent to every venue an edge would touch.
+    ///
+    /// For a [`EdgeKind::Trade`] or [`EdgeKind::Transfer`] that is both ends
+    /// of the edge. A [`EdgeKind::Synthetic`] sends one order per component,
+    /// and a component's venue need not match either end of the edge — a
+    /// basket held at one venue can be built from names that trade elsewhere.
+    /// Checking only `from`/`to` would let a component sitting on a halted or
+    /// unreachable venue through the search's tradability filter, which is
+    /// exactly the "path through a halted venue" this method exists to keep
+    /// out; the component leg would then be the one that fails at the venue,
+    /// discovered by an order rather than by this check.
     pub fn edge_is_tradable(&self, edge: &ConversionEdge) -> bool {
-        [&edge.from.venue, &edge.to.venue].into_iter().all(|venue| {
+        let mut venues: Vec<&VenueId> = vec![&edge.from.venue, &edge.to.venue];
+        if let EdgeKind::Synthetic { components, .. } = &edge.kind {
+            venues.extend(components.iter().map(|component| &component.venue));
+        }
+        venues.into_iter().all(|venue| {
             self.venue_facts(venue)
                 .is_some_and(|facts| facts.status.accepts_orders())
         })
