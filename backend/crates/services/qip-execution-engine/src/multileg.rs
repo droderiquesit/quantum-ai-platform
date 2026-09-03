@@ -62,6 +62,19 @@ pub struct Leg {
     /// filled in three prints at three prices has a notional none of those
     /// prices alone produces, and the leg risk below is a money figure.
     pub filled_notional: Decimal,
+    /// Ids of every fill already folded into `filled`/`filled_notional`.
+    ///
+    /// A redelivered venue report carries the same fill id a second time.
+    /// Without this, [`LegGroup::record_fill`] has no way to tell that print
+    /// apart from a second, genuinely distinct one at the same size and
+    /// price — it would double the leg's notional, which is exactly the
+    /// quantity `leg_risk` is trusted to bound correctly.
+    ///
+    /// `#[serde(default)]` so a group persisted before this field existed
+    /// still deserializes; the event log has to stay replayable across the
+    /// change that added the check, not just after it.
+    #[serde(default)]
+    applied_fills: std::collections::BTreeSet<String>,
 }
 
 impl Leg {
@@ -70,6 +83,7 @@ impl Leg {
             order,
             filled: Decimal::ZERO,
             filled_notional: Decimal::ZERO,
+            applied_fills: std::collections::BTreeSet::new(),
         }
     }
 
@@ -266,6 +280,13 @@ impl LegGroup {
                     fill.order_id.as_str()
                 ))
             })?;
+        if !leg.applied_fills.insert(fill.fill_id.as_str().to_string()) {
+            return Err(Error::invalid(format!(
+                "fill {} was already applied to leg {}; a redelivered report is not a new fill",
+                fill.fill_id.as_str(),
+                fill.order_id.as_str()
+            )));
+        }
         leg.filled += fill.quantity;
         leg.filled_notional += fill.quantity * fill.price;
         if matches!(self.state, GroupState::Pending) {
@@ -515,9 +536,18 @@ mod tests {
         pair_with_bound("250")
     }
 
+    /// Build a distinct fill each call, even for the same order.
+    ///
+    /// Several tests apply more than one print to a leg to exercise a volume-
+    /// weighted average, and `record_fill` now refuses a fill id it has
+    /// already seen — a fixture that derived the id from the order id alone
+    /// would collide with itself on the second print and be refused as a
+    /// redelivery, which is not the case under test.
     fn fill(order_id: &str, quantity: &str, price: &str) -> Fill {
+        static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Fill {
-            fill_id: FillId::from_string(format!("fill-{order_id}")),
+            fill_id: FillId::from_string(format!("fill-{order_id}-{sequence}")),
             order_id: OrderId::from_string(order_id),
             at: at(1),
             quantity: d(quantity),
@@ -761,6 +791,37 @@ mod tests {
         assert_eq!(
             first, second,
             "two calls produced different reversing orders"
+        );
+    }
+
+    #[test]
+    fn a_redelivered_fill_does_not_double_the_legs_notional() {
+        // A retried report carrying the same fill id a second time must not
+        // double the leg's filled notional -- that number is what leg_risk
+        // is trusted to bound, and a phantom double-fill would report a
+        // balanced group as exposed, or an exposed one as balanced, purely
+        // from a redelivery nothing traded caused.
+        let mut group = pair();
+        let one = fill("ord-buy", "40", "10");
+        group.record_fill(&one).expect("first application");
+        assert_eq!(
+            group.leg_risk(),
+            dec!("400"),
+            "the premise: one genuine fill left the group exposed"
+        );
+
+        let error = group
+            .record_fill(&one)
+            .expect_err("the same fill id was applied twice without complaint");
+        assert!(
+            error.message().contains("already applied"),
+            "the refusal does not name the duplicate: {}",
+            error.message()
+        );
+        assert_eq!(
+            group.leg_risk(),
+            dec!("400"),
+            "a redelivered fill doubled the leg's notional"
         );
     }
 
