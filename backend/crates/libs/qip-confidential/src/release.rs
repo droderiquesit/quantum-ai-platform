@@ -229,13 +229,33 @@ impl ReleaseRecord {
 /// cannot tell the difference and will not stop you.** A slowly varying
 /// quantity asked about every hour for a week is a reconstruction, however
 /// carefully each hour was budgeted.
-#[derive(Debug)]
+///
+/// `Debug` is written by hand rather than derived. The seed is key material —
+/// see the module documentation on [`crate::noise`] — and a derived `Debug`
+/// would print it in full the first time anything logs a gate for
+/// troubleshooting, which is exactly the leak the crate's own threat model
+/// names as undefended. The same convention is used for
+/// `qip_brokers::credential::Secret` and `VenueCredential`, for the same
+/// reason: a value that recovers every true release exactly must not be a
+/// field a derive macro is free to print.
 pub struct ReleaseGate {
     policy: Policy,
     seed: u64,
     ledger: PrivacyLedger,
     records: Vec<ReleaseRecord>,
     next_id: u64,
+}
+
+impl std::fmt::Debug for ReleaseGate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReleaseGate")
+            .field("policy", &self.policy)
+            .field("seed", &"<redacted>")
+            .field("ledger", &self.ledger)
+            .field("records", &self.records)
+            .field("next_id", &self.next_id)
+            .finish()
+    }
 }
 
 impl ReleaseGate {
