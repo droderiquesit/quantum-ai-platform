@@ -19,7 +19,7 @@ use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use qip_core::time::Timestamp;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A shock to one factor.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -231,6 +231,22 @@ pub struct ScenarioResult {
     /// shows zero loss because nothing was measured, and reporting that as
     /// safety is how a stress test understates a risk.
     pub unmodelled: Vec<String>,
+    /// Factors the scenario shocks that no position in the book carries a
+    /// beta for, so the shock contributed to nobody's profit and loss.
+    ///
+    /// The same gap `unmodelled` reports for a position, one level up: a
+    /// scenario naming a commodity shock over a book with no recorded
+    /// commodity exposure is indistinguishable, in `loss_fraction` alone,
+    /// from one where that shock happened to net to zero. It did not net to
+    /// zero — it was never applied to anything, and a risk committee reading
+    /// the loss figure has no way to know that unless it is named here.
+    pub unmodelled_factors: Vec<String>,
+    /// The correlation the scenario assumed between its shocked factors,
+    /// carried through from [`Scenario::stressed_correlation`] so a reader of
+    /// the result alone — without the scenario definition beside it — can
+    /// see what regime the number rests on, the same way `liquidity_multiplier`
+    /// is visible through `liquidation_cost`.
+    pub stressed_correlation: Option<f64>,
 }
 
 impl ScenarioResult {
@@ -261,8 +277,21 @@ impl ScenarioResult {
                 self.positions.len() + self.unmodelled.len()
             )
         };
+        let unmodelled_factors = if self.unmodelled_factors.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ", {} shocked factor(s) with no exposure in the book: {}",
+                self.unmodelled_factors.len(),
+                self.unmodelled_factors.join(", ")
+            )
+        };
+        let correlation = match self.stressed_correlation {
+            Some(correlation) => format!(", correlation {correlation:.2}"),
+            None => String::new(),
+        };
         format!(
-            "{}: {:.2}% loss ({:.0} of {:.0}), {:.0} to liquidate at stressed costs{coverage}",
+            "{}: {:.2}% loss ({:.0} of {:.0}), {:.0} to liquidate at stressed costs{coverage}{unmodelled_factors}{correlation}",
             self.scenario,
             self.loss_fraction * 100.0,
             self.equity_before - self.equity_after,
@@ -356,6 +385,25 @@ impl StressTester {
         let liquidation_cost =
             gross * self.base_cost_bps * scenario.liquidity_multiplier / 10_000.0;
 
+        // A shock the scenario names but that touched no position's betas
+        // contributed nothing to `total_pnl` — indistinguishable, from the
+        // loss figure alone, from a shock whose contribution genuinely
+        // netted to zero. Naming it is what tells the two apart.
+        let exposed_factors: BTreeSet<&str> = exposures
+            .iter()
+            .flat_map(|exposure| exposure.betas.keys())
+            .map(String::as_str)
+            .collect();
+        let unmodelled_factors: Vec<String> = scenario
+            .shocks
+            .iter()
+            .map(|shock| shock.factor.as_str())
+            .collect::<BTreeSet<&str>>()
+            .into_iter()
+            .filter(|factor| !exposed_factors.contains(factor))
+            .map(str::to_string)
+            .collect();
+
         let equity_after = equity + total_pnl - liquidation_cost;
         Ok(ScenarioResult {
             scenario: scenario.name.clone(),
@@ -366,6 +414,8 @@ impl StressTester {
             positions,
             liquidation_cost,
             unmodelled,
+            unmodelled_factors,
+            stressed_correlation: scenario.stressed_correlation,
         })
     }
 

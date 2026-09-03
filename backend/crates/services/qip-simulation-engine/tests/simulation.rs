@@ -1034,6 +1034,95 @@ fn a_stress_test_on_a_book_with_no_equity_is_refused() {
     assert!(tester.apply(&scenario, &exposures(), 0.0, start()).is_err());
 }
 
+#[test]
+fn a_scenario_shock_no_position_carries_a_beta_for_is_named_rather_than_silently_netting_to_zero()
+-> Result<()> {
+    // inflation-shock-2022 shocks four factors; `exposures()` carries betas
+    // for equity, rates and credit but none for commodity. A commodity move
+    // that never touched a single position's P&L must not read the same as
+    // one that touched positions and happened to cancel out.
+    let tester = StressTester::new(5.0);
+    let inflation = standard_library()
+        .into_iter()
+        .find(|s| s.name == "inflation-shock-2022")
+        .unwrap();
+    assert!(
+        inflation.shocks.iter().any(|s| s.factor == "commodity"),
+        "the fixture scenario must actually shock commodity for this test to mean anything"
+    );
+
+    let result = tester.apply(&inflation, &exposures(), 10_000_000.0, start())?;
+
+    assert_eq!(result.unmodelled_factors, vec!["commodity".to_string()]);
+    assert!(
+        result.summarise().contains("commodity"),
+        "{}",
+        result.summarise()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_scenario_shocking_only_factors_the_book_carries_reports_no_unmodelled_factors() -> Result<()> {
+    // equity-crash-1987 shocks equity, volatility and rates. `exposures()`
+    // has no volatility beta anywhere, so that factor is genuinely
+    // unmodelled too -- this is not a test that the list is always empty,
+    // it is a test that it names exactly the gap and nothing else.
+    let tester = StressTester::new(5.0);
+    let crash = standard_library()
+        .into_iter()
+        .find(|s| s.name == "equity-crash-1987")
+        .unwrap();
+    let result = tester.apply(&crash, &exposures(), 10_000_000.0, start())?;
+    assert_eq!(result.unmodelled_factors, vec!["volatility".to_string()]);
+    Ok(())
+}
+
+#[test]
+fn the_scenarios_stressed_correlation_is_carried_through_to_its_result() -> Result<()> {
+    let tester = StressTester::new(5.0);
+    let credit_crisis = standard_library()
+        .into_iter()
+        .find(|s| s.name == "credit-crisis-2008")
+        .unwrap();
+    assert_eq!(credit_crisis.stressed_correlation, Some(0.90));
+
+    let result = tester.apply(&credit_crisis, &exposures(), 10_000_000.0, start())?;
+    assert_eq!(result.stressed_correlation, Some(0.90));
+    assert!(
+        result.summarise().contains("correlation 0.90"),
+        "{}",
+        result.summarise()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_scenario_with_no_stated_correlation_reports_none_rather_than_a_fabricated_one() -> Result<()> {
+    let tester = StressTester::new(5.0);
+    let scenario = Scenario {
+        name: "unrelated-mild-move".to_string(),
+        description:
+            "A test scenario used to confirm a result never invents a correlation the scenario itself did not state"
+                .to_string(),
+        shocks: vec![FactorShock::new("equity", -0.1, 5.0)],
+        stressed_correlation: None,
+        liquidity_multiplier: 2.0,
+        historical: false,
+    };
+    let result = tester.apply(&scenario, &exposures(), 10_000_000.0, start())?;
+    assert_eq!(result.stressed_correlation, None);
+    // Substring matching is a trap: the scenario's own name must not contain
+    // the word this assertion is checking for, or the assertion would pass
+    // even if the correlation suffix were never suppressed.
+    assert!(
+        !result.summarise().contains("correlation"),
+        "{}",
+        result.summarise()
+    );
+    Ok(())
+}
+
 /// Rebalances on every bar, so it always has a decision in flight.
 struct AlwaysRebalancing {
     symbol: &'static str,
