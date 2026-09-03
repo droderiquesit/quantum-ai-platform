@@ -1,6 +1,7 @@
 //! A/B line arbitration: redundancy that is actually used.
 
 use qip_contracts::{BookSide, MarketMessage, MessageBody, Origin, VenueId};
+use qip_core::testing::approx_eq;
 use qip_core::{Decimal, ObjectId, Timestamp};
 use qip_sequencing::{ArbitrationEvent, LineArbiter};
 
@@ -216,4 +217,69 @@ fn a_line_further_behind_than_the_window_is_reported_as_a_fault_not_as_jitter() 
         stale.events.first(),
         Some(ArbitrationEvent::BeyondWindow { sequence: 1, .. })
     ));
+}
+
+#[test]
+fn a_beyond_window_redelivery_does_not_dilute_the_average_lag_of_a_genuine_race_loss() {
+    // The window's floor makes a beyond-window redelivery's own lag unmeasurable
+    // — its winner has already left the window, so there is no recorded time to
+    // measure against. Folding it into `lost`, the count `mean_lag_nanos_f64` is
+    // averaged over, would silently drag a line's reported lag toward zero on the
+    // one delivery that proves it is furthest behind.
+    let mut arbiter = LineArbiter::new("itch", &["itch-a", "itch-b"], 4);
+
+    arbiter.accept(
+        "itch-a",
+        vec![message("itch-a", 1)],
+        Timestamp::from_nanos(0),
+    );
+    arbiter.accept(
+        "itch-b",
+        vec![message("itch-b", 1)],
+        Timestamp::from_nanos(100),
+    );
+    let after_race = arbiter
+        .line_health("itch-b")
+        .expect("line b is known")
+        .clone();
+    assert_eq!(after_race.lost, 1, "premise: the race loss was recorded");
+    assert!(
+        approx_eq(after_race.mean_lag_nanos_f64, 100.0, 1e-9),
+        "premise: the one measured lag is exactly the known 100ns, got {}",
+        after_race.mean_lag_nanos_f64
+    );
+
+    // Push the window's floor past sequence 1 without either line ever missing
+    // it, so the later resend is beyond the window rather than a genuine miss.
+    for sequence in 2..=5u64 {
+        arbiter.accept(
+            "itch-a",
+            vec![message("itch-a", sequence)],
+            Timestamp::from_nanos(sequence as i64 * 1_000),
+        );
+    }
+
+    let stale = arbiter.accept(
+        "itch-b",
+        vec![message("itch-b", 1)],
+        Timestamp::from_nanos(1_000_000),
+    );
+    assert!(matches!(
+        stale.events.first(),
+        Some(ArbitrationEvent::BeyondWindow { sequence: 1, .. })
+    ));
+
+    let health_b = arbiter
+        .line_health("itch-b")
+        .expect("line b is known")
+        .clone();
+    assert_eq!(
+        health_b.lost, 1,
+        "the beyond-window redelivery must not be counted as a race loss with a knowable lag"
+    );
+    assert!(
+        approx_eq(health_b.mean_lag_nanos_f64, 100.0, 1e-9),
+        "the average lag over genuine race losses must be unaffected by an unmeasurable late arrival, got {}",
+        health_b.mean_lag_nanos_f64
+    );
 }
