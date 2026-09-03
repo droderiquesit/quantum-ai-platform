@@ -119,10 +119,25 @@ impl Default for ClassicalValidator {
 }
 
 impl ClassicalValidator {
-    pub fn new(tolerance: f64) -> Self {
-        Self {
-            tolerance: tolerance.abs(),
+    /// Build a validator with an explicit tolerance.
+    ///
+    /// Refuses rather than repairs a bad tolerance, because the value gates
+    /// the one check this module exists to enforce. A negative tolerance was
+    /// once silently made positive with `.abs()`; that hid the caller's bug
+    /// instead of naming it. Worse, a non-finite tolerance was not caught at
+    /// all: `discrepancy > f64::NAN` is `false` for every `discrepancy`, so a
+    /// validator built with a NaN tolerance would validate *any* claim,
+    /// however large the gap between it and the classical recomputation —
+    /// exactly the unchecked quantum number ADR 0006 forbids.
+    pub fn new(tolerance: f64) -> Result<Self> {
+        if !tolerance.is_finite() || tolerance < 0.0 {
+            return Err(Error::invalid(format!(
+                "a classical validation tolerance must be finite and non-negative; {tolerance} \
+                 would either fail to bound the check or admit every claim regardless of how far \
+                 it is from the classical recomputation"
+            )));
         }
+        Ok(Self { tolerance })
     }
 
     pub fn tolerance(&self) -> f64 {
