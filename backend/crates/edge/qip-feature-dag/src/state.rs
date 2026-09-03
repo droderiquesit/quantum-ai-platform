@@ -434,6 +434,12 @@ impl InstrumentState {
             ask_price: ask.price,
             ask_size: ask.size,
         };
+        // Whether this pass actually changed the touch, as opposed to a
+        // message that reached the book without moving the top of it — an
+        // order added three levels deep still calls this function, and
+        // `spreads` is documented as one entry per touch change, not one per
+        // message that happened to arrive.
+        let touch_changed = self.last_touch != Some(touch);
         if let Some(previous) = self.last_touch
             && previous != touch
         {
@@ -442,7 +448,7 @@ impl InstrumentState {
         }
         self.last_touch = Some(touch);
 
-        if let Some(spread) = self.book.spread() {
+        if touch_changed && let Some(spread) = self.book.spread() {
             push_capped(&mut self.spreads, spread, self.history);
         }
         if let Some(mid) = self.book.mid() {
