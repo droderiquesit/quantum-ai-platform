@@ -411,6 +411,7 @@ const NODE_MODULE: &str = "infrastructure/terraform/modules/execution-node/main.
 const NODE_STARTUP: &str =
     "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl";
 const TRUST_ZONES_MODULE: &str = "infrastructure/terraform/modules/trust-zones/main.tf";
+const NETWORK_VARIABLES: &str = "infrastructure/terraform/modules/network/variables.tf";
 
 /// The catalogue's workload entries, as `(name, body)`, comments stripped.
 ///
@@ -865,6 +866,54 @@ fn the_execution_nodes_are_one_module_rather_than_nine_copies() {
     assert!(
         module.contains("condition     = length(var.venues) > 0"),
         "the node no longer refuses a plan with no venue, so a node could be created that boots, fails and restarts for ever"
+    );
+}
+
+#[test]
+fn the_console_egress_cidr_validation_refuses_a_range_smaller_than_a_26_rather_than_only_its_syntax()
+ {
+    // The variable's validation used to check only that the value parsed as
+    // *some* CIDR (`can(cidrnetmask(...))`), while its own comment claimed
+    // "refusing a smaller one here rather than at apply time" — a /28 passed
+    // that check and would have failed only when Google's API refused direct
+    // VPC egress on it, after the subnet and instance template already
+    // existed. A second validation now reads the prefix and refuses
+    // anything smaller than the documented /26 floor.
+    let module = without_comments(&read(NETWORK_VARIABLES));
+    assert!(
+        module.contains("can(cidrnetmask(var.console_egress_cidr))"),
+        "the syntax check on console_egress_cidr is gone"
+    );
+    assert!(
+        module.contains("tonumber(split(\"/\", var.console_egress_cidr)[1]) <= 26"),
+        "nothing refuses a console_egress_cidr smaller than a /26 at plan time; Google's \
+         direct VPC egress API would refuse it only at apply, after the subnet and template \
+         already exist"
+    );
+
+    // The gate has to both fire and admit: prove it against the two prefixes
+    // by mirroring the exact HCL expression in Rust, the same way
+    // `console_route.rs`'s `parse_cidr` proves the committed dev value.
+    let admits = |cidr: &str| -> bool {
+        let prefix: u32 = cidr
+            .split('/')
+            .nth(1)
+            .expect("cidr has a prefix")
+            .parse()
+            .expect("numeric");
+        prefix <= 26
+    };
+    assert!(
+        admits("10.0.16.0/26"),
+        "a /26, the documented floor, must be admitted"
+    );
+    assert!(
+        admits("10.0.16.0/24"),
+        "a /24, wider than the floor, must be admitted"
+    );
+    assert!(
+        !admits("10.0.16.0/28"),
+        "a /28, smaller than the /26 floor Google enforces at apply, must be refused"
     );
 }
 
