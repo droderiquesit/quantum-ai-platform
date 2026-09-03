@@ -74,9 +74,22 @@ impl<'a> CrossMarketPair<'a> {
     }
 
     /// State what a difference of resolution authority is worth per contract.
+    ///
+    /// Refuses a positive haircut on a pair with no source divergence: there
+    /// is nothing for it to be the price of, and accepting it anyway would
+    /// record an `Uncertainty` deduction whose non-zero amount contradicts
+    /// its own basis text, which says "both venues resolve from the same
+    /// source" — a self-contradictory line in the one place a trader reads
+    /// to find out where their edge went.
     pub fn with_source_haircut(mut self, per_contract: Decimal) -> Result<Self> {
         if per_contract.is_negative() {
             return Err(Error::invalid("a haircut cannot be negative"));
+        }
+        if per_contract.is_positive() && self.source_divergence.is_none() {
+            return Err(Error::invalid(format!(
+                "markets {} and {} resolve from the same source; a haircut has nothing to price",
+                self.left.market_id, self.right.market_id
+            )));
         }
         self.haircut_per_contract = per_contract;
         Ok(self)
