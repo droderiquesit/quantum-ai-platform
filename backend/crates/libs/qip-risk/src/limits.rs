@@ -302,6 +302,70 @@ impl RiskState {
         }
         self
     }
+
+    /// Populate the fraction of the book liquidatable within each configured
+    /// [`LimitKind::MinLiquidity`] horizon, from `days_to_liquidate` and
+    /// `position_notionals` this state already carries.
+    ///
+    /// [`LimitKind::MinLiquidity`] looks its figure up in `liquidatable_within`,
+    /// keyed by horizon, and records nothing when the key is absent — the same
+    /// shape of failure [`Self::with_tail_risk`] closed for the tail limits.
+    /// [`LimitSet::conservative_default`] has shipped a `liquidity` limit since
+    /// before this method existed, and nothing filled the map it reads: the
+    /// limit took its `None` arm on every book. A control that cannot fire
+    /// reads as protection and is not.
+    ///
+    /// An instrument with no entry in `days_to_liquidate` is **not** treated
+    /// as liquidatable — its notional still counts in the denominator, so it
+    /// pulls the ratio down rather than being dropped from both sides. A
+    /// fraction computed only over the positions with a known exit time would
+    /// read more liquid the less anyone had told it, which is the wrong
+    /// direction for a floor to fail in; refusing to guess an unknown exit
+    /// time is the fail-closed choice.
+    ///
+    /// The key is `{days:.0}`, formatted exactly as the limit's own lookup
+    /// formats it when it reads — one rule, not two copies of the same
+    /// format a rounding boundary could separate.
+    ///
+    /// Leaves `liquidatable_within` untouched when the book holds no
+    /// positions: an empty book has nothing to be illiquid, and recording a
+    /// fabricated `1.0` for a ratio nobody measured is the same mistake in
+    /// the other direction.
+    ///
+    /// Also leaves it untouched when `days_to_liquidate` itself is empty —
+    /// nobody has marked a single instrument, which is a book that has never
+    /// been measured, not a book with zero liquid positions. The fail-closed
+    /// rule above governs *partial* coverage, once measurement has started;
+    /// it does not manufacture a floor-breaching `0.0` for a book a caller
+    /// has not marked at all, the same way an all-too-short return series
+    /// leaves the tail maps empty in [`Self::with_tail_risk`] rather than
+    /// recording a zero nobody computed.
+    pub fn with_liquidity_horizons(mut self, limits: &LimitSet) -> Self {
+        if self.days_to_liquidate.is_empty() {
+            return self;
+        }
+        let total: Decimal = self.position_notionals.values().map(|v| v.abs()).sum();
+        if !total.is_positive() {
+            return self;
+        }
+        for limit in &limits.limits {
+            if let LimitKind::MinLiquidity { days, .. } = limit.kind {
+                let liquidatable: Decimal = self
+                    .position_notionals
+                    .iter()
+                    .filter(|(instrument, _)| {
+                        self.days_to_liquidate
+                            .get(instrument.as_str())
+                            .is_some_and(|exit_days| *exit_days <= days)
+                    })
+                    .map(|(_, notional)| notional.abs())
+                    .sum();
+                self.liquidatable_within
+                    .insert(format!("{days:.0}"), liquidatable.to_f64() / total.to_f64());
+            }
+        }
+        self
+    }
 }
 
 /// The outcome of checking a state against a limit set.
