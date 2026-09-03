@@ -82,10 +82,17 @@ fn run() -> Result<()> {
     let mut config = PlatformConfig::default().with_live_ceiling(ceiling);
     config.central.arbitrage = arbitrage;
     let context = qip_core::Context::new(clock.clone(), config.seed);
+    // Cloned before the platform takes it: `Telemetry` holds `Arc`s over its
+    // registry, tracer and logger, so the clone shares the same underlying
+    // state rather than starting a second, disconnected one. The OpenObserve
+    // drain thread, if configured below, reads from this handle; the platform
+    // records into the same one.
+    let telemetry = Telemetry::new("qip-api", clock.clone());
+    let telemetry_for_export = telemetry.clone();
     let mut platform = Platform::new(
         config,
         context,
-        Telemetry::new("qip-api", clock.clone()),
+        telemetry,
         catalogue.universe,
         LimitSet::conservative_default(),
     )?;
@@ -136,6 +143,21 @@ fn run() -> Result<()> {
             // signing with something nobody verifies.
             envelope_key.as_ref().map(|key| key.as_bytes().to_vec()),
         )?))),
+        None => None,
+    };
+
+    // The OpenObserve drain (ADR 0028): absent configuration means this
+    // process's telemetry stays local, exactly as it always has. Set means a
+    // thread starts that POSTs this process's metrics and spans on an
+    // interval, and the handle must outlive `serve()` below — dropping it
+    // would stop the thread while the process still runs.
+    let openobserve_config = qip_api::openobserve::OpenObserveConfig::from_env()?;
+    let _openobserve_drain = match &openobserve_config {
+        Some(config) => Some(qip_api::openobserve::spawn(
+            telemetry_for_export,
+            config.clone(),
+            clock.clone(),
+        )?),
         None => None,
     };
 
@@ -300,6 +322,14 @@ fn run() -> Result<()> {
             "  mesh:             not served ({} is not set); cells pointed here are \
              partitioned and stop when their envelopes expire",
             qip_api::mesh::CELLS_VARIABLE
+        ),
+    }
+    match &openobserve_config {
+        Some(config) => println!("  openobserve:      draining to {}", config.describe()),
+        None => println!(
+            "  openobserve:      not draining ({} is not set); telemetry stays local to \
+             this process",
+            qip_api::openobserve::URL_VARIABLE
         ),
     }
     for line in storage.banner_lines(

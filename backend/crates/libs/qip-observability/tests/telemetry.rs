@@ -155,6 +155,141 @@ fn prometheus_export_is_well_formed() {
     );
 }
 
+#[test]
+fn otlp_metrics_export_carries_a_counter_a_gauge_and_a_histogram_in_schema_correct_json() {
+    // ADR 0028: a sibling encoder to `to_prometheus`, not a replacement, so
+    // this proves the new shape rather than re-proving the old one.
+    let metrics = Metrics::new("qip-api");
+    metrics.count(names::ORDERS_FILLED, labels([("venue", "XNYS")]));
+    metrics.increment(names::ORDERS_FILLED, labels([("venue", "XNYS")]), 4);
+    metrics.describe(names::ORDERS_FILLED, "orders filled");
+    metrics.gauge(names::PORTFOLIO_VALUE, labels([]), 1_500_000.5);
+    for millis in [1.0, 2.0, 60.0] {
+        metrics.observe_latency_ms(names::EXECUTION_LATENCY_MS, labels([]), millis);
+    }
+
+    let export = metrics
+        .snapshot()
+        .to_otlp_metrics(1_700_000_000_000_000_000);
+
+    // Top-level shape: one resource, naming the service, one scope carrying
+    // every metric.
+    assert_eq!(
+        export["resourceMetrics"][0]["resource"]["attributes"][0]["value"]["stringValue"],
+        "qip-api"
+    );
+    let scope_metrics = export["resourceMetrics"][0]["scopeMetrics"][0]["metrics"]
+        .as_array()
+        .expect("scopeMetrics.metrics must be an array");
+    assert_eq!(
+        scope_metrics.len(),
+        3,
+        "three distinct series were recorded, so three OTLP metrics must appear"
+    );
+
+    let find = |name: &str| {
+        scope_metrics
+            .iter()
+            .find(|m| m["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is missing from the OTLP export"))
+    };
+
+    // The counter: a monotonic cumulative sum, its value a JSON *string* per
+    // OTLP's protobuf-JSON mapping for a 64-bit integer, and the accumulated
+    // total (1 + 4 = 5), not either increment alone.
+    let counter = find(names::ORDERS_FILLED);
+    assert_eq!(counter["description"], "orders filled");
+    assert_eq!(counter["sum"]["isMonotonic"], true);
+    assert_eq!(
+        counter["sum"]["aggregationTemporality"],
+        "AGGREGATION_TEMPORALITY_CUMULATIVE"
+    );
+    let counter_point = &counter["sum"]["dataPoints"][0];
+    assert_eq!(counter_point["asInt"], "5", "the two increments must sum");
+    assert_eq!(counter_point["timeUnixNano"], "1700000000000000000");
+    assert_eq!(counter_point["attributes"][0]["key"], "venue");
+    assert_eq!(
+        counter_point["attributes"][0]["value"]["stringValue"],
+        "XNYS"
+    );
+    assert!(
+        counter_point["asInt"].is_string(),
+        "a 64-bit counter value must be a JSON string, not a number that can lose precision"
+    );
+
+    // The gauge: a bare instantaneous double, no cumulative wrapper.
+    let gauge = find(names::PORTFOLIO_VALUE);
+    assert_eq!(gauge["gauge"]["dataPoints"][0]["asDouble"], 1_500_000.5);
+    assert!(
+        gauge["gauge"]["dataPoints"][0]["asDouble"].is_number(),
+        "a gauge value is a double and stays a JSON number"
+    );
+    assert!(
+        gauge.get("sum").is_none(),
+        "a gauge must not also be encoded as a sum"
+    );
+
+    // The histogram: per-bucket (not cumulative) counts, count and sum both
+    // present, and as many bucket counts as the fixed latency boundaries plus
+    // the overflow bucket.
+    let histogram = find(names::EXECUTION_LATENCY_MS);
+    let point = &histogram["histogram"]["dataPoints"][0];
+    assert_eq!(point["count"], "3");
+    let bucket_counts: Vec<u64> = point["bucketCounts"]
+        .as_array()
+        .expect("bucketCounts must be an array")
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .expect("a bucket count must be a JSON string")
+                .parse()
+                .expect("a bucket count string must parse as u64")
+        })
+        .collect();
+    assert_eq!(
+        bucket_counts.iter().sum::<u64>(),
+        3,
+        "the per-bucket counts must sum to the total observation count, proving they are \
+         per-bucket rather than the cumulative counts `to_prometheus` renders"
+    );
+    let bounds = point["explicitBounds"]
+        .as_array()
+        .expect("explicitBounds must be an array");
+    assert_eq!(
+        bucket_counts.len(),
+        bounds.len() + 1,
+        "there must be one more bucket than boundary — the overflow bucket"
+    );
+
+    // The whole document must actually be JSON, not merely `serde_json::Value`
+    // in memory: round-trip it the way the drain thread's POST body will be
+    // built.
+    let text = serde_json::to_string(&export).expect("the OTLP export must serialise");
+    let back: serde_json::Value =
+        serde_json::from_str(&text).expect("the serialised OTLP export must parse back");
+    assert_eq!(back, export);
+}
+
+#[test]
+fn an_empty_snapshot_produces_an_otlp_document_with_no_metrics() {
+    // The premise a reader needs before trusting the populated test above:
+    // an empty registry does not fabricate a metric, it produces an empty
+    // list inside the same envelope.
+    let metrics = Metrics::new("empty-service");
+    let export = metrics.snapshot().to_otlp_metrics(0);
+    assert_eq!(
+        export["resourceMetrics"][0]["resource"]["attributes"][0]["value"]["stringValue"],
+        "empty-service"
+    );
+    assert_eq!(
+        export["resourceMetrics"][0]["scopeMetrics"][0]["metrics"]
+            .as_array()
+            .expect("metrics must be an array even when empty")
+            .len(),
+        0
+    );
+}
+
 // --- tracing ----------------------------------------------------------------
 
 #[test]
