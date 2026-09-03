@@ -22,7 +22,7 @@ use qip_core::{
 use qip_edge::cell::{Cell, CellConfig, WorkReport};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::mesh::{CapitalGrantTopic, CellStateDelta};
-use qip_edge_node::mesh::{MeshLink, MeshSettings, PEER_VARIABLE};
+use qip_edge_node::mesh::{MeshLink, MeshSettings, MeshTick, PEER_VARIABLE};
 use qip_events::{AnyEvent, Envelope, EventBody, Topic};
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
@@ -391,6 +391,32 @@ fn a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running()
     assert_eq!(cell.deployed_strategies(), vec!["mean-reversion-1"]);
     assert_eq!(node_link.health().uplink.dead_lettered, 1);
     Ok(())
+}
+
+#[test]
+fn a_tick_whose_policy_poll_failed_is_not_reported_quiet() {
+    // The policy downlink carries halt commands as well as policy frames, so
+    // a failure to poll it is exactly as reportable as a failure to poll
+    // capital — `serve` in `main.rs` only logs a tick when `!tick.is_quiet()`,
+    // so a `policy_poll_error` this method does not see is a policy-poll
+    // failure that never reaches an operator's log, however long it lasts.
+    //
+    // Asserting the premise first: a tick that has done nothing at all is
+    // quiet, so the failure below is what flips it and not some other field.
+    let clean = MeshTick::default();
+    assert!(
+        clean.is_quiet(),
+        "the premise failed: an untouched tick was not quiet: {clean:?}"
+    );
+
+    let tick = MeshTick {
+        policy_poll_error: Some("the peer refused the policy request".to_string()),
+        ..MeshTick::default()
+    };
+    assert!(
+        !tick.is_quiet(),
+        "a tick whose policy poll failed was reported quiet: {tick:?}"
+    );
 }
 
 #[test]

@@ -188,6 +188,13 @@ impl MeshTick {
     pub fn is_quiet(&self) -> bool {
         self.refused.is_empty()
             && self.poll_error.is_none()
+            // The policy poll carries halt commands as well as policy
+            // frames; a failure here is exactly as reportable as a failure
+            // to poll capital, and was silently swallowed before this
+            // check existed — `serve`'s `if !tick.is_quiet()` is the only
+            // place a policy-poll failure would ever have reached an
+            // operator's log.
+            && self.policy_poll_error.is_none()
             && self.delta.as_deref().is_none_or(|code| code == "delivered")
             && self
                 .desk
