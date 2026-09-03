@@ -442,6 +442,34 @@ fn resolution_is_deterministic() {
 }
 
 #[test]
+fn a_disagreeing_weak_identifier_does_not_override_an_identical_name() {
+    // Exchange tickers are deliberately weak evidence (confidence 0.4): they
+    // are reused across venues and reassigned over time, so an *agreeing*
+    // ticker must never be authoritative on its own (see
+    // `IdentifierKind::confidence`). The same logic means a *disagreeing*
+    // weak ticker must not be treated as decisive either — only a strong
+    // identifier (ISIN, FIGI, LEI, ...) disagreeing is grounds to force two
+    // records apart despite an identical name.
+    let (context, _) = context();
+    let mut resolver = Resolver::default();
+    resolver.resolve(
+        &record("Northwind Semiconductor Corporation", "filings")
+            .with_identifiers(Identifiers::new().with(IdentifierKind::ExchangeSymbol, "NWSC")),
+        &context,
+    );
+    let (decision, _) = resolver.resolve(
+        &record("Northwind Semiconductor Corporation", "newswire")
+            .with_identifiers(Identifiers::new().with(IdentifierKind::ExchangeSymbol, "NWS")),
+        &context,
+    );
+
+    assert!(
+        matches!(decision, Decision::Linked { .. }),
+        "a disagreeing exchange ticker must not override an identical name: {decision:?}"
+    );
+}
+
+#[test]
 fn a_link_carries_the_evidence_that_produced_it() {
     let (context, _) = context();
     let mut resolver = Resolver::default();
