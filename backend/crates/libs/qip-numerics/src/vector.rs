@@ -101,13 +101,17 @@ pub fn project_simplex(v: &[f64], total: f64) -> Vec<f64> {
 /// caller must report rather than silently approximate.
 pub fn project_box_sum(v: &[f64], lo: &[f64], hi: &[f64], total: f64) -> Option<Vec<f64>> {
     let n = v.len();
-    if n == 0 {
-        return Some(Vec::new());
-    }
     let min_reachable: f64 = lo.iter().sum();
     let max_reachable: f64 = hi.iter().sum();
+    // Checked even for n == 0: an empty box can only reach a sum of zero, and
+    // returning `Some(vec![])` for a non-zero target would tell a caller a
+    // zero-asset budget was met when it was not — infeasibility that would
+    // otherwise surface nowhere.
     if total < min_reachable - 1e-9 || total > max_reachable + 1e-9 {
         return None;
+    }
+    if n == 0 {
+        return Some(Vec::new());
     }
 
     let clamp_at = |tau: f64| -> f64 {

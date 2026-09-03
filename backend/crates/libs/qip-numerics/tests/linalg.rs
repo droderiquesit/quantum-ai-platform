@@ -290,6 +290,18 @@ fn box_sum_projection_reports_infeasibility() {
 }
 
 #[test]
+fn box_sum_projection_reports_infeasibility_on_an_empty_box() {
+    // Zero assets can only ever sum to zero; a non-zero target must be refused
+    // rather than answered with a silently "feasible" empty vector.
+    assert!(vector::project_box_sum(&[], &[], &[], 1.0).is_none());
+    // Zero assets summing to zero is trivially feasible.
+    assert_eq!(
+        vector::project_box_sum(&[], &[], &[], 0.0),
+        Some(Vec::new())
+    );
+}
+
+#[test]
 fn norms_agree_with_definitions() {
     let v = vec![3.0, -4.0];
     assert!(approx_eq(vector::norm2(&v), 5.0, 1e-12));
