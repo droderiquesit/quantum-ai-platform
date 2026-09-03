@@ -185,6 +185,15 @@ pub enum HeldReason {
     CircuitOpen(Refusal),
     /// Every attempt in the ladder failed without the peer answering.
     Undelivered { attempts: u32, last_error: String },
+    /// An earlier envelope to this cell is still waiting in the spool.
+    ///
+    /// Persisted and left for [`CapitalDispatcher::recover`], which is the
+    /// only path allowed to send it. Sending it here instead, ahead of the
+    /// entry still stuck at the head of the spool, is exactly the reordering
+    /// the FIFO discipline exists to prevent: a later — possibly narrower —
+    /// grant would reach the cell before the earlier one `recover` has not
+    /// yet delivered.
+    Queued,
 }
 
 /// What happened to one envelope.
@@ -344,6 +353,14 @@ impl CapitalDispatcher {
     /// here rather than trusted nine times downstream — and the receiving cell
     /// refuses it again anyway, because a correctly signed grant for a
     /// different cell is exactly the replay a signature alone does not stop.
+    ///
+    /// Does not attempt a send while an earlier envelope to this cell is
+    /// still spooled. Trying anyway would defeat the FIFO ordering
+    /// [`Self::recover`] exists to hold: a caller that dispatches a second,
+    /// narrower grant while the first is still held by a down cell or an open
+    /// circuit would have delivered them out of order the moment the peer
+    /// came back within this same call, because nothing here waited for
+    /// `recover` to drain the backlog first.
     pub fn dispatch(
         &mut self,
         envelope: CapitalEnvelope,
@@ -356,10 +373,20 @@ impl CapitalDispatcher {
                 self.cell
             )));
         }
+        // Checked before the push: a non-empty spool at this instant means an
+        // earlier envelope has not yet been delivered, and this one must
+        // queue behind it rather than race it to the wire.
+        let backlog_ahead = self.spool.depth()?;
         let frame = frame_for(&envelope, at)?;
         // Persisted before any attempt to send it. Everything after this point
         // may fail without losing the instruction.
         let sequence = self.spool.push(frame.clone()).map_err(Error::from)?;
+        if backlog_ahead > 0 {
+            return Ok(CapitalDispatch::Held {
+                sequence,
+                reason: HeldReason::Queued,
+            });
+        }
         self.send(sequence, frame, at)
     }
 
