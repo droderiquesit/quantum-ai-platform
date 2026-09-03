@@ -574,16 +574,21 @@ impl CounterfactualEngine {
                 view.as_of()
             ))
         })?;
+        // `DecisionView::liquidity` refuses (returns `None`) both when nothing
+        // had printed and when fewer than two bars had — a single bar cannot
+        // estimate a volatility, and pricing one anyway would silently charge
+        // no market impact at all. Either way the alternative cannot be
+        // planned from what was knowable, so both reach the same refusal.
         let liquidity = view.liquidity(&object_id).ok_or_else(|| {
             Error::not_found(format!(
-                "no traded volume for {object_id} by {}",
+                "no liquidity estimate for {object_id} by {}: not enough closed bars had printed to size an order against",
                 view.as_of()
             ))
         })?;
         let hedge_liquidity = match &hedge {
             Some((instrument, _)) => Some(view.liquidity(instrument).ok_or_else(|| {
                 Error::not_found(format!(
-                    "no traded volume for the hedge {instrument} by {}",
+                    "no liquidity estimate for the hedge {instrument} by {}: not enough closed bars had printed to size an order against",
                     view.as_of()
                 ))
             })?),
