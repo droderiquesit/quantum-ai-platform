@@ -861,3 +861,59 @@ fn the_read_sets_of_a_message_follow_the_contracts_own_predicate() {
         );
     }
 }
+
+#[test]
+fn a_message_that_does_not_move_the_touch_does_not_duplicate_the_spread_series() {
+    // `InstrumentState::spreads` is documented as one entry per touch change,
+    // matching `flow`. A level added three prices away from the touch still
+    // reaches `refresh_touch`, and must not append another copy of the
+    // unchanged spread — a percentile computed over that history would then
+    // be dominated by duplicates of the current value rather than by genuine
+    // history, biasing `SpreadPercentile` toward 1.0 regardless of the real
+    // distribution.
+    let subject = object("AAA");
+    let mut state = qip_feature_dag::MarketState::default();
+    let at = Timestamp::from_secs(1_700_000_000);
+    state
+        .apply(&quote(&subject, "100.00", "100.02", 10, at, 1))
+        .unwrap();
+    // Assert the premise: one touch-establishing message already produced one
+    // spread observation, so the count checked below is a count of
+    // duplicates, not of a series that never grew at all.
+    assert_eq!(state.instrument(&subject).unwrap().spreads().len(), 1);
+
+    for (sequence, price) in [(2u64, "99.00"), (3, "98.50"), (4, "98.00")] {
+        let at_n = at.saturating_add(Duration::from_millis(200 * sequence as i64));
+        state
+            .apply(&message(
+                &subject,
+                MessageBody::LevelSet {
+                    side: BookSide::Bid,
+                    price: Decimal::parse(price).unwrap(),
+                    quantity: Decimal::from_int(5),
+                    order_count: None,
+                },
+                at_n,
+                sequence,
+            ))
+            .unwrap();
+    }
+    assert_eq!(
+        state.instrument(&subject).unwrap().spreads().len(),
+        1,
+        "three messages that never moved the touch must not grow a series \
+         documented as one entry per touch change"
+    );
+
+    // A message that does move the touch must still be recorded — the fix
+    // must gate duplicates, not freeze the series.
+    let at_touch = at.saturating_add(Duration::from_secs(1));
+    state
+        .apply(&quote(&subject, "100.01", "100.03", 10, at_touch, 5))
+        .unwrap();
+    assert_eq!(
+        state.instrument(&subject).unwrap().spreads().len(),
+        2,
+        "a genuine touch change must still be recorded"
+    );
+}
