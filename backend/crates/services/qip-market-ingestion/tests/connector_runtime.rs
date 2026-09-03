@@ -634,6 +634,42 @@ fn a_withheld_event_is_delivered_by_a_later_poll_rather_than_swallowed_as_a_dupl
 }
 
 #[test]
+fn a_withheld_event_does_not_advance_the_cursor_past_itself() -> Result<()> {
+    // A connector with a resume position asks a source for events after the
+    // cursor — that is the documented pattern in `SourceConnector::fetch_request`
+    // for any source with a cursor. If a withheld event's time were folded
+    // into that cursor, the next poll would ask only for events after an
+    // instant the deployment was never entitled to see the first one at, and
+    // the record would never be asked for again once it finally became
+    // knowable — a silent, permanent loss dressed up as `withheld`, whose own
+    // doc comment promises "not a loss: the next poll's window covers them
+    // again". This batch carries one admitted event and one withheld event
+    // newer than it, on purpose, so the cursor's own position after the poll
+    // — not just what the poll delivered — can be checked directly.
+    let manifest = delayed_manifest(15 * 60 * 1000);
+    let (mut runtime, _sleeper) = runtime_with(manifest.clone())?;
+    let mut connector = TestConnector::new(manifest);
+    let mut emulator = emulator_serving(&body(&[
+        ("admitted", "2026-08-24T14:00:00Z", "101.25"),
+        ("withheld", "2026-08-24T14:59:00Z", "101.30"),
+    ]));
+    let transport: &mut dyn SourceTransport = &mut emulator;
+
+    let report = runtime.poll(&mut connector, transport, now())?;
+    assert_eq!(report.admitted.len(), 1, "the premise: one event admitted");
+    assert_eq!(report.withheld, 1, "the premise: one event withheld");
+
+    assert_eq!(
+        runtime.cursor().position.event_time(),
+        Some(at("2026-08-24T14:00:00Z")),
+        "the cursor moved to the withheld event's time rather than stopping at the last \
+         admitted one, so a cursor-based fetch_request would never ask for the withheld \
+         event again"
+    );
+    Ok(())
+}
+
+#[test]
 fn the_envelope_keeps_event_time_ingest_time_and_knowable_time_apart() -> Result<()> {
     let manifest = delayed_manifest(15 * 60 * 1000);
     let (mut runtime, _sleeper) = runtime_with(manifest.clone())?;

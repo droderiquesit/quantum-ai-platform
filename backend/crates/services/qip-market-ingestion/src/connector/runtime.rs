@@ -554,11 +554,29 @@ impl ConnectorRuntime {
         let newest = events.iter().map(|event| event.event_time).max();
         self.heartbeat.answered(at, newest);
 
+        // The cursor must not fold in a withheld event's time: a connector
+        // whose `fetch_request` asks for events after the cursor (the
+        // documented pattern for a source with a resume position) would then
+        // never ask for that event again once it becomes knowable, and a
+        // record this platform was only temporarily not entitled to see
+        // would be lost rather than delivered by a later poll — exactly the
+        // loss `PollReport::withheld`'s own doc comment says cannot happen.
+        // A withheld event's time is therefore excluded from `cursor_newest`
+        // even though it is included in `newest` for the heartbeat above,
+        // whose purpose — telling a dead connector from a dead source — is
+        // legitimately served by every event the source produced.
+        let mut cursor_newest: Option<Timestamp> = None;
         for event in &events {
-            self.admit(connector, event, at, &mut report);
+            let withheld = self.admit(connector, event, at, &mut report);
+            if !withheld {
+                cursor_newest = Some(match cursor_newest {
+                    Some(previous) if previous > event.event_time => previous,
+                    _ => event.event_time,
+                });
+            }
         }
 
-        let position = newest.map_or_else(
+        let position = cursor_newest.map_or_else(
             || self.cursor.position.clone(),
             |at| CursorPosition::EventTime { at },
         );
@@ -577,25 +595,29 @@ impl ConnectorRuntime {
     /// as seen while withholding it, and the next poll — the one that was
     /// supposed to deliver it — would drop it as a duplicate. That is a record
     /// lost with every counter reading zero.
+    ///
+    /// Returns whether the event was withheld, which is what the caller uses
+    /// to keep a withheld event's time out of the cursor: see
+    /// [`Self::ingest`]'s `cursor_newest`.
     fn admit(
         &mut self,
         connector: &dyn SourceConnector,
         event: &RawEvent,
         at: Timestamp,
         report: &mut PollReport,
-    ) {
+    ) -> bool {
         let knowable_at = event
             .event_time
             .saturating_add(self.manifest.publication_delay());
         if knowable_at > at {
             report.withheld = report.withheld.saturating_add(1);
-            return;
+            return true;
         }
 
         let fingerprint = event.fingerprint(&self.manifest);
         if matches!(self.dedup.observe(&fingerprint), Novelty::Duplicate) {
             report.duplicates = report.duplicates.saturating_add(1);
-            return;
+            return false;
         }
 
         let record = match connector.map(event, at) {
@@ -610,7 +632,7 @@ impl ConnectorRuntime {
                     at,
                     report,
                 );
-                return;
+                return false;
             }
         };
 
@@ -623,7 +645,7 @@ impl ConnectorRuntime {
                 at,
                 report,
             );
-            return;
+            return false;
         }
 
         match MarketEventEnvelope::new(
@@ -644,6 +666,7 @@ impl ConnectorRuntime {
                 report,
             ),
         }
+        false
     }
 
     fn hold(
