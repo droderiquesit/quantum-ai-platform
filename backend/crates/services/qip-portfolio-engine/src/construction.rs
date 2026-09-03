@@ -111,6 +111,30 @@ impl Mandate {
                 "the minimum position is at or above the cap, so no position is permissible",
             ));
         }
+        // A negative coefficient here does not merely under-penalise risk, it
+        // rewards it: the mean-variance objective is
+        // `0.5 * risk_aversion * variance - expected_return`, minimised, so a
+        // negative risk_aversion makes higher variance *reduce* the objective
+        // and the solver actively seeks the riskiest feasible book. That is
+        // the opposite of what "risk aversion" names, and clamping it to zero
+        // would silently rewrite a caller's mandate instead of refusing it.
+        if self.risk_aversion < 0.0 {
+            return Err(Error::invalid(format!(
+                "risk aversion of {} is negative, which would reward variance instead of \
+                 penalising it; supply a non-negative value",
+                self.risk_aversion
+            )));
+        }
+        // A negative cost is not a cost. Left unchecked it disables the
+        // turnover penalty in the optimiser (only applied when positive) while
+        // still landing in the proposal's own `estimated_cost_bps`, so the
+        // decision record would claim the book was paid to trade.
+        if self.turnover_cost_bps < 0.0 {
+            return Err(Error::invalid(format!(
+                "turnover cost of {} bps is negative; a cost cannot be negative",
+                self.turnover_cost_bps
+            )));
+        }
         Ok(())
     }
 
