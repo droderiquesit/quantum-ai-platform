@@ -44,8 +44,19 @@
 //!   parameters, draws come from a stream seeded on the run seed and the
 //!   scope, and [`market::SimulationRun::digest`] makes "the same run" a thing
 //!   a test compares byte for byte — including under injected chaos.
+//!
+//! # A regime model is not a result
+//!
+//! [`baseline::RegimeComparison`] runs regime-conditional allocation and the
+//! same sizing with the regime term removed on one declared holdout, every
+//! time, and reports the difference — the discipline ADR 0006 imposes on the
+//! quantum path, applied to the regime path. It refuses a split that was not
+//! declared before the run and a holdout that was knowable before its own
+//! boundary, because a comparison whose split could be chosen afterwards is
+//! unfalsifiable.
 
 pub mod backtest;
+pub mod baseline;
 pub mod clock;
 pub mod conditions;
 pub mod costs;
@@ -59,6 +70,10 @@ pub mod venue;
 
 pub use backtest::{
     BacktestConfig, BacktestResult, BacktestStrategy, Backtester, RejectedOrder, SimulatedFill,
+};
+pub use baseline::{
+    ArmResult, ComparisonPolicy, RegimeComparison, RegimeTerm, ReturnObservation, SplitDeclaration,
+    size,
 };
 pub use clock::{ExecutionAssumptions, PointInTimeView, SimulationClock};
 pub use conditions::{ConditionSchedule, ConditionWindow, FeedFault, MarketCondition, Regime};
