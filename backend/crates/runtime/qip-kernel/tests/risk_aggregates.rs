@@ -131,20 +131,21 @@ fn universe() -> Universe {
     universe
 }
 
-/// The conservative default less its two share-of-gross concentration caps.
+/// The conservative default, exactly as it ships.
 ///
-/// The seam tests below need a first order into an empty book admitted, and
-/// a share-of-gross cap cannot grant that: the first position in any book is
-/// the whole of gross, so `sector-concentration` and `country-concentration`
-/// read 100% and refuse it. That was invisible while the kernel fed the
-/// checks no axis — the buckets were empty and the caps could not fire —
-/// which the bucket tests below now close. Every other default limit stays.
+/// This fixture used to strip `MaxConcentration`, because the seam tests
+/// below need the first order into an empty book admitted and a
+/// share-of-gross cap cannot grant that: the first position in any book is
+/// the whole of gross, so the cap read 100% and refused it at every size.
+///
+/// ADR 0027 settled that by making the default caps a share of *equity*. The
+/// `retain` is removed rather than kept as a no-op — `conservative_default`
+/// holds no `MaxConcentration` today, so it stripped nothing while still
+/// reading as though these tests ran against a reduced set. That is the
+/// worse of the two failures: a real exemption is visible, a vestigial one
+/// quietly becomes real again the day the limit returns.
 fn limits() -> LimitSet {
-    let mut limits = LimitSet::conservative_default();
-    limits
-        .limits
-        .retain(|limit| !matches!(limit.kind, LimitKind::MaxConcentration { .. }));
-    limits
+    LimitSet::conservative_default()
 }
 
 /// A platform over `limits` with the given initial equity.

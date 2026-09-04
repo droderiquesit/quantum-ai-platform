@@ -24,7 +24,7 @@ use qip_financial::universe::Universe;
 use qip_kernel::config::PlatformConfig;
 use qip_kernel::platform::Platform;
 use qip_observability::Telemetry;
-use qip_risk::limits::{LimitKind, LimitSet};
+use qip_risk::limits::LimitSet;
 
 fn start() -> Timestamp {
     Timestamp::from_secs(1_760_000_000)
@@ -50,23 +50,22 @@ fn universe() -> Universe {
     universe
 }
 
-/// The conservative default less its two share-of-gross concentration caps.
+/// The conservative default, exactly as it ships.
 ///
-/// These tests are about equity arithmetic, and their premise is that the
-/// first order into an empty book is admitted. A share-of-gross cap cannot
-/// grant that premise: the first position in any book is the whole of gross,
-/// so `sector-concentration` (35%) and `country-concentration` (60%) read
-/// 100% and refuse it. That was invisible while the kernel fed the checks no
-/// axis at all — the buckets were empty and the caps could never fire, which
-/// `tests/risk_aggregates.rs` now closes. Every other default limit stays;
-/// whether a share-of-gross cap belongs in a pre-trade set at all is the risk
-/// desk's question, not this fixture's.
+/// This fixture used to strip `MaxConcentration` from the set, because these
+/// tests need the first order into an empty book admitted and a
+/// share-of-gross cap cannot grant that — the first position in any book is
+/// the whole of gross, so the cap read 100% and refused it at every size.
+///
+/// ADR 0027 settled that by making the default caps a share of *equity*, so
+/// the exemption is no longer needed. It is removed rather than left as a
+/// harmless no-op: `conservative_default` holds no `MaxConcentration` today,
+/// so the `retain` stripped nothing while still telling a reader that these
+/// tests run against a reduced set. A fixture that removes a default limit
+/// to pass is a fixture testing a set nobody deploys, and one that only
+/// appears to is worse — it survives the limit coming back.
 fn limits() -> LimitSet {
-    let mut limits = LimitSet::conservative_default();
-    limits
-        .limits
-        .retain(|limit| !matches!(limit.kind, LimitKind::MaxConcentration { .. }));
-    limits
+    LimitSet::conservative_default()
 }
 
 fn platform(config: PlatformConfig) -> Result<Platform> {

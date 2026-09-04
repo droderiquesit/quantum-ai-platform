@@ -1358,21 +1358,52 @@ fn a_credential_with_no_version_is_seeded_before_the_apply_that_resolves_it() {
          workflow output, so it lands in the Actions log"
     );
 
-    // The role that can add a version and cannot read one back. secretAccessor
-    // here would let every dispatch of this workflow read the venue credential.
+    // Where the permission to add a version actually comes from.
+    //
+    // The first version of this test asserted that the workflow self-granted
+    // `secretVersionManager` and not `secretAccessor`, and read as though
+    // that kept the runner from reading a payload back. It did not.
+    // `modules/cicd` grants this same account `roles/secretmanager.admin`,
+    // which includes `secretmanager.versions.access`, so the narrower role
+    // added nothing and forbade nothing — an assertion that passed while
+    // guaranteeing a boundary that was never there.
+    //
+    // What is worth pinning is the real dependency: the seeding step works
+    // because of the declarative admin grant, so narrowing that grant without
+    // giving this step its own version-add permission breaks the apply in the
+    // one place nobody looks.
+    let cicd = read("infrastructure/terraform/modules/cicd/main.tf");
+    assert!(
+        cicd.contains("\"roles/secretmanager.admin\""),
+        "the infra account no longer holds secretmanager.admin, so the seeding \
+         step in infra.yml cannot add a version and every fresh environment \
+         fails on the secret it was written to seed"
+    );
+
+    // And the workflow must not paper over that by self-granting a secret
+    // role, which is what made the earlier claim look true.
     let grants = steps
         .iter()
         .find(|step| step.contains("name: the permissions the plan needs"))
         .expect("infra.yml has no step granting the roles the plan needs");
+    // Read the loop's own role list, not the step. The comment above it
+    // explains why no secret role is granted and therefore names two of them;
+    // a scan of the whole step reads that prose as a grant, which is exactly
+    // how the module descriptions tripped this suite once before.
+    let role_list = grants
+        .lines()
+        .find(|line| line.trim_start().starts_with("for role in "))
+        .expect("infra.yml's grant step no longer loops over a role list");
     assert!(
-        grants.contains("roles/secretmanager.secretVersionManager"),
-        "the seeding step cannot add a secret version, because the role that \
-         lets it is no longer granted"
+        role_list.contains("roles/run.admin"),
+        "the premise: this is the role list, and it should still carry the \
+         roles that are only granted here"
     );
     assert!(
-        !grants.contains("roles/secretmanager.secretAccessor"),
-        "this workflow grants itself the ability to read secret payloads, so \
-         every dispatch can read the venue credential"
+        !role_list.contains("roles/secretmanager."),
+        "infra.yml self-grants a secretmanager role again; the account already \
+         holds secretmanager.admin declaratively, so the grant adds nothing and \
+         reads as a narrowing that is not one"
     );
 }
 

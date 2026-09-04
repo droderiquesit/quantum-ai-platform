@@ -186,21 +186,39 @@ jobs:
       # account grants each to itself here —
       # its projectIamAdmin makes that possible; modules/cicd documents why
       # that is accepted — waiting only when a binding is new, since a fresh
-      # grant can take a minute to bite. All exist declaratively in
-      # modules/cicd too, so an environment applied by the bootstrap (whose
-      # identity already holds project owner) never takes this path at all.
+      # grant can take a minute to bite.
+      #
+      # Four of the seven — cloudkms.publicKeyViewer,
+      # binaryauthorization.attestorsAdmin, run.admin, dns.admin — also exist
+      # declaratively in modules/cicd, so an environment applied by the
+      # bootstrap (whose identity already holds project owner) never takes
+      # this path for those. The other three — iap.admin,
+      # identityplatform.admin, container.clusterAdmin — exist *only* here,
+      # and this comment previously claimed all of them were declared. That
+      # mattered: a reader trusting it would conclude this loop is a
+      # belt-and-braces convenience and could be deleted, when for three
+      # roles it is the sole grant and deleting it breaks the plan.
       - name: the permissions the plan needs before it can grant them
         run: |
           set -euo pipefail
           account="${{ steps.identity.outputs.account }}"
           project="${{ steps.identity.outputs.project }}"
-          # secretVersionManager and not secretAccessor: this workflow must be
-          # able to add a first version to a secret terraform declared, and
-          # must never be able to read one back. The narrower
-          # secretVersionAdder cannot list versions, so it could not tell a
-          # seeded secret from an empty one and would mint a new version on
-          # every run.
-          for role in roles/cloudkms.publicKeyViewer roles/binaryauthorization.attestorsAdmin roles/run.admin roles/dns.admin roles/iap.admin roles/identityplatform.admin roles/container.clusterAdmin roles/secretmanager.secretVersionManager; do
+          # No secret role is self-granted here, and the seeding step below
+          # deliberately does not add one.
+          #
+          # A first draft of that step granted itself
+          # `roles/secretmanager.secretVersionManager` and said in a comment
+          # that it therefore "must never be able to read a payload back".
+          # That was false when it was written: `modules/cicd` grants this
+          # same account `roles/secretmanager.admin` declaratively
+          # (`modules/cicd/main.tf`, the `infra_roles` set), and admin
+          # includes `secretmanager.versions.access`. The narrower role added
+          # no permission the account lacked and removed none it held, so the
+          # sentence described a boundary that did not exist -- protection by
+          # assertion, which is the thing this repository refuses most often.
+          # It is gone rather than reworded, because a redundant grant that
+          # exists to make a comment true is worse than no grant at all.
+          for role in roles/cloudkms.publicKeyViewer roles/binaryauthorization.attestorsAdmin roles/run.admin roles/dns.admin roles/iap.admin roles/identityplatform.admin roles/container.clusterAdmin; do
             held="$(gcloud projects get-iam-policy "$project" \
               --flatten="bindings[].members" \
               --filter="bindings.role:$role AND bindings.members:serviceAccount:$account" \
@@ -329,14 +347,20 @@ jobs:
       # Thirteen of fifteen resources landed and the one service that needed
       # a credential did not.
       #
-      # The value is generated here and read back nowhere. This workflow
-      # holds secretVersionManager, which can add and list versions and
-      # cannot access a payload, so the password exists only in Secret
-      # Manager and in the container Cloud Run starts. It is not echoed, not
-      # written to the log, and not passed through a workflow output — a
-      # mode-600 file in a private directory, never an argument, because an
-      # argument is visible in `ps` for as long as the call takes. The
-      # directory is removed on every exit path, including a failing one.
+      # The value is generated here and this step reads it back nowhere: not
+      # echoed, not written to the log, not carried out through a workflow
+      # output. It reaches gcloud as a mode-600 file in a private directory
+      # removed on every exit path, never as an argument, because an argument
+      # is visible in `ps` for as long as the call takes.
+      #
+      # State plainly what that is and is not. It is a property of this step,
+      # not a boundary around the workflow: the account running it holds
+      # `roles/secretmanager.admin` from `modules/cicd`, so it *could* read
+      # any secret in the project, this one included. Nothing here prevents
+      # that; this step simply does not do it. Anyone narrowing the blast
+      # radius of `infra.yml` should start at that declarative grant, and
+      # should not read the care taken below as evidence the grant is already
+      # narrow.
       #
       # Seeding only when a secret has no enabled version is what makes this
       # safe to run on every `up`: a rotated or operator-set credential is
@@ -386,7 +410,7 @@ jobs:
             seeded=1
           done
           if [ "$seeded" = 1 ]; then
-            echo "A generated credential was written. Nothing here can read it back:"
+            echo "A generated credential was written. This step did not log it; read it with:"
             echo "  gcloud secrets versions access latest --secret qip-openobserve-root-password-$suffix --project $project"
           fi
 
