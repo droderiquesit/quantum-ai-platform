@@ -51,7 +51,6 @@ use qip_feature_dag::features::{
 use qip_feature_dag::state::MarketState;
 use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SensedRecord;
-use qip_normalization::normalizer::{Normalizer, SymbolMapping, UnitConversion};
 use qip_orderbook::venue::VenueState;
 use qip_risk::limits::{Limit, LimitKind, LimitSet, RiskState};
 use qip_risk_engine::pretrade::{PreTradeChecker, ProposedOrder};
@@ -146,45 +145,6 @@ fn level_stream(symbol: &str, count: usize, seed: u64) -> Vec<MarketMessage> {
             )
         })
         .collect()
-}
-
-/// `count` bars from a provider that writes the venue and the units its own
-/// way, so normalisation has real work to do rather than a pass-through.
-fn provider_bars(count: usize) -> Vec<SensedRecord> {
-    (0..count)
-        .map(|index| {
-            let close = 100.0 + ((index as f64 * 0.7548776662) % 1.0 - 0.5) * 2.0;
-            let at = start().saturating_sub(Duration::from_secs(index as i64));
-            SensedRecord::Bar(Box::new(Bar {
-                object_id: object("ACME"),
-                // The provider's own venue code, not the canonical one.
-                venue: "LSE".to_string(),
-                interval: Interval::Day,
-                open_time: at,
-                open: Decimal::from_f64(close).expect("representable"),
-                high: Decimal::from_f64(close * 1.003).expect("representable"),
-                low: Decimal::from_f64(close * 0.997).expect("representable"),
-                close: Decimal::from_f64(close).expect("representable"),
-                volume: dec!("2500000"),
-                trade_count: 8_000,
-                vwap: Decimal::from_f64(close),
-                quality: qip_financial::quality::DataQuality::default(),
-            }))
-        })
-        .collect()
-}
-
-fn normalizer() -> Normalizer {
-    let mut normalizer = Normalizer::with_standard_venues();
-    normalizer.add_symbol_mapping(SymbolMapping {
-        provider: "acme-data".to_string(),
-        provider_symbol: "ACME.L".to_string(),
-        object_id: object("ACME"),
-        canonical_symbol: "ACME".to_string(),
-        canonical_venue: "XLON".to_string(),
-    });
-    normalizer.add_conversion(UnitConversion::pence_to_pounds("acme-data", object("ACME")));
-    normalizer
 }
 
 /// A feature graph of the size a cell really runs: several instruments, and
@@ -338,30 +298,12 @@ fn risk_limits() -> LimitSet {
 }
 
 // --- the stages -------------------------------------------------------------
-
-#[test]
-fn event_normalisation_costs_what_the_budget_says() -> Result<()> {
-    // The first thing every observation goes through: venue canonicalisation,
-    // unit conversion, the price-continuity guard and a future-timestamp
-    // clamp. All four run per record, so this is a per-event cost on the
-    // widest path in the platform.
-    const RECORDS: usize = 100_000;
-    let normalizer = normalizer();
-    let records = provider_bars(RECORDS);
-
-    let started = Instant::now();
-    let (out, summary) = normalizer.normalise("acme-data", records, start());
-    let elapsed = started.elapsed();
-
-    assert_eq!(out.len(), RECORDS, "normalisation lost records");
-    assert_eq!(summary.processed, RECORDS as u64);
-    assert!(
-        summary.venues_canonicalised > 0 && summary.units_converted > 0,
-        "the fixture gave normalisation nothing to do: {summary:?}"
-    );
-    report("normalise (bar)", RECORDS, elapsed, 50.0);
-    Ok(())
-}
+//
+// There is no normalisation stage here. `qip-normalization` was removed by
+// ADR 0029 — nothing constructed it, so the figure this file once published
+// for it was the cost of a stage no observation went through — and nothing in
+// the workspace now canonicalises a venue or converts a provider's units. The
+// budgets document says so rather than carrying a row for it.
 
 #[test]
 fn book_apply_costs_what_the_budget_says() -> Result<()> {
@@ -658,6 +600,28 @@ fn order_construction_costs_what_the_budget_says() -> Result<()> {
 
 // --- the honesty check ------------------------------------------------------
 
+/// The stage label of every figure row in the budgets document, lowercased.
+///
+/// A figure row is a Markdown table row whose first cell is a stage name:
+/// the header row (`Stage`) and the alignment row (`---`) are not figures and
+/// are skipped. Every table in the document is a table of figures, so any row
+/// this returns is a published number somebody may design against.
+fn budget_rows(budgets: &str) -> Vec<String> {
+    budgets
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let cells: Vec<&str> = line.strip_prefix('|')?.split('|').collect();
+            let stage = cells.first()?.trim().to_lowercase();
+            if stage.is_empty() || stage == "stage" || stage.chars().all(|c| c == '-' || c == ':') {
+                None
+            } else {
+                Some(stage)
+            }
+        })
+        .collect()
+}
+
 #[test]
 fn the_budgets_document_says_what_is_measured_and_what_is_not() {
     // The document is the deliverable these tests exist to justify, so it is
@@ -683,9 +647,11 @@ fn the_budgets_document_says_what_is_measured_and_what_is_not() {
     }
 
     // Every stage these tests measure has a row, so a stage cannot be measured
-    // and then quietly left out of the budget it was measured for.
-    for stage in [
-        "normalis",
+    // and then quietly left out of the budget it was measured for. One entry
+    // per `*_costs_what_the_budget_says` test above; the kernel-cycle test at
+    // the end of this file asserts flatness across two working sets rather
+    // than a per-operation budget, and has no row by design.
+    const MEASURED_STAGES: [&str; 7] = [
         "book apply",
         "feature",
         "strategy",
@@ -693,10 +659,36 @@ fn the_budgets_document_says_what_is_measured_and_what_is_not() {
         "capital",
         "risk",
         "order construction",
-    ] {
+    ];
+    let rows = budget_rows(&budgets);
+    assert!(
+        !rows.is_empty(),
+        "docs/performance/budgets.md has no budget rows at all"
+    );
+    for stage in MEASURED_STAGES {
         assert!(
-            lowered.contains(stage),
+            rows.iter().any(|row| row.contains(stage)),
             "docs/performance/budgets.md has no row for {stage}"
+        );
+    }
+
+    // And the other direction, which the check above cannot see: every row
+    // names a stage something in this file measures. Without it the document
+    // could keep publishing a figure for a stage nothing times — which it did:
+    // the normalisation rows outlived their measurement until ADR 0029 removed
+    // the crate, and this check stayed green throughout. Each row must match
+    // exactly one stage, so a row that straddles two labels cannot count as
+    // covering either.
+    for row in &rows {
+        let matched = MEASURED_STAGES
+            .iter()
+            .filter(|stage| row.contains(*stage))
+            .count();
+        assert_eq!(
+            matched, 1,
+            "docs/performance/budgets.md publishes a row for \"{row}\", which matches {matched} \
+             measured stages rather than one; a figure for a stage nothing times is a wish \
+             dressed as a measurement"
         );
     }
 

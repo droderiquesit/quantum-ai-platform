@@ -39,6 +39,16 @@ assertions in the test are loose enough that only a real regression — an
 accidental clone per message, a linear scan where there was a lookup, a graph
 recomputed per tick — trips one.
 
+**Normalisation has no figure, because nothing normalises.** This document
+once published 0.31 µs (release) and 0.96 µs (debug) for "normalisation of a
+bar". The crate that was timed, `qip-normalization`, was constructed by no
+deployed process, and the row described work — symbol mapping, a quality
+stamp — that the timed call did not do. ADR 0029 removed the crate and the
+figures are withdrawn with it; nothing in this workspace canonicalises a venue
+alias or converts a provider's units, so there is no such stage to measure.
+The test that checks this document now refuses a row for any stage it does not
+time, in both directions, so a withdrawn figure cannot quietly come back.
+
 ---
 
 ## 2. Measured, release profile
@@ -47,7 +57,6 @@ recomputed per tick — trips one.
 
 | Stage | Per operation | Throughput | What is being timed |
 |---|---:|---:|---|
-| Normalisation of a bar | 0.31 µs | 3.27 M/s | symbol mapping, unit conversion, quality stamp |
 | Book apply (L2 level set) | 0.04 µs | 24.0 M/s | one level replaced in a venue book |
 | Feature ingest + evaluate | 3.29 µs | 0.30 M/s | six features over a graph, dirty-marked and recomputed |
 | Strategy run (19 nodes) | 0.58 µs | 1.72 M/s | one compiled strategy against one feature vector |
@@ -63,7 +72,6 @@ figure, so both are here — and the ratio is the reason the distinction matters
 
 | Stage | Per operation | Throughput | Debug / release |
 |---|---:|---:|---:|
-| Normalisation of a bar | 0.96 µs | 1.05 M/s | 3.1× |
 | Book apply (L2 level set) | 0.10 µs | 10.5 M/s | 2.3× |
 | Feature ingest + evaluate | 11.65 µs | 0.09 M/s | 3.5× |
 | Strategy run (19 nodes) | 1.92 µs | 0.52 M/s | 3.3× |

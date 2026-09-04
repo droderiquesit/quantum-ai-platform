@@ -25,7 +25,7 @@ being able to say precisely why it did what it did is.
 
 ## Stack, as found in the tree
 
-- **Rust 2024**, resolver 3, one workspace, 59 crates. `unsafe_code = "forbid"`;
+- **Rust 2024**, resolver 3, one workspace, 58 crates. `unsafe_code = "forbid"`;
   `todo!`/`unimplemented!`/`panic_in_result_fn` denied; no `unwrap()` outside
   tests.
 - **Two dependencies only** — `serde`, `serde_json` (ADR 0002, ADR 0009).

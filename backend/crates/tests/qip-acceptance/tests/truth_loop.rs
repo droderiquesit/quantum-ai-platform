@@ -9,8 +9,10 @@
 //! reads what this one wrote, so a defect here is not a wrong number in one
 //! report but a wrong number everywhere at once.
 //!
-//! Each stage is owned by a crate with its own tests, and those tests pass
-//! whether or not the stages are wired in this order. What is checked here is
+//! Each stage but one is owned by a crate with its own tests, and those tests
+//! pass whether or not the stages are wired in this order. The exception is
+//! stage 4: since ADR 0029 no crate canonicalises identity, and the rewrite
+//! there is this file's own — see `CanonicalIdentity`. What is checked here is
 //! the composition: that the record leaving one stage is the record the next
 //! one accepts, that both timestamps are still attached at the end, and above
 //! all that the two arrows out of the quality gate go where the architecture
@@ -44,7 +46,6 @@ use qip_mesh::catalog::{Catalog, DatasetRegistration, QualityState};
 use qip_mesh::ports::{Edge, EvidenceReceipt, EvidenceStore, GraphStore, Lakehouse, TableVersion};
 use qip_mesh::provider::MeshPort;
 use qip_mesh::{MemoryEvidence, MemoryGraph, MemoryLakehouse};
-use qip_normalization::normalizer::{NormalizationReport, Normalizer, SymbolMapping};
 use qip_world_model::WorldModel;
 use qip_world_model::features::FeatureValue;
 use qip_world_model::graph::{Node, NodeKind};
@@ -62,6 +63,46 @@ const FEED: &str = "synthetic-exchange";
 /// which is what gives stage 4 something to do.
 const PROVIDER_SYMBOL: &str = "NWSC.O";
 const PROVIDER_VENUE: &str = "NYSE";
+
+/// The same instrument on canonical identity: the MIC for the venue and the
+/// bare ticker for the symbol.
+const CANONICAL_SYMBOL: &str = "NWSC";
+const CANONICAL_VENUE: &str = "XNYS";
+
+/// What the provider's spelling of an instrument maps to.
+///
+/// **Test-owned, and deliberately so.** ADR 0029 deleted `qip-normalization`,
+/// the central normaliser that used to carry stage 4 here, because nothing in
+/// a deployed process ever constructed it and four documents were citing it as
+/// a control that ran. Nothing in the workspace now canonicalises a venue
+/// alias or a provider symbol, and this type does not pretend otherwise: it is
+/// the smallest rewrite that hands stages 5 to 7 a record on canonical
+/// identity, so that what those stages preserve — both timestamps, above all —
+/// is still checked across a real composition. It proves nothing about the
+/// platform's ability to normalise, because the platform has none.
+#[derive(Debug, Clone, PartialEq)]
+struct CanonicalIdentity {
+    canonical_symbol: String,
+    canonical_venue: String,
+}
+
+/// The test's own mapping from a provider's spelling to canonical identity.
+///
+/// Keyed on the provider *and* its symbol, because the same string means
+/// different instruments at different providers, and a table keyed on the
+/// symbol alone is the phantom the deleted crate's `drop_unmapped` was meant
+/// to stop and never did. A provider symbol that is not in the table is
+/// refused by the walk rather than passed through: an unmapped symbol is an
+/// unknown instrument, and guessing produces a record on nobody's identity.
+fn canonical_identities() -> BTreeMap<(String, String), CanonicalIdentity> {
+    BTreeMap::from([(
+        (FEED.to_string(), PROVIDER_SYMBOL.to_string()),
+        CanonicalIdentity {
+            canonical_symbol: CANONICAL_SYMBOL.to_string(),
+            canonical_venue: CANONICAL_VENUE.to_string(),
+        },
+    )])
+}
 
 const DATASET: &str = "xnys.bars.minute";
 const OBJECT: &str = "OBJ00000000000000000NWSC";
@@ -149,9 +190,9 @@ struct Journey {
     quality: DataQuality,
     catalog: Catalog,
     registry: EntitlementRegistry,
-    /// Stage 4.
-    normalisation: NormalizationReport,
-    mapping: SymbolMapping,
+    /// Stage 4 — the test's own rewrite, not the platform's; see
+    /// `CanonicalIdentity`.
+    mapping: CanonicalIdentity,
     normalised: Stamped<SensedRecord>,
     /// Stage 5.
     decision: Decision,
@@ -283,30 +324,23 @@ fn walk() -> Result<Journey> {
     let admitted = licensed.into_inner(&mut registry, Usage::Derive, known_at)?;
 
     // --- 4. NORMALISE IDENTITY ------------------------------------------
-    // `Stamped::map` is what carries the stage: the normalizer rewrites the
-    // value and has no way to touch either timestamp, so bitemporality
-    // survives this stage by construction rather than by remembering to
-    // re-attach it.
-    let mut normalizer = Normalizer::with_standard_venues();
-    normalizer.add_symbol_mapping(SymbolMapping {
-        provider: FEED.to_string(),
-        provider_symbol: PROVIDER_SYMBOL.to_string(),
-        object_id: ObjectId::from_string(OBJECT),
-        canonical_symbol: "NWSC".to_string(),
-        canonical_venue: "XNYS".to_string(),
+    // This stage is the test's, not the platform's (ADR 0029): the mapping
+    // below is owned by this file, and no production code runs here. What
+    // is still the platform's is how the rewrite is carried. `Stamped::map`
+    // rewrites the value and has no way to touch either timestamp, so
+    // bitemporality survives this stage by construction rather than by
+    // remembering to re-attach it — and that is what the later assertions
+    // on `normalised` check.
+    let mapping = canonical_identities()
+        .remove(&(FEED.to_string(), PROVIDER_SYMBOL.to_string()))
+        .ok_or_else(|| Error::not_found(format!("{PROVIDER_SYMBOL} has no canonical mapping")))?;
+    let normalised = admitted.map(|record| match record {
+        SensedRecord::Bar(mut bar) => {
+            bar.venue = mapping.canonical_venue.clone();
+            SensedRecord::Bar(bar)
+        }
+        other => other,
     });
-    let mut normalisation = NormalizationReport::default();
-    let normalised = admitted.map(|record| {
-        let (mut rewritten, report) = normalizer.normalise(FEED, vec![record], known_at);
-        normalisation = report;
-        rewritten
-            .pop()
-            .expect("normalisation returns what it was handed")
-    });
-    let mapping = normalizer
-        .resolve_symbol(FEED, PROVIDER_SYMBOL, &mut normalisation)
-        .ok_or_else(|| Error::not_found(format!("{PROVIDER_SYMBOL} has no canonical mapping")))?
-        .clone();
 
     // --- 5. ENRICH AND CONNECT ------------------------------------------
     // The bar is a claim on an instrument, the instrument is issued by a
@@ -418,7 +452,6 @@ fn walk() -> Result<Journey> {
         quality,
         catalog,
         registry,
-        normalisation,
         mapping,
         normalised,
         decision,
@@ -475,16 +508,20 @@ fn one_market_event_travels_all_seven_stages_of_the_truth_loop() -> Result<()> {
         "reaching the value is what records the check, so there is exactly one"
     );
 
-    // 4. Identity is canonical, and the report says what it changed.
-    assert_eq!(journey.normalisation.processed, 1);
-    assert_eq!(
-        journey.normalisation.venues_canonicalised, 1,
-        "the provider's venue code survived normalisation"
-    );
-    assert_eq!(journey.normalisation.timestamps_corrected, 0);
-    assert!(journey.normalisation.scale_warnings.is_empty());
-    assert_eq!(journey.bar.venue, "XNYS");
-    assert_eq!(journey.mapping.canonical_symbol, "NWSC");
+    // 4. Identity is canonical. The assertions on the normaliser's own
+    // report — records processed, venues canonicalised, timestamps
+    // corrected, scale warnings — went with the crate they tested (ADR
+    // 0029); they were claims about `qip-normalization`'s counters, not
+    // about the loop. What remains is the loop's claim: the record the
+    // later stages received, and the bar that reached the world model, are
+    // on canonical identity and not on the provider's spelling.
+    assert_ne!(PROVIDER_VENUE, CANONICAL_VENUE, "stage 4 had nothing to do");
+    assert_eq!(journey.bar.venue, CANONICAL_VENUE);
+    assert_eq!(journey.mapping.canonical_symbol, CANONICAL_SYMBOL);
+    match journey.normalised.value() {
+        SensedRecord::Bar(bar) => assert_eq!(bar.venue, CANONICAL_VENUE),
+        other => panic!("stage 4 handed on something other than a bar: {other:?}"),
+    }
 
     // 5. Connected to what the platform already knew, on evidence.
     match &journey.decision {

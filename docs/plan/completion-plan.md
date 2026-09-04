@@ -757,3 +757,15 @@ centre's `VenueFeasibility` is installed only through
 it carries no fee floor at all. Nothing was written, which is the correct
 outcome: a producer for a slot with no source is a fabrication the cell would
 then size against. The count is 3 of 12 and stays so until a source exists.
+
+**A5, D6 and the "still a workspace member" paragraph above, re-scored after
+ADR 0029 was applied (this commit): the normaliser half is done.**
+`qip-normalization` is deleted — the crate, both `backend/Cargo.toml` lines,
+the acceptance dev-dependency, the `Cargo.lock` block, the benchmark and both
+budget rows. Stage 4 of the truth loop is a test-owned identity table that
+*refuses* an unmapped symbol rather than passing it through; the budget check
+is bidirectional so a figure for a stage nothing times fails the suite; the
+`>= 25` service floor is an equality against the directories on disk, which
+refuses an unlisted crate as the floor never could. Six mutations fired. The
+four documents decision 2 named are corrected in the same commit. The
+workspace is 58 crates. `qip-arbitrage`'s half of A5 was already done.

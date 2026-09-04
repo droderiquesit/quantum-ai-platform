@@ -29,9 +29,11 @@ schedule without somewhere to announce a rotation is due.
 ## Dataflow
 
 The diagram lists it under the technology stack. No code in this repository
-submits a Dataflow job, and the transformation work it would do — normalisation,
-deduplication, enrichment — is implemented in `qip-normalization` and
-`qip-market-ingestion` and runs in-process. Provisioning a pipeline runner with
+submits a Dataflow job. Of the transformation work it would do, deduplication
+and gap handling are implemented in `qip-sequencing` and `qip-market-ingestion`
+and run in-process; normalisation and enrichment have no implementation at
+all since `qip-normalization` was deleted under ADR 0029, and nothing here
+should be read as providing them. Provisioning a pipeline runner with
 no pipeline produces a service account, a subnet allocation and a quota, all
 attached to nothing.
 

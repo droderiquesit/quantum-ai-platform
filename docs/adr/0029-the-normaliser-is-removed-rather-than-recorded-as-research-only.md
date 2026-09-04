@@ -1,8 +1,11 @@
 # 0029 — The normaliser is removed rather than recorded as research-only
 
-**Status:** accepted — the decision is taken. The removal is **not yet applied
-in the tree**; see "What has actually happened" below, which is the honest
-state and must be deleted, not amended, when the code lands.
+**Status:** applied — the crate, its workspace member and dependency entries,
+the acceptance crate's dev-dependency, and the three acceptance-suite uses are
+gone from the tree; the two performance figures are withdrawn; the budget
+check is bidirectional; and the service-crate floor in `architecture.rs` is an
+equality against the directory. The document corrections under decision 2
+travel in the same change and are owned by the documents' maintainers.
 
 ## Context
 
@@ -140,39 +143,6 @@ untouched by every edit this record calls for.
    never existed in this tree. Which of the two the platform intends is an
    owner's decision. This record deletes the central one; it does not authorise
    or forbid the regional one.
-
-## What has actually happened
-
-Recorded here rather than implied, because a decision record that reads as
-applied when it is not is the same class of false statement this record was
-written to remove.
-
-**Applied:** this record, its index entry in `docs/adr/README.md`, and the A5
-and D6 rows in `docs/plan/completion-plan.md`.
-
-**Not applied:** the deletion itself and every document correction under
-decision 2. The crate is still on disk, still a workspace member, and the four
-documents still describe it as running. The removal cannot be made piecemeal:
-deleting the directory while `backend/Cargo.toml:40` still names it as a
-workspace member makes `cargo` refuse to load the workspace at all, so the
-delete and the four manifest and test-file edits are one atomic change. The
-files that change with it, none of which are this record's to touch, are
-`backend/Cargo.toml`, `backend/Cargo.lock`,
-`qip-acceptance/Cargo.toml`, and the three acceptance suites
-`architecture.rs`, `truth_loop.rs` and `performance.rs`, plus the four
-documents named in the context above and the registers listed in the
-completion plan's A5 row.
-
-One consequence is worth naming because the obvious repair is the wrong one.
-`architecture.rs:795` asserts `services.len() >= 25` against exactly 25 service
-crates (`ls -d backend/crates/services/*/ | wc -l` → 25), so removing a member
-fails that test on its *premise*. Lowering the floor to 24 would be lowering a
-bar to obtain a pass, which `.claude/rules/02-change-management.md` forbids,
-and it would be wrong again on the next removal. The floor should be replaced
-by an equality between what `cargo metadata` reports and what the services
-directory holds — a count that tracks the directory cannot be quietly lowered,
-and it catches the case the floor never could: a crate on disk that nobody
-added to `members`.
 
 ## What it costs
 
