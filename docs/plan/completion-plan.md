@@ -736,3 +736,24 @@ The next owner should take it as its own slice, with `architecture.rs:762`'s
 deliberately — that count is asserted against exactly 25 crates, so the
 deletion fails it on its premise, and lowering the number to make it pass
 would replace a guard with a tautology.
+
+**B14, re-verified at `d703f4b` on evidence rather than on the prior audit:
+the "buildable now" claim for slots 2, 10 and 11 is withdrawn.** An agent read
+each of the nine unproduced slots against the workspace and every one lacks a
+real source; producing any of them would mark a §6.2 capability fresh on
+nothing, and the narrowing an unproduced slot causes is load-bearing. The
+three the row called buildable are the three it was most wrong about:
+`compiled_plan` (2) — the node checks the plan's file bytes against the
+slot's digest (`qip-edge-node/src/strategies.rs:130-166`), and the centre
+holds only `CompiledStrategy`, whose `NodeRef` arena has no way back to the
+`StrategySpec` discarded at `StrategyCandidate::new`, so the centre cannot
+construct the bytes it would be digesting; `inventory_targets` (10) —
+`RiskState` holds realised `position_notionals` and no target, band or mark,
+and the only "target" in the lib is `HedgePolicy::target_net`, a per-axis net
+exposure, not a per-instrument inventory; `feasibility_constraints` (11) —
+the cell's consumer reads per-venue `minimum_order`, `tick`, `fee_floor`, the
+centre's `VenueFeasibility` is installed only through
+`OrderManager::with_venue_feasibility`, which no composition root calls, and
+it carries no fee floor at all. Nothing was written, which is the correct
+outcome: a producer for a slot with no source is a fabrication the cell would
+then size against. The count is 3 of 12 and stays so until a source exists.
