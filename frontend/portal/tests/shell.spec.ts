@@ -18,6 +18,35 @@ const ROUTES = [...NAV_ITEMS.map((item) => item.href), "/offline"] as const;
 /** Every page that renders the autonomy level. Verified by grep, not assumed. */
 const POSTURE_ROUTES = ["/", "/risk", "/system", "/risk/audit", "/admin/autonomy"] as const;
 
+/**
+ * The two surfaces the posture panels read, beyond the chrome's own pair.
+ *
+ * Without them `servePlatform`'s catch-all answers `available: false` and the
+ * pages render "Autonomy —" — no posture, so nothing for a posture label to
+ * sit beside. The premise below asserts the declared level is on the screen
+ * for exactly that reason: a page that failed to read its posture must fail
+ * the premise rather than quietly satisfy a weaker check.
+ */
+const POSTURE_BODIES = {
+  "/autonomy": {
+    level: "paper_trading",
+    ceiling: "paper_trading",
+    live: false,
+    history: [],
+  },
+  "/system": {
+    autonomy: "paper_trading",
+    ceiling: "paper_trading",
+    live: false,
+    halted: false,
+    halted_scopes: [],
+    cycles: 12,
+    events_logged: 12,
+    chain_intact: true,
+    chain_broken_at: null,
+  },
+} as const;
+
 test("the route list under test is the console's own map", () => {
   // The premise for every loop below. A derived list that silently resolved to
   // nothing would make three tests pass by iterating zero routes.
@@ -97,13 +126,20 @@ test("a panel that shows autonomy shows the trading posture beside it", async ({
   // The match is the delimited token. `system/page.tsx` already contains the
   // substring "paper" inside a hint while carrying no label, so
   // `contains("paper")` here would be satisfied by the defect.
-  await servePlatform(page, { ...healthy(), "/risk": RISK_BODY });
+  await servePlatform(page, { ...healthy(), ...POSTURE_BODIES, "/risk": RISK_BODY });
   for (const route of POSTURE_ROUTES) {
     await page.goto(route);
     const content = page.locator("#content");
-    // The premise: this page really does render the posture. Otherwise the
-    // assertion below would hold just as well for a page that rendered nothing.
+    // The premise, in two halves. The word, so the page is a posture page at
+    // all; then the level the stub declared, so the panel has actually read a
+    // posture rather than rendering "Autonomy —". The first half alone is not
+    // enough: it is satisfied by the static label on a panel whose resource
+    // never landed, and it passed on `/risk` in exactly that state.
     await expect(content, `no autonomy rendered on ${route}`).toContainText(/autonomy/i);
+    await expect(
+      content,
+      `${route} shows no autonomy level, so there is no posture for a label to sit beside`,
+    ).toContainText("paper_trading");
     await expect(
       content.getByText("PAPER TRADING", { exact: true }).first(),
       `posture on ${route} carries no PAPER TRADING label`,

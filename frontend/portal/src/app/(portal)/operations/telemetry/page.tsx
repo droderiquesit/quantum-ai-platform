@@ -1,6 +1,6 @@
 "use client";
 
-import { Freshness, KeyValue, StreamControls } from "@/components/data/Bits";
+import { Chip, Freshness, KeyValue, StreamControls } from "@/components/data/Bits";
 import { EventFeed } from "@/components/data/EventFeed";
 import { Kpi, KpiRow } from "@/components/data/Kpi";
 import { Panel, PanelBody, PanelHead } from "@/components/data/Panel";
@@ -52,6 +52,7 @@ export default function TelemetryPage() {
         <PanelHead
           title="Process counters"
           meta={<Freshness resource={metrics} name="metrics" />}
+          actions={<Chip tone="warn">NOT SCRAPED</Chip>}
         />
         <PanelBody>
           <ResourceView resource={metrics} loadingRows={2}>
@@ -168,12 +169,19 @@ export default function TelemetryPage() {
       <Panel>
         <PanelHead title="What this page is, and is not" />
         <PanelBody>
-          <p className="max-w-[90ch] text-[11.5px] leading-relaxed text-[color:var(--color-ink-dim)]">
-            These are process counters read over HTTP from a single running process, plus one
-            event stream. The Prometheus <span className="num">/metrics</span> surface and the
-            Cloud Monitoring alert policies are deployment concerns this console does not read,
-            so nothing on this page can say whether an alert would fire — only what the process
-            itself reports about what it has done.
+          <p
+            data-testid="collection-gap"
+            className="max-w-[90ch] text-[11.5px] leading-relaxed text-[color:var(--color-ink-dim)]"
+          >
+            These are process counters read over HTTP from one running process, plus one event
+            stream, and <strong>nothing collects them</strong>. The binaries do emit a Prometheus{" "}
+            <span className="num">/metrics</span> surface; no collector is attached to it — the
+            managed collector is not vendored or attested, and no execution node is deployed. Every
+            alert policy in the deployment is gated behind{" "}
+            <span className="num">workload_metrics_exist</span>, which is false in every committed
+            environment, so none is stored and none is evaluated. A breach charted here pages no
+            one. This page is a browser watching one process, and it is the whole of the
+            observation.
           </p>
         </PanelBody>
       </Panel>
