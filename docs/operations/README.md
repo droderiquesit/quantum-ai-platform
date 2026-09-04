@@ -4,6 +4,9 @@ Runbooks for the things that actually happen. Each one starts with what to do
 and explains afterwards, because the person reading it at three in the morning
 needs the first line more than the reasoning.
 
+* [The deployment path](deployment-path.md) — the one way a change reaches a
+  running, observable state, what proves each stage, how a rollback is done,
+  and how a serving revision traces back to a commit
 * [The kill switch tripped](kill-switch.md)
 * [A risk limit is breached](limit-breach.md)
 * [Enabling live trading](enabling-live-trading.md)

@@ -1,6 +1,6 @@
 # 0017 — Delivery becomes GitOps: a Helm chart, Argo CD, and Kargo
 
-**Status:** superseded by ADR 0024 — the chart, Argo CD and Kargo are retired; `deploy.yml` moves each Cloud Run service to the attested digest and proves it serves it.
+**Status:** superseded by [ADR 0024](0024-the-blueprint-runtime-is-provisioned-in-code-and-the-gitops-runtime-is-retired.md) — the chart, Argo CD and Kargo are retired and the acceptance suite refuses their return; `deploy.yml` moves each Cloud Run service to the attested digest and proves it serves it. The path that replaced this one is documented in [docs/operations/deployment-path.md](../operations/deployment-path.md). The text below is kept as written, as the record of what was decided and why; none of it describes anything that exists.
 
 ## Decision
 

@@ -607,6 +607,110 @@ five-account set `infrastructure.rs:959-970` pins, so it lands with that test in
 one commit. F8 is the root question behind gaps 1, 2, 3, 4 and 7: F1 to F4 patch
 the script, and F8 decides whether the script should exist.
 
+## Observed on 2026-09-04, from outside the project
+
+The first entry in this register that rests on an observation of
+`algorik-dev` rather than on a file that says something about it. Everything
+above this heading was read off the tree; this section says what was seen,
+what could not be, and which rows move.
+
+**What could not be done, and why.** The session held a Google access token
+in `CLOUDSDK_AUTH_ACCESS_TOKEN` for read-only use. It was fourteen characters
+long, and every Google API refused it the same way — Cloud Run, Compute
+Engine, Binary Authorization, Secret Manager and Cloud Monitoring, one call
+each:
+
+    "code": 401, "status": "UNAUTHENTICATED",
+    "reason": "ACCESS_TOKEN_TYPE_UNSUPPORTED"
+
+`terraform init -input=false -backend-config="bucket=algorik-dev-qip-tfstate"`
+against the real state bucket failed on the same credential:
+
+    Error: Failed to get existing workspaces: querying Cloud Storage failed:
+    googleapi: Error 401: Invalid Credentials, authError
+
+So the serving revisions, digests, traffic splits, service accounts, secret
+volumes, the instance groups, the attestations, the secret-version counts,
+the real drift plan and the `qip_*` metric descriptors were **not
+observed**. No row below claims any of them. The token was not echoed,
+written or quoted.
+
+**What ran instead.** From a copy of `infrastructure/` in a scratch
+directory with a `backend "local"` override — the working tree was not
+touched — `terraform init` succeeded and
+
+    terraform plan -input=false -refresh=false -lock=false \
+      -var-file=../environments/dev/terraform.tfvars \
+      -var-file=../environments/dev/images.tfvars
+    Plan: 164 to add, 0 to change, 0 to destroy.
+
+with no error and no warning. Against empty state that is not a drift
+measurement — every resource is "to add" — but it is more than `validate`:
+every precondition in `catalogue.tf`, every `for_each`, every validation
+block and the provider schema were evaluated against the committed dev
+inputs and all passed. The two data sources that read the project
+(`module.evidence.data.google_storage_project_service_account.storage`,
+`module.binary_authorization.data.google_kms_crypto_key_version.attestor`)
+were deferred to apply, so the bogus credential was never presented. In the
+real tree, `terraform fmt -check -recursive` exited 0 and `terraform validate`
+printed `Success! The configuration is valid.`
+
+**What was observed.** Unauthenticated `GET`s over the public internet, which
+is the whole of what a credential-less session can see. The discriminator
+is the shape of a 404: a `*.run.app` hostname with no service behind it
+answers `404 Page not found` with no `server` header (control:
+`qip-dev-definitely-not-a-service-rgxpsss2lq-uk.a.run.app`), while a service
+with internal ingress answers Google Frontend's `404 Not Found` — `server:
+Google Frontend`, "The requested URL / was not found on this server".
+
+| Hostname | Answer | What it shows |
+|---|---|---|
+| `algorik-portal-rgxpsss2lq-uk.a.run.app` | `200`, title "Algorik — paper trading" | The portal serves, publicly, and renders the paper-trading label |
+| `algorik-landing-rgxpsss2lq-uk.a.run.app` | `200`, title "Algorik — AI and quantum research…" | The landing serves, publicly |
+| `qip-dev-openobserve-rgxpsss2lq-uk.a.run.app` | `308 -> /web/`; `/web/` `200`; `/api/default/` `401 {"code":401,"message":"Unauthorized Access"}` | OpenObserve exists, is reachable anonymously (ADR 0030), and its own login is enforced on the API |
+| `qip-dev-api-rgxpsss2lq-uk.a.run.app` | Google Frontend `404 Not Found` | A service exists at the catalogue's name with internal ingress |
+| `qip-dev-fastbrain-rgxpsss2lq-uk.a.run.app` | Google Frontend `404 Not Found` | Same |
+| `qip-dev-deepbrain-rgxpsss2lq-uk.a.run.app` | Google Frontend `404 Not Found` | Same |
+| `qip-dev-nothing-95200532413.us-east4.run.app` (control) | `404 Page not found`, no `server` header | The shape of "no such service", on the deterministic URL form too |
+
+One limit worth writing down so nobody repeats the probe: `/healthz` on
+*any* `*.run.app` hostname — the landing's, OpenObserve's — is answered by
+Google's own generic 404 page before the request reaches a container,
+while `/healthzz` reaches the application. An external `GET /healthz`
+therefore says nothing about `catalogue.tf:488`'s probe path; the evidence
+that path is right is that the revision is Ready and serving, because the
+startup probe runs inside the instance.
+
+**Rows that move.**
+
+| # | Gap | Severity |
+|---|---|---|
+| 1 | The two frontends: `scripts/deploy-frontends.sh` now deploys both by digest (`:200`, `:242`) with `--binary-authorization=default` (`:208`, `:250`). Fixed in the tree; both hostnames observed serving. Whether the *running* revisions carry the flag was not observed | Was BLOCKING-A-GATE; closed in code, unverified in the project |
+| 2 | The landing has its own identity: `modules/secrets/main.tf:277` creates `landing`, `deploy-frontends.sh:252` passes it, and the acceptance suite's five-account set became six. Fixed in the tree; the running service's identity was not observed | Was BLOCKING-A-GATE; closed in code, unverified in the project |
+| 3 | `modules/network/main.tf:185-199` is `console_egress_deny_egress`, with the Google-APIs allow above it at `:223-238` (`fbb73a7`). Fixed in the tree; not observed | Was BLOCKING-A-GATE; closed in code, unverified in the project |
+| 4 | `deploy-frontends.sh:216` now mounts the session secret at `${SESSION_SECRET_MOUNT}`, a path, so it is a file. Fixed in the tree; not observed | Was BLOCKING-A-GATE; closed in code, unverified in the project |
+| 8 | OpenObserve observed serving anonymously at its Cloud Run URL, exactly as gap 8 said. The §2.1 row is now contradicted by an observation, not only by a file | BLOCKING-A-GATE, confirmed |
+| 10 | `infrastructure/CLAUDE.md:33-35` said "Nothing in this directory has been applied by an agent; the first real plan is a human's to read" while four services it describes were serving. Rewritten in this change to say what was applied and what was observed | COSMETIC, fixed |
+
+The paragraph above headed "F1–F4 are in progress this wave" is superseded
+by rows 1–4 here: each is closed in the tree as of this observation. What
+none of them has is the second half — a `gcloud run services describe`, or
+the Cloud Run API, showing the running revision carries the flag, the
+identity and the mount. That is one authenticated read per service and it
+is the next thing to do with a credential that works.
+
+**Stale decisions, re-read.** ADR 0024's closing sentence — "the platform is
+not running anywhere" — is now contradicted by observation and not only by
+this repository's own files. `workload_metrics_exist = false` is **not**
+stale: the Monitoring API could not be queried, so no descriptor was seen,
+and a gate that stays closed for want of evidence is doing its job.
+
+**What this section does not claim.** Nothing about which digest any
+service serves, whether it matches `images.tfvars`, whether Binary
+Authorization was evaluated on its revision, which secrets have a version,
+whether any execution node exists, or whether anything has scraped. Each of
+those is one `GET` with a real token and none of them was made.
+
 ## The paper-trading boundary
 
 Intact and untouched by this audit. Nothing here changes

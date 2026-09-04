@@ -13,7 +13,9 @@ runtime.
 
 ADR 0020's corrections record the fact plainly: the Kubernetes chart's
 `egress.yaml` described an Envoy Deployment and committed it commented out, so
-Argo CD rendered the chart and no proxy pod ever ran. The `qip-egress` Service
+the Argo CD of that time rendered the chart and no proxy pod ever ran. (That
+chart and that controller are gone under ADR 0024; this paragraph is history,
+not a description of anything running.) The `qip-egress` Service
 had no endpoints, the NetworkPolicies naming it selected nothing, and every
 adapter configured through it was inert. There is therefore **no "same request
 served by both" evidence to produce** for ADR 0020's step 2 — there was never
