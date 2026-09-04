@@ -19,18 +19,21 @@ use qip_core::error::Result;
 use qip_core::ids::ObjectId;
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Decimal, SystemClock, dec};
+use qip_edge::cell::PlacedOrder;
 use qip_edge::cell::{CellConfig, PolledHalt, PricingPolicy};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
-use qip_edge::telemetry::EDGE_FILLS_CONFIRMED;
+use qip_edge::telemetry::{CellMetrics, EDGE_FILLS_CONFIRMED, EDGE_ORDERS_REPRICED};
 use qip_edge_node::allocation::RegionCapital;
 use qip_edge_node::feed::{FEED_VARIABLE, FeedChoice, SimulatedFeed};
 use qip_edge_node::gateway::SimulatedGateway;
 use qip_edge_node::pass::{PassOutcome, PassStats, run_pass};
+use qip_edge_node::reprice::{Requote, Requoter};
 use qip_edge_node::{NodeAssembly, assemble};
 use qip_execution_engine::order::Side;
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
 use qip_observability::metrics::{Labels, labels, names};
+use qip_routing::reprice::RepricePolicy;
 use qip_strategy::catalogue::FeatureCatalogue;
 use qip_strategy::compile::{CompiledStrategy, StrategyCompiler};
 use qip_strategy::ir::{Expr, Rule, StrategySpec};
@@ -142,11 +145,19 @@ fn a_node_with_the_simulated_feed_runs_a_pass_and_the_pass_time_series_move() ->
     assert!(!node.cell.is_halted(), "the premise is a running cell");
 
     let mut stats = PassStats::default();
-    let outcome = run_pass(&mut node.cell, &mut gateway, &mut feed, &mut stats, t(10))?;
+    let outcome = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        None,
+        &mut stats,
+        t(10),
+    )?;
     let PassOutcome::Ran {
         feed: tick,
         report,
         breaks,
+        ..
     } = outcome
     else {
         panic!("a running node reported its pass as halted: {outcome:?}");
@@ -276,7 +287,14 @@ fn a_resting_order_the_venue_fills_on_a_later_pass_is_confirmed_and_the_node_kee
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
     let mut stats = PassStats::default();
 
-    let first = run_pass(&mut node.cell, &mut gateway, &mut feed, &mut stats, t(10))?;
+    let first = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        None,
+        &mut stats,
+        t(10),
+    )?;
     let PassOutcome::Ran { report, breaks, .. } = first else {
         panic!("a running node reported its pass as halted: {first:?}");
     };
@@ -310,7 +328,14 @@ fn a_resting_order_the_venue_fills_on_a_later_pass_is_confirmed_and_the_node_kee
         "the venue's own account does not show the fill"
     );
 
-    let second = run_pass(&mut node.cell, &mut gateway, &mut feed, &mut stats, t(20))?;
+    let second = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        None,
+        &mut stats,
+        t(20),
+    )?;
     let PassOutcome::Ran { report, breaks, .. } = second else {
         panic!("the node halted on the pass after a fill: {second:?}");
     };
@@ -390,7 +415,14 @@ fn a_marketable_order_fills_on_the_pass_it_is_sent_once_the_venue_has_a_touch_to
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     let mut stats = PassStats::default();
 
-    let first = run_pass(&mut node.cell, &mut gateway, &mut feed, &mut stats, t(10))?;
+    let first = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        None,
+        &mut stats,
+        t(10),
+    )?;
     let PassOutcome::Ran { report, .. } = first else {
         panic!("{first:?}");
     };
@@ -407,7 +439,14 @@ fn a_marketable_order_fills_on_the_pass_it_is_sent_once_the_venue_has_a_touch_to
     assert!(!node.cell.is_halted());
 
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(15))?;
-    let second = run_pass(&mut node.cell, &mut gateway, &mut feed, &mut stats, t(20))?;
+    let second = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        None,
+        &mut stats,
+        t(20),
+    )?;
     let PassOutcome::Ran { report, breaks, .. } = second else {
         panic!("{second:?}");
     };
@@ -458,7 +497,14 @@ fn a_pass_with_nothing_listed_at_the_venue_refuses_under_the_venue_selection_gat
     // holding one — counted on the scrape's registry under its own label.
     let (mut node, mut gateway, mut feed) = node_with_feed(PricingPolicy::Marketable)?;
     let mut stats = PassStats::default();
-    let outcome = run_pass(&mut node.cell, &mut gateway, &mut feed, &mut stats, t(10))?;
+    let outcome = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        None,
+        &mut stats,
+        t(10),
+    )?;
     let PassOutcome::Ran {
         feed: tick, report, ..
     } = outcome
@@ -508,7 +554,14 @@ fn a_halted_node_runs_no_pass() -> Result<()> {
     assert!(node.cell.is_halted(), "the premise is a halted cell");
 
     let mut stats = PassStats::default();
-    let outcome = run_pass(&mut node.cell, &mut gateway, &mut feed, &mut stats, t(10))?;
+    let outcome = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        None,
+        &mut stats,
+        t(10),
+    )?;
     let PassOutcome::Halted { feed: tick, .. } = outcome else {
         panic!("a halted node ran a pass: {outcome:?}");
     };
@@ -595,7 +648,14 @@ fn a_partial_fill_on_an_order_that_later_expires_is_counted_once() -> Result<()>
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
     let mut stats = PassStats::default();
 
-    let first = run_pass(&mut node.cell, &mut gateway, &mut feed, &mut stats, t(4))?;
+    let first = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        None,
+        &mut stats,
+        t(4),
+    )?;
     let PassOutcome::Ran { report, .. } = first else {
         panic!("a running node reported its pass as halted: {first:?}");
     };
@@ -611,7 +671,14 @@ fn a_partial_fill_on_an_order_that_later_expires_is_counted_once() -> Result<()>
         resting.quantity
     );
 
-    let second = run_pass(&mut node.cell, &mut gateway, &mut feed, &mut stats, t(8))?;
+    let second = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        None,
+        &mut stats,
+        t(8),
+    )?;
     let PassOutcome::Ran { report, breaks, .. } = second else {
         panic!("the node halted on the pass after a partial fill: {second:?}");
     };
@@ -638,7 +705,14 @@ fn a_partial_fill_on_an_order_that_later_expires_is_counted_once() -> Result<()>
 
     // Past the time to live of the order that filled, so the withdrawal runs
     // on a turn where the old fill is still in the cumulative record.
-    let third = run_pass(&mut node.cell, &mut gateway, &mut feed, &mut stats, t(12))?;
+    let third = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        None,
+        &mut stats,
+        t(12),
+    )?;
     let PassOutcome::Ran { report, breaks, .. } = third else {
         panic!("the node halted on the expiry pass: {third:?}");
     };
@@ -664,6 +738,423 @@ fn a_partial_fill_on_an_order_that_later_expires_is_counted_once() -> Result<()>
         snapshot.counter(EDGE_FILLS_CONFIRMED, &by("venue", VENUE)),
         stats.fills,
         "the node's fill count and the venue counter disagree about the same fact"
+    );
+    Ok(())
+}
+
+// --- the requote seam ------------------------------------------------------
+
+/// A requoter on the node's registry: tick 0.01, stale at five ticks or
+/// fifty basis points behind the touch, whichever binds first.
+fn requoter(node: &NodeAssembly) -> Result<Requoter> {
+    Requoter::new(
+        RepricePolicy::new(dec!("0.01"), 5, 50.0),
+        CellMetrics::new(Arc::clone(node.scrape_registry()), CELL, REGION),
+    )
+}
+
+/// One pass against a 99/101 book, returning the single order it rested at
+/// the mid — the premise every requote test starts from, asserted rather
+/// than assumed.
+fn rest_one_order(
+    node: &mut NodeAssembly,
+    gateway: &mut SimulatedGateway,
+    feed: &mut SimulatedFeed,
+    requoter: &mut Requoter,
+    stats: &mut PassStats,
+) -> Result<PlacedOrder> {
+    gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
+    gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
+    let first = run_pass(&mut node.cell, gateway, feed, Some(requoter), stats, t(10))?;
+    let PassOutcome::Ran {
+        report,
+        requotes,
+        breaks,
+        ..
+    } = first
+    else {
+        panic!("a running node reported its pass as halted: {first:?}");
+    };
+    assert_eq!(report.orders.len(), 1, "the premise is one resting order");
+    assert!(breaks.is_empty(), "{breaks:?}");
+    assert!(
+        requotes.is_empty(),
+        "an order was repriced on the pass that sent it: {requotes:?}"
+    );
+    let resting = report.orders[0].clone();
+    assert_eq!(
+        resting.price,
+        dec!("100"),
+        "the premise is an order resting at the mid"
+    );
+    assert!(
+        gateway.venue_holds_open(&resting.order_id),
+        "the premise is an order the venue holds open"
+    );
+    assert_eq!(
+        gateway.working_count(),
+        1,
+        "the premise is exactly one order followed at the venue"
+    );
+    Ok(resting)
+}
+
+/// The one thing this mechanism exists to guarantee: a stale resting order
+/// is withdrawn, its withdrawal acknowledged, and only then its remainder
+/// re-sent at the touch under a fresh id — so the venue never holds two
+/// orders for one intention, and the cell's record keeps one id for it.
+/// The fill on the replacement then reaches the cell as a fill on the order
+/// the cell sent, on both channels, and reconciles clean. `reprice.rs`
+/// proves the repricer refuses the race in isolation; this proves the node
+/// carries the instruction to the venue in the right order.
+#[test]
+fn a_node_pass_reprices_a_stale_resting_child_after_draining_gateway_events_first() -> Result<()> {
+    let (mut node, mut gateway, mut feed) =
+        node_with_feed(PricingPolicy::rest_at_mid(Duration::from_secs(60))?)?;
+    let mut requoter = requoter(&node)?;
+    let mut stats = PassStats::default();
+    let resting = rest_one_order(
+        &mut node,
+        &mut gateway,
+        &mut feed,
+        &mut requoter,
+        &mut stats,
+    )?;
+    assert!(
+        node.cell.fills().is_empty(),
+        "the premise is a resting order with no fill pending: {:?}",
+        node.cell.fills()
+    );
+    assert_eq!(
+        node.scrape_registry()
+            .snapshot()
+            .counter(EDGE_ORDERS_REPRICED, &by("venue", VENUE)),
+        0,
+        "the premise is a node that has repriced nothing"
+    );
+
+    // Somebody bids 100.50 above the cell's 100: the resting buy is now 50
+    // ticks (about 50 bps) behind the touch, past the five-tick threshold.
+    gateway.seed_touch(&object(), Side::Buy, dec!("100.5"), dec!("1"), t(15))?;
+
+    let second = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        Some(&mut requoter),
+        &mut stats,
+        t(20),
+    )?;
+    let PassOutcome::Ran {
+        report,
+        requotes,
+        breaks,
+        ..
+    } = second
+    else {
+        panic!("the node halted on the pass that should reprice: {second:?}");
+    };
+    assert_eq!(
+        requotes.len(),
+        1,
+        "one stale order, one requote outcome: {requotes:?}"
+    );
+    let Requote::Replaced {
+        order_id,
+        withdrawn,
+        replacement,
+        quantity,
+        price,
+    } = &requotes[0]
+    else {
+        panic!(
+            "the stale order was not cancelled and replaced: {:?}",
+            requotes[0]
+        );
+    };
+    assert_eq!(order_id, &resting.order_id);
+    assert_eq!(
+        withdrawn, &resting.order_id,
+        "the original was not the order withdrawn"
+    );
+    assert_ne!(
+        replacement, &resting.order_id,
+        "the replacement reused the cancelled order's id, which an honouring venue dedupes away"
+    );
+    assert_eq!(
+        *quantity, resting.quantity,
+        "nothing filled, so the whole remainder is re-sent"
+    );
+    assert_eq!(
+        *price,
+        dec!("100.5"),
+        "the replacement does not rest at the touch"
+    );
+
+    // One cancel, then one new order, never two live — by the venue's own
+    // record, which is the one witness the node's bookkeeping cannot fake.
+    assert!(
+        !gateway.venue_holds_open(&resting.order_id),
+        "the venue still holds the stale order open beside its replacement"
+    );
+    assert!(
+        gateway.venue_holds_open(replacement),
+        "the venue does not hold the replacement open"
+    );
+    assert_eq!(
+        gateway.working_count(),
+        1 + report.orders.len(),
+        "the venue follows more orders than the replacement and what this pass sent"
+    );
+    assert_eq!(
+        gateway.submitted_count(),
+        2 + report.orders.len() as u64,
+        "the venue saw more or fewer submissions than the original, its replacement and this \
+         pass's own"
+    );
+
+    // The cell's record keeps one id per intention: the original is still
+    // its one open order for that intention, and the replacement's id never
+    // reaches it.
+    let open = node.cell.open_orders();
+    assert_eq!(
+        open.iter()
+            .filter(|order| order.order_id == resting.order_id)
+            .count(),
+        1,
+        "the cell no longer holds the repriced intention open: {open:?}"
+    );
+    assert!(
+        !open.iter().any(|order| &order.order_id == replacement),
+        "the replacement's venue id leaked into the cell's record: {open:?}"
+    );
+    assert!(
+        breaks.is_empty(),
+        "a requote reconciled as a break: {breaks:?}"
+    );
+    assert!(!node.cell.is_halted(), "a requote halted the cell");
+    assert_eq!(stats.repriced, 1);
+    assert_eq!(
+        node.scrape_registry()
+            .snapshot()
+            .counter(EDGE_ORDERS_REPRICED, &by("venue", VENUE)),
+        1,
+        "the requote did not move the series the scrape serves"
+    );
+
+    // And the fill on the replacement reaches the cell as a fill on the
+    // order it sent, on both channels: somebody sells through everything
+    // resting at 100.50 or better, and the next pass confirms it under the
+    // cell's id, matches it against the drop copy, and keeps trading.
+    gateway.seed_aggressor(&object(), Side::Sell, dec!("100.5"), dec!("200"), t(25))?;
+    let third = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        Some(&mut requoter),
+        &mut stats,
+        t(30),
+    )?;
+    let PassOutcome::Ran { report, breaks, .. } = third else {
+        panic!("the node halted on the pass after the replacement filled: {third:?}");
+    };
+    let on_intention: Vec<_> = report
+        .fills
+        .iter()
+        .filter(|fill| fill.order_id == resting.order_id)
+        .collect();
+    assert_eq!(
+        on_intention.len(),
+        1,
+        "the replacement's fill was not confirmed under the cell's own id: {:?}",
+        report.fills
+    );
+    assert_eq!(on_intention[0].quantity, resting.quantity);
+    assert_eq!(
+        on_intention[0].price,
+        dec!("100.5"),
+        "the fill was not at the replacement's price"
+    );
+    assert!(
+        !report
+            .fills
+            .iter()
+            .any(|fill| &fill.order_id == replacement),
+        "a fill reached the cell under the replacement's venue id: {:?}",
+        report.fills
+    );
+    assert_eq!(
+        node.cell.position(&venue(), &object()),
+        venue_position(&gateway),
+        "the cell's position and the venue's disagree after a repriced fill"
+    );
+    assert!(
+        breaks.is_empty(),
+        "a fill on a replacement reconciled as a break: {breaks:?}"
+    );
+    assert!(!node.cell.is_halted());
+    Ok(())
+}
+
+/// A fill the venue reported since the last pass must be booked before the
+/// order is judged stale, or the replacement carries a quantity that no
+/// longer exists. The repricer's own header names this as the one ordering
+/// the caller owes it; this proves the node honours it, with the partial
+/// fill as the witness: the replacement must be for six, not ten.
+#[test]
+fn a_fill_that_arrived_this_pass_is_booked_before_staleness_is_judged() -> Result<()> {
+    let (mut node, mut gateway, mut feed) =
+        node_with_feed(PricingPolicy::rest_at_mid(Duration::from_secs(60))?)?;
+    let mut requoter = requoter(&node)?;
+    let mut stats = PassStats::default();
+    let resting = rest_one_order(
+        &mut node,
+        &mut gateway,
+        &mut feed,
+        &mut requoter,
+        &mut stats,
+    )?;
+
+    // Between passes: somebody takes one share of the resting order, and
+    // then the bid moves past the threshold. Both facts are waiting for the
+    // next pass.
+    let taken = gateway.seed_aggressor(&object(), Side::Sell, dec!("100"), dec!("1"), t(15))?;
+    assert!(
+        taken.is_positive() && taken < resting.quantity,
+        "the premise is a partial fill: {taken} of {}",
+        resting.quantity
+    );
+    gateway.seed_touch(&object(), Side::Buy, dec!("100.5"), dec!("1"), t(16))?;
+    let remainder = resting.quantity - taken;
+
+    let second = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        Some(&mut requoter),
+        &mut stats,
+        t(20),
+    )?;
+    let PassOutcome::Ran {
+        report,
+        requotes,
+        breaks,
+        ..
+    } = second
+    else {
+        panic!("the node halted on the pass after a partial fill: {second:?}");
+    };
+    let booked: Vec<_> = report
+        .fills
+        .iter()
+        .filter(|fill| fill.order_id == resting.order_id)
+        .collect();
+    assert_eq!(
+        booked.len(),
+        1,
+        "the partial fill was not confirmed on this pass: {:?}",
+        report.fills
+    );
+    assert_eq!(booked[0].quantity, taken);
+    assert_eq!(
+        requotes,
+        vec![Requote::Replaced {
+            order_id: resting.order_id.clone(),
+            withdrawn: resting.order_id.clone(),
+            replacement: format!("{}-c1", resting.order_id),
+            quantity: remainder,
+            price: dec!("100.5"),
+        }],
+        "the replacement does not carry the remainder after the fill this pass booked"
+    );
+    let open = node.cell.open_orders();
+    let intention = open
+        .iter()
+        .find(|order| order.order_id == resting.order_id)
+        .expect("the partly filled intention is still open");
+    assert_eq!(intention.filled, taken, "the cell's record lost the fill");
+    assert!(intention.closed.is_none());
+    assert_eq!(
+        node.cell.position(&venue(), &object()),
+        venue_position(&gateway),
+        "the cell's position and the venue's disagree"
+    );
+    assert!(breaks.is_empty(), "{breaks:?}");
+    assert!(!node.cell.is_halted());
+    assert_eq!(stats.fills, 1);
+    assert_eq!(stats.repriced, 1);
+    Ok(())
+}
+
+/// Inside the declared thresholds nothing moves: an order two ticks behind
+/// the touch rests where it is, the venue holds the same order open, and the
+/// series does not move. Without this the requoter would be a chaser that
+/// pays a cancel round trip on every breath of the book — the failure the
+/// thresholds and budgets exist to prevent.
+#[test]
+fn a_fresh_resting_child_is_not_repriced() -> Result<()> {
+    let (mut node, mut gateway, mut feed) =
+        node_with_feed(PricingPolicy::rest_at_mid(Duration::from_secs(60))?)?;
+    let mut requoter = requoter(&node)?;
+    let mut stats = PassStats::default();
+    let resting = rest_one_order(
+        &mut node,
+        &mut gateway,
+        &mut feed,
+        &mut requoter,
+        &mut stats,
+    )?;
+
+    // Two ticks behind — about two basis points — against a threshold of
+    // five ticks or fifty.
+    gateway.seed_touch(&object(), Side::Buy, dec!("100.02"), dec!("1"), t(15))?;
+    let second = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        Some(&mut requoter),
+        &mut stats,
+        t(20),
+    )?;
+    let PassOutcome::Ran {
+        report, requotes, ..
+    } = second
+    else {
+        panic!("{second:?}");
+    };
+    // The premise: the cell's own book shows the order behind the touch,
+    // so a repricer that ignored its thresholds would have moved it.
+    let best_bid = node
+        .cell
+        .liquidity()
+        .get(&venue(), &object())
+        .and_then(qip_orderbook::venue::VenueState::best_bid)
+        .map(|level| level.price);
+    assert_eq!(
+        best_bid,
+        Some(dec!("100.02")),
+        "the premise is a touch that moved above the resting order"
+    );
+    assert!(
+        requotes.is_empty(),
+        "an order inside the drift thresholds was touched: {requotes:?}"
+    );
+    assert!(
+        gateway.venue_holds_open(&resting.order_id),
+        "the venue no longer holds the fresh order"
+    );
+    assert_eq!(
+        gateway.submitted_count(),
+        1 + report.orders.len() as u64,
+        "something beyond the original and this pass's own orders was submitted"
+    );
+    assert_eq!(stats.repriced, 0);
+    assert_eq!(
+        node.scrape_registry()
+            .snapshot()
+            .counter(EDGE_ORDERS_REPRICED, &by("venue", VENUE)),
+        0,
+        "the requote series moved for an order that was not repriced"
     );
     Ok(())
 }

@@ -48,6 +48,10 @@
 //! cannot flatter the execution, and every condition that touches the spread,
 //! the depth or the fill does so in one direction.
 
+use crate::agents::{
+    AgentRecord, CounterpartyAgent, FlowAction, FlowCalibration, FlowInputs, FlowRecord,
+    PathObservation, generate_flow,
+};
 use crate::conditions::{ConditionSchedule, FeedFault, Regime};
 use crate::costs::CostModel;
 use crate::execution::{
@@ -256,6 +260,11 @@ impl PriceSource {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 struct PathPoint {
     at: Timestamp,
+    /// When the point became readable: the instant itself for a generated
+    /// path, the bar's close for a replayed one. The counterparty agents'
+    /// leakage refusal is keyed on this and not on `at`, so a source that
+    /// stamps knowability later than the instant is honoured.
+    known_at: Timestamp,
     price: Decimal,
     volume: f64,
 }
@@ -350,6 +359,16 @@ pub struct SimulationRun {
     pub stale_mark_steps: usize,
     /// Steps at which some book was crossed.
     pub crossed_market_steps: usize,
+    /// The counterparty agents whose flow the run's books carried, in name
+    /// order; empty when the strategy traded the calm book alone.
+    pub agents: Vec<AgentRecord>,
+    /// What the agents' behaviour was calibrated against. There is one
+    /// answer and it is carried on every run, agents or none, so a report
+    /// reading this record cannot present the counterparty model as
+    /// something it is not.
+    pub flow_calibration: FlowCalibration,
+    /// Every action the agents took, in generation order.
+    pub counterparty_flow: Vec<FlowRecord>,
 }
 
 impl SimulationRun {
@@ -430,12 +449,53 @@ impl SimulationRun {
         bytes.extend_from_slice(&self.cash.raw().to_le_bytes());
         bytes.extend_from_slice(&self.commission.raw().to_le_bytes());
         bytes.extend_from_slice(&self.profit_and_loss.raw().to_le_bytes());
+        bytes.extend_from_slice(self.flow_calibration.statement().as_bytes());
+        for agent in &self.agents {
+            bytes.extend_from_slice(agent.name.as_bytes());
+            bytes.extend_from_slice(agent.kind.as_str().as_bytes());
+            bytes.extend_from_slice(agent.rule.as_bytes());
+        }
+        for flow in &self.counterparty_flow {
+            bytes.extend_from_slice(&flow.at.as_nanos().to_le_bytes());
+            bytes.extend_from_slice(flow.agent.as_bytes());
+            bytes.extend_from_slice(flow.object_id.as_bytes());
+            bytes.extend_from_slice(flow.venue.as_bytes());
+            match flow.action {
+                FlowAction::Take { side, quantity } => {
+                    bytes.push(match side {
+                        Side::Buy => 1,
+                        Side::Sell => 2,
+                    });
+                    bytes.extend_from_slice(&quantity.raw().to_le_bytes());
+                }
+                FlowAction::Quote { bid, ask, size } => {
+                    bytes.push(3);
+                    bytes.extend_from_slice(&bid.raw().to_le_bytes());
+                    bytes.extend_from_slice(&ask.raw().to_le_bytes());
+                    bytes.extend_from_slice(&size.raw().to_le_bytes());
+                }
+            }
+        }
         qip_core::sha256_hex(&bytes)
     }
 
     pub fn summarise(&self) -> String {
+        let agents = if self.agents.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "; against {} agent(s) ({}) — {}",
+                self.agents.len(),
+                self.agents
+                    .iter()
+                    .map(|agent| format!("{} [{}]", agent.name, agent.kind.as_str()))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                self.flow_calibration.statement()
+            )
+        };
         format!(
-            "{} over {} step(s) of {} market [{}]: {} order(s), {} filled, {} residual, P&L {}{}, mean adversity {:.1}bp, {} unreachable, stale marks on {} step(s), crossed on {}",
+            "{} over {} step(s) of {} market [{}]: {} order(s), {} filled, {} residual, P&L {}{}, mean adversity {:.1}bp, {} unreachable, stale marks on {} step(s), crossed on {}{agents}",
             self.strategy,
             self.steps,
             self.source.as_str(),
@@ -476,6 +536,12 @@ pub struct MarketSimulator {
     steps: Vec<Timestamp>,
     schedule: ConditionSchedule,
     costs: CostModel,
+    /// Keyed on name, so the flow cannot depend on declaration order.
+    agents: BTreeMap<String, CounterpartyAgent>,
+    /// The agents' flow, generated once and read by `build_book`.
+    flow: Vec<FlowRecord>,
+    /// Indices into `flow` keyed `instrument@venue`, then instant.
+    flow_index: BTreeMap<String, BTreeMap<Timestamp, Vec<usize>>>,
 }
 
 impl MarketSimulator {
@@ -534,6 +600,7 @@ impl MarketSimulator {
                     })?;
                 points.push(PathPoint {
                     at: *at,
+                    known_at: *at,
                     price: decimal,
                     volume: spec.daily_volume,
                 });
@@ -552,6 +619,9 @@ impl MarketSimulator {
             steps,
             schedule: ConditionSchedule::new(),
             costs: CostModel::default(),
+            agents: BTreeMap::new(),
+            flow: Vec::new(),
+            flow_index: BTreeMap::new(),
         })
     }
 
@@ -604,6 +674,7 @@ impl MarketSimulator {
             }
             paths.entry(key).or_default().push(PathPoint {
                 at: bar.close_time(),
+                known_at: bar.close_time(),
                 price: bar.close,
                 volume: bar.volume.to_f64().max(1.0),
             });
@@ -626,14 +697,102 @@ impl MarketSimulator {
             steps,
             schedule: ConditionSchedule::new(),
             costs: CostModel::default(),
+            agents: BTreeMap::new(),
+            flow: Vec::new(),
+            flow_index: BTreeMap::new(),
         })
     }
 
     /// Inject a schedule of conditions.
+    ///
+    /// Regenerates any agent flow, because the agents withdraw under the
+    /// conditions and must have seen the schedule the fills will see.
     pub fn with_conditions(mut self, schedule: ConditionSchedule) -> Result<Self> {
         schedule.validate()?;
         self.schedule = schedule;
+        self.regenerate_flow()?;
         Ok(self)
+    }
+
+    /// Attach counterparty agents whose flow the books will carry.
+    ///
+    /// Replaces any agents attached before. Two agents with one name are
+    /// refused rather than merged: the run record names each agent's flow by
+    /// its name, and two behaviours under one name is a record that cannot
+    /// say which rule produced an order.
+    pub fn with_agents(mut self, agents: Vec<CounterpartyAgent>) -> Result<Self> {
+        let mut keyed = BTreeMap::new();
+        for agent in agents {
+            if keyed.contains_key(agent.name()) {
+                return Err(Error::invalid(format!(
+                    "two counterparty agents are named {}; name each one distinctly so the run \
+                     record can attribute its flow",
+                    agent.name()
+                )));
+            }
+            keyed.insert(agent.name().to_string(), agent);
+        }
+        self.agents = keyed;
+        self.regenerate_flow()?;
+        Ok(self)
+    }
+
+    /// The agents attached, in name order.
+    pub fn agents(&self) -> impl Iterator<Item = &CounterpartyAgent> {
+        self.agents.values()
+    }
+
+    /// Every action the agents will take over the run, in generation order.
+    pub fn counterparty_flow(&self) -> &[FlowRecord] {
+        &self.flow
+    }
+
+    /// Generate the agents' flow from the seed, the paths and the schedule.
+    ///
+    /// Called from every mutation that changes what an agent would see, so
+    /// the flow is always the flow of the simulator as it stands.
+    fn regenerate_flow(&mut self) -> Result<()> {
+        let mut flow = Vec::new();
+        for (object_id, spec) in &self.instruments {
+            let Some(points) = self.paths.get(object_id) else {
+                continue;
+            };
+            // The crossing from the path's exact prices to the statistics the
+            // agents compute returns from; the exact prices travel beside
+            // them so a quote is built from money, not from a rounding of it.
+            let observations = points
+                .iter()
+                .map(|point| PathObservation::new(point.at, point.known_at, point.price))
+                .collect::<Result<Vec<_>>>()?;
+            let prices: Vec<Decimal> = points.iter().map(|point| point.price).collect();
+            let inputs = FlowInputs {
+                object_id,
+                observations: &observations,
+                prices: &prices,
+                calm_half_spread_bps: spec.half_spread_bps,
+                venues: &self.venues,
+            };
+            let schedule = &self.schedule;
+            let seed = self.seed;
+            flow.extend(generate_flow(
+                &self.agents,
+                &inputs,
+                |at, venue| schedule.regime(at, venue, object_id, 0, seed),
+                seed,
+            )?);
+        }
+        let mut index: BTreeMap<String, BTreeMap<Timestamp, Vec<usize>>> = BTreeMap::new();
+        for (position, record) in flow.iter().enumerate() {
+            index
+                .entry(mark_key(&record.object_id, &record.venue))
+                .or_default()
+                .entry(record.at)
+                .or_default()
+                .push(position);
+        }
+        self.flow = flow;
+        self.flow_index = index;
+        Ok(())
     }
 
     /// Use a different cost model for the impact term and commissions.
@@ -1127,6 +1286,13 @@ impl MarketSimulator {
             unreachable_orders,
             stale_mark_steps,
             crossed_market_steps,
+            agents: self
+                .agents
+                .values()
+                .map(CounterpartyAgent::record)
+                .collect(),
+            flow_calibration: FlowCalibration::NotCalibrated,
+            counterparty_flow: self.flow.clone(),
         })
     }
 
@@ -1236,7 +1402,61 @@ impl MarketSimulator {
                 }
             }
         }
+        self.apply_flow(&mut book, object_id, venue, at, regime)?;
         Ok(book)
+    }
+
+    /// Put the agents' flow at this instant through the book.
+    ///
+    /// Takers sweep the book exactly as a strategy's order would, so the
+    /// depth they consumed is gone when the strategy arrives; quotes rest
+    /// behind every calm order, at `at`, so time priority is the calm book's.
+    /// The book is rebuilt from the spec on every call, so applying the same
+    /// flow on every call is what makes the result a function of the instant
+    /// rather than of how many times it was asked about.
+    ///
+    /// A quote is dropped when the regime handed in carries any condition,
+    /// even though the agent already withdrew under the leg-zero regime it
+    /// was generated against: a condition scoped to another leg would
+    /// otherwise meet a quote priced off the calm touch, inside the widened
+    /// one — the one way an agent could make a condition cheaper.
+    fn apply_flow(
+        &self,
+        book: &mut SimBook,
+        object_id: &str,
+        venue: &str,
+        at: Timestamp,
+        regime: &Regime,
+    ) -> Result<()> {
+        let Some(positions) = self
+            .flow_index
+            .get(&mark_key(object_id, venue))
+            .and_then(|by_instant| by_instant.get(&at))
+        else {
+            return Ok(());
+        };
+        for position in positions {
+            let Some(record) = self.flow.get(*position) else {
+                return Err(Error::invalid(format!(
+                    "the flow index for {object_id}@{venue} at {at} names a record that is not there"
+                )));
+            };
+            match record.action {
+                FlowAction::Take { side, quantity } => {
+                    // The sweep's outcome is the hole it leaves in the book;
+                    // nothing else about it is the strategy's business.
+                    let _consumed = book.take(side, quantity, at);
+                }
+                FlowAction::Quote { bid, ask, size } => {
+                    if !regime.applied.is_empty() {
+                        continue;
+                    }
+                    book.rest(Side::Buy, bid, size, at)?;
+                    book.rest(Side::Sell, ask, size, at)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// How much of the remaining quantity this slice will try for.

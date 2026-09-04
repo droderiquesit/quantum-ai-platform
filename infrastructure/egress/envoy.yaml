@@ -99,13 +99,18 @@
 #   * `api.quantum.ibm.com` — the endpoint the same `HostedConfig` carries in
 #     `backend/crates/libs/qip-quantum/tests/quantum.rs` and in
 #     `backend/crates/services/qip-optimization-engine/tests/optimization.rs`.
-#   * `api.frankfurter.app` — named by the shipped manifest of the
+#   * `api.frankfurter.dev` — named by the shipped manifest of the
 #     `frankfurter-ecb-reference-rates` connector,
 #     `backend/crates/services/qip-market-ingestion/src/connectors/manifests/frankfurter-ecb-reference-rates.json`,
-#     which `connector_feed.rs`'s bridge can open by name. The first
-#     destination here that is a vendor rather than a cloud this platform
-#     already runs on. Reached through `QIP_CONNECTOR_BASE_URL` on the
-#     `frankfurter` listener, path `/latest`, method GET.
+#     and by `FrankfurterRatesConnector::UPSTREAM_HOST`, which
+#     `connector_feed.rs`'s bridge can open by name. The first destination
+#     here that is a vendor rather than a cloud this platform already runs
+#     on. Reached through `QIP_CONNECTOR_BASE_URL` on the `frankfurter`
+#     listener, path `/v1/latest`, method GET. It was `api.frankfurter.app`
+#     until 2026-09-04, when that host began answering 301 to this one; the
+#     connector transport never follows a redirect, so the old cluster was a
+#     path to a refusal, and the manifest, this cluster and the Terraform
+#     allowlist moved together (ADR 0034).
 #
 # ## What is deliberately absent, which matters more than what is present
 #
@@ -114,11 +119,11 @@
 #     Adding one is a decision for whoever owns the execution path, taken with
 #     `docs/operations/enabling-live-trading.md` open.
 #   * **No chain RPC and no prediction venue.** One market-data vendor is
-#     present — `api.frankfurter.app` above — and the bar it cleared is the
+#     present — `api.frankfurter.dev` above — and the bar it cleared is the
 #     bar for the next one, not a precedent for skipping it: a shipped
 #     manifest in this workspace names the host, so nothing was guessed, and
 #     its licensing posture was evaluated before the source could be used
-#     (`qip-fastbrain/src/licensing.rs`), which is the ordering
+#     (`qip-data-finder/src/admission.rs`), which is the ordering
 #     `.claude/rules/domains/data-and-streaming.md` requires. Putting a
 #     hostname nobody has read the licence for into a security control is
 #     still the failure this paragraph exists to prevent.
@@ -412,10 +417,10 @@ static_resources:
     # nothing.
     #
     # One route, one prefix. The connector builds exactly one request,
-    # `/latest?base=EUR&symbols=USD,GBP,JPY`, from `endpoint.path` and
+    # `/v1/latest?base=EUR&symbols=USD,GBP,JPY`, from `endpoint.path` and
     # `endpoint.query` in
     # `connectors/manifests/frankfurter-ecb-reference-rates.json`, and its
-    # `health_path` is the same `/latest`. There is deliberately no catch-all
+    # `health_path` is the same `/v1/latest`. There is deliberately no catch-all
     # here — unlike the two IBM listeners, whose `prefix: "/"` predates this
     # discipline — so the rest of the vendor's surface, `/currencies` and the
     # dated endpoints, 404s at the boundary instead of being forwarded
@@ -458,13 +463,13 @@ static_resources:
                       domains: ["*"]
                       routes:
                         - match:
-                            prefix: "/latest"
+                            prefix: "/v1/latest"
                             headers:
                               - name: ":method"
                                 string_match: { exact: GET }
                           route:
-                            cluster: api_frankfurter_app
-                            host_rewrite_literal: api.frankfurter.app
+                            cluster: api_frankfurter_dev
+                            host_rewrite_literal: api.frankfurter.dev
                             timeout: 30s
                 http_filters:
                   - name: envoy.filters.http.router
@@ -613,22 +618,22 @@ static_resources:
                 - san_type: DNS
                   matcher: { exact: api.quantum.ibm.com }
 
-    - name: api_frankfurter_app
+    - name: api_frankfurter_dev
       type: LOGICAL_DNS
       dns_lookup_family: V4_ONLY
       connect_timeout: 5s
       load_assignment:
-        cluster_name: api_frankfurter_app
+        cluster_name: api_frankfurter_dev
         endpoints:
           - lb_endpoints:
               - endpoint:
                   address:
-                    socket_address: { address: api.frankfurter.app, port_value: 443 }
+                    socket_address: { address: api.frankfurter.dev, port_value: 443 }
       transport_socket:
         name: envoy.transport_sockets.tls
         typed_config:
           "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
-          sni: api.frankfurter.app
+          sni: api.frankfurter.dev
           common_tls_context:
             tls_params:
               tls_minimum_protocol_version: TLSv1_2
@@ -636,4 +641,4 @@ static_resources:
               trusted_ca: { filename: /etc/ssl/certs/ca-certificates.crt }
               match_typed_subject_alt_names:
                 - san_type: DNS
-                  matcher: { exact: api.frankfurter.app }
+                  matcher: { exact: api.frankfurter.dev }

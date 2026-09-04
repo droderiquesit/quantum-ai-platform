@@ -135,7 +135,7 @@ pub struct LiveFeedSettings {
 ///
 /// Two fields and no credential, because the sources this build carries are
 /// unauthenticated by their manifests — `auth.scheme` is `none` — and the
-/// licensing catalogue in [`crate::licensing`] is what decides whether the
+/// licensing catalogue in [`qip_data_finder::admission`] is what decides whether the
 /// source may be used at all. A future keyed source adds its credential to
 /// the manifest's own auth scheme and resolves it through `qip_core::secret`,
 /// not here.

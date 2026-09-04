@@ -195,7 +195,14 @@ fn a_fresh_payload_naming_the_plan_deploys_it_and_the_next_pass_sends_an_order_t
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
     let mut stats = PassStats::default();
-    let first = run_pass(&mut node.cell, &mut gateway, &mut feed, &mut stats, t(20))?;
+    let first = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        None,
+        &mut stats,
+        t(20),
+    )?;
     let PassOutcome::Ran { report, breaks, .. } = first else {
         panic!("a running node reported its pass as halted: {first:?}");
     };
@@ -228,7 +235,14 @@ fn a_fresh_payload_naming_the_plan_deploys_it_and_the_next_pass_sends_an_order_t
         taken, resting.quantity,
         "the flow did not fill the resting order"
     );
-    let second = run_pass(&mut node.cell, &mut gateway, &mut feed, &mut stats, t(30))?;
+    let second = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        None,
+        &mut stats,
+        t(30),
+    )?;
     let PassOutcome::Ran { report, breaks, .. } = second else {
         panic!("the node halted on the pass after a fill: {second:?}");
     };

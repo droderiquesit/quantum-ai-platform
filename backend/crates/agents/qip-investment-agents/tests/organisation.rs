@@ -38,6 +38,7 @@ use qip_portfolio::portfolio::Portfolio;
 use qip_risk::limits::{LimitSet, RiskState};
 use qip_world_model::WorldModel;
 use qip_world_model::features::{Feature, FeatureValue};
+use qip_world_model::vocabulary::names;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -350,22 +351,20 @@ fn populated_desk() -> Arc<Desk> {
     let mut world = WorldModel::new();
     {
         let features = world.features_mut();
+        // Keyed by the economy the equity's geography names — the builder's
+        // default is `US` — because that is the key the macro arm writes and
+        // the macro analyst reads. `"global"` was a key nothing ever wrote.
         for (name, base, slope) in [
-            ("policy_rate", 0.03, 0.0002),
-            ("inflation_yoy", 0.025, -0.0001),
-            ("growth_yoy", 0.02, 0.0001),
-            ("credit_spread_bps", 120.0, 0.5),
+            (names::POLICY_RATE, 0.03, 0.0002),
+            (names::INFLATION_YOY, 0.025, -0.0001),
+            (names::GROWTH_YOY, 0.02, 0.0001),
+            (names::CREDIT_SPREAD_BPS, 120.0, 0.5),
         ] {
-            features.define(Feature::new(
-                name,
-                format!("{name} observed globally"),
-                "macro-provider",
-            ));
             for i in 0..60 {
                 let at = now().saturating_sub(Duration::from_days(60 - i));
                 features.record(
                     name,
-                    "global",
+                    "US",
                     FeatureValue::new(base + slope * i as f64, at, at),
                 );
             }
@@ -969,16 +968,16 @@ fn the_alternative_data_analyst_will_not_use_an_unlicensed_dataset() -> Result<(
 
     let mut world = WorldModel::new();
     {
+        // Recorded under the world model's own definition, whose producer is
+        // the `card-spend` dataset. This fixture once redefined the series
+        // with producer `alt-provider`, and the analyst now refuses a
+        // licensed name whose series some other producer wrote — which is a
+        // different property from the licence question this test asks.
         let features = world.features_mut();
-        features.define(Feature::new(
-            "card_spend_index",
-            "card spend",
-            "alt-provider",
-        ));
         for i in 0..60 {
             let at = now().saturating_sub(Duration::from_days(60 - i));
             features.record(
-                "card_spend_index",
+                names::CARD_SPEND_INDEX,
                 object("ACME").as_str(),
                 FeatureValue::new(100.0 + i as f64 * 1.5, at, at),
             );

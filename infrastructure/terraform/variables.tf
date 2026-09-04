@@ -315,9 +315,9 @@ variable "egress_allowed_upstreams" {
     the bootstrap, not this list.
 
     Five of the six are Google's or IBM's — infrastructure this platform runs
-    on. `api.frankfurter.app` is the first that is neither: a market-data
+    on. `api.frankfurter.dev` is the first that is neither: a market-data
     vendor, reached on one path by one connector whose licensing posture is
-    evaluated in `qip-fastbrain`'s catalogue before the feed opens. It is
+    evaluated in `qip-data-finder`'s catalogue before the feed opens. It is
     listed here rather than folded in silently because it is the entry that
     changes what this list *is* — no longer only the platform's own
     dependencies — and the acceptance suite fails if this set and the
@@ -331,7 +331,7 @@ variable "egress_allowed_upstreams" {
     "europe-west2-aiplatform.googleapis.com",
     "quantum.cloud.ibm.com",
     "api.quantum.ibm.com",
-    "api.frankfurter.app",
+    "api.frankfurter.dev",
   ]
 }
 

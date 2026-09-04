@@ -36,7 +36,7 @@ fn coinbase_horizon() -> Timestamp {
 /// After the recorded rate table's reference date plus the ECB's sixteen-hour
 /// publication delay, so the rates are knowable rather than correctly withheld.
 fn frankfurter_horizon() -> Timestamp {
-    at("2026-08-25T09:00:00Z")
+    at("2026-09-05T09:00:00Z")
 }
 
 fn coinbase() -> Result<(CoinbaseTickerConnector, SourceEmulator)> {
@@ -165,10 +165,10 @@ fn the_frankfurter_connector_fans_one_rate_table_out_into_one_observation_per_pa
         .expect("the table holds a USD rate");
     match usd.record() {
         SensedRecord::Macro(observation) => {
-            assert!((observation.value - 1.0827).abs() < 1e-12);
+            assert!((observation.value - 1.1622).abs() < 1e-12);
             assert_eq!(observation.unit, "USD per EUR");
             assert_eq!(observation.region, FrankfurterRatesConnector::REGION);
-            assert_eq!(observation.reference_date, at("2026-08-24T00:00:00Z"));
+            assert_eq!(observation.reference_date, at("2026-09-04T00:00:00Z"));
         }
         other => panic!("a reference rate decoded into {other:?}"),
     }
@@ -184,10 +184,10 @@ fn a_reference_rate_is_withheld_until_the_ecb_would_have_published_it() -> Resul
     let mut runtime = runtime_for(&connector)?;
     let transport: &mut dyn SourceTransport = &mut emulator;
 
-    let too_early = runtime.poll(&mut connector, transport, at("2026-08-24T09:00:00Z"))?;
+    let too_early = runtime.poll(&mut connector, transport, at("2026-09-04T09:00:00Z"))?;
     assert!(
         too_early.admitted.is_empty(),
-        "a reference rate stamped 2026-08-24 was published at 09:00 on 2026-08-24, seven hours \
+        "a reference rate stamped 2026-09-04 was published at 09:00 on 2026-09-04, seven hours \
          before the ECB would have released it"
     );
     assert_eq!(too_early.withheld, 3);

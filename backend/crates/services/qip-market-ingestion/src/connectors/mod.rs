@@ -10,7 +10,7 @@
 //! | connector | source | what it produces |
 //! |---|---|---|
 //! | [`coinbase_ticker`] | `api.exchange.coinbase.com/products/BTC-USD/ticker` | a [`qip_market::quote::Tick`] per last trade |
-//! | [`frankfurter_rates`] | `api.frankfurter.app/latest?base=EUR` | a [`qip_financial::intelligence::MacroObservation`] per currency pair |
+//! | [`frankfurter_rates`] | `api.frankfurter.dev/v1/latest?base=EUR` | a [`qip_financial::intelligence::MacroObservation`] per currency pair |
 //!
 //! # Both are unreachable in this build, and say so
 //!

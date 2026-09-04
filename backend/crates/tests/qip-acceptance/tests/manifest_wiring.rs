@@ -945,6 +945,19 @@ const NOT_AN_ORDER_ENTRY_DIAL: &str = "This aims order entry, and the \
      up against a real venue is the runbook's deliberate, per-node act, and \
      shadow mode's firewall is what refuses it until then.";
 
+/// The requote policy, which a deployment leaves unset on purpose.
+const REPRICING_IS_A_PER_NODE_DECISION_NOT_A_DEFAULT: &str = "Absent, a resting \
+     child order stays where the cell sent it until its time to live, and the \
+     node's production requirements say so. `QIP_REPRICE` is `<tick>:<ticks>:<bps>` \
+     — the instrument's price increment and two staleness thresholds — and the \
+     right values are a property of the venue and the instruments a particular \
+     node quotes, not of an environment: a one-cent tick written into every \
+     node's template would be wrong for every book that is not priced in cents, \
+     and the policy refuses a zero tick at start-up rather than at the first \
+     pass. Shadow mode sends nothing, so a requote there is a cancel and a \
+     replacement of an order no venue holds. Setting it is the runbook's \
+     per-node act when a node is brought up against a book whose tick is known.";
+
 /// A seed, whose default is derived and whose override is for reproduction.
 const A_SEED_IS_DERIVED_NOT_DEPLOYED: &str = "The seed is derived from the \
      node's own identity so that two cells do not retry in lockstep, and the \
@@ -1204,6 +1217,11 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
         "qip-edge-node",
         "QIP_VENUE_ORDER_ENTRY_ACKNOWLEDGED",
         NOT_AN_ORDER_ENTRY_DIAL,
+    ),
+    (
+        "qip-edge-node",
+        "QIP_REPRICE",
+        REPRICING_IS_A_PER_NODE_DECISION_NOT_A_DEFAULT,
     ),
     (
         "qip-fastbrain",

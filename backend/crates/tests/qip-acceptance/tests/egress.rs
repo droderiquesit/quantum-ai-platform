@@ -106,11 +106,12 @@ const ALLOWED_UPSTREAMS: [(&str, &str); 6] = [
          crates/services/qip-optimization-engine/tests/optimization.rs",
     ),
     (
-        "api.frankfurter.app",
+        "api.frankfurter.dev",
         "the shipped manifest of frankfurter-ecb-reference-rates, in \
-         crates/services/qip-market-ingestion/src/connectors/manifests/, which \
-         connector_feed.rs's bridge opens by name; licensing class `public`, \
-         evaluated in qip-fastbrain/src/licensing.rs before the source can open",
+         crates/services/qip-market-ingestion/src/connectors/manifests/, and \
+         FrankfurterRatesConnector::UPSTREAM_HOST, which connector_feed.rs's \
+         bridge opens by name; licensing class `public`, evaluated in \
+         qip-data-finder/src/admission.rs before the source can open",
     ),
 ];
 
@@ -122,10 +123,15 @@ const FRANKFURTER_MANIFEST: &str = "backend/crates/services/qip-market-ingestion
                                     connectors/manifests/frankfurter-ecb-reference-rates.json";
 const FRANKFURTER_TRANSPORT: &str =
     "backend/crates/services/qip-market-ingestion/src/connector/transport.rs";
-const FRANKFURTER_LICENSING: &str = "backend/crates/apps/qip-fastbrain/src/licensing.rs";
+const FRANKFURTER_LICENSING: &str = "backend/crates/services/qip-data-finder/src/admission.rs";
 const FRANKFURTER_LISTENER: &str = "frankfurter";
-const FRANKFURTER_HOST: &str = "api.frankfurter.app";
-const FRANKFURTER_CLUSTER: &str = "api_frankfurter_app";
+/// Restated rather than read from the connector, for the same reason as
+/// `ALLOWED_UPSTREAMS`: this file's checks are the reviewer's copy. The test
+/// that holds the connector's own constant, the manifest, the bootstrap and
+/// the root variable to one value is
+/// `the_frankfurter_host_is_one_value_in_the_manifest_the_bootstrap_and_the_allowlist`.
+const FRANKFURTER_HOST: &str = "api.frankfurter.dev";
+const FRANKFURTER_CLUSTER: &str = "api_frankfurter_dev";
 
 /// Whether a configuration sets a setting to a value.
 ///
@@ -787,8 +793,9 @@ fn the_market_data_listener_reaches_one_vendor_on_one_path_and_widening_it_fails
     // Licensing was evaluated before the source became reachable, which is the
     // ordering .claude/rules/domains/data-and-streaming.md requires. This is a
     // drift check on the catalogue's text, not a proof that admit() runs —
-    // that proof lives in qip-fastbrain's own tests. What it catches is a
-    // listener landing here for a source the catalogue never grew an entry for.
+    // that proof lives in the data finder's own tests and in each root's.
+    // What it catches is a listener landing here for a source the catalogue
+    // never grew an entry for.
     let licensing = read(FRANKFURTER_LICENSING);
     let source_id = manifest["source_id"]
         .as_str()
@@ -797,9 +804,113 @@ fn the_market_data_listener_reaches_one_vendor_on_one_path_and_widening_it_fails
         licensing.contains(source_id),
         "{FRANKFURTER_LICENSING} carries no entry for {source_id}, so the \
          bootstrap reaches a vendor whose terms nobody wrote down. \
-         licensing::admit refuses an uncatalogued source, so this listener \
-         would be a route the fast brain is denied — the widening without the \
+         admission::admit refuses an uncatalogued source, so this listener \
+         would be a route both roots are denied — the widening without the \
          use, again."
+    );
+}
+
+#[test]
+fn the_frankfurter_host_is_one_value_in_the_manifest_the_bootstrap_and_the_allowlist() {
+    // ADR 0034 requires a vendor host to move in the manifest, the Envoy
+    // cluster and the Terraform allowlist in one commit. On 2026-09-04 the
+    // vendor moved from `api.frankfurter.app` to `api.frankfurter.dev`, the
+    // old host began answering 301, and the transport — which never follows
+    // a redirect — refused the source. The three files then had to change
+    // together, and nothing named which of them disagreed with which: the
+    // earlier test above checks each against a literal of its own, so a host
+    // changed in two places and not the third failed with "does not dial",
+    // which is true and unhelpful. This test takes the connector's own
+    // constant as the one value and reports every place that differs from
+    // it, by name.
+    use qip_market_ingestion::connectors::FrankfurterRatesConnector;
+    let host = FrankfurterRatesConnector::UPSTREAM_HOST;
+
+    // Premise: the constant is a bare hostname. A URL or a path here would
+    // never equal an Envoy `address:` and every mismatch below would fire
+    // for the wrong reason.
+    assert!(
+        host.contains('.') && !host.contains('/') && !host.contains(':'),
+        "UPSTREAM_HOST is {host:?}, which is not a bare hostname"
+    );
+
+    // The manifest, in the parentheses the provider convention uses. Matched
+    // delimited: the host is a substring of longer names.
+    let manifest: serde_json::Value = serde_json::from_str(&read(FRANKFURTER_MANIFEST))
+        .expect("the frankfurter manifest is JSON");
+    let provider = manifest["provider"]
+        .as_str()
+        .expect("the manifest names its provider");
+    let manifest_host = provider
+        .split('(')
+        .nth(1)
+        .and_then(|rest| rest.split(')').next())
+        .expect("the manifest's provider names its host in parentheses");
+
+    // The bootstrap: the cluster that dials the host, its SNI, its
+    // certificate name, and the route's rewritten authority. Four places
+    // because Envoy reads four; a cluster dialling the new host with the old
+    // SNI is a TLS handshake the vendor refuses.
+    let bootstrap = bootstrap();
+    let clusters = entries_of(&clusters_block(&bootstrap));
+    let (_, cluster) = clusters
+        .iter()
+        .find(|(name, _)| name == FRANKFURTER_CLUSTER)
+        .unwrap_or_else(|| panic!("no `{FRANKFURTER_CLUSTER}` cluster is declared"));
+    let listeners = entries_of(&listeners_block(&bootstrap));
+    let (_, listener) = listeners
+        .iter()
+        .find(|(name, _)| name == FRANKFURTER_LISTENER)
+        .unwrap_or_else(|| panic!("no `{FRANKFURTER_LISTENER}` listener is declared"));
+
+    // The root variable's default: the entry that names frankfurter, and
+    // exactly one of them, because two entries would be the old and the new
+    // host both allowed.
+    let declared: Vec<String> = read(ROOT_VARIABLES)
+        .split("variable \"egress_allowed_upstreams\" {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}").next())
+        .expect("the root declares egress_allowed_upstreams")
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix('"'))
+        .filter_map(|rest| rest.split('"').next())
+        .filter(|entry| entry.contains("frankfurter"))
+        .map(str::to_string)
+        .collect();
+    assert_eq!(
+        declared.len(),
+        1,
+        "{ROOT_VARIABLES} allows {declared:?}; exactly one frankfurter host is \
+         the vendor, and two is the old one still reachable"
+    );
+
+    let claims: [(&str, Vec<String>); 6] = [
+        ("the manifest's provider", vec![manifest_host.to_string()]),
+        ("the Envoy cluster's address", values_of(cluster, "address")),
+        ("the Envoy cluster's SNI", values_of(cluster, "sni")),
+        (
+            "the Envoy cluster's certificate name",
+            values_of(cluster, "exact"),
+        ),
+        (
+            "the frankfurter listener's rewritten authority",
+            values_of(listener, "host_rewrite_literal"),
+        ),
+        ("the Terraform allowlist entry", declared),
+    ];
+    let disagreeing: Vec<String> = claims
+        .iter()
+        .filter(|(_, found)| found.as_slice() != [host.to_string()])
+        .map(|(place, found)| format!("{place} says {found:?}"))
+        .collect();
+    assert!(
+        disagreeing.is_empty(),
+        "FrankfurterRatesConnector::UPSTREAM_HOST is {host:?} and {} disagree(s): {}. ADR 0034: \
+         the manifest, the bootstrap and the allowlist move in one commit, and a host \
+         changed in one of them is a 301 — or a certificate the proxy refuses — in the \
+         others",
+        disagreeing.len(),
+        disagreeing.join("; ")
     );
 }
 

@@ -1,13 +1,13 @@
 {
   "exchanges": [
     {
-      "target": "/latest",
+      "target": "/v1/latest",
       "answers": [
         {
           "status": 200,
           "media_type": "application/json",
-          "latency_ms": 121,
-          "body": "{\"amount\":1.0,\"base\":\"EUR\",\"date\":\"2026-08-24\",\"rates\":{\"GBP\":0.84215,\"JPY\":171.94,\"USD\":1.0827}}"
+          "latency_ms": 381,
+          "body": "{\"amount\":1.0,\"base\":\"EUR\",\"date\":\"2026-09-04\",\"rates\":{\"GBP\":0.85898,\"JPY\":181.59,\"USD\":1.1622}}"
         }
       ]
     }

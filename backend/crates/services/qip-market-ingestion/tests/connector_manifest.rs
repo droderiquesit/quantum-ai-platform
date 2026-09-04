@@ -225,6 +225,22 @@ fn the_shipped_example_manifests_validate_and_describe_free_public_sources() -> 
     assert_eq!(frankfurter.source_id, "frankfurter-ecb-reference-rates");
     assert_eq!(frankfurter.protocol, Protocol::Poll);
     assert_eq!(frankfurter.auth.scheme, AuthScheme::None);
+    // The versioned path on the host the vendor moved to. `api.frankfurter.app`
+    // answered every request with a 301 from 2026-09-04, which the transport
+    // refuses to follow, and the unversioned `/latest` answers 404 on the new
+    // host — so the old pair would fail the health probe, and the shipped
+    // manifest, the Envoy cluster and the Terraform allowlist must name the
+    // new host together.
+    assert_eq!(frankfurter.endpoint.path, "/v1/latest");
+    assert_eq!(frankfurter.endpoint.health_path(), "/v1/latest");
+    assert!(
+        frankfurter.provider.contains(&format!(
+            "({})",
+            frankfurter_rates::FrankfurterRatesConnector::UPSTREAM_HOST
+        )),
+        "the manifest documents a host other than the one the code names: {}",
+        frankfurter.provider
+    );
     assert_eq!(
         frankfurter.publication_delay(),
         Duration::from_hours(16),

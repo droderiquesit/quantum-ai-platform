@@ -30,6 +30,9 @@ pub mod mesh;
 pub mod mirror;
 /// One pass of the node: feed, decide, act, reconcile.
 pub mod pass;
+/// Cancel-and-replace of a stale resting order, beneath the cell's placer
+/// seam — the caller `qip_routing::reprice` was written for.
+pub mod reprice;
 /// The strategies the payload's plan names, deployed under their grants.
 pub mod strategies;
 /// The node's own metric seam: the mesh link, rendered as a series.

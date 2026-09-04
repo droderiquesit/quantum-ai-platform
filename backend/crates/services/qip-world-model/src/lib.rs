@@ -22,6 +22,7 @@ pub mod graph;
 pub mod liquidity;
 pub mod relationship;
 pub mod state;
+pub mod vocabulary;
 pub mod world;
 
 pub use causal::{CausalEdge, CausalGraph, Effect, Mechanism, PropagationResult};
@@ -33,4 +34,5 @@ pub use liquidity::{
 };
 pub use relationship::{Relationship, RelationshipKind};
 pub use state::{Change, ChangeKind, WorldDiff, WorldState};
+pub use vocabulary::{AltMetric, FeatureRead, MacroSeries, SubjectKind, UNWRITTEN, Unwritten};
 pub use world::WorldModel;

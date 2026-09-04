@@ -50,15 +50,49 @@ fn closing_the_last_lot_moves_a_position_to_closed_and_the_closed_state_refuses_
     assert!(position.is_flat());
     assert_eq!(position.lifecycle, PositionLifecycle::Closed);
 
-    // A further fill (a late or mistaken report) must not walk it back.
-    position.apply_fill(dec!("50"), dec!("12"), dec!("0"), now(), None);
-    assert_eq!(position.lifecycle, PositionLifecycle::Closed);
-
     // The refusal is structural, not just an artefact of `apply_fill`:
-    // calling the transition function itself is refused too.
+    // calling the transition function itself is refused too, so nothing
+    // can walk a flat, closed record back to held by assertion alone.
     let outcome = position.move_lifecycle(PositionLifecycle::Held);
     assert!(outcome.is_err());
     assert_eq!(position.lifecycle, PositionLifecycle::Closed);
+}
+
+#[test]
+fn a_confirmed_lot_on_a_closed_record_starts_a_new_round_trip_that_closes_again() {
+    // The failure this prevents happened: an earlier version of this file
+    // asserted that a fill after closure left the lifecycle at `Closed`.
+    // `apply_fill` accepts the lot into the ledger regardless, so the record
+    // then held shares while reading as closed, and the close that followed
+    // tried `Closed -> Closed` and tripped the terminal guard in every suite
+    // that traded a name twice through one record (the simulated exchange's
+    // books test, the deep brain's evolution rounds). The lifecycle must
+    // describe the ledger; refusing a late report is the caller's job before
+    // the lot exists, not this field's after it does.
+    let mut position = opened_position();
+    position.apply_fill(dec!("100"), dec!("10"), dec!("0"), now(), None);
+    position.apply_fill(dec!("-100"), dec!("11"), dec!("0"), now(), None);
+    // Premise: the first round trip is closed and booked.
+    assert!(position.is_flat());
+    assert_eq!(position.lifecycle, PositionLifecycle::Closed);
+    assert_eq!(position.trade_count(), 1);
+
+    // A new confirmed lot re-enters the name through the same record.
+    position.apply_fill(dec!("50"), dec!("12"), dec!("0"), now(), None);
+    assert_eq!(position.quantity(), dec!("50"));
+    assert_eq!(
+        position.lifecycle,
+        PositionLifecycle::Held,
+        "a record holding fifty shares must not read as closed"
+    );
+    // The first round trip's history is kept, not overwritten.
+    assert_eq!(position.trade_count(), 1);
+
+    // And the second round trip closes through the table's own edge.
+    position.apply_fill(dec!("-50"), dec!("13"), dec!("0"), now(), None);
+    assert!(position.is_flat());
+    assert_eq!(position.lifecycle, PositionLifecycle::Closed);
+    assert_eq!(position.trade_count(), 2);
 }
 
 #[test]

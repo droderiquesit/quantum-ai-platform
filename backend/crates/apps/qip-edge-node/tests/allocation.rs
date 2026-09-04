@@ -138,7 +138,14 @@ fn spent_by_one_strategy() -> Result<Decimal> {
     let opening = "100000000";
     let (mut node, mut gateway, mut feed) = node_with(opening, &["alpha"])?;
     let mut stats = PassStats::default();
-    let outcome = run_pass(&mut node.cell, &mut gateway, &mut feed, &mut stats, t(10))?;
+    let outcome = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        None,
+        &mut stats,
+        t(10),
+    )?;
     let PassOutcome::Ran { report, .. } = outcome else {
         panic!("the probe node reported its pass as halted: {outcome:?}");
     };
@@ -244,7 +251,14 @@ fn a_node_built_with_the_allocation_refuses_a_second_strategy_once_it_is_spent()
     );
 
     let mut stats = PassStats::default();
-    let outcome = run_pass(&mut node.cell, &mut gateway, &mut feed, &mut stats, t(10))?;
+    let outcome = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        None,
+        &mut stats,
+        t(10),
+    )?;
     let PassOutcome::Ran { report, breaks, .. } = outcome else {
         panic!("a running node reported its pass as halted: {outcome:?}");
     };

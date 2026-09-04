@@ -50,6 +50,13 @@ pub const EDGE_FILLS_CONFIRMED: &str = "qip_edge_fills_confirmed_total";
 /// here for the same reason as [`EDGE_FILLS_CONFIRMED`].
 pub const EDGE_ORDERS_EXPIRED: &str = "qip_edge_orders_expired_total";
 
+/// Resting orders withdrawn because the touch moved past the declared drift
+/// threshold and re-sent at the touch under a fresh id, by venue. Named here
+/// for the same reason as [`EDGE_FILLS_CONFIRMED`]. Recorded by the node's
+/// requoter rather than by the cell, which has no repricing of its own: the
+/// cell's record keeps one id per intention and the venue sees the fresh one.
+pub const EDGE_ORDERS_REPRICED: &str = "qip_edge_orders_repriced_total";
+
 /// Whether this cell was given a region allocation at all: `1` or `0`. Named
 /// here for the same reason as [`EDGE_FILLS_CONFIRMED`].
 pub const EDGE_REGION_ALLOCATION_CONFIGURED: &str = "qip_edge_region_allocation_configured";
@@ -152,6 +159,10 @@ impl CellMetrics {
         m.describe(
             EDGE_ORDERS_EXPIRED,
             "resting orders withdrawn at their time to live, by venue",
+        );
+        m.describe(
+            EDGE_ORDERS_REPRICED,
+            "resting orders withdrawn for drift and re-sent at the touch, by venue",
         );
         m.describe(
             EDGE_REGION_ALLOCATION_CONFIGURED,
@@ -392,6 +403,16 @@ impl CellMetrics {
     pub fn order_expired(&self, venue: &VenueId) {
         self.metrics
             .count(EDGE_ORDERS_EXPIRED, self.with("venue", venue.as_str()));
+    }
+
+    /// A resting order was withdrawn for drift and its remainder re-sent at
+    /// the touch — one cancel acknowledged, then one new order, never two
+    /// live. Bounded on `venue` as [`Self::order_placed`] is. Read beside
+    /// orders placed: a venue where requotes approach placements is a market
+    /// the requote budget is the only thing stopping the cell from chasing.
+    pub fn order_repriced(&self, venue: &VenueId) {
+        self.metrics
+            .count(EDGE_ORDERS_REPRICED, self.with("venue", venue.as_str()));
     }
 
     /// A net that cancelled to zero. An outcome, not an absence — which is

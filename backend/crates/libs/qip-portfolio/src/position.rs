@@ -182,17 +182,25 @@ impl Position {
         }
         if self.opened_at.is_none() {
             self.opened_at = Some(at);
-            // The very first confirmed lot moves Opened -> Held. A fully
-            // closed position also has `opened_at == None` (closing resets
-            // it below), so a further fill after closure takes this same
-            // branch; `move_lifecycle` then refuses Closed -> Held and the
-            // position stays Closed, which is the point of the state being
-            // terminal rather than a bug in reaching it.
+            // A fully closed position also has `opened_at == None` (closing
+            // resets it below), so a confirmed lot arriving on a flat, closed
+            // record is a *new round trip on the same instrument* — the
+            // evolution engine and the simulated exchange re-enter a name
+            // through the record they already hold. That is not the
+            // walk-back the table refuses: the closed trades stay in
+            // `closed_trades`, and the record starts its lifecycle again from
+            // `Opened`, so the only edge taken is the table's own
+            // `Opened -> Held`. An earlier version left the field at `Closed`
+            // here and let the refusal stand; the position then held lots
+            // while reading as closed, and the close that followed tried
+            // `Closed -> Closed` and tripped the terminal guard in every
+            // suite that traded a name twice.
+            if self.lifecycle == PositionLifecycle::Closed {
+                self.lifecycle = PositionLifecycle::Opened;
+            }
+            // The first confirmed lot of a round trip moves Opened -> Held.
             if let Err(refusal) = self.move_lifecycle(PositionLifecycle::Held) {
-                debug_assert!(
-                    self.lifecycle == PositionLifecycle::Closed,
-                    "unexpected refusal moving to held: {refusal:?}"
-                );
+                debug_assert!(false, "unexpected refusal moving to held: {refusal:?}");
             }
         }
 
@@ -248,8 +256,8 @@ impl Position {
             self.opened_at = None;
             // The last lot closed. Closed is reachable from every other
             // state on the table, so this only fails if the position was
-            // already Closed — which cannot happen here, because a Closed,
-            // flat position has no lots left to close in the first place.
+            // already Closed — which cannot happen here, because a re-entry
+            // restarts the lifecycle above before any lot is pushed.
             if let Err(refusal) = self.move_lifecycle(PositionLifecycle::Closed) {
                 debug_assert!(false, "unexpected refusal moving to closed: {refusal:?}");
             }

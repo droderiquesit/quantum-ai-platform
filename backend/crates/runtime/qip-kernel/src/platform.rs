@@ -2516,31 +2516,22 @@ impl Platform {
                     absorbed += 1;
                 }
                 SensedRecord::AlternativeData(point) => {
-                    let feature = format!("alt/{}/{}", point.dataset, point.metric);
-                    self.world.update(|world| {
-                        if world.features().definition(&feature).is_none() {
-                            world.features_mut().define(
-                                Feature::new(
-                                    &feature,
-                                    "alternative data series",
-                                    point.provenance.source.clone(),
-                                )
-                                .with_staleness(Duration::from_days(30)),
-                            );
-                        }
-                        world.features_mut().record(
-                            &feature,
-                            &point.subject_id,
-                            FeatureValue {
-                                value: point.value,
-                                valid_at: point.observed_at,
-                                available_at: point.provenance.ingestion_time,
-                                confidence: point.quality.score(),
-                                imputed: false,
-                            },
-                        );
-                    });
-                    absorbed += 1;
+                    // The world model owns the name and the key, from the
+                    // vocabulary the analyst reads by. A reading it refuses —
+                    // a licensed metric from an unlicensed dataset — is not
+                    // absorbed and is reported, for the same reason a refused
+                    // depth observation is: a reading quietly dropped looks
+                    // exactly like a dataset that never published.
+                    let outcome = self
+                        .world
+                        .update(|world| world.absorb_alternative_data(&point));
+                    match outcome {
+                        Ok(()) => absorbed += 1,
+                        Err(error) => self.capture_problems.push(format!(
+                            "an alternative-data reading was refused: {}",
+                            error.message()
+                        )),
+                    }
                 }
                 SensedRecord::ReferenceData(update) => {
                     self.ensure_world_object(&update.object_id, update.provenance.ingestion_time);

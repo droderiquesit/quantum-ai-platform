@@ -7,7 +7,9 @@ use qip_core::error::Result;
 use qip_core::{Context, Duration, Timestamp};
 use qip_entity_resolution::entity::{Entity, EntityKind, EntityRecord};
 use qip_entity_resolution::resolver::Resolver;
-use qip_financial::intelligence::{FundamentalUpdate, MacroObservation, NewsItem};
+use qip_financial::intelligence::{
+    AlternativeDataPoint, FundamentalUpdate, MacroObservation, NewsItem,
+};
 use qip_market::bar::Bar;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -18,6 +20,7 @@ use crate::features::{Feature, FeatureStore, FeatureValue};
 use crate::graph::{Fact, KnowledgeGraph, Node, NodeKind};
 use crate::relationship::{Relationship, RelationshipKind};
 use crate::state::{Change, ChangeKind, WorldDiff, WorldState};
+use crate::vocabulary::{AltMetric, MacroSeries, SubjectKind, names};
 
 /// Published when the world model absorbs something material.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -67,41 +70,76 @@ impl WorldModel {
         model
     }
 
-    /// The features the platform always computes.
+    /// The features the platform always computes, spelled by the vocabulary.
     fn define_standard_features(&mut self) {
         for feature in [
-            Feature::new("close", "last traded price", "market-ingestion")
+            Feature::new(names::CLOSE, "last traded price", "market-ingestion")
                 .with_staleness(Duration::from_days(5)),
             Feature::new(
-                "realised_volatility_20d",
+                names::REALISED_VOLATILITY_20D,
                 "20-day realised volatility",
                 "quant",
             )
             .with_staleness(Duration::from_days(5)),
-            Feature::new("volume", "session volume", "market-ingestion")
+            Feature::new(names::VOLUME, "session volume", "market-ingestion")
                 .with_staleness(Duration::from_days(5)),
-            Feature::new("revenue", "reported quarterly revenue", "fundamentals")
+            Feature::new(names::REVENUE, "reported quarterly revenue", "fundamentals")
                 // Fundamentals arrive weeks after the period they describe, and
                 // the lag is the whole reason point-in-time access matters.
                 .with_lag(Duration::from_days(30))
                 .with_staleness(Duration::from_days(200)),
             Feature::new(
-                "revenue_surprise",
+                names::REVENUE_SURPRISE,
                 "revenue against consensus",
                 "fundamentals",
             )
             .with_lag(Duration::from_days(30))
             .with_staleness(Duration::from_days(200)),
-            Feature::new("sentiment", "aggregate news sentiment", "world-model")
+            Feature::new(names::SENTIMENT, "aggregate news sentiment", "world-model")
+                .with_subject_kind(SubjectKind::Entity)
                 .with_staleness(Duration::from_days(10)),
-            Feature::new("macro_level", "macroeconomic series level", "macro")
+            Feature::new(names::MACRO_LEVEL, "macroeconomic series level", "macro")
                 .with_lag(Duration::from_days(15))
                 .with_staleness(Duration::from_days(120)),
-            Feature::new("macro_surprise", "macro release against consensus", "macro")
-                .with_lag(Duration::from_days(15))
-                .with_staleness(Duration::from_days(120)),
+            Feature::new(
+                names::MACRO_SURPRISE,
+                "macro release against consensus",
+                "macro",
+            )
+            .with_lag(Duration::from_days(15))
+            .with_staleness(Duration::from_days(120)),
         ] {
             self.features.define(feature);
+        }
+        // The series the macro analyst reads, keyed by economy. Monthly at
+        // best, published weeks after the period, so the staleness bound is
+        // the same one the raw macro series carries.
+        for series in MacroSeries::ALL {
+            self.features.define(
+                Feature::new(
+                    series.feature(),
+                    format!("{} by economy", series.series_code()),
+                    "macro",
+                )
+                .with_subject_kind(SubjectKind::Economy)
+                .with_lag(Duration::from_days(15))
+                .with_staleness(Duration::from_days(120)),
+            );
+        }
+        // The series the alternative-data analyst reads, keyed by the
+        // reading's subject. The producer is the dataset — the name the
+        // licence is held under — so the analyst can see whose series it is
+        // reading before it decides whether it may.
+        for metric in AltMetric::ALL {
+            self.features.define(
+                Feature::new(
+                    metric.feature(),
+                    format!("{} from the {} dataset", metric.feature(), metric.dataset()),
+                    metric.dataset(),
+                )
+                .with_subject_kind(SubjectKind::Instrument)
+                .with_staleness(Duration::from_days(30)),
+            );
         }
     }
 
@@ -342,21 +380,30 @@ impl WorldModel {
     }
 
     /// Absorb a macro observation.
+    ///
+    /// Every release lands under [`names::MACRO_LEVEL`] keyed by the vendor's
+    /// series id — the raw record. A release the vocabulary recognises
+    /// ([`MacroSeries::recognise`]) also lands under the analyst's name keyed
+    /// by the observation's region, which is the key the macro analyst reads
+    /// by: the instrument's geography. Until this second write existed the
+    /// macro analyst had never once found a series, on any deployment.
     pub fn absorb_macro(&mut self, observation: &MacroObservation) {
-        self.features.record(
-            "macro_level",
-            &observation.series_id,
-            FeatureValue {
-                value: observation.value,
-                valid_at: observation.reference_date,
-                available_at: observation.provenance.ingestion_time,
-                confidence: observation.quality.score(),
-                imputed: observation.quality.is_imputed,
-            },
-        );
+        let value = FeatureValue {
+            value: observation.value,
+            valid_at: observation.reference_date,
+            available_at: observation.provenance.ingestion_time,
+            confidence: observation.quality.score(),
+            imputed: observation.quality.is_imputed,
+        };
+        if let Some(series) = MacroSeries::recognise(&observation.series_id, &observation.region) {
+            self.features
+                .record(series.feature(), &observation.region, value.clone());
+        }
+        self.features
+            .record(names::MACRO_LEVEL, &observation.series_id, value);
         if let Some(surprise) = observation.surprise() {
             self.features.record(
-                "macro_surprise",
+                names::MACRO_SURPRISE,
                 &observation.series_id,
                 FeatureValue {
                     value: surprise,
@@ -376,6 +423,51 @@ impl WorldModel {
                 ));
             }
         }
+    }
+
+    /// Absorb an alternative-data reading as a point-in-time feature.
+    ///
+    /// A reading whose metric the vocabulary names lands under that name,
+    /// keyed by the reading's subject, in the series whose definition names
+    /// the dataset as its producer — the dataset travels as provenance, not
+    /// as a path prefix nothing reads. A metric the vocabulary does not name
+    /// is still recorded, under `alt/{dataset}/{metric}`, because a dataset
+    /// nobody has vocabularised must not vanish; nothing reads it, and the
+    /// name says so.
+    ///
+    /// Refused, not stored: a vocabulary metric from a dataset other than the
+    /// one the vocabulary holds it under. The analyst's licence check is by
+    /// dataset, so a reading laundered under the licensed name would pass
+    /// it. The refusal names both datasets and what to do instead.
+    pub fn absorb_alternative_data(&mut self, point: &AlternativeDataPoint) -> Result<()> {
+        let value = FeatureValue {
+            value: point.value,
+            valid_at: point.observed_at,
+            available_at: point.provenance.ingestion_time,
+            confidence: point.quality.score(),
+            imputed: point.quality.is_imputed,
+        };
+        match AltMetric::recognise(&point.dataset, &point.metric)? {
+            Some(metric) => {
+                self.features
+                    .record(metric.feature(), &point.subject_id, value);
+            }
+            None => {
+                let feature = format!("alt/{}/{}", point.dataset, point.metric);
+                if self.features.definition(&feature).is_none() {
+                    self.features.define(
+                        Feature::new(
+                            &feature,
+                            "alternative data series outside the vocabulary; read by nothing",
+                            point.dataset.clone(),
+                        )
+                        .with_staleness(Duration::from_days(30)),
+                    );
+                }
+                self.features.record(&feature, &point.subject_id, value);
+            }
+        }
+        Ok(())
     }
 
     /// Absorb a bar as price and volume features.

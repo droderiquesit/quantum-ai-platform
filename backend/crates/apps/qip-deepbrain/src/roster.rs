@@ -207,6 +207,9 @@ mod tests {
                     }
                 })
                 .collect(),
+            macro_releases: Vec::new(),
+            alternative_data: Vec::new(),
+            dividend_declarations: Vec::new(),
         })
         .expect("the tape loads")
     }

@@ -1030,6 +1030,9 @@ mod tests {
             description: "a node-test tape".to_string(),
             interval: qip_market::bar::Interval::Day,
             observations,
+            macro_releases: Vec::new(),
+            alternative_data: Vec::new(),
+            dividend_declarations: Vec::new(),
         })
         .expect("the tape loads");
         assert_eq!(tape.periods(), 3, "the premise: three knowable instants");

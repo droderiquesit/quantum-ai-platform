@@ -55,6 +55,7 @@
 //! boundary, because a comparison whose split could be chosen afterwards is
 //! unfalsifiable.
 
+pub mod agents;
 pub mod backtest;
 pub mod baseline;
 pub mod clock;
@@ -68,6 +69,10 @@ pub mod scenario;
 pub mod validation;
 pub mod venue;
 
+pub use agents::{
+    AgentKind, AgentRecord, Behaviour, CounterpartyAgent, FlowAction, FlowCalibration, FlowRecord,
+    NOT_CALIBRATED_STATEMENT, PathObservation, PathWindow,
+};
 pub use backtest::{
     BacktestConfig, BacktestResult, BacktestStrategy, Backtester, RejectedOrder, SimulatedFill,
 };

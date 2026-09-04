@@ -69,8 +69,9 @@ pub enum Feed {
     Live(Box<RestMarketDataAdapter>),
     /// A worked connector from the ingestion SDK, opened through the egress
     /// proxy after the licensing catalogue admitted it. See
-    /// [`crate::licensing::admit`] — the gate runs before construction, and
-    /// [`Self::open`] is shaped so there is no path to this arm around it.
+    /// [`qip_data_finder::admission::admit`] — the gate runs before
+    /// construction, and [`Self::open`] is shaped so there is no path to this
+    /// arm around it.
     Connector(Box<ConnectorFeed>),
 }
 
@@ -157,10 +158,14 @@ impl Feed {
     /// The licensing gate runs here, before anything is constructed and
     /// before any socket is touched: the rule is evaluation *then* use, and
     /// putting the call inside the constructor makes the ordering a property
-    /// of the code path rather than of the caller's memory.
+    /// of the code path rather than of the caller's memory. The catalogue is
+    /// the data finder's, shared with `qip-api`: this root once carried its
+    /// own copy of the same entries, and two catalogues that must say the
+    /// same thing about one licence are one catalogue plus a drift nobody
+    /// has found yet.
     pub fn connector(settings: &ConnectorFeedSettings, at: Timestamp) -> Result<Self> {
         let class = qip_market_ingestion::connector_feed::shipped_class(&settings.source_id)?;
-        crate::licensing::admit(&settings.source_id, class, at)?;
+        qip_data_finder::admission::admit(&settings.source_id, class, at)?;
         Ok(Self::Connector(Box::new(ConnectorFeed::open(
             &settings.source_id,
             &settings.base_url,
@@ -534,6 +539,9 @@ mod tape_tests {
             description: "a feed test tape".to_string(),
             interval: Interval::Day,
             observations,
+            macro_releases: Vec::new(),
+            alternative_data: Vec::new(),
+            dividend_declarations: Vec::new(),
         };
         let directory =
             std::env::temp_dir().join(format!("qip-fastbrain-tape-{name}-{}", std::process::id()));
