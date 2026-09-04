@@ -48,6 +48,44 @@
 //! here for the same reason: each is a refusal the cell already makes, and a
 //! refusal made at the centre is one an operator sees at the console instead
 //! of in a cell's delta stream.
+//!
+//! # Why slot 8 is the only one this module produces
+//!
+//! The audit is recorded here because the next reader of this file is the
+//! next person asked to fill another slot, and every one of the remaining
+//! nine looks producible until its input is read.
+//!
+//! Three of the nine — belief priors, the episodic digest and the causal
+//! digest — are the three `PolicyItem::capability` maps to a §6.2
+//! capability, which means producing one *relaxes* the cell rather than
+//! informing it: `DegradationState::sizing_multiplier` stops narrowing when
+//! the belief and causal slots read fresh, and `pauses` stops pausing
+//! situational-recognition strategies when the episodic slot does. The
+//! kernel holds no belief engine, no episodic store, and no causal edge —
+//! `WorldModel::claim_causal` is called only by its own demo seed — so a
+//! producer for any of them would ship an empty or relabelled value and buy
+//! a wider position with it. Their unproduced state is the platform saying
+//! it has no such capability, and that sentence is load-bearing.
+//!
+//! Of the other six: a model manifest names each model by content digest and
+//! `ModelCard` carries no digest of any artifact, because weights are never
+//! materialised here; the compiled plan's digest must match bytes an edge
+//! node reads from a file the centre is never handed; inventory targets are
+//! exact quantities and the centre holds realised books, not targets, and
+//! holds no marks to price them with; the feasibility constraints are per
+//! venue while the only tick this platform states is per instrument, and a
+//! catalogue that omits a tick is indistinguishable from one that states the
+//! builder's default, so signing it would be signing a default as a venue's
+//! grid; there is no adversary monitor at all. The regime is the closest —
+//! the tape statistics are real and drive routing every cycle — but
+//! `Platform::market_regime` is per subject and answers `Crisis` from this
+//! process's own drawdown, so shipping it per cell would sign a house state
+//! as a market state, and `RegimeState::confidence` has no source that is a
+//! confidence rather than a classifier's input.
+//!
+//! An unproduced slot narrows the cell and says why. A produced one asserts
+//! a fact, and a slot asserting a number nobody computed is worse than the
+//! gap it closes.
 
 use qip_contracts::CapitalEnvelope;
 use qip_contracts::message::BookSide;

@@ -37,7 +37,7 @@
 //! rejections and the same watermarks as the live run did.
 
 use qip_contracts::time::Watermark;
-use qip_core::error::Error;
+use qip_core::error::{Error, Result};
 use qip_core::{Duration, Timestamp};
 use qip_sequencing::{ReorderPolicy, SequenceEvent};
 use serde::{Deserialize, Serialize};
@@ -68,6 +68,8 @@ pub struct ProcessingPolicy {
     /// dies during the busiest hour. A duplicate arriving after this many
     /// distinct events is not caught here, which is why the replay window is
     /// the second line of defence and not a nicety.
+    ///
+    /// Zero is refused by [`StreamProcessor::new`] rather than widened to one.
     pub dedup_capacity: usize,
     /// Passed straight to `qip_sequencing`.
     pub reorder: ReorderPolicy,
@@ -217,12 +219,26 @@ struct DedupWindow {
 }
 
 impl DedupWindow {
-    fn new(capacity: usize) -> Self {
-        Self {
-            capacity: capacity.max(1),
+    /// A window remembering `capacity` keys, refusing a capacity of zero.
+    ///
+    /// The refusal rather than a widening to one: a window silently corrected
+    /// upwards is a configuration mistake that survives, because the operator
+    /// reads back the policy they wrote while the process runs a different one.
+    /// `qip_market_ingestion::DedupWindow::new` and `EventBus::dedup_capacity`
+    /// already refuse the same value; a third window that clamped instead would
+    /// be the one place a zero could be written down and not noticed.
+    fn new(capacity: usize) -> Result<Self> {
+        if capacity == 0 {
+            return Err(Error::invalid(
+                "a dedup window of zero remembers no idempotency key, so every redelivery would \
+                 be admitted as a new event; give dedup_capacity at least 1",
+            ));
+        }
+        Ok(Self {
+            capacity,
             seen: BTreeSet::new(),
             order: VecDeque::new(),
-        }
+        })
     }
 
     /// Record a key. `false` when it was already present.
@@ -251,13 +267,15 @@ pub struct StreamProcessor {
 }
 
 impl StreamProcessor {
-    pub fn new(policy: ProcessingPolicy) -> Self {
-        Self {
-            dedup: DedupWindow::new(policy.dedup_capacity),
+    /// A processor applying `policy`, refusing a policy whose bounds cannot do
+    /// the job they are configured for.
+    pub fn new(policy: ProcessingPolicy) -> Result<Self> {
+        Ok(Self {
+            dedup: DedupWindow::new(policy.dedup_capacity)?,
             coordinator: SequenceCoordinator::new(policy.reorder),
             policy,
             stats: ProcessingStats::default(),
-        }
+        })
     }
 
     pub fn policy(&self) -> ProcessingPolicy {

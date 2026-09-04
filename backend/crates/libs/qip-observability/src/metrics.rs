@@ -514,12 +514,17 @@ impl Metrics {
     }
 }
 
-/// One label set as OTLP `KeyValue` attributes, for [`Snapshot::to_otlp_metrics`].
+/// One label set as OTLP `KeyValue` attributes.
+///
+/// Shared by [`Snapshot::to_otlp_metrics`] and by `trace`'s span encoder: a
+/// metric label set and a span attribute set are both `BTreeMap<String,
+/// String>` and both become the same OTLP `KeyValue` array, and two copies of
+/// this would be two places to fix when one of them is found wrong.
 ///
 /// No escaping is needed here the way [`escape_label_value`] is needed for
 /// the Prometheus text format: `serde_json` already produces a well-formed
 /// JSON string for any Rust `&str`, whatever bytes it holds.
-fn otlp_attributes(labels: &Labels) -> Vec<serde_json::Value> {
+pub(crate) fn otlp_attributes(labels: &Labels) -> Vec<serde_json::Value> {
     labels
         .iter()
         .map(|(k, v)| serde_json::json!({"key": k, "value": {"stringValue": v}}))

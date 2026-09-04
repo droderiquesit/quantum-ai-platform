@@ -373,15 +373,126 @@ fn span_ids_have_the_w3c_lengths() {
 }
 
 #[test]
-fn trace_export_has_the_otlp_shape() {
-    let tracer = Arc::new(Tracer::new("api", clock()));
-    tracer.start("GET /portfolios", SpanKind::Server).finish();
+fn trace_export_names_every_leaf_span_field_the_way_otlp_does() {
+    // The failure this prevents: the drain thread POSTs this document to a
+    // collector that validates it. The envelope was OTLP from the start, but
+    // each leaf carried this crate's own names — `trace_id`, `start` as an
+    // RFC 3339 string, `kind` as `"server"`, attributes as a map, and a
+    // `status` nested inside a `status` with no `code` — so the batch would be
+    // rejected whole and the only symptom would be a failure counter climbing.
+    // The previous version of this test asserted the envelope only and passed
+    // over every one of those leaves, which is why the gap survived it.
+    let clock = clock();
+    let tracer = Arc::new(Tracer::new("api", clock.clone()));
+    let mut root = tracer.start("GET /portfolios", SpanKind::Server);
+    root.set_attribute("http.route", "/portfolios");
+    let child = root.child("load-positions", SpanKind::Client);
+    clock.advance(Duration::from_millis(7));
+    child.finish();
+    root.finish();
+
     let export = tracer.export();
-    assert!(export["resourceSpans"][0]["scopeSpans"][0]["spans"].is_array());
+    let spans = export["resourceSpans"][0]["scopeSpans"][0]["spans"]
+        .as_array()
+        .expect("scopeSpans.spans must be an array");
+    // The premise: `is_array()` is true of `[]`, so prove there is something
+    // to inspect before inspecting it.
+    assert_eq!(spans.len(), 2, "two spans were finished: {export}");
+
+    let parent = spans
+        .iter()
+        .find(|s| s["name"] == "GET /portfolios")
+        .expect("the root span is missing from the export");
+    let child = spans
+        .iter()
+        .find(|s| s["name"] == "load-positions")
+        .expect("the child span is missing from the export");
+
+    assert_eq!(
+        parent["traceId"].as_str().map(str::len),
+        Some(32),
+        "traceId must be the 32-character hex OTLP asks for"
+    );
+    assert_eq!(parent["spanId"].as_str().map(str::len), Some(16));
+    assert_eq!(
+        child["parentSpanId"], parent["spanId"],
+        "the child must name its parent under OTLP's key"
+    );
+    assert!(
+        parent.get("parentSpanId").is_none(),
+        "a root span has no parent to name"
+    );
+
+    // Enums are integers: OTLP/JSON's protobuf mapping does not accept the
+    // name string this crate's own derive produces.
+    assert_eq!(parent["kind"], 2, "SpanKind::Server is SPAN_KIND_SERVER, 2");
+    assert_eq!(child["kind"], 3, "SpanKind::Client is SPAN_KIND_CLIENT, 3");
+    assert_eq!(parent["status"], serde_json::json!({"code": 1}));
+
+    // Instants are nanoseconds as decimal strings, not RFC 3339 and not JSON
+    // numbers, which lose precision above 2^53.
+    let start: i64 = parent["startTimeUnixNano"]
+        .as_str()
+        .expect("startTimeUnixNano must be a JSON string")
+        .parse()
+        .expect("startTimeUnixNano must parse as nanoseconds");
+    let end: i64 = parent["endTimeUnixNano"]
+        .as_str()
+        .expect("endTimeUnixNano must be a JSON string")
+        .parse()
+        .expect("endTimeUnixNano must parse as nanoseconds");
+    assert_eq!(
+        end - start,
+        7_000_000,
+        "the span must cover the seven milliseconds the clock advanced"
+    );
+
+    // Attributes are a KeyValue array, not a map.
+    let attributes = parent["attributes"]
+        .as_array()
+        .expect("attributes must be an OTLP KeyValue array, not a map");
+    let route = attributes
+        .iter()
+        .find(|kv| kv["key"] == "http.route")
+        .expect("the attribute set on the span is missing from the export");
+    assert_eq!(route["value"]["stringValue"], "/portfolios");
+
+    // None of this crate's own leaf names may survive into the wire form.
+    for span in spans {
+        for internal in ["trace_id", "span_id", "parent_span_id", "start", "end"] {
+            assert!(
+                span.get(internal).is_none(),
+                "the leaf still carries this crate's own `{internal}`: {span}"
+            );
+        }
+    }
+
+    // The envelope, which was already correct and must stay so.
     assert_eq!(
         export["resourceSpans"][0]["resource"]["attributes"][0]["value"]["stringValue"],
         "api"
     );
+}
+
+#[test]
+fn a_failed_span_exports_otlps_error_code_and_its_message() {
+    // `SpanStatus`'s derive tags the enum with the field name `status`, so a
+    // failed span serialised `"status": {"status": "error"}` — no `code` at
+    // all, which an OTLP reader shows as unset, that is, as having succeeded.
+    // That is the one thing an error span exists to deny.
+    let tracer = Arc::new(Tracer::new("execution-engine", clock()));
+    tracer
+        .start("submit", SpanKind::Client)
+        .finish_with_error("broker rejected the order");
+
+    let export = tracer.export();
+    let span = &export["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
+    assert_eq!(
+        span["name"], "submit",
+        "the premise: the failed span is the one being inspected"
+    );
+    assert_eq!(span["status"]["code"], 2, "STATUS_CODE_ERROR is 2");
+    assert_eq!(span["status"]["message"], "broker rejected the order");
 }
 
 #[test]
