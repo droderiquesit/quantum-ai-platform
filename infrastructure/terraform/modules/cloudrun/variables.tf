@@ -2,6 +2,11 @@ variable "project_id" {
   type = string
 }
 
+variable "project_number" {
+  description = "The project's numeric id. Cloud Run's deterministic URL for a service is built from it, and with the service resource in Config Connector's hands (ADR 0036) the URL is computed here rather than read back."
+  type        = number
+}
+
 variable "region" {
   type = string
 }
@@ -19,9 +24,10 @@ variable "name" {
     The workload's own name, without the `qip-` prefix or the environment
     suffix. `market-adapter`, `intent-netting`, `evidence-sealer`.
 
-    One name, used for the Cloud Run resource, the service account and the
-    label a bill is read by. Two names for one workload is how a cost report
-    and an incident timeline end up describing different things.
+    One name, used for the service account, the buckets, the label a bill is
+    read by, and — in the manifest — the Cloud Run resource. Two names for
+    one workload is how a cost report and an incident timeline end up
+    describing different things.
   EOT
 
   type = string
@@ -29,26 +35,6 @@ variable "name" {
   validation {
     condition     = can(regex("^[a-z][a-z0-9-]{1,30}[a-z0-9]$", var.name))
     error_message = "A workload name is lower case, starts with a letter and contains only letters, digits and hyphens."
-  }
-}
-
-variable "kind" {
-  description = <<-EOT
-    Whether this is a Cloud Run service or a Cloud Run job.
-
-    The blueprint's catalogue holds both, and they are not interchangeable: a
-    service answers requests and a job runs to completion. Naming which one
-    this is here rather than inferring it from whether a port was set means a
-    job that accidentally carries a port is refused instead of deployed as a
-    service that never receives a request.
-  EOT
-
-  type    = string
-  default = "service"
-
-  validation {
-    condition     = contains(["service", "job"], var.kind)
-    error_message = "kind is service or job."
   }
 }
 
@@ -119,10 +105,10 @@ variable "traffic_class" {
       * `platform` — everything else: internal control, data, observability.
 
     Customer traffic and trading traffic never share a load balancer, an
-    identity, a credential or a route, and the preconditions in `main.tf`
-    refuse the configurations that would make them. This module gives every
-    workload its own service account, so the identity half of that separation
-    is structural rather than a rule somebody follows.
+    identity, a credential or a route. This module gives every workload its
+    own service account, so the identity half of that separation is
+    structural; the ingress half is the manifest's, and the parity test
+    refuses a trading workload on any posture but internal.
 
     Not defaulted, because every default here would be a guess about a
     security boundary. A caller that has not decided which class a workload is
@@ -137,301 +123,8 @@ variable "traffic_class" {
   }
 }
 
-variable "ingress_posture" {
-  description = <<-EOT
-    Who may reach this workload, closed by default.
-
-      * `internal`        — reachable only from inside the VPC.
-      * `public-edge`     — reachable only through the external load balancer
-        that fronts the customer edge, and still not directly.
-      * `open-anonymous`  — the service's own `run.app` URL answers the
-        internet. See below; this is not a value to reach for.
-
-    `open-anonymous` exists because ADR 0030 records an owner decision to
-    expose OpenObserve that way, and the honest way to carry that decision was
-    a third value rather than widening `public-edge` or teaching the mapping a
-    branch nobody would find. It maps to `INGRESS_TRAFFIC_ALL`, which was
-    absent from this module until that record: that setting makes the load
-    balancer, its WAF and its identity check a route rather than *the* route,
-    and a service left there after a debugging session looks identical in the
-    console to one that was never meant to be private.
-
-    The name is deliberately unpleasant. `grep -rn 'open-anonymous'
-    infrastructure/` is the whole answer to "what is on the internet", and a
-    value called `public` or `external` would have read like a deployment
-    detail instead of a decision. A workload taking this posture must be named
-    in ADR 0030, and the acceptance suite refuses a second one that is not.
-  EOT
-
-  type    = string
-  default = "internal"
-
-  validation {
-    condition     = contains(["internal", "public-edge", "open-anonymous"], var.ingress_posture)
-    error_message = "ingress_posture is internal, public-edge or open-anonymous. The last opens the workload's own URL to the internet and is governed by ADR 0030."
-  }
-}
-
-variable "invokers" {
-  description = <<-EOT
-    The identities that may invoke this workload, as full IAM members.
-
-    Empty by default, which means nothing may call it: an unreachable service
-    is a deployment problem and a world-reachable one is an incident, so the
-    empty value is the one that fails safely.
-
-    The two anonymous principals are handled differently, and since ADR 0030
-    in two different places. The one admitting every Google account in
-    existence is refused outright by a validation below, everywhere, with no
-    exception: it is not the caller anyone meant, and it reads as
-    authenticated in an audit. The one admitting the internet is refused by a
-    precondition in `main.tf` on every posture except `open-anonymous`, and
-    that posture is refused without it — the pairing is checked in both
-    directions, and it lives there rather than here because a `validation`
-    reading `var.ingress_posture` is a cross-variable reference terraform
-    skips silently.
-
-    Neither is spelled out in this prose, and that is not squeamishness: the
-    acceptance suite scans this configuration for those two literals, and a
-    `validation` or `precondition` block is the one construct that may name
-    them without granting anything — the same arrangement `console-ingress`
-    uses. A description that named them would read to that scanner as the
-    grant it exists to catch. A workload on the public edge is still reached
-    through the load balancer's own backend identity, not by making the
-    service anonymous.
-  EOT
-
-  type    = list(string)
-  default = []
-
-  # `allUsers` and `allAuthenticatedUsers` are the two IAM members with no
-  # `type:` prefix, so a shape check that demands one rejects them for being
-  # malformed rather than for being anonymous — the wrong refusal, and one
-  # that would have hidden the real question behind a syntax error. They are
-  # admitted here as well-formed and judged on their own terms by the two
-  # rules below.
-  validation {
-    condition = alltrue([
-      for member in var.invokers :
-      contains(["allUsers", "allAuthenticatedUsers"], member) ||
-      can(regex("^(user|group|serviceAccount|domain):", member))
-    ])
-    error_message = "Each invoker is a full IAM member: user:…, group:…, serviceAccount:… or domain:…."
-  }
-
-  # `allAuthenticatedUsers` is refused on every posture, with no exception and
-  # no ADR permitting one. It reads like a narrowing of `allUsers` and is not:
-  # it admits every Google account in existence, which is a different and
-  # larger set than the caller anyone had in mind, and unlike `allUsers` it
-  # does so while looking authenticated in an audit.
-  validation {
-    condition     = !contains(var.invokers, "allAuthenticatedUsers")
-    error_message = "allAuthenticatedUsers admits every Google account in existence, which is not the caller you meant. Name the caller, or use allUsers under ADR 0030 if the workload is deliberately anonymous."
-  }
-
-  # The pairing of `allUsers` with `open-anonymous` is enforced in BOTH
-  # directions, and deliberately not here. A `validation` block that reads a
-  # second variable is a cross-variable reference, and terraform skips it
-  # silently: written as a validation on this input, the rule admitted an
-  # anonymous invoker beside `ingress_posture = "internal"` and reported
-  # "Success! The configuration is valid." A guard that cannot fire reads as
-  # protection and is not — the defect this repository has shipped before and
-  # names in its own rules. The two checks live as preconditions on
-  # `google_cloud_run_v2_service.workload` in `main.tf`, which is where this
-  # module already puts every cross-input invariant.
-}
-
-variable "image_digest" {
-  description = <<-EOT
-    The image to run when `source` is `built`, pinned by digest. Ignored, and
-    may be left null, when `source` is `vendored` — see `vendored_image_digest`.
-
-    A tag is a name somebody may move. Pinning by digest is what makes "the
-    bytes that were tested" and "the bytes that are running" the same
-    sentence, and it is the same rule the registry enforces with immutable
-    tags and Binary Authorization enforces with an attestation over the
-    digest. The validation below refuses anything without `@sha256:`, which
-    includes the shape that looks safest and is not — a tag that happens to be
-    a commit hash.
-
-    Null by default so a vendored workload's caller does not have to invent a
-    value for the half of the lookup it does not use; the precondition on
-    `google_service_account.workload` refuses a built workload that left this
-    null instead.
-  EOT
-
-  type    = string
-  default = null
-
-  validation {
-    condition     = var.image_digest == null || can(regex("^[a-z0-9][a-z0-9._/-]*[a-z0-9]@sha256:[a-f0-9]{64}$", var.image_digest))
-    error_message = "The image must be pinned by digest, as repository@sha256:<64 hex>, or null. A tag is a name someone can move after the attestation was signed."
-  }
-}
-
-# Named `image_source` and not `source`: Terraform reserves `source` inside a
-# module block for the module's own address, so `variable "source"` is refused
-# outright with "The variable name "source" is reserved due to its special
-# meaning inside module blocks" — and a caller could never pass it. ADR 0028
-# decision 3 was written naming it `source`; it could not have worked, and the
-# ADR carries the correction.
-variable "image_source" {
-  description = <<-EOT
-    Where this workload's image comes from (ADR 0028, decision 3).
-
-      * `built`    — this platform's own build→sign→attest pipeline. The
-        digest is `image_digest`, which `catalogue.tf` composes from
-        `var.image_digests` — itself written by `.github/workflows/deploy.yml`
-        into `infrastructure/environments/<env>/images.tfvars`. The service's
-        image is then owned by the pipeline: see the `ignore_changes` at the
-        foot of `google_cloud_run_v2_service.workload`, which exists so an
-        apply after a deploy does not roll the service back to the digest the
-        tfvars still name.
-      * `vendored` — a third-party image mirrored and attested by
-        `.github/workflows/vendor.yml` from a reviewed line in
-        `infrastructure/egress/vendored-images.txt`. The digest is
-        `vendored_image_digest`.
-
-    This input selects which digest is read, and nothing else. It does *not*
-    vary the `ignore_changes` rule: ADR 0028 decision 3 said a vendored
-    workload would skip it, and Terraform cannot express that — `ignore_changes`
-    takes a static list, so a value that branches on an input is refused with
-    "A static list expression is required". What that costs a vendored workload
-    is written at the rule itself.
-
-    A vendored image is also one that need not honour the `_FILE` indirection
-    `secret_mounts` writes. The mount works identically for either source; the
-    reading does not, and what that costs is written at `secret_mounts`.
-
-    Default `built`, so every workload this module deployed before this input
-    existed — the whole catalogue, as of ADR 0028 — is unaffected.
-  EOT
-
-  type    = string
-  default = "built"
-
-  validation {
-    condition     = contains(["built", "vendored"], var.image_source)
-    error_message = "image_source is built or vendored."
-  }
-}
-
-variable "vendored_image_digest" {
-  description = <<-EOT
-    The image to run when `source` is `vendored`, pinned by digest. Ignored,
-    and may be left null, when `source` is `built` — see `image_digest`.
-
-    The same pinning rule as `image_digest`, for the same reason: a tag is a
-    name somebody may move after the mirror was reviewed and attested.
-  EOT
-
-  type    = string
-  default = null
-
-  validation {
-    condition     = var.vendored_image_digest == null || can(regex("^[a-z0-9][a-z0-9._/-]*[a-z0-9]@sha256:[a-f0-9]{64}$", var.vendored_image_digest))
-    error_message = "The vendored image must be pinned by digest, as repository@sha256:<64 hex>, or null. A tag is a name someone can move after the attestation was signed."
-  }
-}
-
-variable "egress_network" {
-  description = "The VPC every packet leaving this workload traverses. Direct VPC egress, so the firewall rules and the flow logs are the same ones the rest of the platform has."
-  type        = string
-}
-
-variable "egress_subnet" {
-  description = <<-EOT
-    The subnet Cloud Run places this workload's network interface in.
-
-    Its own range rather than a share of the primary, for the reason
-    `modules/network` gives about the console's subnet: a range that GKE also
-    allocates from produces an allocation failure in whichever of the two asks
-    second.
-  EOT
-
-  type = string
-}
-
-variable "min_instances" {
-  description = <<-EOT
-    The floor. Zero, and it stays zero unless somebody writes down why.
-
-    Scaling to zero is most of the blueprint's cost argument, and a floor of
-    one is not a small change: it is a warm instance per revision per region,
-    billed whether or not a request ever arrives. The execution node is the
-    one workload that is always on and it is not this module.
-  EOT
-
-  type    = number
-  default = 0
-
-  validation {
-    condition     = var.min_instances >= 0 && var.min_instances <= 10 && floor(var.min_instances) == var.min_instances
-    error_message = "min_instances is a whole number between 0 and 10."
-  }
-}
-
-variable "always_on_justification" {
-  description = <<-EOT
-    Why this workload may not scale to zero.
-
-    Empty by default, and a `min_instances` above zero with this empty is
-    refused at plan time. The point is not paperwork: a floor raised to hide a
-    cold-start problem and a floor raised because the workload holds a warm
-    connection are the same line of Terraform, and only one of them should
-    survive review.
-  EOT
-
-  type    = string
-  default = ""
-}
-
-variable "max_instances" {
-  description = "The ceiling. Bounded on purpose: an unbounded ceiling turns a retry storm into a bill and a rate-limited dependency into an outage."
-  type        = number
-  default     = 4
-
-  validation {
-    condition     = var.max_instances >= 1 && var.max_instances <= 100 && floor(var.max_instances) == var.max_instances
-    error_message = "max_instances is a whole number between 1 and 100."
-  }
-}
-
-variable "concurrency" {
-  description = "Requests one instance serves at once. Cloud Run's own default is 80; a workload holding per-request state wants far less, and saying so here is cheaper than discovering it under load."
-  type        = number
-  default     = 80
-
-  validation {
-    condition     = var.concurrency >= 1 && var.concurrency <= 1000 && floor(var.concurrency) == var.concurrency
-    error_message = "concurrency is a whole number between 1 and 1000."
-  }
-}
-
-variable "cpu" {
-  description = "CPU per instance, as Cloud Run writes it."
-  type        = string
-  default     = "1"
-
-  validation {
-    condition     = contains(["0.25", "0.5", "1", "2", "4", "8"], var.cpu)
-    error_message = "cpu is one of the values Cloud Run accepts: 0.25, 0.5, 1, 2, 4 or 8."
-  }
-}
-
-variable "memory" {
-  description = "Memory per instance, as Cloud Run writes it."
-  type        = string
-  default     = "512Mi"
-
-  validation {
-    condition     = can(regex("^[0-9]+(Mi|Gi)$", var.memory))
-    error_message = "memory is written as Cloud Run writes it: 512Mi, 2Gi."
-  }
-}
-
 variable "container_port" {
-  description = "The port a service listens on. Ignored for a job, which listens on nothing."
+  description = "The port the service listens on. The collector's scrape document names it; the manifest publishes it."
   type        = number
   default     = 8080
 
@@ -441,39 +134,10 @@ variable "container_port" {
   }
 }
 
-variable "health_path" {
-  description = <<-EOT
-    The path the startup probe polls before any request is routed.
-
-    `/health` matches what the Rust binaries already serve, and what they
-    serve there is real readiness — storage proven writable, ports bound —
-    rather than process liveness. A probe that passes before the journal has
-    somewhere to go is how a process ends up trading with no record.
-  EOT
-
-  type    = string
-  default = "/health"
-
-  validation {
-    condition     = startswith(var.health_path, "/")
-    error_message = "The health path is a path, starting with a slash."
-  }
-}
-
-variable "request_timeout_seconds" {
-  description = "How long one request may run before Cloud Run ends it. Explicit, because the blocking I/O in this platform is written with timeouts and a request that outlives them is waiting on something that is not coming back."
-  type        = number
-  default     = 300
-
-  validation {
-    condition     = var.request_timeout_seconds >= 1 && var.request_timeout_seconds <= 3600
-    error_message = "A request timeout is between 1 and 3600 seconds."
-  }
-}
-
 variable "env" {
   description = <<-EOT
-    Non-secret configuration, as environment variables.
+    Non-secret configuration, as environment variables, exactly as the
+    manifest must set them.
 
     Non-secret is enforced rather than assumed. A variable whose name reads
     like a credential is refused unless it ends in `_FILE`, which is the
@@ -484,7 +148,8 @@ variable "env" {
     thing are the same thing.
 
     The `_FILE` variables for mounted secrets are generated from
-    `secret_mounts` and must not be repeated here.
+    `secret_mounts` and must not be repeated here. The merged result is the
+    `environment` output, which the parity test compares the manifest to.
   EOT
 
   type    = map(string)
@@ -511,25 +176,25 @@ variable "secret_env" {
     Secrets this workload reads as environment values, projected by Cloud Run
     from a Secret Manager version at container start.
 
-    Refused unless `image_source` is `vendored`, and that refusal is the point
-    (ADR 0031). Every binary this platform compiles reads credentials through
+    Permitted for a vendored image only (ADR 0031), and that restriction is
+    the point. Every binary this platform compiles reads credentials through
     `qip_core::secret`, which takes a path; a built workload reaching for this
     input would be choosing the easier one, and the day that is possible the
     rule against secrets in the environment stops meaning anything. The
-    precondition is in `main.tf`, because a validation here reading
-    `var.image_source` is a cross-variable reference terraform skips silently.
+    exception exists for a binary that cannot read a file. OpenObserve is the
+    one in this catalogue: its image carries no shell, so no entrypoint can
+    bridge a mount, and no symbol in it offers `_FILE` indirection for the
+    credential.
 
-    The exception exists for a binary that cannot read a file. OpenObserve is
-    the one in this catalogue: its image carries no shell, so no entrypoint
-    can bridge a mount, and no symbol in it offers `_FILE` indirection for the
-    credential. Mounting it was correct by the rule and inert in fact.
+    The refusal used to be a precondition on the service resource, reading
+    the image's source. The resource is a manifest now (ADR 0036) and so is
+    the image, so the parity test carries the refusal: a `secret_env` on a
+    manifest whose image is one `deploy.yml` builds fails the build. What
+    stays here is the grant, because without it Cloud Run has no instance at
+    all — see the resource.
 
-    The value is still never in this repository, a plan or the state file:
-    what Terraform carries is the secret's name, and Cloud Run resolves it at
-    start. What it does not close is a crash dump, which ADR 0031 names.
-
-    Keyed by environment variable name; each entry gives the secret id and the
-    version to read.
+    The value is never in this repository, a plan or the state file: what
+    Terraform carries is the secret's name.
   EOT
 
   type = map(object({
@@ -555,32 +220,22 @@ variable "secret_mounts" {
     environment variable that points at it.
 
     Files, never values in the environment — the same rule the Secret Manager
-    CSI driver enforces on GKE, kept when the substrate changes. Cloud Run
+    CSI driver enforced on GKE, kept when the substrate changed. Cloud Run
     mounts one volume per directory and two volumes may not share a mount
     path, so each secret gets its own directory under the platform's usual
-    `/var/run/secrets/qip` rather than the single projected directory the CSI
-    driver produces. The path the process reads is the one this module writes
-    into the `_FILE` variable, so nothing has to know that difference.
+    `/var/run/secrets/qip`. The path the process reads is the one this module
+    writes into the `_FILE` variable (`secret_file_paths`), and the manifest
+    mounts the same directory; the parity test compares the two.
 
     The module grants this workload's own service account
     `roles/secretmanager.secretAccessor` on exactly these secrets and nothing
     else. A secret not listed here is one this workload cannot read, and that
     is the whole point of an account per workload.
 
-    Mounting is the half this module can guarantee; opening the file is the
-    workload's half, and a mount here is not evidence the credential arrived.
-    A `built` workload reads the path through `qip_core::secret`, which is why
-    the variable must be named `QIP_…_FILE`. A `vendored` workload is a binary
-    this platform did not write, and some read a credential only as a plain
-    environment value — OpenObserve's `ZO_ROOT_USER_PASSWORD` is the one in
-    this catalogue today. There the mount is correct and still insufficient:
-    the file is projected at 0400, the `_FILE` variable holds its path, and
-    the process opens neither. No HCL closes that gap. Bridging the file into
-    the variable the upstream binary actually reads is an entrypoint on the
-    image, and an image that gains an entrypoint this platform wrote is a
-    built image, not a vendored one — so it is an ADR 0028 decision-3 question
-    and not a module input. Nothing about the mount is conditional on
-    `image_source`; only whether it is read is.
+    Mounting is the half a manifest guarantees; opening the file is the
+    workload's half, and a mount is not evidence the credential arrived. A
+    built workload reads the path through `qip_core::secret`, which is why
+    the variable must be named `QIP_…_FILE`.
   EOT
 
   type = map(object({
@@ -631,8 +286,8 @@ variable "config_files" {
     is what the reviewer read — the name it appears under, and the
     environment variable that points at it. The module publishes every entry
     to a bucket of this workload's own, under a directory named by the hash
-    of the content, and mounts that directory read-only at `/etc/qip`; the
-    path reaches the process in the named variable.
+    of the content; the manifest mounts that bucket read-only at `/etc/qip`
+    and the path reaches the process in the named variable.
 
     This is not a secret and is deliberately not shaped like one: the
     variable must end in `_PATH`, never `_FILE`, because `_FILE` is the
@@ -684,76 +339,17 @@ variable "config_files" {
   }
 }
 
-variable "encryption_key" {
-  description = <<-EOT
-    The KMS key Cloud Run encrypts this revision's layers with, or null.
-
-    Null is Google-managed encryption, which is not nothing. Passing the
-    platform's own key from `modules/secrets` puts the revision under the same
-    rotation the rest of the deployment is under, and a key ring nobody
-    rotates is the failure the other modules already argue against creating a
-    second of.
-  EOT
-
-  type    = string
-  default = null
-}
-
-variable "task_count" {
-  description = "How many tasks one execution of a job runs. Ignored for a service."
-  type        = number
-  default     = 1
-
-  validation {
-    condition     = var.task_count >= 1 && var.task_count <= 1000 && floor(var.task_count) == var.task_count
-    error_message = "task_count is a whole number between 1 and 1000."
-  }
-}
-
-variable "task_parallelism" {
-  description = "How many of a job's tasks run at once. One by default: a job that fans out before anyone has watched it run once fans out its mistakes too."
-  type        = number
-  default     = 1
-
-  validation {
-    condition     = var.task_parallelism >= 1 && var.task_parallelism <= 1000 && floor(var.task_parallelism) == var.task_parallelism
-    error_message = "task_parallelism is a whole number between 1 and 1000."
-  }
-}
-
-variable "task_max_retries" {
-  description = "How many times a failed task is retried before the execution is failed. Ignored for a service."
-  type        = number
-  default     = 3
-
-  validation {
-    condition     = var.task_max_retries >= 0 && var.task_max_retries <= 10 && floor(var.task_max_retries) == var.task_max_retries
-    error_message = "task_max_retries is a whole number between 0 and 10."
-  }
-}
-
-variable "task_timeout_seconds" {
-  description = "How long one task of a job may run. Ignored for a service."
-  type        = number
-  default     = 600
-
-  validation {
-    condition     = var.task_timeout_seconds >= 1 && var.task_timeout_seconds <= 86400
-    error_message = "A task timeout is between 1 second and 24 hours."
-  }
-}
-
 variable "network_tags" {
   description = <<-EOT
-    The network tags the workload's VPC interface carries.
+    The network tags the workload's VPC interface carries in the manifest.
 
     One tag, normally: the trust zone's, from `modules/trust-zones`. Every
-    firewall rule that module writes — the default deny in both directions,
-    the sanctioned paths, the allowlisted external egress — targets a tag, so
-    a Cloud Run instance whose interface carries none is an instance those
-    rules never see. Empty is permitted because the module cannot know which
-    zone a caller meant; the root refuses a catalogue entry whose zone is not
-    declared, which is where the empty case is actually caught.
+    firewall rule that module writes targets a tag, so an instance whose
+    interface carries none is an instance those rules never see. Recorded
+    here, beside the identity, so the root's `cloud_run_services` output and
+    the parity test read the zone's tag from one place; the root refuses a
+    catalogue entry whose zone is not declared, which is where the empty case
+    is actually caught.
   EOT
 
   type    = list(string)
@@ -769,21 +365,21 @@ variable "network_tags" {
 
 variable "egress_sidecar" {
   description = <<-EOT
-    The TLS-terminating egress proxy to run beside this workload, or null
+    The TLS-terminating egress proxy this workload runs beside it, or null
     for a workload that reaches nothing outside the VPC.
 
     The object is `modules/egress-proxy`'s `sidecar` output, passed through
     unchanged: the mirrored Envoy image by digest, the bucket and object the
     one committed bootstrap is published to, the destination listener ports,
-    and the health listener the startup probe polls. Nothing in it is typed
-    here twice.
+    and the health listener. The sidecar container itself is in the
+    manifest; what this module does with the object is grant the workload's
+    identity the read on the bootstrap bucket, and answer `has_egress_proxy`
+    and `egress_endpoints` so the parity test can hold the manifest to the
+    catalogue.
 
-    Null is the default and the safe one. A workload with a proxy has a
-    route to every host the bootstrap dials — Cloud Storage, BigQuery,
-    Vertex, IBM — bounded further only by its trust zone's egress firewall.
-    The fast path carries none, deliberately: ADR 0008, consequence 3, is that
-    nothing on the hot path consults a model, and port 9102 on this proxy is
-    a route to one.
+    Null is the default and the safe one. The fast path carries none,
+    deliberately: ADR 0008, consequence 3, is that nothing on the hot path
+    consults a model, and port 9102 on this proxy is a route to one.
   EOT
 
   type = object({
@@ -812,23 +408,14 @@ variable "collector_image_digest" {
     The managed-Prometheus collector to run beside this workload, pinned by
     digest, or null for a workload nothing scrapes.
 
-    Google's `cloud-run-gmp-sidecar` scrapes the workload on loopback and
-    writes what it reads to Cloud Monitoring as `prometheus.googleapis.com`
-    descriptors — the ones every alert policy in `modules/observability`
-    queries. It is the Cloud Run form of the `PodMonitoring` that left with
-    the cluster (ADR 0024), and without it a service emits a valid
-    exposition that reaches nobody.
-
-    Null is the default and the closed one: no digest, no sidecar, and the
-    `metrics_collected` output answers false, so nothing downstream can
-    read "a collector is declared" as "a scrape has happened". Set, it
+    Null is the default and the closed one: no digest, no scrape document,
+    no bucket, and `metrics_collected` answers false, so nothing downstream
+    can read "a collector is declared" as "a scrape has happened". Set, it
     must be the full `repository@sha256:<64 hex>` of the copy `vendor.yml`
-    mirrored into the environment's own registry and attested — Binary
-    Authorization admits nothing else, and a revision carrying the
-    upstream image would be refused at admission and read as a broken
-    deploy rather than a missing collector. The root composes the value
-    from the registry prefix and a bare digest, so the upstream repository
-    cannot be named here at all.
+    mirrored into the environment's own registry and attested; the root
+    composes the value from the registry prefix and a bare digest, so the
+    upstream repository cannot be named here at all. The sidecar container
+    is the manifest's; the document it reads is published here.
   EOT
 
   type    = string
@@ -842,10 +429,10 @@ variable "collector_image_digest" {
 
 variable "deployer_service_account" {
   description = <<-EOT
-    The pipeline's account, which moves this service to a new image and must
-    therefore be able to act as the service's identity. Granted on this one
-    account and no other; null grants nobody, which is a service only
-    Terraform can move.
+    The account that creates this service's revisions and must therefore be
+    able to act as the service's identity: Config Connector's, under ADR
+    0036. Granted on this one account and no other; null grants nobody,
+    which is a service nothing can move.
   EOT
 
   type    = string

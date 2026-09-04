@@ -1,0 +1,26 @@
+# Argo CD for dev: the vendored manifest, with every image moved to
+# this environment's own registry at the digest infrastructure/egress/
+# vendored-images.txt reviewed and vendor.yml mirrored and attested. The
+# cluster's Binary Authorization policy admits nothing else, so an overlay
+# that named the upstream repository would produce Pods that never start.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- ../../base
+images:
+- name: quay.io/argoproj/argocd
+  newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/vendor/argocd
+  digest: sha256:e2aadfae709d904e87f46ba4aa49601d827b3022db22cd4d03aae816a2e7097b
+- name: public.ecr.aws/docker/library/redis
+  newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/vendor/redis
+  digest: sha256:08ad0b1d280850169a790dba1393ff7a90aef951fc19632cf4d3ce4f78e679ba
+patches:
+- target:
+    kind: ServiceAccount
+    name: argocd-repo-server
+  patch: "apiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: argocd-repo-server\n  annotations:\n\
+    \    iam.gke.io/gcp-service-account: qip-dev-argocd@algorik-dev.iam.gserviceaccount.com\n"
+- target:
+    kind: ConfigMap
+    name: argocd-cm
+  patch: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: argocd-cm\ndata:\n  url: https://argocd.qip-dev.internal\n"

@@ -1,0 +1,81 @@
+# Argo CD, vendored, with the posture ADR 0036 decision 2 and 7 give it and
+# nothing added that the upstream file does not carry.
+#
+#   * No public ingress. The upstream `argocd-server` Service is ClusterIP
+#     and stays so; nothing here adds an Ingress, a LoadBalancer or a
+#     NodePort. An operator reaches the API server over the fleet's Connect
+#     gateway with their own GKE identity — `argocd --core`, which talks to
+#     the Kubernetes API directly and needs no Argo CD login at all.
+#   * The admin account is disabled (`argocd-cm.yaml`). With no SSO
+#     configured either, the only identity that can act is the Kubernetes
+#     one, which is the Google one; there is no second password to rotate
+#     and no bearer token at rest that is not a Kubernetes service account's.
+#   * Dex is deleted below rather than left running with nothing to serve.
+#     A single-sign-on broker with no connector configured is an image to
+#     vendor, scan and attest for a listener nobody calls.
+#   * A `RunService` and an `IAMPolicyMember` report health from Config
+#     Connector's own `Ready` condition (`argocd-cm.yaml`), so an Application
+#     is `Healthy` when Cloud Run has the revision and `Degraded` when
+#     admission refused it — which is what an unattested digest produces.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: argocd
+resources:
+  - namespace.yaml
+  - ../upstream
+patches:
+  - path: argocd-cm.yaml
+  - target:
+      kind: Deployment
+      name: argocd-dex-server
+    patch: |
+      $patch: delete
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: argocd-dex-server
+  - target:
+      kind: Service
+      name: argocd-dex-server
+    patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: argocd-dex-server
+  - target:
+      kind: ServiceAccount
+      name: argocd-dex-server
+    patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: argocd-dex-server
+  - target:
+      kind: Role
+      name: argocd-dex-server
+    patch: |
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: argocd-dex-server
+  - target:
+      kind: RoleBinding
+      name: argocd-dex-server
+    patch: |
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: argocd-dex-server
+  - target:
+      kind: NetworkPolicy
+      name: argocd-dex-server-network-policy
+    patch: |
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: argocd-dex-server-network-policy

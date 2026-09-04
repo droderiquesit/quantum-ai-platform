@@ -48,10 +48,11 @@ public_ingress  = {}
 # modules/execution-node/README.md for the entry when they are.
 execution_nodes = {}
 
-# No image has ever been built for this environment, so there is no digest
-# to create a service at. deploy.yml writes images.tfvars beside this file
-# on its first run against a provisioned project.
-image_digests = {}
+# No control plane (ADR 0036): gitops_enabled stays at its default of false,
+# so no cluster, no controller identity and nothing reconciling the
+# RunService manifests under infrastructure/gitops/envs/stage/ into a project
+# that does not exist yet. Turning it on needs a `management` entry in
+# trust_zones above and a gitops_master_ipv4_cidr_block; see dev.
 
 # OpenObserve (ADR 0028) is not deployed here either: vendored_openobserve_image_digest
 # stays at its default of null, the same closed state as every other environment,

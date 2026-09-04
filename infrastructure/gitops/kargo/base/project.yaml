@@ -1,0 +1,8 @@
+# The one Kargo project. Kargo creates the `qip` namespace for it, which is
+# why infra.yml's bootstrap applies this directory, waits for the project,
+# and applies it again: the stages below cannot land in a namespace that
+# does not exist yet.
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Project
+metadata:
+  name: qip

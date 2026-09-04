@@ -67,6 +67,13 @@ const CATALOGUE: &str = "infrastructure/terraform/catalogue.tf";
 const NODE_STARTUP: &str =
     "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl";
 const ROOT_VARIABLES: &str = "infrastructure/terraform/variables.tf";
+/// The Config Connector manifests ADR 0036 deploys the catalogue through:
+/// one `RunService` per workload per environment under `envs/<env>/`. Each
+/// is the catalogue entry rendered for that environment, and each is walked
+/// here as a deployment of its own, because a variable the catalogue sets
+/// and a manifest omits is set by nothing the reconciler applies.
+const GITOPS_ENVS: &str = "infrastructure/gitops/envs";
+const ENVIRONMENTS: [&str; 4] = ["dev", "test", "stage", "prod"];
 
 // ---------------------------------------------------------------------------
 // Allowlist
@@ -269,13 +276,136 @@ fn deployments() -> Vec<(String, String, BTreeSet<String>)> {
         "the node's unit runs {node}, which is not a crate under crates/apps"
     );
     found.push(("node.env".to_string(), node, variables_the_node_sets()));
+    found.extend(run_service_deployments());
     assert!(
-        found.len() >= 4,
+        found.len() >= 4 + 3 * ENVIRONMENTS.len(),
         "only {} deployments were matched to a crate; the walk from a \
          deployment to the binary that builds it is finding nothing",
         found.len()
     );
     found
+}
+
+/// The `RunService` documents under one environment's directory, as
+/// `(file, document text)`. Line-based, like every other walk here: a
+/// document is the text between `---` separators, and it is a RunService
+/// when it carries a column-zero `kind: RunService`.
+fn run_service_documents(environment: &str) -> Vec<(String, String)> {
+    let directory = format!("{GITOPS_ENVS}/{environment}");
+    assert!(
+        repository_root().join(&directory).is_dir(),
+        "{directory} does not exist; ADR 0036 decision 4 puts one RunService per workload \
+         there, and until it lands this walk has no manifest to read"
+    );
+    let mut documents = Vec::new();
+    for extension in ["yaml", "yml"] {
+        for path in files_with_extension(&directory, extension) {
+            let content = std::fs::read_to_string(&path).expect("readable");
+            let display = path
+                .strip_prefix(repository_root())
+                .unwrap_or(&path)
+                .display()
+                .to_string();
+            for document in content.split("\n---") {
+                if document
+                    .lines()
+                    .any(|line| line.trim_end() == "kind: RunService")
+                {
+                    documents.push((display.clone(), document.to_string()));
+                }
+            }
+        }
+    }
+    documents
+}
+
+/// The `QIP_` variables a RunService sets: every `name: QIP_…` entry of a
+/// container's `env` list. Exact identifiers, for the reason
+/// `variables_an_entry_sets` gives.
+fn variables_a_run_service_sets(document: &str) -> BTreeSet<String> {
+    document
+        .lines()
+        .filter_map(|line| {
+            let entry = line.trim_start();
+            let entry = entry.strip_prefix("- ").unwrap_or(entry);
+            let value = entry.strip_prefix("name:")?.trim().trim_matches('"');
+            (value.starts_with("QIP_")
+                && value
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
+            .then(|| value.to_string())
+        })
+        .collect()
+}
+
+/// Every catalogue workload's RunService in every environment, as a
+/// deployment: `(envs/<env>:<workload>, binary, variables)`.
+fn run_service_deployments() -> Vec<(String, String, BTreeSet<String>)> {
+    let catalogue = catalogue_workloads();
+    let mut found = Vec::new();
+    for environment in ENVIRONMENTS {
+        let documents = run_service_documents(environment);
+        for (name, body) in &catalogue {
+            let binary = catalogue_field(body, "binary");
+            let service = format!("qip-{environment}-{name}");
+            let matching: Vec<&(String, String)> = documents
+                .iter()
+                .filter(|(_, document)| {
+                    document
+                        .lines()
+                        .any(|line| line.trim_end() == format!("  name: {service}"))
+                })
+                .collect();
+            assert_eq!(
+                matching.len(),
+                1,
+                "{} RunService document(s) under {GITOPS_ENVS}/{environment} are named \
+                 `{service}`; the catalogue's {name} is deployed by exactly one",
+                matching.len()
+            );
+            let set = variables_a_run_service_sets(&matching[0].1);
+            assert!(
+                set.len() >= 3,
+                "{} sets only {set:?} for {binary}; the env list is not being read",
+                matching[0].0
+            );
+            found.push((format!("envs/{environment}:{name}"), binary, set));
+        }
+    }
+    found
+}
+
+/// The variables a catalogue entry sets only when a root variable is
+/// non-null — the keys inside a `var.x == null ? {} : {` arm of its `env`
+/// merge. A RunService is the entry rendered for one environment, and an
+/// environment whose tfvars leave that variable null renders none of them;
+/// that absence is the tfvars' reviewed decision, not a variable nothing
+/// sets, and it is admitted for a RunService alone.
+fn catalogue_conditional_variables() -> BTreeMap<String, BTreeSet<String>> {
+    let mut by_workload = BTreeMap::new();
+    for (name, body) in catalogue_workloads() {
+        let mut names = BTreeSet::new();
+        let mut inside = false;
+        for line in body.lines() {
+            if line.contains("== null ? {} : {") {
+                inside = true;
+                continue;
+            }
+            if inside && line.trim() == "}," {
+                inside = false;
+                continue;
+            }
+            if inside {
+                if let Some((key, _)) = line.split_once('=') {
+                    if key.trim().starts_with("QIP_") {
+                        names.insert(key.trim().to_string());
+                    }
+                }
+            }
+        }
+        by_workload.insert(name, names);
+    }
+    by_workload
 }
 
 // ---------------------------------------------------------------------------
@@ -745,6 +875,18 @@ const PER_INVESTIGATION_NOT_PER_ENVIRONMENT: &str = "A replay reads a recorded \
      standing property of an environment — a catalogue default would leave \
      every restart replaying the same file for ever.";
 
+/// A recorded tape, which is a demonstration's input and not a feed.
+const A_DEMONSTRATION_FIXTURE_NO_DEPLOYMENT_SHIPS: &str = "Optional, and \
+     unset selects the synthetic feed, which is what every environment runs. \
+     The tape is a recorded fixture — `data/datasets/loop-demonstration-tape.json` \
+     — played on its own clock so a demonstration of the loop is reproducible \
+     from one committed file; no deployment ships it, no image carries it, and \
+     a Cloud Run instance has no volume to mount it from, so a value here would \
+     be a configured path that resolves to nothing and the feed refuses it at \
+     start-up. It also contradicts a replay: each root refuses both set at once \
+     by name. A tape belongs on the command that runs a demonstration, never in \
+     the configuration of a workload meant to sense a market.";
+
 /// A number the tests and the probes are written against.
 const THE_PACE_THE_PROBES_ASSUME: &str = "The cadence, the budget and the \
      tolerance are one set of numbers: /ready returns 503 once cycles breach \
@@ -930,6 +1072,16 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
         PER_INVESTIGATION_NOT_PER_ENVIRONMENT,
     ),
     (
+        "qip-fastbrain",
+        "QIP_FASTBRAIN_TAPE_PATH",
+        A_DEMONSTRATION_FIXTURE_NO_DEPLOYMENT_SHIPS,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_TAPE_PATH",
+        A_DEMONSTRATION_FIXTURE_NO_DEPLOYMENT_SHIPS,
+    ),
+    (
         "qip-deepbrain",
         "QIP_DEEPBRAIN_ARCHIVE_EVERY",
         THE_PACE_THE_PROBES_ASSUME,
@@ -1085,10 +1237,19 @@ fn every_variable_a_deployed_binary_reads_is_set_by_the_deployment_or_argued_to_
     let constants = variables_by_constant();
     let deployed = deployments();
 
+    let conditional = catalogue_conditional_variables();
     let mut set_by_the_deployment = 0usize;
     let mut argued_unset = 0usize;
+    let mut left_to_the_tfvars = 0usize;
     let mut unexplained: BTreeSet<String> = BTreeSet::new();
     for (place, binary, set) in &deployed {
+        // A RunService is the catalogue entry rendered for one environment;
+        // the variables the entry sets only when a root variable is non-null
+        // are absent where that environment's tfvars leave it null.
+        let rendered_from = place
+            .strip_prefix("envs/")
+            .and_then(|rest| rest.split_once(':'))
+            .map(|(_, workload)| workload.to_string());
         // The narrow read set: literals in the binary's own crate and the
         // literals of a type it constructs with `::from_env`. The constant
         // rule is deliberately excluded here — it is biased towards
@@ -1120,6 +1281,14 @@ fn every_variable_a_deployed_binary_reads_is_set_by_the_deployment_or_argued_to_
                 argued_unset += 1;
                 continue;
             }
+            if rendered_from
+                .as_ref()
+                .and_then(|workload| conditional.get(workload))
+                .is_some_and(|names| names.contains(variable))
+            {
+                left_to_the_tfvars += 1;
+                continue;
+            }
             unaccounted.insert(variable.clone());
         }
         if !unaccounted.is_empty() {
@@ -1149,6 +1318,16 @@ fn every_variable_a_deployed_binary_reads_is_set_by_the_deployment_or_argued_to_
         argued_unset >= 1,
         "no variable was excused by READ_BUT_NOT_SET, so the allowlist arm is \
          never exercised and could have stopped matching"
+    );
+    // The connector pair is conditional in the catalogue and no environment
+    // sets `market_data_connector` today, so every fast-brain RunService
+    // omits it and the arm has to have fired; if every environment comes to
+    // set the connector, this premise is the line to revisit.
+    assert!(
+        left_to_the_tfvars >= 1,
+        "no variable was left to the tfvars' decision through a conditional \
+         catalogue arm, so that rule is never exercised and could have \
+         stopped matching"
     );
 }
 

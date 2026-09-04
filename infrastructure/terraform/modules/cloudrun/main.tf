@@ -1,49 +1,52 @@
-# One workload from the blueprint's Cloud Run catalogue — a service or a job.
+# One workload from the blueprint's Cloud Run catalogue: its identity, its
+# grants, and the files it reads.
 #
 # ADR 0022 makes the Algorik blueprint the architecture of record and its
-# §41.6 names roughly seventy Rust binaries on Cloud Run and Cloud Run Jobs,
-# every one of them scaling to zero, across twelve planes. ADR 0024 is the
-# owner's instruction to provision that runtime and retire the GKE one, and
-# `infrastructure/terraform/catalogue.tf` is where this module is instantiated,
-# once per workload the platform deploys.
-#
-# Seventy services are seventy chances to get one of them wrong, and the wrong
-# one is the one nobody reads. So the properties that must hold for all of
-# them are held here, once:
+# §41.6 names roughly seventy Rust binaries on Cloud Run, every one scaling to
+# zero. ADR 0024 provisioned that runtime here, and until ADR 0036 this module
+# also declared the `google_cloud_run_v2_service` itself. It no longer does.
+# The service is a Config Connector `RunService` manifest under
+# `infrastructure/gitops/envs/<env>/`, reconciled by Argo CD on the
+# control-plane cluster (`modules/gitops-control-plane`), and this module
+# keeps everything a manifest cannot carry and nothing a manifest carries:
 #
 #   * an identity per workload, created here, holding telemetry and the
 #     secrets this workload mounts and nothing else;
-#   * secrets as files, never as environment values;
-#   * configuration a workload reads as a file — the committed bytes, mounted
-#     read-only under `/etc/qip` from an object named by their hash, so the
-#     file a revision reads is the file the reviewer read;
-#   * the image pinned by digest, with Binary Authorization evaluating the
-#     project policy on every deployment;
-#   * every packet out through the VPC, carrying the trust zone's network
-#     tag, so the zone's firewall rules and flow logs are the ones that apply;
-#   * no ingress from the internet to the workload's own URL, under any input
-#     this module accepts;
-#   * a floor of zero instances unless somebody wrote down why not;
-#   * the egress proxy, where a workload has one, as a sidecar on loopback
-#     that the workload container waits for — never as an address something
-#     else could reach.
+#   * the accessor grant on exactly the secrets the workload reads, as files
+#     (`secret_mounts`) or — for a vendored image only, ADR 0031 — as values
+#     (`secret_env`);
+#   * the committed configuration files the workload reads, published to a
+#     bucket of its own under a directory named by their hash, so the file a
+#     revision mounts is the file the reviewer read;
+#   * the read grant on the egress proxy's bootstrap bucket, where the
+#     workload carries the proxy;
+#   * the collector's scrape document, where a workload carries one.
 #
-# What this module is not: the execution node. §41.4's one permitted VM runs
-# bare under systemd on a C3, is always on, and is out of scope here — the
-# `plane` variable refuses to name it for that reason.
+# # Where the service went, and why the cut is here
+#
+# ADR 0036 decision 5. A `removed` block in the root releases
+# `google_cloud_run_v2_service.workload` and `_iam_member.invokers` from
+# state without destroying them, and Terraform refuses a `removed` block
+# whose address is still declared — even at `count = 0`, with "Removed
+# resource still exists". So the resource is gone from this file rather than
+# gated, and Config Connector acquires each service by its name on the first
+# reconcile. Every precondition that used to sit on the service — internal
+# ingress for the trading class, the ADR 0030 posture pairing, a justified
+# floor above zero, a collector only on a service — checks nothing here now,
+# because there is no service here to check. They are carried by the
+# acceptance suite's parity test, which reads each manifest beside its
+# catalogue entry; a manifest that relaxes one fails the build rather than
+# the plan. What this file still refuses is what it still creates: an
+# identity whose name overruns Google's limit, a customer-facing workload
+# mounting the venue credential, two mounts on one path, and an `env` key
+# colliding with a generated `_FILE` variable.
 #
 # # Who owns the image
 #
-# Terraform creates the service at the digest the environment's tfvars
-# record, and `.github/workflows/deploy.yml` moves it with `gcloud run
-# services update` after it has built, scanned, signed and attested a new
-# one. The `ignore_changes` on the workload container's image below is what
-# keeps the two from fighting: without it, every apply after a deploy would
-# roll the service back to the digest in the tfvars. The pipeline writes the
-# digest it deployed back into `infrastructure/environments/<env>/images.tfvars`
-# in the same run, so the committed record and the running revision agree
-# again as soon as that commit lands — and `gcloud run services describe`,
-# not the tfvars, is the answer to "what is running" in the window between.
+# Nobody here. The manifest names the digest; Kargo's promotion commit moves
+# it; `.github/workflows/deploy.yml` builds, scans, signs, attests and pushes
+# and never touches a service. The `ignore_changes` rule that kept Terraform
+# from rolling a deploy back left with the resource it was written for.
 
 terraform {
   required_providers {
@@ -55,33 +58,16 @@ terraform {
 }
 
 locals {
-  name       = "qip-${var.environment}-${var.name}"
-  is_service = var.kind == "service"
-  is_job     = var.kind == "job"
+  name = "qip-${var.environment}-${var.name}"
 
   # A trust zone is the plane's own unless the caller says otherwise. See the
   # variable: a value written twice is a value that will disagree with itself.
   trust_zone = coalesce(var.trust_zone, var.plane)
 
-  # Three postures, and only one of them is the internet. The default arm is
-  # the closed one, so a posture this map does not know stays private rather
-  # than falling through to something wider — the arm order is load-bearing,
-  # not stylistic.
-  #
-  # INGRESS_TRAFFIC_ALL was absent from this module entirely until ADR 0030
-  # recorded an owner decision to expose OpenObserve anonymously. It is
-  # reachable only through `open-anonymous`, which `variables.tf` refuses
-  # unless an anonymous invoker is named alongside it, and which the
-  # acceptance suite refuses for any workload ADR 0030 does not list.
-  ingress = (
-    var.ingress_posture == "open-anonymous" ? "INGRESS_TRAFFIC_ALL" :
-    var.ingress_posture == "public-edge" ? "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER" :
-    "INGRESS_TRAFFIC_INTERNAL_ONLY"
-  )
-
   # Where the mounted secrets appear. The same directory the CSI driver
-  # projects into on GKE, so a binary moved from a pod to a service reads the
-  # same paths it read before.
+  # projected into on GKE, so a binary moved from a pod to a service reads the
+  # same paths it read before — and the manifest mounts at exactly this root,
+  # which the parity test asserts.
   secret_root = "/var/run/secrets/qip"
 
   # Each secret gets a directory of its own, because Cloud Run mounts a volume
@@ -91,20 +77,6 @@ locals {
     for key, mount in var.secret_mounts :
     key => "${local.secret_root}/${key}/${mount.file_name}"
   }
-
-  # The environment the container actually gets: the caller's non-secret
-  # settings, plus one path per mounted secret. Values never appear here.
-  environment = merge(
-    var.env,
-    {
-      for key, mount in var.secret_mounts :
-      mount.env_file_variable => local.secret_files[key]
-    },
-    {
-      for key, file in var.config_files :
-      file.env_file_variable => local.config_files[key]
-    },
-  )
 
   # Configuration files, when this workload reads any: the committed bytes,
   # as one read-only directory. Every file's path is written here once and
@@ -130,6 +102,22 @@ locals {
   # reads them from one.
   config_prefix = substr(sha256(join("\n", [for key in sort(keys(var.config_files)) : local.config_file_hashes[key]])), 0, 16)
 
+  # The environment the manifest must give the container: the caller's
+  # non-secret settings, plus one path per mounted secret and per
+  # configuration file. Values never appear here. Exported so the parity
+  # test compares the manifest's `env` to this and not to a second list.
+  environment = merge(
+    var.env,
+    {
+      for key, mount in var.secret_mounts :
+      mount.env_file_variable => local.secret_files[key]
+    },
+    {
+      for key, file in var.config_files :
+      file.env_file_variable => local.config_files[key]
+    },
+  )
+
   labels = merge(
     var.labels,
     {
@@ -140,25 +128,16 @@ locals {
     },
   )
 
-  # The egress proxy sidecar, when this workload carries one.
-  #
-  # The sidecar's name is what the workload container's `depends_on` names,
-  # so a workload with a proxy is not started until the proxy's health
-  # listener answers. Without that ordering the first outbound call after a
-  # cold start hits a sidecar that is not listening yet, and the adapter
-  # reports a peer that accepted nothing — the least diagnosable error the
-  # client can produce.
+  # Whether this workload carries the egress proxy. The sidecar itself is in
+  # the manifest; what is here is the grant that lets it read its bootstrap.
   has_egress_sidecar = var.egress_sidecar != null
-  sidecar_name       = "qip-egress"
-  sidecar_mount      = "/etc/envoy"
 
   # The managed-Prometheus collector, when this workload carries one.
   #
-  # Keyed on the digest alone: a null digest is no sidecar, no bucket, no
-  # grant and `metrics_collected = false`. There is no second switch that
-  # could declare a collector without naming the bytes it runs.
+  # Keyed on the digest alone: a null digest is no bucket, no grant and
+  # `metrics_collected = false`. There is no second switch that could declare
+  # a collector without naming the bytes it runs.
   has_metrics_collector = var.collector_image_digest != null
-  collector_name        = "qip-metrics-collector"
   collector_mount       = "/etc/rungmp"
 
   # What the collector scrapes, as the `RunMonitoring` document the sidecar
@@ -183,19 +162,15 @@ locals {
 
   # The object's directory is its content's hash, for the reason the egress
   # bootstrap is named by its hash: a changed configuration is a new object
-  # beside the old one, never an overwrite, so publishing needs no
-  # `storage.objects.delete` and every configuration that ever scraped
-  # stays readable under the name the revision that ran it mounted.
+  # beside the old one, never an overwrite.
   collector_prefix = substr(sha256(local.collector_config), 0, 16)
 
-  # The one branch ADR 0028 decision 3 adds: which of the two digests this
-  # workload actually runs at. `built` is every workload this module deployed
-  # before the branch existed; `vendored` is read from a different variable
-  # because it is written by a different pipeline (vendor.yml, not
-  # deploy.yml) into a different file (vendored-images.txt, not
-  # images.tfvars). The precondition on `google_service_account.workload`
-  # refuses the half of this that was left null.
-  effective_image_digest = var.image_source == "vendored" ? var.vendored_image_digest : var.image_digest
+  # The service's own URL, as Cloud Run has assigned it deterministically
+  # since 2024: the service name, the project number, the region. Computed
+  # rather than read from a resource, because the resource is Config
+  # Connector's now; `gcloud run services describe` is the authority in the
+  # window between a sync and its proof.
+  uri = "https://${local.name}-${var.project_number}.${var.region}.run.app"
 }
 
 # --- the workload's own identity --------------------------------------------
@@ -217,109 +192,19 @@ resource "google_service_account" "workload" {
 
   # 6 to 30 characters, enforced by Google at apply time — which is after the
   # image has been built and pushed. The precondition moves that to plan time,
-  # exactly as `modules/edge-cell` does for a cell id.
+  # exactly as `modules/edge-cell` did for a cell id.
   account_id   = "qip-${var.name}-${var.environment}"
   display_name = "qip ${var.name} (${var.environment})"
-  description  = "Runs the ${var.name} ${var.kind} on Cloud Run, in the ${var.plane} plane."
+  description  = "Runs the ${var.name} service on Cloud Run, in the ${var.plane} plane."
 
   # Every cross-variable refusal in this module is here rather than in a
-  # `validation` block, for one reason: this resource exists whether the
-  # workload is a service or a job, so a bad combination is refused in the plan
-  # either way. A precondition fails during plan, so `terraform plan` on a
-  # rejected configuration prints the message and produces no diff.
+  # `validation` block: a validation that reads a second variable is skipped
+  # silently, and a precondition fails during plan with the message and no
+  # diff.
   lifecycle {
     precondition {
       condition     = length("qip-${var.name}-${var.environment}") <= 30
       error_message = "The derived service account id qip-${var.name}-${var.environment} is ${length("qip-${var.name}-${var.environment}")} characters; Google allows 30. Shorten the workload name."
-    }
-
-    # The public edge carries customer traffic and nothing else.
-    #
-    # This is the load-balancer half of the separation the blueprint requires:
-    # a trading workload that is reachable through the customer edge shares a
-    # load balancer, a WAF configuration and an ingress path with the console,
-    # and the day one of those is loosened for a browser it is loosened for the
-    # order path too.
-    precondition {
-      condition     = var.ingress_posture != "public-edge" || var.traffic_class == "customer"
-      error_message = "A ${var.traffic_class} workload may not sit on the public edge. Customer traffic and trading traffic do not share a load balancer or a route; put this one behind the internal posture and give the customer-facing service its own deployment."
-    }
-
-    # ADR 0030's pairing, in both directions. Here rather than as a
-    # `validation` on `invokers`, because a validation that reads a second
-    # variable is skipped silently: written that way it admitted an anonymous
-    # invoker beside `ingress_posture = "internal"` and validate still said
-    # the configuration was valid.
-    #
-    # The first keeps the purpose of the guard ADR 0030 replaced. That guard
-    # stopped a workload becoming anonymous by accident, and the accident is
-    # exactly this: one of the two inputs set without the other.
-    precondition {
-      condition     = !contains(var.invokers, "allUsers") || var.ingress_posture == "open-anonymous"
-      error_message = "An anonymous invoker makes the workload's own URL the route in. Name the caller, or declare ingress_posture = \"open-anonymous\" and record the workload in ADR 0030."
-    }
-
-    # And the other way: a public URL nobody may call answers 403 to the whole
-    # internet, which is a deployment that lies about itself in the direction
-    # nobody investigates.
-    precondition {
-      condition     = var.ingress_posture != "open-anonymous" || contains(var.invokers, "allUsers")
-      error_message = "ingress_posture is open-anonymous but no anonymous invoker is named, so the URL is public and answers 403 to everyone. Name allUsers, or choose another posture."
-    }
-
-    # ADR 0031's whole guarantee. `qip_core::secret` exists and every binary
-    # this platform compiles reads a path through it, so a built workload
-    # taking a credential from the environment is choosing the easier input
-    # rather than needing it. Refused here rather than in `variables.tf`,
-    # because a validation reading a second variable is skipped silently --
-    # the same trap ADR 0030's pairing fell into and was moved out of.
-    precondition {
-      condition     = length(var.secret_env) == 0 || var.image_source == "vendored"
-      error_message = "secret_env puts a credential in the environment, and a built workload must read it from a file through qip_core::secret instead. See ADR 0031: the exception exists for a vendored image that cannot read a file, not for a binary this platform compiles."
-    }
-
-    # Said again for the trading class specifically, and deliberately so.
-    #
-    # The rule above already implies it. Two checks rather than one is the
-    # house habit for a boundary that matters: the day somebody adds a fourth
-    # traffic class and relaxes the first condition to admit it, this one still
-    # refuses to publish the order path.
-    precondition {
-      condition     = var.traffic_class != "trading" || var.ingress_posture == "internal"
-      error_message = "The trading path is reachable from inside the VPC only. There is no ingress posture that publishes it."
-    }
-
-    # A job has no URL to publish.
-    precondition {
-      condition     = var.kind == "service" || var.ingress_posture == "internal"
-      error_message = "A Cloud Run job answers no requests, so an ingress posture other than internal describes something that does not exist. Leave it at the default."
-    }
-
-    # A floor above zero needs a reason in the file, not in a review comment.
-    precondition {
-      condition     = var.min_instances == 0 || trimspace(var.always_on_justification) != ""
-      error_message = "min_instances is ${var.min_instances}, which bills a warm instance whether or not a request arrives. Set always_on_justification to why this workload cannot start cold, or leave the floor at zero."
-    }
-
-    # A justification with nothing to justify is a comment that will outlive
-    # the reason for it and be read as approval by whoever raises the floor
-    # next.
-    precondition {
-      condition     = trimspace(var.always_on_justification) == "" || var.min_instances > 0
-      error_message = "always_on_justification is set but min_instances is zero. Remove the justification, or raise the floor it was written for."
-    }
-
-    precondition {
-      condition     = var.max_instances >= var.min_instances
-      error_message = "max_instances (${var.max_instances}) is below min_instances (${var.min_instances}); Cloud Run would refuse this at apply."
-    }
-
-    # A job listens on nothing, so there is no port for a collector to
-    # scrape; a collector beside one would fail every scrape for ever and
-    # read as a workload that is emitting and not ingested.
-    precondition {
-      condition     = var.kind == "service" || !local.has_metrics_collector
-      error_message = "A Cloud Run job carries no metrics collector: it serves no port to scrape. Leave collector_image_digest null."
     }
 
     # The venue credential belongs to the trading zone and reaches nothing
@@ -338,22 +223,6 @@ resource "google_service_account" "workload" {
         !startswith(mount.secret_id, "qip-venue-credential")
       ])
       error_message = "A customer-facing workload may not read the venue credential. Customer traffic and trading traffic share no credential; the workload that needs it is in the trading class and is reached over the VPC."
-    }
-
-    # `image_source` names which digest this workload runs at, and only one of the
-    # two variables that could carry it is ever read (see
-    # `local.effective_image_digest`). Left null, the unread half is a caller
-    # bug that would otherwise surface as Cloud Run refusing an empty image
-    # string at apply — after the image was built — rather than at plan time,
-    # naming which half was forgotten.
-    precondition {
-      condition     = var.image_source != "built" || var.image_digest != null
-      error_message = "image_source is \"built\" but image_digest is null. A built workload's digest comes from images.tfvars, composed by the caller into image_digest; pass it through."
-    }
-
-    precondition {
-      condition     = var.image_source != "vendored" || var.vendored_image_digest != null
-      error_message = "image_source is \"vendored\" but vendored_image_digest is null. A vendored workload's digest comes from vendored-images.txt, composed by the caller into vendored_image_digest; pass it through."
     }
 
     # Two mounts producing the same file path silently leave one of the two
@@ -377,14 +246,14 @@ resource "google_service_account" "workload" {
   }
 }
 
-# Who may deploy a revision as this identity.
+# Who may create a revision as this identity.
 #
 # Cloud Run refuses to create a revision unless the caller may act as the
-# service's account, so the pipeline needs `serviceAccountUser` on this one
+# service's account, so the reconciler needs `serviceAccountUser` on this one
 # account — and on this one account only. Granted here, per workload, rather
-# than project-wide in modules/cicd: a project-wide `serviceAccountUser` is
-# the right to act as every identity in the project, the infra account
-# included.
+# than project-wide: a project-wide `serviceAccountUser` is the right to act
+# as every identity in the project, the infra account included. Under ADR
+# 0036 the caller is Config Connector's identity; before it, the pipeline's.
 resource "google_service_account_iam_member" "deployer" {
   count = var.deployer_service_account == null ? 0 : 1
 
@@ -395,14 +264,13 @@ resource "google_service_account_iam_member" "deployer" {
 
 # The minimum every workload needs beyond its own secrets, and no more.
 #
-# The same two grants `modules/secrets` gives the GKE deployables, for the same
-# reason: a workload that cannot write telemetry is a workload nobody can
-# operate, and everything past that is a decision about one particular service
-# rather than about all of them. This module deliberately takes no
-# `additional_roles` parameter — a list of extra roles on a module instantiated
-# seventy times is a place for a wide grant to arrive quietly. A workload that
-# needs to read a bucket gets that grant where the bucket is, named, in a file
-# somebody reviews.
+# A workload that cannot write telemetry is a workload nobody can operate,
+# and everything past that is a decision about one particular service rather
+# than about all of them. This module deliberately takes no `additional_roles`
+# parameter — a list of extra roles on a module instantiated seventy times is
+# a place for a wide grant to arrive quietly. A workload that needs to read a
+# bucket gets that grant where the bucket is, named, in a file somebody
+# reviews.
 resource "google_project_iam_member" "telemetry" {
   project = var.project_id
   role    = "roles/monitoring.metricWriter"
@@ -437,19 +305,10 @@ resource "google_secret_manager_secret_iam_member" "mounted" {
 # is not a slow failure: Cloud Run resolves `secret_key_ref` *before* it
 # starts the instance, so a workload without the grant has no instance at
 # all, and the URL answers the load balancer's own 500 rather than anything
-# the container wrote.
-#
-# It shipped, and the way it shipped is the part worth keeping. The refactor
-# moved `module.openobserve` from `secret_mounts` to `secret_env`, which
-# destroyed its two `mounted` grants in the same apply that created the
-# revision. Nothing ordered those two operations, so the revision came up
-# while the grant was still live, the apply reported success, and the service
-# then scaled to zero — every cold start since failed to resolve the secret.
-# An apply that succeeds and leaves a service that cannot restart is the
-# worst shape this module can produce, because nothing about it looks wrong
-# until the first scale-from-zero.
-#
-# `depends_on` below is what stops the ordering half from recurring.
+# the container wrote. The manifest that mounts the value must be applied
+# after this grant exists; Argo CD's sync is ordered by the same fact the
+# `depends_on` on the old resource stated, and the first sync of an
+# environment is what proves it.
 resource "google_secret_manager_secret_iam_member" "env" {
   for_each = var.secret_env
 
@@ -507,8 +366,8 @@ resource "google_storage_bucket" "collector_config" {
   labels = local.labels
 
   lifecycle {
-    # Google's limit is 63 characters, enforced at apply — after the image
-    # has been built. Refused at plan instead, naming the length.
+    # Google's limit is 63 characters, enforced at apply. Refused at plan
+    # instead, naming the length.
     precondition {
       condition     = length("qip-metrics-${var.environment}-${var.name}-${var.project_id}") <= 63
       error_message = "The collector bucket name qip-metrics-${var.environment}-${var.name}-${var.project_id} is ${length("qip-metrics-${var.environment}-${var.name}-${var.project_id}")} characters; Google allows 63. Shorten the workload name."
@@ -564,8 +423,8 @@ resource "google_storage_bucket" "config_files" {
   labels = local.labels
 
   lifecycle {
-    # Google's limit is 63 characters, enforced at apply — after the image
-    # has been built. Refused at plan instead, naming the length.
+    # Google's limit is 63 characters, enforced at apply. Refused at plan
+    # instead, naming the length.
     precondition {
       condition     = length("qip-config-${var.environment}-${var.name}-${var.project_id}") <= 63
       error_message = "The configuration bucket name qip-config-${var.environment}-${var.name}-${var.project_id} is ${length("qip-config-${var.environment}-${var.name}-${var.project_id}")} characters; Google allows 63. Shorten the workload name."
@@ -575,7 +434,10 @@ resource "google_storage_bucket" "config_files" {
 
 # One object per file, under the hash-named directory, with exactly the
 # committed content. The object is the file: what the process reads at
-# `/etc/qip/<file_name>` is these bytes, and `config_file_hashes` says which.
+# `/etc/qip/<hash>/<file_name>` is these bytes, and `config_file_hashes` says
+# which. The manifest's `_PATH` variable names this directory, so a change to
+# a committed file is a new object here and a new path in the manifest,
+# reviewed together; the parity test refuses the pair disagreeing.
 resource "google_storage_bucket_object" "config_files" {
   for_each = local.has_config_files ? var.config_files : {}
 
@@ -594,549 +456,4 @@ resource "google_storage_bucket_iam_member" "config_files" {
   bucket = google_storage_bucket.config_files[0].name
   role   = "roles/storage.objectViewer"
   member = "serviceAccount:${google_service_account.workload.email}"
-}
-
-# --- the service ------------------------------------------------------------
-
-resource "google_cloud_run_v2_service" "workload" {
-  count = local.is_service ? 1 : 0
-
-  # The grants before the revision that needs them.
-  #
-  # Terraform infers no dependency here: the service names a secret by *id*,
-  # never by reference to the IAM member, so without this the two are
-  # unordered. That is not theoretical. When `module.openobserve` moved from
-  # `secret_mounts` to `secret_env`, one apply destroyed the old grants and
-  # created the new revision in whatever order it liked, reported success,
-  # and left a service that could not resolve its credential on the next
-  # cold start — a Cloud Run instance is not started at all when a
-  # `secret_key_ref` fails to resolve, so the failure surfaces as a 500 from
-  # the load balancer with nothing in the container's own logs to read.
-  #
-  # Both grant resources are named, not just the one this workload happens
-  # to use: an empty `for_each` makes its entry a no-op, and naming only the
-  # populated one would put the ordering back in the caller's hands.
-  depends_on = [
-    google_secret_manager_secret_iam_member.mounted,
-    google_secret_manager_secret_iam_member.env,
-  ]
-
-  project  = var.project_id
-  name     = local.name
-  location = var.region
-  ingress  = local.ingress
-  labels   = local.labels
-
-  # A service deleted by a plan nobody read is an outage with a Terraform
-  # commit for a cause. Removing one is then a deliberate two-step.
-  deletion_protection = true
-
-  # Binary Authorization, evaluating the project's policy — the same policy
-  # `modules/binaryauthorization` sets to REQUIRE_ATTESTATION with
-  # ENFORCED_BLOCK_AND_AUDIT_LOG, and the same attestor the pipeline signs
-  # with. `use_default` rather than a policy named here, so that a workload
-  # cannot be given a policy of its own that admits what the platform's
-  # refuses. `breakglass_justification` is deliberately never set: it deploys
-  # an image the policy rejects and it is the one field that turns this control
-  # off from inside a service definition.
-  binary_authorization {
-    use_default = true
-  }
-
-  template {
-    service_account = google_service_account.workload.email
-
-    # Direct VPC egress, and all of it.
-    #
-    # PRIVATE_RANGES_ONLY sends anything with a public destination straight out
-    # of Google's edge, bypassing the VPC — so the egress firewall, Cloud NAT's
-    # single set of addresses and the flow logs all stop describing what the
-    # workload actually did. There is no variable for that here: a workload
-    # that needs a different arrangement is a change to this file, argued.
-    vpc_access {
-      egress = "ALL_TRAFFIC"
-
-      network_interfaces {
-        network    = var.egress_network
-        subnetwork = var.egress_subnet
-        # The trust zone's tag. Every firewall rule `modules/trust-zones`
-        # writes targets a tag, and a Cloud Run instance whose interface
-        # carries none is an instance those rules never see — which reads as
-        # a zone with default deny and is a workload outside every zone.
-        tags = var.network_tags
-      }
-    }
-
-    scaling {
-      min_instance_count = var.min_instances
-      max_instance_count = var.max_instances
-    }
-
-    max_instance_request_concurrency = var.concurrency
-    timeout                          = "${var.request_timeout_seconds}s"
-    execution_environment            = "EXECUTION_ENVIRONMENT_GEN2"
-    encryption_key                   = var.encryption_key
-
-    # The workload. First, because the `ignore_changes` at the foot of this
-    # resource names it by index: for a built workload, the pipeline owns
-    # this container's image and Terraform owns everything else about it — a
-    # vendored workload has no such pipeline, so `ignore_changes` does not
-    # apply to it and Terraform owns the image too.
-    containers {
-      name  = var.name
-      image = local.effective_image_digest
-
-      # Not started until the proxy answers, where there is one.
-      depends_on = local.has_egress_sidecar ? [local.sidecar_name] : null
-
-      ports {
-        container_port = var.container_port
-      }
-
-      resources {
-        limits = {
-          cpu    = var.cpu
-          memory = var.memory
-        }
-
-        # Throttle the CPU between requests wherever the workload scales to
-        # zero, which is the arrangement that makes scale-to-zero worth having.
-        # A workload with a floor is one that was argued for, and it keeps its
-        # CPU.
-        cpu_idle          = var.min_instances == 0
-        startup_cpu_boost = true
-      }
-
-      dynamic "env" {
-        for_each = local.environment
-
-        content {
-          name  = env.key
-          value = env.value
-        }
-      }
-
-      # A secret as an environment value, resolved by Cloud Run from Secret
-      # Manager at container start (ADR 0031). Refused for a built workload by
-      # the precondition below: what Terraform carries here is the secret's
-      # name, never its content, so a plan and the state file hold nothing --
-      # but the value does reach `/proc/<pid>/environ` in the container, which
-      # is what the rule this amends is about, and the exception is drawn only
-      # where the image cannot read a file at all.
-      dynamic "env" {
-        for_each = var.secret_env
-
-        content {
-          name = env.key
-
-          value_source {
-            secret_key_ref {
-              secret  = env.value.secret_id
-              version = env.value.version
-            }
-          }
-        }
-      }
-
-      dynamic "volume_mounts" {
-        for_each = var.secret_mounts
-
-        content {
-          name       = volume_mounts.key
-          mount_path = "${local.secret_root}/${volume_mounts.key}"
-        }
-      }
-
-      # The configuration files, at the one directory every `_PATH`
-      # variable above points into.
-      dynamic "volume_mounts" {
-        for_each = local.has_config_files ? [local.config_root] : []
-
-        content {
-          name       = "config-files"
-          mount_path = volume_mounts.value
-        }
-      }
-
-      # Nothing is routed here until the process says it is ready, and what
-      # these binaries report at /health is real readiness — storage proven
-      # writable, ports bound — rather than liveness. A process that reported
-      # healthy and then discovered its journal had nowhere to go was running
-      # with no record for however long that took.
-      startup_probe {
-        initial_delay_seconds = 2
-        period_seconds        = 3
-        timeout_seconds       = 2
-        failure_threshold     = 10
-
-        http_get {
-          path = var.health_path
-          port = var.container_port
-        }
-      }
-
-      liveness_probe {
-        period_seconds    = 30
-        timeout_seconds   = 5
-        failure_threshold = 3
-
-        http_get {
-          path = var.health_path
-          port = var.container_port
-        }
-      }
-    }
-
-    # The egress proxy, beside the workload and reachable from nowhere else.
-    #
-    # An Envoy sidecar sharing the instance's network namespace: the workload
-    # dials `http://127.0.0.1:910x` and the proxy originates TLS to the one
-    # host that listener names. It carries no secret volume, no environment,
-    # and no identity of its own — it runs as the service's account because
-    # Cloud Run gives an instance one identity, and it never calls a Google
-    # API on that account's behalf. The bootstrap is the one committed file
-    # `modules/egress-proxy` published, mounted read-only.
-    dynamic "containers" {
-      for_each = local.has_egress_sidecar ? [var.egress_sidecar] : []
-
-      content {
-        name  = local.sidecar_name
-        image = containers.value.image
-
-        args = [
-          "-c",
-          "${local.sidecar_mount}/${containers.value.bootstrap_object}",
-          "--service-cluster",
-          local.sidecar_name,
-          # Warn, not info. An info-level Envoy logs a line per connection,
-          # and the access log in the bootstrap already carries what an
-          # operator needs without a path or a header — which is where a
-          # query string with an API key in it would otherwise land.
-          "--log-level",
-          "warn",
-        ]
-
-        resources {
-          limits = {
-            cpu    = "1"
-            memory = "256Mi"
-          }
-        }
-
-        volume_mounts {
-          name       = "egress-bootstrap"
-          mount_path = local.sidecar_mount
-        }
-
-        # The health listener, on loopback. The workload container's
-        # `depends_on` waits on this probe passing, which is what turns
-        # "the proxy is a sidecar" into "the proxy is up before the first
-        # outbound call".
-        startup_probe {
-          initial_delay_seconds = 1
-          period_seconds        = 2
-          timeout_seconds       = 2
-          failure_threshold     = 15
-
-          http_get {
-            path = "/healthz"
-            port = containers.value.health_port
-          }
-        }
-      }
-    }
-
-    # The metrics collector, beside the workload, when a digest names one.
-    #
-    # It scrapes `127.0.0.1:<port>/metrics` on the instance's own network
-    # namespace and writes to Cloud Monitoring as the service's identity —
-    # the `metricWriter` grant every workload holds — so it carries no
-    # secret, no environment and no identity of its own, exactly as the
-    # proxy does not. It starts after the workload container is ready
-    # rather than before, because a collector that polls a port nobody has
-    # bound yet fills the log with the one error an operator will learn to
-    # ignore.
-    dynamic "containers" {
-      for_each = local.has_metrics_collector ? [var.collector_image_digest] : []
-
-      content {
-        name  = local.collector_name
-        image = containers.value
-
-        depends_on = [var.name]
-
-        resources {
-          limits = {
-            cpu    = "1"
-            memory = "256Mi"
-          }
-        }
-
-        volume_mounts {
-          name       = "metrics-collector-config"
-          mount_path = local.collector_mount
-        }
-      }
-    }
-
-    # Secrets as files. The value never enters the environment, and the
-    # environment carries the path instead.
-    dynamic "volumes" {
-      for_each = var.secret_mounts
-
-      content {
-        name = volumes.key
-
-        secret {
-          secret = volumes.value.secret_id
-
-          # 0400 in octal: readable by the identity the container runs as, and
-          # by nothing else on the filesystem.
-          default_mode = 256
-
-          items {
-            path    = volumes.value.file_name
-            version = volumes.value.version
-            mode    = 256
-          }
-        }
-      }
-    }
-
-    # The proxy's bootstrap, from the bucket `modules/egress-proxy` publishes
-    # it to. Read-only: the allowlist is decided in a diff and written by
-    # Terraform, and nothing that runs may rewrite it.
-    dynamic "volumes" {
-      for_each = local.has_egress_sidecar ? [var.egress_sidecar] : []
-
-      content {
-        name = "egress-bootstrap"
-
-        gcs {
-          bucket    = volumes.value.bootstrap_bucket
-          read_only = true
-        }
-      }
-    }
-
-    # The collector's configuration, from the bucket above, read-only.
-    #
-    # The sidecar reads `/etc/rungmp/config.yaml` and takes no argument
-    # naming another path, so the document has to land at exactly that name
-    # under the mount. `only-dir` would have selected the hash-named
-    # directory and left the file at the root of the mount, but the GA
-    # provider has no `mount_options` on a Cloud Run GCS volume — 6.50.0
-    # refuses it, and that refusal is what stopped the first plan of this
-    # runtime. The whole bucket mounts instead, so the object cannot live
-    # under a hash and still be found: pinning a collector digest means
-    # first deciding whether to name the object `config.yaml` at the bucket
-    # root — an overwrite, which needs `storage.objects.delete` this module
-    # deliberately does not grant — or to reach for the beta provider.
-    # `collector_image_digest` is null in every environment, so nothing
-    # renders this today and no revision has ever carried it.
-    dynamic "volumes" {
-      for_each = local.has_metrics_collector ? [local.collector_prefix] : []
-
-      content {
-        name = "metrics-collector-config"
-
-        gcs {
-          bucket    = google_storage_bucket.collector_config[0].name
-          read_only = true
-        }
-      }
-    }
-
-    # The configuration files, from the bucket above, read-only. The whole
-    # bucket mounts and the hash-named directory is part of the path the
-    # environment carries, so `/etc/qip/<hash>/<file_name>` is the one
-    # committed file this revision was planned with — the same guarantee
-    # `only-dir` gave, moved from the mount into the path.
-    dynamic "volumes" {
-      for_each = local.has_config_files ? [local.config_prefix] : []
-
-      content {
-        name = "config-files"
-
-        gcs {
-          bucket    = google_storage_bucket.config_files[0].name
-          read_only = true
-        }
-      }
-    }
-  }
-
-  # One revision serving, and it is the one that was just deployed. A split
-  # would mean two digests answering the same URL, and an incident where the
-  # answer to "which image served this request" is "one of these two".
-  traffic {
-    type    = "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST"
-    percent = 100
-  }
-
-  # The workload container's image belongs to the pipeline. See the header:
-  # `deploy.yml` moves it after signing and attesting a new digest, and an
-  # apply that reasserted the tfvars digest would roll every deploy back.
-  # That is not hypothetical — it is the state right now: run 33711008893
-  # moved qip-dev-api to cb4eb9f7… and its digest-recording commit was
-  # rejected, so images.tfvars still names f66c1578…. Without this rule the
-  # next apply would serve the older image. Only the image, and only the
-  # workload's — the sidecar's image is this configuration's, and everything
-  # else about the revision is too.
-  #
-  # ADR 0028 decision 3 said a vendored workload would skip this rule,
-  # because `vendor.yml` writes a reviewed line in vendored-images.txt rather
-  # than a running revision and so has no race to lose. Terraform cannot
-  # express that: `ignore_changes` takes a static list and refuses any value
-  # computed from an input ("A static list expression is required"), so the
-  # rule is uniform and the ADR carries the correction rather than this
-  # module carrying an expression that never validated.
-  #
-  # What that costs a vendored workload, stated rather than discovered: the
-  # first apply creates the service at `vendored_image_digest` (this rule
-  # does not affect creation), but a later digest bump in vendored-images.txt
-  # is then ignored on apply, and the service keeps serving the old image
-  # with no diff to show why. The remedy is explicit and belongs in the
-  # vendoring runbook, not in a plan someone hopes will notice:
-  #
-  #   terraform apply -replace='module.openobserve[0].google_cloud_run_v2_service.workload[0]'
-  #
-  # Nothing vendored is deployed today — `vendored_openobserve_image_digest`
-  # defaults to null and no environment sets it — so the exposure is zero
-  # until someone pins that digest, which is the point at which this comment
-  # is the thing they need to have read.
-  lifecycle {
-    ignore_changes = [template[0].containers[0].image]
-  }
-}
-
-# Who may call the service. Nothing, unless the caller names someone.
-resource "google_cloud_run_v2_service_iam_member" "invokers" {
-  for_each = local.is_service ? toset(var.invokers) : toset([])
-
-  project  = var.project_id
-  location = var.region
-  name     = google_cloud_run_v2_service.workload[0].name
-  role     = "roles/run.invoker"
-  member   = each.value
-}
-
-# --- the job ----------------------------------------------------------------
-
-resource "google_cloud_run_v2_job" "workload" {
-  count = local.is_job ? 1 : 0
-
-  project  = var.project_id
-  name     = local.name
-  location = var.region
-  labels   = local.labels
-
-  binary_authorization {
-    use_default = true
-  }
-
-  template {
-    parallelism = var.task_parallelism
-    task_count  = var.task_count
-
-    template {
-      service_account = google_service_account.workload.email
-      max_retries     = var.task_max_retries
-      timeout         = "${var.task_timeout_seconds}s"
-      encryption_key  = var.encryption_key
-
-      vpc_access {
-        egress = "ALL_TRAFFIC"
-
-        network_interfaces {
-          network    = var.egress_network
-          subnetwork = var.egress_subnet
-          tags       = var.network_tags
-        }
-      }
-
-      containers {
-        name  = var.name
-        image = local.effective_image_digest
-
-        resources {
-          limits = {
-            cpu    = var.cpu
-            memory = var.memory
-          }
-        }
-
-        dynamic "env" {
-          for_each = local.environment
-
-          content {
-            name  = env.key
-            value = env.value
-          }
-        }
-
-        dynamic "volume_mounts" {
-          for_each = var.secret_mounts
-
-          content {
-            name       = volume_mounts.key
-            mount_path = "${local.secret_root}/${volume_mounts.key}"
-          }
-        }
-
-        dynamic "volume_mounts" {
-          for_each = local.has_config_files ? [local.config_root] : []
-
-          content {
-            name       = "config-files"
-            mount_path = volume_mounts.value
-          }
-        }
-      }
-
-      dynamic "volumes" {
-        for_each = var.secret_mounts
-
-        content {
-          name = volumes.key
-
-          secret {
-            secret       = volumes.value.secret_id
-            default_mode = 256
-
-            items {
-              path    = volumes.value.file_name
-              version = volumes.value.version
-              mode    = 256
-            }
-          }
-        }
-      }
-
-      dynamic "volumes" {
-        for_each = local.has_config_files ? [local.config_prefix] : []
-
-        content {
-          name = "config-files"
-
-          gcs {
-            bucket    = google_storage_bucket.config_files[0].name
-            read_only = true
-          }
-        }
-      }
-    }
-  }
-}
-
-# Who may run the job. The same empty default as a service's invokers: a job
-# nobody can start is a scheduling problem, and one anybody can start is not.
-resource "google_cloud_run_v2_job_iam_member" "invokers" {
-  for_each = local.is_job ? toset(var.invokers) : toset([])
-
-  project  = var.project_id
-  location = var.region
-  name     = google_cloud_run_v2_job.workload[0].name
-  role     = "roles/run.invoker"
-  member   = each.value
 }

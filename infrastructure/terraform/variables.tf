@@ -116,39 +116,57 @@ variable "autonomy_ceiling" {
   }
 }
 
-# --- The runtime (ADR 0022, ADR 0024) ------------------------------------------
+# --- The runtime (ADR 0022, ADR 0024, ADR 0036) ---------------------------------
 #
-# Every warm binary is a Cloud Run service from `catalogue.tf`; the execution
-# node is a Compute Engine machine from `execution_nodes`; both attach to the
-# trust zones declared below. There is no cluster variable left here, and
-# none may return without an ADR: the GKE runtime and everything that
-# configured it were retired under ADR 0024.
+# Every warm binary is a Cloud Run service — its identity and grants from
+# `catalogue.tf`, its `RunService` manifest under
+# `infrastructure/gitops/envs/<env>/` — and the execution node is a Compute
+# Engine machine from `execution_nodes`; both attach to the trust zones
+# declared below. The one cluster in this configuration runs controllers and
+# no trading binary; it is the module behind `gitops_enabled`, and ADR 0036
+# is the record that brought it back after ADR 0024 retired the last one.
+#
+# There is no `image_digests` variable any more. The digest a service runs at
+# is in its manifest, written by Kargo's promotion commit and reconciled by
+# Argo CD; `environments/<env>/images.tfvars` left with it.
 
-variable "image_digests" {
+variable "gitops_enabled" {
   description = <<-EOT
-    The image digest each catalogue binary is deployed at, keyed by binary
-    name, as `sha256:<64 hex>`.
+    Whether this environment has a GitOps control plane (ADR 0036): a GKE
+    Autopilot cluster in the management trust zone running Config Connector,
+    Argo CD and Kargo, and the three identities they act as.
 
-    Written by `.github/workflows/deploy.yml` into
-    `infrastructure/environments/<env>/images.tfvars` after it has built,
-    scanned, signed and attested the image and moved the service to it —
-    never typed by a person. Terraform creates a service at the digest
-    recorded here and thereafter ignores the image, because the pipeline owns
-    it; `modules/cloudrun` says why. A binary with no entry is refused at
-    plan time by `catalogue.tf`, which names the pipeline run that is
-    missing.
-
-    Empty by default: an environment nothing has ever deployed to has no
-    digest to record, and inventing one would be a service created at bytes
-    nobody attested.
+    False by default, and false is the closed state: no cluster, no
+    controller identity, no bootstrap. Nothing about the trading runtime
+    reads this — Cloud Run services and execution nodes are what they are
+    either way — but with it false nothing reconciles a `RunService`
+    manifest into the environment, so the services in it are whatever they
+    were before the release. Turning it on needs the `management` zone
+    declared in `trust_zones` and a `gitops_master_ipv4_cidr_block`; the plan
+    refuses either missing by name.
   EOT
+  type        = bool
+  default     = false
+}
 
-  type    = map(string)
-  default = {}
+variable "gitops_master_ipv4_cidr_block" {
+  description = <<-EOT
+    The /28 the control-plane cluster's private endpoint is allocated from,
+    or null where `gitops_enabled` is false.
+
+    No default, because an address range chosen as a convenience is the one
+    that collides: it must overlap neither a trust zone, the console's
+    subnet nor an execution node's block (environments/README.md has the
+    ladder). Null is admitted so an environment without a control plane
+    need not invent one; the module's precondition refuses null the moment
+    a cluster is asked for.
+  EOT
+  type        = string
+  default     = null
 
   validation {
-    condition     = alltrue([for digest in values(var.image_digests) : can(regex("^sha256:[a-f0-9]{64}$", digest))])
-    error_message = "Every image digest is `sha256:<64 hex>`. A tag is a name someone can move after the attestation was signed."
+    condition     = var.gitops_master_ipv4_cidr_block == null || can(regex("/28$", coalesce(var.gitops_master_ipv4_cidr_block, "0.0.0.0/0")))
+    error_message = "GKE allocates the private endpoint from exactly a /28; any other size is refused at apply, after the network peering exists."
   }
 }
 
@@ -727,11 +745,13 @@ variable "vendored_openobserve_image_digest" {
     `"vendored"`, so the upstream repository cannot be named here and an
     unmirrored image cannot reach a plan.
 
-    Null by default and null is the closed state: no OpenObserve service, in
-    any environment, until an operator has reviewed the mirrored digest for
-    that environment and named it here. Unlike the metrics collector, this is
-    not a sidecar attached to an existing workload — it is its own top-level
-    Cloud Run service, created only once this is set.
+    Null by default and null is the closed state: no OpenObserve identity or
+    grant in any environment until an operator has reviewed the mirrored
+    digest for that environment and named it here. The service itself is
+    the `RunService` manifest at infrastructure/gitops/envs/<env>/openobserve.yaml
+    (ADR 0036), which must name this same digest; the parity test refuses
+    the two disagreeing, and a manifest applied where this is null names an
+    identity that does not exist.
   EOT
 
   type    = string

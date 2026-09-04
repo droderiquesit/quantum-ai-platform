@@ -49,7 +49,6 @@ const PROXY_MODULE: &str = "infrastructure/terraform/modules/egress-proxy/main.t
 const PROXY_VARIABLES: &str = "infrastructure/terraform/modules/egress-proxy/variables.tf";
 const PROXY_OUTPUTS: &str = "infrastructure/terraform/modules/egress-proxy/outputs.tf";
 const CLOUD_RUN_MODULE: &str = "infrastructure/terraform/modules/cloudrun/main.tf";
-const CLOUD_RUN_VARIABLES: &str = "infrastructure/terraform/modules/cloudrun/variables.tf";
 const NODE_MODULE: &str = "infrastructure/terraform/modules/execution-node/main.tf";
 const NODE_VARIABLES: &str = "infrastructure/terraform/modules/execution-node/variables.tf";
 const NODE_STARTUP: &str =
@@ -357,7 +356,8 @@ fn vendored_envoy() -> (String, String) {
 /// test's own comment is this one: assert the wiring is real and correct
 /// instead of asserting its absence.
 #[test]
-fn the_vendored_openobserve_image_is_pinned_and_now_deployed_through_the_vendored_source_path() {
+fn the_vendored_openobserve_image_is_pinned_and_every_environment_that_names_it_names_the_reviewed_digest()
+ {
     let list = read(VENDORED);
     let entries: Vec<&str> = list
         .lines()
@@ -383,35 +383,14 @@ fn the_vendored_openobserve_image_is_pinned_and_now_deployed_through_the_vendore
         .split_once("@sha256:")
         .unwrap_or_else(|| panic!("{} is not pinned by digest", fields[0]));
 
-    // The module's own vendored-source branch exists: an `image_source` input, a
-    // `vendored_image_digest` input, and the digest lookup actually reads
-    // the second one rather than always falling back to `image_digest`.
-    let cloud_run_variables = without_comments(&read(CLOUD_RUN_VARIABLES));
-    assert!(
-        cloud_run_variables.contains("variable \"image_source\"")
-            && cloud_run_variables.contains("variable \"vendored_image_digest\""),
-        "modules/cloudrun no longer declares image_source and vendored_image_digest; ADR 0028 \
-         decision 3's branch has been removed or renamed"
-    );
-    let cloud_run_module = without_comments(&read(CLOUD_RUN_MODULE));
-    assert!(
-        cloud_run_module.contains(
-            "effective_image_digest = var.image_source == \"vendored\" ? var.vendored_image_digest : var.image_digest"
-        ),
-        "modules/cloudrun no longer branches the image lookup on image_source; a vendored workload \
-         would run whatever image_digest happens to hold"
-    );
-
-    // The catalogue deploys OpenObserve through that branch, not by folding
-    // it into the built-workload for_each: it names `image_source = "vendored"`
-    // and composes `vendored_image_digest` from the registry prefix and the
-    // root's own digest variable, the same shape the metrics collector's
-    // digest is composed with.
+    // The image, the posture and the storage are the manifest's since ADR
+    // 0036: gitops.rs's OpenObserve test asserts the mirrored image at this
+    // reviewed digest, both halves of ADR 0030's anonymous posture, and
+    // ephemeral storage, on every environment's RunService. What Terraform
+    // still holds is the identity and its grants, gated on the same root
+    // variable that gates the deployment, and the ADR 0031 root login as
+    // `secret_env` — the grant for which the module keys on that input.
     let catalogue = without_comments(&read(CATALOGUE));
-    assert!(
-        catalogue.contains("module \"openobserve\""),
-        "catalogue.tf no longer declares the OpenObserve workload"
-    );
     let openobserve_block = catalogue
         .split("module \"openobserve\" {")
         .nth(1)
@@ -420,29 +399,20 @@ fn the_vendored_openobserve_image_is_pinned_and_now_deployed_through_the_vendore
             "catalogue.tf declares module \"openobserve\" with a closing brace on its own line",
         );
     assert!(
-        openobserve_block.contains("image_source = \"vendored\"")
-            && openobserve_block.contains(
-                "vendored_image_digest = \"${module.registry.image_prefix}/vendor/openobserve@${var.vendored_openobserve_image_digest}\""
-            ),
-        "the OpenObserve workload does not use the vendored source path with a digest composed \
-         from the environment's own registry: {openobserve_block}"
-    );
-    // Anonymous since ADR 0030, which amends ADR 0028 decision 5. Both halves
-    // are asserted because the module refuses either alone and a diff that
-    // dropped one would otherwise read as a narrowing while producing a
-    // service that is either unreachable or a public 403.
-    assert!(
-        openobserve_block.contains("ingress_posture = \"open-anonymous\"")
-            && openobserve_block.contains("[\"allUsers\"]"),
-        "OpenObserve no longer declares both halves of the anonymous posture ADR 0030 \
-         records; the module refuses either one without the other: {openobserve_block}"
+        openobserve_block
+            .lines()
+            .any(|line| line.split_whitespace().collect::<Vec<_>>().join(" ")
+                == "count = var.vendored_openobserve_image_digest != null ? 1 : 0"),
+        "OpenObserve's identity is no longer gated on the root's digest variable, so an \
+         environment that deploys nothing carries a principal for it"
     );
     assert!(
-        openobserve_block.contains("ZO_LOCAL_MODE_STORAGE")
-            && !openobserve_block.contains("ZO_S3_"),
-        "OpenObserve is not configured for ephemeral storage, or names an S3 destination — \
-         ADR 0028 decision 4 accepts the ephemeral cost specifically to avoid the static GCS \
-         HMAC key durable storage would need"
+        openobserve_block.contains("ZO_ROOT_USER_EMAIL")
+            && openobserve_block.contains("ZO_ROOT_USER_PASSWORD")
+            && !openobserve_block.contains("image_source")
+            && !openobserve_block.contains("ingress_posture"),
+        "OpenObserve's catalogue block no longer names the ADR 0031 root login as secret_env, \
+         or names an image or posture again: {openobserve_block}"
     );
 
     // The root's digest variable stays closed by default: setting it is what
@@ -1310,20 +1280,27 @@ fn the_egress_proxy_is_attached_to_the_workloads_that_need_it_and_to_nothing_els
         "the fast brain carries the egress proxy, which is a route to a language model API"
     );
 
-    // The module turns the flag into a container the workload waits for.
+    // The container is the manifest's since ADR 0036 — gitops.rs's parity
+    // test asserts a `qip-egress` sidecar on exactly the workloads whose
+    // entry says so, and its own test asserts the workload waits for it and
+    // the sidecar probes its health listener. What the module still turns
+    // the flag into is the grant that lets the sidecar read its bootstrap.
     let module = without_comments(&read(CLOUD_RUN_MODULE));
     assert!(
-        module.contains("for_each = local.has_egress_sidecar ? [var.egress_sidecar] : []"),
-        "the Cloud Run module no longer renders the sidecar from egress_sidecar"
+        sets(&module, "has_egress_sidecar", "var.egress_sidecar != null"),
+        "the Cloud Run module no longer keys anything on egress_sidecar"
     );
+    let grant = module
+        .split("resource \"google_storage_bucket_iam_member\" \"egress_bootstrap\" {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}\n").next())
+        .expect("the Cloud Run module grants the workload its proxy's bootstrap bucket");
     assert!(
-        module.contains("depends_on = local.has_egress_sidecar ? [local.sidecar_name] : null"),
-        "the workload container no longer waits for the proxy, so its first outbound call after a cold start hits a sidecar that is not listening"
-    );
-    assert!(
-        module.contains("path = \"/healthz\"")
-            && module.contains("port = containers.value.health_port"),
-        "the sidecar's startup probe no longer hits the health listener"
+        grant.lines().any(|line| {
+            line.split_whitespace().collect::<Vec<_>>().join(" ")
+                == "count = local.has_egress_sidecar ? 1 : 0"
+        }),
+        "the bootstrap-bucket grant is not keyed on the workload carrying the proxy"
     );
     assert!(
         catalogue.contains(
@@ -1443,39 +1420,16 @@ fn the_proxy_holds_no_credential_and_no_identity_of_its_own() {
     // instance, and the mitigation is that compromising it yields nothing but
     // the traffic already flowing: no mounted secret, no environment, no
     // service account of its own, and no shell.
+    // The Cloud Run sidecar is the manifest's since ADR 0036, and gitops.rs's
+    // `the_egress_sidecar_in_every_manifest_holds_no_credential_and_the_workload_waits_for_it`
+    // asserts, on every RunService that carries one, no environment, no
+    // mount but its bootstrap, and the vendored image. Here: the module
+    // renders no sidecar of its own, so there is no second copy to drift.
     let module = without_comments(&read(CLOUD_RUN_MODULE));
-    let sidecar = module
-        .split("for_each = local.has_egress_sidecar ? [var.egress_sidecar] : []")
-        .nth(1)
-        .and_then(|rest| rest.split("\n    }\n").next())
-        .expect("the Cloud Run module renders the sidecar");
-    // Premise: this really is the sidecar's block, with its image and probe.
     assert!(
-        sidecar.contains("image = containers.value.image") && sidecar.contains("startup_probe {"),
-        "the sidecar block has been reshaped; every absence below is vacuous"
-    );
-    for (marker, why) in [
-        (
-            "secret",
-            "a mounted secret is a credential this process has no use for and an attacker does",
-        ),
-        (
-            "env {",
-            "an environment value is one more thing in /proc/<pid>/environ on the most exposed process",
-        ),
-        (
-            "service_account",
-            "an identity of its own would give the one process that talks to the internet a principal in the project",
-        ),
-    ] {
-        assert!(
-            !sidecar.contains(marker),
-            "the egress sidecar carries `{marker}`: {why}"
-        );
-    }
-    assert!(
-        sidecar.contains("name       = \"egress-bootstrap\""),
-        "the sidecar mounts something other than its bootstrap"
+        !module.contains("containers {"),
+        "modules/cloudrun renders a container again; the manifest is the one place the \
+         sidecar is declared"
     );
 
     // No identity in the proxy module either.
@@ -1836,36 +1790,38 @@ fn the_node_variable_s_regex_uses_escapes_hcl_actually_accepts() {
 /// block added later with the same conditional shape would break the plan the
 /// same way, and this test is the thing that has to notice.
 #[test]
-fn the_cloud_run_lifecycle_rule_is_a_static_list_terraform_will_accept() {
+fn no_terraform_lifecycle_rule_ignores_an_image_because_terraform_no_longer_names_one() {
+    // `modules/cloudrun` once ignored `template[0].containers[0].image` so an
+    // apply would not roll a service back to the digest tfvars still named,
+    // and this test kept that rule a static list terraform would accept.
+    // ADR 0036 takes the service, and with it the image, out of Terraform:
+    // the manifest names the digest and Kargo moves it. The property that
+    // survives is the one the rule existed for — no Terraform resource names
+    // an image a promotion also moves — and its shape now is that no
+    // lifecycle rule anywhere ignores an image, because nothing declares one
+    // to ignore. A rule reappearing is the first sign a service has come
+    // back into Terraform beside its manifest.
     let module = without_comments(&read(CLOUD_RUN_MODULE));
-    let rules: Vec<&str> = module
-        .lines()
-        .map(str::trim)
-        .filter(|line| line.starts_with("ignore_changes"))
-        .collect();
-
-    // Assert the premise before asserting the property: a module that had
-    // stopped declaring the rule at all would otherwise pass this test by
-    // having nothing to check, while every deploy quietly rolled back to the
-    // digest images.tfvars still names.
-    assert_eq!(
-        rules.len(),
-        1,
-        "{CLOUD_RUN_MODULE} declares {} ignore_changes rules; expected exactly one, on \
-         google_cloud_run_v2_service.workload: {rules:?}",
-        rules.len()
-    );
-    let rule = rules[0];
-
     assert!(
-        rule.contains("[template[0].containers[0].image]"),
-        "the lifecycle rule no longer ignores the workload container's image, so an apply \
-         would reassert the tfvars digest and roll back whatever deploy.yml last moved the \
-         service to:\n{rule}"
+        !module.contains("google_cloud_run_v2_service") && !module.contains("ignore_changes"),
+        "{CLOUD_RUN_MODULE} declares a Cloud Run service or a lifecycle rule again; the \
+         manifest is the one writer of the image"
     );
-    assert!(
-        !rule.contains('?') && !rule.contains("var."),
-        "ignore_changes is computed from an input; terraform refuses this with \"A static \
-         list expression is required\" and every commit carrying it fails validate:\n{rule}"
-    );
+    let mut scanned = 0usize;
+    for path in qip_acceptance::files_with_extension("infrastructure/terraform", "tf") {
+        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        scanned += 1;
+        for line in content
+            .lines()
+            .filter(|line| line.trim_start().starts_with("ignore_changes"))
+        {
+            assert!(
+                !line.contains("image"),
+                "{} ignores changes to an image, so a Terraform resource names one a promotion \
+                 also moves:\n{line}",
+                path.display()
+            );
+        }
+    }
+    assert!(scanned >= 20, "only {scanned} Terraform files were scanned");
 }

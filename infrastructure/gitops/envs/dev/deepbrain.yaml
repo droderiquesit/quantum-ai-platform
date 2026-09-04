@@ -1,0 +1,139 @@
+# Generated shape, reviewed content. One file per environment rather than a
+# kustomize base with replacements, so a reader — and the acceptance suite's
+# parity test, which reads these files without a kustomize binary — sees
+# every concrete value the running service must carry. The catalogue entry
+# in infrastructure/terraform/catalogue.tf is the source of truth for each
+# value here; a disagreement fails the build, not the sync (ADR 0036).
+apiVersion: run.cnrm.cloud.google.com/v1beta1
+kind: RunService
+metadata:
+  name: qip-dev-deepbrain
+  annotations:
+    cnrm.cloud.google.com/deletion-policy: abandon
+    cnrm.cloud.google.com/project-id: algorik-dev
+  labels:
+    platform: qip
+    environment: dev
+    managed_by: config-connector
+    live_capable: 'false'
+    qip-plane: cognition
+    qip-trust-zone: cognition
+    qip-traffic-class: platform
+    qip-workload: deepbrain
+spec:
+  projectRef:
+    external: projects/algorik-dev
+  location: us-east4
+  ingress: INGRESS_TRAFFIC_INTERNAL_ONLY
+  binaryAuthorization:
+    useDefault: true
+  template:
+    serviceAccountRef:
+      external: qip-deepbrain-dev@algorik-dev.iam.gserviceaccount.com
+    vpcAccess:
+      egress: ALL_TRAFFIC
+      networkInterfaces:
+      - networkRef:
+          external: projects/algorik-dev/global/networks/qip-dev
+        subnetworkRef:
+          external: projects/algorik-dev/regions/us-east4/subnetworks/qip-dev-tz-cognition
+        tags:
+        - qip-dev-tz-cognition
+    scaling:
+      minInstanceCount: 1
+      maxInstanceCount: 1
+    maxInstanceRequestConcurrency: 1
+    timeout: 300s
+    executionEnvironment: EXECUTION_ENVIRONMENT_GEN2
+    containers:
+    - name: deepbrain
+      image: qip-deepbrain
+      dependsOn:
+      - qip-egress
+      ports:
+      - containerPort: 8080
+      resources:
+        limits:
+          cpu: '4'
+          memory: 8Gi
+        cpuIdle: false
+        startupCpuBoost: true
+      env:
+      - name: QIP_AUTONOMY_CEILING
+        value: paper_trading
+      - name: QIP_CAPITAL_ENVELOPE_KEY_FILE
+        value: /var/run/secrets/qip/capital-envelope-key/capital-envelope-key
+      - name: QIP_CYCLE_INTERVAL_SECONDS
+        value: '300'
+      - name: QIP_DEEPBRAIN_HEALTH_ADDRESS
+        value: 0.0.0.0:8080
+      - name: QIP_STORAGE_TARGET
+        value: memory
+      - name: QIP_UNIVERSE_PATH
+        value: /etc/qip/7ec25303c3f3ecac/universe.json
+      volumeMounts:
+      - name: capital-envelope-key
+        mountPath: /var/run/secrets/qip/capital-envelope-key
+      - name: config-files
+        mountPath: /etc/qip
+      startupProbe:
+        initialDelaySeconds: 2
+        periodSeconds: 3
+        timeoutSeconds: 2
+        failureThreshold: 10
+        httpGet:
+          path: /health
+          port: 8080
+      livenessProbe:
+        periodSeconds: 30
+        timeoutSeconds: 5
+        failureThreshold: 3
+        httpGet:
+          path: /health
+          port: 8080
+    - name: qip-egress
+      image: envoy
+      args:
+      - -c
+      - /etc/envoy/envoy-fc9574203f973d2d.yaml
+      - --service-cluster
+      - qip-egress
+      - --log-level
+      - warn
+      resources:
+        limits:
+          cpu: '1'
+          memory: 256Mi
+      volumeMounts:
+      - name: egress-bootstrap
+        mountPath: /etc/envoy
+      startupProbe:
+        initialDelaySeconds: 1
+        periodSeconds: 2
+        timeoutSeconds: 2
+        failureThreshold: 15
+        httpGet:
+          path: /healthz
+          port: 9900
+    volumes:
+    - name: capital-envelope-key
+      secret:
+        secretRef:
+          external: qip-capital-envelope-key-dev
+        defaultMode: 256
+        items:
+        - path: capital-envelope-key
+          mode: 256
+          versionRef:
+            external: latest
+    - name: egress-bootstrap
+      gcs:
+        bucket: qip-egress-dev-algorik-dev
+        readOnly: true
+    - name: config-files
+      gcs:
+        bucket: qip-config-dev-deepbrain-algorik-dev
+        readOnly: true
+  traffic:
+  - type: TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST
+    percent: 100

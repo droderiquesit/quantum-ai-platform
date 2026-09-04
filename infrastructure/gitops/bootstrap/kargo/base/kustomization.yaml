@@ -1,0 +1,14 @@
+# Kargo, vendored as a rendered manifest — SOURCE.md has the exact command —
+# in the posture ADR 0036 decision 2 gives it: the API server is ClusterIP
+# with no Ingress and no admin account, OIDC is off, and the external
+# webhooks server (which exists to receive calls from the internet) is not
+# rendered at all. An operator reaches the API over the Connect gateway with
+# their kubeconfig — `kargo login --kubeconfig` — so the identity is the GKE
+# one, as it is for Argo CD. The webhooks the cluster itself calls are
+# served under a cert-manager certificate the render declares, which is why
+# cert-manager is applied first.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - ../upstream

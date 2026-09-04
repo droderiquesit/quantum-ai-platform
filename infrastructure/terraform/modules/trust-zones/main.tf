@@ -122,6 +122,12 @@ locals {
     "wallet-read"         = ["venue-read", "chain", "custodian-read"]
     "treasury-write"      = ["custodian", "withdrawal-api"]
     "optimisation"        = ["ibm-quantum"]
+    # The control-plane cluster (ADR 0036) lives in this zone, and its two
+    # reconcilers read and write this repository: Argo CD clones it, Kargo
+    # commits a promotion to it. GitHub's published ranges, on 443, and
+    # nothing that moves money or data. The reversal condition ADR 0017 named
+    # and ADR 0036 keeps is this list growing past source control.
+    "management" = ["source-control"]
   }
 
   # The only zones a client may reach. Customer traffic terminates in front of

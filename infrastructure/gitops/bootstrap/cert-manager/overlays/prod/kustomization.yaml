@@ -1,0 +1,19 @@
+# cert-manager for prod: the vendored manifest, with every image moved to
+# this environment's own registry at the digest infrastructure/egress/
+# vendored-images.txt reviewed and vendor.yml mirrored and attested. The
+# cluster's Binary Authorization policy admits nothing else, so an overlay
+# that named the upstream repository would produce Pods that never start.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- ../../base
+images:
+- name: quay.io/jetstack/cert-manager-controller
+  newName: europe-west2-docker.pkg.dev/unprovisioned/qip-prod/vendor/cert-manager-controller
+  digest: sha256:416a2d76870d996460e62bd7f521bf14fa017be9e3e904aab92163a331fcb61a
+- name: quay.io/jetstack/cert-manager-webhook
+  newName: europe-west2-docker.pkg.dev/unprovisioned/qip-prod/vendor/cert-manager-webhook
+  digest: sha256:d8b3961b51c8c7320633f8208dc46bf88aa13804d0f7cbe48a096b2c523cee42
+- name: quay.io/jetstack/cert-manager-cainjector
+  newName: europe-west2-docker.pkg.dev/unprovisioned/qip-prod/vendor/cert-manager-cainjector
+  digest: sha256:ccf6b919ec0500745a47a910118f834f9636d0aac1ff221245cd2557ed8c7c98

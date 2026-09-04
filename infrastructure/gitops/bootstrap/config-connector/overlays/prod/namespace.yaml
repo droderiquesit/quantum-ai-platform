@@ -1,0 +1,12 @@
+# The namespace Argo CD syncs infrastructure/gitops/envs/prod into. The
+# annotation is what tells Config Connector which project every RunService in
+# it belongs to; a RunService in a namespace without it is refused.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: qip-run
+  annotations:
+    cnrm.cloud.google.com/project-id: unprovisioned
+  labels:
+    platform: qip
+    environment: prod

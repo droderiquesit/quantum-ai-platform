@@ -568,91 +568,23 @@ fn every_cloud_run_service_is_internal_and_mounts_secrets_as_files_never_as_envi
     let module = without_comments(&read(CLOUD_RUN_MODULE));
     let variables = without_comments(&read(CLOUD_RUN_VARIABLES));
 
-    // Ingress. No input produces the open setting, and the catalogue asks
-    // for the closed one of the two that remain.
-    // Read from the code and not the variable's description, which names
-    // the open setting precisely to say why it is absent.
-    assert!(
-        // INGRESS_TRAFFIC_ALL was absent from this module until ADR 0030
-        // recorded an owner decision to expose OpenObserve anonymously. It is
-        // reachable through exactly one posture, and asserting the pairing is
-        // what keeps the setting from drifting onto a second arm: the failure
-        // this replaces the old absence-check with is a `public-edge` or a
-        // default branch quietly learning to answer the internet.
-        module.contains("var.ingress_posture == \"open-anonymous\" ? \"INGRESS_TRAFFIC_ALL\" :"),
-        "the Cloud Run module produces INGRESS_TRAFFIC_ALL from something other than the \
-         open-anonymous posture ADR 0030 governs, or no longer produces it at all"
-    );
-    assert!(
-        variables.contains(
-            "contains([\"internal\", \"public-edge\", \"open-anonymous\"], var.ingress_posture)"
-        ),
-        "the ingress posture admits a value other than internal, public-edge or open-anonymous"
-    );
-    assert!(
-        module.contains("INGRESS_TRAFFIC_INTERNAL_ONLY"),
-        "the Cloud Run module no longer names the internal-only ingress"
-    );
-
-    // The anonymous set is exactly one workload, and it is the one ADR 0030
-    // names. `sets` asserted every service was internal until that record; the
-    // honest successor is not to drop the check but to pin the exception, so a
-    // second workload going anonymous fails here rather than passing on a
-    // precedent.
-    let catalogue = without_comments(&read(CATALOGUE));
-    let anonymous: Vec<&str> = catalogue
-        .split("module \"")
-        .skip(1)
-        .filter(|block| block.contains("ingress_posture = \"open-anonymous\""))
-        .filter_map(|block| block.split('"').next())
-        .collect();
-    assert_eq!(
-        anonymous,
-        ["openobserve"],
-        "the set of anonymously-reachable workloads is not exactly the one ADR 0030 names. \
-         Adding one is an amendment to that record, not an edit to this list"
-    );
-    assert!(
-        sets(&catalogue, "ingress_posture", "\"internal\"")
-            || catalogue.matches("ingress_posture = \"internal\"").count() > 0,
-        "catalogue.tf places no service behind the internal posture, so the default that \
-         every workload but OpenObserve relies on has gone"
-    );
-
-    // Secrets as files. The module mounts a `secret` volume per entry and the
-    // environment carries the path; nothing reads a secret into a value.
-    assert!(
-        module.contains("secret {") && module.contains("volume_mounts {"),
-        "the Cloud Run module no longer mounts secrets as volumes"
-    );
-    // `value_source` reads a secret into an environment value, which this test
-    // forbade outright until ADR 0031. It is now permitted for exactly one
-    // shape and the assertions below are what keep it to that shape, because
-    // the rule this amends is still the rule for everything else.
-    //
-    // The exception exists because a vendored image can be a binary that
-    // cannot read a file at all -- OpenObserve carries no shell, so no
-    // entrypoint can bridge a mount, and no symbol in it offers `_FILE`
-    // indirection for the credential. A built workload has `qip_core::secret`
-    // and no such excuse.
-    assert_eq!(
-        module.matches("secret_key_ref").count(),
-        1,
-        "the Cloud Run module names secret_key_ref more than once, so the single \
-         ADR 0031 exception has become a second credential path"
-    );
-    // Every way a secret reaches a container carries its own accessor grant.
+    // Ingress and the volumes are the manifest's since ADR 0036: the parity
+    // test in gitops.rs holds INGRESS_TRAFFIC_INTERNAL_ONLY on every
+    // catalogue workload, the OpenObserve test holds the one anonymous
+    // exception ADR 0030 records, and both hold every secret as a volume
+    // under /var/run/secrets/qip with its _FILE variable. What the module
+    // still owns is the grant: every way a secret reaches a container carries
+    // its own accessor grant, keyed on the input that names the secret.
     //
     // ADR 0031 added `secret_env` and added no grant, because the only
     // `secretAccessor` resource in the module was keyed on `secret_mounts`.
     // Cloud Run resolves a `secret_key_ref` before it starts the instance, so
-    // the workload did not fail slowly — it had no instance at all, and its
-    // URL answered the load balancer's 500 with nothing in the container's
-    // own logs. The apply that did it reported success, because it destroyed
-    // the old mount grants and created the new revision unordered.
-    //
-    // Both halves are pinned: the grant, and the ordering that made a broken
-    // deployment look like a clean one.
+    // the workload did not fail slowly — it had no instance at all.
+    assert!(
+        !module.contains("INGRESS_TRAFFIC") && !module.contains("secret_key_ref"),
+        "modules/cloudrun computes an ingress or reads a secret into a value again; the \
+         manifest is the one place a posture or a secret path is set"
+    );
     for (resource, keyed_on) in [
         ("\"mounted\"", "var.secret_mounts"),
         ("\"env\"", "var.secret_env"),
@@ -676,28 +608,6 @@ fn every_cloud_run_service_is_internal_and_mounts_secrets_as_files_never_as_envi
             "the {resource} grant no longer grants secretAccessor"
         );
     }
-    assert!(
-        module.contains("google_secret_manager_secret_iam_member.mounted,")
-            && module.contains("google_secret_manager_secret_iam_member.env,"),
-        "the Cloud Run service no longer depends on both secret grants, so terraform \
-         may create a revision before the grant it needs exists — the apply succeeds \
-         and the service cannot restart"
-    );
-
-    assert!(
-        module.contains("length(var.secret_env) == 0 || var.image_source == \"vendored\""),
-        "the precondition refusing secret_env on a built workload is gone, so any \
-         workload could take a credential from the environment -- ADR 0031's whole \
-         guarantee is that one line"
-    );
-    // In `main.tf` and not `variables.tf`: a validation reading a second
-    // variable is a cross-variable reference terraform skips silently, which
-    // ADR 0030's pairing rules were caught by first.
-    assert!(
-        !variables.contains("var.image_source == \"vendored\""),
-        "the secret_env refusal has moved into a variable validation, where it \
-         reads a second variable and terraform will skip it without saying so"
-    );
     assert!(
         variables.contains("(TOKEN|SECRET|CREDENTIAL|PASSWORD|PRIVATE_KEY|_KEY)$"),
         "the module's `env` validation no longer refuses a credential-shaped variable name"
@@ -1072,6 +982,14 @@ fn every_service_account_terraform_creates_runs_something_or_signs_something() {
         // exists so the landing is not the project's default compute
         // identity (missing-infrastructure-register gap 2).
         ("secrets".to_string(), "landing".to_string()),
+        // The three controllers on the control-plane cluster (ADR 0036),
+        // each acting through Workload Identity with no key: Config
+        // Connector applies the RunService manifests, Argo CD reads the
+        // repository and reads the serving revision back, Kargo discovers
+        // digests and commits promotions.
+        ("gitops-control-plane".to_string(), "kcc".to_string()),
+        ("gitops-control-plane".to_string(), "argocd".to_string()),
+        ("gitops-control-plane".to_string(), "kargo".to_string()),
     ];
     expected.sort();
     assert_eq!(
@@ -1094,13 +1012,13 @@ fn no_workload_runs_as_the_projects_default_compute_identity() {
             "{path} names the default compute identity"
         );
     }
+    // The service runs as the account the module creates for it: the module
+    // still creates one per workload, and gitops.rs's parity test asserts
+    // every RunService's serviceAccountRef is exactly that account's email.
     let cloud_run = without_comments(&read(CLOUD_RUN_MODULE));
     assert!(
-        cloud_run
-            .matches("service_account = google_service_account.workload.email")
-            .count()
-            >= 2,
-        "the Cloud Run service or job does not run as the account the module creates for it"
+        cloud_run.contains("account_id   = \"qip-${var.name}-${var.environment}\""),
+        "the Cloud Run module no longer creates one account per workload"
     );
     let node = without_comments(&read(NODE_MODULE));
     assert!(
@@ -1353,10 +1271,15 @@ fn every_cloud_run_service_this_repository_deploys_is_subject_to_the_admission_p
     // them anyway. The binaryauthorization module's own header describes the
     // previous form of this failure: a control that reads as on and admits
     // every image.
+    // The catalogue services' half is the manifest's since ADR 0036:
+    // `binaryAuthorization.useDefault: true` on every RunService, in
+    // gitops.rs's parity test. What is asserted of the module is that it
+    // opts nothing out — no service, so no policy field to relax.
     let module = without_comments(&read(CLOUD_RUN_MODULE));
     assert!(
-        sets(&module, "use_default", "true"),
-        "the Cloud Run module no longer opts its services into the default admission policy"
+        !module.contains("binary_authorization") && !module.contains("breakglass"),
+        "modules/cloudrun names Binary Authorization again; the manifest is the one place the \
+         policy is opted into"
     );
 
     let script = shell_without_comment_lines(&read(DEPLOY_SCRIPT));
@@ -1741,6 +1664,105 @@ fn no_secret_this_repository_deploys_reaches_a_process_as_an_environment_value()
 }
 
 #[test]
+fn the_portal_is_told_to_require_a_session_before_its_gateway_proxies_the_platform() {
+    // The portal is deployed `--allow-unauthenticated`, deliberately: an
+    // anonymous browser has to reach the sign-in page. What then stands
+    // between the internet and qip-api is the portal's own session check,
+    // because its gateway proxies the API with the viewer token it mounts.
+    // That check is switched on by `ALGORIK_AUTH_REQUIRED=true`, and the
+    // deploy once omitted it — so the gateway answered anyone with the
+    // platform's data on a token nobody had to present. Matched as the exact
+    // `NAME=value` token in `--set-env-vars`: `contains("ALGORIK_AUTH_REQUIRED")`
+    // is true of `ALGORIK_AUTH_REQUIRED=false`, which is the defect.
+    let script = shell_without_comment_lines(&read(DEPLOY_SCRIPT));
+    let deploys = cloud_run_deploys(&script);
+    let (_, portal) = deploys
+        .iter()
+        .find(|(name, _)| name == "algorik-portal")
+        .unwrap_or_else(|| panic!("{DEPLOY_SCRIPT} no longer deploys algorik-portal"));
+    // The premise that makes the variable load-bearing: Cloud Run itself
+    // admits anyone. Were the service ever made internal or invoker-gated,
+    // this test would need its reasoning rewritten, not its assertion dropped.
+    assert!(
+        portal
+            .iter()
+            .any(|token| token == "--allow-unauthenticated"),
+        "{DEPLOY_SCRIPT} no longer deploys algorik-portal --allow-unauthenticated; the reason \
+         this test exists has changed and the comment above needs rewriting"
+    );
+    let env = flag_value(portal, "--set-env-vars")
+        .unwrap_or_else(|| panic!("{DEPLOY_SCRIPT} deploys algorik-portal with no environment"));
+    let entries: Vec<&str> = env.split(',').collect();
+    assert!(
+        entries.len() >= 5,
+        "only {entries:?} were parsed out of the portal's --set-env-vars; the parse is reading \
+         the wrong argument"
+    );
+    let auth: Vec<&&str> = entries
+        .iter()
+        .filter(|entry| entry.split('=').next() == Some("ALGORIK_AUTH_REQUIRED"))
+        .collect();
+    assert_eq!(
+        auth,
+        vec![&"ALGORIK_AUTH_REQUIRED=true"],
+        "{DEPLOY_SCRIPT} deploys algorik-portal with ALGORIK_AUTH_REQUIRED set to {auth:?} \
+         rather than exactly `ALGORIK_AUTH_REQUIRED=true`; the service is \
+         --allow-unauthenticated, so without it the gateway proxies qip-api to anyone, on the \
+         viewer token"
+    );
+}
+
+#[test]
+fn the_frontends_script_refuses_to_attest_a_dirty_tree_or_an_unmerged_commit() {
+    // The script signs what it builds with the pipeline's own attestor and
+    // key version, from an operator's identity. `gcloud builds submit`
+    // uploads the directory as it is on disk, so run from a tree with
+    // uncommitted edits it puts the pipeline's signature on bytes no commit
+    // holds and no review saw, under a tag naming a commit they are not. Two
+    // refusals have to come before the first build: a non-empty
+    // `git status --porcelain`, and a HEAD that `merge-base --is-ancestor`
+    // does not find in the remote default branch. Each is matched on the
+    // git subcommand and its flag together, and each must be followed by an
+    // `exit` before its conditional closes — a check that prints and carries
+    // on is the same as no check.
+    let script = shell_without_comment_lines(&read(DEPLOY_SCRIPT));
+    let lines: Vec<&str> = script.lines().collect();
+    let first_build = lines
+        .iter()
+        .position(|line| line.trim_start().starts_with("gcloud builds submit"))
+        .unwrap_or_else(|| panic!("{DEPLOY_SCRIPT} no longer builds anything with Cloud Build"));
+    for (check, what) in [
+        ("status --porcelain", "a tree with uncommitted changes"),
+        (
+            "merge-base --is-ancestor",
+            "a HEAD the remote default branch does not contain",
+        ),
+    ] {
+        let at = lines[..first_build]
+            .iter()
+            .position(|line| line.contains(check))
+            .unwrap_or_else(|| {
+                panic!(
+                    "{DEPLOY_SCRIPT} runs no `git {check}` before its first `gcloud builds \
+                     submit` (line {}), so it would build and attest {what} with the \
+                     pipeline's key",
+                    first_build + 1
+                )
+            });
+        let exits = lines[at..first_build]
+            .iter()
+            .take_while(|line| line.trim() != "fi")
+            .any(|line| line.trim() == "exit 1");
+        assert!(
+            exits,
+            "{DEPLOY_SCRIPT} runs `git {check}` at line {} but does not `exit 1` before the \
+             conditional closes, so {what} is reported and then built anyway",
+            at + 1
+        );
+    }
+}
+
+#[test]
 fn every_secret_a_workload_mounts_is_created_by_terraform_and_granted_to_it() {
     // The chain this pins: the catalogue names a secret to mount; the secrets
     // module creates that secret; the Cloud Run module grants the workload's
@@ -1818,15 +1840,49 @@ fn every_deployable_has_its_own_cloud_run_identity() {
 #[test]
 fn a_cloud_run_service_cannot_be_deleted_by_a_plan_nobody_read() {
     // A service deleted by a plan nobody read is an outage with a Terraform
-    // commit for a cause. Not a variable: the GKE runtime's deletion flag was
-    // one, so a tfvars edit could turn it off, and the only environments
-    // that needed it off were the ones infra.yml tears down — which is now
-    // the execution node alone, because a service that scales to zero costs
-    // nothing standing.
+    // commit for a cause. Until ADR 0036 the module held
+    // `deletion_protection = true` and refused to make it an input. The
+    // service left Terraform under that record, and the guard has two halves
+    // now. The `removed` blocks that released the services set
+    // `destroy = false`, so the apply that dropped them destroyed nothing —
+    // a block without that line is a plan that destroys three services and
+    // every revision they served. And the module declares no service at all,
+    // so no plan can carry a deletion and an input has nothing to weaken;
+    // a service declared here again would be Terraform and Config Connector
+    // writing one object. The manifest's half — `deletion-policy: abandon`,
+    // which turns an Argo CD prune into a release — is the parity test in
+    // gitops.rs.
+    let mut released = 0usize;
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        if path.parent() != Some(repository_root().join("infrastructure/terraform").as_path()) {
+            continue;
+        }
+        let root = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        for block in root.split("\nremoved {").skip(1) {
+            let block = block.split("\n}\n").next().unwrap_or(block);
+            assert!(
+                block
+                    .lines()
+                    .any(|line| collapsed(line) == "destroy = false"),
+                "{} has a removed block without `destroy = false`, so the apply destroys what \
+                 it stops managing:\n{block}",
+                path.display()
+            );
+            if block.contains("google_cloud_run_v2_service") {
+                released += 1;
+            }
+        }
+    }
+    assert!(
+        released >= 2,
+        "only {released} removed block(s) name a Cloud Run service; the catalogue's and \
+         OpenObserve's are at least two"
+    );
     let module = without_comments(&read(CLOUD_RUN_MODULE));
     assert!(
-        sets(&module, "deletion_protection", "true"),
-        "the Cloud Run service no longer refuses deletion"
+        !module.contains("resource \"google_cloud_run_v2_service\""),
+        "modules/cloudrun declares a Cloud Run service again; Terraform and Config Connector \
+         are then two writers of one object, and a plan can destroy it"
     );
     let variables = without_comments(&read(CLOUD_RUN_VARIABLES));
     assert!(
@@ -1835,140 +1891,41 @@ fn a_cloud_run_service_cannot_be_deleted_by_a_plan_nobody_read() {
     );
 }
 
-#[test]
-fn a_rollout_that_fails_says_why_rather_than_naming_a_console_url() {
-    // What `gcloud run services update` gives you on a failed rollout is one
-    // true sentence that is not a cause —
-    //
-    //   ERROR: The user-provided container failed the configured startup
-    //   probe checks. Logs for this revision might contain more information.
-    //   Logs URL: https://console.cloud.google.com/logs/viewer?...
-    //
-    // — and a link. In CI nobody opens the link, so the run ends with the
-    // fact that something failed and no statement of what. The cause is one
-    // API call away and this platform's composition roots put it in the
-    // first lines they print: they refuse to start on a configuration they
-    // cannot honour and each refusal names what to do instead.
-    // Through `workflow_jobs` first: `job_steps` reads one job's list and
-    // deploy.yml has several, so handing it the whole file parses the first
-    // job only and finds nothing here.
-    let deploy = read(".github/workflows/deploy.yml");
-    let jobs = workflow_jobs(&deploy);
-    let (_, body) = jobs
-        .iter()
-        .find(|(name, _)| name == "deploy")
-        .expect("deploy.yml has a deploy job");
-    let steps = job_steps(body);
-    let rollout = steps
-        .iter()
-        .find(|step| step.contains("gcloud run services update"))
-        .expect("deploy.yml still rolls out with `services update`");
-
-    // Premise: the rollout can still fail. A step that cannot fail needs no
-    // diagnosis, and this test would then be guarding a branch nothing takes.
-    assert!(
-        rollout.contains("exit 1"),
-        "the rollout no longer fails the job, so there is no failure for a \
-         diagnosis to explain"
-    );
-
-    assert!(
-        rollout.contains("gcloud logging read"),
-        "a failed rollout prints gcloud's console URL and nothing else, so \
-         the run says something failed and never says what"
-    );
-    // Keyed on the revision that actually failed, not on the service: a
-    // service-wide read returns the last healthy revision's lines too, and
-    // the reader cannot tell which run they came from.
-    assert!(
-        rollout.contains("resource.labels.revision_name="),
-        "the log read is not keyed on the failed revision, so it returns \
-         lines from revisions that were fine"
-    );
-    // And both containers, because a workload that refused its configuration
-    // and a sidecar that never listened are indistinguishable from outside.
-    assert!(
-        rollout.contains("labels.container_name"),
-        "the log read does not say which container spoke, so a sidecar \
-         failure reads as a workload failure"
-    );
-}
+// `a_rollout_that_fails_says_why_rather_than_naming_a_console_url` read the
+// log read out of deploy.yml's rollout step. ADR 0036 decision 8 removes the
+// rollout from the pipeline and decision 7 puts the failure where the
+// reconciler reports it — Config Connector's condition message, carried into
+// the Application by the health check, and the hook naming both images. The
+// property moved with it to gitops.rs as
+// `a_sync_that_fails_says_why_rather_than_reporting_healthy`.
 
 #[test]
-fn a_service_that_failed_its_first_revision_is_repaired_rather_than_left_unfixable() {
-    // The deadlock this closes, found by the migration's first successful
-    // create phase. A Cloud Run service whose first revision is refused —
-    // there, an egress sidecar whose image was not yet attested — exists as
-    // an object and does not serve. Terraform marks it tainted; a tainted
-    // resource is planned destroy-then-create; and the destroy is refused:
-    //
-    //   Error: cannot destroy service without setting
-    //   deletion_protection=false and running `terraform apply`
-    //
-    // So the environment holds a broken service Terraform can neither repair
-    // nor remove, which is the GKE cluster of August in a new place. The
-    // answer is the same one: untaint on evidence, so the apply updates in
-    // place. This test exists mostly to stop the *other* answer, which is to
-    // make deletion_protection a variable — the test above refuses that, and
-    // a future reader hitting this error will reach for it first.
-    let infra = read(".github/workflows/infra.yml");
-    let steps = job_steps(&infra);
-
-    let position = |needle: &str| {
-        steps
-            .iter()
-            .position(|step| step.contains(needle))
-            .unwrap_or_else(|| panic!("infra.yml has no step containing {needle}"))
-    };
-    // By step name: the comment block explaining this sits *above* the step,
-    // and job_steps attaches leading comments to the step before, so a search
-    // for "untaint" finds the plan step and every assertion below then reads
-    // the wrong block. That is how the first draft of this test failed.
-    let repair = position("name: repair a tainted service");
-    let apply = position("apply -input=false -auto-approve");
-
-    // Ordering: an untaint after the apply is an untaint that changed nothing
-    // about the apply that just failed.
-    assert!(
-        repair < apply,
-        "the repair runs at step {repair} and the apply at {apply}, so the \
-         apply still plans a replacement it cannot perform"
-    );
-
-    let step = &steps[repair];
-
-    // It only ever runs on an apply. A plan that mutated state would be a
-    // read-only action that is not one.
-    assert!(
-        step.contains("inputs.action == 'up'"),
-        "the repair is not gated on the apply, so `plan` mutates state"
-    );
-
-    // Evidence, not assumption: the taint is cleared only for a service Cloud
-    // Run confirms it still has. Without the describe this is "untaint
-    // everything", which would hide a service that genuinely needs recreating.
-    assert!(
-        step.contains("gcloud run services describe"),
-        "the repair untaints without asking Cloud Run whether the service is \
-         there, so a service that must be recreated silently is not"
-    );
-    let describe = step
-        .find("gcloud run services describe")
-        .expect("checked above");
-    let untaint = step
-        .find("terraform -chdir=infrastructure/terraform untaint")
-        .expect("the repair untaints");
-    assert!(
-        describe < untaint,
-        "the untaint precedes the read that is supposed to justify it"
-    );
-
-    // And the deletion guard itself is untouched — this is the whole point of
-    // taking this route rather than the other one.
+fn no_service_can_be_left_tainted_because_terraform_no_longer_creates_one() {
+    // The deadlock this used to close: a Cloud Run service whose first
+    // revision was refused existed as an object and did not serve, Terraform
+    // marked it tainted, the replacement was refused by deletion protection,
+    // and infra.yml grew an untaint-on-evidence step. ADR 0036 decision 5
+    // takes the service out of Terraform, so there is no resource to taint
+    // and the repair step is a read of state for nothing — and a step that
+    // untaints a Cloud Run service is the first sign that somebody has put
+    // the resource back. Both are asserted: the module declares no service,
+    // and the workflow untaints nothing.
     let module = without_comments(&read(CLOUD_RUN_MODULE));
     assert!(
-        sets(&module, "deletion_protection", "true"),
-        "the repair path was taken and the guard was weakened anyway"
+        !module.contains("resource \"google_cloud_run_v2_service\"")
+            && !module.contains("deletion_protection"),
+        "modules/cloudrun declares a Cloud Run service or its deletion guard again; the \
+         taint deadlock this test retired is back with it"
+    );
+    let infra: String = read(".github/workflows/infra.yml")
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !infra.contains("untaint") && !infra.contains("google_cloud_run_v2_service"),
+        "infra.yml still repairs a tainted Cloud Run service; Terraform manages none, so the \
+         step reads state for nothing or a service has been put back"
     );
 }
 
@@ -2241,21 +2198,25 @@ fn every_cloud_run_workload_is_placed_in_a_declared_trust_zone_and_carries_its_t
         }
     }
 
+    // The interface is the manifest's since ADR 0036, and gitops.rs's parity
+    // test asserts its subnetwork and its tag both name the entry's zone.
+    // What Terraform still does is compute the tag from the zone and hand it
+    // to the module, which reports it back for the parity test to compare.
     let catalogue = without_comments(&read(CATALOGUE));
     assert!(
-        catalogue.contains("network_tags   = compact([lookup(module.trust_zones.zone_network_tags, each.value.trust_zone, \"\")])"),
-        "the catalogue no longer puts the zone's tag on the workload's interface, so the zone's rules never see it"
-    );
-    assert!(
-        catalogue.contains(
-            "egress_subnet  = lookup(module.trust_zones.zone_subnets, each.value.trust_zone, null)"
+        sets(
+            &catalogue,
+            "network_tags",
+            "compact([lookup(module.trust_zones.zone_network_tags, each.value.trust_zone, \"\")])"
         ),
-        "the catalogue no longer attaches a workload to its zone's subnet"
+        "the catalogue no longer derives the workload's tag from its zone"
     );
-    let module = without_comments(&read(CLOUD_RUN_MODULE));
+    let outputs = without_comments(&read(
+        "infrastructure/terraform/modules/cloudrun/outputs.tf",
+    ));
     assert!(
-        module.contains("tags = var.network_tags"),
-        "the Cloud Run module drops the network tags on the floor"
+        outputs.contains("output \"network_tags\""),
+        "modules/cloudrun no longer reports the tags a manifest has to carry"
     );
 }
 
@@ -2542,49 +2503,12 @@ fn no_environment_can_be_applied_at_a_ceiling_that_reaches_a_real_venue() {
     }
 }
 
-#[test]
-fn the_pipeline_may_read_the_log_it_prints_when_a_rollout_fails() {
-    // The same shape as the attestation grants below, one product over, and
-    // found the same way — by a run that had already built, signed and
-    // attested four images before it asked:
-    //
-    //   ERROR: (gcloud.logging.read) PERMISSION_DENIED: Permission denied for
-    //   all log views. This command is authenticated as qip-ci-dev@...
-    //
-    // A diagnosis step with no grant behind it replaces one unhelpful message
-    // with a different unhelpful message, which is worse than not having it:
-    // the reader now believes the pipeline tried to explain and had nothing
-    // to say, when in fact it was refused.
-    let workflow = read(".github/workflows/deploy.yml");
-    let cicd = read("infrastructure/terraform/modules/cicd/main.tf");
-
-    // Premise: the pipeline really does read logs, so this is a grant for a
-    // live command rather than one somebody removed.
-    assert!(
-        workflow.contains("gcloud logging read"),
-        "deploy.yml no longer reads a revision's log; this test's premise \
-         needs rewriting"
-    );
-
-    let granted = cicd.split("resource \"").any(|block| {
-        block.contains("roles/logging.viewer") && block.contains("google_service_account.ci")
-    });
-    assert!(
-        granted,
-        "nothing grants the pipeline account the role that lets it read a \
-         failed revision's log (roles/logging.viewer), so the diagnosis step \
-         prints a permission error where the cause should be"
-    );
-
-    // And not the role that reads who called what. The pipeline explains its
-    // own rollouts; data-access logs are a different question and a wider
-    // grant than this step can justify.
-    assert!(
-        !cicd.contains("roles/logging.privateLogViewer"),
-        "the pipeline account may read data-access logs, which no step it \
-         runs needs"
-    );
-}
+// `the_pipeline_may_read_the_log_it_prints_when_a_rollout_fails` pinned the
+// logging.viewer grant behind deploy.yml's log read. The read left with the
+// rollout (ADR 0036 decision 8); the shape of the failure it guarded — a
+// diagnosis step with no grant behind it — is now the hook's, and gitops.rs's
+// `the_hook_that_proves_a_promotion_may_read_the_revision_it_proves` pins
+// every link from the Job's service account to the run.viewer grant.
 
 #[test]
 fn every_attestation_command_the_pipeline_runs_has_a_grant_that_permits_it() {
@@ -3114,48 +3038,54 @@ fn no_variable_validation_reads_through_the_null_it_is_guarding_against() {
 
 #[test]
 fn an_environment_can_be_brought_up_before_anything_has_been_deployed_to_it() {
-    // The deadlock this closes. `catalogue.tf` refuses to create a Cloud Run
-    // service without a digest for it, `image_digests` defaults to empty, and
-    // the digests live in `images.tfvars` — which the bootstrap, the script
-    // that creates the services and the only path prod has, never passed. So
-    // the apply stopped at "No digest is recorded for qip-api, ...", the
-    // services were never created, and deploy.yml — which only ever *moves* a
-    // service — had nothing to move. Neither end could go first.
-    let bootstrap = read("scripts/bootstrap-deploy.sh");
-
-    // Premise: the script still applies, and the precondition it tripped on
-    // is still there to trip on.
+    // The deadlock this closes. `catalogue.tf` once refused to create a Cloud
+    // Run service without a digest for it, the digests lived in an
+    // `images.tfvars` the pipeline wrote after moving a service, and the
+    // bootstrap never passed the file — so neither end could go first. ADR
+    // 0036 removes the digest from Terraform entirely: the manifest names it
+    // and Kargo's promotion commit moves it. What keeps the deadlock closed
+    // is that nothing in Terraform needs a digest at all, in any spelling.
+    let mut scanned = 0usize;
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        scanned += 1;
+        for token in [
+            "image_digests",
+            "images.tfvars",
+            "No digest is recorded for",
+        ] {
+            assert!(
+                !content.contains(token),
+                "{} names `{token}`; Terraform takes no digest input under ADR 0036, and one \
+                 that did would need the pipeline to have run before the environment exists",
+                path.display()
+            );
+        }
+    }
+    assert!(scanned >= 20, "only {scanned} Terraform files were scanned");
+    for environment in ["dev", "test", "stage", "prod"] {
+        assert!(
+            !repository_root()
+                .join(format!(
+                    "infrastructure/environments/{environment}/images.tfvars"
+                ))
+                .exists(),
+            "{environment} still carries images.tfvars, a record of digests nothing reads; the \
+             promotion commit under infrastructure/gitops/envs/{environment} is the record"
+        );
+    }
+    let bootstrap: String = read("scripts/bootstrap-deploy.sh")
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
         bootstrap.contains("terraform -chdir=\"${TF_DIR}\" apply"),
         "the bootstrap no longer applies, so this test guards nothing"
     );
-    let catalogue = read("infrastructure/terraform/catalogue.tf");
     assert!(
-        catalogue.contains("No digest is recorded for"),
-        "catalogue.tf no longer refuses a workload with no digest; the \
-         deadlock this guards is gone and so is its premise"
-    );
-
-    assert!(
-        bootstrap.contains("images.tfvars"),
-        "the bootstrap passes no images.tfvars, so its apply cannot create a \
-         Cloud Run service and the environment it bootstraps has none"
-    );
-    assert!(
-        bootstrap.contains("tf_var_files+=(-var-file=\"${IMAGES_TFVARS}\")"),
-        "the bootstrap knows the file but does not pass it to terraform"
-    );
-
-    // And deploy.yml says which of the two runs first, rather than leaving a
-    // raw `Service could not be found` in the log with no fix beside it.
-    let deploy = read(".github/workflows/deploy.yml");
-    assert!(
-        deploy.contains("Terraform creates the Cloud Run services"),
-        "deploy.yml does not say that a missing service is Terraform's to make"
-    );
-    assert!(
-        deploy.contains("action=up"),
-        "deploy.yml names no way to create the service it could not find"
+        !bootstrap.contains("images.tfvars") && !bootstrap.contains("IMAGES_TFVARS"),
+        "the bootstrap still passes images.tfvars; an apply gated on a digest is the deadlock"
     );
 }
 
@@ -3988,17 +3918,10 @@ fn every_cloud_run_service_is_probed_on_a_path_its_binary_serves() {
     // and is not: Cloud Run would never route to the service, and the failure
     // reads as an image that will not start. Each catalogue entry names the
     // path, and the binary's own source has to serve it.
-    let module = without_comments(&read(CLOUD_RUN_MODULE));
-    assert!(
-        module.contains("startup_probe {") && module.contains("liveness_probe {"),
-        "the Cloud Run module no longer probes the workload"
-    );
-    assert_eq!(
-        module.matches("path = var.health_path").count(),
-        2,
-        "the two probes do not both poll the catalogue's health path"
-    );
-
+    // The probes are in the manifest since ADR 0036, and the parity test in
+    // gitops.rs asserts both are on the entry's `health_path`; what is
+    // asserted here is the other end of that path — that the binary serves
+    // it.
     let mut probed = 0usize;
     for (name, body) in catalogue_workloads() {
         let binary = catalogue_field(&body, "binary");
@@ -4069,28 +3992,16 @@ fn every_cloud_run_container_declares_a_cpu_and_a_memory_limit() {
     // neighbours; a CPU limit without a memory limit lets a leak take down the
     // instance. Both, on every container the module renders: the service, the
     // job, the proxy sidecar and the metrics collector.
+    // The containers are the manifests' since ADR 0036, and gitops.rs's
+    // parity test asserts both limits on every container of every RunService
+    // and the workload's equal to the entry's. What is asserted here is that
+    // the module renders none — a container here would be a second writer.
     let module = without_comments(&read(CLOUD_RUN_MODULE));
-    let limits: Vec<String> = module
-        .split("limits = {")
-        .skip(1)
-        .map(|rest| rest.split('}').next().unwrap_or("").to_string())
-        .collect();
-    assert_eq!(
-        limits.len(),
-        4,
-        "{} limits blocks were read; the service, the job, the proxy sidecar and the metrics collector each carry one",
-        limits.len()
+    assert!(
+        !module.contains("containers {") && !module.contains("limits = {"),
+        "modules/cloudrun renders a container again; the manifest is the one place a limit is \
+         set, and two are two that disagree"
     );
-    for block in &limits {
-        assert!(
-            block.contains("cpu"),
-            "a container has no CPU limit: {block}"
-        );
-        assert!(
-            block.contains("memory"),
-            "a container has no memory limit: {block}"
-        );
-    }
     // And the catalogue sets both for every workload rather than taking a
     // default sized for something else.
     for (name, body) in catalogue_workloads() {
@@ -4192,21 +4103,17 @@ fn every_workload_that_runs_the_cycle_over_the_journal_is_pinned_to_one_warm_ins
         "the API has been pinned to one instance, which it does not need"
     );
 
-    // And the values reach the module rather than sitting in the entry: the
-    // catalogue passes each one through and the module applies it to the
-    // service's scaling block.
-    let catalogue = without_comments(&read(CATALOGUE));
-    let module = without_comments(&read(CLOUD_RUN_MODULE));
-    for field in ["min_instances", "max_instances", "always_on_justification"] {
-        assert!(
-            sets(&catalogue, field, &format!("each.value.{field}")),
-            "the catalogue no longer passes {field} to the module, so the entry's value is decoration"
-        );
-    }
+    // And the values reach the service rather than sitting in the entry.
+    // Since ADR 0036 the scaling block is the manifest's, and gitops.rs's
+    // parity test asserts each RunService's minInstanceCount and
+    // maxInstanceCount equal the entry's. Terraform applies no bound of its
+    // own — a module input for one would be a second writer.
+    let variables = without_comments(&read(CLOUD_RUN_VARIABLES));
     assert!(
-        sets(&module, "max_instance_count", "var.max_instances")
-            && sets(&module, "min_instance_count", "var.min_instances"),
-        "the module no longer applies its instance bounds to the service"
+        !variables.contains("variable \"min_instances\"")
+            && !variables.contains("variable \"max_instances\""),
+        "modules/cloudrun takes instance bounds again; the manifest is the one place they \
+         are applied"
     );
 }
 
@@ -4238,8 +4145,11 @@ fn the_metrics_collector_runs_only_under_a_digest_pinned_image_and_nothing_claim
         "collector_image_digest no longer refuses anything but null or a full repository@sha256 digest"
     );
 
-    // The module renders the sidecar from the digest and from nothing else,
-    // and reports only that it declared one.
+    // The module keys the scrape document and its bucket on the digest and
+    // reports only that it declared one; the sidecar container itself is the
+    // manifest's since ADR 0036, and gitops.rs's parity test asserts a
+    // `qip-metrics-collector` container exactly where the entry asks for one
+    // and the environment names a digest.
     let module = without_comments(&read(CLOUD_RUN_MODULE));
     assert!(
         sets(
@@ -4249,35 +4159,11 @@ fn the_metrics_collector_runs_only_under_a_digest_pinned_image_and_nothing_claim
         ),
         "the collector is keyed on something other than the digest being set"
     );
-    let sidecar = module
-        .split("for_each = local.has_metrics_collector ? [var.collector_image_digest] : []")
-        .nth(1)
-        .and_then(|rest| rest.split("\n    }\n").next())
-        .expect("the Cloud Run module renders the collector from the digest");
-    // Premise: this really is the collector's block.
     assert!(
-        sets(sidecar, "image", "containers.value") && sidecar.contains("depends_on = [var.name]"),
-        "the collector block has been reshaped; every absence below is vacuous"
+        !module.contains("containers {"),
+        "modules/cloudrun renders a container again; the manifest is the one place the \
+         collector runs"
     );
-    for (marker, why) in [
-        (
-            "secret",
-            "a mounted secret is a credential the collector has no use for",
-        ),
-        (
-            "env {",
-            "an environment value on the collector is one more thing in /proc/<pid>/environ",
-        ),
-        (
-            "service_account",
-            "an identity of its own would be a second principal for one service",
-        ),
-    ] {
-        assert!(
-            !sidecar.contains(marker),
-            "the metrics collector carries `{marker}`: {why}"
-        );
-    }
     let outputs = without_comments(&read(
         "infrastructure/terraform/modules/cloudrun/outputs.tf",
     ));
@@ -4584,53 +4470,13 @@ fn every_workload_that_reads_the_universe_is_given_the_committed_catalogue_as_a_
         module.contains("sha256(file.content)"),
         "the module no longer hashes each file's content, so the object's name says nothing about its bytes"
     );
-    // Line-based and whitespace-collapsed, because `terraform fmt` aligns
-    // the mount's `name` with its `mount_path` and a substring search for
-    // `name = "config-files"` would find the volume and miss the mount.
-    let lines: Vec<&str> = module.lines().collect();
-    let mut volumes = 0usize;
-    let mut mounts = 0usize;
-    for (index, line) in lines.iter().enumerate() {
-        if line.split_whitespace().collect::<Vec<_>>().join(" ") != "name = \"config-files\"" {
-            continue;
-        }
-        // The lines that follow, up to the block's own closing brace.
-        let piece = lines[index + 1..]
-            .iter()
-            .take_while(|line| line.trim() != "}")
-            .copied()
-            .collect::<Vec<_>>()
-            .join("\n");
-        let block = piece.as_str();
-        if block.contains("gcs {") {
-            // Read-only, from the workload's own bucket. The hash-named
-            // directory used to be selected by `only-dir`, which the GA
-            // provider has no argument for — it refused the first plan of
-            // this runtime — so the whole bucket mounts and the hash is
-            // carried in the path the environment names instead. The
-            // guarantee is the same and it is asserted below, on the path.
-            assert!(
-                sets(block, "read_only", "true")
-                    && !block.contains("mount_options")
-                    && block.contains("google_storage_bucket.config_files[0].name"),
-                "a config-files volume is not a plain read-only mount of the workload's own \
-                 bucket:\n{block}"
-            );
-            volumes += 1;
-        } else {
-            let preceding = lines[index.saturating_sub(4)..index].join("\n");
-            assert!(
-                sets(block, "mount_path", "volume_mounts.value")
-                    && preceding.contains("[local.config_root]"),
-                "a config-files mount is somewhere other than config_root:\n{preceding}\n{block}"
-            );
-            mounts += 1;
-        }
-    }
-    assert_eq!(
-        (volumes, mounts),
-        (2, 2),
-        "expected a config-files volume and mount on both the service and the job"
+    // The volume and its mount are the manifest's since ADR 0036: gitops.rs's
+    // parity test asserts a read-only GCS `config-files` volume mounted at
+    // /etc/qip on every RunService, and every _PATH variable under it.
+    assert!(
+        !module.contains("volumes {") && !module.contains("volume_mounts {"),
+        "modules/cloudrun renders a volume again; the manifest is the one place a mount is \
+         declared"
     );
     // The grant is the narrow one, on the workload's own bucket.
     let grants = terraform_resources(&module, "google_storage_bucket_iam_member");
@@ -4823,17 +4669,22 @@ fn every_workload_pulls_from_the_repository_the_pipeline_pushes_to() {
         "the registry Terraform creates is not the one the pipeline pushes to"
     );
 
-    // And the catalogue pins no registry of its own, and never a tag: the
-    // image is the registry module's prefix, the binary, and a digest.
+    // And Terraform names no image for a catalogue workload at all since ADR
+    // 0036: the manifest does, and gitops.rs's parity test asserts it is
+    // `<prefix>/qip-<env>/<binary>@sha256:…`. A catalogue naming one again
+    // would be a second writer of the digest.
     let catalogue = without_comments(&read(CATALOGUE));
     assert!(
-        catalogue.contains("image_digest = \"${module.registry.image_prefix}/${each.value.binary}@${lookup(var.image_digests, each.value.binary, \"\")}\""),
-        "the catalogue names an image some way other than registry prefix, binary and digest"
+        !catalogue
+            .lines()
+            .any(|line| collapsed(line).starts_with("image_digest = "))
+            && !catalogue.contains("${each.value.binary}@"),
+        "the catalogue names an image for a workload again; the manifest is the one writer"
     );
-    let variables = read(CLOUD_RUN_VARIABLES);
+    let variables = without_comments(&read(CLOUD_RUN_VARIABLES));
     assert!(
-        variables.contains("@sha256:[a-f0-9]{64}$"),
-        "the Cloud Run module no longer refuses an image that is not pinned by digest"
+        !variables.contains("variable \"image_digest\""),
+        "modules/cloudrun takes an image again"
     );
 }
 
@@ -4847,43 +4698,223 @@ const STILL_MENTIONS_THE_RETIRED_STACK: &[(&str, &str)] = &[
     // mention has somewhere to be declared rather than somewhere to hide.
 ];
 
+/// The kinds whose spec is a Pod template. A `qip-*` image in any of them is
+/// a trading binary running on the control-plane cluster, which is the
+/// runtime ADR 0024 retired coming back through the door ADR 0036 opened
+/// for the controllers.
+const POD_BEARING_KINDS: [&str; 7] = [
+    "Pod",
+    "Deployment",
+    "StatefulSet",
+    "DaemonSet",
+    "ReplicaSet",
+    "Job",
+    "CronJob",
+];
+
+/// The binaries the workspace builds, none of which may be a Pod's image.
+const TRADING_BINARIES: [&str; 6] = [
+    "qip-api",
+    "qip-fastbrain",
+    "qip-deepbrain",
+    "qip-edge-node",
+    "qip-web",
+    "qip-cli",
+];
+
+/// The `kind:` values a directory under `infrastructure/gitops` may declare,
+/// by what each directory is for. A kind outside its directory's list is
+/// either a controller nobody decided on or a workload on the cluster.
+fn permitted_kinds(relative: &str) -> &'static [&'static str] {
+    if relative.starts_with("infrastructure/gitops/bootstrap") {
+        // Upstream installs of Argo CD and Kargo, and the namespace and
+        // bindings Config Connector's identity needs: everything a
+        // controller install carries, and no workload.
+        &[
+            "Namespace",
+            "ServiceAccount",
+            "Role",
+            "ClusterRole",
+            "RoleBinding",
+            "ClusterRoleBinding",
+            "ConfigMap",
+            "Secret",
+            "Service",
+            "Deployment",
+            "StatefulSet",
+            "Job",
+            "CustomResourceDefinition",
+            "NetworkPolicy",
+            "PriorityClass",
+            "MutatingWebhookConfiguration",
+            "ValidatingWebhookConfiguration",
+            "ConfigConnector",
+            "ConfigConnectorContext",
+            "PodDisruptionBudget",
+            "HorizontalPodAutoscaler",
+            "Kustomization",
+            // Kargo's render: a CronJob for its garbage collector, and the
+            // cert-manager Certificate and Issuer its webhooks serve under.
+            "CronJob",
+            "Certificate",
+            "Issuer",
+        ]
+    } else if relative.starts_with("infrastructure/gitops/argocd") {
+        &[
+            "Application",
+            "AppProject",
+            "ConfigMap",
+            "Namespace",
+            "Kustomization",
+        ]
+    } else if relative.starts_with("infrastructure/gitops/kargo") {
+        &[
+            "Project",
+            "ProjectConfig",
+            "PromotionTask",
+            "Warehouse",
+            "Stage",
+            "Namespace",
+            "ServiceAccount",
+            "Role",
+            "RoleBinding",
+            "Secret",
+            "Kustomization",
+        ]
+    } else if relative.starts_with("infrastructure/gitops/envs") {
+        // Config Connector resources for the runtime, the namespace they go
+        // in, and the post-sync hook Job that proves the serving revision.
+        &[
+            "RunService",
+            "Namespace",
+            "ConfigConnectorContext",
+            "ServiceAccount",
+            "Role",
+            "RoleBinding",
+            "Job",
+            "ConfigMap",
+            "Kustomization",
+            "IAMPolicyMember",
+            "IAMPolicy",
+        ]
+    } else {
+        &[]
+    }
+}
+
+/// The `image:` values of a YAML file's Pod-bearing documents, with the kind
+/// each sits in. Line-based: a `kind:` at column zero opens a document and
+/// every `image:` until the next belongs to it.
+fn pod_images(content: &str) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    let mut kind = String::new();
+    for line in content.lines() {
+        if let Some(value) = line.strip_prefix("kind: ") {
+            kind = value.trim().to_string();
+        }
+        if line.trim() == "---" {
+            kind.clear();
+        }
+        if let Some(value) = line
+            .trim_start()
+            .strip_prefix("- image: ")
+            .or_else(|| line.trim_start().strip_prefix("image: "))
+        {
+            if POD_BEARING_KINDS.contains(&kind.as_str()) {
+                found.push((kind.clone(), value.trim().trim_matches('"').to_string()));
+            }
+        }
+    }
+    found
+}
+
 #[test]
-fn no_kubernetes_manifest_helm_chart_or_gitops_controller_remains() {
-    // The failure this prevents: a directory of manifests a reviewer takes for
-    // the running system, that nothing applies. It began as a guard on an
-    // empty overlays directory, and on 2026-08-31 the same failure arrived at
+fn no_kubernetes_workload_runs_a_trading_binary_and_no_manifest_lives_outside_the_gitops_tree() {
+    // The failure this prevents: a directory of manifests a reviewer takes
+    // for the running system, that nothing applies. It began as a guard on
+    // an empty overlays directory; on 2026-08-31 the same failure arrived at
     // a hundred times the size when Argo CD replaced kubectl and left the
-    // sed-rendered manifests behind. ADR 0024 retired the whole runtime; this
-    // is what keeps it retired.
-    for retired in [
-        "infrastructure/kubernetes",
-        "infrastructure/helm",
-        "infrastructure/gitops",
-    ] {
+    // sed-rendered manifests behind; ADR 0024 retired the whole runtime.
+    //
+    // ADR 0036 brings Argo CD and Kargo back on a control-plane cluster that
+    // runs controllers and nothing else, so the guard is re-scoped rather
+    // than deleted. What it dropped: the refusal of any `kind:` line under
+    // `infrastructure/` and of `kubectl` in a workflow, both of which the
+    // new design requires. What it keeps: `infrastructure/kubernetes` and
+    // `infrastructure/helm` stay retired; a manifest lives under
+    // `infrastructure/gitops` and nowhere else; every kind under that tree
+    // is one its directory is for; no Pod-bearing kind anywhere under it
+    // names a `qip-*` image, because the trading binaries are Cloud Run
+    // services and an execution node, never Pods; no chart; no controller
+    // CLI in a workflow; and no GKE resource outside the one control-plane
+    // module. gitops.rs holds the rest of the new shape.
+    for retired in ["infrastructure/kubernetes", "infrastructure/helm"] {
         assert!(
             !repository_root().join(retired).exists(),
-            "{retired} exists again. The Kubernetes runtime was retired under ADR 0024; a \
-             manifest, chart or controller directory nothing applies reads as the running \
-             system."
+            "{retired} exists again. The Kubernetes runtime was retired under ADR 0024 and ADR \
+             0036 returns only the controllers, under infrastructure/gitops; a manifest or \
+             chart directory nothing applies reads as the running system."
         );
     }
+    assert!(
+        repository_root().join("infrastructure/gitops").is_dir(),
+        "infrastructure/gitops does not exist; ADR 0036 places the controllers' bootstrap, the \
+         Argo CD and Kargo resources and the RunService manifests there, and until it lands \
+         this test's second half has nothing to read"
+    );
 
-    // No manifest anywhere under infrastructure or the workflows: a YAML
-    // document with a top-level `kind:` is a Kubernetes object whatever
-    // directory it is in.
+    // A manifest — a YAML document with a top-level `kind:` — only under
+    // infrastructure/gitops, and there only of the kinds its directory is
+    // for.
     let mut yaml_scanned = 0usize;
+    let mut manifests_seen = 0usize;
+    let mut pod_images_seen = 0usize;
     for directory in ["infrastructure", ".github"] {
         for extension in ["yaml", "yml"] {
             for path in files_with_extension(directory, extension) {
                 let content = std::fs::read_to_string(&path).expect("readable");
+                let relative = path
+                    .strip_prefix(repository_root())
+                    .unwrap_or(&path)
+                    .display()
+                    .to_string();
                 yaml_scanned += 1;
+                let kinds: Vec<String> = content
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("kind: "))
+                    .map(|kind| kind.trim().to_string())
+                    .collect();
+                if kinds.is_empty() {
+                    continue;
+                }
+                let permitted = permitted_kinds(&relative);
                 assert!(
-                    !content
-                        .lines()
-                        .any(|line| line.starts_with("kind: ") || line.starts_with("apiVersion: ")),
-                    "{} is a Kubernetes manifest",
-                    path.display()
+                    !permitted.is_empty(),
+                    "{relative} is a Kubernetes manifest ({kinds:?}) outside infrastructure/gitops's \
+                     four directories; nothing applies it, and ADR 0036 places every manifest there"
                 );
+                for kind in &kinds {
+                    assert!(
+                        permitted.contains(&kind.as_str()),
+                        "{relative} declares `kind: {kind}`, which its directory is not for \
+                         (permitted: {permitted:?}); a controller nobody decided on, or a workload \
+                         on the cluster"
+                    );
+                    manifests_seen += 1;
+                }
+                for (kind, image) in pod_images(&content) {
+                    pod_images_seen += 1;
+                    let (repository, _) = image.split_once('@').unwrap_or((&image, ""));
+                    let repository = repository.split(':').next().unwrap_or(repository);
+                    let last = repository.rsplit('/').next().unwrap_or(repository);
+                    assert!(
+                        !TRADING_BINARIES.contains(&last),
+                        "{relative} runs `{image}` in a {kind}. {last} is a trading binary; it runs \
+                         as a Cloud Run service or on the execution node and never as a Pod (ADR \
+                         0036 decision 1), and this is the door ADR 0024's runtime would come back \
+                         through"
+                    );
+                }
             }
         }
     }
@@ -4891,37 +4922,105 @@ fn no_kubernetes_manifest_helm_chart_or_gitops_controller_remains() {
         yaml_scanned >= 5,
         "only {yaml_scanned} YAML files were scanned"
     );
+    assert!(
+        manifests_seen >= 20,
+        "only {manifests_seen} kinds were seen under infrastructure/gitops; the controllers' \
+         install alone is more than that, so the walk is not reaching the tree"
+    );
+    assert!(
+        pod_images_seen >= 2,
+        "only {pod_images_seen} Pod image(s) were seen; Argo CD and Kargo run Deployments and \
+         the refusal of a trading binary in one has nothing to refuse"
+    );
 
-    // No workflow runs the retired tooling. Comments are stripped, because a
-    // workflow explaining why it no longer runs kubectl must be allowed to
-    // say so.
+    // No chart anywhere, and no chart-shaped file under the gitops tree.
+    for path in files_with_extension("infrastructure", "yaml") {
+        assert!(
+            path.file_name()
+                .is_none_or(|name| name != "Chart.yaml" && name != "values.yaml"),
+            "{} is a Helm chart file; ADR 0036 decision 2 installs pinned manifests and no chart",
+            path.display()
+        );
+    }
+
+    // No workflow drives a controller from outside, and only infra.yml's
+    // bootstrap runs kubectl. Comments are stripped, because a workflow
+    // explaining why it does not run argocd must be allowed to say so; and
+    // the match is on an invocation, because `argocd` is also a namespace
+    // in `kubectl -n argocd` and a variable in the bootstrap's heredoc.
+    let invokes = |commands: &str, tool: &str| {
+        commands.lines().any(|line| {
+            line.split(['|', ';'])
+                .flat_map(|segment| segment.split("&&"))
+                .flat_map(|segment| segment.split("$("))
+                .map(str::trim_start)
+                // A one-line `run: tool …` is the same invocation as the
+                // first line of a `run: |` block.
+                .map(|segment| {
+                    segment
+                        .trim_start_matches("- ")
+                        .trim_start_matches("run:")
+                        .trim_start()
+                })
+                .any(|segment| {
+                    segment == tool.trim_end()
+                        || (segment.starts_with(tool)
+                            && !segment[tool.len()..].trim_start().starts_with('='))
+                })
+        })
+    };
     for path in files_with_extension(".github/workflows", "yml") {
         let commands: String = std::fs::read_to_string(&path)
             .expect("readable")
             .lines()
-            .map(|line| line.split('#').next().unwrap_or(""))
+            .filter(|line| !line.trim_start().starts_with('#'))
             .collect::<Vec<_>>()
             .join("\n");
-        for tool in ["kubectl ", "helm ", "argocd ", "kargo ", "kustomize "] {
+        for tool in ["helm ", "argocd ", "kargo "] {
             assert!(
-                !commands.contains(tool),
-                "{} runs `{tool}`, which has nothing to run against",
+                !invokes(&commands, tool),
+                "{} runs `{tool}`; promotion is Kargo's, sync is Argo CD's, and a workflow \
+                 driving either from outside is a second deployment path",
                 path.display()
             );
         }
+        if path.file_name().is_none_or(|name| name != "infra.yml") {
+            for tool in ["kubectl ", "kustomize "] {
+                assert!(
+                    !invokes(&commands, tool),
+                    "{} runs `{tool}`; only infra.yml's bootstrap step applies anything to the \
+                     control-plane cluster",
+                    path.display()
+                );
+            }
+        }
     }
 
-    // No GKE resource in the Terraform.
+    // No GKE resource in the Terraform outside the control-plane module.
     //
     // A `removed` block is exempt and has to be: it names the type precisely
     // because it is telling Terraform to stop managing an instance of it, and
     // forbidding the name would force the alternative — leaving the resource
     // in the plan to be destroyed, which for the journal backup plan means
     // deleting the backups. Only the declaring form is refused here.
+    let mut cluster_modules: Vec<String> = Vec::new();
     for path in files_with_extension("infrastructure/terraform", "tf") {
+        let relative = path
+            .strip_prefix(repository_root())
+            .unwrap_or(&path)
+            .display()
+            .to_string();
         let content = without_removed_blocks(&without_comments(
             &std::fs::read_to_string(&path).expect("readable"),
         ));
+        if content.contains("resource \"google_container_cluster\"") {
+            cluster_modules.push(relative.clone());
+        }
+        let is_control_plane = relative.starts_with("infrastructure/terraform/modules/")
+            && relative.contains("control-plane");
+        if is_control_plane {
+            continue;
+        }
         for resource in [
             "google_container_cluster",
             "google_container_node_pool",
@@ -4931,11 +5030,18 @@ fn no_kubernetes_manifest_helm_chart_or_gitops_controller_remains() {
         ] {
             assert!(
                 !content.contains(resource),
-                "{} declares {resource}; the cluster is gone and this is a resource for it",
-                path.display()
+                "{relative} declares {resource}; the only cluster is the control plane's, in its \
+                 own module (ADR 0036 decision 1)"
             );
         }
     }
+    assert_eq!(
+        cluster_modules.len(),
+        1,
+        "{} file(s) declare a google_container_cluster ({cluster_modules:?}); ADR 0036 is one \
+         control-plane cluster module",
+        cluster_modules.len()
+    );
 
     // What still mentions the retired stack outside this change's paths, each
     // re-proved so the list shrinks rather than grows.
@@ -4947,19 +5053,9 @@ fn no_kubernetes_manifest_helm_chart_or_gitops_controller_remains() {
         });
         let lowered = content.to_lowercase();
         assert!(
-            [
-                "argocd",
-                "argo cd",
-                "kargo",
-                "keda",
-                "helm",
-                "kubernetes",
-                "configmap",
-                "node pool",
-                "statefulset"
-            ]
-            .iter()
-            .any(|token| lowered.contains(token)),
+            ["helm", "node pool", "statefulset", "keda"]
+                .iter()
+                .any(|token| lowered.contains(token)),
             "{path} no longer mentions the retired stack ({what}); delete its entry so the list expires"
         );
     }
@@ -5214,146 +5310,14 @@ fn the_teardown_stops_the_meter_and_touches_nothing_that_scales_to_zero() {
     );
 }
 
-/// The workloads deploy.yml moves: read from the same catalogue the workflow
-/// itself parses, by the same rule, so the two cannot disagree about which
-/// services exist.
-fn workloads_the_pipeline_moves() -> Vec<String> {
-    let deploy = read(".github/workflows/deploy.yml");
-    // The workflow reads catalogue.tf with these two patterns. If either
-    // changes here, the awk in the workflow has changed shape and the
-    // catalogue's own tests need re-reading.
-    for pattern in [
-        "/^    [a-z][a-z0-9-]* = \\{$/",
-        "/^      binary[[:space:]]*=/",
-    ] {
-        assert!(
-            deploy.contains(pattern),
-            "deploy.yml no longer reads the catalogue with `{pattern}`; the services it moves are now decided somewhere this check cannot see"
-        );
-    }
-    catalogue_workloads()
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect()
-}
-
-#[test]
-fn a_promotion_names_who_verifies_it() {
-    // An apply that returns is not a deployment that worked. The GitOps
-    // cut-over lost the rollout wait, so a build that crash-looped on boot
-    // produced a green pipeline, and docs/operations/gitops-exceptions.md
-    // recorded the gap rather than closing it. `gcloud run services update`
-    // blocks until the revision is Ready and routing and fails otherwise;
-    // the describe afterwards proves the serving revision runs the digest
-    // that was signed. Both halves are asserted, because the first alone is
-    // satisfied by a traffic split that never moved.
-    let deploy = read(".github/workflows/deploy.yml");
-    let jobs = workflow_jobs(&deploy);
-    let (_, body) = jobs
-        .iter()
-        .find(|(name, _)| name == "deploy")
-        .expect("deploy.yml has a deploy job");
-    let steps = job_steps(body);
-    let rollout = steps
-        .iter()
-        .find(|step| step.contains("id: rollout"))
-        .expect("the deploy job has a rollout step");
-
-    // The premise: it moves every workload the catalogue deploys, and nothing
-    // the catalogue does not know.
-    let moved = workloads_the_pipeline_moves();
-    assert_eq!(moved.len(), 3, "the catalogue parsed to {moved:?}");
-    assert!(
-        rollout.contains("service=\"qip-${TARGET_ENVIRONMENT}-${name}\""),
-        "the rollout step no longer names services the way modules/cloudrun names them"
-    );
-
-    // The wait.
-    assert!(
-        rollout.contains("gcloud run services update \"$service\""),
-        "the rollout step no longer moves the service with `gcloud run services update`, which is the step that waits for the revision"
-    );
-    assert!(
-        rollout.contains("--image \"$image\""),
-        "the rollout step moves the service to something other than the attested image"
-    );
-    // By digest: the image is assembled from the registry's own digest, never
-    // from the tag the build pushed.
-    assert!(
-        rollout.contains("image=\"${prefix}/${binary}@${digest}\""),
-        "the rollout step deploys by tag rather than by the digest the attestation names"
-    );
-
-    // Every global flag precedes `--container`, which opens a scope only
-    // container-level flags may enter. This is not style: with `--quiet`
-    // after it, gcloud refused the whole command — `unrecognized arguments:
-    // --quiet` — and every deployment between the sidecars landing and the
-    // fix failed there, run 33636602162 among them.
-    let update = rollout
-        .split("gcloud run services update")
-        .nth(1)
-        .expect("the rollout step runs `gcloud run services update`");
-    let update = update.split("\n\n").next().unwrap_or(update);
-    let container_at = update
-        .find("--container")
-        .expect("the update names the container it moves");
-    for global in ["--quiet", "--project", "--region"] {
-        let at = update
-            .find(global)
-            .unwrap_or_else(|| panic!("the update no longer passes {global}"));
-        assert!(
-            at < container_at,
-            "the update passes {global}, a global flag, after --container; gcloud refuses that"
-        );
-    }
-
-    // The proof. Read by name, never by position: every service carries the
-    // egress sidecar and may carry the metrics collector, so an index picks
-    // a sidecar as readily as the workload, and nothing documents the first
-    // condition as Ready. And the revisions read are the ones traffic
-    // routes to — `spec.template` is what was asked for, which is the half
-    // a traffic split that never moved would also satisfy.
-    // Comment lines go first: the step's own comment names both positional
-    // selectors in order to say why they are wrong, and a check that read
-    // prose would refuse the explanation along with the defect.
-    let rollout_code: String = rollout
-        .lines()
-        .filter(|line| !line.trim_start().starts_with('#'))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        !rollout_code.contains("containers[0]") && !rollout_code.contains("conditions[0]"),
-        "the rollout step selects a container or a condition by position again"
-    );
-    assert!(
-        rollout.contains("c.get(\"type\") == \"Ready\""),
-        "the rollout step does not select the Ready condition by type"
-    );
-    assert!(
-        rollout.contains("c.get(\"name\") == wanted"),
-        "the rollout step does not select the workload's own container by name"
-    );
-    assert!(
-        rollout.contains("status.get(\"traffic\", [])"),
-        "the rollout step does not read the revisions traffic actually routes to"
-    );
-    assert!(
-        rollout.contains("if [ \"$serving\" != \"$image\" ]; then") && rollout.contains("exit 1"),
-        "the rollout step reads the serving revision back and does not fail when it is not the one asked for"
-    );
-
-    // And the record is written after the proof, not before it: a digest
-    // recorded for a service that never served it is the GitOps values file
-    // all over again.
-    let proof = rollout.find("exit 1").expect("the proof refuses");
-    let record = rollout
-        .find(">> \"$images_file\"")
-        .expect("the step records the digest");
-    assert!(
-        proof < record,
-        "the rollout step records a digest before it has proven the service serves it"
-    );
-}
+// `a_promotion_names_who_verifies_it` lived here while deploy.yml moved each
+// service with `gcloud run services update` and proved the serving revision.
+// ADR 0036 decision 7 moves that proof to the reconciler — Argo CD's health
+// of a RunService and a post-sync hook reading `status.traffic` — and the
+// test moved with it, under the same name, to gitops.rs. The pipeline's own
+// half (it no longer moves a service, and still signs and attests) is
+// `the_pipeline_no_longer_moves_a_service_and_still_signs_attests_and_refuses_prod`
+// in the same file.
 
 #[test]
 fn every_deployment_exclusion_is_recorded_as_a_decision() {

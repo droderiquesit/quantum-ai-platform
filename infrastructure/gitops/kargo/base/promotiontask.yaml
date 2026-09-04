@@ -1,0 +1,104 @@
+# The promotion (ADR 0036 decision 6): clone this repository at its default
+# branch, write the freight's three digests into the stage's
+# `envs/<stage>/kustomization.yaml`, commit with a message that names the
+# freight, every digest and the source commit, push to the default branch,
+# and tell Argo CD which commit to expect. One task shared by every stage,
+# so the shape of a promotion cannot differ between environments; the vars
+# are what differs, and the stage sets them.
+#
+# What refuses a bad promotion here, and where:
+#
+#   * Freight mixing commits is refused before this runs — the Warehouse's
+#     freight-creation criteria require all three images' tags (the commit
+#     sha deploy.yml pushes) to be equal, so no such freight exists to
+#     promote. The `fail` step below is the second line: a task invoked
+#     without a registry has nowhere to write.
+#   * A digest the attestor never signed is not refused here. The commit
+#     lands, Argo CD syncs it, Cloud Run's admission refuses the revision,
+#     and the Application reads `Degraded` with the refusal in its
+#     condition (decision 8). Kargo cannot see the attestation and does not
+#     pretend to.
+apiVersion: kargo.akuity.io/v1alpha1
+kind: PromotionTask
+metadata:
+  name: promote-cloud-run
+  namespace: qip
+spec:
+  vars:
+    - name: gitRepo
+      value: https://github.com/droderiquesit/quantum-ai-platform.git
+    - name: branch
+      value: claude/autonomous-investment-platform-76gt4y
+    # The registry the stage's kustomization names — its own environment's.
+    - name: registry
+      value: ""
+    # The registry the freight's images were discovered in — the warehouse's.
+    # The two differ for every stage but the one whose environment holds the
+    # warehouse; kargo/README.md says what that costs today.
+    - name: warehouseRegistry
+      value: ""
+    # The Argo CD Application to notify, or empty for a stage whose
+    # Application lives on another environment's control plane.
+    - name: argocdApplication
+      value: ""
+  steps:
+    - uses: fail
+      if: ${{ vars.registry == "" || vars.warehouseRegistry == "" }}
+      config:
+        message: This stage did not set `registry` and `warehouseRegistry`; a promotion with no registry has nowhere to write a digest.
+    - uses: git-clone
+      config:
+        repoURL: ${{ vars.gitRepo }}
+        author:
+          name: qip-kargo
+          email: qip-kargo@algorik.internal
+        checkout:
+          - branch: ${{ vars.branch }}
+            path: ./repo
+    - uses: kustomize-set-image
+      as: set-images
+      config:
+        path: ./repo/infrastructure/gitops/envs/${{ ctx.stage }}
+        images:
+          - image: qip-api
+            newName: ${{ vars.registry }}/qip-api
+            digest: ${{ imageFrom(vars.warehouseRegistry + "/qip-api").Digest }}
+          - image: qip-fastbrain
+            newName: ${{ vars.registry }}/qip-fastbrain
+            digest: ${{ imageFrom(vars.warehouseRegistry + "/qip-fastbrain").Digest }}
+          - image: qip-deepbrain
+            newName: ${{ vars.registry }}/qip-deepbrain
+            digest: ${{ imageFrom(vars.warehouseRegistry + "/qip-deepbrain").Digest }}
+    - uses: git-commit
+      as: commit
+      config:
+        path: ./repo
+        message: |
+          Promote freight ${{ ctx.targetFreight.name }} to ${{ ctx.stage }}
+
+          Written by Kargo (infrastructure/gitops/kargo/base/promotiontask.yaml),
+          promotion ${{ ctx.promotion }} in project ${{ ctx.project }}, from
+          warehouse qip-images. Every image below was built, scanned, signed
+          and attested by deploy.yml at the commit its tag names; the
+          warehouse admits only a tag that is a commit sha and creates no
+          freight whose three tags differ.
+
+            source commit  ${{ imageFrom(vars.warehouseRegistry + "/qip-api").Tag }}
+            qip-api        ${{ imageFrom(vars.warehouseRegistry + "/qip-api").Digest }}
+            qip-fastbrain  ${{ imageFrom(vars.warehouseRegistry + "/qip-fastbrain").Digest }}
+            qip-deepbrain  ${{ imageFrom(vars.warehouseRegistry + "/qip-deepbrain").Digest }}
+
+          Argo CD's post-sync hook (envs/${{ ctx.stage }}/prove-serving.yaml)
+          fails the sync unless the routed revision serves these digests.
+    - uses: git-push
+      config:
+        path: ./repo
+        targetBranch: ${{ vars.branch }}
+    - uses: argocd-update
+      if: ${{ vars.argocdApplication != "" }}
+      config:
+        apps:
+          - name: ${{ vars.argocdApplication }}
+            sources:
+              - repoURL: ${{ vars.gitRepo }}
+                desiredRevision: ${{ task.outputs.commit.commit }}

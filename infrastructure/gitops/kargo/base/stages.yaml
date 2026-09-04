@@ -1,0 +1,116 @@
+# The chain: dev → test → stage → prod, each requesting the warehouse's
+# freight from the stage before it (ADR 0036 decision 6). The overlay sets
+# each stage's registry and its Argo CD application; the shape is here.
+#
+# `prod` is the stage that exists so a person can see what would be
+# eligible, and whose promotion does nothing but fail. There is no
+# promotion policy for it in projectconfig.yaml, and there is no promotion
+# path in it either: the first and only step refuses, naming the two
+# records that keep production behind a person. deploy.yml refuses a prod
+# deployment nobody dispatched and infra.yml refuses a prod dispatch at all;
+# this is the third refusal, and the acceptance suite reads it. Lifting it
+# is an ADR, not an edit.
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage
+metadata:
+  name: dev
+  namespace: qip
+spec:
+  requestedFreight:
+    - origin:
+        kind: Warehouse
+        name: qip-images
+      sources:
+        direct: true
+  promotionTemplate:
+    spec:
+      vars: []
+      steps:
+        - task:
+            name: promote-cloud-run
+          as: promote
+          vars:
+            - name: registry
+              value: ${{ vars.registry }}
+            - name: warehouseRegistry
+              value: ${{ vars.warehouseRegistry }}
+            - name: argocdApplication
+              value: ${{ vars.argocdApplication }}
+---
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage
+metadata:
+  name: test
+  namespace: qip
+spec:
+  requestedFreight:
+    - origin:
+        kind: Warehouse
+        name: qip-images
+      sources:
+        stages:
+          - dev
+  promotionTemplate:
+    spec:
+      vars: []
+      steps:
+        - task:
+            name: promote-cloud-run
+          as: promote
+          vars:
+            - name: registry
+              value: ${{ vars.registry }}
+            - name: warehouseRegistry
+              value: ${{ vars.warehouseRegistry }}
+            - name: argocdApplication
+              value: ${{ vars.argocdApplication }}
+---
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage
+metadata:
+  name: stage
+  namespace: qip
+spec:
+  requestedFreight:
+    - origin:
+        kind: Warehouse
+        name: qip-images
+      sources:
+        stages:
+          - test
+  promotionTemplate:
+    spec:
+      vars: []
+      steps:
+        - task:
+            name: promote-cloud-run
+          as: promote
+          vars:
+            - name: registry
+              value: ${{ vars.registry }}
+            - name: warehouseRegistry
+              value: ${{ vars.warehouseRegistry }}
+            - name: argocdApplication
+              value: ${{ vars.argocdApplication }}
+---
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage
+metadata:
+  name: prod
+  namespace: qip
+spec:
+  requestedFreight:
+    - origin:
+        kind: Warehouse
+        name: qip-images
+      sources:
+        stages:
+          - stage
+  promotionTemplate:
+    spec:
+      vars: []
+      steps:
+        - uses: fail
+          as: refuse-prod
+          config:
+            message: prod is promoted by nobody until an ADR lifts this refusal (ADR 0024 decision 3, ADR 0036 decision 6). deploy.yml and infra.yml refuse prod independently; this is the third refusal and it does not know about the other two.

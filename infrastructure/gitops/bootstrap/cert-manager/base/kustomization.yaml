@@ -1,0 +1,13 @@
+# cert-manager, vendored. Kargo's admission webhooks serve TLS and its chart
+# provisions their certificate as a cert-manager `Certificate` from a
+# self-signed `Issuer`; the chart's only alternative is an operator-supplied
+# certificate Secret and a CA bundle spliced into four webhook
+# configurations by hand — the sed-rendered-manifest failure ADR 0017
+# recorded — with a rotation nobody would own. Three digest-pinned images
+# vendored and attested like every other foreign image is the smaller
+# cost, and bootstrap/README.md says so. Nothing else on the platform asks
+# cert-manager for anything.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../upstream

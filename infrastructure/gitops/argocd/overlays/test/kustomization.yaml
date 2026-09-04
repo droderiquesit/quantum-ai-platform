@@ -1,0 +1,8 @@
+# Argo CD's project and the one Application this environment's control plane
+# reconciles. Applied by infra.yml's bootstrap after the controllers.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: argocd
+resources:
+- ../../base
+- application.yaml
