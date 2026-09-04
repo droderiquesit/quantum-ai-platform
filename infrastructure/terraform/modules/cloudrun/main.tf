@@ -430,6 +430,35 @@ resource "google_secret_manager_secret_iam_member" "mounted" {
   member    = "serviceAccount:${google_service_account.workload.email}"
 }
 
+# The same grant for the other way a secret reaches this workload.
+#
+# ADR 0031 added `secret_env` and this resource did not exist, so a workload
+# that took its credential as an environment value was granted nothing. That
+# is not a slow failure: Cloud Run resolves `secret_key_ref` *before* it
+# starts the instance, so a workload without the grant has no instance at
+# all, and the URL answers the load balancer's own 500 rather than anything
+# the container wrote.
+#
+# It shipped, and the way it shipped is the part worth keeping. The refactor
+# moved `module.openobserve` from `secret_mounts` to `secret_env`, which
+# destroyed its two `mounted` grants in the same apply that created the
+# revision. Nothing ordered those two operations, so the revision came up
+# while the grant was still live, the apply reported success, and the service
+# then scaled to zero — every cold start since failed to resolve the secret.
+# An apply that succeeds and leaves a service that cannot restart is the
+# worst shape this module can produce, because nothing about it looks wrong
+# until the first scale-from-zero.
+#
+# `depends_on` below is what stops the ordering half from recurring.
+resource "google_secret_manager_secret_iam_member" "env" {
+  for_each = var.secret_env
+
+  project   = var.project_id
+  secret_id = each.value.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.workload.email}"
+}
+
 # Read the proxy's bootstrap, when this workload carries the proxy.
 #
 # `objectViewer` on the one bucket that holds the allowlist. It is granted
@@ -571,6 +600,26 @@ resource "google_storage_bucket_iam_member" "config_files" {
 
 resource "google_cloud_run_v2_service" "workload" {
   count = local.is_service ? 1 : 0
+
+  # The grants before the revision that needs them.
+  #
+  # Terraform infers no dependency here: the service names a secret by *id*,
+  # never by reference to the IAM member, so without this the two are
+  # unordered. That is not theoretical. When `module.openobserve` moved from
+  # `secret_mounts` to `secret_env`, one apply destroyed the old grants and
+  # created the new revision in whatever order it liked, reported success,
+  # and left a service that could not resolve its credential on the next
+  # cold start — a Cloud Run instance is not started at all when a
+  # `secret_key_ref` fails to resolve, so the failure surfaces as a 500 from
+  # the load balancer with nothing in the container's own logs to read.
+  #
+  # Both grant resources are named, not just the one this workload happens
+  # to use: an empty `for_each` makes its entry a no-op, and naming only the
+  # populated one would put the ordering back in the caller's hands.
+  depends_on = [
+    google_secret_manager_secret_iam_member.mounted,
+    google_secret_manager_secret_iam_member.env,
+  ]
 
   project  = var.project_id
   name     = local.name

@@ -635,6 +635,49 @@ fn every_cloud_run_service_is_internal_and_mounts_secrets_as_files_never_as_envi
         "the Cloud Run module names secret_key_ref more than once, so the single \
          ADR 0031 exception has become a second credential path"
     );
+    // Every way a secret reaches a container carries its own accessor grant.
+    //
+    // ADR 0031 added `secret_env` and added no grant, because the only
+    // `secretAccessor` resource in the module was keyed on `secret_mounts`.
+    // Cloud Run resolves a `secret_key_ref` before it starts the instance, so
+    // the workload did not fail slowly — it had no instance at all, and its
+    // URL answered the load balancer's 500 with nothing in the container's
+    // own logs. The apply that did it reported success, because it destroyed
+    // the old mount grants and created the new revision unordered.
+    //
+    // Both halves are pinned: the grant, and the ordering that made a broken
+    // deployment look like a clean one.
+    for (resource, keyed_on) in [
+        ("\"mounted\"", "var.secret_mounts"),
+        ("\"env\"", "var.secret_env"),
+    ] {
+        let header = format!("resource \"google_secret_manager_secret_iam_member\" {resource}");
+        let start = module.find(&header).unwrap_or_else(|| {
+            panic!(
+                "the Cloud Run module has no secretAccessor grant {resource}, so a workload \
+                 taking a secret that way is granted nothing and never starts"
+            )
+        });
+        let body = &module[start..];
+        let body = &body[..body.find("\n}").unwrap_or(body.len())];
+        assert!(
+            body.contains(&format!("for_each = {keyed_on}")),
+            "the {resource} grant is no longer keyed on {keyed_on}, so a secret passed \
+             that way carries no accessor grant"
+        );
+        assert!(
+            body.contains("roles/secretmanager.secretAccessor"),
+            "the {resource} grant no longer grants secretAccessor"
+        );
+    }
+    assert!(
+        module.contains("google_secret_manager_secret_iam_member.mounted,")
+            && module.contains("google_secret_manager_secret_iam_member.env,"),
+        "the Cloud Run service no longer depends on both secret grants, so terraform \
+         may create a revision before the grant it needs exists — the apply succeeds \
+         and the service cannot restart"
+    );
+
     assert!(
         module.contains("length(var.secret_env) == 0 || var.image_source == \"vendored\""),
         "the precondition refusing secret_env on a built workload is gone, so any \
