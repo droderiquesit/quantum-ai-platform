@@ -376,21 +376,43 @@ as work.**
 
 ---
 
-## Owner decisions this plan is blocked on
+## The six decisions — all taken
 
-Nothing below can be settled by an engineer, and each blocks a track:
+All six were delegated and are recorded. Nothing in this plan is now waiting
+on an answer; what remains is execution.
 
-| # | Decision | Blocks |
-|---|---|---|
-| 1 | **Fast-brain telemetry route** — §0.3 (a) narrow second proxy, (b) in-VPC plaintext collector, (c) not drained. *Recommend (b).* | Track 0, then everything |
-| 2 | **OpenObserve exposure once it holds real data** — IAP, or a new ADR accepting anonymous. ADR 0030's own trigger fires here. | 0.2.c |
-| 3 | **The equities/crypto vendor** (row D9) — which one, on what licence | A.1, so Gate 2 |
-| 4 | **A prediction-market source** | B.2, so Gate 6 |
-| 5 | **Deploy execution nodes at all** — `execution_nodes = {}` everywhere; the whole edge plane runs only in tests | C, and the honesty of any allocation result |
-| 6 | **A6: vendor and attest a collector image** — subsumed by decision 1 if (b) | pull path, `workload_metrics_exist` |
+| # | Decision | Taken | Record |
+|---|---|---|---|
+| 1 | Fast-brain telemetry route | **(b) in-VPC plaintext collector** | ADR 0032 |
+| 6 | A6's collector image | **Same image.** Subsumed by 1 | ADR 0032 |
+| 2 | OpenObserve exposure once it holds data | **Authenticated, still external.** `allUsers` ends | ADR 0033 |
+| 3 | Market-data vendor | **Coinbase, then Alpaca** — transport proven before contract | ADR 0034 |
+| 4 | Prediction source | **Kalshi** | ADR 0034 |
+| 5 | Execution nodes | **One. `us-east4`, shadow mode, dev only** | ADR 0035 |
 
-Decisions 1 and 2 are the urgent pair: they gate the track that gates
-everything else, and 2 must be answered *before* telemetry flows, not after.
+Three consequences change the plan above rather than merely answering it:
+
+- **§0.2.a and §0.2.c are superseded in their routing.** No root drains to
+  OpenObserve's public URL through the egress proxy on 9106; every root
+  drains to the collector on a private address. The 9106 listener is not
+  needed and should not be built. What survives from §0.2 unchanged is the
+  credential as a file mount (0.2.b), the per-root variables (0.2.c, pointed
+  at the collector), the `manifest_wiring.rs` update (0.2.d), and the
+  requirement to prove ingestion with a query (0.2.e).
+- **§0.4's security question is answered by two decisions at once.** ADR 0032
+  keeps telemetry off the public internet entirely, and ADR 0033 ends
+  anonymous access to the store regardless. The `open-anonymous` posture
+  stays in `modules/cloudrun` as a tested, refusable capability with zero
+  users, and the acceptance suite's anonymous set becomes empty.
+- **Track C is unblocked at its infrastructure end.** ADR 0035 authorises the
+  one node Track C needs, with the explicit limit that one region cannot
+  exercise partition behaviour or cross-region reservation contention — so
+  C's result must be scoped to what a single cell can honestly support.
+
+The ordering constraint ADR 0035 sets is worth lifting out, because it
+reverses the obvious sequence: **the collector must be ingesting before the
+node is deployed.** Standing up the least-observed subsystem in the platform
+with nothing watching it is the exact failure that decision exists to end.
 
 ---
 
@@ -399,8 +421,9 @@ everything else, and 2 must be answered *before* telemetry flows, not after.
 ```
 Track 0  ──────────────────────────────────────────►  everything
   0.1 blocker understood ─► 0.2 push path ─► 0.5 prove ingestion
-        │                        └─ needs decisions 1, 2
-        └─ (b) also closes A6 and the pull path
+        │                        └─ decisions 1, 2 taken (ADR 0032, 0033)
+        └─ the collector also closes A6 and the pull path
+              └─► then, and only then, the one node (ADR 0035)
 
 Track A   A.1 vendor ─► A.2 seven days ─► A.3 GATE 2 ─► Phases 4-19
                             ▲
