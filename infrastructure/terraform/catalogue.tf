@@ -510,32 +510,29 @@ module "openobserve" {
     ZO_LOCAL_MODE_STORAGE = "disk"
   }
 
-  # The initial admin login (OpenObserve's own, never a cloud credential),
-  # as a file — the same `secret_mounts` shape every other workload in this
-  # file uses, and for the same reason: `.claude/rules/01-security-and-
-  # safety.md` forbids a secret in the environment outright, and the module's
-  # own `env` validation refuses a key ending `PASSWORD` that does not end
-  # `_FILE`.
+  # The initial admin login (OpenObserve's own, never a cloud credential), as
+  # environment values, which ADR 0031 permits for a vendored workload and
+  # refuses for every built one.
   #
-  # This is only half the wiring, and said plainly rather than left to look
-  # finished: OpenObserve's own published reference reads its root login from
-  # `ZO_ROOT_USER_EMAIL` and `ZO_ROOT_USER_PASSWORD` as plain environment
-  # values — it has no `_FILE` indirection, being a vendored image this
-  # platform does not build. Mounting the credential here is what the
-  # platform's own rule requires and is as far as Terraform can honestly take
-  # it; bridging the mounted file into the two environment variables the
-  # upstream binary actually reads is entrypoint-level work this pass does
-  # not do, named as open rather than silently assumed solved.
-  secret_mounts = {
-    root-user-email = {
-      secret_id         = module.secrets.secret_ids["qip-openobserve-root-email"]
-      file_name         = "root-user-email"
-      env_file_variable = "QIP_OPENOBSERVE_ROOT_EMAIL_FILE"
+  # This was a `secret_mounts` block until that record. The mount satisfied
+  # `.claude/rules/01-security-and-safety.md` and did nothing: the image
+  # carries no shell, so no entrypoint can read a file and exec, and no symbol
+  # in the binary offers `_FILE` indirection for the credential -- both
+  # checked against `openobserve@sha256:88fb692a...` rather than assumed. The
+  # file was projected at 0400, the `_FILE` variable held its path, and the
+  # process opened neither. Keeping it beside a working env var would have
+  # been a second control that reads as protection and is not.
+  #
+  # What is still true: the value is in no committed file, no plan and no
+  # state -- Terraform carries the secret's name and Cloud Run resolves the
+  # version at container start. What is not: it is in the container's
+  # environment, and ADR 0031 names the crash dump that leaves open.
+  secret_env = {
+    ZO_ROOT_USER_EMAIL = {
+      secret_id = module.secrets.secret_ids["qip-openobserve-root-email"]
     }
-    root-user-password = {
-      secret_id         = module.secrets.secret_ids["qip-openobserve-root-password"]
-      file_name         = "root-user-password"
-      env_file_variable = "QIP_OPENOBSERVE_ROOT_PASSWORD_FILE"
+    ZO_ROOT_USER_PASSWORD = {
+      secret_id = module.secrets.secret_ids["qip-openobserve-root-password"]
     }
   }
 

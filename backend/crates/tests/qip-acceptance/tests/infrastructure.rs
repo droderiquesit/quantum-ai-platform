@@ -619,12 +619,36 @@ fn every_cloud_run_service_is_internal_and_mounts_secrets_as_files_never_as_envi
         module.contains("secret {") && module.contains("volume_mounts {"),
         "the Cloud Run module no longer mounts secrets as volumes"
     );
-    for forbidden in ["value_source", "secret_key_ref"] {
-        assert!(
-            !module.contains(forbidden),
-            "the Cloud Run module reads a secret into an environment value through `{forbidden}`"
-        );
-    }
+    // `value_source` reads a secret into an environment value, which this test
+    // forbade outright until ADR 0031. It is now permitted for exactly one
+    // shape and the assertions below are what keep it to that shape, because
+    // the rule this amends is still the rule for everything else.
+    //
+    // The exception exists because a vendored image can be a binary that
+    // cannot read a file at all -- OpenObserve carries no shell, so no
+    // entrypoint can bridge a mount, and no symbol in it offers `_FILE`
+    // indirection for the credential. A built workload has `qip_core::secret`
+    // and no such excuse.
+    assert_eq!(
+        module.matches("secret_key_ref").count(),
+        1,
+        "the Cloud Run module names secret_key_ref more than once, so the single \
+         ADR 0031 exception has become a second credential path"
+    );
+    assert!(
+        module.contains("length(var.secret_env) == 0 || var.image_source == \"vendored\""),
+        "the precondition refusing secret_env on a built workload is gone, so any \
+         workload could take a credential from the environment -- ADR 0031's whole \
+         guarantee is that one line"
+    );
+    // In `main.tf` and not `variables.tf`: a validation reading a second
+    // variable is a cross-variable reference terraform skips silently, which
+    // ADR 0030's pairing rules were caught by first.
+    assert!(
+        !variables.contains("var.image_source == \"vendored\""),
+        "the secret_env refusal has moved into a variable validation, where it \
+         reads a second variable and terraform will skip it without saying so"
+    );
     assert!(
         variables.contains("(TOKEN|SECRET|CREDENTIAL|PASSWORD|PRIVATE_KEY|_KEY)$"),
         "the module's `env` validation no longer refuses a credential-shaped variable name"

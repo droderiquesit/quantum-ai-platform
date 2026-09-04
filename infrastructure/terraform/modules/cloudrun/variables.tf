@@ -506,6 +506,46 @@ variable "env" {
   }
 }
 
+variable "secret_env" {
+  description = <<-EOT
+    Secrets this workload reads as environment values, projected by Cloud Run
+    from a Secret Manager version at container start.
+
+    Refused unless `image_source` is `vendored`, and that refusal is the point
+    (ADR 0031). Every binary this platform compiles reads credentials through
+    `qip_core::secret`, which takes a path; a built workload reaching for this
+    input would be choosing the easier one, and the day that is possible the
+    rule against secrets in the environment stops meaning anything. The
+    precondition is in `main.tf`, because a validation here reading
+    `var.image_source` is a cross-variable reference terraform skips silently.
+
+    The exception exists for a binary that cannot read a file. OpenObserve is
+    the one in this catalogue: its image carries no shell, so no entrypoint
+    can bridge a mount, and no symbol in it offers `_FILE` indirection for the
+    credential. Mounting it was correct by the rule and inert in fact.
+
+    The value is still never in this repository, a plan or the state file:
+    what Terraform carries is the secret's name, and Cloud Run resolves it at
+    start. What it does not close is a crash dump, which ADR 0031 names.
+
+    Keyed by environment variable name; each entry gives the secret id and the
+    version to read.
+  EOT
+
+  type = map(object({
+    secret_id = string
+    version   = optional(string, "latest")
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for key in keys(var.secret_env) : can(regex("^[A-Z][A-Z0-9_]*$", key))
+    ])
+    error_message = "An environment variable name is upper case with underscores."
+  }
+}
+
 variable "secret_mounts" {
   description = <<-EOT
     Secrets this workload reads, projected as files.

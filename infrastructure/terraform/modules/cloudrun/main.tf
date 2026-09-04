@@ -267,6 +267,17 @@ resource "google_service_account" "workload" {
       error_message = "ingress_posture is open-anonymous but no anonymous invoker is named, so the URL is public and answers 403 to everyone. Name allUsers, or choose another posture."
     }
 
+    # ADR 0031's whole guarantee. `qip_core::secret` exists and every binary
+    # this platform compiles reads a path through it, so a built workload
+    # taking a credential from the environment is choosing the easier input
+    # rather than needing it. Refused here rather than in `variables.tf`,
+    # because a validation reading a second variable is skipped silently --
+    # the same trap ADR 0030's pairing fell into and was moved out of.
+    precondition {
+      condition     = length(var.secret_env) == 0 || var.image_source == "vendored"
+      error_message = "secret_env puts a credential in the environment, and a built workload must read it from a file through qip_core::secret instead. See ADR 0031: the exception exists for a vendored image that cannot read a file, not for a binary this platform compiles."
+    }
+
     # Said again for the trading class specifically, and deliberately so.
     #
     # The rule above already implies it. Two checks rather than one is the
@@ -653,6 +664,28 @@ resource "google_cloud_run_v2_service" "workload" {
         content {
           name  = env.key
           value = env.value
+        }
+      }
+
+      # A secret as an environment value, resolved by Cloud Run from Secret
+      # Manager at container start (ADR 0031). Refused for a built workload by
+      # the precondition below: what Terraform carries here is the secret's
+      # name, never its content, so a plan and the state file hold nothing --
+      # but the value does reach `/proc/<pid>/environ` in the container, which
+      # is what the rule this amends is about, and the exception is drawn only
+      # where the image cannot read a file at all.
+      dynamic "env" {
+        for_each = var.secret_env
+
+        content {
+          name = env.key
+
+          value_source {
+            secret_key_ref {
+              secret  = env.value.secret_id
+              version = env.value.version
+            }
+          }
         }
       }
 
