@@ -19,6 +19,7 @@
 //! against the vendor would put every request on the wire in clear.
 
 use crate::adapter::{DataAdapter, SensedRecord, SourceDescriptor};
+use crate::connector::checkpoint::Checkpoint;
 use crate::connector::runtime::{ConnectorRuntime, RuntimeConfig};
 use crate::connector::transport::{HttpSourceTransport, SourceTransport};
 use crate::connector::{SourceConnector, manifest::SourceManifest};
@@ -170,6 +171,27 @@ impl ConnectorFeed {
             descriptor,
         })
     }
+
+    /// Release what [`Self::open`] acquired, at an instant the caller owns.
+    ///
+    /// [`DataAdapter::stop`] carries no clock and the runtime's shutdown needs
+    /// one, so the trait default stays a no-op here. What this replaces is a
+    /// comment telling the composition root to call the runtime's shutdown
+    /// directly — but `runtime` and `connector` are private and there was no
+    /// accessor, so it named a call no root could make, and a node that
+    /// stopped cleanly released the connector's session not at all.
+    pub fn shutdown(&mut self, at: Timestamp) -> Result<()> {
+        self.runtime.shutdown(self.connector.as_mut(), at)
+    }
+
+    /// The cursor a restart would resume from.
+    ///
+    /// Exposed for the same reason: [`ConnectorRuntime::checkpoint`] is public
+    /// and was unreachable through this bridge, so a restarted node had no
+    /// cursor to resume from and would re-poll the manifest's whole window.
+    pub fn checkpoint(&self, at: Timestamp) -> Checkpoint {
+        self.runtime.checkpoint(at)
+    }
 }
 
 impl DataAdapter for ConnectorFeed {
@@ -190,6 +212,99 @@ impl DataAdapter for ConnectorFeed {
 
     // `stop` keeps the trait default. The runtime's own shutdown wants the
     // caller's clock for its final checkpoint, and the adapter contract does
-    // not carry one; the composition root that owns the clock calls the
-    // runtime's shutdown directly when it has an instant to give it.
+    // not carry one; the root that owns the clock calls
+    // [`ConnectorFeed::shutdown`], which this type exposes for exactly that.
+}
+
+#[cfg(test)]
+mod tests {
+    //! Beside the code rather than in `tests/`: the property under test is
+    //! that this bridge forwards the caller's instant into the runtime it
+    //! privately holds, and `runtime` and `connector` are private fields no
+    //! integration test can see either side of.
+
+    use super::*;
+    use crate::connector::checkpoint::Cursor;
+    use crate::connector::emulator::SourceEmulator;
+    use crate::connector::envelope::RawEvent;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    /// A connector that records the instant it was shut down at, and decodes
+    /// nothing. `shutdown` is the only lifecycle call under test, and a real
+    /// connector's is a no-op that would leave nothing to assert on.
+    #[derive(Debug)]
+    struct ShutdownSpy {
+        manifest: SourceManifest,
+        shut_down_at: Rc<Cell<Option<Timestamp>>>,
+    }
+
+    impl SourceConnector for ShutdownSpy {
+        fn manifest(&self) -> &SourceManifest {
+            &self.manifest
+        }
+
+        fn decode(&self, _payload: &serde_json::Value, _cursor: &Cursor) -> Result<Vec<RawEvent>> {
+            Ok(Vec::new())
+        }
+
+        fn map(&self, _event: &RawEvent, _ingest_time: Timestamp) -> Result<SensedRecord> {
+            Err(Error::invalid("the spy decodes no events, so it maps none"))
+        }
+
+        fn shutdown(&mut self, at: Timestamp) -> Result<()> {
+            self.shut_down_at.set(Some(at));
+            Ok(())
+        }
+    }
+
+    fn instant(text: &str) -> Timestamp {
+        Timestamp::parse_rfc3339(text).expect("a literal RFC 3339 instant")
+    }
+
+    #[test]
+    fn the_bridge_carries_the_callers_instant_into_the_runtimes_shutdown_and_checkpoint() {
+        let opened = instant("2026-08-27T00:00:00Z");
+        let closed = instant("2026-08-27T06:00:00Z");
+        assert_ne!(
+            opened, closed,
+            "the two instants must differ, or forwarding the wrong one would still pass"
+        );
+
+        let mut manifest =
+            FrankfurterRatesConnector::shipped_manifest().expect("the shipped manifest parses");
+        manifest.endpoint.base_url = Some("http://127.0.0.1:1".to_string());
+        let health_path = manifest.endpoint.health_path().to_string();
+        let transport = Box::new(SourceEmulator::serving(
+            health_path,
+            r#"{"amount":1.0,"base":"EUR","date":"2026-08-24","rates":{"USD":1.0827}}"#,
+        ));
+        let shut_down_at = Rc::new(Cell::new(None));
+        let connector = Box::new(ShutdownSpy {
+            manifest: manifest.clone(),
+            shut_down_at: shut_down_at.clone(),
+        });
+
+        let mut feed = ConnectorFeed::over_transport(connector, manifest, transport, 7, opened)
+            .expect("the emulator answers the health probe");
+
+        // Premise: nothing has been shut down yet, so the assertion below is
+        // this call's doing and not the constructor's.
+        assert_eq!(shut_down_at.get(), None);
+
+        feed.shutdown(closed).expect("the spy cannot fail to stop");
+        assert_eq!(
+            shut_down_at.get(),
+            Some(closed),
+            "shutdown must reach the connector at the instant the caller gave"
+        );
+
+        let checkpoint = feed.checkpoint(closed);
+        assert_eq!(
+            checkpoint.taken_at, closed,
+            "a checkpoint stamped with anything but the caller's instant would resume from a \
+             position nobody asked for"
+        );
+        assert_eq!(checkpoint.source_id, "frankfurter-ecb-reference-rates");
+    }
 }

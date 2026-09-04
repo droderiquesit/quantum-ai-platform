@@ -17,7 +17,13 @@ import type * as T from "./types";
 export const GATEWAY_PREFIX = "/api/gateway";
 
 /** How the gateway classified the attempt, echoed in a response header. */
-export type GatewayDisposition = "upstream" | "unreachable" | "timeout" | "misconfigured";
+export type GatewayDisposition =
+  | "upstream"
+  | "unreachable"
+  | "timeout"
+  | "misconfigured"
+  /** This gateway refused to forward it; the platform was never asked. */
+  | "refused";
 
 export const GATEWAY_HEADER = "x-qip-gateway";
 
@@ -135,6 +141,19 @@ export async function request<D>(
       kind: "unreachable",
       endpoint: path,
       detail: detailFrom(body, `the gateway reported ${disposition}`),
+    });
+  }
+
+  if (disposition === "refused") {
+    // The gateway's own refusal, kept distinct from the platform's. "This
+    // console does not declare that write" and "the platform refused this
+    // credential" are two different faults with two different remedies, and a
+    // console that conflated them would send an operator to the wrong one.
+    return finish({
+      kind: "error",
+      endpoint: path,
+      status: response.status,
+      detail: detailFrom(body, "the gateway does not forward that write"),
     });
   }
 

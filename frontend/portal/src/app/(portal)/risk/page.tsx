@@ -49,6 +49,18 @@ export default function RiskAndCompliance() {
         <PanelHead
           title="Kill switch and autonomy"
           meta={<Freshness resource={risk} name="risk" />}
+          actions={
+            // Posture is on this panel, so the paper label is on it too. The
+            // banner above covers the screen; it does not travel with a panel
+            // lifted into an incident note, and this panel is the one an
+            // operator crops. Live-capable is an alarm here, not a mode.
+            autonomy.data === null ? null : (
+              <StatusChip
+                tone={autonomy.data.live ? "bad" : "ok"}
+                label={autonomy.data.live ? "LIVE-CAPABLE" : "PAPER TRADING"}
+              />
+            )
+          }
         />
         <PanelBody>
           <ResourceView resource={risk} loadingRows={2}>
