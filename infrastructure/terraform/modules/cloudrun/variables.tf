@@ -181,21 +181,24 @@ variable "invokers" {
     empty value is the one that fails safely.
 
     The two anonymous principals are handled differently, and since ADR 0030
-    in two different places. `allAuthenticatedUsers` is refused outright by a
-    validation below, everywhere, with no exception: it admits every Google
-    account in existence, which is not the caller anyone meant, while reading
-    as authenticated in an audit. `allUsers` is refused by a precondition in
-    `main.tf` on every posture except `open-anonymous`, and that posture is
-    refused without it — the pairing is checked in both directions, and it
-    lives there because a `validation` here reading `var.ingress_posture`
-    would be a cross-variable reference terraform skips silently.
+    in two different places. The one admitting every Google account in
+    existence is refused outright by a validation below, everywhere, with no
+    exception: it is not the caller anyone meant, and it reads as
+    authenticated in an audit. The one admitting the internet is refused by a
+    precondition in `main.tf` on every posture except `open-anonymous`, and
+    that posture is refused without it — the pairing is checked in both
+    directions, and it lives there rather than here because a `validation`
+    reading `var.ingress_posture` is a cross-variable reference terraform
+    skips silently.
 
-    They are named in conditions rather than in this prose, because the
-    acceptance suite scans this configuration for those two tokens and a
-    `validation` or `precondition` block is the one construct that can name
+    Neither is spelled out in this prose, and that is not squeamishness: the
+    acceptance suite scans this configuration for those two literals, and a
+    `validation` or `precondition` block is the one construct that may name
     them without granting anything — the same arrangement `console-ingress`
-    uses. A workload on the public edge is still reached through the load
-    balancer's own backend identity, not by making the service anonymous.
+    uses. A description that named them would read to that scanner as the
+    grant it exists to catch. A workload on the public edge is still reached
+    through the load balancer's own backend identity, not by making the
+    service anonymous.
   EOT
 
   type    = list(string)
