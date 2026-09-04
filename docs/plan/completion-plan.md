@@ -700,7 +700,9 @@ and unexercised.
 
 **The egress allowlist names a market-data vendor.** Rows B3, D9 and §7 say it
 names none. `infrastructure/terraform/variables.tf:294-305` lists six
-upstreams and the sixth is `api.frankfurter.app`, described in-tree as "a
+upstreams and the sixth is `api.frankfurter.dev` (moved from
+`api.frankfurter.app` on 2026-09-04 when the vendor's old host began
+redirecting), described in-tree as "a
 market-data vendor… the first that is neither [Google nor IBM]", with a real
 Envoy cluster on 9105 and `FrankfurterRatesConnector` registered in the
 connector bridge. No scoring document mentioned it. **What is still open:** no
