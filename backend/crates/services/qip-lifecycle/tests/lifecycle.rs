@@ -22,7 +22,10 @@ use qip_core::kv::KeyValueStore;
 use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::{Decimal, Duration, ModelId, ObjectId, Timestamp, dec};
 use qip_lifecycle::band::{BandMethod, HoldoutBand};
-use qip_lifecycle::demotion::{DemotionMonitor, DemotionTrigger, LiveObservation, PilotBaseline};
+use qip_lifecycle::demotion::{
+    DemotionMonitor, DemotionPolicy, DemotionTrigger, LiveObservation, PilotBaseline,
+    RetirementThreshold,
+};
 use qip_lifecycle::evidence::{
     CrossValidationRun, FeatureTiming, HoldoutEvidence, KillCondition, LeakageAudit, PaperEvidence,
     PilotEvidence, ScaledEvidence, ShadowDecision, ShadowEvidence, StrategyEvidence,
@@ -1193,6 +1196,25 @@ fn every_automatic_trigger_lands_a_strategy_somewhere_that_holds_no_capital() {
     };
     assert_eq!(decay.demote_to(GateStage::Scaled), GateStage::Pilot);
     assert!(!decay.demote_to(GateStage::Pilot).holds_capital());
+
+    // Sustained underperformance is the one that retires rather than drops,
+    // and retired is terminal — a variant that landed at shadow would be a
+    // demotion the record called a retirement.
+    let sustained = DemotionTrigger::SustainedUnderperformance {
+        at_floor_since: start(),
+        decaying_for: Duration::from_days(90),
+        threshold: Duration::from_days(90),
+    };
+    for from in GateStage::all() {
+        assert_eq!(
+            sustained.demote_to(from),
+            GateStage::Retired,
+            "{} from {}",
+            sustained.name(),
+            from.as_str()
+        );
+    }
+    assert!(GateStage::Retired.next().is_none());
 }
 
 #[test]
@@ -2165,5 +2187,317 @@ fn judging_or_admitting_without_a_holdout_band_is_refused() -> Result<()> {
         .expect_err("a band belongs to the holdout admission");
     assert_eq!(error.code(), "invalid");
     assert_eq!(ledger.stage_of(&strategy()), GateStage::Holdout);
+    Ok(())
+}
+
+// --- sustained underperformance retires (blueprint §20.3) -------------------
+
+/// A monitor that retires a strategy still decaying `days` after it was
+/// pushed off capital. Everything else is the default policy.
+fn retiring_monitor(days: i64) -> Result<DemotionMonitor> {
+    Ok(DemotionMonitor::new(DemotionPolicy {
+        retirement: RetirementThreshold::after_decaying_for(Duration::from_days(days))?,
+        ..DemotionPolicy::default()
+    }))
+}
+
+/// Live returns with the drift gone: same volatility as the pilot, no edge.
+/// The same series the decay tests above use, so a review of it trips decay
+/// and nothing else.
+fn decayed_observation(at: Timestamp) -> LiveObservation {
+    let mut observation = healthy_observation(at);
+    observation.returns = good_returns(11, 60, -0.0002);
+    observation
+}
+
+fn decayed(triggers: &[DemotionTrigger]) -> bool {
+    triggers
+        .iter()
+        .any(|t| matches!(t, DemotionTrigger::PerformanceDecay { .. }))
+}
+
+fn sustained(triggers: &[DemotionTrigger]) -> Option<(Timestamp, Duration, Duration)> {
+    triggers.iter().find_map(|t| match t {
+        DemotionTrigger::SustainedUnderperformance {
+            at_floor_since,
+            decaying_for,
+            threshold,
+        } => Some((*at_floor_since, *decaying_for, *threshold)),
+        _ => None,
+    })
+}
+
+/// The `raised_by` a move recorded, as the tokens the monitor joined — the
+/// rationale is `raised_by: reason`, and a substring match on it would be
+/// satisfied by a reason that merely mentioned the word.
+fn raised_by_tokens(rationale: &str) -> Vec<&str> {
+    rationale
+        .split_once(": ")
+        .map_or(Vec::new(), |(raised_by, _)| raised_by.split(',').collect())
+}
+
+/// Decay at pilot pushes the strategy to shadow at `start + 60d`, and decay
+/// still present `days` later retires it. Returns the two instants.
+fn retire_by_sustained_decay(
+    ledger: &mut LifecycleLedger,
+    baseline: &PilotBaseline,
+    monitor: DemotionMonitor,
+    days: i64,
+) -> Result<(Timestamp, Timestamp)> {
+    let demoted_at = start().saturating_add(Duration::from_days(60));
+    let (triggers, demotion) = monitor.enforce(
+        ledger,
+        baseline,
+        &decayed_observation(demoted_at),
+        None,
+        demoted_at,
+    )?;
+    assert!(decayed(&triggers), "premise: decay tripped: {triggers:?}");
+    assert!(
+        sustained(&triggers).is_none(),
+        "premise: nothing is sustained on the review that demotes: {triggers:?}"
+    );
+    let demotion = demotion.ok_or_else(|| Error::not_found("demotion"))?;
+    assert_eq!(
+        (demotion.from, demotion.to),
+        (GateStage::Pilot, GateStage::Shadow)
+    );
+    assert_eq!(ledger.stage_of(&baseline.strategy), GateStage::Shadow);
+
+    let retired_at = demoted_at.saturating_add(Duration::from_days(days));
+    let (triggers, retirement) = monitor.enforce(
+        ledger,
+        baseline,
+        &decayed_observation(retired_at),
+        None,
+        retired_at,
+    )?;
+    assert!(decayed(&triggers), "premise: still in decay: {triggers:?}");
+    let retirement = retirement.ok_or_else(|| Error::not_found("retirement"))?;
+    assert_eq!(retirement.to, GateStage::Retired, "{retirement:?}");
+    Ok((demoted_at, retired_at))
+}
+
+/// Blueprint §20.3: "retirement is as automated as promotion". Until this
+/// trigger existed the monitor only ever demoted, `StrategyFactory::retire`
+/// had no production caller, and a strategy whose edge was gone sat at shadow
+/// consuming its evaluation slot until a person noticed. Nothing in this test
+/// calls `retire`; the ledger reaches it through `enforce` alone.
+#[test]
+fn sustained_decay_at_the_floor_retires_the_strategy_without_a_human_call() -> Result<()> {
+    let metrics = Arc::new(Metrics::new("lifecycle-test"));
+    let (mut ledger, baseline) = pilot_fixture()?;
+    ledger.attach_metrics(Arc::clone(&metrics));
+    let monitor = retiring_monitor(30)?;
+    assert_eq!(
+        monitor.policy.retirement.sustained_for(),
+        Duration::from_days(30),
+        "premise: the threshold under test"
+    );
+
+    // Exactly the threshold, not a day more: the boundary is inclusive, and a
+    // strategy at it has been given the whole span it was promised.
+    let (demoted_at, retired_at) = retire_by_sustained_decay(&mut ledger, &baseline, monitor, 30)?;
+    assert_eq!(retired_at.since(demoted_at), Duration::from_days(30));
+
+    let history = ledger.history(&strategy());
+    let last = history.last().ok_or_else(|| Error::not_found("entry"))?;
+    assert_eq!(
+        (last.promotion.from, last.promotion.to, last.promotion.at),
+        (GateStage::Shadow, GateStage::Retired, retired_at)
+    );
+    assert!(
+        last.promotion.approver.is_none(),
+        "no human was in the loop: {:?}",
+        last.promotion.approver
+    );
+    let tokens = raised_by_tokens(&last.promotion.rationale);
+    assert!(
+        tokens.contains(&"sustained_underperformance") && tokens.contains(&"performance_decay"),
+        "the record names both the sustained trigger and the decay it sustained: {tokens:?}"
+    );
+    assert!(
+        last.promotion.rationale.contains("retirement threshold"),
+        "{}",
+        last.promotion.rationale
+    );
+    assert_eq!(ledger.stage_of(&strategy()), GateStage::Retired);
+
+    // The move is counted on the series operators already watch for
+    // demotions, keyed by the rungs alone.
+    assert_eq!(
+        metrics.snapshot().counter(
+            names::STRATEGY_DEMOTIONS,
+            &labels([("from", "shadow"), ("to", "retired")])
+        ),
+        1
+    );
+    Ok(())
+}
+
+/// The trigger the ledger records carries the two instants and the span, so
+/// an incident review can check the arithmetic rather than trust the verdict.
+#[test]
+fn the_retirement_record_carries_when_the_strategy_reached_the_floor_and_how_long_it_decayed()
+-> Result<()> {
+    let (mut ledger, baseline) = pilot_fixture()?;
+    let monitor = retiring_monitor(30)?;
+    let demoted_at = start().saturating_add(Duration::from_days(60));
+    monitor.enforce(
+        &mut ledger,
+        &baseline,
+        &decayed_observation(demoted_at),
+        None,
+        demoted_at,
+    )?;
+    assert_eq!(ledger.stage_of(&strategy()), GateStage::Shadow, "premise");
+
+    // Past the threshold rather than at it, so the recorded span is the
+    // elapsed time and not the threshold echoed back.
+    let retired_at = demoted_at.saturating_add(Duration::from_days(45));
+    let (triggers, retirement) = monitor.enforce(
+        &mut ledger,
+        &baseline,
+        &decayed_observation(retired_at),
+        None,
+        retired_at,
+    )?;
+    let (at_floor_since, decaying_for, threshold) =
+        sustained(&triggers).ok_or_else(|| Error::not_found("the sustained trigger"))?;
+    assert_eq!(at_floor_since, demoted_at);
+    assert_eq!(decaying_for, Duration::from_days(45));
+    assert_eq!(threshold, Duration::from_days(30));
+    let retirement = retirement.ok_or_else(|| Error::not_found("retirement"))?;
+    assert_eq!(retirement.to, GateStage::Retired);
+    assert!(
+        retirement.rationale.contains("45.0 day(s)")
+            && retirement
+                .rationale
+                .contains("30.0-day retirement threshold"),
+        "{}",
+        retirement.rationale
+    );
+    Ok(())
+}
+
+/// Decay that has not yet lasted the threshold is the ordinary case: the
+/// strategy was demoted, it is still decaying, and it keeps the time it was
+/// promised to recover in. A trigger that retired on the first decayed
+/// review at the floor would make the threshold decorative.
+#[test]
+fn decay_at_the_floor_shorter_than_the_threshold_demotes_but_does_not_retire() -> Result<()> {
+    let (mut ledger, baseline) = pilot_fixture()?;
+    let monitor = retiring_monitor(30)?;
+
+    let demoted_at = start().saturating_add(Duration::from_days(60));
+    let (triggers, demotion) = monitor.enforce(
+        &mut ledger,
+        &baseline,
+        &decayed_observation(demoted_at),
+        None,
+        demoted_at,
+    )?;
+    assert!(decayed(&triggers), "premise: decay tripped: {triggers:?}");
+    let demotion = demotion.ok_or_else(|| Error::not_found("demotion"))?;
+    assert_eq!(
+        (demotion.from, demotion.to),
+        (GateStage::Pilot, GateStage::Shadow)
+    );
+    let moves_after_demotion = ledger.history(&strategy()).len();
+
+    // A day short of the threshold, still decaying.
+    let reviewed_at = demoted_at.saturating_add(Duration::from_days(29));
+    assert!(
+        reviewed_at.since(demoted_at) < monitor.policy.retirement.sustained_for(),
+        "premise: inside the threshold"
+    );
+    let (triggers, moved) = monitor.enforce(
+        &mut ledger,
+        &baseline,
+        &decayed_observation(reviewed_at),
+        None,
+        reviewed_at,
+    )?;
+    assert!(decayed(&triggers), "premise: still in decay: {triggers:?}");
+    assert!(
+        sustained(&triggers).is_none(),
+        "nothing is sustained yet: {triggers:?}"
+    );
+    assert!(moved.is_none(), "{moved:?}");
+    assert_eq!(ledger.stage_of(&strategy()), GateStage::Shadow);
+    assert_eq!(
+        ledger.history(&strategy()).len(),
+        moves_after_demotion,
+        "a review inside the threshold records no move"
+    );
+    Ok(())
+}
+
+/// A cell keeps reporting on a strategy for a while after the centre
+/// withdraws it. The review of such a report must neither move the strategy
+/// nor fail — a failure here would abort the learn tick for every other
+/// strategy in it — and nothing may walk it back up.
+#[test]
+fn an_automatically_retired_strategy_is_terminal_and_a_later_review_neither_moves_nor_fails_it()
+-> Result<()> {
+    let (mut ledger, baseline) = pilot_fixture()?;
+    let monitor = retiring_monitor(30)?;
+    let (_, retired_at) = retire_by_sustained_decay(&mut ledger, &baseline, monitor, 30)?;
+    assert_eq!(ledger.stage_of(&strategy()), GateStage::Retired, "premise");
+    let moves_at_retirement = ledger.history(&strategy()).len();
+
+    // The next decayed report, well past the threshold again.
+    let later = retired_at.saturating_add(Duration::from_days(60));
+    let (triggers, moved) = monitor.enforce(
+        &mut ledger,
+        &baseline,
+        &decayed_observation(later),
+        None,
+        later,
+    )?;
+    assert!(
+        decayed(&triggers),
+        "the review still says what it found: {triggers:?}"
+    );
+    assert!(
+        moved.is_none(),
+        "a retired strategy has nowhere to go: {moved:?}"
+    );
+    assert_eq!(ledger.stage_of(&strategy()), GateStage::Retired);
+    assert_eq!(ledger.history(&strategy()).len(), moves_at_retirement);
+
+    // Nothing pushes it further, and nothing promotes out of it.
+    let error = ledger
+        .demote(
+            &strategy(),
+            GateStage::Shadow,
+            "operator",
+            "second thoughts",
+            later,
+        )
+        .expect_err("retired is terminal");
+    assert!(error.message().contains("already retired"), "{error:?}");
+    let error = AuthorisedPromotion::advance(GateStage::Retired, None, later)
+        .expect_err("no rung above retired");
+    assert!(error.message().contains("terminal"), "{error:?}");
+    assert_eq!(ledger.stage_of(&strategy()), GateStage::Retired);
+    Ok(())
+}
+
+/// A zero threshold retires a strategy on the review that demoted it, which
+/// is a demotion wearing retirement's terminal consequences; a negative one
+/// fires on every review after. Both are refused, naming the fix, rather
+/// than clamped to something that would fire sooner or later than intended.
+#[test]
+fn a_retirement_threshold_of_zero_or_less_is_refused_naming_what_to_do() -> Result<()> {
+    for span in [Duration::ZERO, Duration::from_days(-1)] {
+        let error = RetirementThreshold::after_decaying_for(span)
+            .expect_err("a non-positive threshold is refused");
+        assert_eq!(error.code(), "invalid", "{error:?}");
+        assert!(error.message().contains("positive span"), "{error:?}");
+        assert!(error.message().contains("from_days"), "{error:?}");
+    }
+    let admitted = RetirementThreshold::after_decaying_for(Duration::from_days(1))?;
+    assert_eq!(admitted.sustained_for(), Duration::from_days(1));
     Ok(())
 }

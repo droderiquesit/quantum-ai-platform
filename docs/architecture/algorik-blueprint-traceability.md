@@ -759,3 +759,25 @@ still-commented line.
 are blocked on an empirical fact — sustained streaming of real market data —
 that none of the above supplies. The fourth cannot pass while paper trading
 holds and should be read as structurally refused rather than outstanding.
+
+**§20.3 re-scored after the retirement wiring (this commit): PARTIAL, closer.**
+The row above says "no production call site" for `retire`. There is one now:
+`DemotionMonitor::enforce` (`qip-lifecycle/src/demotion.rs`) calls
+`ledger.retire(...)` when a strategy that holds no capital, whose last move
+was downward, is still in decay `RetirementThreshold` after it was pushed off
+capital — reached from `CentralPlane::learn` through the same
+`factory_mut().review(...)` seam as demotion, so retirement is automated as
+promotion is. The threshold is a **duration at the floor**, not the review
+count first proposed, and deliberately: the monitor is `Copy` and copied out
+per review, the ledger records moves only, and a counter kept anywhere in
+memory would make a retirement irreproducible from the log — the one thing
+`.claude/rules/10-product-direction.md` forbids. The floor instant is in the
+ledger already, so "still decaying this long after it" is reproducible from
+the ledger plus one observation. `LearningVerdict::for_review` reads
+`Retired` first, so a retirement from shadow is reported as `Retire` and not
+`Adapt`. Proven by `sustained_decay_at_the_floor_retires_the_strategy_without_a_human_call`
+and four siblings in `qip-lifecycle/tests/lifecycle.rs`, nine mutations
+fired. **What keeps this PARTIAL: §35.2.** A retired strategy's open
+positions are not dispositioned — the code says so at both sites — and until
+§35's row closes, an automatic retirement produces exactly the orphan the
+blueprint calls "a reconciliation break, not a normal state".
