@@ -63,11 +63,21 @@ locals {
   # variable: a value written twice is a value that will disagree with itself.
   trust_zone = coalesce(var.trust_zone, var.plane)
 
-  # Cloud Run has two ingress settings that are not the internet, and this is
-  # the closed one of the two. There is no input to this module that produces
-  # INGRESS_TRAFFIC_ALL; see `ingress_posture` for why that value is absent
-  # rather than merely defaulted away from.
-  ingress = var.ingress_posture == "public-edge" ? "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER" : "INGRESS_TRAFFIC_INTERNAL_ONLY"
+  # Three postures, and only one of them is the internet. The default arm is
+  # the closed one, so a posture this map does not know stays private rather
+  # than falling through to something wider — the arm order is load-bearing,
+  # not stylistic.
+  #
+  # INGRESS_TRAFFIC_ALL was absent from this module entirely until ADR 0030
+  # recorded an owner decision to expose OpenObserve anonymously. It is
+  # reachable only through `open-anonymous`, which `variables.tf` refuses
+  # unless an anonymous invoker is named alongside it, and which the
+  # acceptance suite refuses for any workload ADR 0030 does not list.
+  ingress = (
+    var.ingress_posture == "open-anonymous" ? "INGRESS_TRAFFIC_ALL" :
+    var.ingress_posture == "public-edge" ? "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER" :
+    "INGRESS_TRAFFIC_INTERNAL_ONLY"
+  )
 
   # Where the mounted secrets appear. The same directory the CSI driver
   # projects into on GKE, so a binary moved from a pod to a service reads the
@@ -233,6 +243,28 @@ resource "google_service_account" "workload" {
     precondition {
       condition     = var.ingress_posture != "public-edge" || var.traffic_class == "customer"
       error_message = "A ${var.traffic_class} workload may not sit on the public edge. Customer traffic and trading traffic do not share a load balancer or a route; put this one behind the internal posture and give the customer-facing service its own deployment."
+    }
+
+    # ADR 0030's pairing, in both directions. Here rather than as a
+    # `validation` on `invokers`, because a validation that reads a second
+    # variable is skipped silently: written that way it admitted an anonymous
+    # invoker beside `ingress_posture = "internal"` and validate still said
+    # the configuration was valid.
+    #
+    # The first keeps the purpose of the guard ADR 0030 replaced. That guard
+    # stopped a workload becoming anonymous by accident, and the accident is
+    # exactly this: one of the two inputs set without the other.
+    precondition {
+      condition     = !contains(var.invokers, "allUsers") || var.ingress_posture == "open-anonymous"
+      error_message = "An anonymous invoker makes the workload's own URL the route in. Name the caller, or declare ingress_posture = \"open-anonymous\" and record the workload in ADR 0030."
+    }
+
+    # And the other way: a public URL nobody may call answers 403 to the whole
+    # internet, which is a deployment that lies about itself in the direction
+    # nobody investigates.
+    precondition {
+      condition     = var.ingress_posture != "open-anonymous" || contains(var.invokers, "allUsers")
+      error_message = "ingress_posture is open-anonymous but no anonymous invoker is named, so the URL is public and answers 403 to everyone. Name allUsers, or choose another posture."
     }
 
     # Said again for the trading class specifically, and deliberately so.

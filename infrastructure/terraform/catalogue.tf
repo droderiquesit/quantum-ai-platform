@@ -447,15 +447,23 @@ module "openobserve" {
   trust_zone    = "management"
   traffic_class = "platform"
 
-  # Internal only (ADR 0028 decision 5). This platform has no public-facing
-  # edge anywhere — every workload in this file already uses this posture —
-  # and building one is a separate decision this record does not make.
-  # Nobody is named as an invoker yet; the empty default is the fail-closed
-  # one every other unreachable-by-design workload in this file starts from,
-  # and naming the operator who may call it is the follow-up this comment
-  # does not pre-empt.
-  ingress_posture = "internal"
-  invokers        = []
+  # Anonymous on the public internet, on the owner's instruction, recorded in
+  # ADR 0030 which amends ADR 0028 decision 5. This is the only workload in
+  # this file — and the only one in the platform — that is not internal.
+  #
+  # The two inputs are set together because the module refuses either alone:
+  # an anonymous invoker without the posture is a service nothing can reach
+  # carrying an IAM grant that reads as public, and the posture without the
+  # invoker is a public URL that answers 403 to everyone. Both are
+  # deployments that lie about themselves.
+  #
+  # What this costs is in ADR 0030 and is not repeated here, except for the
+  # trigger, because the trigger is the thing a reader of this file needs:
+  # the service is empty today and stops being empty the moment any
+  # deployment sets QIP_OPENOBSERVE_URL. That change is the one that must
+  # move this behind IAP or re-argue the exposure.
+  ingress_posture = "open-anonymous"
+  invokers        = ["allUsers"]
 
   image_source = "vendored"
   # Composed from the registry prefix and the bare digest the root names, so

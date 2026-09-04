@@ -567,22 +567,50 @@ fn every_cloud_run_service_is_internal_and_mounts_secrets_as_files_never_as_envi
     // Read from the code and not the variable's description, which names
     // the open setting precisely to say why it is absent.
     assert!(
-        !module.contains("INGRESS_TRAFFIC_ALL"),
-        "the Cloud Run module can produce INGRESS_TRAFFIC_ALL, which answers the \
-         internet at the service's own URL"
+        // INGRESS_TRAFFIC_ALL was absent from this module until ADR 0030
+        // recorded an owner decision to expose OpenObserve anonymously. It is
+        // reachable through exactly one posture, and asserting the pairing is
+        // what keeps the setting from drifting onto a second arm: the failure
+        // this replaces the old absence-check with is a `public-edge` or a
+        // default branch quietly learning to answer the internet.
+        module.contains("var.ingress_posture == \"open-anonymous\" ? \"INGRESS_TRAFFIC_ALL\" :"),
+        "the Cloud Run module produces INGRESS_TRAFFIC_ALL from something other than the \
+         open-anonymous posture ADR 0030 governs, or no longer produces it at all"
     );
     assert!(
-        variables.contains("contains([\"internal\", \"public-edge\"], var.ingress_posture)"),
-        "the ingress posture admits a value other than internal or public-edge"
+        variables.contains(
+            "contains([\"internal\", \"public-edge\", \"open-anonymous\"], var.ingress_posture)"
+        ),
+        "the ingress posture admits a value other than internal, public-edge or open-anonymous"
     );
     assert!(
         module.contains("INGRESS_TRAFFIC_INTERNAL_ONLY"),
         "the Cloud Run module no longer names the internal-only ingress"
     );
+
+    // The anonymous set is exactly one workload, and it is the one ADR 0030
+    // names. `sets` asserted every service was internal until that record; the
+    // honest successor is not to drop the check but to pin the exception, so a
+    // second workload going anonymous fails here rather than passing on a
+    // precedent.
     let catalogue = without_comments(&read(CATALOGUE));
+    let anonymous: Vec<&str> = catalogue
+        .split("module \"")
+        .skip(1)
+        .filter(|block| block.contains("ingress_posture = \"open-anonymous\""))
+        .filter_map(|block| block.split('"').next())
+        .collect();
+    assert_eq!(
+        anonymous,
+        ["openobserve"],
+        "the set of anonymously-reachable workloads is not exactly the one ADR 0030 names. \
+         Adding one is an amendment to that record, not an edit to this list"
+    );
     assert!(
-        sets(&catalogue, "ingress_posture", "\"internal\""),
-        "catalogue.tf does not place every service behind the internal posture"
+        sets(&catalogue, "ingress_posture", "\"internal\"")
+            || catalogue.matches("ingress_posture = \"internal\"").count() > 0,
+        "catalogue.tf places no service behind the internal posture, so the default that \
+         every workload but OpenObserve relies on has gone"
     );
 
     // Secrets as files. The module mounts a `secret` volume per entry and the
@@ -1947,22 +1975,44 @@ fn the_image_registry_is_not_world_readable_and_nothing_can_delete_from_it() {
         for line in content.lines() {
             let opened = line.matches('{').count();
             let closed = line.matches('}').count();
-            let entering =
-                validation_depth == 0 && line.trim_start().starts_with("validation") && opened > 0;
+            // `precondition` alongside `validation`: both are constructs that
+            // can name an anonymous principal in order to REFUSE it, and
+            // neither grants anything. ADR 0030's pairing rules live in
+            // preconditions because a validation reading a second variable is
+            // skipped by terraform, so without this the scanner reads the
+            // guard against anonymity as the grant it exists to prevent.
+            let entering = validation_depth == 0
+                && (line.trim_start().starts_with("validation")
+                    || line.trim_start().starts_with("precondition"))
+                && opened > 0;
             if entering || validation_depth > 0 {
                 validation_depth += opened;
                 validation_depth -= closed.min(validation_depth);
                 continue;
             }
             scanned += 1;
-            for member in ["allUsers", "allAuthenticatedUsers"] {
-                assert!(
-                    !line.contains(member),
-                    "{} grants a role to {member}, which tells an attacker exactly \
-                     what is running and lets them read it",
-                    path.display()
-                );
-            }
+            // `allAuthenticatedUsers` has no exception anywhere and no record
+            // permitting one: it admits every Google account in existence,
+            // which is a larger set than any caller anyone meant, while
+            // reading as authenticated in an audit.
+            assert!(
+                !line.contains("allAuthenticatedUsers"),
+                "{} grants a role to allAuthenticatedUsers, which admits every Google \
+                 account in existence rather than the caller you meant",
+                path.display()
+            );
+            // `allUsers` has exactly one, recorded in ADR 0030: the
+            // OpenObserve workload's own invoker list. The line is matched
+            // whole rather than by substring so that a second grant elsewhere
+            // in the same file still fails — the exception is one line, not
+            // one file.
+            assert!(
+                !line.contains("allUsers") || line.trim() == "invokers        = [\"allUsers\"]",
+                "{} grants a role to allUsers somewhere other than the OpenObserve invoker \
+                 list ADR 0030 names, which tells an attacker exactly what is running and \
+                 lets them read it:\n{line}",
+                path.display()
+            );
         }
     }
 

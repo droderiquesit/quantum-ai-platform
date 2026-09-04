@@ -45,7 +45,7 @@ distinction changes the severity of a row, the row says it again.
 anticipated that class and it is empty: eighteen directories under
 `infrastructure/terraform/modules/`, seventeen `module` blocks in `main.tf`
 and two in `catalogue.tf`, `modules/cloudrun` being the one instantiated twice
-(`catalogue.tf:324` and `catalogue.tf:426`). Counted with
+(`catalogue.tf:324` and `catalogue.tf:425`). Counted with
 
     ls infrastructure/terraform/modules/ | wc -l
     grep -c '^module "' infrastructure/terraform/main.tf
@@ -96,7 +96,7 @@ that is right. Nothing behaves differently; a reader is misled.
 
 **Severity: BLOCKING-A-GATE.**
 
-**Required.** ADR 0024:31-35 — "Every warm binary is a Cloud Run service from
+**Required.** ADR 0024:31-34 — "Every warm binary is a Cloud Run service from
 `infrastructure/terraform/catalogue.tf` through `modules/cloudrun` — internal
 ingress, secrets mounted as volumes and never as environment values, an image
 pinned by the digest `deploy.yml` attested."
@@ -395,7 +395,7 @@ above may have moved again.
 LAYER 1/7 row: "*Current:* Next.js portal and landing on Cloud Run".
 
 **Exists.** That is a true statement about the `algorik-dev` project, on this
-repository's own evidence (`environments/dev/terraform.tfvars:122-123,128-129`). It is a
+repository's own evidence (`environments/dev/terraform.tfvars:137-138,143-144`). It is a
 false statement about this repository, which is what the scorecard scores:
 nothing in `infrastructure/terraform` puts either on Cloud Run.
 

@@ -109,6 +109,21 @@ pub(crate) fn hot_tick_labelled(
     event_at: Timestamp,
     ingest_at: Timestamp,
 ) -> Result<StreamEnvelope> {
+    hot_tick_priced(label, sequence, 100 + sequence as i64, event_at, ingest_at)
+}
+
+/// A tick on a chosen venue sequence carrying a chosen price.
+///
+/// Two facts can then share a sequence number without sharing an idempotency
+/// key, which is the only way to reach the sequencer's own duplicate rule: the
+/// processor's dedup window catches two deliveries of the *same* fact first.
+pub(crate) fn hot_tick_priced(
+    label: &str,
+    sequence: u64,
+    price: i64,
+    event_at: Timestamp,
+    ingest_at: Timestamp,
+) -> Result<StreamEnvelope> {
     let facts = EventFacts::derived(
         venue_source(),
         Subject::default()
@@ -123,7 +138,7 @@ pub(crate) fn hot_tick_labelled(
     StreamEnvelope::seal(
         event_id(label),
         lineage(label),
-        tick(100 + sequence as i64, event_at),
+        tick(price, event_at),
         event_at,
         ingest_at,
         facts,

@@ -3,8 +3,13 @@
 # Build context is frontend/landing, which keeps its own dependency tree
 # deliberately (ADR 0015/0016). Same standalone-output shape as the portal:
 # the runtime stage is server.js plus traced node_modules only.
+#
+# Both stages are pinned by digest, for the reason portal.Dockerfile states at
+# length: the runtime stage's bytes ship, and a tag is a name its owner can move
+# after review. The same node:22-alpine index digest as the portal, so the two
+# front-end images cannot drift onto different runtimes.
 
-FROM node:22-alpine AS build
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS build
 # NEXT_PUBLIC_* values are inlined into the client bundles at build time,
 # so the portal URL is a build argument, not a runtime setting — changing
 # it means rebuilding, which is the honest cost of a static inline.
@@ -14,7 +19,7 @@ WORKDIR /src
 COPY . .
 RUN npm ci --no-audit --no-fund && npm run build
 
-FROM node:22-alpine
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32
 USER node
 WORKDIR /app
 ENV NODE_ENV=production PORT=8080 HOSTNAME=0.0.0.0

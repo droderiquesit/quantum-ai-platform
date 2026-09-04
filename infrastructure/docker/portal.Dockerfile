@@ -6,17 +6,22 @@
 # The runtime stage carries only the traced output: server.js and the
 # node_modules the tracer proved are reached, not the 400MB install.
 #
-# The builder tag pins the node major; exact digests live in the lockfile
-# where dependency review happens, matching the rust builder's convention.
+# Both stages are pinned by digest, not by tag. The lockfile pins the npm tree
+# by integrity hash and says nothing whatever about the base image, so a comment
+# claiming the digests "live in the lockfile" described a control that was not
+# there — and the second stage is not a builder: its bytes are the deployed
+# image. The digest is the multi-arch index for docker.io/library/node:22-alpine
+# (node 22.23.2), read from Docker Hub's registry v2 API. Both stages name the
+# same one, so the runtime cannot drift away from what the build ran on.
 
-FROM node:22-alpine AS build
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS build
 WORKDIR /src
 COPY . .
 RUN npm ci --no-audit --no-fund
 WORKDIR /src/portal
 RUN npm run build
 
-FROM node:22-alpine
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32
 # Same non-root discipline as the platform images.
 USER node
 WORKDIR /app

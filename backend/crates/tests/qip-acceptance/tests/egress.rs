@@ -427,9 +427,15 @@ fn the_vendored_openobserve_image_is_pinned_and_now_deployed_through_the_vendore
         "the OpenObserve workload does not use the vendored source path with a digest composed \
          from the environment's own registry: {openobserve_block}"
     );
+    // Anonymous since ADR 0030, which amends ADR 0028 decision 5. Both halves
+    // are asserted because the module refuses either alone and a diff that
+    // dropped one would otherwise read as a narrowing while producing a
+    // service that is either unreachable or a public 403.
     assert!(
-        openobserve_block.contains("ingress_posture = \"internal\""),
-        "OpenObserve is not internal-only; ADR 0028 decision 5 makes no public-edge decision here"
+        openobserve_block.contains("ingress_posture = \"open-anonymous\"")
+            && openobserve_block.contains("[\"allUsers\"]"),
+        "OpenObserve no longer declares both halves of the anonymous posture ADR 0030 \
+         records; the module refuses either one without the other: {openobserve_block}"
     );
     assert!(
         openobserve_block.contains("ZO_LOCAL_MODE_STORAGE")
