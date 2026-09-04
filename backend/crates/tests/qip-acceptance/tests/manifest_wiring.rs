@@ -803,23 +803,25 @@ const THE_MESH_HAS_NO_PORT_ON_CLOUD_RUN: &str = "The in-tree mesh binds one \
 
 /// The OpenObserve drain (ADR 0028), which nothing has vendored or applied
 /// yet.
-const NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET: &str = "ADR 0028 adopts \
-     OpenObserve as the platform's metrics, logs and traces backend, but only \
-     names the shape: `source = \"vendored\"` on `modules/cloudrun` does not \
-     exist in any `.tf` yet, no digest is pinned in \
-     `infrastructure/egress/vendored-images.txt`, and ADR 0028 §5 keeps \
-     ingress internal-only for this first pass with no load balancer, backend \
-     service or URL map in the tree. A catalogue value here would point \
-     `qip-api`'s drain thread at a URL nothing serves, and \
-     `OpenObserveConfig::parse` would build a client that dials it every \
-     interval for no reason a revision's health check would ever surface — \
-     the drain fails closed (principle 10) rather than stopping the process, \
-     so a wrong or absent target reads as quiet rather than as a boot \
-     refusal, which is exactly why the value must not be set until there is a \
-     real collector to point it at. The entry ends when the vendored image is \
-     pinned and attested and the catalogue gains the input to carry it, which \
-     is infrastructure work with its own evidence requirement, not a value \
-     added here as a side effect.";
+const NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET: &str = "The drain cannot \
+     reach the collector ADR 0030 created, and the reason is a property of the \
+     transport rather than a missing value. `qip_transport::Url::parse` \
+     refuses every scheme but plaintext `http` by name -- this platform ships \
+     no TLS stack, deliberately (ADR 0001) -- and ADR 0030 put OpenObserve on \
+     the public internet, which is https. So a URL naming it is refused at \
+     start-up with EX_CONFIG, and a URL naming anything else names something \
+     that does not exist: the egress proxy's allowlist \
+     (`infrastructure/egress/envoy.yaml`, six hosts) does not carry the \
+     service's own run.app address, and `qip-fastbrain` has no proxy at all \
+     because `catalogue.tf` refuses it one at plan time (ADR 0008: nothing on \
+     the hot path may consult a model, and port 9102 is that route). \
+     Setting the variable on any of the three would therefore stop the \
+     process or dial nothing, and the drain fails closed (principle 10) \
+     rather than stopping, so a wrong target reads as quiet rather than as a \
+     boot refusal -- which is exactly why it stays unset. What ends this \
+     entry is a plaintext collector inside the VPC that the proxy's allowlist \
+     names, or a TLS hop this process may use; both are infrastructure work \
+     with their own evidence, not a value added here as a side effect.";
 
 const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     (
@@ -835,6 +837,46 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     (
         "qip-api",
         "QIP_OPENOBSERVE_URL",
+        NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET,
+    ),
+    (
+        "qip-fastbrain",
+        "QIP_OPENOBSERVE_URL",
+        NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET,
+    ),
+    (
+        "qip-fastbrain",
+        "QIP_OPENOBSERVE_ORG",
+        NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET,
+    ),
+    (
+        "qip-fastbrain",
+        "QIP_OPENOBSERVE_INTERVAL_SECS",
+        NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET,
+    ),
+    (
+        "qip-fastbrain",
+        "QIP_OPENOBSERVE_AUTHORIZATION",
+        NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_OPENOBSERVE_URL",
+        NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_OPENOBSERVE_ORG",
+        NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_OPENOBSERVE_INTERVAL_SECS",
+        NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_OPENOBSERVE_AUTHORIZATION",
         NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET,
     ),
     (

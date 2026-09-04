@@ -292,6 +292,7 @@ dependencies = [
  "qip-storage",
  "qip-strategy",
  "qip-training",
+ "qip-transport",
  "serde",
  "serde_json",
 ]
@@ -401,6 +402,7 @@ dependencies = [
  "qip-risk",
  "qip-risk-engine",
  "qip-storage",
+ "qip-transport",
  "serde",
  "serde_json",
 ]

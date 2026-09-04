@@ -16,6 +16,7 @@ pub mod feed;
 pub mod health;
 pub mod licensing;
 pub mod node;
+pub mod openobserve;
 pub mod roster;
 pub mod status;
 pub mod trust;

@@ -39,6 +39,12 @@ qip-contracts.workspace = true
 # synthetic exchange and a recorded replay are the same seam, and a licensed
 # feed would be a third implementation rather than a rewrite of the loop.
 qip-market-ingestion.workspace = true
+# The drain's HTTP client (ADR 0028). A workspace-internal crate under
+# libs/, so this is an inward edge and not a third-party dependency — but it
+# is a real one: this root now holds an outbound client it did not hold
+# before. What it may reach is bounded by the transport itself, which refuses
+# any scheme but plaintext http by name, and by the one operator-set URL.
+qip-transport.workspace = true
 
 [lints]
 workspace = true
