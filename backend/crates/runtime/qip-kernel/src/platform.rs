@@ -5445,6 +5445,31 @@ impl Platform {
         &self.predictions
     }
 
+    /// How many claims [`Self::predictions`] can hold before the oldest is
+    /// evicted.
+    ///
+    /// Published beside the slice so a reader of the working set can say how
+    /// much of the record it is looking at. A count served without its bound
+    /// reads as the whole history, and the bound exists precisely because the
+    /// whole history is not what the process holds.
+    pub const fn prediction_window() -> usize {
+        PREDICTION_HISTORY
+    }
+
+    // --- the price tape -----------------------------------------------------
+
+    /// Each instrument's closes as the platform absorbed them, oldest first,
+    /// bounded by [`SERIES_HISTORY`].
+    ///
+    /// Read-only, and the only way out for the series the detectors and the
+    /// simulate stage read. A consumer that wants a statistic over these —
+    /// the API's correlation view is the one that exists — computes it from
+    /// the same tape the cycle did, so the number it reports is reproducible
+    /// against this process rather than against a copy it kept itself.
+    pub fn price_history(&self) -> &BTreeMap<String, Vec<f64>> {
+        &self.price_history
+    }
+
     /// Score the predictions whose horizon has passed against what was
     /// published.
     ///

@@ -44,6 +44,13 @@ qip-lifecycle.workspace = true
 qip-compliance.workspace = true
 qip-capital.workspace = true
 qip-simulation-engine.workspace = true
+# The research read surface is proven premise-first: a test feeds bars into
+# the platform through `Platform::observe` so a prediction and a price tape
+# exist before the route is read. `SensedRecord` and `Bar` are the kernel's
+# own input types and the kernel re-exports neither. Dev-only: the serving
+# binary ingests nothing and names neither crate.
+qip-market.workspace = true
+qip-market-ingestion.workspace = true
 
 [lints]
 workspace = true

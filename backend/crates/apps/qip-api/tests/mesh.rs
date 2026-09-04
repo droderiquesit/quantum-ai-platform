@@ -45,6 +45,7 @@ use qip_edge::mesh::{
 };
 use qip_kernel::{Platform, PlatformConfig};
 use qip_risk::AggregateFigures;
+use qip_storage::ChainArchive;
 use qip_storage::kv::MemoryKeyValueStore;
 use qip_transport::retry::{Sleeper, ThreadSleeper};
 use qip_transport::{ClientLimits, MemoryDeadLetters, MeshConfig, RetryPolicy};
@@ -110,6 +111,17 @@ fn rig(inbox_capacity: usize) -> Result<Rig> {
 /// trust root is installed, as `main` orders it, so the plane
 /// `harden_central` rebuilds carries the policy too.
 fn rig_with(inbox_capacity: usize, config: PlatformConfig) -> Result<Rig> {
+    rig_full(inbox_capacity, config, None)
+}
+
+/// The same rig with the chain archive `main` wires through
+/// `Api::with_archive`, so a test can read what `POST /cycle` handed to the
+/// store and not only what the platform still holds in memory.
+fn rig_full(
+    inbox_capacity: usize,
+    config: PlatformConfig,
+    archive: Option<Arc<ChainArchive>>,
+) -> Result<Rig> {
     let clock = Arc::new(ManualClock::new(start()));
     let context = Context::new(clock.clone(), config.seed);
     let mut platform = Platform::new(
@@ -162,6 +174,10 @@ fn rig_with(inbox_capacity: usize, config: PlatformConfig) -> Result<Rig> {
     )
     .with_cells(Arc::new(CellRegistry::default()))
     .with_mesh(mesh.clone());
+    let api = match archive {
+        Some(archive) => api.with_archive(archive),
+        None => api,
+    };
 
     Ok(Rig {
         api,
@@ -1275,6 +1291,59 @@ fn a_cycle_ships_the_desk_a_live_grant_funds_as_a_whitelist_the_cell_verifies() 
     assert_eq!(
         issue.whitelist, whitelist,
         "the wire and the journal disagree"
+    );
+    Ok(())
+}
+
+/// The record of what a cycle shipped is in the store before the cycle
+/// answers.
+///
+/// Not hypothetical. `POST /cycle` archived the log first and issued the
+/// whitelist second, so the `policy_distributed` record a cycle journals
+/// reached the store only when the *next* cycle archived. Against a running
+/// `qip-api` serving one cell, `/system` reported five events logged while
+/// the store held four, and the missing one was the last cycle's whitelist —
+/// a permission the cell had already been sent, with no durable record of it.
+/// This process has no signal handler, so "the next cycle will archive it" is
+/// a promise a `SIGTERM` between cycles breaks; the whitelist is journaled
+/// precisely so it is never a permission reproducible from nothing.
+#[test]
+fn the_whitelist_a_cycle_ships_is_in_the_archive_before_the_cycle_answers() -> Result<()> {
+    let archive = Arc::new(ChainArchive::open(Arc::new(MemoryKeyValueStore::new()))?);
+    let rig = rig_full(64, PlatformConfig::default(), Some(archive.clone()))?;
+    // Premise: nothing has been archived before the cycle, so every record
+    // found afterwards was handed over by the route.
+    assert_eq!(archive.len()?, 0);
+
+    run_cycle(&rig)?;
+
+    let platform = rig
+        .platform
+        .lock()
+        .map_err(|_| Error::invalid("the platform lock is poisoned"))?;
+    // Premise: the cycle journaled one whitelist for the one served cell. If
+    // it had not, an archive with no such record would prove nothing.
+    let journaled = platform
+        .replay_journal(&EventFilter::new().topic(Topic::PolicyDistributed))?
+        .len();
+    assert_eq!(journaled, 1, "one cell, one whitelist issued");
+
+    let archived_whitelists = archive
+        .records()?
+        .iter()
+        .filter(|entry| entry.record.event.topic == Topic::PolicyDistributed)
+        .count();
+    assert_eq!(
+        archived_whitelists, 1,
+        "the whitelist this cycle shipped is not in the archive it answered from; it would \
+         reach the store only when a later cycle archived, and never if the process stopped \
+         first"
+    );
+    // And nothing the log holds is still waiting for a later cycle.
+    assert_eq!(
+        archive.len()?,
+        platform.event_log().len(),
+        "the archive lags the log after the cycle answered"
     );
     Ok(())
 }

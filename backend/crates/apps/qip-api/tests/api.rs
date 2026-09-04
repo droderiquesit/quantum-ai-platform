@@ -1028,6 +1028,8 @@ fn a_surface_with_nothing_behind_it_names_the_reason_and_returns_no_number() -> 
         "/api/v1/pnl",
         "/api/v1/data-sources",
         "/api/v1/training",
+        "/api/v1/regimes",
+        "/api/v1/news",
     ] {
         let response = get(&api, path, Some("viewer-token"));
         assert_eq!(response.status, 200, "{path}");
