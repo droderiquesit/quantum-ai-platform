@@ -91,9 +91,15 @@
 //!   and the same limits, and submits with the platform's own autonomy
 //!   controller — which is the call `Platform::submit_order` makes internally
 //!   and the closest this walk can get to it.
-//! * **Nothing decodes a cell delta into a `CellReport`.** `qip_mesh::spine`
-//!   says the composition root is where that decode belongs, and the
-//!   composition root does not do it. Step 5 does it in this file, and says so.
+//! * **The cell-delta decode lives in one composition root, and this walk
+//!   does not reach it.** `qip_mesh::spine` says the composition root is
+//!   where a `CellStateDelta` becomes a `CellReport`, and `qip_api::mesh` now
+//!   does it on every `POST /cycle` — proven over sockets in `qip-api`'s own
+//!   `mesh` suite. This crate does not depend on `qip-api`, so step 5 performs
+//!   the same decode in this file against the acceptance crate's loopback
+//!   receiver, and says so. An earlier version of this bullet said nothing
+//!   decoded the delta anywhere; that was true when it was written and is not
+//!   now.
 //!
 //! [`RestMarketDataAdapter`]: qip_market_ingestion::rest::RestMarketDataAdapter
 //! [`DepthFeedAdapter`]: qip_market_ingestion::depth::DepthFeedAdapter
@@ -620,11 +626,11 @@ fn signed_grant(expires: Timestamp) -> Result<CapitalEnvelope> {
 
 /// The decode `qip_mesh::spine` says belongs in the composition root.
 ///
-/// It is not there — `qip-kernel` names `CellReport` and never names
-/// `CellStateDelta` — so the walk performs it, and the audit records that this
-/// is the seam that does not exist. What it does is the whole of the missing
-/// step: take the frame off the wire, decode the edge crate's type, and build
-/// the central plane's.
+/// `qip-kernel` names `CellReport` and never names `CellStateDelta`; the seam
+/// that joins them is `qip_api::mesh`, which this crate does not depend on.
+/// So the walk performs the same step here against its own receiver: take
+/// the frame off the wire, decode the edge crate's type, and build the
+/// central plane's.
 #[derive(Debug, Default)]
 struct DeltaCollector {
     deltas: Vec<CellStateDelta>,

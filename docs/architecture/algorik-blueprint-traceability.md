@@ -781,3 +781,99 @@ fired. **What keeps this PARTIAL: §35.2.** A retired strategy's open
 positions are not dispositioned — the code says so at both sites — and until
 §35's row closes, an automatic retirement produces exactly the orphan the
 blueprint calls "a reconciliation break, not a normal state".
+
+**§35 re-scored after the retirement disposition (2026-09-04): PARTIAL, from
+MISSING-CURRENT.** The row above says "no code path runs when a strategy
+retires to reassign or schedule-unwind its open positions". There is one now,
+for the second half of that sentence. `CentralPlane::learn`
+(`backend/crates/runtime/qip-kernel/src/central/learning.rs`) follows every
+review the ledger retired this tick with `disposition_for`, which reads the
+attribution's strategy books — the join A3/B11 built, keyed cell, strategy,
+instrument — and produces a `RetirementDisposition`: the strategy, the
+ledger's own rationale, and every non-flat lot it held as `cell/instrument`
+with signed quantity, average price and a `DispositionInstruction::Unwind {
+flatten_by }` for the owning cell's own DECIDE/ACT path. No order is created
+anywhere on that path. `Platform::learn_from_cells` writes the record to the
+event log and the journal (`Topic::PositionUpdated`) in the same call that
+retired the strategy, so the instruction is reproducible from the log alone;
+`CentralPlane::scheduled_unwinds` reads the same schedule back from the
+ledger and the books on every call rather than from a list kept beside them,
+so a retired strategy still holding a lot is listed rather than discovered.
+Where the centre holds two claims about the lots — the attribution and a book
+the cell itself reported — and they disagree, nothing is scheduled: a
+`DispositionRefused` record names each disagreeing lot with both quantities
+and goes to the log under `Topic::ReconciliationCompleted`, which is the
+"reconciliation break, not a normal state" §35.2 says an ownerless position
+is. The delta a cell ships carries no positions (`qip-api/src/mesh.rs`,
+`report_from`), so in a deployment the attribution is the one claim and the
+refusal fires only where a cell has made a second one. Proven by
+`an_automatic_retirement_schedules_every_lot_the_strategy_holds_for_unwinding_and_journals_it`,
+`a_retirement_whose_lots_the_cells_book_and_the_attribution_disagree_on_is_refused_not_guessed`
+and `a_retired_strategy_holding_no_lot_is_dispositioned_as_holding_nothing_and_that_is_journaled`
+in `qip-kernel/tests/central.rs`, each driven through `learn_from_cells` with
+no call to `retire`, and mutation-verified. **What keeps this PARTIAL, in
+the row's own terms:** handover — reassignment to a funded strategy sharing
+the thesis — is not produced, because the centre records no thesis shared
+between two strategies and an owner picked on anything else would be a
+guess; there is still no lifecycle-state field on `qip_portfolio::Position`
+and no Flagged/Unwinding/Orphaned variant; no thesis-expiry sweep and no
+ranked unwind ordering (§35.3) exist; and the flatten instruction reaches a
+cell only when something ships it, which nothing yet does — the record is
+the schedule, and a cell that never reads it leaves the lot listed in
+`scheduled_unwinds` until a fill closes it. §20.3's "what keeps this
+PARTIAL: §35.2" paragraph above is answered to that extent and no further.
+
+**§20.3 and §35 corrected after the LEARN stage gained the call
+(2026-09-04): the review is now reached from `stage_learn`, and was not
+before.** The §20.3 row above and the two re-scoring paragraphs say the
+review seam was "reached from `stage_learn`". That was never true. What was
+true: `CentralPlane::learn` runs `factory_mut().review(...)`, which is what
+demotes and, since `3deace8`, retires; `Platform::learn_from_cells` calls it
+and, since the disposition slice, journals every `DispositionOutcome`; and
+`grep -rn learn_from_cells backend/crates/apps backend/crates/runtime/qip-kernel/src/platform.rs`
+returned only the definition — `stage_learn` did not call it, no composition
+root did, and every retirement, demotion and disposition test in
+`qip-kernel/tests/central.rs` drove `learn_from_cells` by hand with a
+`CellOutcome` it assembled itself. In a deployed `qip-api` the automatic
+retirement path reached no process, and the paragraphs above that said
+"automated as promotion is" described a seam that only tests entered. What is
+true now: `Platform::stage_learn` (`backend/crates/runtime/qip-kernel/src/platform.rs`,
+`review_strategies`) calls `learn_from_cells` every cycle over the outcomes
+`CentralPlane::live_outcomes` derives, so the path runs in `qip-api`'s cycle
+(`routes.rs`, `platform.run_cycle`) with no change to the API. The outcomes
+have one provenance: `CentralPlane::ingest` books each settlement's
+attributed P&L — the same `Settlement::by_strategy` figure the centre bills —
+into `central/realised.rs`'s per-cell, per-strategy sessions, one per UTC day
+of the cell's report instant, bounded at `REALISED_SESSIONS` (252) and kept
+only for strategies the factory holds a baseline for. The observation the
+monitor reads is built at LEARN time from the closed sessions since the
+baseline was established: the daily return is the day's attributed P&L over
+the gross limit of the envelope the centre held for the pair, the realised
+loss and losing-day run are read off the same P&L, drawdown is against the
+grant-plus-P&L high-water mark, and the realised cost is stated as zero
+because the wire carries none — so the cost kill condition still cannot
+fire from this series, and the code says so rather than inventing a figure.
+The cell's own `Utilisation::realised_loss` is deliberately not read: it is
+a second claim about the same fact. The LEARN stage's outcome now records
+"N strategy(ies) reviewed on realised sessions (D demoted, R retired, P
+dispositioned, X disposition(s) refused, S skipped)", and the cycle's
+`CycleJournalEntry` carries the same counts as `strategy_review:
+Option<StrategyReviewJournal>` (absent on a cycle in which no cell had closed
+a session, so a platform with no cells journals exactly as before —
+`attaching_the_central_plane_leaves_a_cycle_exactly_as_it_was` still holds).
+A retired strategy's sessions are dropped in the call that retired it, so
+it is not reviewed again. Proven by
+`the_learn_stage_retires_a_strategy_whose_cells_realised_sustained_decay_and_journals_its_disposition`
+in `qip-kernel/tests/central.rs`, which drives sixty decayed sessions of
+venue-filled round trips through `ingest_cell_report`, runs `run_cycle` twice
+ninety days apart, and reads the demotion, the retirement, the
+`RetirementDisposition` and both cycles' review counts back from the journal —
+with no call to `learn_from_cells`, `learn`, `review` or `retire`; ten
+mutations fired, including removing the new `stage_learn` call (the test then
+fails with the strategy still at `Pilot` and the stage reading "no fills to
+attribute"). What this does not change: the ledger's demotion and retirement
+records are still not events in the log — the disposition is, and carries the
+ledger's rationale — and a strategy pushed off capital produces no new
+sessions, so its retirement ninety days later is judged, as
+`retirement_due` already specifies, on time at the floor plus the series that
+put it there.

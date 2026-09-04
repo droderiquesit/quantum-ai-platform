@@ -35,8 +35,8 @@
 //!   for and nothing was filling.
 
 use crate::central::{
-    AbsorbedFill, CellIngestion, CellOutcome, CellReport, CentralPlane, LearningReport,
-    WhitelistIssue,
+    AbsorbedFill, CellIngestion, CellOutcome, CellReport, CentralPlane, DispositionOutcome,
+    LearningReport, WhitelistIssue,
 };
 use crate::config::PlatformConfig;
 use crate::cycle::{CycleReport, Stage, StageOutcome};
@@ -235,6 +235,9 @@ pub struct Platform {
     /// What the LEARN stage priced this cycle, for the journal. Cleared as
     /// each cycle's LEARN begins.
     cycle_counterfactuals: Option<CounterfactualJournal>,
+    /// What the LEARN stage's strategy review did this cycle, for the
+    /// journal. Cleared as each cycle's LEARN begins.
+    cycle_strategy_review: Option<StrategyReviewJournal>,
     /// The durable, hash-chained mirror of the cycle journal.
     journal: DurableLogTransport,
     /// Everything the platform decided, and what came of it — refusals
@@ -850,6 +853,12 @@ pub struct CycleJournalEntry {
     /// nothing. Defaulted so an older journal replays.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub counterfactuals: Option<CounterfactualJournal>,
+    /// The strategies LEARN reviewed this cycle on the sessions their cells
+    /// realised, and what became of them. Absent on a cycle in which no cell
+    /// had closed a session since its strategy's baseline. Defaulted so an
+    /// older journal replays.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub strategy_review: Option<StrategyReviewJournal>,
 }
 
 /// What the LEARN stage's counterfactual pass left in the journal.
@@ -861,6 +870,35 @@ pub struct CounterfactualJournal {
     pub regrets: usize,
     /// Declined paths due for pricing and left for a later cycle by the cap.
     pub deferred: usize,
+}
+
+/// What the LEARN stage's strategy review left in the journal: how many
+/// strategies the demotion monitor judged on the sessions their cells
+/// realised, and what became of them.
+///
+/// Counts rather than the verdicts themselves, because the verdicts are
+/// already in the record — a move is in the lifecycle ledger with its
+/// rationale, and a retirement's disposition is journaled by
+/// [`Platform::learn_from_cells`] in the call that retired it. What the entry
+/// adds is the fact that the review *ran* this cycle and over how much: a
+/// cycle whose entry carries no review is one in which no cell had closed a
+/// session, and that is distinguishable from a cycle in which the review
+/// found nothing to do.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StrategyReviewJournal {
+    /// Strategies judged against their pilot baseline this cycle.
+    pub reviewed: usize,
+    /// Of those, pushed down a rung and still on the ladder.
+    pub demoted: usize,
+    /// Of those, retired — sustained decay at the floor, without a human.
+    pub retired: usize,
+    /// Retirements whose positions were scheduled for unwinding.
+    pub dispositioned: usize,
+    /// Retirements whose positions the centre refused to guess at, because
+    /// the attribution and a cell's own book disagree.
+    pub dispositions_refused: usize,
+    /// Observations with no baseline to be judged against.
+    pub skipped: usize,
 }
 
 /// One refused order, kept until the twin can price what refusing it cost.
@@ -1382,6 +1420,7 @@ impl Platform {
             declined: Vec::new(),
             declined_scores: Vec::new(),
             cycle_counterfactuals: None,
+            cycle_strategy_review: None,
             journal: DurableLogTransport::in_memory("kernel-journal"),
             outcomes: OutcomeCapture::new(),
             counterfactuals,
@@ -1933,12 +1972,71 @@ impl Platform {
     /// which scores resolved theses. A thesis resolves on its own horizon; a
     /// strategy is judged against the baseline it was promoted on, and the two
     /// answer different questions with different evidence.
+    ///
+    /// Reached every cycle from the LEARN stage, over the outcomes
+    /// [`CentralPlane::live_outcomes`] derives from the sessions each cell's
+    /// fills were attributed to. Public as well, for a caller holding an
+    /// observation the sessions cannot express; the stage's call is the one
+    /// a deployed process makes.
     pub fn learn_from_cells(
         &mut self,
         outcomes: &[CellOutcome],
         now: Timestamp,
     ) -> Result<LearningReport> {
-        self.central.learn(outcomes, None, now)
+        let report = self.central.learn(outcomes, None, now)?;
+        // Blueprint §35.2. A retirement's disposition — or the refusal to
+        // guess one — reaches the log in the same call that retired the
+        // strategy, so the instruction is reproducible from the log and a
+        // retirement with no disposition record is a retirement that did not
+        // happen here. Written before the report is returned: a caller that
+        // read the report and then failed to journal it would leave the
+        // ledger saying retired and the log saying nothing about the lots.
+        for disposition in &report.dispositions {
+            match disposition {
+                DispositionOutcome::Dispositioned(record) => {
+                    self.journal_record(record.clone(), "kernel/retirement", now)?;
+                }
+                DispositionOutcome::Refused(refusal) => {
+                    self.journal_record(refusal.clone(), "kernel/retirement", now)?;
+                }
+            }
+        }
+        Ok(report)
+    }
+
+    /// Append one record to the event log and publish it to the journal,
+    /// exactly as a cycle's entry is: the same frame reaches both, so neither
+    /// can hold a record the other does not.
+    fn journal_record<B: EventBody>(
+        &mut self,
+        body: B,
+        origin: &str,
+        now: Timestamp,
+    ) -> Result<()> {
+        let correlation_id = self
+            .context
+            .ids()
+            .generate::<qip_core::lineage::CorrelationKind>(now);
+        let facts = EventFacts::derived(
+            SourceIdentity::new(
+                SourceId::new("qip-kernel"),
+                SourceType::Internal,
+                StreamRegion::new(HOME_REGION),
+            ),
+            Subject::unattributed(),
+            B::TOPIC,
+        );
+        let envelope = StreamEnvelope::seal(
+            self.context.ids().generate::<EventKind>(now),
+            Lineage::root(correlation_id, origin),
+            body,
+            now,
+            now,
+            facts,
+        )?;
+        self.event_log.append(&envelope.to_frame()?)?;
+        self.journal.publish(envelope, now)?;
+        Ok(())
     }
 
     pub fn context(&self) -> &Context {
@@ -2779,6 +2877,7 @@ impl Platform {
             summary: report.summarise(),
             calibration: self.cycle_calibration.clone(),
             counterfactuals: self.cycle_counterfactuals.clone(),
+            strategy_review: self.cycle_strategy_review.clone(),
         };
 
         let facts = EventFacts::derived(
@@ -4359,10 +4458,107 @@ impl Platform {
         for problem in problems {
             outcome = outcome.with_problem(problem);
         }
+        // Judge every strategy on what its cells have realised since it was
+        // promoted. Blueprint §20.3: retirement is as automated as promotion,
+        // and until this call existed it was not — the review seam and the
+        // triggers behind it were reached only by tests, so a strategy could
+        // decay at the floor for a year in a deployed process and nothing
+        // would notice.
+        let (reviewed, problem) = self.review_strategies(now);
+        if let Some(reviewed) = reviewed {
+            let detail = format!("{}; {reviewed}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        if let Some(problem) = problem {
+            outcome = outcome.with_problem(problem);
+        }
         for problem in std::mem::take(&mut self.capture_problems) {
             outcome = outcome.with_problem(problem);
         }
         outcome
+    }
+
+    /// Run the demotion monitor over the sessions every cell has realised,
+    /// through [`Self::learn_from_cells`], and say what it did.
+    ///
+    /// Returns `(None, None)` when no cell has closed a session for any
+    /// strategy since that strategy's baseline was established — most cycles
+    /// on a platform whose central plane holds no live strategy, and every
+    /// cycle before the first full session. A stage that said "0 reviewed"
+    /// on those would make the additive property of the central plane false
+    /// in the journal: a cycle on a platform with no cells must read exactly
+    /// as it did before this existed.
+    ///
+    /// A failure is returned as a problem rather than an error for the reason
+    /// every LEARN step gives: the cycle has happened, and a review that
+    /// could not run is a fact about this cycle to record, not a reason to
+    /// lose the rest of the stage's account.
+    fn review_strategies(&mut self, now: Timestamp) -> (Option<String>, Option<String>) {
+        self.cycle_strategy_review = None;
+        let outcomes = self.central.live_outcomes(now);
+        if outcomes.is_empty() {
+            return (None, None);
+        }
+        let report = match self.learn_from_cells(&outcomes, now) {
+            Ok(report) => report,
+            Err(error) => {
+                return (
+                    None,
+                    Some(format!(
+                        "{} strategy observation(s) could not be reviewed: {}",
+                        outcomes.len(),
+                        error.message()
+                    )),
+                );
+            }
+        };
+        let retired = report
+            .learnings
+            .iter()
+            .filter(|learning| {
+                learning.review.stage_after == qip_contracts::gate::GateStage::Retired
+                    && learning.review.stage_before != qip_contracts::gate::GateStage::Retired
+            })
+            .count();
+        let demoted = report
+            .learnings
+            .iter()
+            .filter(|learning| {
+                learning.review.moved()
+                    && learning.review.stage_after != qip_contracts::gate::GateStage::Retired
+            })
+            .count();
+        let (dispositioned, dispositions_refused) =
+            report
+                .dispositions
+                .iter()
+                .fold(
+                    (0, 0),
+                    |(scheduled, refused), disposition| match disposition {
+                        DispositionOutcome::Dispositioned(_) => (scheduled + 1, refused),
+                        DispositionOutcome::Refused(_) => (scheduled, refused + 1),
+                    },
+                );
+        let journal = StrategyReviewJournal {
+            reviewed: report.learnings.len(),
+            demoted,
+            retired,
+            dispositioned,
+            dispositions_refused,
+            skipped: report.skipped.len(),
+        };
+        let detail = format!(
+            "{} strategy(ies) reviewed on realised sessions ({} demoted, {} retired, {} \
+             dispositioned, {} disposition(s) refused, {} skipped)",
+            journal.reviewed,
+            journal.demoted,
+            journal.retired,
+            journal.dispositioned,
+            journal.dispositions_refused,
+            journal.skipped
+        );
+        self.cycle_strategy_review = Some(journal);
+        (Some(detail), None)
     }
 
     /// Settle the claims whose horizon has passed against the platform's own

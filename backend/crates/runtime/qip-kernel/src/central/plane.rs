@@ -22,6 +22,8 @@
 
 use super::dna::StrategyDna;
 use super::factory::StrategyFactory;
+use super::learning::CellOutcome;
+use super::realised::RealisedSeries;
 use super::whitelist::{ArbitragePolicy, WhitelistIssue, WhitelistOutcome};
 use qip_capital::allocation::{
     Allocation, AllocationLimits, AllocationPlan, CapitalAllocator, DrawdownSchedule,
@@ -557,6 +559,14 @@ pub struct CentralPlane {
     /// than a generated id: a replay of the same reports produces the same
     /// incident record.
     incidents_raised: u64,
+    /// What each strategy has realised at each cell, session by session, as
+    /// the attribution booked it — the series the demotion monitor reads
+    /// (see `central::realised`). Kept only for strategies the factory holds
+    /// a baseline for, which is what bounds the map: cells times strategies
+    /// that have reached pilot, both fixed by decisions rather than by
+    /// traffic. Keyed cell then strategy, in that order, because a replay
+    /// that reviews strategies in a different order is not a replay.
+    realised: BTreeMap<(String, StrategyId), RealisedSeries>,
 }
 
 impl CentralPlane {
@@ -658,6 +668,7 @@ impl CentralPlane {
             attributor: Attributor::new(),
             sent: BTreeMap::new(),
             incidents_raised: 0,
+            realised: BTreeMap::new(),
         })
     }
 
@@ -829,6 +840,75 @@ impl CentralPlane {
     /// Every strategy book, in key order.
     pub fn strategy_books(&self) -> &BTreeMap<(String, StrategyId, String), StrategyLot> {
         &self.books
+    }
+
+    /// The last book each cell reported, in cell order — the cell's own claim
+    /// about its positions, as distinct from the attribution's books above.
+    /// Empty for a cell whose report carried no positions, which is what the
+    /// delta wire ships; see `disposition_for` in the learn edge for how the
+    /// two claims are read together.
+    pub fn reported_positions(&self) -> impl Iterator<Item = &CellPosition> {
+        self.positions.values().flatten()
+    }
+
+    /// Book one settlement's attributed P&L into each contributing strategy's
+    /// realised sessions at the reporting cell.
+    ///
+    /// Read off the settlement's attribution and not off the report a second
+    /// time, for the same reason the risk aggregate is: what the review
+    /// judges and what the centre billed are then one figure. A strategy the
+    /// factory holds no baseline for is not recorded — it has no pilot to
+    /// have decayed from, so `learn` would skip it, and a series nothing
+    /// reads is exactly the unbounded working set the retention rule
+    /// forbids. The capital beside the day's P&L is the envelope the centre
+    /// holds for the pair at this instant, which is the grant the fills were
+    /// made under.
+    fn record_realised(&mut self, cell: &str, settlement: &Settlement, at: Timestamp) {
+        for (strategy, pnl) in settlement.by_strategy() {
+            let strategy = StrategyId::new(strategy);
+            if self.factory.baseline(&strategy).is_none() {
+                continue;
+            }
+            let capital = self
+                .envelope(cell, &strategy)
+                .map(CapitalEnvelope::gross_limit);
+            self.realised
+                .entry((cell.to_string(), strategy))
+                .or_default()
+                .absorb(at, pnl, capital);
+        }
+    }
+
+    /// The live observation the demotion monitor should review this tick,
+    /// one per strategy per cell that has closed a session since its
+    /// baseline was established, in cell then strategy order.
+    ///
+    /// Derived on every call from the retained sessions rather than kept
+    /// beside them, so the observation a review reads is the one the
+    /// sessions support at `now` and not one computed under an earlier
+    /// clock. A strategy whose baseline the factory has since dropped
+    /// contributes nothing: the sessions were recorded against a baseline,
+    /// and without one there is nothing for them to have decayed from.
+    pub fn live_outcomes(&self, now: Timestamp) -> Vec<CellOutcome> {
+        self.realised
+            .iter()
+            .filter_map(|((cell, strategy), series)| {
+                let baseline = self.factory.baseline(strategy)?;
+                series.outcome(strategy, cell, baseline.established_at, now)
+            })
+            .collect()
+    }
+
+    /// Drop the retained sessions of a strategy the ledger has retired.
+    ///
+    /// Retirement is terminal — the ledger refuses to move a retired strategy
+    /// again — so a series kept for it would be reviewed every cycle for a
+    /// verdict that cannot change, and would hold the working set open for a
+    /// strategy the platform has finished with. The fills behind it stay in
+    /// the event log.
+    pub(super) fn forget_realised(&mut self, strategy: &StrategyId) {
+        self.realised
+            .retain(|(_, retained), _| retained != strategy);
     }
 
     pub fn utilisation(&self, cell: &str, strategy: &StrategyId) -> Option<&Utilisation> {
@@ -1055,6 +1135,7 @@ impl CentralPlane {
         // halt is about what it may do next. Settled before the halt so a
         // refusal in the recall step cannot leave a fill half-attributed.
         let settlement = self.settle(&report, now);
+        self.record_realised(&report.cell, &settlement, report.at);
 
         // The cell's breaks and the settlement's, halted together: a fill on
         // an order the centre never saw sent is the venue's channel and the

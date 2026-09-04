@@ -14,14 +14,22 @@
 // In a test the assertion is the deliverable.
 #![allow(clippy::panic_in_result_fn)]
 
+use qip_api::cells::CellRegistry;
 use qip_api::http::{Handler, Method, Request};
+use qip_api::mesh::{CellAddress, MeshBackbone, MeshSettings};
 use qip_cli::demo::doubles::{ALTERNATIVE_PATH, MARKET_DATA_PATH, ORDERS_PATH, VendorDouble};
 use qip_cli::demo::{
     CycleOutcome, DemoSettings, GAPS, LiveDemo, MAX_CYCLES, STRATEGY, SensedCounts,
 };
-use qip_core::error::Result;
-use qip_core::{Decimal, Timestamp};
+use qip_core::error::{Error, Result};
+use qip_core::{Clock, Context, Decimal, ManualClock, Timestamp};
+use qip_edge::mesh::{CellStateDelta, CellUplink, UplinkConfig};
+use qip_kernel::{Platform, PlatformConfig};
+use qip_storage::kv::MemoryKeyValueStore;
+use qip_transport::retry::ThreadSleeper;
+use qip_transport::{ClientLimits, MemoryDeadLetters, MeshConfig, RetryPolicy};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// A demonstration with the shipped settings, stood up and ready to run.
 fn stood_up() -> Result<LiveDemo> {
@@ -297,6 +305,121 @@ fn the_composition_gaps_the_walk_ran_into_are_printed_where_an_operator_sees_the
             "a gap the module records is not in what the run prints:\n{gap}"
         );
     }
+    Ok(())
+}
+
+/// The gap list is compared with the code it describes, not only printed.
+///
+/// `GAPS` told every operator who ran `qip demo --live` that nothing decoded a
+/// cell delta into the central plane's `CellReport`, for as long as
+/// `qip_api::mesh` had been doing exactly that on every `POST /cycle`. The
+/// test above only checks that whatever the list says gets printed, so a
+/// retired gap stayed in the output with nothing to catch it. This test
+/// drains a delta a real cell uplink published through the API's own
+/// backbone and asserts the centre ingested it — the fact that retired the
+/// sentence — and then refuses the sentence.
+#[test]
+fn the_walk_no_longer_reports_the_delta_decode_the_api_composition_root_performs() -> Result<()> {
+    let now = Timestamp::from_secs(1_760_000_000);
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(now));
+    let config = PlatformConfig::default();
+    let context = Context::new(Arc::clone(&clock), config.seed);
+    let mut platform = Platform::new(
+        config,
+        context,
+        qip_observability::Telemetry::silent(),
+        qip_financial::universe::Universe::new(),
+        qip_risk::limits::LimitSet::conservative_default(),
+    )?;
+    let settings = MeshSettings {
+        cells: vec![CellAddress {
+            cell: "london-1".to_string(),
+            address: "127.0.0.1:0".to_string(),
+        }],
+        inbox_capacity: 16,
+        spool_capacity: 16,
+    };
+    let mut backbone = MeshBackbone::open(
+        &settings,
+        Arc::new(MemoryKeyValueStore::new()),
+        Arc::clone(&clock),
+        None,
+    )?;
+    let peer = backbone
+        .cell_address("london-1")
+        .ok_or_else(|| Error::not_found("the bound cell address"))?
+        .to_string();
+
+    // A delta the edge crate's own uplink framed, over a real socket to the
+    // listener the backbone bound — the same wire a deployed cell uses.
+    let mut uplink = CellUplink::connect(
+        UplinkConfig::new(
+            "london-1",
+            "eu-west",
+            MeshConfig::new("uplink", format!("http://{peer}"))
+                .with_retry(RetryPolicy {
+                    max_attempts: 3,
+                    initial_backoff: qip_core::Duration::from_millis(1),
+                    max_backoff: qip_core::Duration::from_millis(4),
+                    multiplier: 2,
+                    jitter_basis_points: 0,
+                })
+                .with_limits(ClientLimits {
+                    connect_timeout: std::time::Duration::from_millis(500),
+                    read_timeout: std::time::Duration::from_secs(1),
+                    write_timeout: std::time::Duration::from_millis(500),
+                    ..ClientLimits::default()
+                }),
+        ),
+        Arc::clone(&clock),
+        Arc::new(ThreadSleeper),
+        Box::new(MemoryDeadLetters::new(4)),
+    )?;
+    let sent = uplink.publish(
+        CellStateDelta {
+            cell: String::new(),
+            region: String::new(),
+            sequence: 0,
+            at: now,
+            halted: false,
+            utilisation: Vec::new(),
+            orders: Vec::new(),
+            fills: Vec::new(),
+            fills_omitted: 0,
+            refusals: Vec::new(),
+            refusals_omitted: 0,
+            reconciliation_breaks: Vec::new(),
+            reconciliation_breaks_omitted: 0,
+            crosses: Vec::new(),
+            crosses_omitted: 0,
+        },
+        now,
+    )?;
+    // Premise: the delta reached the backbone's inbox, so a zero below would
+    // be the decode's failure and not the wire's.
+    assert!(
+        sent.is_delivered(),
+        "the delta never reached the backbone: {sent:?}"
+    );
+    assert_eq!(backbone.counters().reports_ingested, 0);
+
+    let drained = backbone.drain_into(&mut platform, &CellRegistry::default(), now)?;
+    assert_eq!(drained.absorbed, 1, "{drained:?}");
+    assert_eq!(
+        backbone.counters().reports_ingested,
+        1,
+        "the API's composition root did not decode the delta into a CellReport; if that is \
+         true again, the gap belongs back in GAPS"
+    );
+
+    // The property: with the decode proven above, no gap may claim it is
+    // missing. The retired sentence began with these words and nothing else
+    // in the list does, so a longer neighbour cannot satisfy the match.
+    let retired = "Nothing decodes a cell delta";
+    assert!(
+        !GAPS.iter().any(|gap| gap.starts_with(retired)),
+        "the walk still tells an operator that {retired:?}, which qip_api::mesh has closed"
+    );
     Ok(())
 }
 
