@@ -89,6 +89,28 @@ export const NAV: readonly NavGroup[] = [
         reads: ["/cycle", "/system/metrics"],
       },
       {
+        href: "/loop/dataflow",
+        label: "Dataflow",
+        mark: "DF",
+        description:
+          "The eight stages left to right, what flowed along each edge on the last cycle, and where it went",
+        reads: [
+          "/stream/health",
+          "/system/status",
+          "/system",
+          "/system/metrics",
+          "/opportunities",
+          "/proposals",
+          "/orders",
+          "/fills",
+          "/portfolio",
+          "/pnl",
+          "/predictions",
+          "/mesh",
+          "/regions",
+        ],
+      },
+      {
         href: "/intelligence/predictions",
         label: "Market predictions",
         mark: "PR",

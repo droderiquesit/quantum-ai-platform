@@ -77,6 +77,7 @@ export const ITEM_ICON: Record<string, IconName> = {
   "/": "layout-dashboard",
   "/signals": "radio",
   "/loop": "waypoints",
+  "/loop/dataflow": "activity",
   "/markets": "line-chart",
   "/command/regions": "scan-line",
   "/command/alerts": "alert-triangle",

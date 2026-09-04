@@ -37,6 +37,43 @@ export interface Health {
   readonly reconciliation_breaks: number;
 }
 
+/**
+ * `BackboneCounters` in `qip-api/src/mesh.rs`: what the backbone has done
+ * since the process started, as it counts it. Orders and fills are separate
+ * series on purpose — the status surface once read one as the other.
+ */
+export interface MeshCounters {
+  readonly reports_ingested: number;
+  readonly undecodable: number;
+  readonly orders_reported: number;
+  readonly fills_reported: number;
+  readonly fills_omitted: number;
+  readonly refusals_reported: number;
+  readonly cell_halts: number;
+  readonly recalls_issued: number;
+  readonly envelopes_dispatched: number;
+  readonly envelopes_held: number;
+  readonly envelopes_rejected: number;
+  readonly envelopes_unserved: number;
+}
+
+export interface MeshCellStatus {
+  readonly cell: string;
+  readonly address: string;
+  readonly spool_pending: number;
+  readonly circuit: string;
+}
+
+export interface MeshCellStanding {
+  readonly cell: string;
+  readonly region: string;
+  readonly sequence: number;
+  readonly halted: boolean;
+  readonly strategies: number;
+  readonly reconciliation_breaks: number;
+  readonly reconciliation_breaks_omitted: number;
+}
+
 export interface MeshStatus {
   readonly served: boolean;
   readonly error?: string;
@@ -44,6 +81,11 @@ export interface MeshStatus {
   readonly deltas_absorbed?: number;
   readonly envelopes_dispatched?: number;
   readonly inbox_depth?: number;
+  /** Present when the backbone is served and answered; `MeshStatus` in `mesh.rs`. */
+  readonly counters?: MeshCounters;
+  readonly cells?: readonly MeshCellStatus[];
+  readonly standings?: readonly MeshCellStanding[];
+  readonly last_undecodable?: string | null;
 }
 
 export interface SystemStatus {
