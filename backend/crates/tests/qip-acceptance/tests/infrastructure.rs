@@ -3690,17 +3690,49 @@ fn the_metrics_collector_runs_only_under_a_digest_pinned_image_and_nothing_claim
         "the collector is attached to something other than the two brains; the API's /metrics is behind Role::Monitor and answers a tokenless scrape 401"
     );
 
-    // And no environment names a digest, because none has been reviewed,
-    // mirrored and attested. The tfvars comment says how one would be.
+    // An environment may name a collector digest, and only one
+    // `vendored-images.txt` actually carries.
+    //
+    // This asserted that *no* environment names one, on the premise that no
+    // digest had been reviewed. That premise expired when the
+    // `cloud-run-gmp-sidecar` line was uncommented, and a test whose premise
+    // has expired is worse than no test: it would have had to be deleted to
+    // let the review land, and deleting it would have removed the only check
+    // that a named digest was ever mirrored.
+    //
+    // The invariant it was really protecting survives the change and is
+    // stronger stated directly. Binary Authorization admits only what this
+    // platform's attestor signed, and `vendor.yml` signs exactly the lines in
+    // that file. A digest in tfvars that is absent from the list is therefore
+    // a revision that cannot be admitted — an apply that fails at the last
+    // step, having already reported a plan a person approved.
+    let vendored = read("infrastructure/egress/vendored-images.txt");
     for environment in ["dev", "test", "stage", "prod"] {
         let tfvars = read(&format!(
             "infrastructure/environments/{environment}/terraform.tfvars"
         ));
+        let Some(named) = tfvars
+            .lines()
+            .map(str::trim_start)
+            .find(|line| line.starts_with("metrics_collector_image_digest"))
+        else {
+            continue;
+        };
+        // The digest as written, between the quotes, matched as a delimited
+        // value rather than as a substring of the line — a `contains` over
+        // the whole line would be satisfied by the variable's own name.
+        let digest = named.split('"').nth(1).unwrap_or_else(|| {
+            panic!("{environment} sets a collector digest with no quoted value")
+        });
         assert!(
-            !tfvars.lines().any(|line| line
-                .trim_start()
-                .starts_with("metrics_collector_image_digest")),
-            "{environment} names a collector digest that vendored-images.txt does not carry"
+            vendored
+                .lines()
+                .filter(|line| !line.trim_start().starts_with('#'))
+                .any(|line| line.contains(digest) && line.contains("vendor/cloud-run-gmp-sidecar")),
+            "{environment} names collector digest {digest}, which is not an uncommented \
+             vendor/cloud-run-gmp-sidecar line in vendored-images.txt — nothing mirrored or \
+             attested it, so Binary Authorization refuses the revision after the apply is \
+             already under way"
         );
     }
 }

@@ -109,13 +109,23 @@ github_repository = "droderiquesit/quantum-ai-platform"
 # has scraped: modules/observability/NOT-SCRAPED.md says what does not yet.
 # workload_metrics_exist = true
 #
-# The collector that would produce that descriptor is declared in
-# modules/cloudrun and attached to both brains by catalogue.tf, but only once
-# a digest is named here — one vendor.yml has mirrored and attested from a
-# reviewed line in infrastructure/egress/vendored-images.txt. No digest has
-# been reviewed, so this stays unset, no service carries a sidecar, and
-# every service's `metrics_collected` output is false.
-# metrics_collector_image_digest = "sha256:<the mirrored collector's digest>"
+# The collector that produces that descriptor is declared in modules/cloudrun
+# and attached to both brains by catalogue.tf. Its line in
+# infrastructure/egress/vendored-images.txt is reviewed and uncommented, so
+# vendor.yml mirrors and attests it and this names the digest it carries.
+#
+# The digest is the one the registry returns for tag 1.9.2, re-confirmed
+# against the live registry at the moment of the review rather than carried
+# forward from when it was first resolved — the failure that check exists to
+# catch is a tag moved between resolution and adoption, which no later gate
+# would notice.
+#
+# `workload_metrics_exist` above stays commented until something is observed
+# to have scraped. Naming a collector is not evidence one collected, and the
+# seven alert policies gated on that flag would otherwise be stored against
+# descriptors Cloud Monitoring has never ingested — a project that reads in
+# the console as watched and evaluates nothing.
+metrics_collector_image_digest = "sha256:ff1fc68871118f1032a3ce17e2b0abd703292e883989d220244330ebdf522fd1"
 
 # OpenObserve (ADR 0028): the platform's metrics, logs and traces backend,
 # mirrored to infrastructure/egress/vendored-images.txt as `vendor/openobserve`
