@@ -232,6 +232,55 @@ impl SourceLicense {
         self.permits.contains(&usage)
     }
 
+    /// Why this licence does not grant `usage` at `now`.
+    ///
+    /// Expiry, a term that has not begun, and a scope that never covered the
+    /// usage are three different remedies — renew, wait, renegotiate — and one
+    /// message saying "does not grant" sends the reader to the wrong one. The
+    /// `Forbidden` rule on a [`Legality`] and the reason on a denied
+    /// [`Entitlement`] are the same claim about the same licence, so they are
+    /// computed here once rather than twice; two independent statements of one
+    /// fact will disagree eventually, and the louder one will be wrong. The
+    /// entitlement is what travels to the mesh catalogue, so the one that
+    /// disagreed was the one a reader would have acted on.
+    fn refusal_for(&self, usage: Usage, now: Timestamp) -> String {
+        if let Some(expiry) = self.expires_at
+            && now >= expiry
+        {
+            return format!(
+                "licence `{}` expired at {expiry}, before {now}",
+                self.identifier
+            );
+        }
+        if let Some(effective_from) = self.effective_from
+            && now < effective_from
+        {
+            return format!(
+                "licence `{}` does not take effect until {effective_from}, and {now} is before \
+                 that; a licence agreed today cannot retroactively cover an instant before it \
+                 existed",
+                self.identifier
+            );
+        }
+        if self.permits.is_empty() {
+            return format!(
+                "licence `{}` grants no usage at all, so it cannot grant {}",
+                self.identifier,
+                usage.as_str()
+            );
+        }
+        format!(
+            "licence `{}` grants {} and not {}",
+            self.identifier,
+            self.permits
+                .iter()
+                .map(|granted| granted.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            usage.as_str()
+        )
+    }
+
     /// The licence rendered as the entitlements `qip-compliance` enforces.
     ///
     /// Every usage gets an entry — granted or explicitly denied — so a
@@ -258,11 +307,7 @@ impl SourceLicense {
                 Entitlement::Denied {
                     dataset: dataset.to_string(),
                     usage,
-                    reason: format!(
-                        "licence `{}` does not grant {}",
-                        self.identifier,
-                        usage.as_str()
-                    ),
+                    reason: self.refusal_for(usage, now),
                 }
             }
         })
@@ -318,34 +363,8 @@ impl LicensingPosture {
                         license.identifier(),
                         usage.as_str()
                     ))
-                } else if license.expires_at().is_some_and(|expiry| now >= expiry) {
-                    Legality::forbidden(format!(
-                        "licence `{}` expired before {now}",
-                        license.identifier()
-                    ))
-                } else if license
-                    .takes_effect_at()
-                    .is_some_and(|effective_from| now < effective_from)
-                {
-                    Legality::forbidden(format!(
-                        "licence `{}` does not take effect until {}, and {now} is before that; \
-                         a licence agreed today cannot retroactively cover an instant before it \
-                         existed",
-                        license.identifier(),
-                        license.takes_effect_at().unwrap_or(now)
-                    ))
                 } else {
-                    Legality::forbidden(format!(
-                        "licence `{}` grants {} and not {}",
-                        license.identifier(),
-                        license
-                            .permits()
-                            .iter()
-                            .map(|granted| granted.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                        usage.as_str()
-                    ))
+                    Legality::forbidden(license.refusal_for(usage, now))
                 }
             }
             Self::Ambiguous { evidence } => Legality::unknown(format!(
@@ -379,20 +398,38 @@ impl HostRules {
         Self::default()
     }
 
+    /// Build the rules, refusing an entry no parsed host could ever match.
+    ///
+    /// A denylist entry is normally a legal instruction or a publisher who
+    /// asked. Stored in a form [`covers`] can never match — `.example.com`,
+    /// `https://example.com`, `example.com:443` — it is a control that reads
+    /// as protection and cannot fire, which is worse than the absence it
+    /// replaces because someone stops looking. Refused at construction, where
+    /// the person who wrote it is still in the room.
     pub fn new(
         allowlist: impl IntoIterator<Item = String>,
         denylist: impl IntoIterator<Item = String>,
-    ) -> Self {
-        Self {
-            allowlist: allowlist
-                .into_iter()
-                .map(|host| host.to_ascii_lowercase())
-                .collect(),
-            denylist: denylist
-                .into_iter()
-                .map(|host| host.to_ascii_lowercase())
-                .collect(),
-        }
+    ) -> Result<Self> {
+        Ok(Self {
+            allowlist: Self::rules(allowlist, "allowlist")?,
+            denylist: Self::rules(denylist, "denylist")?,
+        })
+    }
+
+    fn rules(entries: impl IntoIterator<Item = String>, list: &str) -> Result<BTreeSet<String>> {
+        entries
+            .into_iter()
+            .map(|entry| {
+                let entry = entry.trim().to_ascii_lowercase();
+                match unkeyable_host_reason(&entry) {
+                    Some(reason) => Err(Error::invalid(format!(
+                        "`{entry}` cannot be a host {list} entry because {reason}. Write the \
+                         bare host, as `example.com`, which covers its subdomains too"
+                    ))),
+                    None => Ok(entry),
+                }
+            })
+            .collect()
     }
 
     pub fn allowlist(&self) -> &BTreeSet<String> {
@@ -435,6 +472,42 @@ impl HostRules {
 /// Whether `entry` covers `host`, exactly or as a parent domain.
 fn covers(entry: &str, host: &str) -> bool {
     host == entry || host.ends_with(&format!(".{entry}"))
+}
+
+/// Why `host` cannot be keyed on by anything in this module, if it cannot.
+///
+/// Every legal question here is answered against one string: the endpoint's
+/// host. [`HostRules::verdict`] matches a rule against it exactly or as a
+/// parent domain, and `robots_url` builds an origin from it. A host that is
+/// not a plain sequence of DNS labels therefore misses every rule written
+/// about it, silently and in the permissive direction — which is why this
+/// refuses rather than normalises. Guessing which host
+/// `collector.example@denied.example` meant is the guess that walks past the
+/// denylist entry for `denied.example`: `covers` compares the character before
+/// `denied.example` against `.`, finds `@`, and the denylist does not fire.
+pub(crate) fn unkeyable_host_reason(host: &str) -> Option<&'static str> {
+    if host.trim().is_empty() {
+        return Some("it is blank");
+    }
+    if host.contains('@') {
+        return Some(
+            "it carries user information before the host, and `@` is not a label separator, \
+             so a rule about the host after it would never match",
+        );
+    }
+    if host.contains('/') || host.contains(':') {
+        return Some("it carries a scheme, path or port, and a host is matched bare");
+    }
+    if host.split('.').any(str::is_empty) {
+        return Some("it has an empty label — a leading dot, a trailing root dot, or `..`");
+    }
+    if !host
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+    {
+        return Some("it contains a character that is not a letter, digit, hyphen or dot");
+    }
+    None
 }
 
 /// A request budget, as a publisher states it.

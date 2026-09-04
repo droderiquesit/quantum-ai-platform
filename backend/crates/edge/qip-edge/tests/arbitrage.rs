@@ -720,3 +720,95 @@ fn a_running_cell_takes_a_desk_once_and_refuses_a_second() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn a_cycle_the_region_allocation_cannot_hold_is_refused_whole() -> Result<()> {
+    // A cycle is admitted and refused whole. The region bound holds once for
+    // the sum of the legs, after every leg has been admitted, because holding
+    // leg by leg would leave a partial hold behind when a later leg is
+    // vetoed — and a cycle short one leg is a position, not a smaller cycle.
+    //
+    // Premise: the same fixture with no region allocation places all three
+    // legs, so what stops them below is the bound and not the scanner.
+    let (mut unbounded, _) = cell_with(ethereum_books()?, desk(ethereum_graph()?, 4)?, None)?;
+    let mut gateway = RecordingGateway::default();
+    let baseline = unbounded.work(t(10), &mut gateway)?;
+    assert_eq!(
+        baseline.orders.len(),
+        3,
+        "the premise failed: the cycle's legs did not go out without a region bound: {baseline:?}"
+    );
+
+    let (cell, _) = cell_with(ethereum_books()?, desk(ethereum_graph()?, 4)?, None)?;
+    // A unit of the start instrument against a cycle sized in thousands.
+    let mut cell = cell.with_region_allocation(d("1"))?;
+    let mut gateway = RecordingGateway::default();
+    let report = cell.work(t(10), &mut gateway)?;
+
+    assert!(
+        report.orders.is_empty(),
+        "a cycle the region cannot hold still sent legs: {:?}",
+        report.orders
+    );
+    assert!(gateway.placed.is_empty(), "a leg reached the venue");
+    assert_eq!(
+        refusals_under(&report, "region_reservation").len(),
+        1,
+        "the region gate did not refuse the cycle exactly once: {:?}",
+        report.refusals
+    );
+    let whole = refusals_under(&report, "arbitrage_cycle");
+    assert!(
+        whole
+            .iter()
+            .any(|reason| reason.contains("the region allocation cannot hold")),
+        "the cycle was not refused whole for want of a region hold: {whole:?}"
+    );
+    // Nothing was held: the refusal path returns what it could not take.
+    assert_eq!(
+        cell.region_allocation_free(),
+        Some(d("1")),
+        "a refused cycle kept part of the region's capital"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_cycle_whose_legs_all_go_out_spends_the_region_allocation_and_does_not_get_it_back()
+-> Result<()> {
+    // The other half of the cycle's hold: admitted, sent, and *committed*, so
+    // the capital does not return to the region at the next pass's sweep. A
+    // hold released instead of committed would let the same budget fund a
+    // second cycle a pass later, which is the double-spend the bound exists
+    // to stop.
+    let opening = d("100000000");
+    let (cell, _) = cell_with(ethereum_books()?, desk(ethereum_graph()?, 4)?, None)?;
+    let mut cell = cell.with_region_allocation(opening)?;
+    let mut gateway = RecordingGateway::default();
+    let report = cell.work(t(10), &mut gateway)?;
+
+    // Premise: the cycle went out whole. A cycle the region refused would
+    // also leave the balance where the assertion below wants it.
+    assert_eq!(
+        report.orders.len(),
+        3,
+        "the premise failed: the cycle's legs did not go out: {:?}",
+        report.refusals
+    );
+    let after = cell
+        .region_allocation_free()
+        .expect("the cell was given an allocation");
+    assert!(
+        after < opening,
+        "a cycle that reached the venue spent none of the region's capital"
+    );
+
+    // The next pass sweeps abandoned holds. A committed one is gone, not
+    // merely out of scope, so the balance may fall further and never rises.
+    cell.work(t(20), &mut gateway)?;
+    assert!(
+        cell.region_allocation_free().expect("still allocated") <= after,
+        "the sweep returned capital a sent cycle had already spent"
+    );
+    Ok(())
+}

@@ -35,6 +35,7 @@
 use qip_contracts::degradation::{Capability, DegradationState, Freshness};
 use qip_contracts::signal::SignalKind;
 use qip_contracts::venue::VenueId;
+use qip_core::Decimal;
 use qip_observability::metrics::{Histogram, Labels, Metrics, names};
 use std::sync::Arc;
 
@@ -48,6 +49,14 @@ pub const EDGE_FILLS_CONFIRMED: &str = "qip_edge_fills_confirmed_total";
 /// Resting orders the cell withdrew at their time to live, by venue. Named
 /// here for the same reason as [`EDGE_FILLS_CONFIRMED`].
 pub const EDGE_ORDERS_EXPIRED: &str = "qip_edge_orders_expired_total";
+
+/// Whether this cell was given a region allocation at all: `1` or `0`. Named
+/// here for the same reason as [`EDGE_FILLS_CONFIRMED`].
+pub const EDGE_REGION_ALLOCATION_CONFIGURED: &str = "qip_edge_region_allocation_configured";
+
+/// What the region allocation has left, published only by a cell that holds
+/// one. Named here for the same reason as [`EDGE_FILLS_CONFIRMED`].
+pub const EDGE_REGION_ALLOCATION_FREE: &str = "qip_edge_region_allocation_free";
 
 /// Buckets for the netting ratio.
 ///
@@ -143,6 +152,14 @@ impl CellMetrics {
         m.describe(
             EDGE_ORDERS_EXPIRED,
             "resting orders withdrawn at their time to live, by venue",
+        );
+        m.describe(
+            EDGE_REGION_ALLOCATION_CONFIGURED,
+            "whether an operator gave this cell a region allocation to hold against",
+        );
+        m.describe(
+            EDGE_REGION_ALLOCATION_FREE,
+            "capital the cell's region allocation has left, no hold standing on it",
         );
         m.describe(
             names::EDGE_INTENTS_CANCELLED,
@@ -286,6 +303,33 @@ impl CellMetrics {
             self.base.clone(),
             state.sizing_multiplier().to_f64(),
         );
+    }
+
+    /// The region allocation, per pass.
+    ///
+    /// Two series rather than one, because the absent case is the one an
+    /// operator most needs to see. A cell with no allocation publishes
+    /// `configured = 0` and no free balance: a free balance of zero would
+    /// read as a cell that has spent everything, and publishing its
+    /// envelopes' total would be a number nobody computed. A missing series
+    /// is not enough on its own — nobody notices a series that is not there —
+    /// so the boolean is written on every pass either way.
+    pub fn region_allocation(&self, free: Option<Decimal>) {
+        self.metrics.gauge(
+            EDGE_REGION_ALLOCATION_CONFIGURED,
+            self.base.clone(),
+            f64::from(u8::from(free.is_some())),
+        );
+        if let Some(free) = free {
+            // The crossing point from `Decimal` to `f64`, and a reporting one:
+            // the balance the cell holds against stays `Decimal` wherever it
+            // is arithmetic.
+            self.metrics.gauge(
+                EDGE_REGION_ALLOCATION_FREE,
+                self.base.clone(),
+                free.to_f64(),
+            );
+        }
     }
 
     /// The sequence of the policy payload the cell has applied.

@@ -17,6 +17,7 @@ use crate::feasibility::{self, VenueModel};
 use crate::journal::{Decision, Journal, Mirror};
 use crate::mesh::{CellStateDelta, DeltaOrder, DeltaRefusal, StrategyUtilisation};
 use crate::policy::{VerifiedHalt, VerifiedPolicy};
+use crate::reservation::RegionAllocation;
 use crate::seam::CellLiquidity;
 use crate::telemetry::CellMetrics;
 use qip_arbitrage::scan::{Opportunity, RejectionStage};
@@ -508,6 +509,18 @@ pub struct Cell {
     /// registry nobody reads, which is what every test in the tree does. See
     /// [`crate::telemetry`] for why nothing here can block or fail the pass.
     metrics: CellMetrics,
+    /// The capital this whole cell may commit, if a composition root gave it
+    /// one, and every hold against it.
+    ///
+    /// `None` is the cell as it was before B12: every strategy bounded by its
+    /// own signed envelope and nothing bounding their sum. It is not a
+    /// silently permissive default — [`CellMetrics::region_allocation`] writes
+    /// on every pass whether one is held, so a cell running without this
+    /// bound says so in its series rather than looking like one that has it.
+    /// Given, never reached for, like the metric registry: a cell that chose
+    /// its own amount would be deciding how much it may risk, which is the
+    /// one thing ADR 0008 says it never does.
+    region_allocation: Option<RegionAllocation>,
 }
 
 /// How many reconciliation breaks a cell keeps for reporting.
@@ -545,6 +558,7 @@ impl Cell {
             pass: 0,
             crossing_history: BTreeMap::new(),
             metrics: CellMetrics::silent(),
+            region_allocation: None,
             config,
         })
     }
@@ -570,6 +584,26 @@ impl Cell {
         self.metrics = CellMetrics::new(metrics, &self.config.cell_id, &self.config.region);
         self.record_halt();
         self
+    }
+
+    /// Bound everything this cell commits by one amount.
+    ///
+    /// A builder rather than a [`CellConfig`] field, so a cell assembled
+    /// without one keeps compiling and behaves exactly as it did. The bound
+    /// can only ever narrow a deployment: a hold is taken *in addition to*
+    /// the per-strategy envelope check that already ran, never instead of it.
+    ///
+    /// See [`crate::reservation`] for what this is and is not — in particular
+    /// that the amount is an operator's, not a signed grant from the centre.
+    pub fn with_region_allocation(mut self, amount: Decimal) -> Result<Self> {
+        self.region_allocation = Some(RegionAllocation::new(amount)?);
+        Ok(self)
+    }
+
+    /// What the region allocation has left, or `None` if this cell holds no
+    /// allocation. The two are different facts and a zero would conflate them.
+    pub fn region_allocation_free(&self) -> Option<Decimal> {
+        self.region_allocation.as_ref().map(RegionAllocation::free)
     }
 
     /// Install the arbitrage desk this cell scans with.
@@ -1295,6 +1329,35 @@ impl Cell {
         // `Passes` interval that skipped halted passes would stretch over
         // more wall time the longer the cell was stopped.
         self.pass = self.pass.saturating_add(1);
+
+        // Region holds are pass-scoped: each is committed or released before
+        // its pass ends. This is the backstop for the path that did neither —
+        // most plausibly an error propagating out of phase three — and it runs
+        // before the halt check so a cell that halts mid-incident does not pin
+        // its region's capital for as long as the halt lasts. Journaled rather
+        // than silent: a hold reaching here means a release site was missed,
+        // and that is a defect an operator should be able to find afterwards.
+        let abandoned = match self.region_allocation.as_mut() {
+            Some(allocation) => allocation.sweep_before(self.pass),
+            None => Vec::new(),
+        };
+        for (id, amount) in abandoned {
+            self.journal.record(
+                Decision::Refused {
+                    gate: "region_reservation_abandoned".to_string(),
+                    reason: format!(
+                        "the region hold {id} outlived its pass holding {amount}; it has been \
+                         returned to the allocation"
+                    ),
+                },
+                now,
+            );
+        }
+        // Published before the halt check, so a halted cell still reports what
+        // its region has left rather than going dark on the number.
+        self.metrics
+            .region_allocation(self.region_allocation.as_ref().map(RegionAllocation::free));
+
         self.record_halt();
 
         // What the venue has done with the orders already out, before the
@@ -1409,7 +1472,15 @@ impl Cell {
         // contributors were feasible, and the venue's rejection — or the
         // fee's bite — would land on all of them. `retain` judges in place,
         // so the gate allocates nothing per pass.
-        intents.retain(|intent| self.admit_feasible(intent, now, &mut report));
+        intents.retain(|intent| {
+            let feasible = self.admit_feasible(intent, now, &mut report);
+            if !feasible {
+                // The region hold this intent took in phase one, given back:
+                // it will not reach a net, so it can never be committed.
+                self.release_region_hold_for(intent.strategy.as_str());
+            }
+            feasible
+        });
 
         // Phase two. Everything the strategies asked for collapses onto one
         // intent per instrument, venue and representation — so two strategies
@@ -1630,6 +1701,34 @@ impl Cell {
             return Ok(None);
         }
 
+        // The region's own bound, taken before the intent exists. The envelope
+        // above bounds this *strategy*; until this line nothing bounded the
+        // sum of the strategies, so a cell with four deployments could commit
+        // four envelopes' worth against a region budget the centre had set
+        // aside once — and with seven cells deciding alone while partitioned,
+        // that is a double-spend of the same capital. The hold is released
+        // below if any gate between here and the venue refuses, and committed
+        // when the order goes out.
+        let pass = self.pass;
+        let Some(notional_held) = quantity.checked_mul(price) else {
+            self.refuse(
+                report,
+                "region_reservation",
+                "the admitted notional cannot be represented, so no region hold can be taken \
+                 against it; nothing is sent on a number the cell could not compute",
+                now,
+            );
+            return Ok(None);
+        };
+        if !self.hold_region_capital(
+            region_hold_id(pass, signal.strategy.as_str()),
+            notional_held,
+            now,
+            report,
+        ) {
+            return Ok(None);
+        }
+
         // Signed, because netting is addition: a buy is positive, a sell is
         // negative, and two opposing intents of equal size sum to nothing
         // without anybody writing a conditional that could be got backwards.
@@ -1672,6 +1771,12 @@ impl Cell {
     /// wanted opposite things, cancelled internally, and the venue never sees
     /// either — which is the self-trade this whole mechanism exists to
     /// prevent. It is recorded so the cell can still explain what happened.
+    ///
+    /// Every path that returns without sending gives back the region holds
+    /// the contributors took in phase one; the send path commits them. The
+    /// one exception is `self.send(...)?`, whose error propagates out of
+    /// `work` and leaves the holds standing — that pass has ended, and the
+    /// sweep at the top of the next one returns them.
     fn place_net(
         &mut self,
         net_intent: &NetIntent,
@@ -1704,6 +1809,10 @@ impl Cell {
             );
             self.metrics.intent_cancelled();
             report.cancelled.push(net_intent.clone());
+            // Nothing reached the venue, so nothing of the region's capital
+            // was spent. A hold left standing here would take the whole
+            // cancelled pair's notional out of the region for the pass.
+            self.release_region_holds(&net_intent.contributors);
             return Ok(None);
         };
         // A buy takes the ask. See `intent_for` for why this must agree with
@@ -1731,15 +1840,18 @@ impl Cell {
                 ),
                 now,
             );
+            self.release_region_holds(&net_intent.contributors);
             return Ok(None);
         }
         if !self.has_open_capacity(1) {
             self.refuse_for_capacity(report, now);
+            self.release_region_holds(&net_intent.contributors);
             return Ok(None);
         }
         let Some((price, expires_at)) =
             self.resolve_pricing(net_intent, side, quantity, now, gateway, report)
         else {
+            self.release_region_holds(&net_intent.contributors);
             return Ok(None);
         };
 
@@ -1771,6 +1883,10 @@ impl Cell {
                 deployed.utilisation.orders_sent += 1;
             }
         }
+        // Beside the envelope charge and for the same reason it is here: the
+        // region allocation and the envelopes are two claims about one order,
+        // and two claims recorded in different places will disagree.
+        self.commit_region_holds(&net_intent.contributors);
         self.record_sent(
             Working {
                 order: OpenOrder {
@@ -2542,6 +2658,30 @@ impl Cell {
             );
             return None;
         }
+        // The region's bound on the cycle, whole and after every leg was
+        // admitted. Holding leg by leg would leave a partial hold behind when
+        // a later leg is vetoed, and a cycle short one leg is a position
+        // rather than a smaller cycle. A cycle whose legs admitted no notional
+        // at all is refused here too: a cycle with nothing to hold against is
+        // not a smaller cycle either.
+        let pass = self.pass;
+        if !self.hold_region_capital(
+            region_hold_id_for_cycle(pass, cycle_id),
+            notional,
+            now,
+            report,
+        ) {
+            self.refuse(
+                report,
+                "arbitrage_cycle",
+                &format!(
+                    "cycle {cycle_id} is refused whole: the region allocation cannot hold its \
+                     {notional} notional"
+                ),
+                now,
+            );
+            return None;
+        }
         Some(AdmittedCycle {
             cycle_id: cycle_id.to_string(),
             net: opportunity.net(),
@@ -2689,6 +2829,12 @@ impl Cell {
     /// reconciliation break trips it: the cell stops until an operator has
     /// looked, and the error propagates so the caller knows the pass did not
     /// complete.
+    ///
+    /// A cycle that breaks that way leaves its region hold standing, because
+    /// the error propagates out of `work` before anything could release it —
+    /// and legs have already gone out, so the capital is genuinely spent. The
+    /// sweep at the top of the next pass returns it; the halt means there is
+    /// no next pass until an operator has looked.
     fn place_cycle(
         &mut self,
         cycle: &AdmittedCycle,
@@ -2701,6 +2847,9 @@ impl Cell {
         // is a position nobody chose.
         if !self.has_open_capacity(cycle.legs.len()) {
             self.refuse_for_capacity(report, now);
+            // Nothing of this cycle reaches a venue, so the hold it took at
+            // admission is given back rather than left to the sweep.
+            self.release_cycle_hold(&cycle.cycle_id);
             return Ok(());
         }
         let mut orders: Vec<String> = Vec::with_capacity(cycle.legs.len());
@@ -2800,6 +2949,8 @@ impl Cell {
                 simulated,
             });
         }
+        // Every leg is out, so the cycle's hold on the region is spend.
+        self.commit_cycle_hold(&cycle.cycle_id);
         self.journal.record(
             Decision::CycleCommitted {
                 cycle_id: cycle.cycle_id.clone(),
@@ -3252,6 +3403,106 @@ impl Cell {
             .cloned()
     }
 
+    /// Take the region hold for an admitted size, or refuse it.
+    ///
+    /// Returns `false` when the caller must abandon what it was building.
+    /// The hold is taken *before* the `Intent` exists, which is what makes
+    /// this a reservation rather than a check: there is no way to learn the
+    /// allocation covers this notional without simultaneously holding it, so
+    /// a second strategy in the same pass cannot also pass against it. §28
+    /// puts strategy-level limits before netting for the same reason the
+    /// envelope check is here — a strategy that has exhausted the region's
+    /// budget must not contribute to a net at all.
+    ///
+    /// Refused whole, never reduced. `CapitalGrant::Reduced` narrows an order
+    /// to what one strategy's envelope has left; a region allocation short of
+    /// what a strategy asked for is a different fact — the capital is
+    /// somewhere else — and trimming would spend a remainder the centre may
+    /// have promised elsewhere.
+    fn hold_region_capital(
+        &mut self,
+        id: String,
+        notional: Decimal,
+        now: Timestamp,
+        report: &mut WorkReport,
+    ) -> bool {
+        let pass = self.pass;
+        // The borrow ends with the match, so the refusal path below can take
+        // `&mut self` to journal why it refused.
+        let outcome = match self.region_allocation.as_mut() {
+            None => return true,
+            Some(allocation) => allocation.reserve(id, notional, pass),
+        };
+        match outcome {
+            Ok(()) => true,
+            Err(error) => {
+                self.refuse(report, "region_reservation", error.message(), now);
+                false
+            }
+        }
+    }
+
+    /// Give back one strategy's region hold, because its intent is not
+    /// becoming an order.
+    fn release_region_hold_for(&mut self, strategy: &str) {
+        let pass = self.pass;
+        if let Some(allocation) = self.region_allocation.as_mut() {
+            // The amount returns to the free balance inside the ledger; this
+            // path has nothing to charge it against.
+            let _ = allocation.release(&region_hold_id(pass, strategy));
+        }
+    }
+
+    /// Give back the holds a net's contributors took.
+    ///
+    /// Called on every path in [`Self::place_net`] that returns without
+    /// sending. A contributor whose hold is already gone is passed over: the
+    /// only things that remove a hold mid-pass are this and the commit below,
+    /// and both are terminal for the net.
+    fn release_region_holds(&mut self, contributors: &[Contributor]) {
+        for contributor in contributors {
+            self.release_region_hold_for(contributor.strategy.as_str());
+        }
+    }
+
+    /// Turn a net's holds into spend.
+    ///
+    /// The whole hold is committed, not the contributor's share of the sent
+    /// order. A strategy whose intent partly cancelled inside the net
+    /// therefore spends slightly more of the region's budget than reached the
+    /// venue. That is the conservative direction, and it is what putting the
+    /// bound before netting buys: the alternative gives a strategy that
+    /// offset against another its budget back to bid for again in the same
+    /// pass.
+    fn commit_region_holds(&mut self, contributors: &[Contributor]) {
+        let pass = self.pass;
+        if let Some(allocation) = self.region_allocation.as_mut() {
+            for contributor in contributors {
+                // `None` is unreachable here: the key is derived from the same
+                // (pass, strategy) that took the hold, and the only thing that
+                // could remove it in between is the sweep, which runs at the
+                // top of a pass and cannot run inside one.
+                let _ = allocation.commit(&region_hold_id(pass, contributor.strategy.as_str()));
+            }
+        }
+    }
+
+    /// Give back a cycle's region hold, because the cycle is not going out.
+    fn release_cycle_hold(&mut self, cycle_id: &str) {
+        let pass = self.pass;
+        if let Some(allocation) = self.region_allocation.as_mut() {
+            let _ = allocation.release(&region_hold_id_for_cycle(pass, cycle_id));
+        }
+    }
+
+    /// Turn a cycle's region hold into spend, once every leg is out.
+    fn commit_cycle_hold(&mut self, cycle_id: &str) {
+        let pass = self.pass;
+        if let Some(allocation) = self.region_allocation.as_mut() {
+            let _ = allocation.commit(&region_hold_id_for_cycle(pass, cycle_id));
+        }
+    }
+
     fn refuse(&mut self, report: &mut WorkReport, gate: &str, reason: &str, now: Timestamp) {
         // Every gate a *pass* can refuse at funnels through here, so one
         // recording site covers all of them. `gate` is a string literal at
@@ -3651,6 +3902,21 @@ struct AdmittedCycle {
 /// One literal per stage of the scanner, so §30.1's question — which stage
 /// refuses most of what the search proposes — is a series rather than a
 /// grep of the journal. Bounded by the enum.
+/// The key one strategy's region hold is taken under.
+///
+/// The pass is part of the key so a hold leaked from an earlier pass cannot
+/// be mistaken for this pass's and committed by it. Phase one admits at most
+/// one intent per strategy, so the strategy is the rest of the key.
+fn region_hold_id(pass: u64, strategy: &str) -> String {
+    format!("{pass}:strategy:{strategy}")
+}
+
+/// The key one cycle's region hold is taken under. A cycle is admitted and
+/// refused whole, so it holds once for the sum of its legs.
+fn region_hold_id_for_cycle(pass: u64, cycle_id: &str) -> String {
+    format!("{pass}:cycle:{cycle_id}")
+}
+
 const fn scan_gate(stage: RejectionStage) -> &'static str {
     match stage {
         RejectionStage::Unsized => "arbitrage_scan_unsized",

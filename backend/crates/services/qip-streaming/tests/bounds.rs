@@ -13,7 +13,7 @@
 
 mod common;
 
-use common::{at, hot_tick, hot_tick_priced, warm_note};
+use common::{at, hot_tick, hot_tick_priced, vendor_tick, warm_note};
 use qip_core::error::Result;
 use qip_core::{Duration, Timestamp};
 use qip_events::EventFilter;
@@ -102,6 +102,83 @@ fn a_dedup_capacity_of_zero_is_refused_rather_than_widened_to_one() {
     // And the gate admits a good value, which is what separates a working
     // refusal from one that refuses everything.
     assert!(StreamProcessor::new(policy(1)).is_ok());
+}
+
+#[test]
+fn a_correction_sharing_an_idempotency_key_is_admitted_rather_than_swallowed_as_a_duplicate()
+-> Result<()> {
+    let mut processor = StreamProcessor::new(policy(16))?;
+    let original = vendor_tick("C1", 100, 500, at(0), at(10))?;
+    let redelivered = vendor_tick("C2", 100, 500, at(0), at(11))?;
+    let corrected = vendor_tick("C3", 100, 900, at(0), at(12))?;
+
+    // The premise, in two halves. All three carry one key, so the corrected
+    // record really does reach the rule under test; and the corrected record
+    // really is different bytes, so it is not a redelivery under any reading.
+    assert_eq!(original.idempotency_key(), corrected.idempotency_key());
+    assert_eq!(original.idempotency_key(), redelivered.idempotency_key());
+    assert_ne!(original.payload_hash(), corrected.payload_hash());
+    assert_eq!(original.payload_hash(), redelivered.payload_hash());
+
+    let first = processor.admit(vec![original.clone()], at(20));
+    assert_eq!(first.accepted.len(), 1);
+
+    // Same key, same bytes: still one fact delivered twice, still refused.
+    let again = processor.admit(vec![redelivered], at(21));
+    assert_eq!(
+        again.rejections_because(RejectionReason::Duplicate).len(),
+        1,
+        "a redelivery of the same bytes must still be refused"
+    );
+
+    let revision = processor.admit(vec![corrected.clone()], at(22));
+    assert_eq!(
+        revision
+            .accepted
+            .iter()
+            .map(|envelope| envelope.event_id().as_str())
+            .collect::<Vec<_>>(),
+        vec![corrected.event_id().as_str()],
+        "a corrected record shares the key and not the bytes; refusing it destroys the correction \
+         and leaves the stale record standing: {:?}",
+        revision.rejected
+    );
+    assert_eq!(processor.stats().duplicates, 1);
+    assert_eq!(processor.stats().key_reuse, 1);
+    Ok(())
+}
+
+#[test]
+fn a_reused_idempotency_key_is_reported_with_both_payload_hashes() -> Result<()> {
+    let mut processor = StreamProcessor::new(policy(16))?;
+    let original = vendor_tick("R1", 100, 500, at(0), at(10))?;
+    let corrected = vendor_tick("R2", 100, 900, at(0), at(11))?;
+    assert!(
+        processor
+            .admit(vec![original.clone()], at(20))
+            .rejected
+            .is_empty()
+    );
+
+    let outcome = processor.admit(vec![corrected.clone()], at(21));
+    // Both hashes, because the operator's question is which record won and
+    // which one it replaced, and a bare "key reused" answers neither.
+    assert!(
+        outcome.observations.iter().any(|observation| matches!(
+            observation,
+            StreamObservation::IdempotencyKeyReused {
+                key,
+                seen_payload_hash,
+                offered_payload_hash,
+                ..
+            } if key == &original.idempotency_key()
+                && seen_payload_hash == original.payload_hash()
+                && offered_payload_hash == corrected.payload_hash()
+        )),
+        "the collision must name the key and both payloads: {:?}",
+        outcome.observations
+    );
+    Ok(())
 }
 
 #[test]

@@ -145,6 +145,43 @@ pub(crate) fn hot_tick_priced(
     )
 }
 
+/// A consolidated vendor's tick, unsequenced and warm.
+///
+/// `volume` is a parameter because `Tick::idempotency_key` does not include
+/// it: two of these are one key and two payloads, which is what a corrected
+/// print looks like on the wire.
+pub(crate) fn vendor_tick(
+    label: &str,
+    price: i64,
+    volume: i64,
+    event_at: Timestamp,
+    ingest_at: Timestamp,
+) -> Result<StreamEnvelope> {
+    let facts = EventFacts::derived(
+        SourceIdentity::new(
+            SourceId::new("consolidated-tape"),
+            SourceType::AlternativeData,
+            Region::new("us-east"),
+        ),
+        Subject::default()
+            .with_asset_class(AssetClass::Equity)
+            .with_instrument(instrument()),
+        Topic::MarketTick,
+    );
+
+    StreamEnvelope::seal(
+        event_id(label),
+        lineage(label),
+        Tick {
+            volume: Decimal::from_int(volume),
+            ..tick(price, event_at)
+        },
+        event_at,
+        ingest_at,
+        facts,
+    )
+}
+
 /// A tick from a venue feed that forgot to number its output.
 pub(crate) fn unsequenced_tick(
     event_at: Timestamp,

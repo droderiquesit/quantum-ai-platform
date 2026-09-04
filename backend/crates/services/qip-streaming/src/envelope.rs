@@ -352,8 +352,20 @@ impl StreamEnvelope {
     }
 
     /// The bitemporal pair, in the platform's own contract type.
+    ///
+    /// Built from the *reported* ingest time, not [`Self::ingest_timestamp`].
+    /// The reported value is what `Stamped::new` clamps; handing it the
+    /// already-clamped value made `known_at < valid_at` unsatisfiable, so
+    /// `Stamped::was_clamped` was false on every envelope this crate produced,
+    /// including the ones whose source really had a broken clock. Known-time
+    /// is unchanged either way — the clamp is the same clamp — so this only
+    /// restores the flag a caller would read to find the broken clock.
     pub fn stamped(&self) -> Stamped<&AnyEvent> {
-        Stamped::new(&self.event, self.event_timestamp(), self.ingest_timestamp())
+        Stamped::new(
+            &self.event,
+            self.event_timestamp(),
+            self.reported_ingest_timestamp,
+        )
     }
 
     /// Freshness against an explicit as-of. Derived, never stored.
@@ -442,7 +454,25 @@ impl StreamEnvelope {
             // Assigned by the log on append; zero until then.
             sequence: 0,
             lineage: self.event.lineage.clone(),
-            idempotency_key: Some(self.idempotency_key()),
+            // The frame carries the *unprefixed* key, because
+            // `AnyEvent::dedup_key` adds the topic itself. Writing the
+            // already-prefixed key here made `frame.dedup_key()` read
+            // `market.tick:market.tick:…` against the envelope's
+            // `market.tick:…` — one fact with two fingerprints, on a path
+            // where the difference decides deduplication: `qip_transport`'s
+            // mesh window and its spool both key on the frame's, and every
+            // reader on this side keys on the envelope's, so a redelivery
+            // caught on one wire was invisible on the other. Falling back to
+            // the body's payload hash rather than the frame's keeps the two
+            // equal in the arm where the body supplies no key — the frame's
+            // hash covers the whole serialised envelope and is a different
+            // number with a different job.
+            idempotency_key: Some(
+                self.event
+                    .idempotency_key
+                    .clone()
+                    .unwrap_or_else(|| self.event.payload_hash.clone()),
+            ),
             payload,
             payload_hash,
         })
