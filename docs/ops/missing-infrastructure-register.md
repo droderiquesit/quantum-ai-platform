@@ -33,12 +33,20 @@ than to build a resource.
 Every quotation below was read in the file at the line cited, on branch
 `claude/algorik-architecture-refactor-pmp0zy`.
 
-**No Terraform ran.** There is no `terraform` binary in this environment. No
-plan, no `validate` and no `fmt` output backs any statement here, and the
-Google APIs were not called either. Every claim about what a plan would create
-is read off a `count`, a `for_each`, a `precondition` or a validation block in
-source, and every claim about what exists in the `algorik-dev` project is read
-off a file in this repository that says so — never observed. Where that
+**Terraform ran, and did not query Google.** A `terraform` binary is present
+at `/usr/local/bin/terraform` (v1.9.8). From `infrastructure/terraform`,
+`terraform init -backend=false` succeeded, `terraform fmt -check -recursive`
+exited 0 with no output (nothing to reformat), and `terraform validate`
+printed `Success! The configuration is valid.` — all re-run and read on
+2026-09-04 for this correction. None of the three calls the Google APIs, so
+the earlier caveat about the `algorik-dev` project stands unchanged: every
+claim about what exists in that project is read off a file in this repository
+that says so — never observed. What has changed is narrower — the syntax and
+internal references of the HCL are now machine-checked, not merely read.
+Every claim about what a plan would *create*, as opposed to whether the
+configuration is well-formed, is still read off a `count`, a `for_each`, a
+`precondition` or a validation block in source, because `validate` does not
+evaluate those against real state and no `plan` was run. Where that
 distinction changes the severity of a row, the row says it again.
 
 **No module is instantiated nowhere.** The audit that produced this file
@@ -87,7 +95,7 @@ that is right. Nothing behaves differently; a reader is misled.
 | 5 | `ledger_database` and `control_fabric_topic` are module inputs no root assigns | BLOCKING-DEPLOY |
 | 6 | The control fabric of §46.1 is Pub/Sub and no resource of any kind exists | BLOCKING-DEPLOY (decision, listed for completeness) |
 | 7 | `catalogue.tf`'s "deliberately not here" list omits the two workloads that are most deliberately not there | COSMETIC |
-| 8 | The §2.1 scorecard row still reads "no third-party SaaS at runtime" after ADR 0028 | COSMETIC |
+| 8 | The §2.1 scorecard row still reads "no third-party SaaS at runtime" after ADR 0028 — OpenObserve is now deployed and serving | BLOCKING-A-GATE (promoted; was COSMETIC) |
 | 9 | The LAYER 1 scorecard row is right about the world and wrong about this repository | COSMETIC |
 
 ---
@@ -173,15 +181,18 @@ Nothing in this row touches the three layers that hold the paper boundary.
 **Severity: BLOCKING-A-GATE.**
 
 **Required.**
-`backend/crates/tests/qip-acceptance/tests/infrastructure.rs:981`,
+`backend/crates/tests/qip-acceptance/tests/infrastructure.rs:1076`,
 `fn no_workload_runs_as_the_projects_default_compute_identity`, whose comment
 gives the reason: "The default compute service account is shared by everything
 in the project that does not name one; a grant given to it for one workload is
-a grant given to all of them."
+a grant given to all of them." (Re-derived by
+`grep -n "fn no_workload_runs_as_the_projects_default_compute_identity" backend/crates/tests/qip-acceptance/tests/infrastructure.rs`
+on 2026-09-04; the register previously cited `:981`, which has drifted.)
 
 **Exists.** The test reads two paths — `CLOUD_RUN_MODULE` and `NODE_MODULE`
-(`infrastructure.rs:985`) — and asserts neither contains
-`compute@developer.gserviceaccount.com`. Both pass, correctly.
+(`infrastructure.rs:1080`, `for path in [CLOUD_RUN_MODULE, NODE_MODULE]`) —
+and asserts neither contains `compute@developer.gserviceaccount.com`. Both
+pass, correctly.
 
 **The delta.** `scripts/deploy-frontends.sh:98-108` deploys the portal with
 `--service-account "${CONSOLE_SA}"` (`:102`). The landing deploy at `:133-138`
@@ -191,11 +202,14 @@ named after. The test cannot fail on it, because the script is not one of the
 two paths it reads.
 
 The adjacent test is what makes this a gate failure rather than a bug.
-`infrastructure.rs:959-970` enumerates every service account Terraform creates
-and asserts the set is exactly five, the fifth being `("secrets", "console")`
-with the comment "The portal, deployed by `scripts/deploy-frontends.sh`." The
-suite therefore already knows that script deploys workloads, and already
-reasons about the identities they carry. It reasons about one of the two.
+`infrastructure.rs:1033-1073`
+(`fn every_service_account_terraform_creates_runs_something_or_signs_something`;
+the register previously cited `:959-970`, which has drifted) enumerates every
+service account Terraform creates and asserts the set is exactly five, the
+fifth being `("secrets", "console")` at `:1064` with the comment "The portal,
+deployed by `scripts/deploy-frontends.sh`." at `:1063`. The suite therefore
+already knows that script deploys workloads, and already reasons about the
+identities they carry. It reasons about one of the two.
 
 ---
 
@@ -277,6 +291,25 @@ hazard: the concern is not the script or the image, it is the process.
 
 No secret value appears in this register or in the script; both name secret
 ids only.
+
+**ADR 0031 does not reach this row.** Since this register was first written,
+ADR 0031 amended `.claude/rules/01-security-and-safety.md`'s blanket
+"never as environment variables" — but narrowly: `modules/cloudrun` gains a
+`secret_env` input that "projects a Secret Manager version into an
+environment variable through Cloud Run's own `value_source.secret_key_ref`,
+and it is **refused unless `image_source == "vendored"`**. The platform's own
+binaries cannot reach it, in any environment, by any tfvars edit."
+(`docs/adr/0031-a-vendored-workload-may-take-a-secret-as-an-environment-value.md:12-16`).
+`image_source` defaults to `"built"` for every catalogue workload (ADR 0028
+decision 3) and the only value in the tree set to `"vendored"` is
+`catalogue.tf:468`'s `module.openobserve` — confirmed by
+`grep -n "image_source" infrastructure/terraform/catalogue.tf`, one hit. The
+portal is not that module, and is not in `modules/cloudrun` at all: it is
+deployed by `scripts/deploy-frontends.sh`'s own `gcloud run deploy`, entirely
+outside Terraform (gap 1). ADR 0031's `secret_env` is a Terraform input on a
+module the portal never passes through, so the exception cannot structurally
+reach it even in the most generous reading, independent of the "built" vs
+"vendored" distinction. **Gap 4 stands.**
 
 ---
 
@@ -360,30 +393,44 @@ list with two omissions.
 
 ### 8. The §2.1 scorecard row still reads "no third-party SaaS at runtime" after ADR 0028
 
-**Severity: COSMETIC.**
+**Severity: BLOCKING-A-GATE, promoted from COSMETIC.** The promotion
+condition this row itself named — "the promotion condition has already half
+fired" — has now fully fired: OpenObserve is not merely planned, it is
+running. `docs/plan/gate-completion-plan.md:54` states "**OpenObserve is now
+deployed and serving** at its Cloud Run URL, anonymous on the public internet
+under ADR 0030, with its own login enforced (the API answers 401
+unauthenticated)." A reader of the §2.1 row who trusts "no third-party SaaS
+at runtime" now holds a false belief about a Cloud Run service that is
+actually running in the project — the definition of BLOCKING-A-GATE in this
+register's own terms, not merely a document out of date about a plan.
 
 **Required.** `docs/architecture/algorik-blueprint-traceability.md:61` scores
 blueprint §2.1 ALIGNED on the ground that managed services are "GCP + IBM
 Quantum; no third-party SaaS at runtime", citing
 `infrastructure/terraform/modules/`.
 
-**Exists.** `catalogue.tf:425-460` is `module "openobserve"`, a second
+**Exists.** `catalogue.tf:425-473` is `module "openobserve"`, a second
 instantiation of `modules/cloudrun` running a vendored third-party image
-(`image_source = "vendored"`, `:460`) under ADR 0028.
+(`image_source = "vendored"`, `:468` as of this correction; re-derived by
+`grep -n "image_source" infrastructure/terraform/catalogue.tf`, one hit — the
+register previously cited `:460`) under ADR 0028.
 
-**The delta.** The row predates the module, and it is now wrong about the plan
-as well as the tree. `count = var.vendored_openobserve_image_digest != null ? 1 : 0`
-(`catalogue.tf:427`) was the mitigation: with the digest unset, no service was
-created and the row was merely out of date. `environments/dev/terraform.tfvars:133`
-now sets that digest, so `dev` plans a third-party service. The row still says
-"no third-party SaaS at runtime".
+**The delta — no longer conditional.** `count = var.vendored_openobserve_image_digest != null ? 1 : 0`
+(`catalogue.tf:427`) was the mitigation this row originally relied on: with the
+digest unset, no service was created and the row was merely out of date.
+`environments/dev/terraform.tfvars:139` (re-derived by
+`grep -n vendored_openobserve_image_digest infrastructure/environments/dev/terraform.tfvars` —
+the register previously cited `:133`) sets that digest, so `dev` plans a
+third-party service, and — beyond planning — `docs/plan/gate-completion-plan.md:54`
+records it "now deployed and serving" on a real Cloud Run URL. The row still
+says "no third-party SaaS at runtime". This is no longer a row that is merely
+out of date about a plan; it is wrong about a running service.
 
-COSMETIC is the severity because a scorecard row misleads a reader and changes
-nothing; but this is the row in this register most likely to be promoted, and
-the promotion condition has already half fired. Whoever fixes it should check
-the digest's state rather than trusting this paragraph — `dev/terraform.tfvars`
-was being edited by another change while this audit ran, and the line number
-above may have moved again.
+The promotion this paragraph once called "half fired" is now complete, which
+is why the severity above moved to BLOCKING-A-GATE. Whoever fixes it should
+re-check the digest's state and the deploy record rather than trusting this
+paragraph on its own — both files are shared with concurrent changes and a
+line number here is the weakest part of the citation.
 
 ---
 
@@ -455,6 +502,65 @@ gated on it (`grep -c 'resource "google_monitoring_alert_policy"'` returns 7).
 Each fails closed and each says so at the point of absence: the digest
 precondition at `catalogue.tf:306-312`, the fast-brain proxy precondition at
 `:314-320`, and the job at `:28-29`.
+
+## Re-scored at HEAD
+
+Four ADRs landed after this register's rows were first written. None of them
+close a numbered gap outright, and one closes a long-open question this
+register's own domain rule (`observability.md`) tracked as "A6". Read in
+full before citing; one line each below is the decision, not the argument.
+
+- **ADR 0032** — telemetry from all three central roots drains to a collector
+  running **inside the VPC** on plaintext OTLP, forwarding to OpenObserve on
+  its own TLS; no root drains to a public URL directly.
+- **ADR 0033** — OpenObserve moves from anonymous to Identity-Aware-Proxy
+  authenticated *before* the collector's first byte reaches it, firing the
+  condition ADR 0030 wrote for itself ("the moment any deployment sets
+  `QIP_OPENOBSERVE_URL`").
+- **ADR 0034** — names the first three egress-allowed vendor sources (Coinbase
+  Exchange first) for market data and a prediction feed, each with a
+  licensing-posture record ahead of use.
+- **ADR 0035** — deploys **exactly one** execution node, in `us-east4`, in
+  shadow mode, in `dev` only; `execution_nodes` stays `{}` in test, stage and
+  prod.
+
+**A6 (the managed-Prometheus collector for Cloud Run, tracked in
+`.claude/rules/domains/observability.md`) is REFUSED, not open.** ADR 0032
+names the collector image as "the vendored, digest-pinned,
+Binary-Authorization-attested image A6 has been blocked on" and states
+plainly what would make the decision wrong: "If the collector image cannot be
+vendored and attested. That is the whole premise." That is exactly what
+happened. `infrastructure/egress/vendored-images.txt` records the review of
+`cloud-run-gmp-sidecar` (Google's own image, confirmed by reading
+`confgenerator.Version=1.9.2` out of its entrypoint binary) and its result:
+
+    run-gmp-entrypoint (gobinary)  Total: 1 (CRITICAL: 1)
+    rungmpcol (gobinary)           Total: 1 (CRITICAL: 1)
+    golang.org/x/crypto  CVE-2026-56854  CRITICAL  fixed
+      installed v0.54.0, fixed 0.55.0
+      golang.org/x/crypto/ssh: authentication bypass due to unenforced
+      source-address restrictions
+
+and "There is no patched release to move to. The registry's tag list carries
+1.0.0 through 1.9.2 and nothing above it... The adoption is therefore blocked
+upstream, not here." The line is left commented in `vendored-images.txt`, not
+merely unreviewed — "resolved but nobody looked" and "looked at and refused"
+are different states, and this is the second one. `workload_metrics_exist`
+therefore cannot flip on this path; ADR 0032's own fallback (a second, narrow
+egress-proxy route, accepting the public-internet hop under ADR 0033's
+mitigation) is the remaining route, and nothing in this tree has taken it yet.
+
+**F1–F4 are in progress this wave, not closed.** Other agents are working the
+follow-ups this register lists (`scripts/deploy-frontends.sh`'s missing
+`--binary-authorization` flags, the landing's missing service account, the
+console-egress subnet's missing deny rule, and the session secret's
+environment-variable mount). Re-read as of this correction,
+`scripts/deploy-frontends.sh` still has no `--binary-authorization` flag on
+either deploy and still sets
+`ALGORIK_SESSION_SECRET=algorik-session-secret:latest` as a `--set-secrets`
+name rather than a path (`:115`) — gaps 1 and 4 are unchanged in fact. This
+register does not mark F1–F4 done, and whoever closes one should update this
+file rather than leave the row to be re-audited from scratch.
 
 ## What this register does not cover
 

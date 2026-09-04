@@ -50,21 +50,30 @@ that cannot fire").
 
 ---
 
-## 3. `terraform validate` quoted by name
+## 3. `terraform validate` quoted by name — DONE
 
 **Closes:** gap-matrix.md item 4 phrasing, completion-plan.md B17, §6's own
 "still genuinely open" list.
 
-This session's plans and applies ran through CI, which necessarily
-type-checks and reference-checks the HCL — but no commit in the sequence
-separately ran and quoted `terraform validate`. That is a smaller, cheap
-step (one more CI step or one more local run wherever `terraform` is
-installed) that closes a specific, named gap this document has repeatedly
-flagged as open, independent of whether anything is applied.
+Done on 2026-09-04. A `terraform` binary is present at
+`/usr/local/bin/terraform` (v1.9.8). From `infrastructure/terraform`:
 
-**How it would be verified:** `terraform validate` output, quoted, for the
-root module and each of `cloudrun`, `execution-node`, `trust-zones`,
-`egress-proxy`.
+- `terraform init -backend=false` — "Terraform has been successfully
+  initialized!"
+- `terraform fmt -check -recursive` — exit 0, no output (nothing to
+  reformat).
+- `terraform validate` — "Success! The configuration is valid."
+
+None of the three calls a Google API, so this closes the phrasing gap (a
+named `terraform validate` run, quoted) without being evidence that anything
+plans or applies cleanly against real state — that remains open per item 1
+above. The narrower ask in this row's original "how it would be verified"
+column — separate `validate` output for each of `cloudrun`,
+`execution-node`, `trust-zones`, `egress-proxy` as standalone roots — was not
+done; those are modules without their own state and `terraform validate`
+does not run against a module in isolation outside a root that calls it. The
+root-level run is what closes this item; a module-level equivalent, if still
+wanted, is separate follow-up.
 
 ---
 
@@ -142,6 +151,22 @@ through Identity Platform; Playwright coverage for the browser half; the grep
 above no longer empty.
 
 ---
+
+## F1–F4 — in progress this wave, not closed
+
+`docs/ops/missing-infrastructure-register.md`'s follow-ups F1–F4 (Binary
+Authorization flags on the two `gcloud run deploy` calls in
+`scripts/deploy-frontends.sh`; a named service account for the landing; a
+deny-egress rule for the console-egress subnet; mounting the portal's session
+secret as a file instead of an environment value) are being worked by other
+agents this wave. Not this document's own item — recorded here only so this
+backlog does not independently claim them done or open against a stale
+count. As of this note, re-reading `scripts/deploy-frontends.sh` shows
+neither deploy carries `--binary-authorization` and the session secret is
+still passed as `ALGORIK_SESSION_SECRET=algorik-session-secret:latest` (a
+name, not a path) at `:115` — F1 and F4 are unresolved in fact as of this
+reading. Do not mark any of F1–F4 done from this file; the register is the
+owning record.
 
 ## What is deliberately not in this list
 
