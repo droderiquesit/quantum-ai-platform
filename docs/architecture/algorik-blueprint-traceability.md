@@ -137,6 +137,27 @@ at current scale, and process proliferation was rejected.
   **Deliberately not scaffolded** — six engines named by §16.1 with no consumer
   would be six empty crates.
 
+  **Re-scored 2026-09-04.** The gap-map's verdict on §16.1's credit engine —
+  "`default_probability`/`recovery_rate` fields... a data holder, not an
+  engine. No spread decomposition" — is now half true rather than wholly
+  true. `RiskCharacteristics::spread_decomposition`
+  (`qip-financial/src/risk_profile.rs`) turns the two fields already on the
+  type into the named identity `spread ≈ default_probability ×
+  (1 − recovery_rate)` in exact `Decimal` arithmetic, refusing (naming the
+  field and the offending value, via `Error::invalid`) a `default_probability`
+  or `recovery_rate` outside `[0, 1]` rather than clamping either — proved by
+  `qip-financial/tests/object_model.rs::the_spread_decomposition_identity_is_exact_in_decimal`,
+  `::a_recovery_rate_above_one_is_refused_not_clamped`,
+  `::a_recovery_rate_of_exactly_one_is_the_admitted_boundary`, and
+  `::a_negative_default_probability_is_refused_not_clamped`, each
+  mutation-verified. This does not promote the plane out of MISSING-CURRENT:
+  no engine, consumer, credit-spread valuation flow, or entry in the six
+  named by §16.1 exists yet — one method on an existing struct now computes
+  a documented identity instead of leaving two fields unrelated, and the doc
+  comment states what the identity assumes (risk-neutral, single-period, no
+  liquidity premium) so it is not mistaken for a market spread. The six
+  engines remain unscaffolded for the reason given above.
+
 - **[PLANE 4/7 — Intelligence]** *Ownership:* `qip-lifecycle` (statistical
   gates, `gates.rs`, `evidence.rs`), `qip-training`, `qip-evolution`
   (champion/challenger, wired at `apps/qip-deepbrain/src/evolution.rs:426`),
@@ -253,6 +274,29 @@ at current scale, and process proliferation was rejected.
   `security.rs::no_signing_or_withdrawal_path_exists_for_capital_to_leave_the_platform`.
   Capital reservation is unbuilt, so two concurrent proposals can pass against
   one balance.
+
+**Re-score at 2026-09-04, on the §43.3/§43.4 attribution gap named above and
+in `docs/plan/blueprint-v10.1-gap-map.md`'s "Explanation object" row.**
+`qip-compliance::model_risk::Explanation` (`src/model_risk.rs:373`) now
+carries an optional `upstream: Option<HypothesisId>` — the claim or
+hypothesis whose belief produced the explained output's inputs — stated
+through `Explanation::reconciled`'s constructor rather than defaulted, so a
+caller must write `None` explicitly to record that no hypothesis drove an
+output. It is serialised with `serde` and preserved exactly by a round trip,
+and it is folded into the same private-field, one-constructor discipline
+that already refuses an explanation whose contributions do not reconcile to
+its output in exact `Decimal` arithmetic — carrying the reference does not
+relax that check (`tests/model_risk.rs::an_explanation_with_an_upstream_reference_that_does_not_reconcile_is_still_refused`).
+This is one additive hop toward the blueprint's full attribution chain (fill
+→ strategy → family → mandate; intent → belief → causal edge → world event →
+entity), not the chain itself: `Explanation` still explains one model's
+numeric output, not a position, and the gap-map's finding stands unchanged —
+`grep -rln "model_risk::Explanation"` still finds no caller outside this
+crate's own `lib.rs` re-export and its tests, so the field is real and
+round-trips but is wired to nothing that would populate it from a live
+hypothesis. The per-user, per-strategy ledger §43.3 also names is still
+absent, as stated above; this hop touches only the explanation half of the
+gap-map row, not the ledger half.
 
 ## §6.2 — the degradation order
 
@@ -625,6 +669,37 @@ record exist, the fills do not. Naming this here rather than in a comment
 because a reader who sees `CrossedInternally` in the journal will otherwise
 reasonably assume the books moved.
 
+**Re-scored 2026-09-04: a booked cross now settles at the cell.**
+`Cell::settle_cross` calls `Cell::book_cross` (`qip-edge/src/cell.rs`)
+before it seals the record, and `book_cross` reads *only* the
+`InternalCross` record the journal entry is written from — the one buyer,
+the one seller, the size and the mid — so the buyer's lot rises and its cash
+falls by `quantity × price`, the seller's the reverse, and the two cash legs
+sum to zero. Read back through `Cell::strategy_position` and
+`Cell::strategy_cash`; the venue-facing `Cell::position` moves by nothing,
+because the venue saw nothing and the drop-copy reconciler must not. The
+forty percent cap is untouched and the settlement sits behind it. Two
+consequences worth stating. First, the record must be able to settle
+itself: a net whose crossable portion names two buyers or two sellers
+carries one size and no per-strategy split, so `cross_internally` now
+refuses it under `internal_cross_attribution` before any record exists —
+the same record `CentralPlane::ingest` already refused to settle, for the
+same reason, so cell and centre can no longer disagree about a cross one of
+them booked and the other could not settle; those intents still net exactly
+as before, and nothing extra reaches a venue. Second, this is the crossed
+portion only: a venue fill is attributed at the centre and is not booked to
+these per-strategy books, so `strategy_position` is what never reached a
+venue and not a strategy's whole position. Proved by
+`qip-edge/tests/crossing.rs::a_booked_cross_moves_both_contributors_lots_and_cash_at_the_journaled_mid_and_the_cash_legs_cancel`
+(price read back from the chain, not the report),
+`::a_cross_above_the_cap_is_still_refused_and_moves_no_lot_or_cash` and
+`::a_cross_with_two_strategies_on_one_side_is_refused_rather_than_settled_by_a_guess`,
+each mutation-verified (settlement call removed; settled at the journaled
+price plus one; attribution gate disabled; cap comparison inverted). §27.1's
+"both strategies receive their full intended fill at the crossing price" is
+therefore implemented at the cell for the crosses the cell books; the
+sentence above that says the fills do not exist is history from this date.
+
 ### F8 — the follow-on this slice makes easier, and the one footgun it adds
 
 `Cell::work` now has a named seam between what the strategies want
@@ -877,3 +952,84 @@ ledger's rationale — and a strategy pushed off capital produces no new
 sessions, so its retirement ninety days later is judged, as
 `retirement_due` already specifies, on time at the floor plus the series that
 put it there.
+
+**§35 re-scored (2026-09-04): the lifecycle-state field named as missing in
+the paragraph above now exists.** `qip_portfolio::position::Position` carries
+a `lifecycle: PositionLifecycle` field
+(`backend/crates/libs/qip-portfolio/src/position.rs`), and
+`PositionLifecycle` (`backend/crates/libs/qip-portfolio/src/lifecycle.rs`) is
+the six-variant enum §35 names — `Opened`, `Held`, `Flagged`, `Unwinding`,
+`Orphaned`, `Closed`. A new position starts `Opened`; `apply_fill` moves it to
+`Held` on its first confirmed lot and to `Closed` when the last lot closes,
+both through `PositionLifecycle::transition`, which refuses every pair not on
+its own legal-edge table (`Closed` admits no further move, and `Flagged`
+cannot be walked back to `Held` directly — only `Opened -> Held`,
+`Opened/Held/Flagged/Unwinding/Orphaned -> Closed`, `Held -> Flagged`,
+`Flagged -> Unwinding/Orphaned` and `Unwinding -> Orphaned` are legal).
+`Flagged`, `Unwinding` and `Orphaned` are reachable only by calling
+`transition` explicitly (via `Position::move_lifecycle`); nothing in
+`qip-portfolio` assigns them directly. Proven by
+`an_opened_position_moves_to_held_on_its_first_confirmed_lot`,
+`a_flagged_position_cannot_be_reopened_without_a_new_lot`,
+`closing_the_last_lot_moves_a_position_to_closed_and_the_closed_state_refuses_further_transitions`
+and a full-cross-product table test, in
+`qip-portfolio/tests/lifecycle.rs` and `qip-portfolio/src/lifecycle.rs`'s own
+unit tests; two mutations verified (deleting the refusal arm, and adding
+`Closed -> Held` to the legal table) both broke the intended tests for the
+stated reason. **What this does not close, in the row's own terms:** the
+field exists but nothing outside `qip-portfolio` writes `Flagged`,
+`Unwinding` or `Orphaned` yet — the retirement disposition recorded in the
+paragraph above still reasons about lots and a `DispositionInstruction`
+without touching this field, so a lot scheduled for unwinding is not yet
+reflected as `Unwinding` on the `Position` itself, and no thesis-expiry sweep
+or ranked unwind-ordering policy (§35.3) exists. The row stays PARTIAL.
+
+## Re-score at `d951ff4` (2026-09-04) — §2.2 "Strategies are compiled, not interpreted"
+
+Appended rather than folded in, per this file's convention. The §2.2 row
+above reads "`qip-strategy` evaluates; no shared compiled plan with CSE" and
+scores PARTIAL. Read against the tree at HEAD, the implementation half of
+that verdict was already stale when scored: `StrategyCompiler` lowers every
+`Expr` into one shared `Program` arena, interning children before parents on
+a structural key (`backend/crates/edge/qip-strategy/src/compile.rs`,
+`intern` and `structural_key`), so two structurally identical subtrees —
+within one strategy or across many compiled through the same compiler — are
+one IR node; commutative operands are ordered so `a + b` and `b + a` are one
+node; constant subtrees fold to a literal before interning; and the map is a
+`BTreeMap`, with node numbers assigned in lowering order, so a recompile of
+the same source numbers every node identically. The shared plan reaches
+production through `qip-edge-node/src/strategies.rs:355`, which compiles
+every loaded strategy through one compiler and hands `into_program()` to the
+cell's `StrategyRuntime`. What was missing was the proof, and that is what
+this pass adds, in `backend/crates/edge/qip-strategy/tests/strategy.rs`:
+`two_clauses_sharing_a_ratio_compile_to_one_ratio_node_rather_than_two`
+(premise first: the two `Expr::Ratio` subtrees are equal and distinct
+allocations; then 10 unique nodes for 14 written, exactly one `Op::Ratio`,
+both rules reading it);
+`a_shared_plan_evaluates_exactly_as_the_unshared_expression_tree_does`
+(premise: the fixture writes the ratio three times and the compiler shared
+something; then six market states through the runtime agree with a
+separate reference interpreter over the written tree on kind, quantity and
+conviction, covering both rules and no rule);
+`node_numbering_is_stable_across_independent_compiles` (two fresh compilers
+over three strategies produce equal `Program`s and equal plans); and
+`the_size_refusal_still_fires_on_a_program_that_is_oversized_after_sharing`
+(a 1,023-node tree written twice — 2,051 nodes as written, 1,030 once
+shared, both above the 512 ceiling — is refused with `guard` and "budget").
+Five mutations to `compile.rs` were applied and each fired: the dedup pass
+removed (count test: 14 unique for 14 written); `Ratio` keyed by the
+numerator's address rather than structure (count test: 11 for 14, while the
+differential test still passed, which is the right split); the `Feature` key
+salted with wall-clock parity (numbering test, three runs of three);
+the syntactic budget check in `measure` removed alone (the new size test
+still passed — the post-sharing `cost_of` check refused on its own) and
+then both checks removed (it failed); and statistic literals keyed without
+their value (differential test: conviction 0.0005 against 0.6). `compile.rs`
+was restored byte-for-byte after each, sha256
+`0a6b5b64f36e765656aeddeab6af3f18657d41f007d1b876f86fe70b89deb8e9`.
+Re-scored **ALIGNED** for the shared-plan-with-CSE half of the row. Two
+honest limits: the compiler's first refusal is on the *written* node count,
+so a strategy that would fit once shared but exceeds the ceiling as written
+is still refused — conservative by design, and unchanged here; and the
+reference interpreter in the test covers only the operators its fixture
+uses, so it is a specification of that fixture, not of the whole language.

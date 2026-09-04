@@ -478,6 +478,21 @@ pub struct Cell {
     /// settlement because a position does not stop existing when the order
     /// that built it is agreed.
     positions: BTreeMap<String, Decimal>,
+    /// What each strategy holds from internal crosses, keyed by strategy,
+    /// venue and instrument, and the cash each has paid or received for it,
+    /// keyed by strategy. A cross is a trade between two of the cell's own
+    /// strategies at the recorded mid: the buyer's lot goes up and its cash
+    /// down by the notional, the seller's the other way round, and the two
+    /// cash legs sum to zero because nothing left the cell. Until these
+    /// existed a cross was booked — journal entry, both sides, price, size —
+    /// and no position or cash balance moved, so a reader of
+    /// `crossed_internally` in the chain assumed books that did not exist
+    /// (traceability F7). Bounded by the deployed strategies and the
+    /// instruments the cell holds books for; `positions` above stays the
+    /// venue-facing aggregate and a cross moves it by exactly nothing, which
+    /// is why the drop-copy reconciler never sees one.
+    strategy_positions: BTreeMap<String, Decimal>,
+    strategy_cash: BTreeMap<String, Decimal>,
     /// Every disagreement between this cell's fills and the venue's own
     /// account, kept so the centre hears about it in the state delta as well as
     /// in the journal.
@@ -552,6 +567,8 @@ impl Cell {
             working: BTreeMap::new(),
             confirmed: Vec::new(),
             positions: BTreeMap::new(),
+            strategy_positions: BTreeMap::new(),
+            strategy_cash: BTreeMap::new(),
             breaks: Vec::new(),
             breaks_omitted: 0,
             order_sequence: 0,
@@ -781,6 +798,48 @@ impl Cell {
 
     fn position_key(venue: &VenueId, object_id: &ObjectId) -> String {
         format!("{}/{}", venue.as_str(), object_id.as_str())
+    }
+
+    /// The signed lot one strategy holds on one instrument at one venue from
+    /// internal crosses settled at this cell: bought positive, sold negative.
+    ///
+    /// Crosses only. A venue fill is attributed to its contributors at the
+    /// centre (`CentralPlane::ingest`) and is not booked here, so this is
+    /// not a strategy's whole position — it is the part that never reached a
+    /// venue and that no other record would otherwise hold.
+    pub fn strategy_position(
+        &self,
+        strategy: &StrategyId,
+        venue: &VenueId,
+        object_id: &ObjectId,
+    ) -> Decimal {
+        self.strategy_positions
+            .get(&Self::strategy_position_key(strategy, venue, object_id))
+            .copied()
+            .unwrap_or(Decimal::ZERO)
+    }
+
+    /// The cash one strategy has paid (negative) or received (positive) for
+    /// its crossed lots at this cell, at the mid each cross was journaled at.
+    /// Sums to zero across the strategies of every cross, because a cross
+    /// moves money between two of the cell's own books and nowhere else.
+    pub fn strategy_cash(&self, strategy: &StrategyId) -> Decimal {
+        self.strategy_cash
+            .get(strategy.as_str())
+            .copied()
+            .unwrap_or(Decimal::ZERO)
+    }
+
+    fn strategy_position_key(
+        strategy: &StrategyId,
+        venue: &VenueId,
+        object_id: &ObjectId,
+    ) -> String {
+        format!(
+            "{}/{}",
+            strategy.as_str(),
+            Self::position_key(venue, object_id)
+        )
     }
 
     /// Whether the cell is stopped, by any of its three halts.
@@ -3180,6 +3239,48 @@ impl Cell {
             return None;
         };
 
+        // The record must settle itself. `book_cross` moves each side's lot
+        // and cash from the record alone — one name a side, the size, the
+        // mid — so a record that names two buyers or two sellers carries no
+        // per-strategy size to move, and splitting it evenly would be a
+        // guess dressed as a ledger. The centre refuses exactly this record
+        // for exactly this reason (`CentralPlane::ingest`); refusing it here
+        // means the two never disagree about a cross that one of them booked
+        // and the other could not settle. Refused, not narrowed to a pair:
+        // choosing which two of three strategies traded is another guess.
+        if bought.len() != 1 || sold.len() != 1 {
+            self.refuse(
+                report,
+                "internal_cross_attribution",
+                &format!(
+                    "crossing {crossed} on {} names {} buyer(s) and {} seller(s); the record \
+                     carries no per-strategy size, so the cross cannot be settled to each book \
+                     from the record alone and is refused rather than split by a guess",
+                    net_intent.object_id.as_str(),
+                    bought.len(),
+                    sold.len()
+                ),
+                now,
+            );
+            return None;
+        }
+        // The notional the settlement will move. Judged now, before the
+        // record exists, so that a cross the chain says happened can never be
+        // one whose cash leg could not be represented.
+        if crossed.checked_mul(price).is_none() {
+            self.refuse(
+                report,
+                "internal_cross_price",
+                &format!(
+                    "crossing {crossed} at {price} on {} has a notional the ledger cannot \
+                     represent, so the cross is refused rather than booked without its cash leg",
+                    net_intent.object_id.as_str()
+                ),
+                now,
+            );
+            return None;
+        }
+
         Some(InternalCross {
             object_id: net_intent.object_id.clone(),
             venue: net_intent.venue.clone(),
@@ -3209,8 +3310,98 @@ impl Cell {
         let quantity = crossed
             .as_ref()
             .map_or(Decimal::ZERO, |cross| cross.quantity);
+        if let Some(cross) = &crossed {
+            self.book_cross(cross, now);
+        }
         self.record_cross(crossed, now, report);
         self.observe_crossing(net_intent, quantity, now);
+    }
+
+    /// Move both sides' lots and cash by what the cross record says, and
+    /// nothing else.
+    ///
+    /// The record is the one source: the buyer named in it gains `quantity`
+    /// and pays `quantity × price`, the seller named in it loses `quantity`
+    /// and receives the same, at the price the chain is about to seal. No
+    /// contributor size, reference price or book read enters here — a
+    /// settlement worked out a second time from the intents could disagree
+    /// with the journal, and the journal is what a reader replays.
+    ///
+    /// Every arithmetic step is checked. A lot or cash balance that could
+    /// not be represented, or a record naming other than one strategy a side
+    /// — impossible from `cross_internally`, which refuses both before the
+    /// record exists — is a reconciliation break: the chain would hold a
+    /// cross the books do not, which is the disagreement `break_on` exists
+    /// to stop the cell on. `positions`, the venue-facing aggregate, is left
+    /// alone: the two lots sum to zero and the venue saw nothing.
+    fn book_cross(&mut self, cross: &InternalCross, now: Timestamp) {
+        let ([buyer], [seller]) = (cross.bought.as_slice(), cross.sold.as_slice()) else {
+            self.break_on(
+                format!(
+                    "a cross of {} {} at {} was booked naming {} buyer(s) and {} seller(s), and \
+                     the ledger cannot settle it to one book a side",
+                    cross.quantity,
+                    cross.object_id.as_str(),
+                    cross.price,
+                    cross.bought.len(),
+                    cross.sold.len()
+                ),
+                now,
+            );
+            return;
+        };
+        let Some(notional) = cross.quantity.checked_mul(cross.price) else {
+            self.break_on(
+                format!(
+                    "a cross of {} {} at {} was booked and its notional cannot be represented, \
+                     so the cash legs were not moved",
+                    cross.quantity,
+                    cross.object_id.as_str(),
+                    cross.price
+                ),
+                now,
+            );
+            return;
+        };
+        // Buyer first, then seller; equal and opposite on both legs.
+        let legs = [
+            (buyer.clone(), cross.quantity, -notional),
+            (seller.clone(), -cross.quantity, notional),
+        ];
+        for (strategy, lot, cash) in legs {
+            let position_key =
+                Self::strategy_position_key(&strategy, &cross.venue, &cross.object_id);
+            let held = self
+                .strategy_positions
+                .get(&position_key)
+                .copied()
+                .unwrap_or(Decimal::ZERO);
+            let balance = self
+                .strategy_cash
+                .get(strategy.as_str())
+                .copied()
+                .unwrap_or(Decimal::ZERO);
+            match (held.checked_add(lot), balance.checked_add(cash)) {
+                (Some(next_held), Some(next_balance)) => {
+                    self.strategy_positions.insert(position_key, next_held);
+                    self.strategy_cash
+                        .insert(strategy.as_str().to_string(), next_balance);
+                }
+                _ => {
+                    self.break_on(
+                        format!(
+                            "settling a cross of {} {} at {} to {} would overflow its lot or \
+                             cash balance, so that side's book was not moved",
+                            cross.quantity,
+                            cross.object_id.as_str(),
+                            cross.price,
+                            strategy.as_str()
+                        ),
+                        now,
+                    );
+                }
+            }
+        }
     }
 
     /// The instrument key the crossing window is kept by: what `net` groups

@@ -22,7 +22,7 @@
 
 use qip_ai::registry::ModelRegistry;
 use qip_core::error::{Error, Result};
-use qip_core::{Decimal, Timestamp};
+use qip_core::{Decimal, HypothesisId, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -370,6 +370,16 @@ pub struct Contribution {
 /// a tolerance is a place for a systematic error to hide, and every
 /// attribution method the platform uses is exact by construction with a
 /// residual term where it is not.
+///
+/// `upstream` is one additive hop toward the blueprint's full attribution
+/// chain (fill → strategy → family → mandate; intent → belief → causal edge
+/// → world event → entity): the claim or hypothesis whose belief produced
+/// this model's inputs, if one drove it. It is `Option` because not every
+/// model output is downstream of a hypothesis — some are computed straight
+/// from market data — but the constructor takes it as a required argument
+/// rather than defaulting it, so a caller who never considered the question
+/// cannot end up recording `None` by omission the way a `#[derive(Default)]`
+/// field would let them.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Explanation {
     model_reference: String,
@@ -379,16 +389,24 @@ pub struct Explanation {
     baseline: Decimal,
     contributions: Vec<Contribution>,
     at: Timestamp,
+    /// The claim/hypothesis id that produced this output's inputs, or `None`
+    /// if none did. Stated explicitly at construction — see the struct doc.
+    upstream: Option<HypothesisId>,
 }
 
 impl Explanation {
     /// Build an explanation, refusing one whose parts do not sum to its whole.
+    ///
+    /// `upstream` must be stated even when it is `None`, so a caller who has
+    /// not thought about provenance cannot silently produce an explanation
+    /// that looks the same as one who deliberately found none.
     pub fn reconciled(
         model_reference: impl Into<String>,
         output: Decimal,
         baseline: Decimal,
         contributions: Vec<Contribution>,
         at: Timestamp,
+        upstream: Option<HypothesisId>,
     ) -> Result<Self> {
         let model_reference = model_reference.into();
         if contributions.is_empty() {
@@ -424,6 +442,7 @@ impl Explanation {
             baseline,
             contributions,
             at,
+            upstream,
         })
     }
 
@@ -445,6 +464,12 @@ impl Explanation {
 
     pub fn at(&self) -> Timestamp {
         self.at
+    }
+
+    /// The claim or hypothesis whose belief produced this output's inputs,
+    /// if the explanation names one.
+    pub fn upstream(&self) -> Option<&HypothesisId> {
+        self.upstream.as_ref()
     }
 
     /// The inputs and their values, for checking against a risk file's

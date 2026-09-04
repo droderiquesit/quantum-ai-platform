@@ -8,7 +8,7 @@ use qip_core::testing::approx_eq;
 use qip_core::{Decimal, Duration, ObjectId, Timestamp};
 use qip_strategy::catalogue::FeatureCatalogue;
 use qip_strategy::compile::{CompilerLimits, StrategyCompiler, WarningKind};
-use qip_strategy::ir::{Expr, Rule, StrategySpec, Type};
+use qip_strategy::ir::{ArithmeticOp, CompareOp, Expr, LogicalOp, Rule, StrategySpec, Type};
 use qip_strategy::model::{DistilledModel, TreeNode};
 use qip_strategy::program::{Node, NodeRef, Op, Program};
 use qip_strategy::runtime::StrategyRuntime;
@@ -433,6 +433,459 @@ fn an_expression_with_no_features_in_it_is_folded_at_compile_time() {
             .any(|warning| warning.kind == WarningKind::AlwaysTrue)
             || compiled.inputs().len() == 1
     );
+}
+
+// --- the shared plan: one node per distinct computation ---------------------
+//
+// The compiler interns children before parents, keyed on structure, so two
+// syntactically identical subtrees — in one strategy or across many — are one
+// node in the program. The tests below pin what that has to mean: the node
+// count drops by exactly the duplicated nodes and no more, evaluation through
+// the shared plan is indistinguishable from evaluating the written tree, the
+// numbering a compile assigns is the same every time, and sharing never
+// rescues a strategy from the cost ceiling.
+
+/// The spread as a fraction of the mid — the kind of ratio several clauses of
+/// one strategy plausibly all want.
+fn relative_spread() -> Expr {
+    Expr::feature(spread()).over(Expr::feature(mid()))
+}
+
+/// How many subtrees of `haystack` are structurally equal to `needle`.
+fn occurrences(haystack: &Expr, needle: &Expr) -> usize {
+    let here = usize::from(haystack == needle);
+    here + haystack
+        .children()
+        .iter()
+        .map(|child| occurrences(child, needle))
+        .sum::<usize>()
+}
+
+/// Every operator in `expr`, counted as written — the node count a program
+/// would hold if nothing were shared.
+fn syntactic_size(expr: &Expr) -> usize {
+    1 + expr
+        .children()
+        .iter()
+        .map(|child| syntactic_size(child))
+        .sum::<usize>()
+}
+
+/// The nodes a whole strategy would hold if nothing were shared.
+fn syntactic_size_of(spec: &StrategySpec) -> usize {
+    spec.rules
+        .iter()
+        .map(|rule| {
+            syntactic_size(&rule.condition)
+                + syntactic_size(&rule.size)
+                + syntactic_size(&rule.conviction)
+        })
+        .sum()
+}
+
+/// Two rules, each comparing the same relative spread against its own
+/// threshold.
+fn two_clauses_over_the_relative_spread() -> StrategySpec {
+    StrategySpec::new(
+        StrategyId::new("two-clauses"),
+        subject(),
+        Duration::from_millis(250),
+    )
+    .with_rule(Rule::new(
+        "tight",
+        SignalKind::Enter,
+        relative_spread().less_than(Expr::Statistic(0.0005)),
+        Expr::Exact(Decimal::from_int(100)),
+        Expr::Statistic(0.6),
+        400,
+    ))
+    .with_rule(Rule::new(
+        "wide",
+        SignalKind::Exit,
+        relative_spread().greater_than(Expr::Statistic(0.002)),
+        Expr::Exact(Decimal::from_int(50)),
+        Expr::Statistic(0.6),
+        200,
+    ))
+}
+
+#[test]
+fn two_clauses_sharing_a_ratio_compile_to_one_ratio_node_rather_than_two() {
+    let spec = two_clauses_over_the_relative_spread();
+
+    // Premise: the two clauses carry the same subtree as two separate
+    // allocations. A deduplication keyed on identity rather than structure
+    // would see two different ratios here — that is the failure this test
+    // exists to catch, so the premise has to hold before the claim means
+    // anything.
+    let (
+        Expr::Compare {
+            left: first_ratio, ..
+        },
+        Expr::Compare {
+            left: second_ratio, ..
+        },
+    ) = (&spec.rules[0].condition, &spec.rules[1].condition)
+    else {
+        panic!("fixture: both conditions compare a ratio against a threshold");
+    };
+    assert_eq!(
+        first_ratio, second_ratio,
+        "the fixture must write the same ratio in both clauses"
+    );
+    assert!(
+        !std::ptr::eq(first_ratio.as_ref(), second_ratio.as_ref()),
+        "the two ratios must be distinct allocations, or identity would pass for structure"
+    );
+    let written = syntactic_size_of(&spec);
+    assert_eq!(written, 14, "two clauses of seven nodes each, as written");
+
+    let mut compiler = compiler();
+    let compiled = compiler.compile(&spec).unwrap();
+    let report = compiler.report();
+    assert_eq!(report.submitted_nodes, written);
+
+    // The ratio subtree — two feature reads and the ratio — and the conviction
+    // literal are each written twice and exist once: four nodes saved, and
+    // not one more, because the thresholds and the sizes differ.
+    assert_eq!(
+        report.unique_nodes,
+        written - 4,
+        "N shared nodes, not 2N: {} unique for {written} written",
+        report.unique_nodes
+    );
+    assert_eq!(compiled.cost(), report.unique_nodes);
+
+    let program = compiler.program();
+    let ratios: Vec<NodeRef> = compiled
+        .plan()
+        .iter()
+        .copied()
+        .filter(|node| matches!(program.node(*node).map(|n| &n.op), Some(Op::Ratio { .. })))
+        .collect();
+    assert_eq!(ratios.len(), 1, "exactly one ratio node: {ratios:?}");
+    for rule in compiled.rules() {
+        let Some(Op::Compare { left, .. }) = program.node(rule.condition()).map(|n| &n.op) else {
+            panic!("rule '{}' must compile to a comparison", rule.name());
+        };
+        assert_eq!(
+            *left,
+            ratios[0],
+            "rule '{}' must read the one shared ratio",
+            rule.name()
+        );
+    }
+}
+
+#[test]
+fn node_numbering_is_stable_across_independent_compiles() {
+    let specs = [
+        two_clauses_over_the_relative_spread(),
+        spec_with(
+            "lean-and-calm",
+            leaning().and(Expr::feature(volatility()).less_than(Expr::Statistic(0.5))),
+        ),
+        spec_with(
+            "lean-and-tight",
+            leaning().and(relative_spread().less_than(Expr::Statistic(0.0005))),
+        ),
+    ];
+    let compile_all = || {
+        let mut compiler = compiler();
+        let compiled: Vec<_> = specs
+            .iter()
+            .map(|spec| compiler.compile(spec).unwrap())
+            .collect();
+        (compiled, compiler.into_program())
+    };
+
+    let (first, first_program) = compile_all();
+    let (second, second_program) = compile_all();
+
+    // Premise: sharing happened, so which index a node received is a real
+    // question rather than a count.
+    let written: usize = specs.iter().map(syntactic_size_of).sum();
+    assert!(
+        first_program.len() < written,
+        "{} nodes for {written} written — nothing was shared",
+        first_program.len()
+    );
+
+    // A replay that renumbers is not a replay: a stored plan names indices,
+    // and a program recompiled from the same source must put the same
+    // computation at each of them.
+    assert_eq!(first_program, second_program);
+    assert_eq!(first, second);
+    for (a, b) in first.iter().zip(&second) {
+        assert_eq!(a.plan(), b.plan(), "strategy {} was renumbered", a.id());
+    }
+}
+
+/// A strategy whose three expressions all read the relative spread — two
+/// conditions and one conviction — so the shared plan computes it once where
+/// the written tree computes it three times.
+fn relative_spread_family() -> StrategySpec {
+    StrategySpec::new(
+        StrategyId::new("relative-spread"),
+        subject(),
+        Duration::from_millis(250),
+    )
+    .with_rule(Rule::new(
+        "tight",
+        SignalKind::Enter,
+        relative_spread()
+            .less_than(Expr::Statistic(0.0005))
+            .and(leaning()),
+        Expr::Exact(Decimal::from_int(100)),
+        Expr::Statistic(0.6),
+        400,
+    ))
+    .with_rule(Rule::new(
+        "wide",
+        SignalKind::Exit,
+        relative_spread()
+            .greater_than(Expr::Statistic(0.002))
+            .or(Expr::feature(volatility()).greater_than(Expr::Statistic(0.5))),
+        Expr::Exact(Decimal::from_int(50)),
+        Expr::Statistic(0.5).plus(relative_spread()),
+        200,
+    ))
+}
+
+/// The written tree, evaluated directly and without sharing.
+///
+/// Deliberately a second implementation over the `Expr` tree rather than a
+/// call into the crate: it is the reference the compiled plan is checked
+/// against, so it must not be built from the thing under test. It covers only
+/// the operators the fixture uses and panics on anything else, which keeps it
+/// small enough to be read as a specification.
+fn reference(expr: &Expr, vector: &FeatureVector) -> FeatureValue {
+    let statistics =
+        |left: &Expr, right: &Expr| match (reference(left, vector), reference(right, vector)) {
+            (FeatureValue::Statistic(a), FeatureValue::Statistic(b)) => (a, b),
+            other => panic!("reference: expected two statistics, found {other:?}"),
+        };
+    match expr {
+        Expr::Exact(value) => FeatureValue::Exact(*value),
+        Expr::Statistic(value) => FeatureValue::Statistic(*value),
+        Expr::Feature(key) => vector
+            .get(key)
+            .expect("the fixture vector carries every feature"),
+        Expr::Ratio {
+            numerator,
+            denominator,
+        } => match (reference(numerator, vector), reference(denominator, vector)) {
+            (FeatureValue::Exact(top), FeatureValue::Exact(bottom)) => {
+                FeatureValue::Statistic(top.to_f64() / bottom.to_f64())
+            }
+            other => panic!("reference: a ratio of {other:?}"),
+        },
+        Expr::Compare { op, left, right } => {
+            let (a, b) = statistics(left, right);
+            FeatureValue::Flag(match op {
+                CompareOp::Less => a < b,
+                CompareOp::Greater => a > b,
+                other => panic!("reference: comparison {} is not covered", other.as_str()),
+            })
+        }
+        Expr::Logical { op, left, right } => {
+            match (reference(left, vector), reference(right, vector)) {
+                (FeatureValue::Flag(a), FeatureValue::Flag(b)) => FeatureValue::Flag(match op {
+                    LogicalOp::And => a && b,
+                    LogicalOp::Or => a || b,
+                }),
+                other => panic!("reference: a logical over {other:?}"),
+            }
+        }
+        Expr::Arithmetic {
+            op: ArithmeticOp::Add,
+            left,
+            right,
+        } => {
+            let (a, b) = statistics(left, right);
+            FeatureValue::Statistic(a + b)
+        }
+        other => panic!("reference: {} is not covered", other.label()),
+    }
+}
+
+/// The first rule whose condition holds under the reference, as what the
+/// runtime would emit for it.
+fn reference_signal(
+    spec: &StrategySpec,
+    vector: &FeatureVector,
+) -> Option<(SignalKind, Decimal, Conviction)> {
+    spec.rules
+        .iter()
+        .find_map(|rule| match reference(&rule.condition, vector) {
+            FeatureValue::Flag(false) => None,
+            FeatureValue::Flag(true) => {
+                let FeatureValue::Exact(quantity) = reference(&rule.size, vector) else {
+                    panic!("reference: a size that is not exact");
+                };
+                let FeatureValue::Statistic(probability) = reference(&rule.conviction, vector)
+                else {
+                    panic!("reference: a conviction that is not a statistic");
+                };
+                Some((
+                    rule.kind,
+                    quantity,
+                    Conviction::new(probability, rule.observations),
+                ))
+            }
+            other => panic!("reference: a condition that evaluated to {other:?}"),
+        })
+}
+
+/// One market state the fixture strategy reads.
+fn market(
+    mid_price: &str,
+    spread_width: &str,
+    lean: f64,
+    vol: f64,
+    at: Timestamp,
+) -> FeatureVector {
+    vector_of(
+        &[
+            (
+                mid(),
+                FeatureValue::Exact(Decimal::parse(mid_price).expect("fixture decimal")),
+            ),
+            (
+                spread(),
+                FeatureValue::Exact(Decimal::parse(spread_width).expect("fixture decimal")),
+            ),
+            (pressure(), FeatureValue::Statistic(lean)),
+            (volatility(), FeatureValue::Statistic(vol)),
+        ],
+        at,
+    )
+}
+
+#[test]
+fn a_shared_plan_evaluates_exactly_as_the_unshared_expression_tree_does() {
+    let spec = relative_spread_family();
+
+    // Premise: the fixture has something to share. Three occurrences of the
+    // ratio, across two conditions and a conviction, so the shared plan
+    // computes once what the written tree computes three times.
+    let duplicates: usize = spec
+        .rules
+        .iter()
+        .flat_map(|rule| [&rule.condition, &rule.size, &rule.conviction])
+        .map(|expr| occurrences(expr, &relative_spread()))
+        .sum();
+    assert!(
+        duplicates >= 2,
+        "the fixture must write the ratio at least twice, wrote it {duplicates} times"
+    );
+
+    let mut compiler = compiler();
+    let compiled = compiler.compile(&spec).unwrap();
+    let report = compiler.report();
+    assert!(
+        report.unique_nodes < report.submitted_nodes,
+        "the compiler must actually have shared something: {} unique for {} submitted",
+        report.unique_nodes,
+        report.submitted_nodes
+    );
+    let mut runtime = StrategyRuntime::new(compiler.into_program()).unwrap();
+
+    let at = Timestamp::from_secs(1_700_000_000);
+    let fixtures = [
+        // A tight spread and a leaning book: the first rule fires.
+        market("100", "0.01", 0.7, 0.1, at),
+        // A wide spread alone: the second rule fires on the ratio.
+        market("100", "0.5", 0.2, 0.1, at),
+        // Tight but not leaning, and calm: nothing fires.
+        market("250.5", "0.1", 0.2, 0.1, at),
+        // Tight but not leaning, and volatile: the second rule fires on
+        // volatility, with a conviction that reads the ratio.
+        market("250.5", "0.1", 0.2, 0.9, at),
+        // Neither tight nor wide, volatile: the second rule, via volatility.
+        market("100", "0.1", 0.9, 0.9, at),
+        // Both rules would fire; order decides, and the first wins.
+        market("100", "0.01", 0.7, 0.9, at),
+    ];
+
+    // Premise: the fixture set reaches every outcome — each rule, and none —
+    // or agreement on it proves less than it appears to.
+    let expected: Vec<_> = fixtures
+        .iter()
+        .map(|vector| reference_signal(&spec, vector))
+        .collect();
+    for wanted in [Some(SignalKind::Enter), Some(SignalKind::Exit), None] {
+        assert!(
+            expected
+                .iter()
+                .any(|outcome| outcome.as_ref().map(|(kind, _, _)| *kind) == wanted),
+            "the fixture set never reaches {wanted:?}"
+        );
+    }
+
+    for (vector, wanted) in fixtures.iter().zip(&expected) {
+        let got = runtime
+            .run(&compiled, vector, at)
+            .unwrap()
+            .map(|signal| (signal.kind, signal.desired_quantity, signal.conviction));
+        assert_eq!(
+            &got, wanted,
+            "the shared plan and the written tree disagree on {vector:?}"
+        );
+    }
+}
+
+#[test]
+fn the_size_refusal_still_fires_on_a_program_that_is_oversized_after_sharing() {
+    // Depth 9 gives 512 leaves and 1023 nodes, all distinct feature reads.
+    // Written twice, the strategy is 2,051 nodes as written and 1,028 once
+    // shared — either side of nothing, and both above the default ceiling.
+    let depth = 9;
+    let mut catalogue = catalogue();
+    for key in distinct_wide_tree_leaves(depth, &subject()) {
+        catalogue.declare(key, Type::Statistic).unwrap();
+    }
+    let mut next = 0u64;
+    let tree = distinct_wide_tree(depth, &subject(), &mut next);
+    let doubled = tree
+        .clone()
+        .greater_than(Expr::Statistic(0.0))
+        .and(tree.clone().less_than(Expr::Statistic(1.0)));
+
+    // Premise: the tree is written twice, so sharing has something to do.
+    assert_eq!(occurrences(&doubled, &tree), 2);
+
+    // Premise: it does not fit even once shared. A generous compiler admits
+    // it and states the shared cost, which must be below what was written and
+    // above what the default ceiling allows — otherwise a refusal below would
+    // be the syntactic measure firing, and say nothing about sharing.
+    let generous = CompilerLimits {
+        max_nodes: 4096,
+        max_depth: 32,
+    };
+    let mut wide_open = StrategyCompiler::with_limits(catalogue.clone(), generous);
+    let shared = wide_open
+        .compile(&spec_with("doubled", doubled.clone()))
+        .unwrap();
+    let written = syntactic_size(&doubled);
+    assert!(
+        shared.cost() < written,
+        "sharing must have happened: {} for {written} written",
+        shared.cost()
+    );
+    assert!(
+        shared.cost() > CompilerLimits::default().max_nodes,
+        "the fixture must exceed the default ceiling once shared: {} of {}",
+        shared.cost(),
+        CompilerLimits::default().max_nodes
+    );
+
+    // Sharing is not a way past the budget.
+    let refused = StrategyCompiler::new(catalogue)
+        .compile(&spec_with("doubled", doubled))
+        .unwrap_err();
+    assert_eq!(refused.code(), "guard", "{refused}");
+    assert!(refused.to_string().contains("budget"), "{refused}");
 }
 
 // --- warnings ---------------------------------------------------------------
