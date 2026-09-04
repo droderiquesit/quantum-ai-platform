@@ -516,6 +516,9 @@ module "execution_node" {
   default_pricing    = each.value.default_pricing
   strategy_plan_path = each.value.strategy_plan_path
 
+  # Per node and never defaulted; see the variable's own description.
+  region_allocation = each.value.region_allocation
+
   # The same bootstrap every Cloud Run sidecar mounts, and the loopback
   # addresses it answers on.
   egress_bootstrap = file("${path.module}/../egress/envoy.yaml")

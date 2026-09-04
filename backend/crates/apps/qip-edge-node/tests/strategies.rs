@@ -21,6 +21,7 @@ use qip_core::{Decimal, SystemClock, dec};
 use qip_edge::cell::{CellConfig, PricingPolicy};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::policy::VerifiedPolicy;
+use qip_edge_node::allocation::RegionCapital;
 use qip_edge_node::feed::SimulatedFeed;
 use qip_edge_node::gateway::SimulatedGateway;
 use qip_edge_node::pass::{PassOutcome, PassStats, run_pass};
@@ -128,7 +129,9 @@ fn policy(
 fn node_with_feed() -> Result<(NodeAssembly, SimulatedGateway, SimulatedFeed)> {
     let config = CellConfig::new(CELL, REGION).with_venue(venue());
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
-    let mut node = assemble(config, features, Arc::new(SystemClock))?;
+    // Far above any grant this suite signs, so the plan's deployment decides.
+    let allocation = RegionCapital::read(Some("1000000000"))?;
+    let mut node = assemble(config, features, Arc::new(SystemClock), allocation)?;
     let gateway = SimulatedGateway::new(venue(), 7, t(0))?;
     let feed = SimulatedFeed::new(venue());
     feed.attach(&mut node.cell)?;

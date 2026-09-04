@@ -12,6 +12,11 @@
 //!   does not know which cell it is cannot check that scope.
 //! * A **venue set**. What this cell may reach, independent of what any
 //!   envelope permits; an order clears both or neither.
+//! * A **region allocation**. The one amount the whole cell may commit,
+//!   across every strategy it runs. Each envelope bounds one strategy and
+//!   nothing on any wire bounds their sum, so a cell without this can spend
+//!   every envelope in full while partitioned from the centre — see
+//!   `qip_edge_node::allocation` for why it is refused rather than defaulted.
 //!
 //! And one thing it must be *told*, because the default is the safe answer and
 //! silence has to keep selecting it: **which venue adapter the orders go
@@ -44,6 +49,7 @@ use qip_core::error::{Error, Result};
 use qip_core::{Clock, Duration, SystemClock};
 use qip_edge::cell::PolledHalt;
 use qip_edge::cell::{Cell, CellConfig, Placer, PricingPolicy, WorkReport};
+use qip_edge_node::allocation::RegionCapital;
 use qip_edge_node::arbitrage::{ArbitrageInstaller, STRATEGY_VARIABLE};
 use qip_edge_node::feed::{FEED_VARIABLE, FeedChoice, SIMULATED_FEED, SimulatedFeed};
 use qip_edge_node::gateway::NodeGateway;
@@ -110,6 +116,10 @@ struct NodeConfig {
     region: String,
     venues: Vec<VenueId>,
     envelope_key: Vec<u8>,
+    /// The capital the whole cell may commit. Required, and a `RegionCapital`
+    /// rather than a `Decimal` so the only value that can reach the cell is
+    /// one that passed `RegionCapital::read` — see `qip_edge_node::allocation`.
+    region_allocation: RegionCapital,
     health_port: u16,
     storage: StorageSettings,
     /// Where the central plane is, when there is one. `None` is a cell running
@@ -152,6 +162,14 @@ impl NodeConfig {
         let region = required("QIP_CELL_REGION", &mut missing);
         let key = required_secret("QIP_CAPITAL_ENVELOPE_KEY", &mut missing)?;
         let venues = required("QIP_VENUES", &mut missing);
+        // Spelled as a literal beside the other four rather than through
+        // `allocation::ALLOCATION_VARIABLE`: the acceptance walk in
+        // `manifest_wiring.rs` learns what this binary refuses to start
+        // without by reading the quoted name in each `required` call, and a
+        // name it could not see there is a crash loop it could not warn a
+        // deployment about. (That walk reads comments too, so this one must
+        // not spell the call with a placeholder name inside the quotes.)
+        let region_allocation = required("QIP_REGION_ALLOCATION", &mut missing);
 
         if !missing.is_empty() {
             return Err(Error::invalid(format!(
@@ -159,6 +177,11 @@ impl NodeConfig {
                 missing.join(", ")
             )));
         }
+
+        // Checked before anything below opens a port or a store, and refused
+        // outright: a node whose allocation is unparseable or zero must never
+        // reach the cell with a number it made up in place of one.
+        let region_allocation = RegionCapital::read(Some(&region_allocation))?;
 
         let venues: Vec<VenueId> = venues
             .split(',')
@@ -221,6 +244,7 @@ impl NodeConfig {
             region,
             venues,
             envelope_key: key,
+            region_allocation,
             health_port,
             storage,
             mesh,
@@ -287,11 +311,19 @@ fn run() -> Result<()> {
     // together in the library, where a test can prove they are one registry.
     // Assembled piecewise here, that property was held by a source check on
     // this file, which a second `Telemetry` inserted between the lines passed.
+    // The region allocation goes in by the same door, for the same reason:
+    // the builder that installs it was called by no composition root for as
+    // long as calling it was optional.
     let NodeAssembly {
         telemetry,
         mut cell,
         mesh_series,
-    } = assemble(cell_config, features, Arc::clone(&clock))?;
+    } = assemble(
+        cell_config,
+        features,
+        Arc::clone(&clock),
+        config.region_allocation,
+    )?;
     let metrics: &Arc<Metrics> = &telemetry.metrics;
 
     // The venue seam, and the one decision in this binary that is not
@@ -354,12 +386,18 @@ fn run() -> Result<()> {
     )?;
     let retained_sessions = mirror.retained_sessions()?;
 
+    // The allocation is printed as the cell holds it, not as configuration
+    // read it, so the banner is a claim about the cell and not about a
+    // variable — the two were allowed to differ for as long as no root
+    // installed the value it read.
     println!(
-        "qip-edge-node cell={} region={} venues={} live_capable={} gateway={}({}) adapter={} \
-         reaches_a_socket={}",
+        "qip-edge-node cell={} region={} venues={} region_allocation={} live_capable={} \
+         gateway={}({}) adapter={} reaches_a_socket={}",
         config.cell_id,
         config.region,
         config.venues.len(),
+        cell.region_allocation_free()
+            .map_or_else(|| "none".to_string(), |free| free.to_string()),
         ceiling.is_live(),
         gateway.class(),
         gateway.venue(),
@@ -773,8 +811,15 @@ fn answer(
         ),
         None => "null".to_string(),
     };
+    // What the region has left, as the cell holds it. `null` would mean a cell
+    // with no allocation at all, which this root can no longer build; the
+    // arm stays because the cell's accessor is honest about that state and a
+    // probe should not be the thing that turns it into a zero.
+    let region_allocation_free = cell
+        .region_allocation_free()
+        .map_or_else(|| "null".to_string(), |free| format!("\"{free}\""));
     let body = format!(
-        r#"{{"cell":"{}","region":"{}","halted":{},"halt_flag":{halt_flag},"arbitrage_desk":{},"live_capable":{},"venues":{},"strategies":{},"journal_entries":{},"journal_shipped":{},"storage":"{}","durable":{},"gateway":{{"class":"{}","venue":"{}","submitted":{},"rejected":{},"reaches_a_socket":{},"unknown_orders":{}}},"pass":{pass},"mesh":{mesh},"started_at":{}}}"#,
+        r#"{{"cell":"{}","region":"{}","halted":{},"halt_flag":{halt_flag},"arbitrage_desk":{},"live_capable":{},"venues":{},"region_allocation_free":{region_allocation_free},"strategies":{},"journal_entries":{},"journal_shipped":{},"storage":"{}","durable":{},"gateway":{{"class":"{}","venue":"{}","submitted":{},"rejected":{},"reaches_a_socket":{},"unknown_orders":{}}},"pass":{pass},"mesh":{mesh},"started_at":{}}}"#,
         config.cell_id,
         config.region,
         cell.is_halted(),

@@ -544,3 +544,34 @@ variable "strategy_plan_path" {
     EOT
   }
 }
+
+variable "region_allocation" {
+  description = <<-EOT
+    The capital this node may hold in reservation across all its strategies,
+    written into `node.env` as `QIP_REGION_ALLOCATION`.
+
+    Required, with no default, because a default is a number nobody chose.
+    `qip-edge-node` refuses to start without it (ADR 0008: a cell that has
+    lost the centre still refuses its own second proposal, and it can only do
+    that against a per-region allocation it was given at assembly). Zero is
+    refused by the binary as well: "send nothing" is what the halt flag is
+    for, and an allocation of zero that starts a node is a control that reads
+    as protection and is not.
+  EOT
+
+  type = string
+
+  validation {
+    # Same heredoc-injection reasoning as `strategy_plan_path`: this is
+    # interpolated unquoted into node.env, so the shape is a character class,
+    # not a parse. A plain decimal with an optional fraction and nothing else.
+    condition     = can(regex("^[0-9]+(\\.[0-9]+)?$", var.region_allocation)) && var.region_allocation != "0" && !can(regex("^0+(\\.0+)?$", var.region_allocation))
+    error_message = <<-EOT
+      region_allocation must be a positive decimal such as "250000.50" — digits,
+      an optional fraction, nothing else. It is written verbatim into node.env by
+      an unquoted heredoc, so any other character is an injection rather than a
+      number; and zero is refused because a node that can reserve nothing should
+      be halted, not started.
+    EOT
+  }
+}

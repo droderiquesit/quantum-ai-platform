@@ -22,6 +22,7 @@ use qip_core::{Decimal, SystemClock, dec};
 use qip_edge::cell::{CellConfig, PolledHalt, PricingPolicy};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::telemetry::EDGE_FILLS_CONFIRMED;
+use qip_edge_node::allocation::RegionCapital;
 use qip_edge_node::feed::{FEED_VARIABLE, FeedChoice, SimulatedFeed};
 use qip_edge_node::gateway::SimulatedGateway;
 use qip_edge_node::pass::{PassOutcome, PassStats, run_pass};
@@ -108,7 +109,10 @@ fn node_with_feed(
 ) -> Result<(NodeAssembly, SimulatedGateway, SimulatedFeed)> {
     let config = CellConfig::new(CELL, REGION).with_venue(venue());
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
-    let mut node = assemble(config, features, Arc::new(SystemClock))?;
+    // Far above the one strategy's grant, so the pass loop is what decides;
+    // the region bound has its own suite in `allocation.rs`.
+    let allocation = RegionCapital::read(Some("1000000000"))?;
+    let mut node = assemble(config, features, Arc::new(SystemClock), allocation)?;
     let gateway = SimulatedGateway::new(venue(), 7, t(0))?;
     let feed = SimulatedFeed::new(venue());
     feed.attach(&mut node.cell)?;

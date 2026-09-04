@@ -264,6 +264,12 @@ variable "execution_nodes" {
       port = number
     }))
     create_egress_nat = optional(bool, false)
+    # The capital this node may reserve across its strategies, as a positive
+    # decimal string. Required per entry and never defaulted: `qip-edge-node`
+    # refuses to start without QIP_REGION_ALLOCATION, and a value that
+    # appeared from nowhere would be the one number in a cell's envelope no
+    # reviewer had read.
+    region_allocation = string
     # How the node prices the intents of every strategy it deploys, and where
     # it reads the compiled plan from. Empty is "deploy nothing", which is
     # what the node does with them unset; they are written into `node.env`

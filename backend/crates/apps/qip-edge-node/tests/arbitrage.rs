@@ -26,6 +26,7 @@ use qip_core::{Decimal, Duration, SystemClock, Timestamp, dec};
 use qip_edge::cell::CellConfig;
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::policy::VerifiedPolicy;
+use qip_edge_node::allocation::RegionCapital;
 use qip_edge_node::arbitrage::{ArbitrageInstaller, Installation, graph_from_whitelist};
 use qip_edge_node::{NodeAssembly, assemble};
 use qip_feature_dag::engine::FeatureEngine;
@@ -46,7 +47,10 @@ fn t(secs: i64) -> Timestamp {
 fn assembled() -> NodeAssembly {
     let config = CellConfig::new(CELL, REGION).with_venue(VenueId::new(VENUE));
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
-    assemble(config, features, Arc::new(SystemClock)).expect("a well-formed cell assembles")
+    // Far above any grant this suite signs, so the desk's own gates decide.
+    let allocation = RegionCapital::read(Some("1000000000")).expect("a positive amount");
+    assemble(config, features, Arc::new(SystemClock), allocation)
+        .expect("a well-formed cell assembles")
 }
 
 fn signed_envelope(strategy: &str) -> Result<VerifiedEnvelope> {
