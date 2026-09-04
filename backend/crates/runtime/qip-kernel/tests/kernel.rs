@@ -1058,3 +1058,107 @@ fn the_panel_records_the_agents_that_ran_and_records_no_denial_it_did_not_have()
     );
     Ok(())
 }
+
+#[test]
+fn a_lapsed_roster_is_recorded_as_an_unauthorised_organisation_and_not_as_eighteen_failures()
+-> Result<()> {
+    // The failure: every manifest is reviewed at assembly and expires after
+    // its ninety-day review interval, whereupon `AgentHost::run` refuses each
+    // agent and the cycle reports one `failed` line per agent — the same
+    // line a bug in the analyst produces. Nothing halted, nothing paged, and
+    // no series carried the fact. This proves the fact now has a number and
+    // a sentence, and that neither is produced by a fresh roster.
+
+    // The premise on a fresh roster: the panel convenes, nothing is refused,
+    // and the gauge reads zero. Without this the assertions below could be
+    // passing against a roster that is always reported unauthorised.
+    let mut fresh = platform(PlatformConfig::default())?;
+    let roster = fresh.organisation().roster().len();
+    assert!(
+        roster > 1,
+        "the roster is empty; there is nothing to expire"
+    );
+    fresh.observe(bars("AAA", 120));
+    let report = fresh.run_cycle(start());
+    let reason = report.stage(Stage::Reason).expect("REASON reports");
+    assert!(
+        !reason.detail.contains("nothing in the queue"),
+        "the panel did not convene on a fresh roster: {}",
+        reason.detail
+    );
+    assert!(
+        !reason.problems.iter().any(|p| p.contains("unauthorised")),
+        "a fresh roster was reported unauthorised: {:?}",
+        reason.problems
+    );
+    assert!(
+        !reason.problems.iter().any(|p| p.contains("refused to run")),
+        "a fresh roster had a run refused: {:?}",
+        reason.problems
+    );
+    assert_eq!(
+        recorded(&fresh).gauge(names::AGENT_MANIFESTS_EXPIRED, &labels([])),
+        Some(0.0),
+        "the expiry gauge was not recorded as zero on a fresh roster"
+    );
+
+    // The same assembly, first cycle one day past the review interval.
+    let mut lapsed = platform(PlatformConfig::default())?;
+    lapsed.observe(bars("AAA", 120));
+    let later = start().saturating_add(Duration::from_days(91));
+    let report = lapsed.run_cycle(later);
+    let reason = report.stage(Stage::Reason).expect("REASON reports");
+    assert!(
+        !reason.detail.contains("nothing in the queue"),
+        "the panel did not convene, so no run could be refused: {}",
+        reason.detail
+    );
+
+    // The number: every manifest on the roster.
+    assert_eq!(
+        recorded(&lapsed).gauge(names::AGENT_MANIFESTS_EXPIRED, &labels([])),
+        Some(roster as f64),
+        "the expiry gauge does not count the whole lapsed roster"
+    );
+    // The sentence: one cycle-level line naming the organisation, not the
+    // agents one by one as failures.
+    let unauthorised: Vec<&String> = reason
+        .problems
+        .iter()
+        .filter(|p| p.starts_with("the organisation is unauthorised"))
+        .collect();
+    assert_eq!(
+        unauthorised.len(),
+        1,
+        "expected exactly one organisation-level line, got {:?}",
+        reason.problems
+    );
+    assert!(
+        unauthorised[0].contains(&format!("{roster} of {roster} agent manifest(s)")),
+        "the line does not count the roster: {}",
+        unauthorised[0]
+    );
+    assert!(
+        unauthorised[0].contains("nothing here renews one"),
+        "the line does not say a manifest is not auto-renewed: {}",
+        unauthorised[0]
+    );
+    // And each refused run says it was refused, with the host's reason,
+    // rather than reading as a failed analysis.
+    let refused = reason
+        .problems
+        .iter()
+        .filter(|p| p.contains("refused to run: ") && p.contains("expired"))
+        .count();
+    assert!(
+        refused >= 1,
+        "no run was reported as refused for an expired manifest: {:?}",
+        reason.problems
+    );
+    assert!(
+        !reason.problems.iter().any(|p| p.ends_with(" failed")),
+        "a refused run still reads as a failure: {:?}",
+        reason.problems
+    );
+    Ok(())
+}

@@ -12,7 +12,7 @@ use qip_agents::finding::{
 use qip_agents::governance::{Roster, Severity};
 use qip_agents::manifest::{AgentManifest, AgentRole, EscalationPolicy};
 use qip_agents::memory::{Episode, EpisodeOutcome, Lesson, PromotionPolicy, ResearchMemory};
-use qip_agents::runtime::{Agent, AgentContext, AgentHost, Gated, RunStatus};
+use qip_agents::runtime::{Agent, AgentContext, AgentHost, Gated, RunStatus, Upstream};
 use qip_ai::language::{DeterministicModel, ModelRequest};
 use qip_core::error::{Error, Result};
 use qip_core::ids::{AgentRunId, LessonId};
@@ -921,4 +921,119 @@ fn episodes_are_read_point_in_time() {
             .len(),
         2
     );
+}
+
+// --- the upstream: one writer, gated readers ---------------------------------
+
+/// An agent that reads the feed and reports the last price it saw.
+#[derive(Debug)]
+struct Reader {
+    manifest: AgentManifest,
+    feed: Gated<MarketFeed>,
+}
+
+impl Agent for Reader {
+    fn manifest(&self) -> &AgentManifest {
+        &self.manifest
+    }
+    fn analyse(&self, ctx: &mut AgentContext, brief: &AgentBrief) -> Result<AgentFinding> {
+        let feed = self.feed.get(ctx)?;
+        Ok(AgentFinding::new(
+            ctx.run_id().clone(),
+            "reader",
+            ctx.now(),
+            brief.as_of,
+            "read it",
+        )
+        .with_fact(NumericFact::observed(
+            "last",
+            feed.last,
+            "usd",
+            "feed",
+            brief.as_of,
+            "r-1",
+        )))
+    }
+}
+
+#[test]
+fn a_gate_on_an_upstream_shows_what_the_upstream_has_written_and_a_cold_gate_does_not() {
+    // The failure: a platform that absorbed every bar into its own copy of a
+    // facility while the desk the agents read held a `Gated::new` of an
+    // empty one taken at assembly. Every analyst answered `no_data` for the
+    // whole life of the process. A gate built from an upstream reads the
+    // upstream's slot; a gate built from a value reads that value forever.
+    let upstream = Upstream::new(MarketFeed { last: 100.0 });
+    let fed = upstream.gate(Capability::ReadPortfolio, "portfolio");
+    let cold = Gated::new(
+        MarketFeed { last: 100.0 },
+        Capability::ReadPortfolio,
+        "portfolio",
+    );
+    assert!(
+        upstream.feeds(&fed),
+        "the gate was not wired to its upstream"
+    );
+    assert!(!upstream.feeds(&cold), "a cold gate reported itself as fed");
+
+    // The premise: before any write both gates agree, so a later difference
+    // is the write and not the wiring.
+    let manifest = AgentManifest::research("reader", "Reader", "reads", now()).with_capabilities(
+        CapabilitySet::of([Capability::ReadPortfolio, Capability::PublishHypothesis]),
+    );
+    let host = AgentHost::new(11);
+    let read = |gate: Gated<MarketFeed>, n: u64| -> f64 {
+        let agent = Reader {
+            manifest: manifest.clone(),
+            feed: gate,
+        };
+        let record = host.run(&agent, &brief(), now(), lineage(), run_id(n));
+        assert!(record.status.is_success(), "{:?}", record.status);
+        record.finding.unwrap().fact("last").unwrap().value
+    };
+    // Gates onto the same slot are cheap to make; each read below uses a
+    // fresh one so the closure can own it.
+    assert!((read(upstream.gate(Capability::ReadPortfolio, "portfolio"), 1) - 100.0).abs() < 1e-12);
+
+    upstream.update(|feed| feed.last = 101.5);
+
+    assert!(
+        (upstream.read().last - 101.5).abs() < 1e-12,
+        "the owner's own read did not see the write"
+    );
+    assert!(
+        (read(fed, 2) - 101.5).abs() < 1e-12,
+        "an agent reading through the fed gate did not see the upstream's write"
+    );
+    assert!(
+        (read(cold, 3) - 100.0).abs() < 1e-12,
+        "a cold gate changed without an upstream, so something else can write it"
+    );
+}
+
+#[test]
+fn an_upstream_does_not_relax_the_gate_it_feeds() {
+    // The guarantee `Gated` exists for, restated against the new wiring: the
+    // capability check, the charge and the audit entry are still the only way
+    // through, whether or not something upstream can write the slot.
+    let upstream = Upstream::new(MarketFeed { last: 100.0 });
+    let manifest = AgentManifest::research("reader", "Reader", "reads", now())
+        .with_capabilities(CapabilitySet::of([Capability::ReadMarketData]));
+    let agent = Reader {
+        manifest,
+        feed: upstream.gate(Capability::ReadPortfolio, "portfolio"),
+    };
+    let host = AgentHost::new(11);
+    let record = host.run(&agent, &brief(), now(), lineage(), run_id(4));
+
+    assert!(
+        matches!(record.status, RunStatus::Failed { .. }),
+        "{:?}",
+        record.status
+    );
+    assert!(record.finding.is_none());
+    let denied = record.denied_accesses();
+    assert_eq!(denied.len(), 1, "the refusal left no audit entry");
+    assert_eq!(denied[0].capability, Capability::ReadPortfolio);
+    assert_eq!(denied[0].facility, "portfolio");
 }

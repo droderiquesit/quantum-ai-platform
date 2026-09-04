@@ -40,8 +40,9 @@ use crate::central::{
 };
 use crate::config::PlatformConfig;
 use crate::cycle::{CycleReport, Stage, StageOutcome};
-use qip_agents::Budget;
 use qip_agents::memory::ResearchMemory;
+use qip_agents::runtime::{Reading, Upstream};
+use qip_agents::{Budget, RunStatus};
 use qip_ai::language::DeterministicModel;
 use qip_ai::retrieval::SearchIndex;
 use qip_capital::reservation::ReservationLedger;
@@ -285,12 +286,12 @@ pub struct Platform {
     /// trade, taken from the universe at assembly.
     ///
     /// A projection of reference data rather than a second copy of a facility.
-    /// The universe itself lives behind the desk's `read_market_data`
-    /// capability gate and the composition root holds no agent context to
-    /// unlock it — see [`Platform::world`] for the same trade-off made the
-    /// other way. Reference data does not change under the platform, so a
-    /// projection of it cannot drift from the desk's copy the way absorbed
-    /// state would.
+    /// The universe itself lives in the market view behind the desk's
+    /// `read_market_data` gate; the platform is that view's upstream and
+    /// could read it without a context, but reference data does not change
+    /// under the platform, so a projection taken once at assembly cannot
+    /// drift from it the way absorbed state would — and absorbed state is
+    /// now shared rather than projected, see the `world` field.
     asset_classes: BTreeMap<String, AssetClass>,
     /// The exposure buckets every instrument this platform was assembled to
     /// trade belongs to, keyed by object id then axis — the same projection
@@ -321,17 +322,31 @@ pub struct Platform {
     /// and neither is one that can fail to write silently.
     capture_problems: Vec<String>,
 
-    /// The platform's own world model — the one [`Platform::observe`] feeds.
+    /// The world model — the one [`Platform::observe`] feeds, held as the
+    /// writing end of the slot the agents' desk reads through its
+    /// `read_world_model` gate.
     ///
-    /// Distinct from the copy handed to the agents' desk at assembly: the
-    /// desk's sits behind a read-only capability gate inside an `Arc` every
-    /// agent shares, so there is deliberately no mutable path to it. The
-    /// absorbed state therefore lives here, where the UNDERSTAND stage reads
-    /// its coverage and the DISCOVER stage reads its series. Sharing one
-    /// instance with the desk would require interior mutability in the agent
-    /// runtime, which is a change with its own review; until then the desk's
-    /// copy is honestly a cold start, exactly as `Desk::empty` documents.
-    world: WorldModel,
+    /// One instance, not a copy. Until this was an [`Upstream`] the desk held
+    /// a `WorldModel::new()` taken at assembly and nothing ever wrote to it:
+    /// the platform absorbed three hundred and twenty periods of a tape into
+    /// *this* field while every analyst read an empty model, answered
+    /// `no_data`, and left each hypothesis resting on the single anomaly
+    /// origin — whose concentration penalty caps effective confidence at
+    /// 0.36 against a 0.50 bar. No running binary had ever produced an order,
+    /// and the reason was a cold copy, not a control. The platform writes
+    /// between cycles, in `observe`, and never while a dispatch is reading.
+    world: Upstream<WorldModel>,
+    /// The market view the agents read through the desk's `read_market_data`
+    /// gate — the snapshot [`Platform::observe`] applies every bar, quote,
+    /// trade and book to, beside the reference universe.
+    ///
+    /// The snapshot's bar series is trimmed to [`SERIES_HISTORY`] on every
+    /// push past it, so what the desk holds per instrument is exactly the
+    /// platform's own `bar_history`: the same bars, the same bound, the same
+    /// newest-first retention. A `BarSeries` is unbounded on its own, and a
+    /// desk that grew with uptime would be the failure [`SERIES_HISTORY`]
+    /// documents, reached by a second road.
+    market: Upstream<MarketView>,
     /// Where liquidity lives per instrument across venues, fed from books and
     /// quotes as they arrive, each at its own observed instant.
     liquidity: LiquidityTopology,
@@ -1307,10 +1322,21 @@ impl Platform {
             assembled_at: now,
         };
 
-        let desk = Arc::new(Desk::new(
+        // The two facilities the platform feeds, held as their writing ends.
+        // The desk is built by `Desk::new` so the facility-to-capability
+        // pairing stays where that constructor's documentation says it lives,
+        // and the two gates are then re-pointed at these slots under the
+        // capability and label `Desk::new` itself chose — not a second
+        // spelling of either.
+        let world = Upstream::new(WorldModel::new());
+        let market = Upstream::new(MarketView {
+            snapshot: MarketSnapshot::new(now),
+            universe,
+        });
+        let mut desk = Desk::new(
             MarketView {
                 snapshot: MarketSnapshot::new(now),
-                universe,
+                universe: Universe::new(),
             },
             WorldModel::new(),
             BookView {
@@ -1334,7 +1360,10 @@ impl Platform {
             ComplianceView::default(),
             ResearchMemory::new(),
             SearchIndex::new(),
-        ));
+        );
+        desk.world = world.gate(desk.world.required(), desk.world.label());
+        desk.market = market.gate(desk.market.required(), desk.market.label());
+        let desk = Arc::new(desk);
 
         let organisation = Organisation::standard(
             desk.clone(),
@@ -1472,7 +1501,8 @@ impl Platform {
             volume_history: BTreeMap::new(),
             spread_history: BTreeMap::new(),
             observation_history: BTreeMap::new(),
-            world: WorldModel::new(),
+            world,
+            market,
             liquidity: LiquidityTopology::default(),
             market_events: Vec::new(),
             capital: TrackedCapital::new(initial_equity),
@@ -1645,6 +1675,10 @@ impl Platform {
         metrics.describe(
             names::PERMISSION_DENIALS,
             "agent attempts at something the agent's manifest does not grant",
+        );
+        metrics.describe(
+            names::AGENT_MANIFESTS_EXPIRED,
+            "roster manifests past their review interval; non-zero means every agent run is refused",
         );
         metrics.describe(
             names::RESERVATION_SHORTFALL,
@@ -2122,12 +2156,31 @@ impl Platform {
         &self.desk
     }
 
-    /// The platform's world model — the one [`Platform::observe`] feeds.
+    /// The platform's world model — the one [`Platform::observe`] feeds, and
+    /// the one the agents read through the desk's `read_world_model` gate.
     ///
     /// Read-only: `observe` is the writer, and a second writer would be a
-    /// second story about what the platform believes.
-    pub fn world(&self) -> &WorldModel {
-        &self.world
+    /// second story about what the platform believes. The borrow is a read
+    /// lock on the shared slot, so hold it for a statement, not a cycle.
+    pub fn world(&self) -> Reading<'_, WorldModel> {
+        self.world.read()
+    }
+
+    /// The market view the agents read through the desk's `read_market_data`
+    /// gate, as [`Platform::observe`] has fed it.
+    pub fn market_view(&self) -> Reading<'_, MarketView> {
+        self.market.read()
+    }
+
+    /// Whether the desk the agents hold reads the platform's own world model
+    /// and market view rather than a copy.
+    ///
+    /// Answered by pointer identity on the shared slots, so a regression to
+    /// a cold copy — the wiring this platform ran with for its whole life
+    /// before this seam existed — is a `false` here and not a `no_data`
+    /// finding somebody has to notice in a cycle report.
+    pub fn desk_is_fed(&self) -> bool {
+        self.world.feeds(&self.desk.world) && self.market.feeds(&self.desk.market)
     }
 
     /// Where liquidity lives, per instrument across venues, as fed from the
@@ -2319,6 +2372,19 @@ impl Platform {
                         self.bar_history.entry(key).or_default(),
                         bar.as_ref().clone(),
                     );
+                    // The desk's series, from the same bar at the same
+                    // instant. The guard is taken and released before the
+                    // rebuild below asks for the write lock again.
+                    let overflowed = self.market.update(|market| {
+                        market.snapshot.apply_bar(bar.as_ref().clone());
+                        market
+                            .snapshot
+                            .get(&bar.object_id)
+                            .is_some_and(|state| state.bars.len() >= DESK_SERIES_REBUILD_AT)
+                    });
+                    if overflowed {
+                        self.rebuild_desk_snapshot();
+                    }
                     bars.push(bar);
                     absorbed += 1;
                 }
@@ -2326,24 +2392,32 @@ impl Platform {
                     self.ensure_world_object(trade.object_id.as_str(), trade.at);
                     // "Last traded price" is the feature store's own
                     // definition of `close`, and a trade is exactly that.
-                    self.world.features_mut().record(
-                        "close",
-                        trade.object_id.as_str(),
-                        FeatureValue::new(trade.price.to_f64(), trade.at, trade.at),
-                    );
+                    self.world.update(|world| {
+                        world.features_mut().record(
+                            "close",
+                            trade.object_id.as_str(),
+                            FeatureValue::new(trade.price.to_f64(), trade.at, trade.at),
+                        );
+                    });
+                    self.market
+                        .update(|market| market.snapshot.apply_trade(trade));
                     absorbed += 1;
                 }
                 SensedRecord::Tick(tick) => {
                     self.ensure_world_object(tick.object_id.as_str(), tick.at);
-                    self.world.features_mut().record(
-                        "close",
-                        tick.object_id.as_str(),
-                        FeatureValue::new(tick.price.to_f64(), tick.at, tick.at),
-                    );
+                    self.world.update(|world| {
+                        world.features_mut().record(
+                            "close",
+                            tick.object_id.as_str(),
+                            FeatureValue::new(tick.price.to_f64(), tick.at, tick.at),
+                        );
+                    });
                     absorbed += 1;
                 }
                 SensedRecord::Quote(quote) => {
                     self.ensure_world_object(quote.object_id.as_str(), quote.at);
+                    self.market
+                        .update(|market| market.snapshot.apply_quote(quote.clone()));
                     if let Some(bps) = spread_bps(quote.bid, quote.ask) {
                         push_bounded(
                             self.spread_history
@@ -2382,6 +2456,8 @@ impl Platform {
                     let observation =
                         DepthObservation::from_book(&book, BOOK_DEPTH_LEVELS, VenueStatus::Open);
                     self.absorb_depth(observation, book.at);
+                    self.market
+                        .update(|market| market.snapshot.apply_book(*book));
                     absorbed += 1;
                 }
                 SensedRecord::News(item) => {
@@ -2389,7 +2465,8 @@ impl Platform {
                     // records sentiment at the item's published instant; the
                     // context supplies only entity-resolution bookkeeping,
                     // never a knowability stamp.
-                    self.world.absorb_news(&item, &self.context);
+                    let context = &self.context;
+                    self.world.update(|world| world.absorb_news(&item, context));
                     for event in MarketEvent::from_news(&item) {
                         self.push_market_event(event);
                     }
@@ -2397,7 +2474,7 @@ impl Platform {
                 }
                 SensedRecord::Fundamental(update) => {
                     self.define_fundamental_features(&update.metric, &update.provenance.source);
-                    self.world.absorb_fundamental(&update);
+                    self.world.update(|world| world.absorb_fundamental(&update));
                     if let Some(surprise) = update.surprise() {
                         // The surprise series the observation detector scans,
                         // keyed the way `SensedRecord::subject` names it.
@@ -2412,7 +2489,7 @@ impl Platform {
                     absorbed += 1;
                 }
                 SensedRecord::Macro(observation) => {
-                    self.world.absorb_macro(&observation);
+                    self.world.update(|world| world.absorb_macro(&observation));
                     self.push_market_event(MarketEvent::from_macro(&observation));
                     absorbed += 1;
                 }
@@ -2440,27 +2517,29 @@ impl Platform {
                 }
                 SensedRecord::AlternativeData(point) => {
                     let feature = format!("alt/{}/{}", point.dataset, point.metric);
-                    if self.world.features().definition(&feature).is_none() {
-                        self.world.features_mut().define(
-                            Feature::new(
-                                &feature,
-                                "alternative data series",
-                                point.provenance.source.clone(),
-                            )
-                            .with_staleness(Duration::from_days(30)),
+                    self.world.update(|world| {
+                        if world.features().definition(&feature).is_none() {
+                            world.features_mut().define(
+                                Feature::new(
+                                    &feature,
+                                    "alternative data series",
+                                    point.provenance.source.clone(),
+                                )
+                                .with_staleness(Duration::from_days(30)),
+                            );
+                        }
+                        world.features_mut().record(
+                            &feature,
+                            &point.subject_id,
+                            FeatureValue {
+                                value: point.value,
+                                valid_at: point.observed_at,
+                                available_at: point.provenance.ingestion_time,
+                                confidence: point.quality.score(),
+                                imputed: false,
+                            },
                         );
-                    }
-                    self.world.features_mut().record(
-                        &feature,
-                        &point.subject_id,
-                        FeatureValue {
-                            value: point.value,
-                            valid_at: point.observed_at,
-                            available_at: point.provenance.ingestion_time,
-                            confidence: point.quality.score(),
-                            imputed: false,
-                        },
-                    );
+                    });
                     absorbed += 1;
                 }
                 SensedRecord::ReferenceData(update) => {
@@ -2479,36 +2558,39 @@ impl Platform {
                         && value.is_finite()
                     {
                         let feature = format!("reference/{}", update.field);
-                        if self.world.features().definition(&feature).is_none() {
-                            self.world.features_mut().define(
-                                Feature::new(
-                                    &feature,
-                                    "reference data field",
-                                    update.provenance.source.clone(),
-                                )
-                                // Reference values persist until restated;
-                                // ten years is "no staleness bound" said
-                                // with a number.
-                                .with_staleness(Duration::from_days(3_650)),
+                        self.world.update(|world| {
+                            if world.features().definition(&feature).is_none() {
+                                world.features_mut().define(
+                                    Feature::new(
+                                        &feature,
+                                        "reference data field",
+                                        update.provenance.source.clone(),
+                                    )
+                                    // Reference values persist until
+                                    // restated; ten years is "no staleness
+                                    // bound" said with a number.
+                                    .with_staleness(Duration::from_days(3_650)),
+                                );
+                            }
+                            world.features_mut().record(
+                                &feature,
+                                &update.object_id,
+                                FeatureValue::new(
+                                    value,
+                                    update.effective_from,
+                                    update.provenance.ingestion_time,
+                                ),
                             );
-                        }
-                        self.world.features_mut().record(
-                            &feature,
-                            &update.object_id,
-                            FeatureValue::new(
-                                value,
-                                update.effective_from,
-                                update.provenance.ingestion_time,
-                            ),
-                        );
+                        });
                     }
                     absorbed += 1;
                 }
             }
         }
         if !bars.is_empty() {
-            self.world
-                .absorb_bars(bars.iter().map(|bar| (bar.as_ref(), bar.close_time())));
+            self.world.update(|world| {
+                world.absorb_bars(bars.iter().map(|bar| (bar.as_ref(), bar.close_time())));
+            });
         }
         absorbed
     }
@@ -2520,14 +2602,55 @@ impl Platform {
     /// rewrite that. `recorded_at` is the record's own knowable instant, never
     /// the wall clock.
     fn ensure_world_object(&mut self, object_id: &str, recorded_at: Timestamp) {
-        if self.world.graph().node(object_id).is_none() {
-            self.world.graph_mut().add_node(Node::new(
-                object_id,
-                NodeKind::FinancialObject,
-                object_id,
-                recorded_at,
-            ));
-        }
+        self.world.update(|world| {
+            if world.graph().node(object_id).is_none() {
+                world.graph_mut().add_node(Node::new(
+                    object_id,
+                    NodeKind::FinancialObject,
+                    object_id,
+                    recorded_at,
+                ));
+            }
+        });
+    }
+
+    /// Hold the desk's bar series to the platform's own bound by rebuilding
+    /// the snapshot from `bar_history`.
+    ///
+    /// `BarSeries` has no bound of its own and `MarketSnapshot` no mutable
+    /// path to one instrument, so the whole snapshot is rebuilt: every
+    /// instrument's latest quote, book and trade are re-applied from the old
+    /// view, and its bars are re-applied from the platform's bounded history
+    /// rather than from the old series — so what the desk reads afterwards is
+    /// derived from the platform's record and not from its own past. Bars
+    /// arrive in order, so each re-application lands at the end of its series
+    /// and the rebuild is linear. The one figure not preserved is
+    /// `session_volume`, which a re-applied last trade restarts at that
+    /// trade's size; nothing on the desk reads it, and it is said here rather
+    /// than left to be discovered. Without this the desk would grow with
+    /// uptime — the failure [`SERIES_HISTORY`] exists to prevent, reached
+    /// through the one series that constant did not cover.
+    fn rebuild_desk_snapshot(&self) {
+        let history = &self.bar_history;
+        self.market.update(|market| {
+            let as_of = market.snapshot.as_of;
+            let old = std::mem::replace(&mut market.snapshot, MarketSnapshot::new(as_of));
+            for (object_id, state) in old.instruments() {
+                if let Some(quote) = &state.quote {
+                    market.snapshot.apply_quote(quote.clone());
+                }
+                if let Some(book) = &state.book {
+                    market.snapshot.apply_book(book.clone());
+                }
+                if let Some(trade) = &state.last_trade {
+                    market.snapshot.apply_trade(trade.clone());
+                }
+                for bar in history.get(object_id).into_iter().flatten() {
+                    market.snapshot.apply_bar(bar.clone());
+                }
+            }
+            market.snapshot.advance_to(as_of);
+        });
     }
 
     /// Hand a depth observation to the topology, surfacing a refusal.
@@ -2555,13 +2678,15 @@ impl Platform {
             (metric, "reported fundamental"),
             (surprise.as_str(), "reported fundamental against consensus"),
         ] {
-            if self.world.features().definition(name).is_none() {
-                self.world.features_mut().define(
-                    Feature::new(name, description, source)
-                        .with_lag(Duration::from_days(30))
-                        .with_staleness(Duration::from_days(200)),
-                );
-            }
+            self.world.update(|world| {
+                if world.features().definition(name).is_none() {
+                    world.features_mut().define(
+                        Feature::new(name, description, source)
+                            .with_lag(Duration::from_days(30))
+                            .with_staleness(Duration::from_days(200)),
+                    );
+                }
+            });
         }
     }
 
@@ -2937,8 +3062,10 @@ impl Platform {
         // dimensions — not the price-history count this line used to quote
         // while the model sat empty. A coverage line that cannot go down when
         // absorption stops is not a coverage line.
-        let state = self.world.state_at(now, now);
-        let documents = self.world.index().len();
+        let (state, documents) = {
+            let world = self.world.read();
+            (world.state_at(now, now), world.index().len())
+        };
         let liquidity = if self.liquidity.observation_count() == 0 {
             String::new()
         } else {
@@ -3310,7 +3437,60 @@ impl Platform {
         self.reason_routing = Some(routing);
     }
 
+    /// The REASON stage: the organisation's authorisation first, then the
+    /// queue.
+    ///
+    /// The authorisation is checked and recorded on every cycle, whether or
+    /// not anything is in the queue, because it is a state of the
+    /// organisation and not of the question: an operator who sees the gauge
+    /// rise on a quiet cycle learns the same fact a day earlier than one who
+    /// waits for the next opportunity to be refused eighteen times.
     fn stage_reason(&mut self, now: Timestamp, lineage: &Lineage) -> StageOutcome {
+        let expired = self.expired_manifests(now);
+        let roster = self.organisation.roster().len();
+        self.telemetry.metrics.gauge(
+            names::AGENT_MANIFESTS_EXPIRED,
+            labels([]),
+            expired.len() as f64,
+        );
+        let outcome = self.reason_about_the_queue(now, lineage);
+        if expired.is_empty() {
+            return outcome;
+        }
+        // Up to three addresses in the line, the rest as a count: the
+        // journal keeps every problem of every cycle, and a roster's worth of
+        // ids on every cycle of a ninety-day lapse is a record nobody reads.
+        let named: Vec<&str> = expired.iter().take(3).map(String::as_str).collect();
+        let others = expired.len().saturating_sub(named.len());
+        let addresses = if others == 0 {
+            named.join(", ")
+        } else {
+            format!("{} and {others} more", named.join(", "))
+        };
+        outcome.with_problem(format!(
+            "the organisation is unauthorised: {} of {roster} agent manifest(s) are past \
+             their review interval ({addresses}); every run is refused until an operator \
+             re-reviews them, and nothing here renews one",
+            expired.len()
+        ))
+    }
+
+    /// Manifests on the roster whose review interval has lapsed at `now`, in
+    /// roster order.
+    ///
+    /// Read from the manifests themselves rather than from the governance
+    /// review's rule name, so a rewording of that review cannot silently
+    /// leave this count at zero.
+    fn expired_manifests(&self, now: Timestamp) -> Vec<String> {
+        self.organisation
+            .roster()
+            .iter()
+            .filter(|manifest| manifest.is_expired(now))
+            .map(|manifest| manifest.id.clone())
+            .collect()
+    }
+
+    fn reason_about_the_queue(&mut self, now: Timestamp, lineage: &Lineage) -> StageOutcome {
         let Some(opportunity) = self.queue.first().cloned() else {
             return StageOutcome::ran(Stage::Reason, 0, "nothing in the queue to reason about");
         };
@@ -3444,10 +3624,25 @@ impl Platform {
         self.telemetry
             .metrics
             .increment(names::AGENT_RUNS, labels([]), report.runs.len() as u64);
+        // A run the host refused before the agent ran is reported with the
+        // host's reason, not as `failed`: an expired manifest and a bug in the
+        // analyst are different problems with different owners, and for
+        // ninety days after assembly they read identically.
+        let refused: BTreeMap<&str, &str> = report
+            .runs
+            .iter()
+            .filter_map(|run| match &run.status {
+                RunStatus::Refused { reason } => Some((run.agent_id.as_str(), reason.as_str())),
+                _ => None,
+            })
+            .collect();
         let mut problems: Vec<String> = report
             .failed
             .iter()
-            .map(|agent| format!("{agent} failed"))
+            .map(|agent| match refused.get(agent.as_str()) {
+                Some(reason) => format!("{agent} refused to run: {reason}"),
+                None => format!("{agent} failed"),
+            })
             .collect();
         if !report.failed.is_empty() {
             self.telemetry.metrics.increment(
@@ -5999,6 +6194,17 @@ fn push_bounded_bars(series: &mut Vec<Bar>, bar: Bar) {
     }
 }
 
+/// The desk's bar series length at which the snapshot is rebuilt from the
+/// platform's own bounded history.
+///
+/// Twice [`SERIES_HISTORY`] rather than the bound itself because a
+/// `MarketSnapshot` offers no mutable path to one instrument's series — it
+/// can only be rebuilt whole, at a cost linear in instruments times the
+/// bound — so the rebuild is amortised over a bound's worth of bars. Between
+/// rebuilds the desk holds at most this many bars per instrument; after each
+/// it holds exactly `bar_history`.
+const DESK_SERIES_REBUILD_AT: usize = 2 * SERIES_HISTORY;
+
 fn push_bounded(series: &mut Vec<f64>, value: f64) {
     series.push(value);
     if series.len() > SERIES_HISTORY {
@@ -6988,5 +7194,115 @@ mod retention_tests {
             (recorded - 1) as u64,
             "the newest claim did not survive eviction"
         );
+    }
+
+    // --- the desk -----------------------------------------------------------
+
+    /// The desk the agents read is the platform's own world model and market
+    /// view, not a copy taken at assembly.
+    ///
+    /// The failure this prevents ran in every deployed binary until this seam
+    /// existed: `Platform::observe` absorbed three hundred and twenty tape
+    /// periods into the platform's fields while the desk held a
+    /// `WorldModel::new()` and an empty `MarketSnapshot`, so every analyst
+    /// answered `no_data` and no hypothesis could gather a second origin.
+    #[test]
+    fn the_desk_reads_what_the_platform_absorbed_and_stays_within_the_bound() {
+        let mut platform = platform();
+        let object = ObjectId::from_string("obj-AAA");
+
+        // The premise, structurally: the gates share the platform's slots.
+        assert!(
+            platform.desk_is_fed(),
+            "the desk's world and market gates are not wired to the platform's upstreams"
+        );
+        // And before anything is absorbed the desk is honestly empty, so a
+        // populated desk below is absorption and not assembly.
+        assert!(platform.market_view().snapshot.get(&object).is_none());
+
+        // Enough bars to cross the rebuild threshold and then some, so the
+        // test sees the desk both before and after a rebuild.
+        let extra = 5;
+        platform.observe(counting_bars(DESK_SERIES_REBUILD_AT + extra));
+
+        let history = platform
+            .bar_history
+            .get("obj-AAA")
+            .expect("the platform holds the instrument's bars");
+        assert_eq!(
+            history.len(),
+            SERIES_HISTORY,
+            "the platform's own bound moved"
+        );
+
+        let market = platform.market_view();
+        let state = market
+            .snapshot
+            .get(&object)
+            .expect("the desk holds market state for the instrument the platform absorbed");
+        // Bounded: never more than the rebuild threshold, and after the
+        // rebuild exactly the platform's history plus what arrived since.
+        assert!(
+            state.bars.len() < DESK_SERIES_REBUILD_AT,
+            "the desk holds {} bars; it grows with uptime",
+            state.bars.len()
+        );
+        assert_eq!(
+            state.bars.len(),
+            SERIES_HISTORY + extra,
+            "the rebuild did not leave the desk holding the platform's history plus the bars since"
+        );
+        // Derived from the platform's record: the newest SERIES_HISTORY
+        // closes on the desk are the platform's, in order.
+        let desk_closes = state.bars.closes();
+        let platform_closes: Vec<f64> = history.iter().map(|bar| bar.close.to_f64()).collect();
+        assert_eq!(
+            desk_closes[desk_closes.len() - SERIES_HISTORY..],
+            platform_closes[..],
+            "the desk's newest bars are not the platform's bars"
+        );
+        // The last bar absorbed is the last bar the desk shows, and the
+        // snapshot's clock followed it.
+        let newest = 100.0 + (DESK_SERIES_REBUILD_AT + extra - 1) as f64;
+        assert_eq!(
+            state.bars.last().map(|bar| bar.close.to_f64()),
+            Some(newest)
+        );
+        assert_eq!(
+            market.snapshot.as_of,
+            history[history.len() - 1].close_time()
+        );
+        drop(market);
+
+        // The world model the agents read through the other gate saw the
+        // same absorption: its `close` feature for the instrument is readable
+        // at the newest bar's close.
+        let world = platform.world();
+        let closes = world.features().history("close", "obj-AAA", start());
+        assert!(
+            !closes.is_empty(),
+            "the world model behind the desk's gate holds no close series"
+        );
+        assert_eq!(closes.last().map(|value| value.value), Some(newest));
+    }
+
+    /// The other market records reach the desk too, so an agent reading the
+    /// book or the last trade is reading what the platform absorbed.
+    #[test]
+    fn quotes_reach_the_desk_snapshot_as_they_are_absorbed() {
+        let mut platform = platform();
+        let object = ObjectId::from_string("obj-AAA");
+        assert!(platform.market_view().snapshot.get(&object).is_none());
+
+        platform.observe(counting_quotes(3));
+
+        let market = platform.market_view();
+        let state = market
+            .snapshot
+            .get(&object)
+            .expect("the desk holds the quoted instrument");
+        let quote = state.quote.as_ref().expect("the desk holds the quote");
+        // The newest quote of the three: half-spread 0.03 either side of 100.
+        assert_eq!(quote.ask - quote.bid, Decimal::from_f64(0.06).unwrap());
     }
 }

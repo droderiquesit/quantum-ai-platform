@@ -23,16 +23,25 @@ use qip_core::lineage::Lineage;
 use qip_core::rng::Xoshiro256;
 use qip_core::time::{Duration, Timestamp};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::ops::Deref;
+use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard};
 
 /// A facility that can only be reached with a capability.
 ///
 /// The inner value is unreachable except through [`Gated::get`], which needs
 /// the run's context. Wrapping a facility is therefore sufficient to enforce
 /// its permission, with no cooperation required from the agent.
+///
+/// The value sits in a slot the gate may share with one [`Upstream`] — the
+/// platform's writing end. A gate built by [`Gated::new`] shares its slot with
+/// nothing, so what it holds is fixed for its lifetime; a gate built by
+/// [`Upstream::gate`] shows whatever its upstream has most recently written.
+/// Either way nothing reachable from the gate can write: there is no method
+/// here that yields the slot, the upstream, or a mutable borrow, so an agent
+/// holding a desk of gates still cannot alter what the next agent reads.
 #[derive(Debug)]
 pub struct Gated<T> {
-    value: T,
+    value: Arc<RwLock<T>>,
     required: Capability,
     /// What the facility is, for the audit entry and the denial message.
     label: &'static str,
@@ -41,7 +50,7 @@ pub struct Gated<T> {
 impl<T> Gated<T> {
     pub fn new(value: T, required: Capability, label: &'static str) -> Self {
         Self {
-            value,
+            value: Arc::new(RwLock::new(value)),
             required,
             label,
         }
@@ -56,9 +65,15 @@ impl<T> Gated<T> {
     }
 
     /// Borrow the facility, charging the run and recording the access.
-    pub fn get<'a>(&'a self, ctx: &mut AgentContext) -> Result<&'a T> {
+    ///
+    /// The borrow is a read lock on the slot, held for as long as the returned
+    /// [`Reading`] lives — the length of the agent's own use of it. Every
+    /// agent that runs while no upstream writes sees the same value, which is
+    /// what makes a dispatch reproducible: the platform writes between cycles
+    /// and never during one.
+    pub fn get<'a>(&'a self, ctx: &mut AgentContext) -> Result<Reading<'a, T>> {
         ctx.authorise(self.required, self.label)?;
-        Ok(&self.value)
+        Ok(Reading(read_slot(&self.value)))
     }
 
     /// Whether the context could reach this facility, without charging for it.
@@ -68,6 +83,88 @@ impl<T> Gated<T> {
     pub fn is_available(&self, ctx: &AgentContext) -> bool {
         ctx.manifest.capabilities.contains(self.required)
     }
+}
+
+/// A read borrow of a gated facility, obtained through [`Gated::get`] or
+/// [`Upstream::read`].
+///
+/// Dereferences to the facility and nothing else: it cannot be cloned into a
+/// longer-lived handle, and it cannot be turned into a write.
+#[derive(Debug)]
+pub struct Reading<'a, T>(RwLockReadGuard<'a, T>);
+
+impl<T> Deref for Reading<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+/// The writing end of a facility that agents read through a [`Gated`].
+///
+/// The failure this closes has happened: the platform absorbed every
+/// observation into its own world model while the desk the eighteen agents
+/// read held a copy taken at assembly, so every analyst answered `no_data`
+/// on a tape three hundred periods long and no hypothesis could ever gather
+/// a second origin. The facility the agents see and the one the platform
+/// feeds have to be the same slot, and this is the one handle that writes it.
+///
+/// Three things are structural rather than conventional. It is not `Clone`,
+/// so a process holds exactly one writer per facility. No method on [`Gated`]
+/// yields it, so an agent holding the desk cannot obtain it. And
+/// [`Upstream::update`] takes a closure rather than returning a guard, so a
+/// write lock is released before the call returns and can never be held
+/// across an agent dispatch — an agent's read would otherwise block on the
+/// platform's own write, in the same thread, forever.
+#[derive(Debug)]
+pub struct Upstream<T> {
+    slot: Arc<RwLock<T>>,
+}
+
+impl<T> Upstream<T> {
+    pub fn new(value: T) -> Self {
+        Self {
+            slot: Arc::new(RwLock::new(value)),
+        }
+    }
+
+    /// A gate onto this slot. Agents holding it read whatever the upstream
+    /// has most recently written, under the capability named here.
+    pub fn gate(&self, required: Capability, label: &'static str) -> Gated<T> {
+        Gated {
+            value: Arc::clone(&self.slot),
+            required,
+            label,
+        }
+    }
+
+    /// Read the facility as the owner, with no capability check: the owner
+    /// is the process that assembled the desk, not an agent running under a
+    /// manifest.
+    pub fn read(&self) -> Reading<'_, T> {
+        Reading(read_slot(&self.slot))
+    }
+
+    /// Change the facility. The write lock lives for the closure only.
+    pub fn update<R>(&self, change: impl FnOnce(&mut T) -> R) -> R {
+        let mut guard = self.slot.write().unwrap_or_else(PoisonError::into_inner);
+        change(&mut guard)
+    }
+
+    /// Whether `gate` reads this slot — for a test proving a desk was wired
+    /// to its upstream rather than to a copy.
+    pub fn feeds(&self, gate: &Gated<T>) -> bool {
+        Arc::ptr_eq(&self.slot, &gate.value)
+    }
+}
+
+/// A poisoned slot is one a writer panicked inside. The workspace denies
+/// panics in every `Result`-returning function, so this arm is unreachable in
+/// practice; taking the inner value rather than propagating keeps the desk
+/// readable for the audit that would follow if it ever were reached.
+fn read_slot<T>(slot: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    slot.read().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// One recorded capability invocation.

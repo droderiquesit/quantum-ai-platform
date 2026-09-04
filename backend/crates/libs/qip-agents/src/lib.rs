@@ -40,4 +40,6 @@ pub use finding::{
 pub use governance::{AuditTrail, GovernanceFinding, Roster, Severity};
 pub use manifest::{AgentManifest, AgentRole, EscalationPolicy};
 pub use memory::{Episode, EpisodeOutcome, Lesson, PromotionPolicy, ResearchMemory};
-pub use runtime::{Agent, AgentContext, AgentHost, AgentRunRecord, Gated, RunStatus};
+pub use runtime::{
+    Agent, AgentContext, AgentHost, AgentRunRecord, Gated, Reading, RunStatus, Upstream,
+};

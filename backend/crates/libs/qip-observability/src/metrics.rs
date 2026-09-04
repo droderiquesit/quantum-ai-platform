@@ -603,6 +603,19 @@ pub mod names {
     pub const AGENT_TOKENS: &str = "qip_agent_tokens_total";
     pub const AGENT_TOOL_CALLS: &str = "qip_agent_tool_calls_total";
     pub const AGENT_PERMISSION_DENIALS: &str = "qip_agent_permission_denials_total";
+    /// How many of the roster's manifests are past their review interval at
+    /// the instant the REASON stage ran — a gauge, because it is a state of
+    /// the organisation and not a rate of anything.
+    ///
+    /// The failure this makes visible: every manifest is reviewed at
+    /// assembly and expires ninety days later, whereupon `AgentHost::run`
+    /// refuses every agent and the cycle reports eighteen `failed` lines,
+    /// indistinguishable on a dashboard from eighteen bugs. Nothing halted
+    /// and nothing paged, because there was no series in which "the
+    /// organisation is unauthorised" was a number. Non-zero here is that
+    /// number; renewing a manifest is an operator's review, and nothing in
+    /// the kernel does it.
+    pub const AGENT_MANIFESTS_EXPIRED: &str = "qip_agent_manifests_expired";
 
     // Optimisation
     pub const OPTIMIZATION_RUNS: &str = "qip_optimization_runs_total";

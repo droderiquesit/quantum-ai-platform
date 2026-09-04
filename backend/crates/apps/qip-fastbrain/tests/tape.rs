@@ -8,10 +8,18 @@
 //! own shape is asserted before anything the platform made of it.
 //!
 //! What this does not prove, stated so nobody reads it as proven: no order
-//! and no fill. Every hypothesis is rejected on review, and the arithmetic
-//! is structural rather than a matter of data — see `qip_fastbrain::feed`'s
-//! tape documentation and the register on this test.
+//! and no fill. Every hypothesis is rejected on review. The second test
+//! below states the arithmetic exactly, now that the desk the agents read
+//! is the platform's own (it was a cold copy for the whole life of every
+//! deployed binary before that seam existed): the equity analyst is an
+//! independent supporting origin and the Bayesian posterior reaches 0.60,
+//! but the mechanism attenuation toward the 0.25 prior — weighted by the
+//! detector's own confidence of 0.45 — and the concentration penalty leave
+//! an effective confidence of 0.36 against the 0.50 bar. The bar, the
+//! penalty and the attenuation are the reasoning controls (ADR 0005), and
+//! this tape holds only bars, so no other analyst has anything to add.
 
+use qip_agents::finding::{AgentFinding, Direction, FindingStatus};
 use qip_core::{Clock, Duration, Timestamp};
 use qip_fastbrain::feed::Feed;
 use qip_fastbrain::node;
@@ -201,6 +209,145 @@ fn the_demonstration_tape_drives_the_loop_through_tape_time_to_a_scored_claim() 
     assert!(
         calibrations >= 1,
         "a claim was scored and no cycle journal entry carries a calibration record"
+    );
+
+    // Nothing became live, on a tape or otherwise.
+    assert!(!platform.is_live_capable());
+    assert!(!platform.orders().has_live_fills());
+}
+
+/// Parse the effective confidence the REASON stage prints, if the line
+/// carries one.
+fn reported_confidence(detail: &str) -> Option<f64> {
+    let rest = detail.split("at confidence ").nth(1)?;
+    rest.chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect::<String>()
+        .parse()
+        .ok()
+}
+
+#[test]
+fn the_fed_desk_gives_the_panel_a_second_origin_on_the_tape_and_the_review_still_holds_the_bar() {
+    // ----- the premise: the tape, and the wiring ---------------------------
+    let tape = Tape::open(tape_path()).expect("the committed tape loads");
+    assert_eq!(tape.periods(), 320, "the tape does not hold 320 periods");
+
+    let mut feed = Feed::tape(&tape_path().display().to_string()).expect("the tape feed opens");
+    let tape_clock = feed.owned_clock().expect("a tape owns its clock");
+    let config = PlatformConfig::default();
+    let clock: Arc<dyn Clock> = tape_clock.clone();
+    let context = qip_core::Context::new(clock.clone(), config.seed);
+    let mut platform = Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        universe(qip_core::SystemClock.now()),
+        LimitSet::conservative_default(),
+    )
+    .expect("the platform assembles");
+    // Structurally, before a single bar: the desk's gates read the
+    // platform's own slots. This is the wiring every earlier run lacked.
+    assert!(
+        platform.desk_is_fed(),
+        "the desk the agents hold is a copy, not the platform's world and market"
+    );
+
+    // ----- the run ---------------------------------------------------------
+    let wall = qip_core::SystemClock;
+    let mut convened = 0usize;
+    let mut best_confidence = 0.0_f64;
+    let mut rejections_at_the_bar = 0usize;
+    while !feed.is_exhausted() {
+        let now = feed
+            .cycle_instant(&wall)
+            .expect("an unexhausted tape has a next period");
+        let outcome =
+            node::step(&mut platform, &mut feed, now, MAXIMUM_BUDGET).expect("a step runs");
+        let reason = outcome
+            .report
+            .stage(Stage::Reason)
+            .expect("REASON reports every cycle");
+        if reason.detail.contains("run(s)") {
+            convened += 1;
+        }
+        if let Some(confidence) = reported_confidence(&reason.detail) {
+            best_confidence = best_confidence.max(confidence);
+        }
+        if reason
+            .problems
+            .iter()
+            .any(|problem| problem.contains("below the 0.500 required"))
+        {
+            rejections_at_the_bar += 1;
+        }
+    }
+    assert!(convened >= 1, "no panel was convened on the tape");
+
+    // ----- what the agents saw ---------------------------------------------
+    let nwsc = qip_core::ObjectId::from_string(NWSC);
+    let bars_on_the_desk = platform
+        .market_view()
+        .snapshot
+        .get(&nwsc)
+        .map_or(0, |state| state.bars.len());
+    assert!(
+        bars_on_the_desk >= 100,
+        "the desk holds {bars_on_the_desk} bars for NWSC after 320 periods; the agents were \
+         reading a cold copy"
+    );
+
+    // A directional finding from an origin other than the anomaly: the equity
+    // analyst, reading the bars it was handed. Premise first — the analyst
+    // ran and produced findings at all — then the direction.
+    let records = platform.organisation().audit().records();
+    let equity_findings: Vec<&AgentFinding> = records
+        .iter()
+        .filter(|record| record.agent_id == "equity-analyst")
+        .filter_map(|record| record.finding.as_ref())
+        .collect();
+    assert!(
+        !equity_findings.is_empty(),
+        "the equity analyst produced no finding on {} recorded runs",
+        records.len()
+    );
+    let directional = equity_findings
+        .iter()
+        .filter(|finding| {
+            finding.status == FindingStatus::Complete && finding.direction != Direction::Neutral
+        })
+        .count();
+    assert!(
+        directional >= 1,
+        "the equity analyst took no direction in {} findings; it saw no bars",
+        equity_findings.len()
+    );
+
+    // ----- the arithmetic, as the review reported it -----------------------
+    // With one origin the concentration penalty caps effective confidence at
+    // 0.174 on this tape's anomaly (prior 0.25, weight 0.44, chain 0.45,
+    // penalty 0.6). With the analyst as a second supporting origin the
+    // posterior is 0.60 and the effective confidence 0.36. The lift is the
+    // seam working; the shortfall against 0.50 is the controls working.
+    assert!(
+        best_confidence >= 0.30,
+        "the best effective confidence on the tape was {best_confidence:.3}; a second origin \
+         never entered a hypothesis"
+    );
+    assert!(
+        best_confidence < 0.50,
+        "the best effective confidence on the tape was {best_confidence:.3}, at or above the \
+         0.50 bar: a hypothesis may now be approved on this tape, and this test must grow to \
+         assert the order, the fill and the LEARN attribution that follow"
+    );
+    assert!(
+        rejections_at_the_bar >= 1,
+        "no cycle reported the review's shortfall against the bar"
+    );
+    assert_eq!(
+        platform.orders().fills().len(),
+        0,
+        "a fill was booked on a tape whose best confidence was {best_confidence:.3}"
     );
 
     // Nothing became live, on a tape or otherwise.
