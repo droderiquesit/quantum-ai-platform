@@ -81,10 +81,18 @@ pub fn shipped_class(source_id: &str) -> Result<qip_financial::quality::Licensin
 
 /// A live connector, its transport and its runtime, behind the loop's own
 /// adapter contract.
+///
+/// Both trait objects are `Send`, and the bound is load-bearing rather than
+/// decorative: `qip-api` holds its feed behind a mutex that every request
+/// thread can reach, and a `Mutex<T>` is shareable only when `T` can move
+/// between threads. Every connector and transport this crate ships is plain
+/// data and satisfies it; a future one holding a thread-local handle would
+/// be refused here at compile time rather than discovered as a data race in
+/// a request handler.
 #[derive(Debug)]
 pub struct ConnectorFeed {
-    connector: Box<dyn SourceConnector>,
-    transport: Box<dyn SourceTransport>,
+    connector: Box<dyn SourceConnector + Send>,
+    transport: Box<dyn SourceTransport + Send>,
     runtime: ConnectorRuntime,
     descriptor: SourceDescriptor,
 }
@@ -105,32 +113,32 @@ impl ConnectorFeed {
                  TLS to the vendor, never at the vendor itself"
             )));
         }
-        let (connector, mut manifest): (Box<dyn SourceConnector>, SourceManifest) = match source_id
-        {
-            CoinbaseTickerConnector::SOURCE_ID => {
-                let manifest = CoinbaseTickerConnector::shipped_manifest()?;
-                let connector = CoinbaseTickerConnector::new(
-                    manifest.clone(),
-                    "BTC-USD",
-                    ObjectId::from_string("BTC-USD"),
-                    "COINBASE",
-                )?;
-                (Box::new(connector), manifest)
-            }
-            FrankfurterRatesConnector::SOURCE_ID => {
-                let manifest = FrankfurterRatesConnector::shipped_manifest()?;
-                let connector = FrankfurterRatesConnector::new(manifest.clone())?;
-                (Box::new(connector), manifest)
-            }
-            other => {
-                return Err(Error::invalid(format!(
-                    "{other:?} names no connector this build carries. The known sources are: {}. \
+        let (connector, mut manifest): (Box<dyn SourceConnector + Send>, SourceManifest) =
+            match source_id {
+                CoinbaseTickerConnector::SOURCE_ID => {
+                    let manifest = CoinbaseTickerConnector::shipped_manifest()?;
+                    let connector = CoinbaseTickerConnector::new(
+                        manifest.clone(),
+                        "BTC-USD",
+                        ObjectId::from_string("BTC-USD"),
+                        "COINBASE",
+                    )?;
+                    (Box::new(connector), manifest)
+                }
+                FrankfurterRatesConnector::SOURCE_ID => {
+                    let manifest = FrankfurterRatesConnector::shipped_manifest()?;
+                    let connector = FrankfurterRatesConnector::new(manifest.clone())?;
+                    (Box::new(connector), manifest)
+                }
+                other => {
+                    return Err(Error::invalid(format!(
+                        "{other:?} names no connector this build carries. The known sources are: {}. \
                      A source outside this list has no licensing evaluation on file, and an \
                      unevaluated source is refused rather than fetched",
-                    KNOWN_SOURCES.join(", ")
-                )));
-            }
-        };
+                        KNOWN_SOURCES.join(", ")
+                    )));
+                }
+            };
         manifest.endpoint.base_url = Some(base_url.to_string());
         manifest.validate()?;
 
@@ -145,9 +153,9 @@ impl ConnectorFeed {
     /// deployment takes — the only difference between a test and production
     /// is the transport, which is the difference it should be.
     pub fn over_transport(
-        connector: Box<dyn SourceConnector>,
+        connector: Box<dyn SourceConnector + Send>,
         manifest: SourceManifest,
-        transport: Box<dyn SourceTransport>,
+        transport: Box<dyn SourceTransport + Send>,
         seed: u64,
         at: Timestamp,
     ) -> Result<Self> {
@@ -227,16 +235,25 @@ mod tests {
     use crate::connector::checkpoint::Cursor;
     use crate::connector::emulator::SourceEmulator;
     use crate::connector::envelope::RawEvent;
-    use std::cell::Cell;
-    use std::rc::Rc;
+    use std::sync::{Arc, Mutex};
 
     /// A connector that records the instant it was shut down at, and decodes
     /// nothing. `shutdown` is the only lifecycle call under test, and a real
-    /// connector's is a no-op that would leave nothing to assert on.
+    /// connector's is a no-op that would leave nothing to assert on. The
+    /// shared cell is an `Arc<Mutex>` rather than an `Rc<Cell>` because the
+    /// feed now demands a `Send` connector, and this spy is the one caller
+    /// that would otherwise have been refused by the bound it exists to
+    /// prove nothing real is refused by.
     #[derive(Debug)]
     struct ShutdownSpy {
         manifest: SourceManifest,
-        shut_down_at: Rc<Cell<Option<Timestamp>>>,
+        shut_down_at: Arc<Mutex<Option<Timestamp>>>,
+    }
+
+    impl ShutdownSpy {
+        fn read(cell: &Mutex<Option<Timestamp>>) -> Option<Timestamp> {
+            *cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        }
     }
 
     impl SourceConnector for ShutdownSpy {
@@ -253,7 +270,10 @@ mod tests {
         }
 
         fn shutdown(&mut self, at: Timestamp) -> Result<()> {
-            self.shut_down_at.set(Some(at));
+            *self
+                .shut_down_at
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(at);
             Ok(())
         }
     }
@@ -279,7 +299,7 @@ mod tests {
             health_path,
             r#"{"amount":1.0,"base":"EUR","date":"2026-08-24","rates":{"USD":1.0827}}"#,
         ));
-        let shut_down_at = Rc::new(Cell::new(None));
+        let shut_down_at = Arc::new(Mutex::new(None));
         let connector = Box::new(ShutdownSpy {
             manifest: manifest.clone(),
             shut_down_at: shut_down_at.clone(),
@@ -290,11 +310,11 @@ mod tests {
 
         // Premise: nothing has been shut down yet, so the assertion below is
         // this call's doing and not the constructor's.
-        assert_eq!(shut_down_at.get(), None);
+        assert_eq!(ShutdownSpy::read(&shut_down_at), None);
 
         feed.shutdown(closed).expect("the spy cannot fail to stop");
         assert_eq!(
-            shut_down_at.get(),
+            ShutdownSpy::read(&shut_down_at),
             Some(closed),
             "shutdown must reach the connector at the instant the caller gave"
         );

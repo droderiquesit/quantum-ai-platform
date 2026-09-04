@@ -414,6 +414,15 @@ pub struct Api {
     /// an API assembled without the handle leaves its overview empty for the
     /// life of the process — the defect this field exists to close.
     overview: Option<Arc<crate::web::CycleOverview>>,
+    /// The source `POST /cycle` senses before it runs the loop.
+    ///
+    /// `None` is a process that senses nothing — the shipped state, and the
+    /// cycle report carries no `sense` key for it rather than a zero. Behind
+    /// a mutex of its own because a tape advances and a connector polls, and
+    /// the lock order is always platform first, then feed; no path takes
+    /// them the other way around. Records in transit from a source to the
+    /// platform, not state the API keeps.
+    feed: Option<Arc<Mutex<crate::feed::ApiFeed>>>,
     /// The bounds every live connection runs under.
     ///
     /// Held here rather than read from a constant so a test can open a stream
@@ -453,6 +462,7 @@ impl Api {
             archive: None,
             mesh: None,
             overview: None,
+            feed: None,
             stream_limits: StreamLimits::default(),
             pulse: Arc::new(HealthPulse::default()),
         }
@@ -477,6 +487,19 @@ impl Api {
     /// serves everything else and says honestly that no mesh is served.
     pub fn with_mesh(mut self, mesh: Arc<Mutex<crate::mesh::MeshBackbone>>) -> Self {
         self.mesh = Some(mesh);
+        self
+    }
+
+    /// Sense `feed` into the platform at the start of every `POST /cycle`.
+    ///
+    /// Without this the loop runs over a platform nothing observes into,
+    /// which is what every cycle this process ever ran did until the
+    /// composition root began choosing a source. The platform must have been
+    /// assembled on the feed's own clock where it owns one — the root does
+    /// that, and a feed handed here after a platform built on the wall clock
+    /// would observe last year while reasoning about today.
+    pub fn with_feed(mut self, feed: Arc<Mutex<crate::feed::ApiFeed>>) -> Self {
+        self.feed = Some(feed);
         self
     }
 
@@ -704,6 +727,63 @@ impl Api {
                 }
             }
             (Method::Post, "/cycle") => {
+                // SENSE, before the loop: the feed's records go into the
+                // platform and the cycle runs at the instant the feed says —
+                // tape time for a tape, which is why `now` is rebound here
+                // rather than read again from the wall clock. A source that
+                // fails to answer is a refusal to cycle, not a cycle over
+                // stale state with a note attached: every stage after SENSE
+                // would otherwise reason as if it were current.
+                let (now, sensed) = match self.feed.as_ref() {
+                    None => (now, None),
+                    Some(feed) => {
+                        let Ok(mut feed) = feed.lock() else {
+                            return Response::json(
+                                503,
+                                r#"{"error":"the feed is in an inconsistent state and is not serving"}"#,
+                            );
+                        };
+                        if feed.is_exhausted() {
+                            return Response::json(
+                                409,
+                                format!(
+                                    r#"{{"error":{}}}"#,
+                                    json::string(
+                                        "the tape is spent: every period has been released, \
+                                         so there is no next instant to cycle at. Restart the \
+                                         process to replay it"
+                                    )
+                                ),
+                            );
+                        }
+                        let mut sensed = match feed.sense(now) {
+                            Ok(sensed) => sensed,
+                            Err(error) => {
+                                eprintln!("qip-api: the feed did not answer: {}", error.message());
+                                return Response::json(
+                                    503,
+                                    format!(
+                                        r#"{{"error":{},"source":{}}}"#,
+                                        json::string(error.message()),
+                                        json::string(&feed.descriptor().name)
+                                    ),
+                                );
+                            }
+                        };
+                        let released = sensed.records.len();
+                        let observed = platform.observe(std::mem::take(&mut sensed.records));
+                        (
+                            sensed.at,
+                            Some(SenseSummary {
+                                source: sensed.source,
+                                at: sensed.at,
+                                released,
+                                observed,
+                                rejections: sensed.rejections,
+                            }),
+                        )
+                    }
+                };
                 let report = platform.run_cycle(now);
                 // Recorded before anything that can fail below, so the page
                 // shows the cycle even when the archive or the mesh does not.
@@ -771,7 +851,7 @@ impl Api {
                 };
                 Response::json(
                     202,
-                    cycle_report(&report, archived.as_ref(), mesh.as_deref()),
+                    cycle_report(&report, archived.as_ref(), mesh.as_deref(), sensed.as_ref()),
                 )
             }
             (Method::Post, "/kill-switch") => {
@@ -1233,10 +1313,25 @@ fn autonomy(platform: &Platform) -> String {
     )
 }
 
+/// What SENSE did before one cycle, for the cycle's response.
+///
+/// `released` is what the source handed over and `observed` is what the
+/// platform took in; the two are reported separately because a record the
+/// platform declined is a gap that would otherwise be invisible in a count
+/// that only ever grew.
+struct SenseSummary {
+    source: String,
+    at: Timestamp,
+    released: usize,
+    observed: usize,
+    rejections: Vec<String>,
+}
+
 fn cycle_report(
     report: &qip_kernel::CycleReport,
     archived: Option<&std::result::Result<usize, String>>,
     mesh: Option<&str>,
+    sensed: Option<&SenseSummary>,
 ) -> String {
     let stages: Vec<String> = report
         .stages
@@ -1275,15 +1370,36 @@ fn cycle_report(
     let mesh = mesh
         .map(|exchange| format!(r#","mesh":{exchange}"#))
         .unwrap_or_default();
+    // Absent for the same reason the mesh is: a process with no feed sensed
+    // nothing, and `"observed":0` would read as a source that went quiet.
+    let sense = sensed
+        .map(|sensed| {
+            format!(
+                r#","sense":{{"source":{},"at":{},"released":{},"observed":{},"rejected":{},"rejections":[{}]}}"#,
+                json::string(&sensed.source),
+                json::string(&sensed.at.to_rfc3339()),
+                sensed.released,
+                sensed.observed,
+                sensed.rejections.len(),
+                sensed
+                    .rejections
+                    .iter()
+                    .map(|rejection| json::string(rejection))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        })
+        .unwrap_or_default();
     format!(
-        r#"{{"cycle":{},"correlation_id":{},"halted":{},"traversed_every_stage":{},{},"stages":[{}]{}}}"#,
+        r#"{{"cycle":{},"correlation_id":{},"halted":{},"traversed_every_stage":{},{},"stages":[{}]{}{}}}"#,
         report.cycle,
         json::string(report.correlation_id.as_str()),
         report.halted,
         report.traversed_every_stage(),
         archived,
         stages.join(","),
-        mesh
+        mesh,
+        sense
     )
 }
 

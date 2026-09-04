@@ -84,7 +84,29 @@ fn run() -> Result<()> {
 
     let mut config = PlatformConfig::default().with_live_ceiling(ceiling);
     config.central.arbitrage = arbitrage;
-    let context = qip_core::Context::new(clock.clone(), config.seed);
+
+    // The source `POST /cycle` senses, chosen before the platform exists
+    // because a tape owns the clock the platform must be assembled on. A
+    // connector is admitted by the data finder's licensing catalogue inside
+    // `ApiFeed::open`, before any socket is touched, and refused rather than
+    // opened when its posture is not evaluated — see `feed.rs` for why the
+    // absent case stays absent instead of falling back to generated prices.
+    let feed_settings = qip_api::feed::FeedSettings::from_env()
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    let feed = qip_api::feed::ApiFeed::open(&feed_settings, config.seed, now)
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    // The clock the platform reasons on. A tape owns its own, and the
+    // platform must be assembled on it: opportunities expire at tape time,
+    // and a router asked for a latency budget measured from the wall clock
+    // against a deadline in 2025 would refuse every panel as already late.
+    // Everything operational — credentials, rate limits, the console's
+    // staleness, telemetry timestamps — stays on the wall clock, which is
+    // what an operator is on.
+    let platform_clock: Arc<dyn Clock> = match feed.as_ref().and_then(|feed| feed.owned_clock()) {
+        Some(tape_clock) => tape_clock,
+        None => clock.clone(),
+    };
+    let context = qip_core::Context::new(platform_clock, config.seed);
     // Cloned before the platform takes it: `Telemetry` holds `Arc`s over its
     // registry, tracer and logger, so the clone shares the same underlying
     // state rather than starting a second, disconnected one. The OpenObserve
@@ -116,6 +138,27 @@ fn run() -> Result<()> {
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
     let provenance = qip_api::trust::harden_central(&mut platform, envelope_key.as_deref())
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+
+    // A tape must end before the roster's authorisation does, and the
+    // assembled organisation is asked directly. See
+    // `ApiFeed::refuse_tape_beyond_authorisation` for the run that showed why.
+    if let Some(feed) = &feed {
+        feed.refuse_tape_beyond_authorisation(&platform)
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    }
+    let feed_banner = feed.as_ref().map_or_else(
+        || {
+            format!(
+                "none ({} and {} are not set); POST /cycle senses nothing and reasons over what \
+                 the platform already holds, and no research route will show an instrument until \
+                 a source is chosen",
+                qip_api::feed::TAPE_PATH_VARIABLE,
+                qip_api::feed::CONNECTOR_SOURCE_VARIABLE
+            )
+        },
+        qip_api::feed::ApiFeed::describe,
+    );
+    let feed = feed.map(|feed| Arc::new(Mutex::new(feed)));
 
     // The durable trial book, on the same storage the event log archives to.
     // The factory the plane was built with charges holdout evaluations to an
@@ -231,6 +274,9 @@ fn run() -> Result<()> {
     if let Some(mesh) = &mesh {
         api = api.with_mesh(mesh.clone());
     }
+    if let Some(feed) = &feed {
+        api = api.with_feed(feed.clone());
+    }
     let api = Arc::new(api);
     let console = Arc::new(Console::new(
         platform.clone(),
@@ -288,6 +334,21 @@ fn run() -> Result<()> {
          clears one"
     );
     println!("  capital trust:    {}", provenance.describe());
+    println!("  feed:             {feed_banner}");
+    if let Some(feed) = &feed {
+        let Ok(feed) = feed.lock() else {
+            return Err(Error::invalid(
+                "the feed is in an inconsistent state before serving began",
+            ));
+        };
+        if let Some(tape_clock) = feed.owned_clock() {
+            println!(
+                "  platform clock:   tape time, at {} until the first POST /cycle; credentials, \
+                 rate limits and the console stay on the wall clock",
+                tape_clock.now().to_rfc3339()
+            );
+        }
+    }
     println!("  arbitrage desk:   {arbitrage_banner}");
     match &mesh {
         Some(mesh) => {

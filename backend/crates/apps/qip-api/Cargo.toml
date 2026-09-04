@@ -26,6 +26,16 @@ qip-web.workspace = true
 qip-contracts.workspace = true
 qip-mesh.workspace = true
 qip-transport.workspace = true
+# The API's SENSE stage. `POST /cycle` used to run a platform nothing
+# observed into, so every stage after SENSE reasoned over an empty tape and
+# every research route answered honestly that nothing had been seen. The
+# composition root now selects one source — the committed demonstration tape
+# on its own clock, or a catalogued connector through the egress proxy — and
+# each cycle observes that source's records before the loop runs. The
+# licensing gate a connector passes first is the data finder's catalogue,
+# evaluated before any socket is opened.
+qip-market-ingestion.workspace = true
+qip-data-finder.workspace = true
 
 [dev-dependencies]
 # The tests publish genuine cell deltas and verify dispatched grants with the
@@ -46,11 +56,10 @@ qip-capital.workspace = true
 qip-simulation-engine.workspace = true
 # The research read surface is proven premise-first: a test feeds bars into
 # the platform through `Platform::observe` so a prediction and a price tape
-# exist before the route is read. `SensedRecord` and `Bar` are the kernel's
-# own input types and the kernel re-exports neither. Dev-only: the serving
-# binary ingests nothing and names neither crate.
+# exist before the route is read. `Bar` is the kernel's own input type and
+# the kernel does not re-export it. Dev-only: the serving binary builds no
+# bar of its own — what it observes comes off the feed above.
 qip-market.workspace = true
-qip-market-ingestion.workspace = true
 
 [lints]
 workspace = true

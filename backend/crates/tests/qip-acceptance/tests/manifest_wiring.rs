@@ -887,6 +887,30 @@ const A_DEMONSTRATION_FIXTURE_NO_DEPLOYMENT_SHIPS: &str = "Optional, and \
      by name. A tape belongs on the command that runs a demonstration, never in \
      the configuration of a workload meant to sense a market.";
 
+/// The API's own source selection, which no deployment makes yet.
+///
+/// The API's default is not the synthetic feed the brains fall back to: it
+/// is no source at all, said in the banner, because the API is the process an
+/// operator reads and generated prices there would be indistinguishable from
+/// a sensed market.
+const THE_API_SENSES_NOTHING_UNTIL_A_SOURCE_IS_CHOSEN: &str = "Optional, and \
+     unset means the API senses nothing and says so in its banner — not a \
+     synthetic exchange, because this is the process an operator reads and \
+     generated prices here would be indistinguishable from a sensed market. \
+     The tape is the same committed demonstration fixture the brains replay, \
+     played on its own clock; no deployment ships it, no image carries it, \
+     and a Cloud Run instance has no volume to mount it from, so a value here \
+     would be a configured path that resolves to nothing and the feed refuses \
+     it at start-up. The connector pair is the real path ADR 0034 decides, and \
+     it is admitted by the data finder's licensing catalogue before any socket \
+     opens; the catalogue sets it for the fast brain from \
+     `var.market_data_connector` and for nothing else, and extending that arm \
+     to the API is a catalogue change with its own plan evidence — the API's \
+     egress sidecar has never been applied, and the one FX source this build \
+     carries answers a 301 from the host its manifest names, so a value today \
+     would start a process whose feed refuses to open at boot. Each root \
+     refuses a tape and a connector set at once by name.";
+
 /// A number the tests and the probes are written against.
 const THE_PACE_THE_PROBES_ASSUME: &str = "The cadence, the budget and the \
      tolerance are one set of numbers: /ready returns 503 once cycles breach \
@@ -1075,6 +1099,21 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
         "qip-fastbrain",
         "QIP_FASTBRAIN_TAPE_PATH",
         A_DEMONSTRATION_FIXTURE_NO_DEPLOYMENT_SHIPS,
+    ),
+    (
+        "qip-api",
+        "QIP_API_TAPE_PATH",
+        THE_API_SENSES_NOTHING_UNTIL_A_SOURCE_IS_CHOSEN,
+    ),
+    (
+        "qip-api",
+        "QIP_CONNECTOR_SOURCE",
+        THE_API_SENSES_NOTHING_UNTIL_A_SOURCE_IS_CHOSEN,
+    ),
+    (
+        "qip-api",
+        "QIP_CONNECTOR_BASE_URL",
+        THE_API_SENSES_NOTHING_UNTIL_A_SOURCE_IS_CHOSEN,
     ),
     (
         "qip-deepbrain",

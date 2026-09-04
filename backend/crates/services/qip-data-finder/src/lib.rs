@@ -47,6 +47,7 @@
 //! transport is not, which is the same shape `qip-storage` and `qip-mesh` use
 //! for the services they cannot reach.
 
+pub mod admission;
 pub mod coverage;
 pub mod decision;
 pub mod endpoint;
@@ -62,6 +63,7 @@ pub mod schema;
 pub mod scoring;
 pub mod source;
 
+pub use admission::{CatalogueEntry, LicensingDecision, admit, admit_from};
 pub use coverage::{CoverageGap, CoverageMatch, SourceCoverage, SourceRegion, UpdateFrequency};
 pub use decision::{
     DecisionOutcome, LifecycleStage, ReasonStep, Reasoning, RegisteredSource, RegistrationDecision,
