@@ -498,6 +498,34 @@ and it needs its own slice and its own review. The row is recorded so the next
 reader does not infer from a working central ledger that the property holds
 regionally.
 
+**Re-scored at `2fd254f`: PARTIAL, was CONTRADICTS.** The slice this row asked
+for was written at `0ca4b92` and this paragraph was never updated, so the
+document went on calling absent a thing the tree had carried for days — the
+exact drift the re-score convention exists to prevent, in the row whose whole
+subject is not inferring a property from a document.
+
+What exists now, verified by reading rather than from the commit message:
+`qip-edge/src/reservation.rs` holds `RegionAllocation` with a `reserve` that
+refuses against a balance already spent; `Cell::with_region_allocation`
+(`cell.rs:598`) takes the allocation; and `hold_region_capital`
+(`cell.rs:3422`) is consulted on both paths that can commit capital,
+`cell.rs:1723` and `:2668`. `qip-edge/tests/reservation.rs` carries the
+property tests, among them
+`a_second_strategy_is_refused_once_the_region_allocation_is_spent_even_though_its_own_envelope_would_admit_it`
+— which is precisely the disconnected-cell case the paragraph above says
+nothing covers.
+
+**What has NOT changed, and is why this is PARTIAL rather than ALIGNED: no
+composition root constructs it.** `grep -rn "with_region_allocation\|
+RegionAllocation" backend/crates/apps/` returns nothing. The type is
+opt-in by construction — a cell records into an allocation it is *given*,
+never one it reaches for — so a `Cell` built by `qip-edge-node` today has no
+region allocation and behaves exactly as this row originally described. The
+control exists and is tested; it is not installed. A reader must not take
+"the slice landed" for "the property holds in a deployment", which is the
+same distinction the row was written to protect and the reason the verdict
+moves one step and not two.
+
 *Re-scored at `584c96b` — the aggregate half of §26/§33.* Reservation is
 unchanged and this finding stands. What changed is what the central aggregate
 is fed: `588335a` projects every instrument's sector, country, asset-class and
@@ -656,3 +684,78 @@ move one into its natural table without losing that history.
 | §25.6 The Cross-Margin Model | A collateral graph — what backs what, portfolio vs. isolated margin per venue, rehypothecation, correlated collapse, cross-venue collateral, liquidation cascade — feeding the risk envelope and the liquidity ladder | Absent entirely. A grep for `cross_margin`, `CrossMargin`, `collateral_graph` or `rehypothecation` (any case) across `backend/crates` returns nothing | MISSING-CURRENT | Grep above; no type, module or test anywhere in the tree | Backlog. Needs an owner decision before code: a collateral graph is a new data model that several existing engines (`qip-risk`, `qip-capital`, `qip-portfolio-engine`) would all read, so it is a crate-boundary question — where the graph lives and who is allowed to write it — not an addition to one crate. Likely needs an ADR under `.claude/rules/architecture/00-boundaries.md`'s "Recording a decision" bar if it becomes its own service rather than a library type the risk engine consumes | Low while every venue relationship is simulated and paper-only, but the blueprint frames it as where "the classic margin spiral" is caught | 8 | — |
 | §29 The Quote Loop, Quote Rate Management and Market Creation | Two-sided quoting with inventory skew, adverse-selection and volatility terms, a requote threshold, per-venue quote-rate budgets, and a gate (valuation, causal explanation, adverse-selection model, hard-coded max exposure, human approval per instrument class) before any market-creation activity | No market-making strategy exists anywhere in `backend/crates/edge/qip-strategy` or elsewhere — no fair-value/inventory-skew/half-spread/adverse-selection arithmetic and no market-making strategy type. The adjacent mechanism — cancel-and-replace repricing of a resting child order, which could carry the requote-threshold half of §29.1/§29.2 — exists in `qip-routing/src/reprice.rs` but its own module doc says so explicitly: "Nothing here sends anything, and nothing is wired yet — deliberately" (`backend/crates/edge/qip-routing/src/reprice.rs:19`); no caller exists in `qip-edge-node` or `qip-edge` | MISSING-CURRENT | `backend/crates/edge/qip-routing/src/reprice.rs:1-33`; absence of any market-making strategy confirmed by inspection of `backend/crates/edge/qip-strategy` | Two separable pieces of backlog, not one: (1) wiring `Repricer` into `qip-edge-node`'s gateway loop is scoped and stated already in the module's own doc comment; (2) an actual quoting/market-making strategy family (fair value, skew, size, quote-rate budget, the §29.3 market-creation gate) does not exist at any layer and is a new strategy family, not a wiring gap | Low now (nothing quotes); the blueprint frames market creation itself as "the most dangerous" activity in the platform, gated on a causal explanation and human approval per instrument class — a reason to scope any future work narrowly | 4 | `qip-routing/tests/reprice.rs` (mechanism only; no market-making test exists) |
 | §35 A Position Has a Lifecycle / §35.2 The Three Questions Version 9 Left Open / §35.3 Unwind Ordering | An explicit state machine (Opened, Held, Flagged, Unwinding, Orphaned, Closed); a retired strategy's positions are reassigned or scheduled for unwinding, never left ownerless; a thesis-expiry sweep flags and unwinds positions held past their horizon; unwind order is a ranked policy (failed thesis first, tax efficiency, liquidity-ladder cost, hedge preservation, cross-margin respect) | `qip_portfolio::position::Position` (`backend/crates/libs/qip-portfolio/src/position.rs:38-54`) carries `lots`, `realised_pnl`, `opened_at`/`updated_at` and a `PositionSide` (Long/Short/Flat) derived from quantity — there is no lifecycle-state field and no Flagged/Unwinding/Orphaned variant anywhere in the workspace. No code path runs when a strategy retires to reassign or schedule-unwind its open positions — `StrategyFactory::retire` (see the §20.3 row above) touches only the lifecycle ledger, never `qip-portfolio` or `qip-capital`. No thesis-expiry sweep and no ranked unwind-ordering policy exist anywhere in the tree | MISSING-CURRENT | `backend/crates/libs/qip-portfolio/src/position.rs:12-54`; `StrategyFactory::retire` reviewed at `central/factory.rs:406-414` has no call into `qip-portfolio` or `qip-capital` | Backlog, and sequenced after §20.3's retirement wiring is closed — retirement without a position-disposition step is exactly the orphan case §35.2 names. This crosses the `qip-lifecycle` / `qip-portfolio` / `qip-capital` boundary (a retirement decision in one service has to reach position state owned by another), so per `.claude/rules/architecture/00-boundaries.md` the composition belongs in `qip-kernel`, not a new dependency edge between the two services. It does not by itself need a new crate; it would need an ADR only if the eventual design promotes a shared position-lifecycle type into a lib both services read, which is a decision for whoever scopes the slice, not a default | Medium — an orphaned position after a retirement is, in the blueprint's own words, "a reconciliation break, not a normal state"; today nothing distinguishes the two | 10 | — |
+
+## Re-score at `2fd254f` — the environment gained a Terraform binary, and four gaps closed
+
+Appended rather than folded in, per this file's convention. Every claim below
+was checked at HEAD in the session that wrote it, not carried forward.
+
+**The `no terraform binary exists in this environment` verdict is withdrawn.**
+It appears twice above — in the LAYER 6/7 row and in the verification note at
+the foot of the runtime section — and in four other documents. It was true
+when written and is not now: `/usr/local/bin/terraform` exists, and both gates
+were run against the tree.
+
+```
+terraform fmt -check -recursive .   exit 0
+terraform validate                  Success! The configuration is valid.
+```
+
+This matters more than a corrected sentence. That verdict was the stated
+reason "every precondition in the new modules is asserted and unexercised",
+and it was load-bearing in the worst way: because nothing here parsed HCL, a
+`variable "source"` (a reserved name) and a conditional `ignore_changes`
+(which must be a static list) shipped together, `terraform validate` failed on
+every commit carrying them, and 3,741 Rust tests passed straight through.
+`terraform_contract.rs` was written against that failure. **What is still
+true, and is the half a reader must not lose: `validate` is not a plan.**
+Preconditions are plan-time, so ADR 0030's pairing rules and ADR 0031's
+`secret_env` refusal are still asserted and unexercised. Only a real plan
+exercises them.
+
+**The frontend gates ran for the first time and pass.** They had never been
+run in any session that scored this file, so the LAYER 1 row's verdict rested
+on reading. `npm ci` in `frontend/` and separately in `frontend/landing/` —
+the landing keeps its own dependency tree deliberately (ADR 0015, a different
+React major), so it is not a workspace member and a root install does not
+reach it, which is how a first attempt produced five `Can't resolve 'swiper/*'`
+errors that were the runner's mistake and not a defect:
+
+```
+portal   npm run lint       clean     npm run typecheck   clean     npm run build   36 routes
+landing  npm run lint       clean — 41 files, 12 routes   npm run build   13 routes
+```
+
+Both frontend absolutes were then verified by reading, not assumed from the
+rule that requires them. **No control that could submit an order exists**: a
+grep for `submitOrder|placeOrder|sendOrder|createOrder|POST.*order` across
+both apps' `app/`, `components/` and `lib/` returns exactly one hit, and it is
+prose in `landing/components/layout/footer/Footer1.js:59` stating that no
+control submits a live order. **`PAPER TRADING` renders wherever posture is
+shown**: `portal/src/components/chrome/PaperTradingBanner.tsx:27`, the admin
+autonomy page, both risk pages, both portfolio pages, the system page and the
+portal root, with the live-capable arm spelled as its own label rather than as
+the absence of this one.
+
+**Four decisions were taken and recorded** — ADR 0032 (telemetry drains to a
+collector on a private address, not to a public URL; the fast brain forces it,
+having no egress proxy by design), ADR 0033 (OpenObserve becomes
+authenticated before it holds telemetry, firing ADR 0030's own trigger),
+ADR 0034 (Coinbase, then Alpaca, then Kalshi — candidates, with
+`qip-data-finder`'s licensing gate deciding), ADR 0035 (one execution node,
+`us-east4`, shadow mode, dev only). `docs/plan/gate-completion-plan.md` plans
+the four gates against those decisions.
+
+**A6 is refused rather than open.** The collector image was reviewed this
+session: its digest still resolves, `modules/cloudrun` does publish the
+`/etc/rungmp/config.yaml` it insists on, and Trivy failed it on
+CVE-2026-56854, a CRITICAL authentication bypass in `golang.org/x/crypto`
+v0.54.0 fixed in 0.55.0. The registry publishes nothing above 1.9.2, so there
+is no patched release. No scanner exception was written.
+`infrastructure/egress/vendored-images.txt` carries the finding beside the
+still-commented line.
+
+**What has not moved: the four gates are still 0 of 4**, and three of them
+are blocked on an empirical fact — sustained streaming of real market data —
+that none of the above supplies. The fourth cannot pass while paper trading
+holds and should be read as structurally refused rather than outstanding.

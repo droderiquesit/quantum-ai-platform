@@ -322,7 +322,7 @@ ahead it is elsewhere. This is the critical path to the first gate.
 | B20 | ~~**Charge a cell's reported fills into the centre's risk aggregate**~~ | §26, §33, rule 11 | P3 | — | — | **Done at `98bc687`**: `CentralPlane::settle` records each venue fill it books on the `Settlement` (`central/plane.rs:1081`) and `Platform::ingest_cell_report` charges that list under the cell's id as the aggregate's strategy axis (`charge_cell_fills`, `platform.rs:1720`) — a counter per cell, bounded by the deployment's cell list, so the O(1) rule holds; crosses are not charged; a refused report is charged nothing. `qip-kernel/tests/risk_aggregates.rs::a_cells_fills_are_charged_into_the_aggregate_and_the_next_desk_order_is_refused_on_leverage` | 1, spent |
 | B21 | ~~**Budget each family at five hundred trials a calendar quarter**~~ | §20.1, §54.1 | P2 | B5 | — | **Done at `e31aae4`**: every trial-book record carries the family's count for the UTC calendar quarter of its own instant, under the same hash as the lifetime (`qip-lifecycle/src/trials.rs:69`, `:199`), and `charge` refuses — recording nothing — when a charge would carry the quarter past the budget (`:674`); zero is refused as a budget. `qip-lifecycle/tests/lifecycle.rs::the_five_hundredth_trial_of_a_quarter_charges_and_the_five_hundred_and_first_is_refused`, `::a_new_quarter_resets_the_running_count_and_not_the_lifetime`, `::the_quarterly_count_replays_from_the_store_and_a_lowered_one_is_refused` | 1, spent |
 | B22 | ~~**Bill the wire's fills, not its placements**~~ | §43.4, rule 12, principle 6 | P3 | B11, B20 | — | **Done at `5290bb9`**, in six commits (`9e45dc0`, `ef4464a`, `96a49f1`, `3c2b789`, `d59505d`, `5290bb9`). The defect: since `cb79b46` the cell booked a fill only when the venue reported one, but the uplink carried only the placements, as `orders`, and `CentralPlane::settle` booked every one as a fill into the strategy books and, through B20, into the risk aggregate. Now `FillRecord` and `FillShare` are declared once in `qip-contracts/src/wire.rs:68-110`, the delta carries `fills: Vec<FillRecord>` beside `orders` (`qip-edge/src/mesh.rs:214`; built from `WorkReport::fills` at `cell.rs:3253`, bounded by `MAX_FILLS_PER_DELTA` = 64 at `wire.rs:120` with `fills_omitted` counting the rest), `CELL_DELTA_SCHEMA_VERSION` is 4 (`wire.rs:148`) so an older centre refuses the delta rather than decoding the orders as fills again, and the centre's mirror decodes `fills` with a serde default so a v3 delta with no field replays as sent-and-nothing-confirmed (`qip-mesh/src/delta.rs::a_delta_written_before_fills_existed_decodes_as_having_confirmed_none`, `:478`, asserting first that the fixture lacks the field). `settle` (`central/plane.rs:1161`) registers each order as sent in `SentOrders` — 4,096 per cell, oldest evicted (`:1526`) — under `qip_central_orders_sent_total` (`:1187`; `qip-observability/src/metrics.rs:711`) and bills, attributes and charges the aggregate from fills only, each booked as the cell's own shares and refused if they do not sum (`:1226`); a fill naming an order the centre never saw sent, or beyond its unfilled remainder, is `BreakOrigin::UnsentFill` (`:1214`), direction `unsent_fill`, merged with the report's own breaks (`:1066`) and halting the cell through the same path. The API sink carries the fills onto the report and counts `fills_reported`/`fills_omitted` apart from the orders (`qip-api/src/mesh.rs:1209`, `:1219-1220`). Tests, each mutation-verified per its commit: `qip-kernel/tests/risk_aggregates.rs::a_sent_order_the_venue_has_not_filled_charges_nothing_to_the_aggregate` (`:506`), `::the_same_order_filled_in_the_next_report_charges_exactly_the_fill` (`:562`); `tests/attribution.rs::a_report_from_a_cell_older_than_the_fill_record_is_counted_sent_and_settles_nothing` (`:441`), `::a_fill_on_an_order_the_centre_never_saw_sent_halts_the_cell_and_books_nothing` (`:499`), `::a_fill_beyond_the_quantity_sent_is_the_same_break` (`:567`), `::a_fill_whose_shares_do_not_sum_to_it_is_refused_rather_than_booked_short` (`:635`); `qip-api/tests/mesh.rs::the_fills_a_cell_reports_reach_the_centres_strategy_books` (`:712`), `::an_order_a_cell_reports_sent_and_unfilled_reaches_no_book_and_charges_nothing` (`:760`); `qip-edge/tests/mesh.rs::a_state_delta_a_cell_produced_arrives_at_the_centre_unchanged` (`:420`, a fill of one against an order of three); `acceptance.rs::the_centre_decodes_a_contributor_vector_out_of_bytes_the_edge_crate_produced` (`:648`, the edge serialiser against the centre's decoder). B20's test still passes and now charges fills. The last reader of `orders` as holdings — `qip-acceptance/tests/e2e_live.rs::report_from`, a test-only helper that had survived `3c2b789` because its fixture pass sent nothing — closed at `095144b`: positions from `delta.fills` (`:698`), both lists forwarded (`:751`), and the walk's pass sends a hundred and fills forty (`::the_platform_completes_a_cycle_observed_from_sockets_and_acted_on_over_one`, `:780`), its mutation back to `orders` failing on a gross of 10002 where 4000.8 was required | 1, spent |
-| B23 | **Decide what a concentration cap is a share of, then change the default set** — the fed buckets refuse the first order into any catalogued universe, and since B19's closing sentence every deployed root assembles one, so the pinned test in B19 is a standing refusal until ADR 0027 is accepted in some direction | §26, §28.1, §33 | P3 | B19, D13 | **D13** — ADR 0027 is proposed (`360cfd8`), not accepted | ADR 0027's status changed by the owner; `LimitSet::conservative_default` amended to the chosen denominator; the pinned test replaced by one asserting the first order into the catalogue is admitted and the first breach of the chosen cap is refused | 1 (ADR, the owner's) + 1 |
+| B23 | **Decide what a concentration cap is a share of, then change the default set** — the fed buckets refuse the first order into any catalogued universe, and since B19's closing sentence every deployed root assembles one, so the pinned test in B19 is a standing refusal until ADR 0027 is accepted in some direction | §26, §28.1, §33 | P3 | B19, D13 | **D13 — CLOSED.** ADR 0027 was accepted as option (a) and applied at `eca7ebb`; line 3 of the record reads `accepted — option (a)`. `LimitKind::MaxAxisWeight` replaced the two share-of-gross entries in `LimitSet::conservative_default` on the same axes at 0.35 and 0.60, so the first order into a fed book is admitted and a sector past the cap is still refused. The two kernel fixtures that dropped `MaxConcentration` had become no-ops — the default set no longer holds that kind — and were removed at `0882a02`, so both files now run the set that ships (`capital.rs` 5 passed, `risk_aggregates.rs` 7 passed). This row was still reading "proposed, not accepted" 165 commits after the decision | ADR 0027's status changed by the owner; `LimitSet::conservative_default` amended to the chosen denominator; the pinned test replaced by one asserting the first order into the catalogue is admitted and the first breach of the chosen cap is refused | 1 (ADR, the owner's) + 1 |
 
 Phase 0–3 total at `296e187`, excluding what is not authorised: **roughly
 fourteen slices remain of the twenty-five**, six having been spent (B5's crate
@@ -660,3 +660,79 @@ The gate for this file is
 which checks every internal link resolves and refuses the overclaims it names.
 Run it on every edit and quote the `test result:` line in the commit. This
 document does not claim the gate ran; the commit that lands it must.
+
+## Re-score at `2fd254f` — corrections this plan was carrying
+
+Appended, not rewritten. Five statements in the rows above were false against
+the tree when checked at HEAD; each is corrected here with the evidence,
+because a plan that misreports what is done sends the next wave at work
+already finished.
+
+**B12/F6 — per-region reservation is implemented, not absent.** The rows above
+say "still absent" and quote a grep they report as empty. It landed at
+`0ca4b92`: `qip-edge/src/reservation.rs` holds `RegionAllocation::reserve`;
+`Cell::with_region_allocation` takes it (`cell.rs:598`); `hold_region_capital`
+(`cell.rs:3422`) is consulted on both capital-committing paths (`:1723`,
+`:2668`); and `qip-edge/tests/reservation.rs` carries the property tests,
+including
+`a_second_strategy_is_refused_once_the_region_allocation_is_spent_even_though_its_own_envelope_would_admit_it`.
+**Still open, and the reason this is not closed outright:** no composition
+root constructs it —
+`grep -rn "with_region_allocation\|RegionAllocation" backend/crates/apps/`
+returns nothing — so a cell built by `qip-edge-node` today has none. Written
+and tested; not installed.
+
+**B23/D13 — ADR 0027 is accepted, not proposed.** Corrected in the row itself
+above. It was accepted as option (a) and applied at `eca7ebb`, 165 commits
+before this plan was last read.
+
+**The `no terraform binary` premise is withdrawn.** It appears at line 45 and
+in the verification notes at lines 424 and 512. A binary exists at
+`/usr/local/bin/terraform`; `terraform fmt -check -recursive` exits 0 and
+`terraform validate` returns "Success! The configuration is valid." The wave-7
+backlog item asking for "`terraform validate` quoted by name" is satisfied.
+What stays true: `validate` is not a plan, so every plan-time precondition —
+ADR 0030's pairing rules, ADR 0031's `secret_env` refusal — remains asserted
+and unexercised.
+
+**The egress allowlist names a market-data vendor.** Rows B3, D9 and §7 say it
+names none. `infrastructure/terraform/variables.tf:294-305` lists six
+upstreams and the sixth is `api.frankfurter.app`, described in-tree as "a
+market-data vendor… the first that is neither [Google nor IBM]", with a real
+Envoy cluster on 9105 and `FrankfurterRatesConnector` registered in the
+connector bridge. No scoring document mentioned it. **What is still open:** no
+request through that allowlist has been observed in a deployment log, and
+Frankfurter is FX reference rates — not the equities feed the Phase 2 gate
+needs.
+
+**All three central services are deployed and proven serving.** Lines 514-518,
+571 and 608-610 say `qip-dev-api` and `qip-dev-deepbrain` are not proven
+running. `infrastructure/environments/dev/images.tfvars` records all three
+digests from run 33780092495, each written by the pipeline itself as having
+moved onto its Cloud Run service and been proven serving before the line was
+written. `qip-dev-openobserve` was added since, and answers 200 at `/web/` and
+401 unauthenticated on its API.
+
+### Not done, and deliberately: ADR 0029's removal
+
+`qip-normalization` is still a workspace member. The decision to delete it is
+taken and unchanged; executing it was judged the wrong use of this session and
+that judgement is recorded rather than left as a silent omission.
+
+The removal is not mechanical. The crate's only consumers are two acceptance
+suites that use it as a *fixture*, and ADR 0029's own cost section says what
+that means: `truth_loop.rs`'s fourth stage becomes an explicitly test-owned
+value rewrite, and two published performance figures are withdrawn with the
+budget check made bidirectional in the same change. `truth_loop.rs` asserts on
+`NormalizationReport`'s `processed`, `venues_canonicalised`,
+`timestamps_corrected` and `scale_warnings` (`:479-485`) and on
+`SymbolMapping::canonical_symbol` (`:487`), and `normalised` is threaded
+through eleven later assertions. That is a careful edit to a flagship
+seven-stage suite for zero functional gain, and a hurried one risks exactly
+the weakened test this repository forbids.
+
+The next owner should take it as its own slice, with `architecture.rs:762`'s
+`NO_MONEY_AUTHORITY` literal and the `services.len() >= 25` assertion handled
+deliberately — that count is asserted against exactly 25 crates, so the
+deletion fails it on its premise, and lowering the number to make it pass
+would replace a guard with a tautology.
