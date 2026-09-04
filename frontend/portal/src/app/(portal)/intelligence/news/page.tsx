@@ -1,145 +1,181 @@
 "use client";
 
-import { Chip } from "@/components/data/Bits";
+import { useMemo } from "react";
+import { Chip, Metric, MetricRow, StreamControls } from "@/components/data/Bits";
+import { EventFeed } from "@/components/data/EventFeed";
 import { Panel, PanelBody, PanelHead } from "@/components/data/Panel";
-import { SimulatedBanner } from "@/components/data/Simulated";
 import { StateBlock } from "@/components/data/States";
-import { Bars } from "@/components/viz/primitives";
-import { simBetween } from "@/lib/sim";
+import { formatCount, formatTimestamp } from "@/lib/format";
+import { useEventStream } from "@/lib/hooks/useEventStream";
+import type { StreamEnvelope } from "@/lib/sse/envelope";
 
 /**
- * News and sentiment: what is true today on top, an illustration below.
+ * News and sentiment, read from the platform's own market stream.
  *
- * The two halves are separated on purpose and must stay that way. The top
- * panel is the platform's actual position — no live news source is ingested
- * and no news surface is served — stated without simulation, because "we have
- * no news" is a fact worth the whole panel. The bottom half illustrates what
- * the surface would carry, under the banner, with invented sectors and
- * fictional instruments only: a fabricated headline about a real company is a
- * fabrication however clearly the page is labelled, so no real entity may
- * appear here.
+ * `GET /api/v1/stream/market` carries every narrative topic the ingestion
+ * service records — `news.received`, `fundamental.updated`, `macro.updated` —
+ * and this page is a client of that stream and nothing else. It used to render
+ * six invented headlines under a SIMULATED DATA banner; that illustration is
+ * gone, because a real route existed for the thing it illustrated, and a
+ * placeholder beside a real feed is exactly the mixed panel the console's
+ * rules forbid.
+ *
+ * What is honest about an empty feed: this deployment configures no vendor
+ * narrative adapter, so the stream is open and carries nothing on these
+ * topics. The page says that in the feed's own "connected, no events" state
+ * rather than dressing it up — "no news has been ingested" is a fact, and a
+ * quiet feed and a dead socket are kept distinguishable by the stream
+ * controls beside it.
  */
 
-interface SimulatedHeadline {
-  /** A fictional instrument from the console's invented universe. */
-  readonly instrument: string;
-  /** An invented sector — not an industry classification anyone publishes. */
-  readonly sector: string;
-  readonly headline: string;
-  /** Sentiment in [-1, 1], from the seeded generator. */
-  readonly sentiment: number;
+/** The wire names of the topics the narrative adapter publishes. */
+const NARRATIVE_TOPICS = new Set(["news.received", "fundamental.updated", "macro.updated"]);
+
+function isNarrative(envelope: StreamEnvelope): boolean {
+  return NARRATIVE_TOPICS.has(envelope.type);
 }
 
-const HEADLINES: readonly SimulatedHeadline[] = [
-  {
-    instrument: "EQ-AURORA",
-    sector: "orbital logistics",
-    headline:
-      "Aurora-basket assemblers guide deliveries higher after a debottlenecked launch window",
-  },
-  {
-    instrument: "EQ-BOREAL",
-    sector: "synthetic agriculture",
-    headline: "Boreal growers report a weaker glasshouse harvest as input costs stay elevated",
-  },
-  {
-    instrument: "FX-KESTREL",
-    sector: "monetary policy",
-    headline: "The Kestrel-bloc central bank holds its corridor and hints at a slower unwind",
-  },
-  {
-    instrument: "FX-MERIDIAN",
-    sector: "trade flows",
-    headline: "Meridian-corridor freight volumes contract for a second consecutive quarter",
-  },
-  {
-    instrument: "CR-ORRERY",
-    sector: "structured credit",
-    headline: "Orrery-index issuers refinance early, tightening the on-the-run spread",
-  },
-  {
-    instrument: "CM-THALASSA",
-    sector: "deep-sea energy",
-    headline: "Thalassa-strip supply disruption resolved sooner than the forward curve priced",
-  },
-].map((entry) => ({
-  ...entry,
-  sentiment: Math.round(simBetween(`news:sentiment:${entry.instrument}`, -1, 1) * 100) / 100,
-}));
+function asNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
 
-function sentimentTone(value: number): "up" | "down" | "flat" {
-  if (value > 0.15) return "up";
-  if (value < -0.15) return "down";
-  return "flat";
+function asText(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/** A `NewsItem` payload, rendered with its own fields where they are present. */
+function NewsRow({ envelope }: { envelope: StreamEnvelope }) {
+  const payload = envelope.payload;
+  const headline = asText(payload["headline"]);
+  const source = asText(payload["source"]);
+  const sentiment =
+    typeof payload["sentiment"] === "object" && payload["sentiment"] !== null
+      ? (payload["sentiment"] as Record<string, unknown>)
+      : null;
+  const polarity = sentiment ? asNumber(sentiment["polarity"]) : null;
+  const confidence = sentiment ? asNumber(sentiment["confidence"]) : null;
+  const publishedAt = asText(payload["published_at"]);
+
+  if (headline === null) {
+    // Not a news item — a fundamental or macro update, or a shape this
+    // console has not modelled. The type chip in the row already names it;
+    // the payload is shown as the platform sent it rather than guessed at.
+    return <span>{JSON.stringify(payload).slice(0, 200)}</span>;
+  }
+  return (
+    <span className="flex flex-wrap items-center gap-2" data-testid="news-row">
+      <span className="text-[color:var(--color-ink)]">{headline}</span>
+      {source ? <Chip tone="info">{source}</Chip> : null}
+      {polarity !== null ? (
+        <Chip tone={polarity > 0.15 ? "ok" : polarity < -0.15 ? "bad" : "neutral"}>
+          polarity {polarity.toFixed(2)}
+          {confidence !== null ? ` · conf ${confidence.toFixed(2)}` : ""}
+        </Chip>
+      ) : null}
+      {publishedAt ? (
+        <span className="num text-[10px] text-[color:var(--color-ink-faint)]">
+          published {formatTimestamp(publishedAt)}
+        </span>
+      ) : null}
+    </span>
+  );
 }
 
 export default function NewsPage() {
+  const market = useEventStream({
+    channel: "market",
+    label: "SSE /stream/market (narrative)",
+    maxEvents: 300,
+  });
+
+  const narrative = useMemo(() => market.events.filter(isNarrative), [market.events]);
+  const feed = useMemo(() => ({ ...market, events: narrative }), [market, narrative]);
+  const newsCount = useMemo(
+    () => narrative.filter((envelope) => envelope.type === "news.received").length,
+    [narrative],
+  );
+  const otherOnStream = market.events.length - narrative.length;
+
   return (
     <div className="flex flex-col gap-3 p-3">
       <Panel>
-        <PanelHead title="What the platform ingests today" actions={<Chip tone="warn">no live source</Chip>} />
+        <PanelHead
+          title="Narrative feed"
+          meta={<StreamControls stream={market} name="market" />}
+          actions={<Chip>SSE /api/v1/stream/market</Chip>}
+        />
+        <PanelBody>
+          <MetricRow>
+            <Metric
+              label="News items"
+              value={formatCount(newsCount)}
+              hint="news.received, since connect"
+            />
+            <Metric
+              label="Narrative events"
+              value={formatCount(narrative.length)}
+              hint="news, fundamentals and macro releases"
+            />
+            <Metric
+              label="Other market events"
+              value={formatCount(otherOnStream)}
+              hint="on the same stream, not shown here"
+            />
+            <Metric
+              label="Resume cursor"
+              value={market.cursor ?? "—"}
+              hint="what a reconnect asks for"
+            />
+          </MetricRow>
+        </PanelBody>
+        <PanelBody flush>
+          {/* The premise beside the conclusion: a filtered-empty feed on a
+              stream that carried other events must never read as a stream that
+              carried nothing. */}
+          {market.events.length > 0 && narrative.length === 0 ? (
+            <p
+              className="border-b border-[color:var(--color-line)] px-3 py-1 text-[11px] text-[color:var(--color-ink-faint)]"
+              data-testid="news-filter-premise"
+            >
+              The stream has delivered {formatCount(market.events.length)} event(s) since connect,
+              none of them narrative. This is a measured absence of news, not a silent feed.
+            </p>
+          ) : null}
+          <EventFeed
+            stream={feed}
+            channel="market"
+            maxHeight="52vh"
+            renderRow={(envelope) => <NewsRow envelope={envelope} />}
+          />
+        </PanelBody>
+      </Panel>
+
+      <Panel>
+        <PanelHead title="What is behind this feed" actions={<Chip tone="warn">no vendor source</Chip>} />
         <PanelBody>
           <StateBlock
             tone="warn"
-            label="not served"
-            headline="This deployment ingests no live news source, and serves no news surface."
+            label="not ingested"
+            headline="This deployment configures no live news source, so the feed above carries what the platform recorded on these topics — which, today, is nothing."
+            compact
           >
             <p>
               The absorption machinery is real: the narrative adapter in{" "}
               <code className="num">backend/crates/services/qip-market-ingestion/src/narrative.rs</code>{" "}
-              decodes news items, corporate filings and macroeconomic releases into sensed
-              records, anchored on the instant each document became knowable. But it runs
-              in-process, no vendor feed is configured here, and nothing exposes what was
-              absorbed over HTTP — the contract this page is written against,{" "}
-              <code className="num">GET /api/v1/news</code>, does not exist yet.
+              decodes news items, corporate filings and macroeconomic releases into sensed records,
+              anchored on the instant each document became knowable, and publishes them on the
+              topics this page subscribes to. No vendor feed is configured in this process, so
+              nothing reaches the stream. When one is, the rows render here with the item&rsquo;s own
+              headline, source and scored sentiment — no adapter change on this side.
             </p>
             <p className="mt-1.5 text-[color:var(--color-ink-faint)]">
-              So the emptiness above is a stated absence, not a quiet news day. The cards below
-              are a labelled illustration of what the surface would carry, and nothing more.
+              What is still missing on the platform side is a history: the stream opens at the live
+              edge with a bounded backlog, and there is no <code className="num">GET /api/v1/news</code>{" "}
+              to page through what was ingested before this tab opened.
             </p>
           </StateBlock>
         </PanelBody>
       </Panel>
-
-      <SimulatedBanner subject="news and sentiment" contract="GET /api/v1/news">
-        <p className="max-w-[80ch] text-[11.5px] leading-relaxed text-[color:var(--color-ink-dim)]">
-          Every headline below is invented, about a fictional instrument in an invented sector.
-          No real company, publication or event appears here, so no card can be read as a claim
-          about the world.
-        </p>
-      </SimulatedBanner>
-
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 xl:grid-cols-3">
-        {HEADLINES.map((item) => {
-          const tone = sentimentTone(item.sentiment);
-          return (
-            <Panel key={item.instrument}>
-              <PanelHead
-                title={item.instrument}
-                meta={<Chip tone="info">{item.sector}</Chip>}
-                actions={
-                  <Chip tone={tone === "up" ? "ok" : tone === "down" ? "bad" : "neutral"}>
-                    {tone === "up" ? "reads positive" : tone === "down" ? "reads negative" : "reads neutral"}
-                  </Chip>
-                }
-              />
-              <PanelBody>
-                <div className="flex flex-col gap-3">
-                  <p className="text-[12.5px] leading-relaxed text-[color:var(--color-ink)]">
-                    {item.headline}
-                  </p>
-                  <Bars
-                    items={[{ label: "sentiment", value: item.sentiment, tone }]}
-                  />
-                  <p className="text-[10px] text-[color:var(--color-ink-faint)]">
-                    Sentiment in [-1, 1], generated from a fixed seed. The headline is invented.
-                  </p>
-                </div>
-              </PanelBody>
-            </Panel>
-          );
-        })}
-      </div>
     </div>
   );
 }

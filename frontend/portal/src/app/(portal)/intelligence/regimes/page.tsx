@@ -1,140 +1,158 @@
 "use client";
 
-import { Chip } from "@/components/data/Bits";
+import { useMemo } from "react";
+import { Chip, Metric, MetricRow, StreamControls } from "@/components/data/Bits";
+import { EventFeed } from "@/components/data/EventFeed";
 import { Panel, PanelBody, PanelHead } from "@/components/data/Panel";
-import { SimulatedBanner } from "@/components/data/Simulated";
-import type { HeatCell } from "@/components/viz/primitives";
-import { Bars, Gauge, Heatmap } from "@/components/viz/primitives";
-import { simBetween, simPick } from "@/lib/sim";
+import { StateBlock } from "@/components/data/States";
+import { formatClock, formatCount } from "@/lib/format";
+import { useEventStream } from "@/lib/hooks/useEventStream";
+import { summarisePayload, type StreamEnvelope } from "@/lib/sse/envelope";
 
 /**
- * Regime detection, illustrated — the surface does not exist yet.
+ * Regime detection, read from the platform's own signal stream.
  *
- * The transition matrix is generated under the one constraint that makes a
- * transition matrix a transition matrix: each row is normalised so its
- * probabilities sum to one (to within display rounding). A row summing to 1.3
- * would not be a simplification, it would be an object that cannot exist, and
- * a reader who noticed would rightly stop trusting the page. The diagonal is
- * weighted up because regimes persist — an illustration where the market
- * reshuffles its regime every step would teach the wrong intuition about what
- * the real surface will show.
+ * `GET /api/v1/stream/signals` carries `regime.changed`, and the regime the
+ * platform currently believes is, by definition, the payload of the newest
+ * such event. This page is a client of that stream and nothing else. It used
+ * to render a seeded "current regime", a confidence gauge and a transition
+ * matrix under a SIMULATED DATA banner; the illustration is gone because the
+ * route that carries the fact it illustrated already exists, and the two
+ * figures it had no source for — classification confidence and the
+ * transition matrix — are named below as the gap they are rather than
+ * generated.
+ *
+ * With no `regime.changed` recorded, the page says so. It does not pick a
+ * regime to show: an invented "range-bound" on a page an operator reads to
+ * learn the market state is a fabrication however plausible the choice.
  */
 
-const REGIMES = [
-  { code: "RB", name: "range-bound / low volatility" },
-  { code: "TR", name: "trending / expanding volatility" },
-  { code: "ST", name: "stressed / correlated selloff" },
-  { code: "RO", name: "rotational / dispersion" },
-] as const;
+const REGIME_TOPIC = "regime.changed";
 
-type Regime = (typeof REGIMES)[number];
-
-const CURRENT: Regime = simPick("regimes:current", REGIMES);
-const CONFIDENCE = simBetween("regimes:confidence", 0.4, 0.9);
-
-/** One row of the transition matrix, normalised to sum to 1 before rounding. */
-function transitionRow(from: Regime): readonly number[] {
-  const weights = REGIMES.map(
-    (to) =>
-      // Persistence bias: staying put outweighs any single move.
-      (to.code === from.code ? 2.2 : 0) +
-      simBetween(`regimes:transition:${from.code}:${to.code}`, 0.05, 1),
-  );
-  const total = weights.reduce((sum, weight) => sum + weight, 0);
-  return weights.map((weight) => Math.round((weight / total) * 100) / 100);
+function isRegimeChange(envelope: StreamEnvelope): boolean {
+  return envelope.type === REGIME_TOPIC;
 }
 
-const MATRIX: readonly (readonly number[])[] = REGIMES.map((from) => transitionRow(from));
+function asText(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
 
-const CELLS: readonly HeatCell[] = REGIMES.flatMap((from, i) =>
-  REGIMES.map((to, j) => ({
-    row: from.name,
-    column: to.code,
-    value: MATRIX[i]?.[j] ?? null,
-  })),
-);
-
-const CURRENT_INDEX = REGIMES.findIndex((regime) => regime.code === CURRENT.code);
-const NEXT_LIKELY = REGIMES.map((to, j) => ({
-  label: to.name,
-  value: MATRIX[CURRENT_INDEX]?.[j] ?? 0,
-  tone: to.code === CURRENT.code ? ("flat" as const) : ("accent" as const),
-})).sort((a, b) => b.value - a.value);
+/** The regime a `regime.changed` payload names, under whichever key it uses. */
+function regimeOf(envelope: StreamEnvelope): string {
+  const payload = envelope.payload;
+  return (
+    asText(payload["to"]) ??
+    asText(payload["regime"]) ??
+    asText(payload["new_regime"]) ??
+    asText(payload["state"]) ??
+    summarisePayload(envelope)
+  );
+}
 
 export default function RegimesPage() {
+  const signals = useEventStream({
+    channel: "signals",
+    label: "SSE /stream/signals (regimes)",
+    maxEvents: 200,
+  });
+
+  const changes = useMemo(() => signals.events.filter(isRegimeChange), [signals.events]);
+  const feed = useMemo(() => ({ ...signals, events: changes }), [signals, changes]);
+  const current = changes[0] ?? null;
+  const otherOnStream = signals.events.length - changes.length;
+
   return (
     <div className="flex flex-col gap-3 p-3">
-      <SimulatedBanner subject="regime detection" contract="GET /api/v1/regimes">
-        <p className="max-w-[80ch] text-[11.5px] leading-relaxed text-[color:var(--color-ink-dim)]">
-          The machinery that would ground this page is real: the world model in{" "}
-          <code className="num">backend/crates/services/qip-world-model</code> tracks the believed state
-          of the world and what changed between any two instants, in-process. No HTTP surface
-          exposes a regime classification yet, so everything below is a seeded illustration of
-          the contract.
-        </p>
-      </SimulatedBanner>
-
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-[2fr_3fr]">
         <Panel>
           <PanelHead
             title="Current regime"
-            actions={<Chip tone="info">generated from a fixed seed</Chip>}
+            meta={<StreamControls stream={signals} name="signals" />}
+            actions={<Chip>SSE /api/v1/stream/signals</Chip>}
           />
           <PanelBody>
-            <div className="flex flex-col gap-4">
-              <div className="flex flex-wrap items-center gap-4">
+            {current ? (
+              <div className="flex flex-col gap-3" data-testid="current-regime">
                 <p className="num text-[19px] font-semibold text-[color:var(--color-ink)]">
-                  {CURRENT.name}
+                  {regimeOf(current)}
                 </p>
-                <Gauge
-                  fraction={CONFIDENCE}
-                  label="classification confidence"
-                  caption="generated from a fixed seed"
-                  tone="accent"
-                  size={92}
-                />
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <span className="eyebrow">most likely next regime</span>
-                <Bars items={NEXT_LIKELY} />
-                <p className="text-[10px] text-[color:var(--color-ink-faint)]">
-                  The current-regime row of the matrix, largest first. Staying put is shown grey
-                  so a glance ranks the moves, not the persistence.
+                <MetricRow>
+                  <Metric
+                    label="Changed at"
+                    value={formatClock(current.receivedAt)}
+                    hint={current.eventTime ? `event_time ${current.eventTime}` : "as received"}
+                  />
+                  <Metric label="Cursor" value={current.cursor ?? "—"} hint="log position" />
+                  <Metric
+                    label="Changes seen"
+                    value={formatCount(changes.length)}
+                    hint="regime.changed since connect"
+                  />
+                </MetricRow>
+                <p className="text-[11px] text-[color:var(--color-ink-faint)]">
+                  The newest <code className="num">regime.changed</code> on the stream, shown as the
+                  platform sent it. Nothing here is classified in the browser.
                 </p>
               </div>
-            </div>
+            ) : (
+              <StateBlock
+                tone="neutral"
+                label="no regime change recorded"
+                headline="The platform has recorded no regime change on this stream."
+                compact
+              >
+                <p>
+                  The current regime is the newest <code className="num">regime.changed</code> event,
+                  and none has arrived
+                  {signals.events.length > 0
+                    ? ` — although ${formatCount(signals.events.length)} other signal event(s) have, so the feed itself is live`
+                    : ""}
+                  . This page does not choose a regime to display in its place.
+                </p>
+              </StateBlock>
+            )}
           </PanelBody>
         </Panel>
 
         <Panel>
-          <PanelHead title="Transition matrix" />
-          <PanelBody>
-            <div className="flex flex-col gap-3">
-              <Heatmap
-                cells={CELLS}
-                rows={REGIMES.map((regime) => regime.name)}
-                columns={REGIMES.map((regime) => regime.code)}
-                label="Simulated regime transition probabilities"
-              />
-              <div className="max-w-[80ch] text-[11px] leading-relaxed text-[color:var(--color-ink-dim)]">
-                <p>
-                  Rows are the regime the market is in; columns are the regime it moves to next,
-                  keyed{" "}
-                  {REGIMES.map((regime, index) => (
-                    <span key={regime.code}>
-                      <span className="num">{regime.code}</span> = {regime.name}
-                      {index < REGIMES.length - 1 ? ", " : "."}
-                    </span>
-                  ))}{" "}
-                  Each row is normalised to sum to one before rounding, so a row of the
-                  two-decimal figures shown may read 0.99 or 1.01. Depth of colour is
-                  probability; the heavy diagonal is deliberate, because regimes persist.
-                </p>
-              </div>
-            </div>
+          <PanelHead title="Regime changes" />
+          <PanelBody flush>
+            {signals.events.length > 0 && changes.length === 0 ? (
+              <p
+                className="border-b border-[color:var(--color-line)] px-3 py-1 text-[11px] text-[color:var(--color-ink-faint)]"
+                data-testid="regime-filter-premise"
+              >
+                {formatCount(otherOnStream)} signal event(s) on the stream are not regime changes and
+                are not shown here.
+              </p>
+            ) : null}
+            <EventFeed stream={feed} channel="signals" maxHeight="44vh" />
           </PanelBody>
         </Panel>
       </div>
+
+      <Panel>
+        <PanelHead title="What the platform does not serve" actions={<Chip tone="warn">gap</Chip>} />
+        <PanelBody>
+          <StateBlock
+            tone="warn"
+            label="not served"
+            headline="Classification confidence and the transition matrix have no platform surface."
+            compact
+          >
+            <p>
+              The world model in <code className="num">backend/crates/services/qip-world-model</code>{" "}
+              tracks the believed state of the world in-process, and{" "}
+              <code className="num">/stream/signals</code> declares <code className="num">regime.changed</code>{" "}
+              as a topic it carries. No component in this deployment publishes that topic yet, and
+              nothing exposes a classification with its confidence or a transition matrix. Those
+              would need a <code className="num">GET /api/v1/regimes</code> answering the current
+              regime, its confidence and the row of transition probabilities from it. Until then this
+              page shows the changes the stream delivers and no figure it cannot source.
+            </p>
+          </StateBlock>
+        </PanelBody>
+      </Panel>
     </div>
   );
 }

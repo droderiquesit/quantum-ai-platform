@@ -6,10 +6,12 @@ import { NextResponse, type NextRequest } from "next/server";
  *
  * Two deliberate limits, both worth stating:
  *
- * **Off unless ALGORIK_AUTH_REQUIRED=true.** The console predates accounts and
- * its suites exercise it directly; deployments that want an open console (a
- * kiosk on a desk) keep it. The flag is read at the edge per-request, so the
- * same build serves both.
+ * **On unless ALGORIK_AUTH_REQUIRED=false.** The open console — a kiosk on a
+ * desk, the suites that predate accounts — is something a deployment writes
+ * down; absence, a typo, or any other value is the closed gate. The rule is
+ * `authRequired()` in `lib/server/auth-gate.ts`, inlined here because this
+ * file runs at the edge and imports nothing from `lib/server`. The flag is
+ * read per request, so the same build serves both.
  *
  * **This is UX, not the security boundary.** Edge middleware has no
  * `node:crypto`, so it checks cookie *presence* and redirects — a comfort for
@@ -38,7 +40,8 @@ function sessionCookieName(): string {
 }
 
 export function proxy(request: NextRequest): NextResponse {
-  if (process.env.ALGORIK_AUTH_REQUIRED !== "true") return NextResponse.next();
+  // Mirrors authRequired() in lib/server/auth-gate.ts: closed unless opted out.
+  if (process.env.ALGORIK_AUTH_REQUIRED === "false") return NextResponse.next();
 
   const { pathname } = request.nextUrl;
   if (PUBLIC_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`))) {
