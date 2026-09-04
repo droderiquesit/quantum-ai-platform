@@ -1,6 +1,13 @@
 # ADR 0033 — OpenObserve becomes authenticated before it holds telemetry
 
-- **Status:** accepted
+- **Status:** accepted, not yet applied — `infrastructure/terraform/catalogue.tf`
+  still declares `module "openobserve"` as `ingress_posture = "open-anonymous"`
+  with `invokers = ["allUsers"]`, and the acceptance suite still pins that
+  (`infrastructure.rs`, `egress.rs`). Until it is applied, the condition this
+  record fires on is enforced rather than assumed:
+  `terraform_contract.rs::no_deployment_points_telemetry_at_openobserve_while_it_is_anonymous`
+  refuses the first catalogue entry that sets `QIP_OPENOBSERVE_URL` while the
+  posture is anonymous.
 - **Date:** 2026-09-04
 - **Amends:** ADR 0030, on the condition ADR 0030 set for itself
 - **Relates to:** ADR 0028 (OpenObserve adopted), ADR 0032 (the collector)
@@ -67,9 +74,9 @@ password.
 - **Work already done is partly undone.** ADR 0030's plumbing — the
   `open-anonymous` posture, the widened invoker shape check, the paired
   preconditions — stays in the module and stops being used by any workload.
-  That is not waste: the posture is now a tested, refusable capability with
-  exactly zero users, and the acceptance suite pins the anonymous set to
-  empty rather than to `["openobserve"]`.
+  That is not waste: the posture becomes a tested, refusable capability with
+  exactly zero users, and applying this record moves the acceptance suite's
+  pin on the anonymous set from `["openobserve"]` to empty.
 - **It does not solve exfiltration by an authorised viewer**, and nothing
   here pretends to. Named, not solved.
 
