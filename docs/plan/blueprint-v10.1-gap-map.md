@@ -1,5 +1,8 @@
 # Blueprint v10.1 gap map
 
+> **Superseded for status by [`PROJECT-PLAN.md`](PROJECT-PLAN.md).** This
+> document's structural inventory is kept as history.
+
 A first-pass structural inventory: for each capability the "Algorik —
 Cognitive Investment Platform, Blueprint v10.1" document names, does anything
 resembling it exist in the actual tree, and if so, does a real caller reach

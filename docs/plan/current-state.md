@@ -1,5 +1,8 @@
 # Current state, as measured
 
+> **Superseded for status by [`PROJECT-PLAN.md`](PROJECT-PLAN.md).** This
+> document's measurements are kept as history.
+
 Established by running the gates and reading the tree. Every number here came
 from a command whose output was read, and each row names the commit it was read
 at, because a number without a commit is a number nobody can re-measure.

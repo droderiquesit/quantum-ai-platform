@@ -1,5 +1,8 @@
 # Completion plan — how far from done, what is left, in what order, blocked on whom
 
+> **Superseded for status by [`PROJECT-PLAN.md`](PROJECT-PLAN.md).** This
+> document's content and its dated re-score paragraphs are kept as history.
+
 **Living document.** First scored on branch
 `claude/algorik-architecture-refactor-pmp0zy` at `de5d042`; re-scored at
 `296e187`, fifty-seven commits later (`git log --oneline de5d042..296e187 |
