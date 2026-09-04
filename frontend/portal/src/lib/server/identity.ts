@@ -12,7 +12,13 @@ import {
   gipWriteProfile,
   type StoredProfileClaims,
 } from "./identity-platform";
-import { hashPassword, newSessionId, SESSION_TTL_MS, verifyPassword } from "./session";
+import {
+  configuredSessionSecret,
+  hashPassword,
+  newSessionId,
+  SESSION_TTL_MS,
+  verifyPassword,
+} from "./session";
 
 /**
  * The identity service: every rule of the authentication journey in one
@@ -94,7 +100,10 @@ function failure(code: AuthFailure["code"], message: string, next?: AuthFailure[
 
 /** HMAC of a one-time code, so the store never holds the code itself. */
 function codeHash(code: string): string {
-  const key = process.env.ALGORIK_SESSION_SECRET?.trim() || "algorik-development";
+  // The same resolver as the cookie signer, so a secret mounted as a file
+  // keys the code store too; read directly, this fell back to the development
+  // key in a production deployment whose secret was a file.
+  const key = configuredSessionSecret() ?? "algorik-development";
   return createHmac("sha256", key).update(code).digest("base64url");
 }
 

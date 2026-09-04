@@ -1,4 +1,5 @@
 import { createHmac, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
+import { secretFromEnvironment } from "./secret";
 
 /**
  * Server-side session and credential handling.
@@ -101,8 +102,47 @@ export const CSRF_HEADER = "x-algorik-csrf";
  */
 let developmentKey: Buffer | null = null;
 
+/**
+ * The credential sessions are signed with.
+ *
+ * Named once, because it is resolved through the `_FILE` contract in
+ * `./secret` and both halves of that contract have to name the same variable
+ * for the "both set" refusal to mean anything.
+ */
+const SESSION_SECRET_VARIABLE = "ALGORIK_SESSION_SECRET";
+
+/**
+ * The session secret the deployment configured, or `null` if it set none.
+ *
+ * Resolved through `./secret` rather than read from `process.env` directly,
+ * so `ALGORIK_SESSION_SECRET_FILE` — the mounted file
+ * `scripts/deploy-frontends.sh` projects — is honoured. This file used to read
+ * the variable itself, and a deployment that mounted the secret as a file
+ * would have found no key: in production a refusal to start, and in
+ * development a per-process key no other replica could verify, silently.
+ *
+ * A line break inside the value is refused. The secret is seeded as one
+ * base64 line with the newline stripped; a break in the middle means the file
+ * holds more than one thing — a second version pasted under the first, a PEM
+ * — and an HMAC over all of it keys every cookie on bytes nobody chose, which
+ * another replica whose file differs by one line cannot verify. Trailing
+ * whitespace is already stripped by `./secret`, so `echo`'s newline is not
+ * what this catches.
+ */
+export function configuredSessionSecret(): string | null {
+  const configured = secretFromEnvironment(SESSION_SECRET_VARIABLE);
+  if (configured !== null && /[\r\n]/u.test(configured)) {
+    throw new Error(
+      `${SESSION_SECRET_VARIABLE} contains a line break. A signing key is one line; a value ` +
+        `with a break in it is a file holding more than one thing, and sessions signed over ` +
+        `all of it would verify nowhere else.`,
+    );
+  }
+  return configured;
+}
+
 function signingKey(): Buffer {
-  const configured = process.env.ALGORIK_SESSION_SECRET?.trim();
+  const configured = configuredSessionSecret();
   if (configured) {
     if (configured.length < 32) {
       throw new Error(

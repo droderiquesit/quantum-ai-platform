@@ -261,3 +261,23 @@ resource "google_project_iam_member" "console_profile_claims" {
   role    = google_project_iam_custom_role.console_profile_claims[0].id
   member  = "serviceAccount:${google_service_account.console[0].email}"
 }
+
+# The account the landing runs as.
+#
+# The same reason as the console's, and the same failure: the landing was
+# deployed with no `--service-account` at all, which on Cloud Run means the
+# project's default compute identity — the account everything that names none
+# shares, and the one `no_workload_runs_as_the_projects_default_compute_identity`
+# forbids without being able to see the script that used it. It holds no
+# grant, deliberately: the landing is a public site whose only link to the
+# platform is the portal's URL inlined at build time, and an identity with a
+# credential it has no way to use is a standing grant with no purpose. Created
+# under the console's switch because it exists for the console — a landing
+# with no portal to sign into has nothing to be the front door of.
+resource "google_service_account" "landing" {
+  count        = var.console_enabled ? 1 : 0
+  project      = var.project_id
+  account_id   = "qip-${var.environment}-landing"
+  display_name = "The landing, holding no credential"
+  description  = "Runs the Cloud Run landing. Reads no secret and no platform; the portal's URL is inlined at build time."
+}
