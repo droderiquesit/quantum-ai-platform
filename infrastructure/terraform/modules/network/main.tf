@@ -146,3 +146,94 @@ resource "google_compute_subnetwork" "console_egress" {
     metadata             = "INCLUDE_ALL_METADATA"
   }
 }
+
+# --- what the console may reach ----------------------------------------------
+#
+# The subnet above is the one subnet on this platform that `modules/trust-zones`
+# does not cover: it is not a zone, so no zone tag is on its interface and no
+# per-zone `deny_egress` targets it, and what applied to it was Terraform's
+# implied allow-all egress at priority 65535 — the exact thing the zone deny
+# exists to sit above (missing-infrastructure-register §3). These two rules are
+# the zone module's pair, copied in shape and priority rather than invented,
+# so that a reader comparing the console to a zone finds the same posture.
+locals {
+  # The tag both rules target, named after the subnet so the operator adding
+  # it to the console sees which subnet it belongs with. A Cloud Run interface
+  # carries a tag only if the deploy passes `--network-tags`, and
+  # `scripts/deploy-frontends.sh` does not yet: until it does, these rules
+  # bind no instance and — as the zone module says of its own tags — do
+  # nothing, silently. That gap is written here rather than discovered from a
+  # flow log, and the script is the file that closes it.
+  console_egress_tag = "qip-${var.environment}-console-egress"
+
+  # The restricted VIP: the /30 the A record above resolves every
+  # `*.googleapis.com` to, and the default `modules/trust-zones` and
+  # `modules/execution-node` take for `google_apis_range`. One literal, kept
+  # beside the record set that makes it mean something.
+  restricted_vip_range = "199.36.153.8/30"
+}
+
+# Priority 65000, `0.0.0.0/0`, all protocols — the zone module's deny. The
+# failure this rule prevents is the register's: a console whose egress was
+# never argued through could reach any private range in the VPC, and a
+# compromised portal is then a foothold in every zone's subnet rather than a
+# broken web page. The failure it must not cause is the opposite one, and it
+# is the reason the allow below exists: a deny that breaks the console is not
+# found by a test — `terraform validate` cannot see a dropped packet — it is
+# found by an operator whose portal answers 500 on every gateway call, and
+# that reads as a platform fault rather than a firewall one.
+resource "google_compute_firewall" "console_egress_deny_egress" {
+  count   = var.console_egress_cidr == null ? 0 : 1
+  project = var.project_id
+  name    = "qip-${var.environment}-console-egress-deny-egress"
+  network = google_compute_network.vpc.id
+
+  direction = "EGRESS"
+  priority  = 65000
+
+  deny {
+    protocol = "all"
+  }
+
+  destination_ranges = ["0.0.0.0/0"]
+  target_tags        = [local.console_egress_tag]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
+}
+
+# The one allow, and it is the zone module's `google_apis` rule: TCP 443 to
+# the restricted VIP, priority 1000, nothing else. Everything the console
+# reaches over this interface is a Google-fronted address — Secret Manager for
+# its token, Identity Platform for sign-in, and `qip-api` at its own Cloud Run
+# URL (ADR 0018; `api_internal_base_url` in the root outputs, which replaced
+# the internal load-balancer address the GKE runtime reserved). There is no
+# private address of the API's for this rule to name, so a rule naming a zone
+# subnet would admit traffic the console never sends. That is the reason
+# the destination is this /30 rather than anything wider: an allow to
+# `10.0.0.0/8` or to `0.0.0.0/0` would be the original gap with a rule's name
+# on it, and would pass every text-level check this repository has.
+#
+# What this rule does not decide, said plainly: whether a request to the API's
+# `run.app` URL crosses this interface at all is the deploy's egress setting
+# (`--vpc-egress private-ranges-only`) and the VPC's resolution of `run.app`,
+# neither of which this module holds. A request that leaves by Cloud Run's own
+# egress instead is not subject to either rule here.
+resource "google_compute_firewall" "console_egress_google_apis" {
+  count   = var.console_egress_cidr == null ? 0 : 1
+  project = var.project_id
+  name    = "qip-${var.environment}-console-egress-google-apis"
+  network = google_compute_network.vpc.id
+
+  direction = "EGRESS"
+  priority  = 1000
+
+  allow {
+    protocol = "tcp"
+    ports    = ["443"]
+  }
+
+  destination_ranges = [local.restricted_vip_range]
+  target_tags        = [local.console_egress_tag]
+}
