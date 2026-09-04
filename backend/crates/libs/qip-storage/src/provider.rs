@@ -278,15 +278,25 @@ impl StorageTarget {
 }
 
 /// Resolves a storage target into a working adapter.
+///
+/// It builds adapters from what it was given and reads nothing itself: a
+/// managed target's address, bucket and credential arrive through
+/// [`StorageProvider::with_managed`], resolved by the composition root, and a
+/// provider that was given none refuses the target naming the variable that
+/// is missing. This crate once read those variables here, at the moment the
+/// adapter was built — which put `std::env::var` in a library and read the
+/// two credentials without the `_FILE` indirection every other secret has.
 #[derive(Debug, Clone)]
 pub struct StorageProvider {
     target: StorageTarget,
     root: std::path::PathBuf,
     clock: std::sync::Arc<dyn qip_core::Clock>,
+    managed: crate::managed::ManagedSettings,
 }
 
 impl StorageProvider {
-    /// A provider reading the host wall clock.
+    /// A provider reading the host wall clock, with nothing resolved for a
+    /// managed target.
     ///
     /// The provider is a composition-root helper, which is the one place a
     /// live [`qip_core::SystemClock`] belongs; a simulation or a replay calls
@@ -296,6 +306,7 @@ impl StorageProvider {
             target,
             root: root.into(),
             clock: std::sync::Arc::new(qip_core::SystemClock),
+            managed: crate::managed::ManagedSettings::none(),
         }
     }
 
@@ -304,6 +315,13 @@ impl StorageProvider {
     /// simulated ones.
     pub fn with_clock(mut self, clock: std::sync::Arc<dyn qip_core::Clock>) -> Self {
         self.clock = clock;
+        self
+    }
+
+    /// Supply what a managed target needs. See
+    /// [`crate::managed::ManagedSettings`].
+    pub fn with_managed(mut self, managed: crate::managed::ManagedSettings) -> Self {
+        self.managed = managed;
         self
     }
 
@@ -329,21 +347,16 @@ impl StorageProvider {
                 crate::EngineConfig::new(self.clock.clone()),
             )?)),
             // The one target whose adapter exists and whose *deployment* may
-            // still be missing. The address and AUTH string come from the
-            // environment rather than from this provider's fields, for the
-            // same reason `StorageSettings` reads the target from there: a
-            // credential is a property of the deployment, never of the build,
-            // and threading it through every construction site would put it in
-            // the signatures of code that has no business holding it.
-            // `RedisConfig::from_env` returns `Unavailable` naming the
-            // variables when they are unset, and `connect` proves the instance
-            // answers before this returns, so a bad address fails at start-up
-            // rather than during the first cycle.
+            // still be missing. The address and AUTH string are whatever the
+            // composition root resolved into `with_managed` — a credential is
+            // a property of the deployment, never of the build, and the root
+            // is the one place that may read one. `redis_config` returns
+            // `Unavailable` naming the variables when nothing was given, and
+            // `connect` proves the instance answers before this returns, so a
+            // bad address fails at start-up rather than during the first
+            // cycle.
             StorageTarget::Memorystore => Ok(std::sync::Arc::new(
-                crate::redis::RedisKeyValueStore::connect(
-                    crate::redis::RedisConfig::from_env()?,
-                    namespace,
-                )?,
+                crate::redis::RedisKeyValueStore::connect(self.managed.redis_config()?, namespace)?,
             )),
             // Implemented, and not this shape. Reporting these as "not built
             // into this binary" would send an operator looking for a missing
@@ -395,21 +408,24 @@ impl StorageProvider {
                  Use the Cloud Storage or file blob store",
             )),
             // The target this provider was always meant to reach for an
-            // archive. Configuration comes from the environment for the same
-            // reason Memorystore's does: a credential is a property of the
-            // deployment, never of the build. `from_env` returns `Unavailable`
-            // naming the variables when they are unset, and the store refuses
-            // every operation — opening no connection — rather than writing to
-            // local disk, which is the failure this whole target exists to
-            // avoid: a deployment configured for a bucket that quietly wrote to
-            // a container filesystem would pass every smoke test and lose the
+            // archive. Configuration is whatever the composition root resolved
+            // into `with_managed`, for the same reason Memorystore's is: a
+            // credential is a property of the deployment, never of the build.
+            // `cloud_storage_config` returns `Unavailable` naming the bucket
+            // variable when nothing was given, and the store refuses every
+            // operation — opening no connection — rather than writing to local
+            // disk, which is the failure this whole target exists to avoid: a
+            // deployment configured for a bucket that quietly wrote to a
+            // container filesystem would pass every smoke test and lose the
             // archive when the pod was rescheduled.
             //
             // The namespace becomes a key prefix. One bucket holds many
             // namespaces, and without it two of them both writing `model.bin`
             // would be one object.
             StorageTarget::CloudStorage => {
-                let config = crate::gcp::CloudStorageConfig::from_env(self.clock.clone())?
+                let config = self
+                    .managed
+                    .cloud_storage_config(self.clock.clone())?
                     .with_prefix(namespace);
                 Ok(std::sync::Arc::new(crate::gcp::CloudStorageBlobStore::new(
                     config,

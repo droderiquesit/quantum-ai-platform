@@ -239,6 +239,30 @@ pub trait DataAdapter: std::fmt::Debug {
     fn stop(&mut self) -> Result<()> {
         Ok(())
     }
+
+    /// For a source that owns time, move to the next instant at which
+    /// something becomes knowable and return it.
+    ///
+    /// `None` is the answer for every source that does not — a venue, a
+    /// vendor, the synthetic exchange — and for a tape that is spent. A caller
+    /// that gets `None` runs on its own clock; one that gets an instant runs
+    /// the next cycle at it, which is what lets a recorded tape drive a
+    /// platform through tape time rather than being swallowed in one poll.
+    fn advance(&mut self) -> Option<Timestamp> {
+        None
+    }
+
+    /// Whether this source owns time — whether [`Self::advance`] is the
+    /// clock rather than a question with no answer.
+    ///
+    /// Distinct from `advance` returning `None`, which a spent tape also
+    /// does: a loop has to tell "this source runs on the wall clock" from
+    /// "this source ran out", because the first keeps cycling and the second
+    /// stops, and a tape that fell back to the wall clock when it ran out
+    /// would cycle forever on an empty feed while looking busy.
+    fn owns_time(&self) -> bool {
+        false
+    }
 }
 
 /// Marker for adapters producing market data.

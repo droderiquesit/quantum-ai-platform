@@ -95,11 +95,28 @@ fn run() -> Result<()> {
         config.live_feed.as_ref(),
         config.connector_feed.as_ref(),
         config.replay_path.as_deref(),
+        config.tape_path.as_deref(),
         config.seed,
         config.cycle_interval,
         started,
     )
     .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    // A tape must end before the roster's authorisation does. See
+    // `Feed::refuse_tape_beyond` for the run that showed why.
+    if let Some(interval) = roster::shortest_review_interval(started) {
+        feed.refuse_tape_beyond(interval)
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    }
+    // The clock the platform reasons on. A tape owns its own, and the
+    // platform must be assembled on it: opportunities expire at tape time,
+    // and a router asked for a latency budget measured from the wall clock
+    // against a deadline in 2025 would refuse every panel as already late.
+    // Everything operational — the health surface, the run bound, telemetry
+    // timestamps — stays on the wall clock, which is what an operator is on.
+    let platform_clock: Arc<dyn Clock> = match feed.owned_clock() {
+        Some(tape_clock) => tape_clock,
+        None => clock.clone(),
+    };
 
     // The ceiling this deployment is permitted to run at. Read here for the
     // first time: `fastbrain.yaml` has always set QIP_AUTONOMY_CEILING from
@@ -115,7 +132,7 @@ fn run() -> Result<()> {
     let platform_config = PlatformConfig::default().with_live_ceiling(AutonomyLevel::deployable(
         std::env::var("QIP_AUTONOMY_CEILING").ok().as_deref(),
     )?);
-    let context = qip_core::Context::new(clock.clone(), platform_config.seed);
+    let context = qip_core::Context::new(platform_clock, platform_config.seed);
     let ceiling = platform_config.autonomy_ceiling.to_string();
     // The registry handle is taken before the telemetry moves into the
     // platform, because the health thread below serves a scrape from it and
@@ -393,6 +410,9 @@ fn banner(
     );
     if let Some(requirement) = feed.production_requirement() {
         println!("  awaiting:         {requirement}");
+    }
+    if let Some(summary) = feed.tape_summary() {
+        println!("  tape:             {summary}");
     }
     for line in config.storage.banner_lines(
         &["the event log's hash chain, between cycles and once on the way out"],

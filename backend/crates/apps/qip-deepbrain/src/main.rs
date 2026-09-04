@@ -145,7 +145,39 @@ fn run() -> Result<()> {
         .with_live_ceiling(AutonomyLevel::deployable(
             std::env::var("QIP_AUTONOMY_CEILING").ok().as_deref(),
         )?);
-    let context = qip_core::Context::new(clock.clone(), platform_config.seed);
+    // A committed tape, opened before the platform exists because the
+    // platform's clock has to be the tape's: opportunities expire at tape
+    // time, and a router asked for a latency budget from the wall clock
+    // against a deadline in 2025 would refuse every panel as already late.
+    // Refused beside a replay — two recordings on two clocks — and refused
+    // when it outlasts the roster's review interval, for the reason
+    // `roster::refuse_tape_beyond_review` gives.
+    let replay_path = std::env::var("QIP_DEEPBRAIN_REPLAY_PATH")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let mut tape_feed = match (&config.tape_path, &replay_path) {
+        (Some(_), Some(_)) => {
+            return Err(Error::invalid(
+                "configuration: both QIP_DEEPBRAIN_REPLAY_PATH and QIP_DEEPBRAIN_TAPE_PATH are \
+                 set. A replay runs on the wall clock and a tape on its own; unset one of them",
+            ));
+        }
+        (Some(path), None) => {
+            let tape = qip_market_ingestion::tape::Tape::open(path)
+                .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+            roster::refuse_tape_beyond_review(&tape, started)
+                .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+            Some(qip_market_ingestion::tape::TapeFeed::new(tape))
+        }
+        (None, _) => None,
+    };
+    // Everything operational — the health surface, the run bound, telemetry
+    // timestamps — stays on the wall clock, which is what an operator is on.
+    let platform_clock: Arc<dyn Clock> = match &tape_feed {
+        Some(feed) => feed.clock(),
+        None => clock.clone(),
+    };
+    let context = qip_core::Context::new(platform_clock, platform_config.seed);
     let ceiling = platform_config.autonomy_ceiling.to_string();
     // The universe this node sizes against, read and journaled before the
     // platform exists — see `load_universe` for why an unset path is a
@@ -245,8 +277,34 @@ fn run() -> Result<()> {
     // reference universe is derived from the exchange's own instrument list,
     // and once the environment is behind `dyn DataAdapter` that list is
     // unreachable.
-    let mut evolution = match std::env::var("QIP_DEEPBRAIN_REPLAY_PATH").ok().as_deref() {
-        Some(path) => qip_deepbrain::evolution::EvolutionEngine::new(
+    let tape_summary = tape_feed.as_ref().map(|feed| {
+        let tape = feed.tape();
+        let (first, last) = tape
+            .span()
+            .map_or((String::new(), String::new()), |(first, last)| {
+                (first.to_rfc3339(), last.to_rfc3339())
+            });
+        format!(
+            "{} observation(s) across {} instrument(s) in {} period(s), {first} to {last}; tape \
+             time drives the platform clock, one period per cycle, and the cadence wait is \
+             skipped",
+            tape.len(),
+            tape.instruments().len(),
+            tape.periods()
+        )
+    });
+    let mut evolution = match (tape_feed.take(), replay_path.as_deref()) {
+        // The tape carries the catalogue's own instruments, so the reference
+        // universe is the catalogue, read again for the engine: `Universe`
+        // moved into the platform above, and the manifest record it writes
+        // a second time is the same record.
+        (Some(feed), _) => qip_deepbrain::evolution::EvolutionEngine::new(
+            evolution_config,
+            Box::new(feed),
+            platform.config().seed,
+            load_universe(&config.storage, started)?.universe,
+        )?,
+        (None, Some(path)) => qip_deepbrain::evolution::EvolutionEngine::new(
             evolution_config,
             Box::new(qip_market_ingestion::replay::ReplayAdapter::open(
                 "replay", path,
@@ -263,7 +321,7 @@ fn run() -> Result<()> {
             // path is visibly off rather than invisibly producing nothing.
             Universe::new(),
         )?,
-        None => {
+        (None, None) => {
             // The bar interval must match the step, or a fast cadence
             // closes a bar every sixty cycles and the node runs blind for
             // hours while looking configured — the trap the fast brain's
@@ -300,6 +358,9 @@ fn run() -> Result<()> {
             "disabled (QIP_DEEPBRAIN_EVOLUTION_EVERY=0)"
         }
     );
+    if let Some(summary) = &tape_summary {
+        println!("  tape:             {summary}");
+    }
 
     let summary = node::run(
         &mut platform,

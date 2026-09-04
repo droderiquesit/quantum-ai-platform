@@ -1,5 +1,5 @@
-//! Storage configuration, read from the environment, and the refusals that
-//! keep a misconfigured deployment from looking healthy.
+//! Storage configuration, resolved from an environment the caller supplies,
+//! and the refusals that keep a misconfigured deployment from looking healthy.
 //!
 //! Four binaries need the same three things at start-up: which
 //! [`StorageTarget`] to use, where its root is, and a *loud* failure when
@@ -8,6 +8,22 @@
 //! and the refusals are the whole value: [`StorageProvider`] already declines
 //! a managed target rather than falling back, and this module is what makes
 //! that decline happen at start-up rather than at the first write.
+//!
+//! # This module never reads the process environment
+//!
+//! Every constructor here takes the environment as a lookup the composition
+//! root passes in — [`StorageSettings::from_env`] is `from_env(&|name|
+//! std::env::var(name).ok())` in a binary and `from_env(&|name|
+//! map.get(name).cloned())` in a test. A library that reached for
+//! `std::env` itself could not be tested without mutating a process-global
+//! that every other test in the binary shares, and could not be deployed
+//! twice with different settings; more to the point, the two credentials a
+//! managed target needs once lived in this crate as bare `std::env::var`
+//! reads, which meant a deployment could not mount either one as a file the
+//! way it mounts every other secret. They now go through
+//! [`qip_core::secret::resolve_from`], with the `_FILE` indirection and the
+//! both-set refusal that rule carries, and the acceptance suite refuses any
+//! `std::env` outside a composition root.
 //!
 //! # The failure this module exists to prevent
 //!
@@ -43,11 +59,7 @@ use crate::provider::{StorageProvider, StorageTarget};
 use qip_core::error::{Error, Result};
 use std::path::{Path, PathBuf};
 
-/// The environment variable naming the storage target.
-pub const TARGET_VARIABLE: &str = "QIP_STORAGE_TARGET";
-
-/// The environment variable naming the storage root.
-pub const ROOT_VARIABLE: &str = "QIP_STORAGE_ROOT";
+pub use crate::managed::{Environment, ManagedSettings};
 
 /// The namespace [`StorageSettings::preflight`] writes its probe into.
 ///
@@ -57,33 +69,48 @@ pub const ROOT_VARIABLE: &str = "QIP_STORAGE_ROOT";
 /// itself worth being able to see.
 pub const PREFLIGHT_NAMESPACE: &str = "preflight";
 
-/// Which store a process uses, and where.
+/// The environment variable naming the storage target.
+pub const TARGET_VARIABLE: &str = "QIP_STORAGE_TARGET";
+
+/// The environment variable naming the storage root.
+pub const ROOT_VARIABLE: &str = "QIP_STORAGE_ROOT";
+
+/// Which store a process uses, where, and what a managed target was given.
 ///
-/// Constructed from the environment by [`StorageSettings::from_env`] or,
-/// in tests, from explicit values by [`StorageSettings::from_values`] — the
-/// latter exists because tests that set process environment variables race
-/// each other under the default parallel harness, and a racy test of the
-/// refusal logic is worse than no test of it.
+/// Constructed by a composition root through [`StorageSettings::from_env`],
+/// which takes the environment as a lookup rather than reading it, or from
+/// the target and root alone by [`StorageSettings::from_values`]. Both are
+/// testable without touching the process environment, which every test in a
+/// binary shares and which the 2024 edition makes `unsafe` to mutate.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StorageSettings {
     target: StorageTarget,
     root: PathBuf,
+    managed: ManagedSettings,
 }
 
 impl StorageSettings {
-    /// Read [`TARGET_VARIABLE`] and [`ROOT_VARIABLE`].
+    /// Resolve [`TARGET_VARIABLE`], [`ROOT_VARIABLE`] and — for a managed
+    /// target — what [`ManagedSettings::from_env`] reads, from `env`.
     ///
-    /// Credentials and paths come from the environment and never from a file
-    /// in the repository, so that a deployment's storage location is a
-    /// property of the deployment rather than of the build.
-    pub fn from_env() -> Result<Self> {
-        Self::from_values(
-            std::env::var(TARGET_VARIABLE).ok().as_deref(),
-            std::env::var(ROOT_VARIABLE).ok().as_deref(),
-        )
+    /// `env` is the composition root's view of its environment: in a binary
+    /// `&|name| std::env::var(name).ok()`, in a test a map. Nothing here reads
+    /// the process environment, so a deployment's storage location and
+    /// credentials are properties of the deployment rather than of the build,
+    /// and so a credential may arrive as a mounted file through the `_FILE`
+    /// rule every other secret in this platform is read by.
+    pub fn from_env(env: &Environment<'_>) -> Result<Self> {
+        let settings = Self::from_values(
+            env(TARGET_VARIABLE).as_deref(),
+            env(ROOT_VARIABLE).as_deref(),
+        )?;
+        let managed = ManagedSettings::from_env(settings.target, env)?;
+        Ok(settings.with_managed(managed))
     }
 
-    /// The same resolution, from explicit values.
+    /// The target and root, from explicit values, with nothing resolved for
+    /// a managed target — the provider built from this refuses one, naming
+    /// what it needs, exactly as it does for a deployment that set nothing.
     ///
     /// An empty or whitespace-only variable is treated as unset. A deployment
     /// template that expands a missing value to `""` is common enough that
@@ -108,6 +135,7 @@ impl StorageSettings {
                 None => Ok(Self {
                     target,
                     root: PathBuf::new(),
+                    managed: ManagedSettings::none(),
                 }),
                 Some(root) => Err(Error::invalid(format!(
                     "{ROOT_VARIABLE} is set to {root:?} but {TARGET_VARIABLE} is memory, which \
@@ -121,6 +149,7 @@ impl StorageSettings {
                 Some(root) => Ok(Self {
                     target,
                     root: PathBuf::from(root),
+                    managed: ManagedSettings::none(),
                 }),
                 None => Err(Error::invalid(format!(
                     "{TARGET_VARIABLE} is {} but {ROOT_VARIABLE} is unset; there is no default \
@@ -137,6 +166,7 @@ impl StorageSettings {
             _ => Ok(Self {
                 target,
                 root: root.map(PathBuf::from).unwrap_or_default(),
+                managed: ManagedSettings::none(),
             }),
         }
     }
@@ -147,7 +177,19 @@ impl StorageSettings {
         Self {
             target: StorageTarget::Memory,
             root: PathBuf::new(),
+            managed: ManagedSettings::none(),
         }
+    }
+
+    /// Carry what a managed target was given. See [`ManagedSettings`].
+    pub fn with_managed(mut self, managed: ManagedSettings) -> Self {
+        self.managed = managed;
+        self
+    }
+
+    /// What was resolved for a managed target; empty for every other target.
+    pub fn managed(&self) -> &ManagedSettings {
+        &self.managed
     }
 
     pub fn target(&self) -> StorageTarget {
@@ -166,7 +208,7 @@ impl StorageSettings {
 
     /// The provider these settings resolve to.
     pub fn provider(&self) -> StorageProvider {
-        StorageProvider::new(self.target, self.root.clone())
+        StorageProvider::new(self.target, self.root.clone()).with_managed(self.managed.clone())
     }
 
     /// Build a store, failing here rather than at the first write.

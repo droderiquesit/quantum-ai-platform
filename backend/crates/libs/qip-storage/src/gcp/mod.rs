@@ -171,22 +171,30 @@ impl GcpAccess {
         Ok(self)
     }
 
-    /// Read the endpoint and credential from the environment.
+    /// Resolve the endpoint and credential from values a composition root
+    /// read.
     ///
-    /// The same shape as `RedisConfig::from_env`, and for the same reason: a
-    /// credential is a property of the deployment, never of the build, and
-    /// threading it through every construction site would put it in the
-    /// signatures of code that has no business holding it.
+    /// Values, not variables: this crate does not read the process
+    /// environment. A credential is a property of the deployment, never of
+    /// the build, and the composition root is the one place that may read
+    /// one — [`crate::managed::ManagedSettings::from_env`] is where the
+    /// variables below are looked up, and where `QIP_GCP_ACCESS_TOKEN` goes
+    /// through `qip_core::secret` so it may arrive as a mounted file. Taking
+    /// values is also what lets the resolution rules be tested without a test
+    /// mutating the process environment, which is shared by every test in the
+    /// binary.
     ///
-    /// * `QIP_GCP_ENDPOINT` — `http://…` of the TLS-terminating proxy.
+    /// * `endpoint` — [`ENDPOINT_VARIABLE`], `http://…` of the TLS-terminating
+    ///   proxy.
     /// * exactly one of:
-    ///   * `QIP_GCP_METADATA_SERVER=1` — take tokens from the instance
-    ///     metadata server, which is the whole answer on GCE, GKE and Cloud
-    ///     Run and needs no key material anywhere.
-    ///   * `QIP_GCP_TOKEN_FILE` — a path something else keeps fresh.
-    ///   * `QIP_GCP_ACCESS_TOKEN` — a literal token. Correct for an operator
-    ///     task and wrong for a long-running process, because it expires in
-    ///     about an hour and nothing here will notice.
+    ///   * `metadata` — [`METADATA_VARIABLE`] set to `1`: take tokens from the
+    ///     instance metadata server, which is the whole answer on GCE, GKE and
+    ///     Cloud Run and needs no key material anywhere.
+    ///   * `token_file` — [`TOKEN_FILE_VARIABLE`], a path something else
+    ///     keeps fresh, re-read before every request.
+    ///   * `token` — [`TOKEN_VARIABLE`], a literal token. Correct for an
+    ///     operator task and wrong for a long-running process, because it
+    ///     expires in about an hour and nothing here will notice.
     ///
     /// Requiring exactly one is deliberate. Two credentials configured at once
     /// means somebody changed how this deployment authenticates and did not
@@ -196,20 +204,6 @@ impl GcpAccess {
     /// `clock` is used only by the metadata source, to decide when a cached
     /// token is close enough to its expiry to refetch. It is injected rather
     /// than read from the host so a replayed run sees the same boundary.
-    pub fn from_env(clock: Arc<dyn qip_core::Clock>) -> Result<Self> {
-        Self::from_values(
-            std::env::var(ENDPOINT_VARIABLE).ok().as_deref(),
-            std::env::var(METADATA_VARIABLE).ok().as_deref(),
-            std::env::var(TOKEN_FILE_VARIABLE).ok().as_deref(),
-            std::env::var(TOKEN_VARIABLE).ok().as_deref(),
-            clock,
-        )
-    }
-
-    /// [`GcpAccess::from_env`] with the values supplied directly.
-    ///
-    /// Separate so the resolution rules can be tested without a test mutating
-    /// the process environment, which is shared by every test in the binary.
     pub fn from_values(
         endpoint: Option<&str>,
         metadata: Option<&str>,

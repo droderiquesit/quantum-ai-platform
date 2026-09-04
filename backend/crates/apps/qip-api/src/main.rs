@@ -61,8 +61,11 @@ fn run() -> Result<()> {
 
     // Resolved and proven writable before anything else is built. Failing here
     // costs a restart; failing at the first archived cycle costs the record of
-    // everything that happened up to it.
-    let storage = StorageSettings::from_env()?;
+    // everything that happened up to it. The environment is passed in rather
+    // than read by the library: this is the composition root, the one place
+    // that may read it, and the managed-target credentials it resolves go
+    // through `qip_core::secret` so a deployment may mount them as files.
+    let storage = StorageSettings::from_env(&|name| std::env::var(name).ok())?;
     storage.preflight()?;
     let archive = Arc::new(ChainArchive::open(storage.key_value("event-log")?)?);
 

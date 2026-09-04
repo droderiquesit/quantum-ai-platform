@@ -14,7 +14,7 @@
 
 use qip_core::Duration;
 use qip_core::error::{Error, Result};
-use qip_storage::settings::{ROOT_VARIABLE, StorageSettings, TARGET_VARIABLE};
+use qip_storage::settings::StorageSettings;
 use std::collections::BTreeMap;
 
 use crate::roster::MAXIMUM_BUDGET;
@@ -75,6 +75,11 @@ pub struct FastBrainConfig {
     pub storage: StorageSettings,
     /// A recorded JSONL feed to replay instead of the synthetic exchange.
     pub replay_path: Option<String>,
+    /// A committed bitemporal tape to run through on its own clock instead
+    /// of the synthetic exchange. Mutually exclusive with `replay_path`;
+    /// `Feed::open` refuses the contradiction. See
+    /// `qip_market_ingestion::tape` for why this is not the replay.
+    pub tape_path: Option<String>,
     /// A licensed vendor to poll instead of either. `None` is the shipped
     /// state and the only state any environment in this repository configures.
     pub live_feed: Option<LiveFeedSettings>,
@@ -158,6 +163,7 @@ impl Default for FastBrainConfig {
             archive_every: DEFAULT_ARCHIVE_EVERY,
             storage: StorageSettings::in_memory(),
             replay_path: None,
+            tape_path: None,
             live_feed: None,
             connector_feed: None,
             seed: 20_260_822,
@@ -259,12 +265,14 @@ impl FastBrainConfig {
             // Prefixed so `main` can exit with the configuration code rather
             // than the general one: an orchestrator that cannot tell "deployed
             // wrong" from "broke" restarts the first forever.
-            storage: StorageSettings::from_values(
-                text(vars, TARGET_VARIABLE).as_deref(),
-                text(vars, ROOT_VARIABLE).as_deref(),
-            )
-            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?,
+            //
+            // The variables are looked up in `vars` by the library rather
+            // than read by it, so a managed target's credential is resolved
+            // here, in the composition root, through `qip_core::secret`.
+            storage: StorageSettings::from_env(&|name| text(vars, name))
+                .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?,
             replay_path: text(vars, "QIP_FASTBRAIN_REPLAY_PATH"),
+            tape_path: text(vars, "QIP_FASTBRAIN_TAPE_PATH"),
             live_feed: live_feed(vars)?,
             connector_feed: connector_feed(
                 vars,
@@ -454,6 +462,7 @@ fn millis(vars: &BTreeMap<String, String>, name: &str) -> Result<Option<Duration
 #[cfg(test)]
 mod tests {
     use super::*;
+    use qip_storage::settings::{ROOT_VARIABLE, TARGET_VARIABLE};
 
     fn vars(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs

@@ -66,6 +66,7 @@ pub mod replay;
 pub mod rest;
 pub mod service;
 pub mod synthetic;
+pub mod tape;
 
 pub use adapter::{
     AlternativeDataAdapter, DataAdapter, FundamentalsAdapter, MacroAdapter, MarketDataAdapter,
@@ -90,3 +91,4 @@ pub use replay::ReplayAdapter;
 pub use rest::{FetchStats, RestFeedConfig, RestInstrument, RestMarketDataAdapter};
 pub use service::{IngestionService, IngestionStats, SensedBatch};
 pub use synthetic::{ScriptedEvent, ScriptedEventKind, SyntheticEnvironment, SyntheticInstrument};
+pub use tape::{Tape, TapeDocument, TapeEntry, TapeFeed, TapeObservation};

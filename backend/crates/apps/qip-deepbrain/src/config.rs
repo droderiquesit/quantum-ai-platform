@@ -19,7 +19,7 @@
 use qip_core::Duration;
 use qip_core::error::{Error, Result};
 use qip_kernel::EventLogDestination;
-use qip_storage::settings::{ROOT_VARIABLE, StorageSettings, TARGET_VARIABLE};
+use qip_storage::settings::StorageSettings;
 use std::collections::BTreeMap;
 
 /// Where the health surface binds when the environment does not say.
@@ -129,6 +129,11 @@ pub struct DeepBrainConfig {
     pub event_log: EventLogDestination,
     /// How long the shutdown flush may take before the node gives up on it.
     pub shutdown_budget: Duration,
+    /// A committed bitemporal tape to run through on its own clock instead
+    /// of the synthetic exchange. Mutually exclusive with
+    /// `QIP_DEEPBRAIN_REPLAY_PATH`, which `main` refuses beside it. See
+    /// `qip_market_ingestion::tape` for why this is not the replay.
+    pub tape_path: Option<String>,
 }
 
 impl Default for DeepBrainConfig {
@@ -143,6 +148,7 @@ impl Default for DeepBrainConfig {
             storage: StorageSettings::in_memory(),
             event_log: EventLogDestination::InMemory,
             shutdown_budget: DEFAULT_SHUTDOWN_BUDGET,
+            tape_path: None,
         }
     }
 }
@@ -198,11 +204,12 @@ impl DeepBrainConfig {
         // Prefixed so `main` can exit with the configuration code rather than
         // the general one: an orchestrator that cannot tell "deployed wrong"
         // from "broke" restarts the first forever.
-        let storage = StorageSettings::from_values(
-            text(vars, TARGET_VARIABLE).as_deref(),
-            text(vars, ROOT_VARIABLE).as_deref(),
-        )
-        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+        //
+        // The variables are looked up in `vars` by the library rather than
+        // read by it, so a managed target's credential is resolved here, in
+        // the composition root, through `qip_core::secret`.
+        let storage = StorageSettings::from_env(&|name| text(vars, name))
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
 
         let event_log = event_log_destination(vars, &storage)?;
 
@@ -216,6 +223,7 @@ impl DeepBrainConfig {
             storage,
             event_log,
             shutdown_budget,
+            tape_path: text(vars, "QIP_DEEPBRAIN_TAPE_PATH"),
         })
     }
 
@@ -315,6 +323,7 @@ fn seconds(vars: &BTreeMap<String, String>, name: &str) -> Result<Option<Duratio
 #[cfg(test)]
 mod tests {
     use super::*;
+    use qip_storage::settings::{ROOT_VARIABLE, TARGET_VARIABLE};
 
     fn vars(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs
