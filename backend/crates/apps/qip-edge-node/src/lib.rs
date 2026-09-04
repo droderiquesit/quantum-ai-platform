@@ -17,6 +17,8 @@
 //! doing something nobody asked for — so each is exercised against the types
 //! the binary actually uses.
 
+/// The capital the whole cell may commit, as the deployment states it.
+pub mod allocation;
 /// The arbitrage desk, built from the payload's whitelist once capital arrives.
 pub mod arbitrage;
 /// The simulated venue's quote feed, and the one value it may be configured as.
@@ -28,10 +30,13 @@ pub mod mesh;
 pub mod mirror;
 /// One pass of the node: feed, decide, act, reconcile.
 pub mod pass;
+/// The strategies the payload's plan names, deployed under their grants.
+pub mod strategies;
 /// The node's own metric seam: the mesh link, rendered as a series.
 pub mod telemetry;
 pub mod venue;
 
+use allocation::RegionCapital;
 use qip_core::Clock;
 use qip_core::error::Result;
 use qip_edge::cell::{Cell, CellConfig};
@@ -69,7 +74,8 @@ impl NodeAssembly {
     }
 }
 
-/// Wire the cell and the mesh series into the one registry the scrape serves.
+/// Wire the cell and the mesh series into the one registry the scrape serves,
+/// under the one bound on what the whole cell may commit.
 ///
 /// The defect this exists to make testable is one nothing at runtime would
 /// report: a second `Metrics` built for the health thread. The cell would
@@ -77,16 +83,26 @@ impl NodeAssembly {
 /// another, forever — the exact gap the edge's observability seam closes,
 /// rebuilt one level up. `qip-fastbrain` and `qip-deepbrain` take their
 /// registry handle the same way, before the telemetry is used anywhere else.
+///
+/// The region allocation is a parameter rather than a later builder call for
+/// the same reason: `Cell::with_region_allocation` existed, was tested, and
+/// no composition root called it, so every node this binary built ran with
+/// no bound on the sum of its strategies. Taking a [`RegionCapital`] here —
+/// a type only [`RegionCapital::read`] can produce — means a node cannot be
+/// assembled without an amount the deployment stated and this crate checked.
 pub fn assemble(
     config: CellConfig,
     features: FeatureEngine,
     clock: Arc<dyn Clock>,
+    allocation: RegionCapital,
 ) -> Result<NodeAssembly> {
     let cell_id = config.cell_id.clone();
     let region = config.region.clone();
     let telemetry = Telemetry::new("qip-edge-node", clock);
     let metrics: Arc<Metrics> = Arc::clone(&telemetry.metrics);
-    let cell = Cell::new(config, features)?.with_metrics(Arc::clone(&metrics));
+    let cell = Cell::new(config, features)?
+        .with_metrics(Arc::clone(&metrics))
+        .with_region_allocation(allocation.amount())?;
     let mesh_series = MeshSeries::new(metrics, &cell_id, &region);
     Ok(NodeAssembly {
         telemetry,

@@ -294,6 +294,15 @@ fn sequence_of(key: &str, namespace: &str) -> Option<u64> {
 pub struct DurableDeadLetters {
     store: Arc<dyn KeyValueStore>,
     namespace: String,
+    /// The key a new letter is assigned next. Held separately from `recorded`
+    /// because the two answer different questions: this is "what key is free
+    /// to use", `recorded` is "how many letters does this process's view
+    /// count". Deriving the next key from `recorded` — or from how many
+    /// letters are currently held — reuses a key an operator's `release` left
+    /// a gap for, and the letter that already occupies the *next* higher key
+    /// is silently overwritten. See [`DurableSpool::open`] for the same
+    /// reasoning on the spool's own sequence.
+    next_sequence: u64,
     recorded: u64,
     /// Letters this sink could not write down.
     ///
@@ -308,10 +317,17 @@ pub struct DurableDeadLetters {
 impl DurableDeadLetters {
     pub fn open(store: Arc<dyn KeyValueStore>, name: impl AsRef<str>) -> Result<Self> {
         let namespace = format!("deadletter/{}/", name.as_ref());
-        let existing = store.keys_with_prefix(&namespace)?.len() as u64;
+        let pending = store.keys_with_prefix(&namespace)?;
+        let existing = pending.len() as u64;
+        let next_sequence = pending
+            .iter()
+            .filter_map(|key| sequence_of(key, &namespace))
+            .max()
+            .map_or(0, |seq| seq + 1);
         Ok(Self {
             store,
             namespace,
+            next_sequence,
             recorded: existing,
             unrecordable: 0,
         })
@@ -351,10 +367,16 @@ impl DeadLetterSink for DurableDeadLetters {
     fn record(&mut self, letter: DeadLetter) {
         // Keyed by arrival order, not by idempotency key: two failures of the
         // same message are two facts an operator needs, and keying by the
-        // message would keep only the most recent.
-        let key = format!("{}{:0SEQUENCE_WIDTH$}", self.namespace, self.recorded);
+        // message would keep only the most recent. The key comes from
+        // `next_sequence`, not from `recorded` — see the field comment on why
+        // conflating them lets a released letter's freed key collide with one
+        // still held.
+        let key = format!("{}{:0SEQUENCE_WIDTH$}", self.namespace, self.next_sequence);
         match self.store.put_as(&key, &letter) {
-            Ok(()) => self.recorded += 1,
+            Ok(()) => {
+                self.next_sequence += 1;
+                self.recorded += 1;
+            }
             Err(_) => self.unrecordable += 1,
         }
     }

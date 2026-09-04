@@ -12,6 +12,11 @@
 //!   does not know which cell it is cannot check that scope.
 //! * A **venue set**. What this cell may reach, independent of what any
 //!   envelope permits; an order clears both or neither.
+//! * A **region allocation**. The one amount the whole cell may commit,
+//!   across every strategy it runs. Each envelope bounds one strategy and
+//!   nothing on any wire bounds their sum, so a cell without this can spend
+//!   every envelope in full while partitioned from the centre — see
+//!   `qip_edge_node::allocation` for why it is refused rather than defaulted.
 //!
 //! And one thing it must be *told*, because the default is the safe answer and
 //! silence has to keep selecting it: **which venue adapter the orders go
@@ -43,7 +48,8 @@ use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Duration, SystemClock};
 use qip_edge::cell::PolledHalt;
-use qip_edge::cell::{Cell, CellConfig, Placer, WorkReport};
+use qip_edge::cell::{Cell, CellConfig, Placer, PricingPolicy, WorkReport};
+use qip_edge_node::allocation::RegionCapital;
 use qip_edge_node::arbitrage::{ArbitrageInstaller, STRATEGY_VARIABLE};
 use qip_edge_node::feed::{FEED_VARIABLE, FeedChoice, SIMULATED_FEED, SimulatedFeed};
 use qip_edge_node::gateway::NodeGateway;
@@ -51,6 +57,10 @@ use qip_edge_node::halt::{FLAG_VARIABLE, HaltFlag};
 use qip_edge_node::mesh::{MeshLink, MeshSettings, PEER_VARIABLE};
 use qip_edge_node::mirror::StoreMirror;
 use qip_edge_node::pass::{PassOutcome, PassStats, run_pass};
+use qip_edge_node::strategies::{
+    MARKETABLE, PLAN_VARIABLE, PRICING_VARIABLE, REST_AT_MID_PREFIX, StrategyInstaller,
+    parse_pricing,
+};
 use qip_edge_node::telemetry::{MeshSeries, respond};
 use qip_edge_node::venue::{ACKNOWLEDGEMENT_VARIABLE, ADAPTER_VARIABLE, VenueChoice};
 use qip_edge_node::{NodeAssembly, assemble};
@@ -60,6 +70,7 @@ use qip_observability::metrics::Metrics;
 use qip_storage::settings::{ROOT_VARIABLE, StorageSettings, TARGET_VARIABLE};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Exit code for a configuration problem, matching `sysexits.h`.
@@ -67,6 +78,22 @@ use std::sync::Arc;
 /// Distinct from a general failure so an orchestrator can tell "this node was
 /// deployed wrong" from "this node broke", and stop restarting the first.
 const EX_CONFIG: i32 = 78;
+
+/// How long one health request may take to arrive, and its answer to be
+/// written, before the node gives up on it.
+///
+/// `qip-fastbrain` and `qip-deepbrain` bound their health sockets because a
+/// held thread makes every later probe time out, which reads as a dead node.
+/// Here the consequence is larger and specific to this binary: [`serve`] polls
+/// the halt flag, flushes the journal, exchanges with the central plane and
+/// runs `Cell::work` on the **same** thread that accepts and reads a
+/// connection. An unbounded read is therefore not a slow probe — it is a cell
+/// that has stopped deciding, stopped halting and stopped shipping its record
+/// for exactly as long as any client holds a socket open without sending, and
+/// a cell that decides alone (ADR 0008) has nobody to notice on its behalf.
+/// Two seconds is far longer than a loopback probe or the Ops Agent's scrape
+/// needs, and far shorter than either one's own timeout.
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 fn main() {
     match run() {
@@ -89,6 +116,10 @@ struct NodeConfig {
     region: String,
     venues: Vec<VenueId>,
     envelope_key: Vec<u8>,
+    /// The capital the whole cell may commit. Required, and a `RegionCapital`
+    /// rather than a `Decimal` so the only value that can reach the cell is
+    /// one that passed `RegionCapital::read` — see `qip_edge_node::allocation`.
+    region_allocation: RegionCapital,
     health_port: u16,
     storage: StorageSettings,
     /// Where the central plane is, when there is one. `None` is a cell running
@@ -109,6 +140,15 @@ struct NodeConfig {
     /// simulator; see `qip_edge_node::feed` for why a live feed is refused
     /// at start rather than read.
     feed: Option<FeedChoice>,
+    /// How every strategy the plan deploys is priced at the venue, until
+    /// the plan slot carries a policy of its own. `None` deploys nothing
+    /// and is named in the production requirements; a value that is not
+    /// one of the two forms stops the process — see
+    /// `qip_edge_node::strategies`.
+    pricing: Option<PricingPolicy>,
+    /// Where the compiled plan the payload names by digest is read from.
+    /// `None` deploys nothing and is named in the production requirements.
+    plan_path: Option<PathBuf>,
 }
 
 impl NodeConfig {
@@ -122,6 +162,14 @@ impl NodeConfig {
         let region = required("QIP_CELL_REGION", &mut missing);
         let key = required_secret("QIP_CAPITAL_ENVELOPE_KEY", &mut missing)?;
         let venues = required("QIP_VENUES", &mut missing);
+        // Spelled as a literal beside the other four rather than through
+        // `allocation::ALLOCATION_VARIABLE`: the acceptance walk in
+        // `manifest_wiring.rs` learns what this binary refuses to start
+        // without by reading the quoted name in each `required` call, and a
+        // name it could not see there is a crash loop it could not warn a
+        // deployment about. (That walk reads comments too, so this one must
+        // not spell the call with a placeholder name inside the quotes.)
+        let region_allocation = required("QIP_REGION_ALLOCATION", &mut missing);
 
         if !missing.is_empty() {
             return Err(Error::invalid(format!(
@@ -129,6 +177,11 @@ impl NodeConfig {
                 missing.join(", ")
             )));
         }
+
+        // Checked before anything below opens a port or a store, and refused
+        // outright: a node whose allocation is unparseable or zero must never
+        // reach the cell with a number it made up in place of one.
+        let region_allocation = RegionCapital::read(Some(&region_allocation))?;
 
         let venues: Vec<VenueId> = venues
             .split(',')
@@ -180,18 +233,26 @@ impl NodeConfig {
             _ => None,
         };
         let feed = FeedChoice::from_env()?;
+        let pricing = parse_pricing(std::env::var(PRICING_VARIABLE).ok().as_deref())?;
+        let plan_path = match std::env::var(PLAN_VARIABLE) {
+            Ok(value) if !value.trim().is_empty() => Some(PathBuf::from(value.trim())),
+            _ => None,
+        };
 
         Ok(Self {
             cell_id,
             region,
             venues,
             envelope_key: key,
+            region_allocation,
             health_port,
             storage,
             mesh,
             halt_flag,
             arbitrage_strategy,
             feed,
+            pricing,
+            plan_path,
         })
     }
 }
@@ -250,11 +311,19 @@ fn run() -> Result<()> {
     // together in the library, where a test can prove they are one registry.
     // Assembled piecewise here, that property was held by a source check on
     // this file, which a second `Telemetry` inserted between the lines passed.
+    // The region allocation goes in by the same door, for the same reason:
+    // the builder that installs it was called by no composition root for as
+    // long as calling it was optional.
     let NodeAssembly {
         telemetry,
         mut cell,
         mesh_series,
-    } = assemble(cell_config, features, Arc::clone(&clock))?;
+    } = assemble(
+        cell_config,
+        features,
+        Arc::clone(&clock),
+        config.region_allocation,
+    )?;
     let metrics: &Arc<Metrics> = &telemetry.metrics;
 
     // The venue seam, and the one decision in this binary that is not
@@ -317,12 +386,18 @@ fn run() -> Result<()> {
     )?;
     let retained_sessions = mirror.retained_sessions()?;
 
+    // The allocation is printed as the cell holds it, not as configuration
+    // read it, so the banner is a claim about the cell and not about a
+    // variable — the two were allowed to differ for as long as no root
+    // installed the value it read.
     println!(
-        "qip-edge-node cell={} region={} venues={} live_capable={} gateway={}({}) adapter={} \
-         reaches_a_socket={}",
+        "qip-edge-node cell={} region={} venues={} region_allocation={} live_capable={} \
+         gateway={}({}) adapter={} reaches_a_socket={}",
         config.cell_id,
         config.region,
         config.venues.len(),
+        cell.region_allocation_free()
+            .map_or_else(|| "none".to_string(), |free| free.to_string()),
         ceiling.is_live(),
         gateway.class(),
         gateway.venue(),
@@ -372,6 +447,12 @@ fn run() -> Result<()> {
         .arbitrage_strategy
         .clone()
         .map(|strategy| ArbitrageInstaller::new(strategy, config.venues.clone()));
+    // The plan's installer, always: it holds the grants for strategies the
+    // plan will name and deploys them once a fresh, verified payload names
+    // a plan whose bytes are at the configured path. With no pricing or no
+    // path it deploys nothing and says which on every tick, so a node
+    // running no strategy is a node whose log says why.
+    let mut strategies = StrategyInstaller::new(config.plan_path.clone(), config.pricing);
 
     for requirement in missing_production_requirements(
         config.mesh.is_some(),
@@ -379,6 +460,7 @@ fn run() -> Result<()> {
         installer.is_some(),
         config.feed,
         &gateway,
+        &strategies,
     ) {
         println!("qip-edge-node: awaiting {requirement}");
     }
@@ -397,6 +479,7 @@ fn run() -> Result<()> {
         &mut mirror,
         link.as_mut(),
         installer.as_mut(),
+        &mut strategies,
         &clock,
         started,
         metrics,
@@ -423,6 +506,7 @@ fn missing_production_requirements(
     has_arbitrage_strategy: bool,
     feed: Option<FeedChoice>,
     gateway: &NodeGateway,
+    strategies: &StrategyInstaller,
 ) -> Vec<String> {
     let mut missing = vec![
         "QIP_VENUE_FEED_ENDPOINT and its multicast group or session credential".to_string(),
@@ -468,6 +552,22 @@ fn missing_production_requirements(
              alone"
         ));
     }
+    if strategies.pricing().is_none() {
+        // Unset is allowed and deploys nothing: the cell refuses an unpriced
+        // deploy, and the alternative — defaulting to one of the two forms —
+        // would have this node deciding whether to cross the spread on a
+        // strategy nobody priced.
+        missing.push(format!(
+            "{PRICING_VARIABLE} for the plan's strategies: without it the plan the payload names \
+             deploys nothing; set `{MARKETABLE}` or `{REST_AT_MID_PREFIX}<seconds>`"
+        ));
+    }
+    if strategies.plan_path().is_none() {
+        missing.push(format!(
+            "{PLAN_VARIABLE} for the compiled plan: the payload names the plan by digest, and \
+             without a file to read the digest names nothing this node can deploy"
+        ));
+    }
     if !has_halt_flag {
         // The broadcast halt shares the mesh's failure. A node with no
         // second wire is a node that a partition leaves unhaltable for as
@@ -503,6 +603,7 @@ fn serve(
     mirror: &mut StoreMirror,
     mut link: Option<&mut MeshLink>,
     mut installer: Option<&mut ArbitrageInstaller>,
+    strategies: &mut StrategyInstaller,
     clock: &Arc<dyn Clock>,
     started: qip_core::Timestamp,
     metrics: &Arc<Metrics>,
@@ -569,8 +670,13 @@ fn serve(
                 // no feed, which then reports its authority and halt state
                 // rather than its trading, as it always has.
                 if let Some(link) = link.as_deref_mut() {
-                    let tick =
-                        link.exchange_with(cell, &last_report, now, installer.as_deref_mut());
+                    let tick = link.exchange_with_installers(
+                        cell,
+                        &last_report,
+                        now,
+                        installer.as_deref_mut(),
+                        Some(&mut *strategies),
+                    );
                     if !tick.is_quiet() {
                         eprintln!("qip-edge-node: mesh exchange: {tick:?}");
                     }
@@ -644,6 +750,10 @@ fn answer(
     started: qip_core::Timestamp,
     metrics: &Metrics,
 ) -> Result<()> {
+    // Bounded before a byte is read, because this is the thread the cell
+    // decides on. See [`REQUEST_TIMEOUT`].
+    bound(&stream, REQUEST_TIMEOUT)?;
+
     let mut buffer = [0u8; 1024];
     // The read has to happen or the client sees a reset instead of a response.
     // It is also the only thing that distinguishes a scrape from a probe: this
@@ -701,8 +811,15 @@ fn answer(
         ),
         None => "null".to_string(),
     };
+    // What the region has left, as the cell holds it. `null` would mean a cell
+    // with no allocation at all, which this root can no longer build; the
+    // arm stays because the cell's accessor is honest about that state and a
+    // probe should not be the thing that turns it into a zero.
+    let region_allocation_free = cell
+        .region_allocation_free()
+        .map_or_else(|| "null".to_string(), |free| format!("\"{free}\""));
     let body = format!(
-        r#"{{"cell":"{}","region":"{}","halted":{},"halt_flag":{halt_flag},"arbitrage_desk":{},"live_capable":{},"venues":{},"strategies":{},"journal_entries":{},"journal_shipped":{},"storage":"{}","durable":{},"gateway":{{"class":"{}","venue":"{}","submitted":{},"rejected":{},"reaches_a_socket":{},"unknown_orders":{}}},"pass":{pass},"mesh":{mesh},"started_at":{}}}"#,
+        r#"{{"cell":"{}","region":"{}","halted":{},"halt_flag":{halt_flag},"arbitrage_desk":{},"live_capable":{},"venues":{},"region_allocation_free":{region_allocation_free},"strategies":{},"journal_entries":{},"journal_shipped":{},"storage":"{}","durable":{},"gateway":{{"class":"{}","venue":"{}","submitted":{},"rejected":{},"reaches_a_socket":{},"unknown_orders":{}}},"pass":{pass},"mesh":{mesh},"started_at":{}}}"#,
         config.cell_id,
         config.region,
         cell.is_halted(),
@@ -736,6 +853,18 @@ fn answer(
     write_response(stream, content_type, &payload)
 }
 
+/// Put a deadline on both halves of one health exchange.
+///
+/// Separated from [`answer`] so a test can drive the exact call the binary
+/// makes with a timeout it does not have to wait out, rather than a copy of
+/// two lines kept in a test file where it could drift from what ships.
+fn bound(stream: &TcpStream, timeout: std::time::Duration) -> Result<()> {
+    stream
+        .set_read_timeout(Some(timeout))
+        .and_then(|()| stream.set_write_timeout(Some(timeout)))
+        .map_err(|error| Error::io(format!("cannot bound the health request: {error}")))
+}
+
 fn write_response(mut stream: TcpStream, content_type: &str, body: &str) -> Result<()> {
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -747,4 +876,60 @@ fn write_response(mut stream: TcpStream, content_type: &str, body: &str) -> Resu
     stream
         .flush()
         .map_err(|error| Error::io(format!("cannot flush the health response: {error}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    /// The failure this prevents: a client that connects to the health port
+    /// and never sends a byte holding the one thread this node polls its halt
+    /// flag, ships its journal, talks to the centre and runs `Cell::work` on.
+    /// Not hypothetical — every accepted socket in this binary was unbounded
+    /// until this test, while `qip-fastbrain` and `qip-deepbrain` had bounded
+    /// theirs for a smaller consequence.
+    ///
+    /// The read runs on its own thread and reports through a channel so that a
+    /// regression fails on a deadline instead of hanging the test binary: an
+    /// unbounded read never returns, and a test that never returns reports
+    /// nothing at all.
+    #[test]
+    fn a_client_that_sends_nothing_does_not_hold_the_thread_the_cell_decides_on() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
+        let address = listener.local_addr().expect("the listener has an address");
+
+        // Held open for the whole test, sending nothing. Dropping it would
+        // close the connection and the read would return zero bytes on end of
+        // file, which is a different event from the one under test.
+        let _silent_client = TcpStream::connect(address).expect("connect to the listener");
+
+        let (sender, receiver) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("the client connected");
+            bound(&stream, std::time::Duration::from_millis(50)).expect("the socket can be bound");
+            let mut buffer = [0u8; 16];
+            let outcome = (&stream).read(&mut buffer).map_err(|error| error.kind());
+            let _ = sender.send(outcome);
+        });
+
+        let outcome = receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect(
+                "the read from a silent client never returned: the health socket is unbounded and \
+                 this is the thread the cell decides on",
+            );
+        // Asserting the premise as well as the property: an `Ok` here would
+        // mean the client sent something after all, and the test would have
+        // proved nothing about a timeout.
+        let kind = outcome.expect_err("a client that sent nothing produced readable bytes");
+        assert!(
+            matches!(
+                kind,
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ),
+            "the read failed for a reason that is not the deadline: {kind:?}"
+        );
+        reader.join().expect("the reading thread finished");
+    }
 }

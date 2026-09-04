@@ -49,6 +49,7 @@ const PROXY_MODULE: &str = "infrastructure/terraform/modules/egress-proxy/main.t
 const PROXY_VARIABLES: &str = "infrastructure/terraform/modules/egress-proxy/variables.tf";
 const PROXY_OUTPUTS: &str = "infrastructure/terraform/modules/egress-proxy/outputs.tf";
 const CLOUD_RUN_MODULE: &str = "infrastructure/terraform/modules/cloudrun/main.tf";
+const CLOUD_RUN_VARIABLES: &str = "infrastructure/terraform/modules/cloudrun/variables.tf";
 const NODE_MODULE: &str = "infrastructure/terraform/modules/execution-node/main.tf";
 const NODE_VARIABLES: &str = "infrastructure/terraform/modules/execution-node/variables.tf";
 const NODE_STARTUP: &str =
@@ -60,6 +61,8 @@ const ROOT_VARIABLES: &str = "infrastructure/terraform/variables.tf";
 /// Where every listener binds, and the only address a co-located adapter is
 /// ever configured with.
 const LOOPBACK: &str = "127.0.0.1";
+/// The one address the bootstrap opens wider, and only for `health`.
+const WILDCARD: &str = "0.0.0.0";
 
 /// The trust store every upstream is verified against.
 ///
@@ -78,7 +81,7 @@ const CA_BUNDLE: &str = "/etc/ssl/certs/ca-certificates.crt";
 ///
 /// Each entry names where it came from, because "why is this host here" is the
 /// question a reviewer of the *next* entry will need answered by example.
-const ALLOWED_UPSTREAMS: [(&str, &str); 5] = [
+const ALLOWED_UPSTREAMS: [(&str, &str); 6] = [
     (
         "storage.googleapis.com",
         "qip_storage::gcp::storage — its own requirement string names the host, \
@@ -103,7 +106,42 @@ const ALLOWED_UPSTREAMS: [(&str, &str); 5] = [
         "the HostedConfig in crates/libs/qip-quantum/tests/quantum.rs and in \
          crates/services/qip-optimization-engine/tests/optimization.rs",
     ),
+    (
+        "api.frankfurter.app",
+        "the shipped manifest of frankfurter-ecb-reference-rates, in \
+         crates/services/qip-market-ingestion/src/connectors/manifests/, which \
+         connector_feed.rs's bridge opens by name; licensing class `public`, \
+         evaluated in qip-fastbrain/src/licensing.rs before the source can open",
+    ),
 ];
+
+/// The shipped manifest the market-data listener is derived from.
+///
+/// Read rather than restated: a route checked against a literal this test
+/// carried itself would agree with a connector that had been repointed.
+const FRANKFURTER_MANIFEST: &str = "backend/crates/services/qip-market-ingestion/src/\
+                                    connectors/manifests/frankfurter-ecb-reference-rates.json";
+const FRANKFURTER_TRANSPORT: &str =
+    "backend/crates/services/qip-market-ingestion/src/connector/transport.rs";
+const FRANKFURTER_LICENSING: &str = "backend/crates/apps/qip-fastbrain/src/licensing.rs";
+const FRANKFURTER_LISTENER: &str = "frankfurter";
+const FRANKFURTER_HOST: &str = "api.frankfurter.app";
+const FRANKFURTER_CLUSTER: &str = "api_frankfurter_app";
+
+/// Whether a configuration sets a setting to a value.
+///
+/// Compares with whitespace collapsed, so a `terraform fmt` that realigns the
+/// equals signs does not break a check reading this. Matches
+/// `infrastructure.rs`'s own `sets` exactly; each test binary in this suite
+/// reads Terraform as text independently, and duplicating the four-line
+/// helper is cheaper than a shared dependency between two acceptance suites
+/// that otherwise have nothing to say to each other.
+fn sets(content: &str, setting: &str, value: &str) -> bool {
+    content.lines().any(|line| {
+        let collapsed: String = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        collapsed == format!("{setting} = {value}")
+    })
+}
 
 /// A configuration with its comments removed.
 ///
@@ -177,7 +215,7 @@ fn bootstrap() -> String {
 /// One block of the bootstrap, bounded by the block that follows it.
 ///
 /// Bounded rather than open-ended, and the difference is not cosmetic: a check
-/// reading "the listeners" that ran on past `clusters:` would read the five
+/// reading "the listeners" that ran on past `clusters:` would read the six
 /// upstream port 443s as listener ports. Both ends must be found, so a
 /// reshaped bootstrap fails here rather than quietly widening what a caller is
 /// looking at.
@@ -241,8 +279,8 @@ fn listener_ports() -> Vec<(String, String)> {
     let listeners = entries_of(&listeners_block(&bootstrap));
     assert_eq!(
         listeners.len(),
-        5,
-        "{:?} listeners were read; there are four destination listeners and \
+        6,
+        "{:?} listeners were read; there are five destination listeners and \
          the health listener, and a listener this check cannot see is a port \
          nothing below constrains",
         listeners.iter().map(|(name, _)| name).collect::<Vec<_>>()
@@ -263,6 +301,14 @@ fn listener_ports() -> Vec<(String, String)> {
 }
 
 /// The `vendor/envoy` line of the vendored-images list, as source and digest.
+///
+/// Selects by destination rather than by position: a second entry
+/// (`vendor/openobserve`, mirrored so its reviewed bytes exist in the
+/// registry but not yet deployed — see the file's own comment on the two
+/// decisions still outstanding before it can be) means "exactly one line"
+/// stopped being a fact about this file the moment it was reviewed, but
+/// "the envoy line is still the distroless proxy image" has to remain true
+/// regardless of how many other images this platform goes on to adopt.
 fn vendored_envoy() -> (String, String) {
     let list = read(VENDORED);
     let entries: Vec<&str> = list
@@ -270,25 +316,190 @@ fn vendored_envoy() -> (String, String) {
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .collect();
-    assert_eq!(
-        entries.len(),
-        1,
-        "{VENDORED} carries {entries:?}; one image is vendored on this platform and a second is a decision"
+    assert!(
+        !entries.is_empty(),
+        "{VENDORED} carries no entries; the egress proxy has to be vendored from somewhere"
     );
-    let fields: Vec<&str> = entries[0].split_whitespace().collect();
+    let envoy_lines: Vec<&&str> = entries
+        .iter()
+        .filter(|line| line.split_whitespace().nth(1) == Some("vendor/envoy"))
+        .collect();
+    assert_eq!(
+        envoy_lines.len(),
+        1,
+        "{VENDORED} carries {entries:?}; expected exactly one vendor/envoy line"
+    );
+    let fields: Vec<&str> = envoy_lines[0].split_whitespace().collect();
     assert_eq!(
         fields.len(),
         3,
         "{VENDORED} line is not `<source@digest> <dest> <tag>`: {entries:?}"
     );
-    assert_eq!(
-        fields[1], "vendor/envoy",
-        "the vendored image is not the egress proxy"
-    );
     let (repository, digest) = fields[0]
         .split_once("@sha256:")
         .unwrap_or_else(|| panic!("{} is not pinned by digest", fields[0]));
     (repository.to_string(), digest.to_string())
+}
+
+/// The vendored OpenObserve line is well-formed and pinned by digest, and the
+/// two decisions the vendoring comment once named as still needing a human —
+/// a new top-level workload category, and how storage is authenticated
+/// without a static key — are visibly made rather than defaulted past:
+/// `modules/cloudrun` carries the `image_source = "vendored"` branch ADR 0028
+/// decision 3 describes, and `catalogue.tf` wires it up on ephemeral,
+/// ZO_S3_*-free storage per decision 4, gated on
+/// `vendored_openobserve_image_digest` naming a digest.
+///
+/// This test used to assert the opposite of its second half — that nothing
+/// in `infrastructure/terraform/**` referenced `vendor/openobserve` at all —
+/// as a deliberate tripwire for the day OpenObserve stopped being merely
+/// mirrored. That day is this commit, and the honest update named by the old
+/// test's own comment is this one: assert the wiring is real and correct
+/// instead of asserting its absence.
+#[test]
+fn the_vendored_openobserve_image_is_pinned_and_now_deployed_through_the_vendored_source_path() {
+    let list = read(VENDORED);
+    let entries: Vec<&str> = list
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+    let openobserve_lines: Vec<&&str> = entries
+        .iter()
+        .filter(|line| line.split_whitespace().nth(1) == Some("vendor/openobserve"))
+        .collect();
+    assert_eq!(
+        openobserve_lines.len(),
+        1,
+        "{VENDORED} carries {entries:?}; expected exactly one vendor/openobserve line"
+    );
+    let fields: Vec<&str> = openobserve_lines[0].split_whitespace().collect();
+    assert_eq!(
+        fields.len(),
+        3,
+        "{VENDORED} line is not `<source@digest> <dest> <tag>`: {entries:?}"
+    );
+    fields[0]
+        .split_once("@sha256:")
+        .unwrap_or_else(|| panic!("{} is not pinned by digest", fields[0]));
+
+    // The module's own vendored-source branch exists: an `image_source` input, a
+    // `vendored_image_digest` input, and the digest lookup actually reads
+    // the second one rather than always falling back to `image_digest`.
+    let cloud_run_variables = without_comments(&read(CLOUD_RUN_VARIABLES));
+    assert!(
+        cloud_run_variables.contains("variable \"image_source\"")
+            && cloud_run_variables.contains("variable \"vendored_image_digest\""),
+        "modules/cloudrun no longer declares image_source and vendored_image_digest; ADR 0028 \
+         decision 3's branch has been removed or renamed"
+    );
+    let cloud_run_module = without_comments(&read(CLOUD_RUN_MODULE));
+    assert!(
+        cloud_run_module.contains(
+            "effective_image_digest = var.image_source == \"vendored\" ? var.vendored_image_digest : var.image_digest"
+        ),
+        "modules/cloudrun no longer branches the image lookup on image_source; a vendored workload \
+         would run whatever image_digest happens to hold"
+    );
+
+    // The catalogue deploys OpenObserve through that branch, not by folding
+    // it into the built-workload for_each: it names `image_source = "vendored"`
+    // and composes `vendored_image_digest` from the registry prefix and the
+    // root's own digest variable, the same shape the metrics collector's
+    // digest is composed with.
+    let catalogue = without_comments(&read(CATALOGUE));
+    assert!(
+        catalogue.contains("module \"openobserve\""),
+        "catalogue.tf no longer declares the OpenObserve workload"
+    );
+    let openobserve_block = catalogue
+        .split("module \"openobserve\" {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}\n").next())
+        .expect(
+            "catalogue.tf declares module \"openobserve\" with a closing brace on its own line",
+        );
+    assert!(
+        openobserve_block.contains("image_source = \"vendored\"")
+            && openobserve_block.contains(
+                "vendored_image_digest = \"${module.registry.image_prefix}/vendor/openobserve@${var.vendored_openobserve_image_digest}\""
+            ),
+        "the OpenObserve workload does not use the vendored source path with a digest composed \
+         from the environment's own registry: {openobserve_block}"
+    );
+    // Anonymous since ADR 0030, which amends ADR 0028 decision 5. Both halves
+    // are asserted because the module refuses either alone and a diff that
+    // dropped one would otherwise read as a narrowing while producing a
+    // service that is either unreachable or a public 403.
+    assert!(
+        openobserve_block.contains("ingress_posture = \"open-anonymous\"")
+            && openobserve_block.contains("[\"allUsers\"]"),
+        "OpenObserve no longer declares both halves of the anonymous posture ADR 0030 \
+         records; the module refuses either one without the other: {openobserve_block}"
+    );
+    assert!(
+        openobserve_block.contains("ZO_LOCAL_MODE_STORAGE")
+            && !openobserve_block.contains("ZO_S3_"),
+        "OpenObserve is not configured for ephemeral storage, or names an S3 destination — \
+         ADR 0028 decision 4 accepts the ephemeral cost specifically to avoid the static GCS \
+         HMAC key durable storage would need"
+    );
+
+    // The root's digest variable stays closed by default: setting it is what
+    // creates the service, and no environment forces it.
+    let root_variables = without_comments(&read(ROOT_VARIABLES));
+    assert!(
+        root_variables.contains("variable \"vendored_openobserve_image_digest\"")
+            && sets(&root_variables, "default", "null"),
+        "the root no longer declares vendored_openobserve_image_digest with a null default"
+    );
+    // An environment may pin one, and if it does it must be the digest this
+    // repository reviewed. This used to assert that no environment pinned
+    // anything at all, which was true until dev did, and was a tripwire for
+    // exactly this moment rather than a rule. The rule it becomes is the
+    // stronger half: `vendored-images.txt` is the review surface — its git
+    // history is the answer to "which foreign code runs here" — so a digest
+    // in a tfvars that appears nowhere in that file is bytes nobody read,
+    // and Binary Authorization would refuse them at apply having already
+    // let them through review.
+    let vendored = read(VENDORED);
+    let reviewed: Vec<String> = vendored
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter(|line| line.split_whitespace().nth(1) == Some("vendor/openobserve"))
+        .filter_map(|line| line.split_whitespace().next())
+        .filter_map(|source| source.split_once("@").map(|(_, digest)| digest.to_string()))
+        .collect();
+
+    for environment in ["dev", "test", "stage", "prod"] {
+        let tfvars = read(&format!(
+            "infrastructure/environments/{environment}/terraform.tfvars"
+        ));
+        let Some(pinned) = tfvars
+            .lines()
+            .map(str::trim)
+            .find(|line| line.starts_with("vendored_openobserve_image_digest"))
+        else {
+            continue;
+        };
+        // The premise, asserted before the property: a review surface with no
+        // OpenObserve line would make every pin below unreviewable, and an
+        // empty `reviewed` would otherwise fail each one with a message about
+        // the wrong file.
+        assert!(
+            !reviewed.is_empty(),
+            "{VENDORED} carries no active vendor/openobserve line, so {environment}'s pinned \
+             digest cannot be checked against anything: {pinned}"
+        );
+        assert!(
+            reviewed
+                .iter()
+                .any(|digest| pinned.contains(digest.as_str())),
+            "{environment} pins an OpenObserve digest that {VENDORED} has not reviewed. The \
+             reviewed digests are {reviewed:?} and the pin is: {pinned}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -303,11 +514,11 @@ fn the_egress_proxy_dials_only_the_vendor_hosts_the_adapters_named() {
     let bootstrap = bootstrap();
 
     // Premise. Every address in this file is written inside a flow mapping;
-    // six binds and five upstreams is eleven, and fewer than ten means the
-    // socket addresses have moved and this check is looking at nothing.
+    // seven binds and six upstreams is thirteen, and fewer than twelve means
+    // the socket addresses have moved and this check is looking at nothing.
     let addresses = values_of(&bootstrap, "address");
     assert!(
-        addresses.len() >= 10,
+        addresses.len() >= 12,
         "only {addresses:?} were read out of the bootstrap; the socket_address \
          blocks have been reshaped and this check is filtering an empty list"
     );
@@ -318,10 +529,10 @@ fn the_egress_proxy_dials_only_the_vendor_hosts_the_adapters_named() {
     // proxy will connect out to.
     let (bound, dialled): (Vec<String>, Vec<String>) = addresses
         .into_iter()
-        .partition(|address| address == LOOPBACK);
+        .partition(|address| address == LOOPBACK || address == WILDCARD);
 
     assert!(
-        bound.len() >= 5,
+        bound.len() >= 6,
         "only {bound:?} bind addresses were found beside {dialled:?}; the rule \
          that tells a bind from a dial has stopped telling them apart"
     );
@@ -388,6 +599,241 @@ fn the_egress_proxy_dials_only_the_vendor_hosts_the_adapters_named() {
 }
 
 #[test]
+fn the_market_data_listener_reaches_one_vendor_on_one_path_and_widening_it_fails_here() {
+    // The first market-data egress path this platform has had, and the first
+    // destination in this bootstrap that is neither Google nor IBM. The risk
+    // it carries is not that it is wrong today; it is that "we already have a
+    // vendor listener" is the sentence that precedes a second route on it, a
+    // catch-all prefix, or a SAN matcher widened to a suffix. Each of those is
+    // a separate assertion below, and each is a route to the internet out of a
+    // process that holds trading state.
+    //
+    // Everything is derived from the shipped manifest rather than restated, so
+    // a connector repointed at another path or another host fails here instead
+    // of being agreed with.
+    let manifest: serde_json::Value = serde_json::from_str(&read(FRANKFURTER_MANIFEST))
+        .expect("the frankfurter manifest is JSON");
+    let manifest_host = manifest["provider"]
+        .as_str()
+        .expect("the manifest names its provider");
+    let manifest_path = manifest["endpoint"]["path"]
+        .as_str()
+        .expect("the manifest names the path it requests");
+
+    // Premise, twice over. A manifest whose path were "/" or empty would make
+    // the prefix comparison below vacuous — it would admit the catch-all this
+    // test exists to refuse — and a manifest that stopped naming the host
+    // would leave the allowlist entry with no provenance.
+    assert!(
+        manifest_path.starts_with('/') && manifest_path.len() > 1,
+        "the manifest requests {manifest_path:?}; a path that is empty or a \
+         bare `/` cannot distinguish a narrow route from a catch-all, and \
+         every check below would pass on a proxy that forwards everything"
+    );
+    assert!(
+        manifest_host.contains(FRANKFURTER_HOST),
+        "the manifest's provider no longer names {FRANKFURTER_HOST}; the \
+         allowlist entry for that host has lost the source it was derived from"
+    );
+
+    let bootstrap = bootstrap();
+    let listeners = entries_of(&listeners_block(&bootstrap));
+    let (_, listener) = listeners
+        .iter()
+        .find(|(name, _)| name == FRANKFURTER_LISTENER)
+        .unwrap_or_else(|| {
+            panic!(
+                "no `{FRANKFURTER_LISTENER}` listener in the bootstrap, but \
+                 {FRANKFURTER_HOST} is on the allowlist. An upstream declared \
+                 with no listener in front of it is a host the proxy may dial \
+                 and no reviewed route reaches — the widening without the use."
+            )
+        });
+
+    // Loopback, and one port. The port is the whole destination selector here:
+    // there is no host header a caller controls, so a wider bind is a route
+    // anything on the network can take to a rewritten authority.
+    assert_eq!(
+        values_of(listener, "address"),
+        vec![LOOPBACK.to_string()],
+        "the {FRANKFURTER_LISTENER} listener does not bind {LOOPBACK} alone"
+    );
+    let ports = values_of(listener, "port_value");
+    assert_eq!(
+        ports.len(),
+        1,
+        "the {FRANKFURTER_LISTENER} listener binds {ports:?}; one listener, \
+         one port is what makes the port a destination selector"
+    );
+
+    // One route. Not "every route points at Frankfurter" — one. A second route
+    // on this listener is a second thing reachable through an address whose
+    // whole review was "it is the rates feed".
+    let routed = values_of(listener, "cluster");
+    assert_eq!(
+        routed,
+        vec![FRANKFURTER_CLUSTER.to_string()],
+        "the {FRANKFURTER_LISTENER} listener routes to {routed:?}. One vendor, \
+         one cluster: this listener was reviewed as a path to the ECB's \
+         reference rates and to nothing else."
+    );
+    assert_eq!(
+        values_of(listener, "host_rewrite_literal"),
+        vec![FRANKFURTER_HOST.to_string()],
+        "the {FRANKFURTER_LISTENER} listener rewrites the authority to \
+         something other than {FRANKFURTER_HOST}"
+    );
+
+    // One prefix, and it is the one the connector actually builds. This is the
+    // assertion that refuses `prefix: "/"`: a catch-all makes the listener a
+    // forward proxy to whatever the rewritten authority serves, which for a
+    // vendor with more than one product is a different API entirely.
+    assert_eq!(
+        values_of(listener, "prefix"),
+        vec![manifest_path.to_string()],
+        "the {FRANKFURTER_LISTENER} listener's routes do not match exactly \
+         {manifest_path:?}, the one path the shipped manifest requests. A \
+         prefix wider than the manifest is a route nothing in this workspace \
+         asks for."
+    );
+    assert!(
+        !without_comments(listener).contains("regex"),
+        "the {FRANKFURTER_LISTENER} listener matches with a regex; a route \
+         whose extent a reviewer has to simulate is not a reviewed route"
+    );
+
+    // GET and only GET. Asserting the method at the proxy is what makes "this
+    // path cannot carry an order" a property of the boundary rather than of
+    // the vendor's product range: an order is a POST, and a POST to this port
+    // gets a 404 before a socket is opened upstream.
+    assert_eq!(
+        values_of(listener, "exact"),
+        vec!["GET".to_string()],
+        "the {FRANKFURTER_LISTENER} listener no longer restricts the method to \
+         GET. The connector transport issues Method::Get and only that; a \
+         listener that forwards a POST forwards something this platform does \
+         not send."
+    );
+    let transport = read(FRANKFURTER_TRANSPORT);
+    assert!(
+        transport.contains("Method::Get"),
+        "{FRANKFURTER_TRANSPORT} no longer issues Method::Get, so the route's \
+         method matcher above now describes a request nobody makes"
+    );
+    for method in [
+        "Method::Post",
+        "Method::Put",
+        "Method::Delete",
+        "Method::Patch",
+    ] {
+        assert!(
+            !transport.contains(method),
+            "{FRANKFURTER_TRANSPORT} issues {method}; the connector transport \
+             has gained a write path, and a write path to a market-data vendor \
+             is a decision nobody recorded"
+        );
+    }
+
+    // The converse. Without this, a route added to the `gcp` listener naming
+    // this cluster passes every check above, because every check above reads
+    // only this listener.
+    for (name, body) in &listeners {
+        if name == FRANKFURTER_LISTENER {
+            continue;
+        }
+        assert!(
+            !values_of(body, "cluster").contains(&FRANKFURTER_CLUSTER.to_string()),
+            "the {name} listener routes to {FRANKFURTER_CLUSTER}. The vendor is \
+             reachable from one reviewed port, or it is reachable from anywhere \
+             a route was added without one."
+        );
+        assert!(
+            !values_of(body, "host_rewrite_literal").contains(&FRANKFURTER_HOST.to_string()),
+            "the {name} listener rewrites the authority to {FRANKFURTER_HOST}"
+        );
+    }
+
+    // The cluster: one host, one certificate name, matched exactly. A matcher
+    // widened from `exact` to `suffix` accepts any certificate under the
+    // domain, which on a proxy that terminates TLS means a DNS answer is
+    // enough to redirect the request.
+    let clusters = entries_of(&clusters_block(&bootstrap));
+    let (_, cluster) = clusters
+        .iter()
+        .find(|(name, _)| name == FRANKFURTER_CLUSTER)
+        .unwrap_or_else(|| panic!("no `{FRANKFURTER_CLUSTER}` cluster is declared"));
+    assert_eq!(
+        values_of(cluster, "address"),
+        vec![FRANKFURTER_HOST.to_string()],
+        "{FRANKFURTER_CLUSTER} dials somewhere other than {FRANKFURTER_HOST}"
+    );
+    assert_eq!(
+        values_of(cluster, "sni"),
+        vec![FRANKFURTER_HOST.to_string()],
+        "{FRANKFURTER_CLUSTER}'s SNI is not {FRANKFURTER_HOST}"
+    );
+    assert_eq!(
+        values_of(cluster, "exact"),
+        vec![FRANKFURTER_HOST.to_string()],
+        "{FRANKFURTER_CLUSTER} does not match the certificate name exactly"
+    );
+    for loose in ["suffix", "contains", "safe_regex", "ignore_case"] {
+        assert_eq!(
+            key_count(cluster, loose),
+            0,
+            "{FRANKFURTER_CLUSTER}'s certificate matcher carries `{loose}`. A \
+             name matched loosely is every host that can obtain a certificate \
+             under it, and this connection carries a request the platform acts \
+             on."
+        );
+    }
+    assert_eq!(
+        values_of(cluster, "filename"),
+        vec![CA_BUNDLE.to_string()],
+        "{FRANKFURTER_CLUSTER} verifies against a trust store other than {CA_BUNDLE}"
+    );
+
+    // The manifest's own two claims first, then the cross-file drift check.
+    // The order is deliberate: these two are self-contained, and putting the
+    // check that reads another crate's source ahead of them would mean a
+    // catalogue that had not been written yet masked a manifest that had
+    // silently changed class.
+    assert_eq!(
+        manifest["licensing"].as_str(),
+        Some("public"),
+        "the manifest's licensing class is no longer `public`; the argument \
+         for admitting this host ahead of every other candidate was that \
+         `public` is the one posture already evaluated"
+    );
+    assert_eq!(
+        manifest["auth"]["scheme"].as_str(),
+        Some("none"),
+        "the frankfurter connector now authenticates. This proxy terminates \
+         TLS and its clients speak plaintext to it, so a credential on this \
+         path is a credential in the sidecar's clear text — a different review \
+         from the one this listener had."
+    );
+
+    // Licensing was evaluated before the source became reachable, which is the
+    // ordering .claude/rules/domains/data-and-streaming.md requires. This is a
+    // drift check on the catalogue's text, not a proof that admit() runs —
+    // that proof lives in qip-fastbrain's own tests. What it catches is a
+    // listener landing here for a source the catalogue never grew an entry for.
+    let licensing = read(FRANKFURTER_LICENSING);
+    let source_id = manifest["source_id"]
+        .as_str()
+        .expect("the manifest has a source_id");
+    assert!(
+        licensing.contains(source_id),
+        "{FRANKFURTER_LICENSING} carries no entry for {source_id}, so the \
+         bootstrap reaches a vendor whose terms nobody wrote down. \
+         licensing::admit refuses an uncatalogued source, so this listener \
+         would be a route the fast brain is denied — the widening without the \
+         use, again."
+    );
+}
+
+#[test]
 fn the_proxy_rewrites_the_authority_to_a_host_on_the_same_allowlist() {
     // The clients send an origin-form request line with `host:` naming
     // loopback, so every request has to have its authority rewritten before it
@@ -431,7 +877,7 @@ fn every_route_names_a_cluster_the_bootstrap_actually_declares() {
 
     let routed = values_of(&listeners, "cluster");
     assert!(
-        routed.len() >= 5,
+        routed.len() >= 6,
         "only {routed:?} routes were read; the route blocks have been reshaped"
     );
     assert!(
@@ -640,13 +1086,21 @@ fn every_listener_binds_loopback_and_only_the_destination_listeners_are_exposed(
     let ports = listener_ports();
     let bootstrap = bootstrap();
     for (name, body) in entries_of(&listeners_block(&bootstrap)) {
+        // `health` is the one exception and it is named, not matched by a
+        // predicate: Cloud Run issues the sidecar's startup probe from
+        // outside the container's network namespace, so a loopback bind
+        // answers nothing at all and the instance never starts —
+        // "STARTUP HTTP probe failed 15 times consecutively ...
+        // ERROR_CONNECTION_FAILED", with Envoy up and this file loaded.
+        // Every listener that carries traffic still binds loopback.
+        let expected = if name == "health" { WILDCARD } else { LOOPBACK };
         assert_eq!(
             values_of(&body, "address"),
-            vec![LOOPBACK.to_string()],
-            "the listener {name} binds {:?}. Anything but loopback is reachable \
-             by whatever shares the network, which on Cloud Run is nothing and \
-             on the node is everything in the subnet — and the property has to \
-             hold in both.",
+            vec![expected.to_string()],
+            "the listener {name} binds {:?} and should bind {expected}. A \
+             traffic listener on anything but loopback is reachable by \
+             whatever shares the network, which on the node is everything in \
+             the subnet.",
             values_of(&body, "address")
         );
     }
@@ -659,8 +1113,11 @@ fn every_listener_binds_loopback_and_only_the_destination_listeners_are_exposed(
     // The module's own gate says the same, at plan time.
     let module = without_comments(&read(PROXY_MODULE));
     assert!(
-        module.contains("listener.address == \"127.0.0.1\""),
-        "the proxy module no longer refuses a listener bound to an interface address"
+        module.contains("listener.address == (name == \"health\" ? \"0.0.0.0\" : \"127.0.0.1\")"),
+        "the proxy module no longer refuses, at plan time, a traffic listener \
+         bound to an interface address — or it no longer names `health` as \
+         the single exception, which is how a second wide bind would arrive \
+         without a reviewer seeing it"
     );
 
     // And what it exposes to a workload is every listener but the health one.
@@ -731,8 +1188,8 @@ fn no_workload_is_configured_with_an_address_that_leaves_the_instance_except_thr
         .collect();
     assert_eq!(
         ports.len(),
-        4,
-        "four destination listeners were expected, found {ports:?}"
+        5,
+        "five destination listeners were expected, found {ports:?}"
     );
 
     let mut checked = 0usize;
@@ -1155,5 +1612,260 @@ fn every_rendering_derives_from_the_single_committed_bootstrap() {
                 .to_string()
         ],
         "more than one Envoy bootstrap exists under infrastructure/: {bootstraps:?}. Two copies of an allowlist is two allowlists."
+    );
+}
+
+#[test]
+fn the_vendor_workflow_attests_every_platform_manifest_and_not_only_the_index() {
+    // Cloud Run resolves a multi-arch index to the manifest for the platform
+    // it runs and asks Binary Authorization about *that* digest. GKE asked
+    // about the digest in the pod spec, which is the index, so attesting the
+    // index alone was enough there and is not enough here. The first Cloud
+    // Run apply of the migration was refused on it:
+    //
+    //   Image .../vendor/envoy@sha256:c8fecdf5... denied by attestor
+    //   qip-dev-build: No attestations found that were valid and signed by a
+    //   key trusted by the attestor
+    //
+    // — a digest that appears in no committed file, because it is the
+    // linux/amd64 child of the index digest that does. A workflow that signs
+    // only the index leaves the platform admitting nothing it vendored, and
+    // the failure surfaces at apply rather than at review.
+    let vendor = read(".github/workflows/vendor.yml");
+
+    // Premise: the workflow still mirrors by digest and still signs. Without
+    // both, what follows is a test about a workflow that does nothing.
+    assert!(
+        vendor.contains("crane copy") && vendor.contains("binauthz attestations sign-and-create"),
+        "vendor.yml no longer mirrors and signs, so this guards nothing"
+    );
+
+    // The children are read from the mirrored image's own manifest rather
+    // than from a list, and the index is signed alongside them.
+    assert!(
+        vendor.contains("crane manifest") && vendor.contains(".manifests[]?.digest"),
+        "vendor.yml does not read the platform manifests out of the index, so \
+         a multi-arch image is attested only at its index digest and Cloud \
+         Run refuses every revision that runs it"
+    );
+
+    // And the signing call must be inside the loop over those digests, not
+    // beside it: a loop that computes the children and then signs one fixed
+    // reference is the same gap wearing a for statement.
+    let signing = vendor
+        .split_once("for digest in")
+        .expect("vendor.yml signs inside a loop over the digests")
+        .1;
+    let sign_at = signing
+        .find("sign-and-create")
+        .expect("the loop body signs");
+    let loop_end = signing.find("\n            done").unwrap_or(signing.len());
+    assert!(
+        sign_at < loop_end,
+        "vendor.yml signs outside the loop over the index and its platform \
+         manifests, so only one of them is attested"
+    );
+    // Read from the signing call itself, not from the loop body around it.
+    // The first draft asserted over the whole body and a mutation that made
+    // sign-and-create name the fixed index reference passed anyway, because
+    // the idempotency lookup two lines above still named the loop variable.
+    assert!(
+        signing[sign_at..loop_end].contains("--artifact-url \"${artifact}\""),
+        "sign-and-create names something other than the digest the loop is \
+         on, so every iteration attests the same reference"
+    );
+}
+
+#[test]
+fn the_health_listener_is_the_only_wide_bind_and_it_forwards_nowhere() {
+    // The trade this file makes, held in one place. `health` binds 0.0.0.0
+    // because Cloud Run probes it from outside the container's namespace, and
+    // that is the only listener here reachable by anything but the co-located
+    // workload. What it may answer with is therefore the whole of the
+    // exposure: a constant, and no route out.
+    //
+    // `modules/egress-proxy` cannot check this — it parses each listener's
+    // name, address and port and never sees a body — so the property lives
+    // here rather than as an unvalidatable regex in the plan path.
+    let bootstrap = bootstrap();
+    let listeners = entries_of(&listeners_block(&bootstrap));
+
+    // Premise: there are several listeners and one is `health`, so what
+    // follows compares a real exception against real neighbours.
+    assert!(
+        listeners.len() >= 6,
+        "only {} listener(s) were read out of the bootstrap; the block has \
+         been reshaped and this test is comparing nothing",
+        listeners.len()
+    );
+    let (_, health) = listeners
+        .iter()
+        .find(|(name, _)| name == "health")
+        .expect("the bootstrap has a listener named `health`");
+
+    // Exactly one wide bind, and it is this one.
+    let wide: Vec<&String> = listeners
+        .iter()
+        .filter(|(_, body)| values_of(body, "address") == vec![WILDCARD.to_string()])
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(
+        wide,
+        vec!["health"],
+        "the listeners bound to {WILDCARD} are {wide:?}. Exactly one may be, \
+         and it is the one that answers a probe with a constant."
+    );
+
+    // And it forwards to nothing. A `cluster` here would be an
+    // unauthenticated way out of the network at the one address opened wider.
+    // Comments stripped first: an entry's body runs to the next `- name:`,
+    // so it carries the prose introducing the listener after it — and the
+    // paragraph above `gcp` explains that it is "the only listener here with
+    // more than one cluster behind it". Reading that as configuration failed
+    // this assertion on a bootstrap that was correct.
+    let configured = without_comments(health);
+    assert!(
+        !configured.contains("cluster"),
+        "the health listener names a cluster: it is the only listener bound \
+         to an interface address, and it may answer with a constant and \
+         nothing else.\n{configured}"
+    );
+    assert!(
+        health.contains("direct_response"),
+        "the health listener no longer answers with a direct response, so \
+         what the wide bind reaches is no longer a fixed reply.\n{health}"
+    );
+}
+
+#[test]
+fn the_node_module_admits_the_same_named_exception_it_shares_the_bootstrap_with() {
+    // Run 23 of infra.yml found this the hard way: fixing
+    // `modules/egress-proxy`'s bind gate was not enough, because
+    // `modules/execution-node` reads the same committed bootstrap and
+    // carried its own validation refusing any 0.0.0.0 listener outright —
+    //
+    //   Error: Invalid value for variable
+    //   The egress bootstrap binds a listener to 0.0.0.0. On the node every
+    //   listener is loopback...
+    //   This was checked by the validation rule at
+    //   modules/execution-node/variables.tf:276,3-13.
+    //
+    // — on `main.tf line 506`, which passes this same file to both modules.
+    // One file, two independent gates; fixing one and not the other still
+    // refuses the plan.
+    let node_variables = read(NODE_VARIABLES);
+
+    // Premise: the module still takes the bootstrap as a string variable
+    // with validations on it, so this is a test about which validations.
+    assert!(
+        node_variables.contains("variable \"egress_bootstrap\""),
+        "modules/execution-node no longer declares egress_bootstrap; this \
+         test's premise needs rewriting"
+    );
+
+    // It no longer refuses 0.0.0.0 outright...
+    assert!(
+        !node_variables.contains("!strcontains(var.egress_bootstrap, \"address: 0.0.0.0\")"),
+        "the node module still refuses any 0.0.0.0 listener outright, which \
+         refuses the health listener's own bootstrap and blocks every apply"
+    );
+    // ...and the replacement names `health` as the one exception, matching
+    // the shape `modules/egress-proxy` uses for the same file.
+    assert!(
+        node_variables.contains("line[0] == \"health\""),
+        "the node module's replacement validation does not name `health` as \
+         the exception, so either nothing is admitted (blocking every \
+         apply) or every listener is (admitting a real mistake)"
+    );
+}
+
+#[test]
+fn the_node_variable_s_regex_uses_escapes_hcl_actually_accepts() {
+    // Run 24 of infra.yml found this: the fix above swapped a blanket
+    // refusal for a `regexall` over the bootstrap text, but HCL's own
+    // string-escaping rules are not the regex engine's. `\n` is a real HCL
+    // escape (a literal newline) and passed straight through, but `\s` and
+    // `\{` are not on HCL's short list of valid escapes — `terraform init`
+    // refused the module outright:
+    //
+    //   Error: Invalid escape sequence
+    //   The symbol "s" is not a valid escape sequence selector.
+    //
+    // A backslash meant to reach the regex engine has to survive HCL's own
+    // parse first, which means writing it doubled (`\\s`, `\\{`) so HCL
+    // emits one literal backslash for `regexall` to see. A parenthesised
+    // capture (`\(`) is not this class — the fixture below asserts on the
+    // two cases the previous fix actually broke, not on every metacharacter.
+    let node_variables = read(NODE_VARIABLES);
+    let regexall_line = node_variables
+        .lines()
+        .find(|line| line.contains("for line in regexall("))
+        .expect(
+            "the validation's regexall call moved or was rewritten; this \
+             test's premise needs rewriting",
+        );
+
+    assert!(
+        regexall_line.contains("\\\\s+address"),
+        "the regex uses a bare \\s for whitespace, which HCL parses as an \
+         invalid escape sequence and refuses at `terraform init` before any \
+         plan runs — every apply is blocked, not just a bad value admitted.\n\
+         {regexall_line}"
+    );
+    assert!(
+        regexall_line.contains("\\\\{ address"),
+        "the regex uses a bare \\{{ for the literal brace, which HCL parses \
+         as an invalid escape sequence for the same reason.\n{regexall_line}"
+    );
+}
+
+/// `ignore_changes` names a static list, and nothing computed from an input.
+///
+/// This is not hypothetical. ADR 0028 decision 3 said a vendored workload
+/// would skip the rule, and the module was written to do exactly that:
+///
+///   ignore_changes = var.source == "vendored" ? [] : [template[0].containers[0].image]
+///
+/// Terraform refuses that outright — "A static list expression is required" —
+/// so `terraform validate` failed on every commit carrying it, the deploy
+/// gate correctly refused to ship an unvalidated tree, and nothing reached
+/// dev until it was made uniform. The rule is now the same for both sources
+/// and the cost to a vendored workload is written at the rule itself.
+///
+/// A whole-file scan, not a scan of one known line: a second `lifecycle`
+/// block added later with the same conditional shape would break the plan the
+/// same way, and this test is the thing that has to notice.
+#[test]
+fn the_cloud_run_lifecycle_rule_is_a_static_list_terraform_will_accept() {
+    let module = without_comments(&read(CLOUD_RUN_MODULE));
+    let rules: Vec<&str> = module
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("ignore_changes"))
+        .collect();
+
+    // Assert the premise before asserting the property: a module that had
+    // stopped declaring the rule at all would otherwise pass this test by
+    // having nothing to check, while every deploy quietly rolled back to the
+    // digest images.tfvars still names.
+    assert_eq!(
+        rules.len(),
+        1,
+        "{CLOUD_RUN_MODULE} declares {} ignore_changes rules; expected exactly one, on \
+         google_cloud_run_v2_service.workload: {rules:?}",
+        rules.len()
+    );
+    let rule = rules[0];
+
+    assert!(
+        rule.contains("[template[0].containers[0].image]"),
+        "the lifecycle rule no longer ignores the workload container's image, so an apply \
+         would reassert the tfvars digest and roll back whatever deploy.yml last moved the \
+         service to:\n{rule}"
+    );
+    assert!(
+        !rule.contains('?') && !rule.contains("var."),
+        "ignore_changes is computed from an input; terraform refuses this with \"A static \
+         list expression is required\" and every commit carrying it fails validate:\n{rule}"
     );
 }

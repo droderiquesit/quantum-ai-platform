@@ -714,6 +714,9 @@ struct Assembled {
     web: Arc<Web>,
     cells: Arc<CellRegistry>,
     clock: Arc<ManualClock>,
+    /// The platform the API and the interface share, for a test to drive a
+    /// fact into before asserting a page shows it.
+    platform: Arc<std::sync::Mutex<qip_kernel::Platform>>,
 }
 
 fn assemble() -> Result<Assembled> {
@@ -778,7 +781,7 @@ fn assemble() -> Result<Assembled> {
             .with_cycle_overview(web.cycle_overview()),
         ),
         console: Arc::new(Console::new(
-            platform,
+            platform.clone(),
             cells.clone(),
             authenticator,
             rate_limiter,
@@ -787,6 +790,7 @@ fn assemble() -> Result<Assembled> {
         web,
         cells,
         clock,
+        platform,
     })
 }
 
@@ -1386,5 +1390,338 @@ fn the_console_can_trip_the_kill_switch_and_has_no_path_that_clears_one() -> Res
     }
     let body = body_of(get(&assembled.api, "/api/v1/health", Some("monitor-token")));
     assert_eq!(body["halted"], serde_json::json!(true), "{body}");
+    Ok(())
+}
+
+// --- the operator interface reads platform facts through the router ---------
+
+/// Fetch one surface through the router as a viewer, asserting it rendered.
+fn page(router: &Router, path: &str) -> String {
+    let response = router.handle(&request(Method::Get, path, Some("viewer-token")));
+    assert_eq!(response.status, 200, "{path}");
+    String::from_utf8(response.body).expect("a UTF-8 page")
+}
+
+#[test]
+fn the_execution_page_renders_the_settlement_the_platform_counted_and_not_a_zero_it_did_not()
+-> Result<()> {
+    use qip_contracts::message::BookSide;
+    use qip_contracts::signal::StrategyId;
+    use qip_contracts::venue::VenueId;
+    use qip_kernel::central::{BreakDirection, CellReport, ReconciliationBreak};
+    use qip_observability::metrics::{labels, names};
+
+    let assembled = assemble()?;
+    let router = Router::new(assembled.api.clone(), assembled.web.clone());
+
+    // Premise: the platform has counted nothing and no cell has reported.
+    {
+        let platform = assembled.platform.lock().expect("the platform lock");
+        let snapshot = platform.telemetry().metrics.snapshot();
+        assert!(
+            !snapshot
+                .series
+                .iter()
+                .any(|series| series.name == names::CENTRAL_ORDERS_SENT),
+            "the premise is a platform that has registered no sent order"
+        );
+    }
+    assert!(assembled.cells.is_empty());
+
+    let before = page(&router, "/execution");
+    assert!(
+        before.contains(r#"data-panel="Cells" data-state="absent""#),
+        "{before}"
+    );
+    for key in [
+        "central_orders_sent",
+        "central_breaks_unsent_fill",
+        "central_cell_halts_reconciliation",
+    ] {
+        assert!(
+            before.contains(&format!(
+                r#"data-fact="{key}" data-state="not-recorded">not recorded<"#
+            )),
+            "{key} was not rendered as not recorded: {before}"
+        );
+        assert!(
+            !before.contains(&format!(r#"data-fact="{key}" data-state="recorded">0<"#)),
+            "{key} rendered a zero the platform never counted"
+        );
+    }
+
+    // One report: an order the venue accepted, and a break the cell shipped.
+    // The plane registers the first and halts the cell on the second.
+    let report = CellReport::new("eu-west", now())
+        .with_orders(vec![qip_mesh::delta::DeltaOrder {
+            order_id: "eu-west-1".to_string(),
+            strategy: StrategyId::new("strat-1"),
+            object_id: qip_core::ObjectId::from_string("obj-AAA"),
+            venue: VenueId::new("XNYS"),
+            side: BookSide::Ask,
+            quantity: qip_core::Decimal::from_int(10),
+            price: qip_core::Decimal::from_int(100),
+            simulated: true,
+            contributors: Vec::new(),
+        }])
+        .with_break(ReconciliationBreak {
+            instrument: "obj-AAA".to_string(),
+            cell_quantity: qip_core::Decimal::from_int(10),
+            external_quantity: qip_core::Decimal::from_int(4),
+            detail: "the venue confirms less than the cell holds".to_string(),
+            origin: Default::default(),
+        });
+    assembled.cells.record(&report);
+    let ingestion = {
+        let mut platform = assembled.platform.lock().expect("the platform lock");
+        platform.ingest_cell_report(report, now())?
+    };
+    assert_eq!(ingestion.settlement.orders_sent, 1, "{ingestion:?}");
+    assert!(ingestion.halted.is_some(), "{ingestion:?}");
+
+    // Premise for the rendering: the platform now holds the counted facts.
+    {
+        let platform = assembled.platform.lock().expect("the platform lock");
+        let snapshot = platform.telemetry().metrics.snapshot();
+        assert_eq!(snapshot.counter_total(names::CENTRAL_ORDERS_SENT), 1);
+        assert_eq!(
+            snapshot.counter(
+                names::CENTRAL_RECONCILIATION_BREAKS,
+                &labels([("direction", BreakDirection::CellOverVenue.as_str())])
+            ),
+            1
+        );
+        assert!(platform.autonomy().kill_switch().is_halted("eu-west"));
+    }
+
+    let after = page(&router, "/execution");
+    assert!(
+        after.contains(r#"data-fact="central_orders_sent" data-state="recorded">1<"#),
+        "{after}"
+    );
+    assert!(
+        after.contains(r#"data-fact="central_breaks_cell_over_venue" data-state="recorded">1<"#),
+        "{after}"
+    );
+    assert!(
+        after.contains(r#"data-fact="central_cell_halts_reconciliation" data-state="recorded">1<"#),
+        "{after}"
+    );
+    // A direction nothing incremented is still not recorded, beside one that
+    // was: the page distinguishes the arms per series, not per page.
+    assert!(
+        after.contains(r#"data-fact="central_breaks_unsent_fill" data-state="not-recorded">"#),
+        "{after}"
+    );
+    // The cell's row: reported, halted by the centre's own scope, and its
+    // per-cell settlement said to be not recorded rather than zero.
+    assert!(
+        after.contains(r#"data-panel="Cells" data-state="current""#),
+        "{after}"
+    );
+    assert!(
+        after.contains(r#"data-fact="cell.eu-west.halted_by_centre"><span class="pill bad">yes<"#),
+        "{after}"
+    );
+    assert!(
+        after.contains(r#"data-fact="cell.eu-west.policy_halt_flag"><span class="pill good">no<"#),
+        "the centre's global switch is not tripped, so the policy flag it ships is no: {after}"
+    );
+    assert!(
+        after.contains(
+            r#"data-fact="cell.eu-west.orders_sent" data-state="not-recorded">not recorded<"#
+        ),
+        "{after}"
+    );
+    assert!(
+        !after.contains(r#"data-fact="cell.eu-west.orders_sent" data-state="recorded">0<"#),
+        "{after}"
+    );
+    // No mesh is served here, so the cell's own halted flag — which travels
+    // only on its delta — is not recorded, and the polled flag never is.
+    assert!(
+        after
+            .contains(r#"data-fact="cell.eu-west.cell_reports_halted" data-state="not-recorded">"#),
+        "{after}"
+    );
+    assert!(
+        after.contains(r#"data-fact="cell.eu-west.polled_halt_flag" data-state="not-recorded">"#),
+        "{after}"
+    );
+    assert!(after.contains(">PAPER TRADING<"), "{after}");
+    Ok(())
+}
+
+#[test]
+fn a_router_with_a_mesh_lends_it_to_the_page_and_the_page_says_no_delta_was_decoded() -> Result<()>
+{
+    use qip_api::mesh::{CellAddress, MeshBackbone, MeshSettings};
+
+    let assembled = assemble()?;
+    let settings = MeshSettings {
+        cells: vec![CellAddress {
+            cell: "eu-west".to_string(),
+            address: "127.0.0.1:0".to_string(),
+        }],
+        inbox_capacity: 8,
+        spool_capacity: 8,
+    };
+    let mesh = MeshBackbone::open(
+        &settings,
+        Arc::new(qip_storage::kv::MemoryKeyValueStore::new()),
+        assembled.clock.clone() as Arc<dyn qip_core::Clock>,
+        None,
+    )?;
+    // Premise: the mesh has decoded no delta.
+    assert!(mesh.status().standings.is_empty());
+    let api = Arc::new(
+        Api::new(
+            assembled.platform.clone(),
+            Arc::new(Authenticator::new(credentials())),
+            Arc::new(RateLimiter::new(Duration::from_secs(60), 1000)),
+            assembled.clock.clone(),
+        )
+        .with_cells(assembled.cells.clone())
+        .with_mesh(Arc::new(std::sync::Mutex::new(mesh))),
+    );
+    assembled
+        .cells
+        .record(&qip_kernel::CellReport::new("eu-west", now()));
+    let router = Router::new(api, assembled.web.clone());
+
+    let page = page(&router, "/execution");
+    assert!(
+        page.contains(r#"data-fact="cell.eu-west.cell_reports_halted" data-state="not-recorded">not recorded<small class="muted"> — the mesh has decoded no delta from this cell"#),
+        "{page}"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_governance_page_renders_the_whitelist_the_platform_journaled_and_no_slot_it_did_not()
+-> Result<()> {
+    use qip_events::Topic;
+
+    let assembled = assemble()?;
+    let router = Router::new(assembled.api.clone(), assembled.web.clone());
+
+    // Premise: nothing has been journaled under the policy topic.
+    {
+        let platform = assembled.platform.lock().expect("the platform lock");
+        assert!(
+            platform
+                .event_log()
+                .by_topic(Topic::PolicyDistributed)
+                .is_empty()
+        );
+    }
+    let before = page(&router, "/governance");
+    assert!(
+        before.contains(r#"data-panel="Last payload per cell" data-state="absent""#),
+        "{before}"
+    );
+    assert!(
+        !before.contains(r#"data-fact="policy.eu-west.whitelist""#),
+        "{before}"
+    );
+
+    // The platform issues and journals one cell's whitelist — what the cycle
+    // route does at the shipping seam.
+    let issue = {
+        let mut platform = assembled.platform.lock().expect("the platform lock");
+        let issue = platform.issue_cycle_whitelist("eu-west", now())?;
+        assert_eq!(
+            platform
+                .event_log()
+                .by_topic(Topic::PolicyDistributed)
+                .len(),
+            1
+        );
+        issue
+    };
+
+    let after = page(&router, "/governance");
+    assert!(
+        after.contains(&format!(
+            r#"data-fact="policy.eu-west.whitelist">{}<"#,
+            issue.describe()
+        )),
+        "the line the platform journaled is not the line on the page: {after}"
+    );
+    assert!(
+        after.contains(&format!(
+            r#"data-fact="policy.eu-west.cycle_whitelist" data-state="recorded">produced at {}<"#,
+            now().to_rfc3339()
+        )),
+        "{after}"
+    );
+    // The other eleven slots are assembled at the shipping seam and not
+    // journaled; the page says so rather than claiming they were produced.
+    for slot in [
+        "trained_models",
+        "capital_grants",
+        "risk_envelope",
+        "adversary_profiles",
+    ] {
+        assert!(
+            after.contains(&format!(
+                r#"data-fact="policy.eu-west.{slot}" data-state="not-recorded">not recorded<"#
+            )),
+            "{slot}: {after}"
+        );
+    }
+    assert!(
+        after.contains(r#"data-fact="policy.eu-west.sequence" data-state="not-recorded">"#),
+        "{after}"
+    );
+    assert!(after.contains(">PAPER TRADING<"), "{after}");
+    Ok(())
+}
+
+#[test]
+fn the_overview_renders_the_instruments_the_platform_found_unfit_and_says_what_it_cannot_attest()
+-> Result<()> {
+    let assembled = assemble()?;
+    let router = Router::new(assembled.api.clone(), assembled.web.clone());
+
+    // Premise: the fixture's one instrument is synthetic, and the platform
+    // said so at assembly.
+    let excluded = {
+        let platform = assembled.platform.lock().expect("the platform lock");
+        platform.universe_not_decision_grade().to_vec()
+    };
+    assert_eq!(excluded.len(), 1, "{excluded:?}");
+    assert_eq!(excluded[0].0, "obj-AAA");
+    assert_eq!(
+        excluded[0].1,
+        "licensing class Synthetic is not production-eligible"
+    );
+
+    let page = page(&router, "/");
+    assert!(
+        page.contains(r#"data-fact="universe.not_decision_grade" data-state="recorded">1<"#),
+        "{page}"
+    );
+    assert!(
+        page.contains(
+            r#"<td class="mono">obj-AAA</td><td>licensing class Synthetic is not production-eligible</td>"#
+        ),
+        "{page}"
+    );
+    // The catalogue's identity is not readable from the platform, and the
+    // page says so instead of printing a version it did not read.
+    for key in [
+        "universe.version",
+        "universe.sha256",
+        "universe.instruments",
+    ] {
+        assert!(
+            page.contains(&format!(
+                r#"data-fact="{key}" data-state="not-recorded">not recorded<"#
+            )),
+            "{key}: {page}"
+        );
+    }
+    assert!(page.contains(">PAPER TRADING<"), "{page}");
     Ok(())
 }

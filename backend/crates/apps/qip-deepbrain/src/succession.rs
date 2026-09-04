@@ -97,8 +97,9 @@ impl ChallengeSummary {
                 self.subject, self.compared, self.minted
             ),
             None => format!(
-                "succession: {} holds {}; {} challenger(s) compared of {} minted, {} refused",
-                self.subject, self.subject, self.compared, self.minted, self.refused
+                "succession: {} holds its ground; {} challenger(s) compared of {} minted, {} \
+                 refused",
+                self.subject, self.compared, self.minted, self.refused
             ),
         }
     }
@@ -382,5 +383,54 @@ mod tests {
         assert_eq!(desk.champions(), 0);
         assert!(desk.champion("obj-ACME").is_none());
         assert_eq!(desk.stats().challenges, 0);
+    }
+
+    #[test]
+    fn a_crowning_names_the_new_champion_and_the_round_it_won() {
+        let summary = ChallengeSummary {
+            subject: "OBJ-AAPL".to_string(),
+            minted: 4,
+            refused: 1,
+            compared: 3,
+            winners: 1,
+            crowned: Some("challenger-7".to_string()),
+            refusals: Vec::new(),
+        };
+        let text = summary.describe();
+        assert!(
+            text.contains("challenger-7 takes OBJ-AAPL"),
+            "the crowning does not name who won and what they now hold: {text}"
+        );
+        assert!(
+            text.contains("3 challenger(s) compared of 4 minted"),
+            "the crowning drops the count a comparison was made against: {text}"
+        );
+    }
+
+    #[test]
+    fn a_round_with_no_crowning_does_not_report_the_instrument_as_holding_itself() {
+        // Regression: the uncrowned branch used to read
+        // "succession: OBJ-AAPL holds OBJ-AAPL", which names no champion at
+        // all -- an instrument does not hold itself. The only identity this
+        // branch has to report is the subject, so the fix is in the wording,
+        // not in a field this summary does not carry.
+        let summary = ChallengeSummary {
+            subject: "OBJ-AAPL".to_string(),
+            minted: 4,
+            refused: 1,
+            compared: 3,
+            winners: 0,
+            crowned: None,
+            refusals: Vec::new(),
+        };
+        let text = summary.describe();
+        assert!(
+            !text.contains("OBJ-AAPL holds OBJ-AAPL"),
+            "the summary still claims the instrument holds itself: {text}"
+        );
+        assert!(
+            text.contains("3 challenger(s) compared of 4 minted, 1 refused"),
+            "the uncrowned branch dropped the round's own counts: {text}"
+        );
     }
 }

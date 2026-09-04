@@ -89,11 +89,23 @@ a scrape's exposition is rendered on the thread that flushes the journal — the
 same thread that already renders the JSON body, and not the order path.
 
 **A central-plane reconciliation break is now recorded too.**
-`Platform::ingest_cell_report` counts `qip_central_reconciliation_breaks_total`
-by the direction of the gap and `qip_central_cell_halts_total` by cause, on
-the outcome rather than the report, so a refused report charts no halt. The
+`CentralPlane::record_halt` (`central/plane.rs:1398`, reached from `ingest`
+and so from `Platform::ingest_cell_report`) counts
+`qip_central_reconciliation_breaks_total` by the direction of the gap —
+`cell_over_venue`, `venue_over_cell`, `detail_only`, and since `3c2b789`
+`unsent_fill`, a fill a cell reported on an order the centre never saw sent
+or beyond the quantity it saw sent — and `qip_central_cell_halts_total` by
+cause, on the outcome rather than the report, so a refused report charts no
+halt. The `unsent_fill` direction is the centre's own finding rather than the
+cell's, merged with the report's breaks before the halt (`plane.rs:1066`). The
 `qip_central_` prefix keeps it distinct from the edge's own break counter,
-which records what the cell found rather than what the centre acted on. Two
+which records what the cell found rather than what the centre acted on.
+Beside it, since `9e45dc0`, `qip_central_orders_sent_total`
+(`qip-observability/src/metrics.rs:711`; recorded at `plane.rs:1187`) counts
+the orders a cell reported sent and `qip_central_fills_attributed_total`
+counts the fill shares the centre booked, so that what was sent and what
+filled are two series — for one slice the centre billed every sent order as a
+fill, and there was no series in which the two claims could disagree. Two
 facts that once had no production caller now have one, in the LEARN stage:
 `Platform::learn_from`, which produces the belief calibration, is called from
 `calibrate_resolved` (`platform.rs:4086`, reached from `stage_learn` at

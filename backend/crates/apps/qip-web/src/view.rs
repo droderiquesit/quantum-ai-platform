@@ -6,7 +6,150 @@
 //! a lock by accident, which is how a rendering path ends up able to deadlock
 //! a trading loop.
 
+use crate::panel::Panel;
 use serde::{Deserialize, Serialize};
+
+/// A figure the platform recorded, or the reason it has none.
+///
+/// The scrape surface's rule, applied to HTML: a value the platform never
+/// recorded is not zero. A counter that never incremented has no series, a
+/// settlement nothing retained has no count, and a page that printed `0` for
+/// either would be making a claim the platform did not. So a figure reaches a
+/// page as one of two things — the string the platform produced, or the
+/// reason there is none — and the renderer has no arm that turns the second
+/// into a number.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum Fact {
+    /// The platform recorded this, and this is what it recorded.
+    Recorded { value: String },
+    /// The platform has no such fact. `reason` names what would have
+    /// recorded it and why it did not, so an operator reading the gap can
+    /// tell a counter that never moved from a wire that is not attached.
+    NotRecorded { reason: String },
+}
+
+impl Fact {
+    pub fn recorded(value: impl Into<String>) -> Self {
+        Self::Recorded {
+            value: value.into(),
+        }
+    }
+
+    pub fn not_recorded(reason: impl Into<String>) -> Self {
+        Self::NotRecorded {
+            reason: reason.into(),
+        }
+    }
+
+    pub fn is_recorded(&self) -> bool {
+        matches!(self, Self::Recorded { .. })
+    }
+}
+
+/// One labelled figure, with the key its markup is addressed by.
+///
+/// `key` becomes the `data-fact` attribute, so a test can find the one cell
+/// it asserts on rather than matching a digit somewhere in the page.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FactRow {
+    pub key: String,
+    pub label: String,
+    pub fact: Fact,
+}
+
+impl FactRow {
+    pub fn new(key: impl Into<String>, label: impl Into<String>, fact: Fact) -> Self {
+        Self {
+            key: key.into(),
+            label: label.into(),
+            fact,
+        }
+    }
+}
+
+/// One edge cell, as the centre last heard from it.
+///
+/// Every figure here is one the centre holds about the cell: what the last
+/// report said, what the centre's own switch says, and — where the centre
+/// keeps no per-cell figure — a [`Fact::NotRecorded`] naming why. The three
+/// halt wires are kept apart because they are three different facts: the
+/// scope the centre itself halted, the flag the centre ships on the policy
+/// payload, and the flag a node polls off its own filesystem, which never
+/// reaches the centre at all.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EdgeCellRow {
+    pub cell: String,
+    /// When the cell's last report was made, formatted.
+    pub reported_at: String,
+    /// How old that report is, formatted.
+    pub age: String,
+    pub stale: bool,
+    pub positions: usize,
+    pub strategies: usize,
+    /// Reconciliation breaks the cell itself shipped on its last report.
+    pub breaks_shipped: usize,
+    /// Orders the centre registered as sent from this cell.
+    pub orders_sent: Fact,
+    /// Fills the centre settled from this cell.
+    pub fills_confirmed: Fact,
+    /// Whether the centre's own kill switch holds a halt scoped to this cell.
+    pub halted_by_centre: bool,
+    /// The halted flag the centre carries on the policy payload it ships.
+    pub policy_halt_flag: bool,
+    /// Whether the cell's last delta said it had stopped itself.
+    pub cell_reports_halted: Fact,
+    /// The polled halt flag on the node's own filesystem.
+    pub polled_halt_flag: Fact,
+}
+
+/// What the centre last shipped one cell, as the platform's journal has it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShippedPolicyRow {
+    pub cell: String,
+    /// When the cycle whitelist was issued, from the journal.
+    pub issued_at: String,
+    /// The payload's sequence.
+    pub sequence: Fact,
+    /// The line the platform journaled for the cycle whitelist — the same
+    /// line the cycle response carries.
+    pub whitelist: String,
+    /// One row per slot of the twelve-item payload, in the blueprint's order.
+    pub slots: Vec<FactRow>,
+}
+
+/// One instrument the platform will not size a decision on, and why.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UniverseExclusionRow {
+    pub object: String,
+    pub reason: String,
+}
+
+/// The universe the platform assembled, as the platform can attest it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct UniverseView {
+    pub version: Fact,
+    pub sha256: Fact,
+    pub instruments: Fact,
+    /// The instruments the universe itself said may not drive a decision.
+    /// Current-and-empty is a real observation: the platform asked and every
+    /// instrument answered decision-grade.
+    pub not_decision_grade: Panel<UniverseExclusionRow>,
+}
+
+impl Default for UniverseView {
+    /// Nothing attested. Every figure is absent for the reason the type
+    /// gives, and none of them is zero.
+    fn default() -> Self {
+        let reason = "this view was not assembled; nothing reported it";
+        Self {
+            version: Fact::not_recorded(reason),
+            sha256: Fact::not_recorded(reason),
+            instruments: Fact::not_recorded(reason),
+            not_decision_grade: Panel::default(),
+        }
+    }
+}
 
 /// Whether real money is moving, and how much authority the platform holds.
 ///
@@ -153,6 +296,15 @@ pub struct ViewModel {
     pub limits: Vec<LimitRow>,
     pub agents: Vec<AgentRow>,
     pub governance: Vec<GovernanceRow>,
+
+    /// The edge cells, as the centre last heard from each.
+    pub cells: Panel<EdgeCellRow>,
+    /// What the central plane recorded settling every cell's reports, from
+    /// its own counters: one row per series, recorded or not.
+    pub settlement: Vec<FactRow>,
+    /// The last policy the centre shipped each cell, from the journal.
+    pub shipped_policy: Panel<ShippedPolicyRow>,
+    pub universe: UniverseView,
 }
 
 impl ViewModel {
@@ -205,6 +357,10 @@ impl Default for ViewModel {
             limits: Vec::new(),
             agents: Vec::new(),
             governance: Vec::new(),
+            cells: Panel::default(),
+            settlement: Vec::new(),
+            shipped_policy: Panel::default(),
+            universe: UniverseView::default(),
         }
     }
 }

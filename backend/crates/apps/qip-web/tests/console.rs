@@ -298,6 +298,25 @@ fn populated() -> ConsoleModel {
     }
 }
 
+// --- the stylesheet -----------------------------------------------------------
+
+#[test]
+fn the_console_s_inlined_stylesheet_reaches_the_page_as_css_rather_than_as_escaped_text() {
+    // Same failure as the nine investment surfaces, on the console's own
+    // document assembly: `<style>` never decodes an entity, so escaping the
+    // stylesheet on the way in shipped `&quot;SF Mono&quot;` and
+    // `&#47;* ... *&#47;` instead of CSS.
+    let page = render(View::Global, &ConsoleModel::default());
+    assert!(
+        page.contains("\"SF Mono\""),
+        "the quoted font name was HTML-escaped: {page}"
+    );
+    assert!(
+        !page.contains("&quot;SF Mono&quot;"),
+        "the stylesheet is still escaped: {page}"
+    );
+}
+
 // --- the console renders at all ---------------------------------------------
 
 #[test]

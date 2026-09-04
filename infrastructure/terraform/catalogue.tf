@@ -267,10 +267,23 @@ locals {
 
   # Each zone's identities, for the ledger and fabric grants in
   # modules/trust-zones: the accounts of the workloads placed there.
-  zone_identities = {
-    for zone in distinct([for workload in local.cloud_run_catalogue : workload.trust_zone]) :
-    zone => sort([for name, workload in module.cloud_run : workload.service_account_email if workload.trust_zone == zone])
-  }
+  #
+  # OpenObserve is merged in rather than folded into the comprehension: it is
+  # not a member of `cloud_run_catalogue` (see the module below for why), so a
+  # comprehension reading only that map would silently omit the one workload
+  # in the management zone. No `permitted_paths` names `management` as a
+  # source or destination in any environment today, so nothing yet reads this
+  # entry — but an identity a zone's own module cannot see is an identity a
+  # future path grant would silently miss.
+  zone_identities = merge(
+    {
+      for zone in distinct([for workload in local.cloud_run_catalogue : workload.trust_zone]) :
+      zone => sort([for name, workload in module.cloud_run : workload.service_account_email if workload.trust_zone == zone])
+    },
+    {
+      "management" = sort([for workload in module.openobserve : workload.service_account_email])
+    }
+  )
 }
 
 # The plan refuses a catalogue that is not fully placed.
@@ -372,6 +385,164 @@ module "cloud_run" {
   # deploy.yml moves the service, as this account, and needs to act as the
   # service's own identity to create a revision.
   deployer_service_account = module.cicd.service_account_email
+}
+
+# The plan refuses to name a digest for a zone this environment never
+# declared. `catalogue_is_placed` above catches the same shape for the built
+# catalogue; this is that check's other half, gated on the one condition that
+# makes OpenObserve exist at all rather than on an unconditional map lookup,
+# because the zone genuinely need not be declared while the digest is null.
+resource "terraform_data" "openobserve_is_placed" {
+  count = var.vendored_openobserve_image_digest != null ? 1 : 0
+  input = "openobserve"
+
+  lifecycle {
+    precondition {
+      condition     = contains(keys(var.trust_zones), "management")
+      error_message = "vendored_openobserve_image_digest is set but trust_zones does not declare \"management\"; OpenObserve has no subnet and no tag without it. Declare the zone's range in the tfvars alongside the digest."
+    }
+  }
+}
+
+# --- OpenObserve (ADR 0028) --------------------------------------------------
+#
+# The platform's metrics, logs and traces backend, adopted as a deliberate,
+# named exception to blueprint §2.1 (ADR 0028 decision 1) — not part of
+# `local.cloud_run_catalogue` above, and deliberately so: every entry there is
+# a binary `deploy.yml` builds, signs and attests, its digest read from
+# `var.image_digests`, and `catalogue_workloads()` in the acceptance suite
+# asserts the map holds exactly those three. OpenObserve has no such
+# pipeline — its digest is mirrored and attested by `vendor.yml` from the
+# reviewed line in `infrastructure/egress/vendored-images.txt` — so this is
+# the one instantiation in the tree that exercises `modules/cloudrun`'s
+# `source = "vendored"` path (ADR 0028 decision 3) directly, rather than
+# folding a second image lifecycle into a `for_each` built for one.
+#
+# `count`, not `for_each`, because there is exactly one of these and its
+# existence is a single yes/no: null in `vendored_openobserve_image_digest`
+# is the closed state described there, and no service is created at all —
+# the same shape `execution_nodes` uses for "no node configured yet".
+module "openobserve" {
+  source = "./modules/cloudrun"
+  count  = var.vendored_openobserve_image_digest != null ? 1 : 0
+
+  # Nothing here can be created before its API is on. See module "services".
+  depends_on = [module.services]
+
+  project_id  = var.project_id
+  region      = var.region
+  environment = var.environment
+  labels      = local.labels
+
+  name = "openobserve"
+  kind = "service"
+
+  # `data-and-observability` is the one plane this workload could name; there
+  # is no matching entry in blueprint §46.1's thirteen trust zones, so the
+  # zone is named explicitly. `management` is the zone built for exactly this
+  # shape of workload: reached by an operator with a binding, not by another
+  # workload's traffic (ADR 0028 decision 5 — no path from any zone into this
+  # one is sanctioned today, and none is added here).
+  plane         = "data-and-observability"
+  trust_zone    = "management"
+  traffic_class = "platform"
+
+  # Anonymous on the public internet, on the owner's instruction, recorded in
+  # ADR 0030 which amends ADR 0028 decision 5. This is the only workload in
+  # this file — and the only one in the platform — that is not internal.
+  #
+  # The two inputs are set together because the module refuses either alone:
+  # an anonymous invoker without the posture is a service nothing can reach
+  # carrying an IAM grant that reads as public, and the posture without the
+  # invoker is a public URL that answers 403 to everyone. Both are
+  # deployments that lie about themselves.
+  #
+  # What this costs is in ADR 0030 and is not repeated here, except for the
+  # trigger, because the trigger is the thing a reader of this file needs:
+  # the service is empty today and stops being empty the moment any
+  # deployment sets QIP_OPENOBSERVE_URL. That change is the one that must
+  # move this behind IAP or re-argue the exposure.
+  ingress_posture = "open-anonymous"
+  invokers        = ["allUsers"]
+
+  image_source = "vendored"
+  # Composed from the registry prefix and the bare digest the root names, so
+  # the only image a plan can carry is the mirrored, attested copy — the
+  # same composition `collector_image_digest` below uses, for the same
+  # reason: the upstream repository cannot be named here at all.
+  vendored_image_digest = "${module.registry.image_prefix}/vendor/openobserve@${var.vendored_openobserve_image_digest}"
+
+  egress_network = module.network.network_id
+  egress_subnet  = lookup(module.trust_zones.zone_subnets, "management", null)
+  network_tags   = compact([lookup(module.trust_zones.zone_network_tags, "management", "")])
+
+  cpu         = "2"
+  memory      = "2Gi"
+  concurrency = 20
+  # 5080 and /healthz are OpenObserve's own defaults, confirmed against its
+  # published Docker quick-start (port) and its own convention for a
+  # single-binary health listener; unlike the storage variables below, its
+  # own API reference does not enumerate this path, so this is the one value
+  # in this block a first real deployment should confirm rather than assume.
+  container_port = 5080
+  health_path    = "/healthz"
+
+  # Zero, like every workload in this file that has not written down why not
+  # — and here there is a second reason not to: a warm instance holding
+  # ephemeral local storage is a warm instance whose dashboards vanish the
+  # moment Cloud Run decides to replace it anyway, on no schedule this
+  # platform controls. min_instances stays at the module's own default.
+  always_on_justification = ""
+
+  # Ephemeral storage, on purpose and by instruction (ADR 0028 decision 4).
+  # OpenObserve's only durable backend is S3-compatible (`ZO_S3_*`, confirmed
+  # against its own published environment-variable reference), which this
+  # platform cannot reach without a GCS HMAC access/secret key pair — the
+  # class of static, long-lived credential
+  # `.claude/rules/01-security-and-safety.md` forbids outright. Both
+  # variables here are already OpenObserve's own defaults; they are written
+  # explicitly, the way the metrics collector's scrape interval is, so the
+  # choice is a line in this diff and not a fact left to the image. A cold
+  # start loses every dashboard this deployment ever held — named here, not
+  # hidden, per the ADR's own "what it costs".
+  env = {
+    ZO_LOCAL_MODE         = "true"
+    ZO_LOCAL_MODE_STORAGE = "disk"
+  }
+
+  # The initial admin login (OpenObserve's own, never a cloud credential), as
+  # environment values, which ADR 0031 permits for a vendored workload and
+  # refuses for every built one.
+  #
+  # This was a `secret_mounts` block until that record. The mount satisfied
+  # `.claude/rules/01-security-and-safety.md` and did nothing: the image
+  # carries no shell, so no entrypoint can read a file and exec, and no symbol
+  # in the binary offers `_FILE` indirection for the credential -- both
+  # checked against `openobserve@sha256:88fb692a...` rather than assumed. The
+  # file was projected at 0400, the `_FILE` variable held its path, and the
+  # process opened neither. Keeping it beside a working env var would have
+  # been a second control that reads as protection and is not.
+  #
+  # What is still true: the value is in no committed file, no plan and no
+  # state -- Terraform carries the secret's name and Cloud Run resolves the
+  # version at container start. What is not: it is in the container's
+  # environment, and ADR 0031 names the crash dump that leaves open.
+  secret_env = {
+    ZO_ROOT_USER_EMAIL = {
+      secret_id = module.secrets.secret_ids["qip-openobserve-root-email"]
+    }
+    ZO_ROOT_USER_PASSWORD = {
+      secret_id = module.secrets.secret_ids["qip-openobserve-root-password"]
+    }
+  }
+
+  # deploy.yml never touches this service — see `source` above — but
+  # vendor.yml still needs to have created the revision once, and nothing
+  # else in this file grants that account anything on a vendored workload
+  # specifically. Left null: nothing here needs a second deployer identity
+  # yet, and the field defaults to "Terraform is the only mover", which is
+  # correct for a workload the pipeline does not update.
+  deployer_service_account = null
 }
 
 # The hash of the universe every central workload was given, so a person can

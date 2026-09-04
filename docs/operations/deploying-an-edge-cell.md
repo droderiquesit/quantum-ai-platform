@@ -90,16 +90,30 @@ it can promise:
    `shadow_mode` is true (`main.tf:551-552`). The passes the node runs in the meantime are priced
    off the in-process simulator, not off any of these venues.
 
-6. **Set `create_egress_nat`.** True only when the node's region has no NAT of
+6. **Set `region_allocation`.** The capital this node may hold in reservation
+   across all of its strategies, as a positive decimal string. It is required
+   per entry with no default anywhere, and the module refuses an empty or zero
+   value at plan time (`modules/execution-node/variables.tf`,
+   `region_allocation`). The startup script writes it as
+   `QIP_REGION_ALLOCATION` and `qip-edge-node` refuses to start without it:
+   under ADR 0008 a cell that has lost the centre must still refuse its own
+   second proposal, and it can only do that against an allocation it was
+   given at assembly — so a node without one is a cell in which two
+   strategies can each spend the whole envelope. Zero is refused because
+   "send nothing" is what the halt flag is for; a node that can reserve
+   nothing should be halted, not started. Choose it below the sum of the
+   envelopes the centre will grant the cell — the allocation binds first.
+
+7. **Set `create_egress_nat`.** True only when the node's region has no NAT of
    its own; a second NAT over the same subnetworks in one region is an apply
    error, not a redundancy (`variables.tf:427-446`). The primary region already
    has one from `modules/network`.
 
-7. **Add the entry.** The shape is in
+8. **Add the entry.** The shape is in
    `modules/execution-node/README.md`, "The tfvars entry". Leave everything
    about shadow mode alone: it is not a field.
 
-8. **Plan, and read the plan.** `infra.yml`'s `plan` action is a manual
+9. **Plan, and read the plan.** `infra.yml`'s `plan` action is a manual
    dispatch and refuses `prod` (`.github/workflows/infra.yml:43,83-85`);
    `up` prints the plan before applying. What a correct plan for a new node
    contains, all from `modules/execution-node/main.tf`: the subnet; one
@@ -116,17 +130,17 @@ it can promise:
    means `shadow_mode` at `main.tf:492` has been edited or the ceiling refusal
    in `variables.tf:105-116` has been removed. Stop and ask.
 
-9. **Apply — a person's decision.** ADR 0024 authorises the code and not an
+10. **Apply — a person's decision.** ADR 0024 authorises the code and not an
    apply; the first plan against a project that ran the old runtime will
    propose destroying it, and whoever reads that plan decides.
 
-10. **Confirm the tag is carried.** Every rule constraining the node targets
+11. **Confirm the tag is carried.** Every rule constraining the node targets
     the tag in `terraform output execution_nodes` (`node_tag`), and a rule
     targeting a tag nothing carries does nothing, silently. Check with
     `gcloud compute instances list --filter="tags.items=<tag>"`; an empty
     result means the deny-all egress rule constrains nothing.
 
-11. **Write the verification key.** The `qip-capital-envelope-key` secret is
+12. **Write the verification key.** The `qip-capital-envelope-key` secret is
     created empty by Terraform (`infrastructure/terraform/main.tf:201-204`),
     because a value in Terraform is a value in the state file. Write the
     version out of band. The startup script fetches it into the unit's run
@@ -134,7 +148,7 @@ it can promise:
     (`modules/execution-node/main.tf:197-199`). Its confidentiality matters
     less than its integrity: whoever can replace it can mint envelopes.
 
-12. **Confirm the node can reach nothing yet.** The group judges the instance
+13. **Confirm the node can reach nothing yet.** The group judges the instance
     by `GET /health` on port 8080 (`main.tf:282-285`) after a five-minute
     initial delay (`:456`), and the startup script's last line reads
     `started in SHADOW mode` (`startup.sh.tftpl:292`) — read it over an
@@ -146,14 +160,14 @@ it can promise:
     is empty. Running, connected to nothing, holding no envelope. That is the
     state to be in before granting any capital.
 
-13. **Attach the journal snapshot schedule.** Terraform creates the schedule
+14. **Attach the journal snapshot schedule.** Terraform creates the schedule
     and cannot attach it, because the disk is created by the group after any
     apply. Run `terraform -chdir=infrastructure/terraform output -raw journal_snapshot_attachment_command`
     now and again after every replacement; until then the journal is covered
     by nothing (`modules/backup/NOT-COVERED.md`). See
     [disaster recovery](disaster-recovery.md).
 
-14. **Know what is still not connected.** The centre-to-node path is unwired
+15. **Know what is still not connected.** The centre-to-node path is unwired
     on this runtime: `QIP_MESH_PEER` is not set on the node and
     `QIP_MESH_CELLS` is not set on the API (ADR 0024, "What it costs";
     `infrastructure/terraform/catalogue.tf:21-27`), so the node starts
@@ -188,7 +202,7 @@ an untargeted destroy (`.github/workflows/infra.yml:19,223`).
 
 The journal disk is `auto_delete = true` (`main.tf:319-331`): it goes with the
 instance. Its snapshots do not — the schedule keeps them on disk deletion
-(`modules/backup/main.tf:89`) — but only if step 13 was run for that disk.
+(`modules/backup/main.tf:89`) — but only if step 14 was run for that disk.
 
 Let the envelopes expire rather than revoking them, if you can. Every envelope
 expires by construction, and a cell that stops when its grant runs out stops
@@ -260,7 +274,7 @@ book serve no price.
 * **A venue feed.** `QIP_VENUE_FEED` has one value, `simulated`. A feed from
   a market is an architecture decision (ADR 0003), not a configuration line,
   and this runbook does not describe one.
-* **The centre-to-node path.** Step 14. The blueprint's control fabric is
+* **The centre-to-node path.** Step 15. The blueprint's control fabric is
   Pub/Sub, and building it is work ADR 0024 names and does not do.
 * **A collector or an alert for the node.** The receiver is declared; nothing
   has been scraped. See `.claude/rules/domains/observability.md`.

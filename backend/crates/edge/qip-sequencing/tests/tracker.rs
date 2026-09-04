@@ -398,3 +398,68 @@ fn a_tracker_resuming_from_a_log_sees_what_was_lost_while_it_was_down() {
         })
     ));
 }
+
+#[test]
+fn a_tracker_resuming_from_a_log_at_sequence_zero_still_sees_what_was_lost() {
+    // `contiguous - 1` cannot hold a value below zero, so a naive resume-position
+    // could only be represented as `checked_sub(1)`, which returns `None` for
+    // `first_sequence == 0` — indistinguishable from `SequenceTracker::new`'s
+    // "no expectation at all". A cell resuming a stream that numbers from zero
+    // would then silently treat whatever arrived first as the start, exactly the
+    // invisible loss `expecting` exists to prevent.
+    let mut tracker = SequenceTracker::expecting("XNAS/itch-a/1", patient_policy(), 0);
+    let batch = tracker.accept_unit(3, unit(3), at(0));
+
+    assert!(
+        batch.released.is_empty(),
+        "premise: sequence 3 is not the expected first sequence and must be held, not released"
+    );
+    assert!(matches!(
+        batch.events.first(),
+        Some(SequenceEvent::GapOpened {
+            missing_from: 0,
+            missing_to: 2,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn a_gap_that_never_released_anything_can_still_be_abandoned_at_its_deadline() {
+    // A gap opened by `expecting` before the tracker has ever released a message
+    // has no `contiguous` value to compute a deadline resync from. `abandon` must
+    // fall back to the expected start rather than silently doing nothing, or a
+    // stream resuming into an immediate gap that then goes quiet would stay
+    // blocked forever with nothing to fire the deadline it already opened.
+    let policy = ReorderPolicy::new(1_024, Duration::from_millis(50));
+    let mut tracker = SequenceTracker::expecting("XNAS/itch-a/1", policy, 101);
+    let opened = tracker.accept_unit(105, unit(105), at(0));
+    assert!(
+        opened
+            .events
+            .iter()
+            .any(|event| matches!(event, SequenceEvent::GapOpened { .. })),
+        "premise: the out-of-order arrival opened a gap before anything was released"
+    );
+
+    let late = tracker.poll(at(0).saturating_add(Duration::from_millis(60)));
+    assert!(matches!(
+        late.events.last(),
+        Some(SequenceEvent::GapAbandoned {
+            missing_from: 101,
+            missing_to: 104,
+            reason: GapReason::Deadline,
+            ..
+        })
+    ));
+    assert_eq!(
+        sequences(&late),
+        vec![105],
+        "the message held behind the abandoned gap is released once the reset is emitted"
+    );
+    assert_eq!(
+        tracker.stats().messages_lost,
+        4,
+        "101 through 104 were lost"
+    );
+}

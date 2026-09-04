@@ -93,12 +93,25 @@ impl DurableLogTransport {
 
     /// Every envelope matching a filter, ignoring the subscription cursor.
     ///
-    /// The replay entry point. `EventFilter::as_of` gives the point-in-time
-    /// view, so a replay reads exactly what was knowable at an instant.
+    /// The replay entry point, in known-time as well as in valid-time.
+    ///
+    /// `EventFilter::until` — what `EventFilter::as_of` sets — bounds
+    /// `occurred_at`, which is when the fact was *true*. A record that became
+    /// true before an instant and knowable after it satisfies that filter and
+    /// must still not be returned: serving it is point-in-time leakage, and a
+    /// backtest reading a filing hours before the platform received it is
+    /// profitable for exactly that reason. So the known-time bound is applied
+    /// here, on the same instant, and a replay returns only what the platform
+    /// could actually have acted on by then.
     pub fn replay(&self, filter: &EventFilter) -> Result<Vec<StreamEnvelope>> {
         self.log
             .query(filter)
             .into_iter()
+            .filter(|frame| {
+                filter
+                    .until
+                    .is_none_or(|knowable_by| frame.recorded_at < knowable_by)
+            })
             .map(StreamEnvelope::from_frame)
             .collect()
     }

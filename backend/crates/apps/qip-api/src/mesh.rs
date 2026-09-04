@@ -684,7 +684,6 @@ pub fn pending_policy(
 }
 
 /// The centre's half of the mesh, assembled and serving.
-#[derive(Debug)]
 pub struct MeshBackbone {
     receiver: CellDeltaReceiver,
     /// The trust root policy payloads and halts are signed with — the same
@@ -698,6 +697,27 @@ pub struct MeshBackbone {
     counters: BackboneCounters,
     standings: BTreeMap<String, CellStandingSummary>,
     last_undecodable: Option<String>,
+}
+
+// The key is deliberately not in the `Debug` output, matching
+// `qip_capital::envelope::EnvelopeIssuer`: a struct that prints its own
+// secret gets it into a log the first time anything derives `Debug` on a type
+// that contains it, and this is the same trust root `QIP_CAPITAL_ENVELOPE_KEY`
+// installs — a `{:?}` on this backbone (a panic message, an error wrapper, a
+// `dbg!()` added while debugging a stuck cell) must not become the channel
+// that puts it in one.
+impl std::fmt::Debug for MeshBackbone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MeshBackbone")
+            .field(
+                "policy_key",
+                &self.policy_key.as_ref().map(|_| "<redacted>"),
+            )
+            .field("cells", &self.lanes.len())
+            .field("listeners", &self.listeners.len())
+            .field("counters", &self.counters)
+            .finish_non_exhaustive()
+    }
 }
 
 impl MeshBackbone {
@@ -1380,5 +1400,65 @@ mod tests {
         // millisecond is the herd the seed exists to break up.
         assert_ne!(seed_from("london-1"), seed_from("tokyo-2"));
         assert_eq!(seed_from("london-1"), seed_from("london-1"));
+    }
+
+    /// The backbone's `Debug` output must never contain the raw trust-root
+    /// key it dispatches every capital envelope and policy payload under.
+    ///
+    /// `EnvelopeIssuer` in `qip_capital::envelope` states the failure this
+    /// guards against in its own doc comment: a struct that prints its own
+    /// secret gets it into a log the first time anything derives `Debug` on
+    /// a type that contains it. `MeshBackbone` held the key in a plain
+    /// `#[derive(Debug)]` struct, so a panic message, an error wrapper or a
+    /// stray `dbg!()` anywhere this backbone crossed would have put the same
+    /// key `QIP_CAPITAL_ENVELOPE_KEY` installs into a log line — the key
+    /// every cell verifies a capital grant against.
+    #[test]
+    fn the_backbones_debug_output_never_carries_the_trust_root_key() -> Result<()> {
+        // A recognisable byte pattern rather than the production variable's
+        // name, so the assertion below cannot pass by accident on a value
+        // that happens to contain common English words. Deliberately not
+        // named with the bare identifier a short constant like this would
+        // usually get: `qip-acceptance`'s `manifest_wiring` walk resolves a
+        // binary's environment reads in part by matching bare identifier
+        // names workspace-wide and is not comment- or scope-aware, so a
+        // short, common local name here can be mistaken for an unrelated
+        // constant of the same name declared in another crate.
+        const TEST_TRUST_ROOT_SIGNING_MATERIAL: &str = "unmistakable-signing-key-bytes-3f9a7c21";
+        let settings = MeshSettings {
+            cells: vec![CellAddress {
+                cell: "london-1".to_string(),
+                address: "127.0.0.1:0".to_string(),
+            }],
+            inbox_capacity: 64,
+            spool_capacity: 64,
+        };
+        let backbone = MeshBackbone::open(
+            &settings,
+            Arc::new(qip_storage::kv::MemoryKeyValueStore::new()),
+            Arc::new(qip_core::ManualClock::new(Timestamp::from_secs(
+                1_760_000_000,
+            ))) as Arc<dyn Clock>,
+            Some(TEST_TRUST_ROOT_SIGNING_MATERIAL.as_bytes().to_vec()),
+        )?;
+
+        // Premise: the backbone really was built with the key, or a
+        // redaction that hid nothing would prove nothing.
+        assert!(
+            backbone.policy_key.as_deref() == Some(TEST_TRUST_ROOT_SIGNING_MATERIAL.as_bytes()),
+            "the backbone was not assembled with the key this test signs with"
+        );
+
+        let rendered = format!("{backbone:?}");
+        assert!(
+            !rendered.contains(TEST_TRUST_ROOT_SIGNING_MATERIAL),
+            "the trust-root signing key leaked through MeshBackbone's Debug output: {rendered}"
+        );
+        assert!(
+            rendered.contains("redacted"),
+            "the policy key field is missing from the redacted output rather than \
+             genuinely redacted: {rendered}"
+        );
+        Ok(())
     }
 }

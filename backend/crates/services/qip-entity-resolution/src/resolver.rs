@@ -423,12 +423,23 @@ fn score_pair(entity: &Entity, record: &EntityRecord) -> (f64, Vec<MatchEvidence
     let mut evidence = Vec::new();
 
     // Identifier agreement is the strongest signal available, and identifier
-    // *disagreement* is decisive the other way.
+    // *disagreement* is decisive the other way — but only for an identifier
+    // strong enough to be authoritative. `IdentifierKind::confidence` scores
+    // a ticker at 0.4-0.6 precisely because tickers are reused across venues
+    // and reassigned over time; forcing two records apart because their
+    // tickers happen to differ, despite an otherwise identical name, would
+    // fragment the same company across venues, which is the failure the
+    // weak-identifier scoring exists to prevent. The same 0.9 cut-off is what
+    // `Identifiers::match_strength` itself uses to decide a disagreement is
+    // decisive, so this mirrors rather than second-guesses that rule.
     let identifier_strength = entity.identifiers.match_strength(&record.identifiers);
-    let has_shared_identifier_kind = record
-        .identifiers
-        .iter()
-        .any(|(kind, _)| entity.identifiers.contains(kind));
+    let has_disagreeing_strong_identifier = record.identifiers.iter().any(|(kind, value)| {
+        kind.confidence() >= 0.9
+            && entity
+                .identifiers
+                .get(kind)
+                .is_some_and(|existing| !existing.eq_ignore_ascii_case(value))
+    });
 
     if identifier_strength > 0.0 {
         evidence.push(MatchEvidence::new(
@@ -440,7 +451,7 @@ fn score_pair(entity: &Entity, record: &EntityRecord) -> (f64, Vec<MatchEvidence
         if identifier_strength >= 0.9 {
             return (identifier_strength.min(1.0), evidence);
         }
-    } else if has_shared_identifier_kind {
+    } else if has_disagreeing_strong_identifier {
         evidence.push(MatchEvidence::new(
             "identifier",
             -1.0,

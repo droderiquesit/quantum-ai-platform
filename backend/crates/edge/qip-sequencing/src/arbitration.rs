@@ -35,7 +35,10 @@ pub struct LineHealth {
     pub delivered: u64,
     /// Units this line delivered first, and which were therefore published.
     pub won: u64,
-    /// Units delivered by another line first.
+    /// Units delivered by another line first, while this delivery was still in
+    /// the window and its lag could be measured. A delivery so late the window
+    /// had already forgotten the sequence is `BeyondWindow`, not this — its lag
+    /// is unknown, not zero.
     pub lost: u64,
     /// Units that left the window without this line ever delivering them.
     pub missed: u64,
@@ -196,9 +199,12 @@ impl LineArbiter {
         }
 
         if self.floor.is_some_and(|floor| sequence <= floor) {
-            if let Some(health) = self.lines.get_mut(line) {
-                health.lost += 1;
-            }
+            // Not counted as `lost`: that field's lag is averaged into
+            // `mean_lag_nanos_f64`, and this delivery's winner has already left
+            // the window, so there is no `delivery.at` to measure against. Folding
+            // it into `lost` without a matching addition to the lag total would
+            // silently drag the average toward zero — reporting a late line as
+            // having *no* lag on the one delivery that proves it has the most.
             outcome.events.push(ArbitrationEvent::BeyondWindow {
                 line: line.to_string(),
                 sequence,

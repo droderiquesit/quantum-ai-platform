@@ -50,6 +50,16 @@ trust_zones = {
     region      = "us-east4"
     subnet_cidr = "10.0.34.0/24"
   }
+  # Declared for OpenObserve (ADR 0028 decision 5), which is the only
+  # workload in this zone and reaches nothing: it receives OTLP from the
+  # API's drain and serves an operator who holds a binding. No entry in
+  # `permitted_paths`, `external_egress` or `public_ingress` names it, so
+  # the zone is default-deny in both directions like every other, and the
+  # zone existing is not the same as anything being able to reach it.
+  "management" = {
+    region      = "us-east4"
+    subnet_cidr = "10.0.35.0/24"
+  }
 }
 
 # No path between zones, no external egress, no public ingress. The API is
@@ -102,10 +112,31 @@ github_repository = "droderiquesit/quantum-ai-platform"
 # The collector that would produce that descriptor is declared in
 # modules/cloudrun and attached to both brains by catalogue.tf, but only once
 # a digest is named here — one vendor.yml has mirrored and attested from a
-# reviewed line in infrastructure/egress/vendored-images.txt. No digest has
-# been reviewed, so this stays unset, no service carries a sidecar, and
-# every service's `metrics_collected` output is false.
+# reviewed line in infrastructure/egress/vendored-images.txt.
+#
+# That review has now happened and its answer was no. vendor.yml run 11
+# mirrored Google's collector 1.9.2 and Trivy failed it on CVE-2026-56854, a
+# CRITICAL authentication bypass in golang.org/x/crypto v0.54.0, fixed in
+# 0.55.0 and unfixed in every version the registry publishes — 1.9.2 is the
+# newest tag it has. So this stays unset because the only available image
+# fails the platform's own scan gate, not because nobody looked. The full
+# finding is in vendored-images.txt beside the commented line.
 # metrics_collector_image_digest = "sha256:<the mirrored collector's digest>"
+
+# OpenObserve (ADR 0028): the platform's metrics, logs and traces backend,
+# mirrored to infrastructure/egress/vendored-images.txt as `vendor/openobserve`
+# but not deployed anywhere until this names the digest. Unlike the metrics
+# collector, setting this creates a whole new top-level Cloud Run service
+# (catalogue.tf's `module.openobserve`), not a sidecar on an existing one —
+# and that service also needs a `management` entry in `trust_zones` above,
+# which this environment now declares.
+#
+# The digest is the one `vendored-images.txt` reviewed and vendor.yml run
+# 33789488338 mirrored into this environment's registry and attested, so
+# Binary Authorization admits it. Confirmed independently before it was set
+# here: `crane digest docker.io/openobserve/openobserve:v0.92.2` answers this
+# same sha256, so the tag had not moved under the reviewed line.
+vendored_openobserve_image_digest = "sha256:88fb692ac791d3eaff69653a4a4686f1c7eceb9e105491d58d29ac2739560b3b"
 
 # --- Customer identity ------------------------------------------------------
 # Identity Platform for customer sign-in, activated once real hostnames

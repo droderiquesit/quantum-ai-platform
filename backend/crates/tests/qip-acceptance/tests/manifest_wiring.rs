@@ -801,6 +801,28 @@ const THE_MESH_HAS_NO_PORT_ON_CLOUD_RUN: &str = "The in-tree mesh binds one \
      path on this runtime is that work, recorded in ADR 0024, not a port that \
      cannot be published. The entry ends when the fabric exists.";
 
+/// The OpenObserve drain (ADR 0028), which nothing has vendored or applied
+/// yet.
+const NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET: &str = "The drain cannot \
+     reach the collector ADR 0030 created, and the reason is a property of the \
+     transport rather than a missing value. `qip_transport::Url::parse` \
+     refuses every scheme but plaintext `http` by name -- this platform ships \
+     no TLS stack, deliberately (ADR 0001) -- and ADR 0030 put OpenObserve on \
+     the public internet, which is https. So a URL naming it is refused at \
+     start-up with EX_CONFIG, and a URL naming anything else names something \
+     that does not exist: the egress proxy's allowlist \
+     (`infrastructure/egress/envoy.yaml`, six hosts) does not carry the \
+     service's own run.app address, and `qip-fastbrain` has no proxy at all \
+     because `catalogue.tf` refuses it one at plan time (ADR 0008: nothing on \
+     the hot path may consult a model, and port 9102 is that route). \
+     Setting the variable on any of the three would therefore stop the \
+     process or dial nothing, and the drain fails closed (principle 10) \
+     rather than stopping, so a wrong target reads as quiet rather than as a \
+     boot refusal -- which is exactly why it stays unset. What ends this \
+     entry is a plaintext collector inside the VPC that the proxy's allowlist \
+     names, or a TLS hop this process may use; both are infrastructure work \
+     with their own evidence, not a value added here as a side effect.";
+
 const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     (
         "qip-api",
@@ -811,6 +833,66 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
         "qip-api",
         "QIP_ARBITRAGE_POLICY_PATH",
         THE_MESH_HAS_NO_PORT_ON_CLOUD_RUN,
+    ),
+    (
+        "qip-api",
+        "QIP_OPENOBSERVE_URL",
+        NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET,
+    ),
+    (
+        "qip-fastbrain",
+        "QIP_OPENOBSERVE_URL",
+        NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET,
+    ),
+    (
+        "qip-fastbrain",
+        "QIP_OPENOBSERVE_ORG",
+        NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET,
+    ),
+    (
+        "qip-fastbrain",
+        "QIP_OPENOBSERVE_INTERVAL_SECS",
+        NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET,
+    ),
+    (
+        "qip-fastbrain",
+        "QIP_OPENOBSERVE_AUTHORIZATION",
+        NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_OPENOBSERVE_URL",
+        NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_OPENOBSERVE_ORG",
+        NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_OPENOBSERVE_INTERVAL_SECS",
+        NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_OPENOBSERVE_AUTHORIZATION",
+        NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET,
+    ),
+    (
+        "qip-api",
+        "QIP_OPENOBSERVE_ORG",
+        NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET,
+    ),
+    (
+        "qip-api",
+        "QIP_OPENOBSERVE_INTERVAL_SECS",
+        NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET,
+    ),
+    (
+        "qip-api",
+        "QIP_OPENOBSERVE_AUTHORIZATION",
+        NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET,
     ),
     ("qip-api", "QIP_MESH_INBOX_CAPACITY", A_BOUND_NOT_A_DIAL),
     ("qip-api", "QIP_MESH_SPOOL_CAPACITY", A_BOUND_NOT_A_DIAL),

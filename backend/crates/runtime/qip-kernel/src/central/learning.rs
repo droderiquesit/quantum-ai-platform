@@ -20,14 +20,27 @@
 //!
 //! The verdict is advisory in one direction only. Scaling down happens here,
 //! automatically, because [`qip_lifecycle::LifecycleLedger::demote`] needs no
-//! authority. Scaling up does not: [`LearningVerdict::Scale`] is a
-//! recommendation that still has to walk through the scaled gate and collect
-//! two more names, and [`LearningVerdict::Retire`] is a recommendation because
-//! retirement is terminal and a human's call.
+//! authority, and so does retiring: the monitor retires a strategy that was
+//! pushed off capital and is still decaying past its
+//! [`qip_lifecycle::demotion::RetirementThreshold`], through the same review
+//! call, with no one asked (blueprint §20.3). Scaling up does not:
+//! [`LearningVerdict::Scale`] is a recommendation that still has to walk
+//! through the scaled gate and collect two more names. [`LearningVerdict::Retire`]
+//! is therefore two things by turns — the record of a retirement the ledger
+//! has already made, or a recommendation for one it has not yet — and
+//! [`StrategyReview::stage_after`] says which.
+//!
+//! What a retirement does not yet do is disposition the strategy's open
+//! positions. Blueprint §35.2 says they are reassigned or scheduled for
+//! unwinding, never left ownerless; nothing here reaches the books when the
+//! ledger retires a strategy, and the positions stay where the last
+//! settlement left them. That composition belongs in this kernel, because it
+//! crosses the lifecycle, portfolio and capital services, and §35 owes it.
 
 use super::factory::StrategyReview;
 use super::plane::CentralPlane;
 use qip_ai::registry::ModelRegistry;
+use qip_contracts::gate::GateStage;
 use qip_contracts::signal::StrategyId;
 use qip_core::error::Result;
 use qip_core::{Decimal, Timestamp};
@@ -99,9 +112,10 @@ impl CellOutcome {
 
 /// What expected-versus-actual argues for.
 ///
-/// Only [`Self::Adapt`] and the demotion behind it happen on their own. The
-/// other three are readings, and the two that would commit more capital or end
-/// a strategy for good need a person.
+/// [`Self::Adapt`] and the demotion behind it happen on their own, and so
+/// does [`Self::Retire`] when the review's `stage_after` is
+/// [`GateStage::Retired`]. [`Self::Scale`] is a reading: the one verdict that
+/// would commit more capital needs two people.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LearningVerdict {
     /// Live matched or beat the baseline and nothing tripped. A candidate for
@@ -112,10 +126,11 @@ pub enum LearningVerdict {
     /// A trigger fired. The strategy has already been pushed down; what is
     /// left is deciding whether to re-earn the rung or change the strategy.
     Adapt,
-    /// The edge is gone rather than smaller — realised performance is not
-    /// positive and the strategy has been demoted out of capital.
-    /// A recommendation: retirement is terminal, and terminal is a human's
-    /// call.
+    /// The edge is gone rather than smaller. Either the ledger has already
+    /// retired the strategy — sustained decay at the floor, no one asked —
+    /// or realised performance is not positive and the strategy has just
+    /// been demoted out of capital, in which case this is the recommendation
+    /// the automatic retirement will act on if the decay holds.
     Retire,
 }
 
@@ -126,6 +141,32 @@ impl LearningVerdict {
             Self::Hold => "hold",
             Self::Adapt => "adapt",
             Self::Retire => "retire",
+        }
+    }
+
+    /// The verdict one review argues for.
+    ///
+    /// A review that ends at [`GateStage::Retired`] is read as retirement
+    /// first, whatever else fired: the monitor retires from the floor, so
+    /// such a review never started at a capital rung, and the
+    /// demoted-off-capital reading below would otherwise call a retirement
+    /// [`Self::Adapt`] — a terminal move reported as one to be adapted from.
+    fn for_review(review: &StrategyReview, realised: f64, retained: f64) -> Self {
+        if review.stage_after == GateStage::Retired {
+            return Self::Retire;
+        }
+        let demoted_off_capital =
+            review.stage_before.holds_capital() && !review.stage_after.holds_capital();
+        if demoted_off_capital && realised <= 0.0 {
+            Self::Retire
+        } else if review.triggers.is_empty() {
+            if retained >= 1.0 {
+                Self::Scale
+            } else {
+                Self::Hold
+            }
+        } else {
+            Self::Adapt
         }
     }
 }
@@ -265,19 +306,7 @@ impl CentralPlane {
             };
 
             let resized = self.resize(&review.strategy, expected, realised);
-            let demoted_off_capital =
-                review.stage_before.holds_capital() && !review.stage_after.holds_capital();
-            let verdict = if demoted_off_capital && realised <= 0.0 {
-                LearningVerdict::Retire
-            } else if review.triggers.is_empty() {
-                if retained >= 1.0 {
-                    LearningVerdict::Scale
-                } else {
-                    LearningVerdict::Hold
-                }
-            } else {
-                LearningVerdict::Adapt
-            };
+            let verdict = LearningVerdict::for_review(&review, realised, retained);
 
             learnings.push(StrategyLearning {
                 strategy: review.strategy.clone(),
@@ -322,5 +351,82 @@ impl CentralPlane {
         let resized = (updated.expected_sharpe, updated.sharpe_standard_error);
         self.set_proposal(updated);
         Some(resized)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qip_contracts::gate::Promotion;
+    use qip_core::Duration;
+    use qip_lifecycle::demotion::DemotionTrigger;
+
+    fn review(
+        before: GateStage,
+        after: GateStage,
+        triggers: Vec<DemotionTrigger>,
+    ) -> StrategyReview {
+        let at = Timestamp::from_secs(1_700_000_000);
+        let demotion = (before != after).then(|| Promotion {
+            from: before,
+            to: after,
+            at,
+            approver: None,
+            rationale: "test".to_string(),
+            evidence: Vec::new(),
+        });
+        StrategyReview {
+            strategy: StrategyId::new("momentum-v3"),
+            stage_before: before,
+            stage_after: after,
+            triggers,
+            demotion,
+        }
+    }
+
+    fn decay() -> DemotionTrigger {
+        DemotionTrigger::PerformanceDecay {
+            baseline_sharpe: 1.2,
+            live_sharpe: 0.1,
+            retained: 0.08,
+        }
+    }
+
+    /// The monitor retires from the floor, so a retiring review starts at
+    /// shadow, and the demoted-off-capital reading does not see it. Before
+    /// this was ordered first, that review was reported as `adapt` — a
+    /// terminal move the report told the desk to adapt from.
+    #[test]
+    fn a_review_the_ledger_retired_is_reported_as_retire_and_not_adapt() {
+        let at = Timestamp::from_secs(1_700_000_000);
+        let retiring = review(
+            GateStage::Shadow,
+            GateStage::Retired,
+            vec![
+                decay(),
+                DemotionTrigger::SustainedUnderperformance {
+                    at_floor_since: at,
+                    decaying_for: Duration::from_days(90),
+                    threshold: Duration::from_days(90),
+                },
+            ],
+        );
+        assert!(!retiring.triggers.is_empty(), "premise: triggers fired");
+        assert!(
+            !retiring.stage_before.holds_capital(),
+            "premise: the retirement started at the floor, not at capital"
+        );
+        // Realised positive, so the older reading would never have said retire.
+        assert_eq!(
+            LearningVerdict::for_review(&retiring, 0.4, 0.3),
+            LearningVerdict::Retire
+        );
+
+        // The same triggers on a review that only demoted still read as adapt.
+        let demoted = review(GateStage::Pilot, GateStage::Shadow, vec![decay()]);
+        assert_eq!(
+            LearningVerdict::for_review(&demoted, 0.4, 0.3),
+            LearningVerdict::Adapt
+        );
     }
 }

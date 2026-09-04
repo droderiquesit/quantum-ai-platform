@@ -1293,3 +1293,65 @@ fn a_forecaster_with_no_history_refuses_rather_than_defaulting() -> Result<()> {
     assert!(forecaster.with_confidence(0.95).is_ok());
     Ok(())
 }
+
+#[test]
+fn a_forecaster_refuses_history_that_reaches_past_its_own_as_of_instant() -> Result<()> {
+    // Point-in-time leakage: fitting a forecast made "as of" some instant on an
+    // observation dated after that instant is how a backtest built from a
+    // full-run history reports a forecaster that "knew" a shortfall was coming
+    // for a lane, when the production loop — which only ever appends an
+    // observation once a fill has actually happened — never has one to leak.
+    let forecaster = DemandForecaster::new();
+    let as_of = thursday();
+    let past = vec![
+        DemandObservation::new(
+            as_of.saturating_sub(Duration::from_days(2)),
+            dec!("1000000"),
+        ),
+        DemandObservation::new(
+            as_of.saturating_sub(Duration::from_days(1)),
+            dec!("1100000"),
+        ),
+        DemandObservation::new(as_of, dec!("1200000")),
+    ];
+
+    // Assert the premise first: a history entirely at or before `as_of` fits
+    // cleanly, so the refusal below is caused by the future-dated entry added
+    // to it and not by something else about the shape of the history.
+    assert!(
+        forecaster
+            .forecast(
+                at_venue("XLON"),
+                DemandKind::Cash,
+                &past,
+                as_of,
+                Duration::from_days(3),
+            )
+            .is_ok(),
+        "a history entirely at or before as_of was refused for the wrong reason"
+    );
+
+    let mut leaking = past;
+    leaking.push(DemandObservation::new(
+        as_of.saturating_add(Duration::from_days(1)),
+        dec!("5000000"),
+    ));
+
+    let err = forecaster
+        .forecast(
+            at_venue("XLON"),
+            DemandKind::Cash,
+            &leaking,
+            as_of,
+            Duration::from_days(3),
+        )
+        .expect_err(
+            "a forecast fitted on an observation from after its own as-of instant was accepted",
+        );
+    assert!(
+        err.to_string()
+            .contains("after the forecast's as-of instant"),
+        "the refusal did not name the leakage as the reason: {err}"
+    );
+    Ok(())
+}

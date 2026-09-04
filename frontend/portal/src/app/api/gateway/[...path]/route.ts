@@ -1,6 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { declaresWrite } from "@/lib/api/endpoints";
 import { requireCsrf, sessionFrom } from "@/lib/server/auth-http";
 import {
+  API_VERSION_PREFIX,
   resolveUpstreamPath,
   upstream,
   upstreamHeaders,
@@ -63,9 +65,30 @@ async function forward(request: NextRequest, context: RouteContext): Promise<Res
   let target: Upstream;
   let path: string;
   try {
-    target = upstream();
     const { path: segments } = await context.params;
     path = resolveUpstreamPath(segments);
+    // Asked before `upstream()`, so a write this console does not declare does
+    // not even cause the credential to be read off disk.
+    const undeclared =
+      request.method !== "GET" &&
+      request.method !== "HEAD" &&
+      !declaresWrite(request.method, path.slice(API_VERSION_PREFIX.length));
+    if (undeclared) {
+      return NextResponse.json(
+        {
+          error:
+            `this console declares no ${request.method} on ${path}. ` +
+            "Its writes are POST /cycle, POST /kill-switch and DELETE /kill-switch; " +
+            "adding a fourth is an edit to the route table, not to a page.",
+          gateway: "refused",
+        },
+        {
+          status: 405,
+          headers: { "x-qip-gateway": "refused", "cache-control": "no-store" },
+        },
+      );
+    }
+    target = upstream();
   } catch (cause) {
     const detail = cause instanceof Error ? cause.message : "the gateway is not configured";
     return NextResponse.json(

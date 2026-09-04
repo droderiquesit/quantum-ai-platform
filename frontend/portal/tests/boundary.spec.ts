@@ -87,3 +87,52 @@ test("a halted platform is shown as halted rather than as quiet", async ({ page 
   await page.goto("/");
   await expect(page.locator("body")).toContainText(/halt/i);
 });
+
+test("the gateway refuses a write this console does not declare, before it reaches the platform", async ({
+  request,
+}) => {
+  // The hole this closes was demonstrated, not imagined: a plain button on any
+  // page could `fetch` the gateway with an order body and the gateway would
+  // forward it upstream with the deployment credential attached. The refusal
+  // is here rather than in `client.ts` because a guarantee held in the browser
+  // bundle is one page edit wide.
+  //
+  // The premise: the gateway is up and answering, so the refusals below are
+  // refusals and not a dead server.
+  const declared = await request.post("/api/gateway/cycle");
+  expect(declared.headers()["x-qip-gateway"]).toBe("unreachable");
+
+  for (const [method, path] of [
+    ["POST", "/api/gateway/orders"],
+    ["POST", "/api/gateway/orders/submit"],
+    ["POST", "/api/gateway/trade"],
+    ["DELETE", "/api/gateway/orders"],
+    ["POST", "/api/gateway/kill-switch/all"],
+  ] as const) {
+    const response = await request.fetch(path, { method });
+    expect(response.status(), `${method} ${path} was not refused`).toBe(405);
+    // The disposition, not just the status: a 405 from the platform and a
+    // refusal by this gateway are different facts, and only one of them means
+    // the credential never left this process.
+    expect(response.headers()["x-qip-gateway"], `${method} ${path}`).toBe("refused");
+  }
+});
+
+test("the gateway still forwards each of the three writes the console declares", async ({
+  request,
+}) => {
+  // The half that distinguishes a working gate from one that refuses
+  // everything. `QIP_API_BASE_URL` points at a port nothing listens on, so a
+  // forwarded write reports the platform unreachable — which is proof it was
+  // forwarded, and a refusal never is.
+  for (const [method, path] of [
+    ["POST", "/api/gateway/cycle"],
+    ["POST", "/api/gateway/kill-switch"],
+    ["DELETE", "/api/gateway/kill-switch"],
+  ] as const) {
+    const response = await request.fetch(path, { method });
+    expect(response.headers()["x-qip-gateway"], `${method} ${path} was refused`).toBe(
+      "unreachable",
+    );
+  }
+});

@@ -141,26 +141,34 @@ variable "ingress_posture" {
   description = <<-EOT
     Who may reach this workload, closed by default.
 
-      * `internal`    — reachable only from inside the VPC.
-      * `public-edge` — reachable only through the external load balancer that
-        fronts the customer edge, and still not directly.
+      * `internal`        — reachable only from inside the VPC.
+      * `public-edge`     — reachable only through the external load balancer
+        that fronts the customer edge, and still not directly.
+      * `open-anonymous`  — the service's own `run.app` URL answers the
+        internet. See below; this is not a value to reach for.
 
-    There is deliberately no value that maps to Cloud Run's
-    `INGRESS_TRAFFIC_ALL`. That setting makes the service's own `run.app` URL
-    answer the internet, which means the load balancer, its WAF and its
-    identity check become a route rather than the route — and a service left
-    at `ALL` after a debugging session looks identical in the console to one
-    that was never meant to be private. The public edge here is
-    `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER`: the load balancer is the only
-    way in, and there is no input to this module that produces anything wider.
+    `open-anonymous` exists because ADR 0030 records an owner decision to
+    expose OpenObserve that way, and the honest way to carry that decision was
+    a third value rather than widening `public-edge` or teaching the mapping a
+    branch nobody would find. It maps to `INGRESS_TRAFFIC_ALL`, which was
+    absent from this module until that record: that setting makes the load
+    balancer, its WAF and its identity check a route rather than *the* route,
+    and a service left there after a debugging session looks identical in the
+    console to one that was never meant to be private.
+
+    The name is deliberately unpleasant. `grep -rn 'open-anonymous'
+    infrastructure/` is the whole answer to "what is on the internet", and a
+    value called `public` or `external` would have read like a deployment
+    detail instead of a decision. A workload taking this posture must be named
+    in ADR 0030, and the acceptance suite refuses a second one that is not.
   EOT
 
   type    = string
   default = "internal"
 
   validation {
-    condition     = contains(["internal", "public-edge"], var.ingress_posture)
-    error_message = "ingress_posture is internal or public-edge. There is no value here that opens the workload's own URL to the internet."
+    condition     = contains(["internal", "public-edge", "open-anonymous"], var.ingress_posture)
+    error_message = "ingress_posture is internal, public-edge or open-anonymous. The last opens the workload's own URL to the internet and is governed by ADR 0030."
   }
 }
 
@@ -172,37 +180,71 @@ variable "invokers" {
     is a deployment problem and a world-reachable one is an incident, so the
     empty value is the one that fails safely.
 
-    The two anonymous principals are refused by the second validation below.
-    One of them admits the internet and the other admits every Google account
-    in existence, which is a different thing from admitting the caller you had
-    in mind. They are named in the condition rather than here, because the
-    acceptance suite scans this configuration for those two tokens and a
-    `validation` block is the one construct that can name them without
-    granting anything — the same arrangement `console-ingress` uses. A
-    workload on the public edge is reached through the load balancer's own
-    backend identity, not by making the service anonymous.
+    The two anonymous principals are handled differently, and since ADR 0030
+    in two different places. The one admitting every Google account in
+    existence is refused outright by a validation below, everywhere, with no
+    exception: it is not the caller anyone meant, and it reads as
+    authenticated in an audit. The one admitting the internet is refused by a
+    precondition in `main.tf` on every posture except `open-anonymous`, and
+    that posture is refused without it — the pairing is checked in both
+    directions, and it lives there rather than here because a `validation`
+    reading `var.ingress_posture` is a cross-variable reference terraform
+    skips silently.
+
+    Neither is spelled out in this prose, and that is not squeamishness: the
+    acceptance suite scans this configuration for those two literals, and a
+    `validation` or `precondition` block is the one construct that may name
+    them without granting anything — the same arrangement `console-ingress`
+    uses. A description that named them would read to that scanner as the
+    grant it exists to catch. A workload on the public edge is still reached
+    through the load balancer's own backend identity, not by making the
+    service anonymous.
   EOT
 
   type    = list(string)
   default = []
 
+  # `allUsers` and `allAuthenticatedUsers` are the two IAM members with no
+  # `type:` prefix, so a shape check that demands one rejects them for being
+  # malformed rather than for being anonymous — the wrong refusal, and one
+  # that would have hidden the real question behind a syntax error. They are
+  # admitted here as well-formed and judged on their own terms by the two
+  # rules below.
   validation {
     condition = alltrue([
       for member in var.invokers :
+      contains(["allUsers", "allAuthenticatedUsers"], member) ||
       can(regex("^(user|group|serviceAccount|domain):", member))
     ])
     error_message = "Each invoker is a full IAM member: user:…, group:…, serviceAccount:… or domain:…."
   }
 
+  # `allAuthenticatedUsers` is refused on every posture, with no exception and
+  # no ADR permitting one. It reads like a narrowing of `allUsers` and is not:
+  # it admits every Google account in existence, which is a different and
+  # larger set than the caller anyone had in mind, and unlike `allUsers` it
+  # does so while looking authenticated in an audit.
   validation {
-    condition     = !contains(var.invokers, "allUsers") && !contains(var.invokers, "allAuthenticatedUsers")
-    error_message = "An anonymous invoker makes the workload's own URL the route in. Name the caller."
+    condition     = !contains(var.invokers, "allAuthenticatedUsers")
+    error_message = "allAuthenticatedUsers admits every Google account in existence, which is not the caller you meant. Name the caller, or use allUsers under ADR 0030 if the workload is deliberately anonymous."
   }
+
+  # The pairing of `allUsers` with `open-anonymous` is enforced in BOTH
+  # directions, and deliberately not here. A `validation` block that reads a
+  # second variable is a cross-variable reference, and terraform skips it
+  # silently: written as a validation on this input, the rule admitted an
+  # anonymous invoker beside `ingress_posture = "internal"` and reported
+  # "Success! The configuration is valid." A guard that cannot fire reads as
+  # protection and is not — the defect this repository has shipped before and
+  # names in its own rules. The two checks live as preconditions on
+  # `google_cloud_run_v2_service.workload` in `main.tf`, which is where this
+  # module already puts every cross-input invariant.
 }
 
 variable "image_digest" {
   description = <<-EOT
-    The image to run, pinned by digest.
+    The image to run when `source` is `built`, pinned by digest. Ignored, and
+    may be left null, when `source` is `vendored` — see `vendored_image_digest`.
 
     A tag is a name somebody may move. Pinning by digest is what makes "the
     bytes that were tested" and "the bytes that are running" the same
@@ -211,13 +253,84 @@ variable "image_digest" {
     digest. The validation below refuses anything without `@sha256:`, which
     includes the shape that looks safest and is not — a tag that happens to be
     a commit hash.
+
+    Null by default so a vendored workload's caller does not have to invent a
+    value for the half of the lookup it does not use; the precondition on
+    `google_service_account.workload` refuses a built workload that left this
+    null instead.
   EOT
 
-  type = string
+  type    = string
+  default = null
 
   validation {
-    condition     = can(regex("^[a-z0-9][a-z0-9._/-]*[a-z0-9]@sha256:[a-f0-9]{64}$", var.image_digest))
-    error_message = "The image must be pinned by digest, as repository@sha256:<64 hex>. A tag is a name someone can move after the attestation was signed."
+    condition     = var.image_digest == null || can(regex("^[a-z0-9][a-z0-9._/-]*[a-z0-9]@sha256:[a-f0-9]{64}$", var.image_digest))
+    error_message = "The image must be pinned by digest, as repository@sha256:<64 hex>, or null. A tag is a name someone can move after the attestation was signed."
+  }
+}
+
+# Named `image_source` and not `source`: Terraform reserves `source` inside a
+# module block for the module's own address, so `variable "source"` is refused
+# outright with "The variable name "source" is reserved due to its special
+# meaning inside module blocks" — and a caller could never pass it. ADR 0028
+# decision 3 was written naming it `source`; it could not have worked, and the
+# ADR carries the correction.
+variable "image_source" {
+  description = <<-EOT
+    Where this workload's image comes from (ADR 0028, decision 3).
+
+      * `built`    — this platform's own build→sign→attest pipeline. The
+        digest is `image_digest`, which `catalogue.tf` composes from
+        `var.image_digests` — itself written by `.github/workflows/deploy.yml`
+        into `infrastructure/environments/<env>/images.tfvars`. The service's
+        image is then owned by the pipeline: see the `ignore_changes` at the
+        foot of `google_cloud_run_v2_service.workload`, which exists so an
+        apply after a deploy does not roll the service back to the digest the
+        tfvars still name.
+      * `vendored` — a third-party image mirrored and attested by
+        `.github/workflows/vendor.yml` from a reviewed line in
+        `infrastructure/egress/vendored-images.txt`. The digest is
+        `vendored_image_digest`.
+
+    This input selects which digest is read, and nothing else. It does *not*
+    vary the `ignore_changes` rule: ADR 0028 decision 3 said a vendored
+    workload would skip it, and Terraform cannot express that — `ignore_changes`
+    takes a static list, so a value that branches on an input is refused with
+    "A static list expression is required". What that costs a vendored workload
+    is written at the rule itself.
+
+    A vendored image is also one that need not honour the `_FILE` indirection
+    `secret_mounts` writes. The mount works identically for either source; the
+    reading does not, and what that costs is written at `secret_mounts`.
+
+    Default `built`, so every workload this module deployed before this input
+    existed — the whole catalogue, as of ADR 0028 — is unaffected.
+  EOT
+
+  type    = string
+  default = "built"
+
+  validation {
+    condition     = contains(["built", "vendored"], var.image_source)
+    error_message = "image_source is built or vendored."
+  }
+}
+
+variable "vendored_image_digest" {
+  description = <<-EOT
+    The image to run when `source` is `vendored`, pinned by digest. Ignored,
+    and may be left null, when `source` is `built` — see `image_digest`.
+
+    The same pinning rule as `image_digest`, for the same reason: a tag is a
+    name somebody may move after the mirror was reviewed and attested.
+  EOT
+
+  type    = string
+  default = null
+
+  validation {
+    condition     = var.vendored_image_digest == null || can(regex("^[a-z0-9][a-z0-9._/-]*[a-z0-9]@sha256:[a-f0-9]{64}$", var.vendored_image_digest))
+    error_message = "The vendored image must be pinned by digest, as repository@sha256:<64 hex>, or null. A tag is a name someone can move after the attestation was signed."
   }
 }
 
@@ -393,6 +506,46 @@ variable "env" {
   }
 }
 
+variable "secret_env" {
+  description = <<-EOT
+    Secrets this workload reads as environment values, projected by Cloud Run
+    from a Secret Manager version at container start.
+
+    Refused unless `image_source` is `vendored`, and that refusal is the point
+    (ADR 0031). Every binary this platform compiles reads credentials through
+    `qip_core::secret`, which takes a path; a built workload reaching for this
+    input would be choosing the easier one, and the day that is possible the
+    rule against secrets in the environment stops meaning anything. The
+    precondition is in `main.tf`, because a validation here reading
+    `var.image_source` is a cross-variable reference terraform skips silently.
+
+    The exception exists for a binary that cannot read a file. OpenObserve is
+    the one in this catalogue: its image carries no shell, so no entrypoint
+    can bridge a mount, and no symbol in it offers `_FILE` indirection for the
+    credential. Mounting it was correct by the rule and inert in fact.
+
+    The value is still never in this repository, a plan or the state file:
+    what Terraform carries is the secret's name, and Cloud Run resolves it at
+    start. What it does not close is a crash dump, which ADR 0031 names.
+
+    Keyed by environment variable name; each entry gives the secret id and the
+    version to read.
+  EOT
+
+  type = map(object({
+    secret_id = string
+    version   = optional(string, "latest")
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for key in keys(var.secret_env) : can(regex("^[A-Z][A-Z0-9_]*$", key))
+    ])
+    error_message = "An environment variable name is upper case with underscores."
+  }
+}
+
 variable "secret_mounts" {
   description = <<-EOT
     Secrets this workload reads, projected as files.
@@ -413,6 +566,21 @@ variable "secret_mounts" {
     `roles/secretmanager.secretAccessor` on exactly these secrets and nothing
     else. A secret not listed here is one this workload cannot read, and that
     is the whole point of an account per workload.
+
+    Mounting is the half this module can guarantee; opening the file is the
+    workload's half, and a mount here is not evidence the credential arrived.
+    A `built` workload reads the path through `qip_core::secret`, which is why
+    the variable must be named `QIP_…_FILE`. A `vendored` workload is a binary
+    this platform did not write, and some read a credential only as a plain
+    environment value — OpenObserve's `ZO_ROOT_USER_PASSWORD` is the one in
+    this catalogue today. There the mount is correct and still insufficient:
+    the file is projected at 0400, the `_FILE` variable holds its path, and
+    the process opens neither. No HCL closes that gap. Bridging the file into
+    the variable the upstream binary actually reads is an entrypoint on the
+    image, and an image that gains an entrypoint this platform wrote is a
+    built image, not a vendored one — so it is an ADR 0028 decision-3 question
+    and not a module input. Nothing about the mount is conditional on
+    `image_source`; only whether it is read is.
   EOT
 
   type = map(object({
@@ -634,7 +802,7 @@ variable "egress_sidecar" {
   }
 
   validation {
-    condition     = var.egress_sidecar == null || (var.egress_sidecar.health_port > 0 && var.egress_sidecar.health_port <= 65535 && length(var.egress_sidecar.ports) > 0)
+    condition     = var.egress_sidecar == null ? true : (var.egress_sidecar.health_port > 0 && var.egress_sidecar.health_port <= 65535 && length(var.egress_sidecar.ports) > 0)
     error_message = "The egress proxy names a health port and at least one destination listener; a proxy with no listener proxies nothing and reads as a route."
   }
 }

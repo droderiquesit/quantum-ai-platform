@@ -237,3 +237,59 @@ fn an_event_is_knowable_only_from_its_ingest_time_onwards() -> Result<()> {
     assert!(envelope.event_timestamp() < Timestamp::from_nanos(at(400).as_nanos()));
     Ok(())
 }
+
+#[test]
+fn one_fact_has_one_fingerprint_at_the_envelope_and_at_its_frame() -> Result<()> {
+    // Both arms of `AnyEvent::dedup_key`, because they were wrong in
+    // different ways: a body with its own key, and one without.
+    let keyed = hot_tick(7, at(0), at(5))?;
+    let unkeyed = warm_note("N", at(0), at(5))?;
+    assert!(
+        keyed.event().idempotency_key.is_some(),
+        "the premise: this body supplies its own key"
+    );
+    assert!(
+        unkeyed.event().idempotency_key.is_none(),
+        "the premise: this body supplies none, so the payload hash must serve"
+    );
+
+    for envelope in [&keyed, &unkeyed] {
+        let frame = envelope.to_frame()?;
+        assert_eq!(
+            frame.dedup_key(),
+            envelope.idempotency_key(),
+            "the mesh window keys on the frame and this side keys on the envelope; a fact whose \
+             two keys differ is deduplicated on neither wire"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn the_contract_stamp_reports_the_clamp_the_envelope_applied() -> Result<()> {
+    // Delivered at t=200 a fact that was true at t=400: physically impossible,
+    // so a clock or a parsing fault at the source.
+    let clamped = hot_tick(1, at(400), at(200))?;
+    assert!(
+        clamped.was_clamped(),
+        "the premise: this envelope really was clamped"
+    );
+    assert_eq!(clamped.clock_correction(), Duration::from_millis(200));
+
+    let stamped = clamped.stamped();
+    assert!(
+        stamped.was_clamped(),
+        "the envelope and the contract type must not disagree about whether a source's clock was \
+         wrong; a flag that cannot be true reads as protection and is none"
+    );
+    assert_eq!(stamped.known_at(), clamped.ingest_timestamp());
+    assert_eq!(stamped.valid_at(), clamped.event_timestamp());
+
+    // The other half: an envelope whose clock was sane must not be reported as
+    // corrected, or the flag is true of everything and says nothing.
+    let sane = hot_tick(2, at(100), at(300))?;
+    assert!(!sane.was_clamped());
+    assert!(!sane.stamped().was_clamped());
+    assert_eq!(sane.stamped().known_at(), at(300));
+    Ok(())
+}

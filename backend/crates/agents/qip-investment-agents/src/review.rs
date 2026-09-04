@@ -60,8 +60,6 @@ impl Agent for AdversarialReviewer {
         // --- has the organisation been wrong about this before? ---
         {
             let memory = self.desk.memory.get(ctx)?;
-            let recent = memory.episodes_as_of("", brief.as_of);
-            let _ = recent;
             for agent_id in memory
                 .episodes()
                 .iter()

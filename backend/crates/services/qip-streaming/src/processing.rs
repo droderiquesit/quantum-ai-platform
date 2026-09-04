@@ -10,7 +10,10 @@
 //! 3. **Future rejection.** The mirror image: an event stamped meaningfully
 //!    after the caller's clock is a clock fault or an injection, not data.
 //! 4. **Deduplication.** By `qip_events::AnyEvent::dedup_key` — the body's own
-//!    idempotency key where it has one, the payload hash where it does not.
+//!    idempotency key where it has one, the payload hash where it does not —
+//!    *and* by the payload behind that key. A key that comes back carrying
+//!    different bytes is a correction, not a redelivery, and is admitted with
+//!    an observation rather than refused.
 //! 5. **Timestamp correction.** Already applied by the envelope, which clamps
 //!    ingest forward past event; here it is *reported*, because a clamp is
 //!    evidence of a broken clock upstream.
@@ -37,11 +40,11 @@
 //! rejections and the same watermarks as the live run did.
 
 use qip_contracts::time::Watermark;
-use qip_core::error::Error;
+use qip_core::error::{Error, Result};
 use qip_core::{Duration, Timestamp};
 use qip_sequencing::{ReorderPolicy, SequenceEvent};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 
 use crate::envelope::StreamEnvelope;
 use crate::provenance::SourceId;
@@ -68,6 +71,12 @@ pub struct ProcessingPolicy {
     /// dies during the busiest hour. A duplicate arriving after this many
     /// distinct events is not caught here, which is why the replay window is
     /// the second line of defence and not a nicety.
+    ///
+    /// Zero is refused by [`StreamProcessor::new`] rather than widened to one.
+    ///
+    /// What is remembered is the key *and* the payload hash under it, so the
+    /// window costs one hash per key and can tell a redelivery from a
+    /// correction.
     pub dedup_capacity: usize,
     /// Passed straight to `qip_sequencing`.
     pub reorder: ReorderPolicy,
@@ -149,6 +158,21 @@ pub enum StreamObservation {
         event_id: String,
         compatibility: SchemaCompatibility,
     },
+    /// Two records shared an idempotency key and disagreed about their bytes.
+    ///
+    /// Not a rejection. A body's key names only part of the record, so the
+    /// second record is a correction of the first far more often than a
+    /// redelivery of it, and refusing it destroyed the correction. It is also
+    /// the only signal that two unrelated records have collided on one key —
+    /// `Trade` joins a free-form venue and a free-form trade id with a bare
+    /// colon, so a venue of `X` and an id of `1:2` forge the key of a venue
+    /// `X:1` and an id `2`.
+    IdempotencyKeyReused {
+        event_id: String,
+        key: String,
+        seen_payload_hash: String,
+        offered_payload_hash: String,
+    },
     /// A hole would not fill. Consumers of the stream must resynchronise.
     StreamResynchronised { stream: String, reason: String },
 }
@@ -167,6 +191,8 @@ pub struct ProcessingStats {
     pub malformed: u64,
     pub unroutable: u64,
     pub duplicates: u64,
+    /// Records admitted under a key already seen carrying different bytes.
+    pub key_reuse: u64,
     pub replayed: u64,
     pub future_dated: u64,
     pub unsequenced: u64,
@@ -208,36 +234,74 @@ impl BatchOutcome {
     }
 }
 
-/// A bounded set of idempotency keys already seen.
+/// A bounded map from idempotency key to the payload last seen under it.
 #[derive(Debug)]
 struct DedupWindow {
     capacity: usize,
-    seen: BTreeSet<String>,
+    seen: BTreeMap<String, String>,
     order: VecDeque<String>,
 }
 
+/// What the window made of one key and the payload behind it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Admission {
+    /// Nothing has been seen under this key.
+    Fresh,
+    /// The same key carrying the same bytes: one fact delivered twice.
+    Redelivery,
+    /// The same key carrying different bytes. A body's idempotency key names
+    /// only part of the record — `Tick`'s omits volume and quality, `Trade`'s
+    /// omits price, size and the `Corrected` condition — so this is a
+    /// correction of the earlier record far more often than it is a
+    /// redelivery of it. Refusing it dropped the correction and left the
+    /// stale record standing, with a counter as the only trace.
+    Reused { seen_payload_hash: String },
+}
+
 impl DedupWindow {
-    fn new(capacity: usize) -> Self {
-        Self {
-            capacity: capacity.max(1),
-            seen: BTreeSet::new(),
-            order: VecDeque::new(),
+    /// A window remembering `capacity` keys, refusing a capacity of zero.
+    ///
+    /// The refusal rather than a widening to one: a window silently corrected
+    /// upwards is a configuration mistake that survives, because the operator
+    /// reads back the policy they wrote while the process runs a different one.
+    /// `qip_market_ingestion::DedupWindow::new` and `EventBus::dedup_capacity`
+    /// already refuse the same value; a third window that clamped instead would
+    /// be the one place a zero could be written down and not noticed.
+    fn new(capacity: usize) -> Result<Self> {
+        if capacity == 0 {
+            return Err(Error::invalid(
+                "a dedup window of zero remembers no idempotency key, so every redelivery would \
+                 be admitted as a new event; give dedup_capacity at least 1",
+            ));
         }
+        Ok(Self {
+            capacity,
+            seen: BTreeMap::new(),
+            order: VecDeque::new(),
+        })
     }
 
-    /// Record a key. `false` when it was already present.
-    fn admit(&mut self, key: &str) -> bool {
-        if self.seen.contains(key) {
-            return false;
+    /// Record a key and the payload under it.
+    fn admit(&mut self, key: &str, payload_hash: &str) -> Admission {
+        if let Some(seen) = self.seen.get_mut(key) {
+            if seen == payload_hash {
+                return Admission::Redelivery;
+            }
+            let seen_payload_hash = std::mem::replace(seen, payload_hash.to_string());
+            // The key keeps its place in the eviction order rather than moving
+            // to the back. It is still one key, and refreshing it on every
+            // correction would let one repeatedly-corrected record hold the
+            // window open against every other key in it.
+            return Admission::Reused { seen_payload_hash };
         }
         if self.order.len() >= self.capacity
             && let Some(evicted) = self.order.pop_front()
         {
             self.seen.remove(&evicted);
         }
-        self.seen.insert(key.to_string());
+        self.seen.insert(key.to_string(), payload_hash.to_string());
         self.order.push_back(key.to_string());
-        true
+        Admission::Fresh
     }
 }
 
@@ -251,13 +315,15 @@ pub struct StreamProcessor {
 }
 
 impl StreamProcessor {
-    pub fn new(policy: ProcessingPolicy) -> Self {
-        Self {
-            dedup: DedupWindow::new(policy.dedup_capacity),
+    /// A processor applying `policy`, refusing a policy whose bounds cannot do
+    /// the job they are configured for.
+    pub fn new(policy: ProcessingPolicy) -> Result<Self> {
+        Ok(Self {
+            dedup: DedupWindow::new(policy.dedup_capacity)?,
             coordinator: SequenceCoordinator::new(policy.reorder),
             policy,
             stats: ProcessingStats::default(),
-        }
+        })
     }
 
     pub fn policy(&self) -> ProcessingPolicy {
@@ -437,15 +503,29 @@ impl StreamProcessor {
         }
 
         let key = envelope.idempotency_key();
-        if !self.dedup.admit(&key) {
-            self.stats.duplicates += 1;
-            outcome.rejected.push(Rejection {
-                index,
-                reason: RejectionReason::Duplicate,
-                detail: format!("idempotency key {key} has already been processed"),
-                event_id: Some(event_id),
-            });
-            return None;
+        match self.dedup.admit(&key, envelope.payload_hash()) {
+            Admission::Fresh => {}
+            Admission::Redelivery => {
+                self.stats.duplicates += 1;
+                outcome.rejected.push(Rejection {
+                    index,
+                    reason: RejectionReason::Duplicate,
+                    detail: format!("idempotency key {key} has already been processed"),
+                    event_id: Some(event_id),
+                });
+                return None;
+            }
+            Admission::Reused { seen_payload_hash } => {
+                self.stats.key_reuse += 1;
+                outcome
+                    .observations
+                    .push(StreamObservation::IdempotencyKeyReused {
+                        event_id: event_id.clone(),
+                        key,
+                        seen_payload_hash,
+                        offered_payload_hash: envelope.payload_hash().to_string(),
+                    });
+            }
         }
 
         if envelope.was_clamped() {

@@ -108,18 +108,29 @@ impl MarketKind {
     /// A yes/no market, with the no outcome derived as the exact complement.
     ///
     /// Derived rather than supplied: a hand-written "no" that is not the
-    /// negation of the "yes" leaves a gap where neither side pays.
-    pub fn binary(yes: Outcome, no_id: OutcomeId, no_object: ObjectId) -> Self {
+    /// negation of the "yes" leaves a gap where neither side pays. Refuses a
+    /// `no_id` that collides with the "yes" outcome's id: [`categorical`]
+    /// refuses exactly this for its own outcomes, and a binary market that
+    /// admitted it would silently index two outcomes under one id, so a book
+    /// supplied for either would be read as the book for both.
+    ///
+    /// [`categorical`]: Self::categorical
+    pub fn binary(yes: Outcome, no_id: OutcomeId, no_object: ObjectId) -> Result<Self> {
+        if no_id == yes.id {
+            return Err(Error::invalid(format!(
+                "the no outcome cannot share id {no_id} with the yes outcome"
+            )));
+        }
         let no = Outcome::new(
             no_id,
             format!("not {}", yes.label),
             no_object,
             ResolutionCriteria::Not(Box::new(yes.criteria.clone())),
         );
-        Self::Binary {
+        Ok(Self::Binary {
             yes: Box::new(yes),
             no: Box::new(no),
-        }
+        })
     }
 
     /// Refuses fewer than two outcomes, a repeated identifier, and two

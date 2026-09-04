@@ -198,25 +198,49 @@ jobs:
               --ignore-unfixed \
               "$image"
 
-            # Idempotent for the same reason deploy.yml's sign step is:
-            # re-running for an unchanged list is normal, and an existing
-            # attestation for these exact bytes is success.
-            existing=$(gcloud container binauthz attestations list \
-              --project "${GCP_PROJECT}" \
-              --attestor "${BINAUTHZ_ATTESTOR}" \
-              --attestor-project "${GCP_PROJECT}" \
-              --artifact-url "${image}" \
-              --format='value(name)')
-            if [ -n "${existing}" ]; then
-              echo "${image} is already attested."
-            else
-              gcloud beta container binauthz attestations sign-and-create \
+            # The index digest, and every platform manifest under it.
+            #
+            # Attesting the index alone is what a reviewer would expect to be
+            # enough, and on GKE it was: the pod spec names the index and
+            # Binary Authorization checks that digest. Cloud Run resolves the
+            # index to the manifest for the platform it runs and evaluates
+            # *that*, so the first Cloud Run apply was refused —
+            #
+            #   Image .../vendor/envoy@sha256:c8fecdf5... denied by attestor
+            #   qip-dev-build: No attestations found that were valid and
+            #   signed by a key trusted by the attestor
+            #
+            # — naming a digest that appears nowhere in the vendored list,
+            # because it is the linux/amd64 child of the digest that does.
+            # These are not extra bytes: a child manifest is part of the
+            # index that was reviewed, and crane copied the whole index
+            # byte-for-byte, so signing the children signs bytes this file's
+            # git history already accounts for. A single-manifest source has
+            # no children and the loop then signs exactly the one digest, as
+            # before.
+            children="$(crane manifest "$image" | jq -r '.manifests[]?.digest // empty')"
+            for digest in ${source_digest} ${children}; do
+              artifact="${prefix}/${dest}@${digest}"
+              # Idempotent for the same reason deploy.yml's sign step is:
+              # re-running for an unchanged list is normal, and an existing
+              # attestation for these exact bytes is success.
+              existing=$(gcloud container binauthz attestations list \
                 --project "${GCP_PROJECT}" \
-                --artifact-url "${image}" \
                 --attestor "${BINAUTHZ_ATTESTOR}" \
                 --attestor-project "${GCP_PROJECT}" \
-                --keyversion "${BINAUTHZ_KEY_VERSION}"
-            fi
+                --artifact-url "${artifact}" \
+                --format='value(name)')
+              if [ -n "${existing}" ]; then
+                echo "${artifact} is already attested."
+              else
+                gcloud beta container binauthz attestations sign-and-create \
+                  --project "${GCP_PROJECT}" \
+                  --artifact-url "${artifact}" \
+                  --attestor "${BINAUTHZ_ATTESTOR}" \
+                  --attestor-project "${GCP_PROJECT}" \
+                  --keyversion "${BINAUTHZ_KEY_VERSION}"
+              fi
+            done
             mirrored=$((mirrored + 1))
           done < infrastructure/egress/vendored-images.txt
           # An empty run means the list parsed to nothing, which is far more

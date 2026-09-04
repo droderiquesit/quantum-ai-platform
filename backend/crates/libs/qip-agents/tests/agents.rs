@@ -14,7 +14,7 @@ use qip_agents::manifest::{AgentManifest, AgentRole, EscalationPolicy};
 use qip_agents::memory::{Episode, EpisodeOutcome, Lesson, PromotionPolicy, ResearchMemory};
 use qip_agents::runtime::{Agent, AgentContext, AgentHost, Gated, RunStatus};
 use qip_ai::language::{DeterministicModel, ModelRequest};
-use qip_core::error::Result;
+use qip_core::error::{Error, Result};
 use qip_core::ids::{AgentRunId, LessonId};
 use qip_core::lineage::{CorrelationId, Lineage};
 use qip_core::testing::is_exactly_zero;
@@ -619,6 +619,72 @@ fn an_agent_that_runs_out_of_budget_escalates_rather_than_lying() {
         "the run must stop exactly at the allowance, not before or after"
     );
     assert!(record.utilisation >= 1.0);
+}
+
+#[derive(Debug)]
+struct MisleadingFailure {
+    manifest: AgentManifest,
+    portfolio: Gated<MarketFeed>,
+}
+
+impl Agent for MisleadingFailure {
+    fn manifest(&self) -> &AgentManifest {
+        &self.manifest
+    }
+    fn analyse(&self, ctx: &mut AgentContext, _brief: &AgentBrief) -> Result<AgentFinding> {
+        // Spends the run's one permitted tool call, then trips the budget on
+        // a second call and discards that refusal — standing in for an agent
+        // that retries or otherwise absorbs a budget denial instead of
+        // propagating it immediately.
+        let _ = self.portfolio.get(ctx);
+        let _ = self.portfolio.get(ctx);
+        // The failure the run actually ends on has nothing to do with the
+        // budget it happened to exhaust earlier.
+        Err(Error::numeric("the covariance matrix failed to invert"))
+    }
+}
+
+#[test]
+fn a_failure_unrelated_to_an_earlier_exhausted_budget_is_not_reported_as_an_escalation() {
+    // Reproduces the failure mode this run status has to rule out: once
+    // `BudgetLedger::exhausted()` is set it never clears, so keying the
+    // escalation branch on that flag alone would relabel *any* later error
+    // in the same run as "ran out of budget", even one the budget had
+    // nothing to do with. The record must keep the real reason.
+    let budget = Budget {
+        wall_time: Duration::from_mins(5),
+        tool_calls: 1,
+        language_model_calls: 0,
+        tokens: 0,
+        cost_micros: 0,
+    };
+    let manifest = AgentManifest::research("misleading", "Misleading", "fails oddly", now())
+        .with_capabilities(CapabilitySet::of([Capability::ReadPortfolio]))
+        .with_budget(budget);
+    let agent = MisleadingFailure {
+        manifest,
+        portfolio: Gated::new(
+            MarketFeed { last: 100.0 },
+            Capability::ReadPortfolio,
+            "portfolio",
+        ),
+    };
+    let host = AgentHost::new(9);
+    let record = host.run(&agent, &brief(), now(), lineage(), run_id(20));
+
+    match &record.status {
+        RunStatus::Failed { message, .. } => {
+            assert!(
+                message.contains("covariance matrix"),
+                "the agent's real failure must survive the fact that it also \
+                 exhausted its budget earlier in the run: {message}"
+            );
+        }
+        other => panic!(
+            "a failure unrelated to the exhausted budget must not be reported \
+             as an escalation: {other:?}"
+        ),
+    }
 }
 
 // --- roster governance ------------------------------------------------------

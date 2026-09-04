@@ -63,11 +63,21 @@ locals {
   # variable: a value written twice is a value that will disagree with itself.
   trust_zone = coalesce(var.trust_zone, var.plane)
 
-  # Cloud Run has two ingress settings that are not the internet, and this is
-  # the closed one of the two. There is no input to this module that produces
-  # INGRESS_TRAFFIC_ALL; see `ingress_posture` for why that value is absent
-  # rather than merely defaulted away from.
-  ingress = var.ingress_posture == "public-edge" ? "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER" : "INGRESS_TRAFFIC_INTERNAL_ONLY"
+  # Three postures, and only one of them is the internet. The default arm is
+  # the closed one, so a posture this map does not know stays private rather
+  # than falling through to something wider — the arm order is load-bearing,
+  # not stylistic.
+  #
+  # INGRESS_TRAFFIC_ALL was absent from this module entirely until ADR 0030
+  # recorded an owner decision to expose OpenObserve anonymously. It is
+  # reachable only through `open-anonymous`, which `variables.tf` refuses
+  # unless an anonymous invoker is named alongside it, and which the
+  # acceptance suite refuses for any workload ADR 0030 does not list.
+  ingress = (
+    var.ingress_posture == "open-anonymous" ? "INGRESS_TRAFFIC_ALL" :
+    var.ingress_posture == "public-edge" ? "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER" :
+    "INGRESS_TRAFFIC_INTERNAL_ONLY"
+  )
 
   # Where the mounted secrets appear. The same directory the CSI driver
   # projects into on GKE, so a binary moved from a pod to a service reads the
@@ -104,7 +114,7 @@ locals {
   config_root      = "/etc/qip"
   config_files = {
     for key, file in var.config_files :
-    key => "${local.config_root}/${file.file_name}"
+    key => "${local.config_root}/${local.config_prefix}/${file.file_name}"
   }
   config_file_hashes = {
     for key, file in var.config_files :
@@ -177,6 +187,15 @@ locals {
   # `storage.objects.delete` and every configuration that ever scraped
   # stays readable under the name the revision that ran it mounted.
   collector_prefix = substr(sha256(local.collector_config), 0, 16)
+
+  # The one branch ADR 0028 decision 3 adds: which of the two digests this
+  # workload actually runs at. `built` is every workload this module deployed
+  # before the branch existed; `vendored` is read from a different variable
+  # because it is written by a different pipeline (vendor.yml, not
+  # deploy.yml) into a different file (vendored-images.txt, not
+  # images.tfvars). The precondition on `google_service_account.workload`
+  # refuses the half of this that was left null.
+  effective_image_digest = var.image_source == "vendored" ? var.vendored_image_digest : var.image_digest
 }
 
 # --- the workload's own identity --------------------------------------------
@@ -224,6 +243,39 @@ resource "google_service_account" "workload" {
     precondition {
       condition     = var.ingress_posture != "public-edge" || var.traffic_class == "customer"
       error_message = "A ${var.traffic_class} workload may not sit on the public edge. Customer traffic and trading traffic do not share a load balancer or a route; put this one behind the internal posture and give the customer-facing service its own deployment."
+    }
+
+    # ADR 0030's pairing, in both directions. Here rather than as a
+    # `validation` on `invokers`, because a validation that reads a second
+    # variable is skipped silently: written that way it admitted an anonymous
+    # invoker beside `ingress_posture = "internal"` and validate still said
+    # the configuration was valid.
+    #
+    # The first keeps the purpose of the guard ADR 0030 replaced. That guard
+    # stopped a workload becoming anonymous by accident, and the accident is
+    # exactly this: one of the two inputs set without the other.
+    precondition {
+      condition     = !contains(var.invokers, "allUsers") || var.ingress_posture == "open-anonymous"
+      error_message = "An anonymous invoker makes the workload's own URL the route in. Name the caller, or declare ingress_posture = \"open-anonymous\" and record the workload in ADR 0030."
+    }
+
+    # And the other way: a public URL nobody may call answers 403 to the whole
+    # internet, which is a deployment that lies about itself in the direction
+    # nobody investigates.
+    precondition {
+      condition     = var.ingress_posture != "open-anonymous" || contains(var.invokers, "allUsers")
+      error_message = "ingress_posture is open-anonymous but no anonymous invoker is named, so the URL is public and answers 403 to everyone. Name allUsers, or choose another posture."
+    }
+
+    # ADR 0031's whole guarantee. `qip_core::secret` exists and every binary
+    # this platform compiles reads a path through it, so a built workload
+    # taking a credential from the environment is choosing the easier input
+    # rather than needing it. Refused here rather than in `variables.tf`,
+    # because a validation reading a second variable is skipped silently --
+    # the same trap ADR 0030's pairing fell into and was moved out of.
+    precondition {
+      condition     = length(var.secret_env) == 0 || var.image_source == "vendored"
+      error_message = "secret_env puts a credential in the environment, and a built workload must read it from a file through qip_core::secret instead. See ADR 0031: the exception exists for a vendored image that cannot read a file, not for a binary this platform compiles."
     }
 
     # Said again for the trading class specifically, and deliberately so.
@@ -286,6 +338,22 @@ resource "google_service_account" "workload" {
         !startswith(mount.secret_id, "qip-venue-credential")
       ])
       error_message = "A customer-facing workload may not read the venue credential. Customer traffic and trading traffic share no credential; the workload that needs it is in the trading class and is reached over the VPC."
+    }
+
+    # `image_source` names which digest this workload runs at, and only one of the
+    # two variables that could carry it is ever read (see
+    # `local.effective_image_digest`). Left null, the unread half is a caller
+    # bug that would otherwise surface as Cloud Run refusing an empty image
+    # string at apply — after the image was built — rather than at plan time,
+    # naming which half was forgotten.
+    precondition {
+      condition     = var.image_source != "built" || var.image_digest != null
+      error_message = "image_source is \"built\" but image_digest is null. A built workload's digest comes from images.tfvars, composed by the caller into image_digest; pass it through."
+    }
+
+    precondition {
+      condition     = var.image_source != "vendored" || var.vendored_image_digest != null
+      error_message = "image_source is \"vendored\" but vendored_image_digest is null. A vendored workload's digest comes from vendored-images.txt, composed by the caller into vendored_image_digest; pass it through."
     }
 
     # Two mounts producing the same file path silently leave one of the two
@@ -355,6 +423,35 @@ resource "google_project_iam_member" "logging" {
 # this module and none has a value in Terraform.
 resource "google_secret_manager_secret_iam_member" "mounted" {
   for_each = var.secret_mounts
+
+  project   = var.project_id
+  secret_id = each.value.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.workload.email}"
+}
+
+# The same grant for the other way a secret reaches this workload.
+#
+# ADR 0031 added `secret_env` and this resource did not exist, so a workload
+# that took its credential as an environment value was granted nothing. That
+# is not a slow failure: Cloud Run resolves `secret_key_ref` *before* it
+# starts the instance, so a workload without the grant has no instance at
+# all, and the URL answers the load balancer's own 500 rather than anything
+# the container wrote.
+#
+# It shipped, and the way it shipped is the part worth keeping. The refactor
+# moved `module.openobserve` from `secret_mounts` to `secret_env`, which
+# destroyed its two `mounted` grants in the same apply that created the
+# revision. Nothing ordered those two operations, so the revision came up
+# while the grant was still live, the apply reported success, and the service
+# then scaled to zero — every cold start since failed to resolve the secret.
+# An apply that succeeds and leaves a service that cannot restart is the
+# worst shape this module can produce, because nothing about it looks wrong
+# until the first scale-from-zero.
+#
+# `depends_on` below is what stops the ordering half from recurring.
+resource "google_secret_manager_secret_iam_member" "env" {
+  for_each = var.secret_env
 
   project   = var.project_id
   secret_id = each.value.secret_id
@@ -504,6 +601,26 @@ resource "google_storage_bucket_iam_member" "config_files" {
 resource "google_cloud_run_v2_service" "workload" {
   count = local.is_service ? 1 : 0
 
+  # The grants before the revision that needs them.
+  #
+  # Terraform infers no dependency here: the service names a secret by *id*,
+  # never by reference to the IAM member, so without this the two are
+  # unordered. That is not theoretical. When `module.openobserve` moved from
+  # `secret_mounts` to `secret_env`, one apply destroyed the old grants and
+  # created the new revision in whatever order it liked, reported success,
+  # and left a service that could not resolve its credential on the next
+  # cold start — a Cloud Run instance is not started at all when a
+  # `secret_key_ref` fails to resolve, so the failure surfaces as a 500 from
+  # the load balancer with nothing in the container's own logs to read.
+  #
+  # Both grant resources are named, not just the one this workload happens
+  # to use: an empty `for_each` makes its entry a no-op, and naming only the
+  # populated one would put the ordering back in the caller's hands.
+  depends_on = [
+    google_secret_manager_secret_iam_member.mounted,
+    google_secret_manager_secret_iam_member.env,
+  ]
+
   project  = var.project_id
   name     = local.name
   location = var.region
@@ -561,11 +678,13 @@ resource "google_cloud_run_v2_service" "workload" {
     encryption_key                   = var.encryption_key
 
     # The workload. First, because the `ignore_changes` at the foot of this
-    # resource names it by index: the pipeline owns this container's image
-    # and Terraform owns everything else about it.
+    # resource names it by index: for a built workload, the pipeline owns
+    # this container's image and Terraform owns everything else about it — a
+    # vendored workload has no such pipeline, so `ignore_changes` does not
+    # apply to it and Terraform owns the image too.
     containers {
       name  = var.name
-      image = var.image_digest
+      image = local.effective_image_digest
 
       # Not started until the proxy answers, where there is one.
       depends_on = local.has_egress_sidecar ? [local.sidecar_name] : null
@@ -594,6 +713,28 @@ resource "google_cloud_run_v2_service" "workload" {
         content {
           name  = env.key
           value = env.value
+        }
+      }
+
+      # A secret as an environment value, resolved by Cloud Run from Secret
+      # Manager at container start (ADR 0031). Refused for a built workload by
+      # the precondition below: what Terraform carries here is the secret's
+      # name, never its content, so a plan and the state file hold nothing --
+      # but the value does reach `/proc/<pid>/environ` in the container, which
+      # is what the rule this amends is about, and the exception is drawn only
+      # where the image cannot read a file at all.
+      dynamic "env" {
+        for_each = var.secret_env
+
+        content {
+          name = env.key
+
+          value_source {
+            secret_key_ref {
+              secret  = env.value.secret_id
+              version = env.value.version
+            }
+          }
         }
       }
 
@@ -778,9 +919,21 @@ resource "google_cloud_run_v2_service" "workload" {
       }
     }
 
-    # The collector's configuration, from the bucket above. Read-only, and
-    # mounted at the hash-named directory alone, so `/etc/rungmp/config.yaml`
-    # is the one document this revision was planned with.
+    # The collector's configuration, from the bucket above, read-only.
+    #
+    # The sidecar reads `/etc/rungmp/config.yaml` and takes no argument
+    # naming another path, so the document has to land at exactly that name
+    # under the mount. `only-dir` would have selected the hash-named
+    # directory and left the file at the root of the mount, but the GA
+    # provider has no `mount_options` on a Cloud Run GCS volume — 6.50.0
+    # refuses it, and that refusal is what stopped the first plan of this
+    # runtime. The whole bucket mounts instead, so the object cannot live
+    # under a hash and still be found: pinning a collector digest means
+    # first deciding whether to name the object `config.yaml` at the bucket
+    # root — an overwrite, which needs `storage.objects.delete` this module
+    # deliberately does not grant — or to reach for the beta provider.
+    # `collector_image_digest` is null in every environment, so nothing
+    # renders this today and no revision has ever carried it.
     dynamic "volumes" {
       for_each = local.has_metrics_collector ? [local.collector_prefix] : []
 
@@ -788,16 +941,17 @@ resource "google_cloud_run_v2_service" "workload" {
         name = "metrics-collector-config"
 
         gcs {
-          bucket        = google_storage_bucket.collector_config[0].name
-          read_only     = true
-          mount_options = ["only-dir=${volumes.value}"]
+          bucket    = google_storage_bucket.collector_config[0].name
+          read_only = true
         }
       }
     }
 
-    # The configuration files, from the bucket above. Read-only, and mounted
-    # at the hash-named directory alone, so `/etc/qip/<file_name>` is the one
-    # committed file this revision was planned with.
+    # The configuration files, from the bucket above, read-only. The whole
+    # bucket mounts and the hash-named directory is part of the path the
+    # environment carries, so `/etc/qip/<hash>/<file_name>` is the one
+    # committed file this revision was planned with — the same guarantee
+    # `only-dir` gave, moved from the mount into the path.
     dynamic "volumes" {
       for_each = local.has_config_files ? [local.config_prefix] : []
 
@@ -805,9 +959,8 @@ resource "google_cloud_run_v2_service" "workload" {
         name = "config-files"
 
         gcs {
-          bucket        = google_storage_bucket.config_files[0].name
-          read_only     = true
-          mount_options = ["only-dir=${volumes.value}"]
+          bucket    = google_storage_bucket.config_files[0].name
+          read_only = true
         }
       }
     }
@@ -824,8 +977,34 @@ resource "google_cloud_run_v2_service" "workload" {
   # The workload container's image belongs to the pipeline. See the header:
   # `deploy.yml` moves it after signing and attesting a new digest, and an
   # apply that reasserted the tfvars digest would roll every deploy back.
-  # Only the image, and only the workload's — the sidecar's image is this
-  # configuration's, and everything else about the revision is too.
+  # That is not hypothetical — it is the state right now: run 33711008893
+  # moved qip-dev-api to cb4eb9f7… and its digest-recording commit was
+  # rejected, so images.tfvars still names f66c1578…. Without this rule the
+  # next apply would serve the older image. Only the image, and only the
+  # workload's — the sidecar's image is this configuration's, and everything
+  # else about the revision is too.
+  #
+  # ADR 0028 decision 3 said a vendored workload would skip this rule,
+  # because `vendor.yml` writes a reviewed line in vendored-images.txt rather
+  # than a running revision and so has no race to lose. Terraform cannot
+  # express that: `ignore_changes` takes a static list and refuses any value
+  # computed from an input ("A static list expression is required"), so the
+  # rule is uniform and the ADR carries the correction rather than this
+  # module carrying an expression that never validated.
+  #
+  # What that costs a vendored workload, stated rather than discovered: the
+  # first apply creates the service at `vendored_image_digest` (this rule
+  # does not affect creation), but a later digest bump in vendored-images.txt
+  # is then ignored on apply, and the service keeps serving the old image
+  # with no diff to show why. The remedy is explicit and belongs in the
+  # vendoring runbook, not in a plan someone hopes will notice:
+  #
+  #   terraform apply -replace='module.openobserve[0].google_cloud_run_v2_service.workload[0]'
+  #
+  # Nothing vendored is deployed today — `vendored_openobserve_image_digest`
+  # defaults to null and no environment sets it — so the exposure is zero
+  # until someone pins that digest, which is the point at which this comment
+  # is the thing they need to have read.
   lifecycle {
     ignore_changes = [template[0].containers[0].image]
   }
@@ -878,7 +1057,7 @@ resource "google_cloud_run_v2_job" "workload" {
 
       containers {
         name  = var.name
-        image = var.image_digest
+        image = local.effective_image_digest
 
         resources {
           limits = {
@@ -941,9 +1120,8 @@ resource "google_cloud_run_v2_job" "workload" {
           name = "config-files"
 
           gcs {
-            bucket        = google_storage_bucket.config_files[0].name
-            read_only     = true
-            mount_options = ["only-dir=${volumes.value}"]
+            bucket    = google_storage_bucket.config_files[0].name
+            read_only = true
           }
         }
       }

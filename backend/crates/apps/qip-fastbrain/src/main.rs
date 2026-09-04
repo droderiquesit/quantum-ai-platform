@@ -126,6 +126,12 @@ fn run() -> Result<()> {
     // level up.
     let telemetry = Telemetry::new("qip-fastbrain", clock.clone());
     let metrics = telemetry.metrics.clone();
+    // A second handle on the same three `Arc`s, taken for the same reason the
+    // registry handle above is: the drain thread must read the registry the
+    // cycle writes to. A `Telemetry::new` of its own would export an empty
+    // surface for ever while the platform recorded into one nothing could
+    // reach — the defect the comment above describes, one level up again.
+    let telemetry_for_export = telemetry.clone();
     // The universe this node sizes against, read and journaled before the
     // platform exists — see `load_universe` for why an unset path is a
     // refusal and not an empty universe.
@@ -168,6 +174,26 @@ fn run() -> Result<()> {
         .open_trial_book(config.storage.key_value("trial-book")?, "trial-book")
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
 
+    // The OpenObserve drain (ADR 0028): absent configuration means this
+    // process's telemetry stays where it already is, on /metrics on the health
+    // port below. Set means a thread starts that POSTs this node's metrics and
+    // spans on an interval. Refused here, before the banner, so a deployment
+    // that got the configuration wrong exits 78 rather than starting and
+    // draining nowhere; and see `openobserve`'s module doc for why nothing
+    // this process can reach answers on the other end today.
+    let openobserve_config = qip_fastbrain::openobserve::OpenObserveConfig::from_env()?;
+    // Bound rather than discarded: `DrainHandle::drop` stops the loop, so a
+    // `_` pattern here would start the thread and stop it on the same line.
+    // This binding must outlive `node::run` below.
+    let _openobserve_drain = match &openobserve_config {
+        Some(config) => Some(qip_fastbrain::openobserve::spawn(
+            telemetry_for_export,
+            config.clone(),
+            clock.clone(),
+        )?),
+        None => None,
+    };
+
     let status = Arc::new(Mutex::new(
         qip_fastbrain::status::NodeStatus::opening(
             &cleared,
@@ -189,6 +215,14 @@ fn run() -> Result<()> {
          sector-concentration, and the decision is the risk desk's, not this process's",
         catalogue.manifest.describe()
     );
+    match &openobserve_config {
+        Some(config) => println!("  openobserve:      draining to {}", config.describe()),
+        None => println!(
+            "  openobserve:      not draining ({} is not set); telemetry stays local to \
+             /metrics on the health port",
+            qip_fastbrain::openobserve::URL_VARIABLE
+        ),
+    }
 
     // One thread for the listener, blocking, no async runtime. It reads the
     // status the loop writes and never takes a lock the loop holds for longer

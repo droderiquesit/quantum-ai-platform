@@ -175,10 +175,22 @@ impl SequenceCoordinator {
         }
 
         for event in &batch.events {
+            // The *last* offered copy, not the first. Within one call the
+            // tracker releases or holds the earliest copy of a sequence and
+            // drops the later ones, so matching forwards charged the duplicate
+            // to the copy the tracker was still holding: that envelope left
+            // `pending`, and when the hole filled the tracker released a
+            // carrier nothing could be matched to. The envelope was lost, its
+            // carrier's `Reset` body was reported to consumers as an order to
+            // resynchronise a stream that had lost nothing, and the copy that
+            // really was dropped stayed in `pending` for the life of the
+            // process — an unbounded working set on a feed with a redundant
+            // line. Released arrivals are retained out above, so the last
+            // remaining match is always a copy the tracker refused.
             if let SequenceEvent::Duplicate { stream, sequence } = event
                 && let Some(position) = arrivals
                     .iter()
-                    .position(|(_, s, q)| s == stream && q == sequence)
+                    .rposition(|(_, s, q)| s == stream && q == sequence)
             {
                 let (id, _, _) = arrivals.remove(position);
                 self.pending.remove(&id);

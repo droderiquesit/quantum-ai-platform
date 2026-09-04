@@ -363,6 +363,58 @@ fn an_alternative_beyond_the_calibrated_participation_is_unfillable_not_profitab
     Ok(())
 }
 
+#[test]
+fn a_decision_with_only_one_closed_bar_of_history_is_refused_rather_than_priced_at_zero_impact()
+-> Result<()> {
+    // Before the two-bar floor in `DecisionView::liquidity`, a decision this
+    // early in a history got a `Liquidity` anyway: `stats::stddev` of a
+    // single return is `0.0` by construction (sample variance divides by
+    // `n - 1`), and `CostModel::cost_of` treats a non-positive volatility as
+    // "no impact term". Every counterfactual settled from it would have paid
+    // commission and spread but never impact — the alternative would have
+    // looked cheapest exactly when the estimate behind it was worth least.
+    // The fix makes the twin refuse rather than guess; this proves the
+    // refusal reaches all the way up through `evaluate`, not just `liquidity`
+    // itself.
+    let subject = object("obj-alpha");
+    let one_bar = vec![bar(&subject, 0, 100, 101, 60_000)];
+    let mut market = market_of(one_bar)?;
+    let engine = engine(1)?;
+    let decision = Decision::new(
+        DecisionId::from_string("dec-1"),
+        TraceId::new("trace-alpha"),
+        CorrelationId::from_string("cor-alpha"),
+        day(1),
+        subject.clone(),
+        Action::Filled {
+            order_id: OrderId::from_string("ord-1"),
+            venue: VenueId::new("XTST"),
+            quantity: dec!("10000"),
+            price: dec!("101"),
+        },
+    );
+    let actual = ActualTrade::new(
+        subject.clone(),
+        BookSide::Bid,
+        dec!("10000"),
+        VenueId::new("XTST"),
+        "us",
+        day(1),
+    )?;
+    let outcome = RealisedOutcome::realised(day(6), dec!("1"), Decimal::ZERO, dec!("10000"));
+
+    let error = engine
+        .evaluate(&mut market, &decision, &actual, &outcome)
+        .expect_err(
+            "a single closed bar was treated as a liquidity estimate and priced with zero impact",
+        );
+    assert!(
+        error.message().contains("not enough closed bars"),
+        "{error}"
+    );
+    Ok(())
+}
+
 // --- regret has the sign the world does -------------------------------------
 
 #[test]

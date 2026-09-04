@@ -223,6 +223,18 @@ module "secrets" {
     # here either: the adapter reads it from the environment at start-up and
     # redacts it from every Debug rendering.
     "qip-market-data-key",
+    # OpenObserve's own root login (ADR 0028), not a cloud credential: the
+    # email and password `catalogue.tf` projects into the OpenObserve
+    # workload's environment under ADR 0031, because that image carries no
+    # shell and no `_FILE` indirection, so a mount could never have reached
+    # the process. A first version is seeded by `infra.yml` when the secret
+    # has none, which is what makes an `up` that creates this service able to
+    # start it. Created in every environment for the same reason the venue
+    # credential is — a uniform deployment — even though the workload that
+    # mounts it exists only once `vendored_openobserve_image_digest` names a
+    # digest.
+    "qip-openobserve-root-email",
+    "qip-openobserve-root-password",
   ]
 
   # The venue credential is readable only by an environment that could use it,
@@ -363,7 +375,10 @@ module "registry" {
   # Cloud Run pulls as its own service agent, which the project grants
   # without a line here. The workloads are listed so a component can read the
   # digest of the image it is running, which is what makes a provenance claim
-  # checkable from inside the process.
+  # checkable from inside the process. OpenObserve is not: it is a vendored
+  # binary this platform does not build, and nothing inside it ever calls
+  # this platform's registry API to check its own provenance — the same
+  # reason it carries no `deployer_service_account` in catalogue.tf.
   pull_service_accounts = [for workload in module.cloud_run : workload.service_account_email]
 }
 
@@ -493,6 +508,16 @@ module "execution_node" {
 
   venues               = each.value.venues
   central_plane_ranges = local.central_plane_ranges
+
+  # Per node, because a plan and its pricing are a property of what a cell is
+  # asked to run rather than of the environment. Both default to empty, which
+  # is the node's own "deploy nothing" and is what every environment gets
+  # until one names otherwise.
+  default_pricing    = each.value.default_pricing
+  strategy_plan_path = each.value.strategy_plan_path
+
+  # Per node and never defaulted; see the variable's own description.
+  region_allocation = each.value.region_allocation
 
   # The same bootstrap every Cloud Run sidecar mounts, and the loopback
   # addresses it answers on.

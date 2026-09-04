@@ -280,6 +280,63 @@ fn an_assignment_of_the_wrong_shape_is_refused_before_it_is_scored() -> Result<(
     Ok(())
 }
 
+#[test]
+fn a_validator_refuses_a_non_finite_tolerance_instead_of_admitting_every_claim() {
+    // `discrepancy > f64::NAN` is `false` for every discrepancy, so a
+    // validator built with a NaN tolerance would validate any claim
+    // whatsoever if construction let it through unchecked. Construction must
+    // refuse the tolerance itself, before a single problem is ever validated
+    // against it.
+    let refusal =
+        ClassicalValidator::new(f64::NAN).expect_err("a NaN tolerance must not build a validator");
+    assert_eq!(refusal.code(), "invalid");
+
+    let refusal = ClassicalValidator::new(f64::INFINITY)
+        .expect_err("an infinite tolerance must not build a validator");
+    assert_eq!(refusal.code(), "invalid");
+}
+
+#[test]
+fn a_validator_refuses_a_negative_tolerance_rather_than_silently_making_it_positive() {
+    // A negative tolerance is a caller mistake, not a magnitude spelled with
+    // the wrong sign. Refusing it is what surfaces the mistake instead of a
+    // `.abs()` that quietly repairs it and hides the bug from whoever wrote
+    // the caller.
+    let refusal =
+        ClassicalValidator::new(-1e-6).expect_err("a negative tolerance must not be accepted");
+    assert_eq!(refusal.code(), "invalid");
+}
+
+#[test]
+fn a_validator_built_with_a_finite_non_negative_tolerance_still_validates() -> Result<()> {
+    // The refusal above must not have turned every tolerance into an error:
+    // a real deployment configuring a wider tolerance than the default still
+    // gets a working validator back.
+    let qubo = spin_glass(8, 4);
+    let assignment = vec![1u8, 0, 1, 1, 0, 0, 1, 0];
+    let truth = qubo.evaluate(&assignment);
+    let candidate = SolverCandidate {
+        solver: "nearly-right".to_string(),
+        kind: SolverKind::QuantumInspired,
+        assignment,
+        claimed_objective: truth + 1e-3,
+        evaluations: 1,
+        trace: SearchTrace {
+            family: "test".to_string(),
+            moves_proposed: 0,
+            moves_accepted: 0,
+            uphill_accepted: 0,
+            restarts: 0,
+            replicas: 1,
+            local_optimum: false,
+        },
+    };
+    let validator = ClassicalValidator::new(1e-2)?;
+    let validated = validator.validate(&qubo, &candidate)?;
+    assert!((validated.objective() - truth).abs() < 1e-15);
+    Ok(())
+}
+
 // --- the quantum-inspired solver is a different solver ----------------------
 
 #[test]

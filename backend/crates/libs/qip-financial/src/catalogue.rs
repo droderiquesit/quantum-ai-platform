@@ -50,7 +50,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::asset_class::{InstrumentType, Sector};
 use crate::object::FinancialObject;
 use crate::quality::{LicensingClass, Provenance};
-use crate::universe::Universe;
+use crate::universe::{CatalogueOrigin, Universe};
 
 /// The catalogue format this build reads. A file declaring another is
 /// refused: a newer schema may carry a field this build would silently
@@ -227,6 +227,15 @@ pub fn load(text: &str, now: Timestamp) -> Result<LoadedCatalogue> {
         not_decision_grade,
         loaded_at: now,
     };
+    // Named after the last insert, because inserting clears it. The same
+    // three values the manifest carries, copied rather than recomputed, so
+    // the manifest a root banners and the origin the kernel journals cannot
+    // name two different catalogues.
+    let universe = universe.with_origin(CatalogueOrigin {
+        version: manifest.version.clone(),
+        sha256: manifest.sha256.clone(),
+        source: manifest.source.clone(),
+    });
     Ok(LoadedCatalogue { manifest, universe })
 }
 

@@ -88,5 +88,5 @@ pub use narrative::{
 };
 pub use replay::ReplayAdapter;
 pub use rest::{FetchStats, RestFeedConfig, RestInstrument, RestMarketDataAdapter};
-pub use service::{IngestionService, IngestionStats};
+pub use service::{IngestionService, IngestionStats, SensedBatch};
 pub use synthetic::{ScriptedEvent, ScriptedEventKind, SyntheticEnvironment, SyntheticInstrument};

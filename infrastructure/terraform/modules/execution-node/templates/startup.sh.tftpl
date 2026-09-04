@@ -173,6 +173,19 @@ QIP_HALT_FLAG_PATH=$HALT_DIR/engaged
 QIP_ARBITRAGE_STRATEGY=arbitrage-desk
 QIP_VENUE_FEED=simulated
 QIP_EXECUTION_NODE_SHADOW=${shadow_mode ? "1" : "0"}
+# Required by the binary, which refuses to start without it (ADR 0008): the
+# per-region reservation the cell refuses its own second proposal against
+# once it has lost the centre. No default anywhere — a default is a number
+# nobody chose, and the module refuses an empty or zero value at plan time.
+QIP_REGION_ALLOCATION=${region_allocation}
+# Written even when empty, and empty is the default. Unset and empty mean
+# the same thing to the binary — no plan, no strategy deployed, said at
+# start-up — but an optional variable no deployment writes at all is a
+# capability no environment can select, and nothing anywhere would say the
+# feature was off. The key present with an empty value puts the choice in
+# the tfvars where a reviewer sees it.
+QIP_DEFAULT_PRICING=${default_pricing}
+QIP_STRATEGY_PLAN_PATH=${strategy_plan_path}
 EOF
 chmod 0444 "$CONF_DIR/node.env"
 

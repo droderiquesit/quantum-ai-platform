@@ -1,9 +1,15 @@
 # 0027 — Concentration limits are a share of what
 
-**Status:** proposed — the owner decides. This record decides nothing; it
-frames one decision a kernel change surfaced, the completion plan filed as
-D13, and no record has yet named, and it carries a recommendation marked as
-one.
+**Status:** accepted — option (a). The owner took the decision recorded in
+"Decision" below; the framing, the options and the recommendation are kept as
+written so the reasoning that led there stays readable. The completion plan's
+D13 is closed by this record.
+**What the accepted change touches:** nothing above the risk lib except two
+kernel test fixtures, the banner text in the three composition roots, and one
+`qip-api` test. `LimitKind` gains `MaxAxisWeight`; `LimitSet::conservative_default`
+swaps its two `MaxConcentration` entries for it on the same axes at the same
+numbers; `MaxConcentration` stays in the type with no production caller. No
+crate is added, so ADR 0002 and ADR 0009 are untouched.
 **Would amend, if accepted in any direction:** nothing above the risk lib.
 Every option below is a change to `LimitSet::conservative_default` and, for
 two of them, to `LimitKind`. No option adds a crate, so ADR 0002 and ADR 0009
@@ -14,6 +20,14 @@ an order path. `.claude/rules/domains/risk-and-execution.md` is the owner's
 and is quoted here rather than corrected.
 
 ## Context, as verified in the tree at `cfe11c1`
+
+Every line reference in this section is as of `cfe11c1` and the accepted
+change has moved them. In the tree carrying the decision: the
+`MaxConcentration` evaluation arm is `limits.rs:619-635`, the new
+`MaxAxisWeight` arm `:636-660`, `RiskState::ratio` `:310-315`,
+`conservative_default` starts at `:788` and its two per-axis entries are
+`:811-833`. Recount before quoting any of them again — a line number in a
+record is stale the moment the file above it grows.
 
 ### The finding
 
@@ -317,6 +331,93 @@ that the default has no bucket control, which is the honest cost and the
 reason not to take it.
 
 *Dependency direction.* Unchanged.
+
+### Option (e), considered and rejected: a floored capital denominator
+
+Proposed as an improvement on (a): measure each bucket as
+`position_value / max(gross_exposure, allocated_capital)`, where
+`allocated_capital` is the allocation's total budget. The intent was to keep
+share-of-gross semantics on a full book while giving a thin book a
+denominator the order cannot create. It is rejected on four facts checked in
+the tree:
+
+1. **The `max` is a loosening, never a tightening.** `max(G, C) ≥ C`, so the
+   observed share is smaller than plain `value / C` in every levered state.
+   Under the shipped `leverage` bound of 1.5
+   (`backend/crates/libs/qip-risk/src/limits.rs:807`) a sector could reach
+   `0.35 × 1.5 = 52.5%` of equity. The limit gets weakest exactly when the
+   book is largest, which is the shape of a control that reads as protection
+   and is not.
+2. **It reintroduces the discontinuity it was meant to remove.** Above the
+   crossover the denominator is again a quantity the order itself moves —
+   the seam this record charges against option (b).
+3. **`allocated_capital` is numerically `config.initial_equity` today.**
+   `AllocationLimits::new(initial_equity, …)`
+   (`backend/crates/runtime/qip-kernel/src/platform.rs:1356`) and
+   `RiskAggregates::new(initial_equity, initial_equity)` (`platform.rs:1440`)
+   are the same number, so (e) and (a) compute the same ratio on day one —
+   and (e) costs a new `RiskState` field, a new `AggregateFigures` method, and
+   a second claim about the size of the same book, which principle 6 of
+   `CLAUDE.md` exists to prevent.
+4. **Where they diverge, equity is the better number.** The allocation's
+   total budget is set once at assembly and never re-anchored, so (e) is
+   share-of-*initial*-capital: after a 40% loss a sector may still hold 35%
+   of the original envelope. Equity shrinks with the book.
+
+What (e) argued and (a) keeps: the denominator must be knowable before an
+order exists and must not be moved by the order under check. `state.equity`
+satisfies both and is already the denominator of six sibling limits.
+
+## Decision
+
+**Option (a), taken.** `LimitKind::MaxAxisWeight { axis, limit }` — every
+bucket of a named axis measured as a fraction of equity through the existing
+`RiskState::ratio` — replaces the two `MaxConcentration` entries in
+`LimitSet::conservative_default`. `MaxConcentration` stays in the type, with
+its fixtures, and leaves the default set.
+
+**The numbers stay at 0.35 and 0.60.** Changing the denominator and the
+calibration in one diff would make the change unattributable. The consequence,
+stated rather than hidden: against a `position-weight` of 0.10, a sector cap
+of 0.35 of equity binds only at four or more full-size names in one sector,
+and a country cap of 0.60 needs six. That is a reachable control, not a
+calibrated one, and the numbers are the desk's to re-set.
+
+Recorded beside the decision, because both are load-bearing:
+
+- **`MaxConcentration` is the only kind of the sixteen whose denominator is
+  part of the state the order perturbs.** That is why
+  `PreTradeChecker::largest_permissible`'s `if quantity.is_zero() { return (true, …) }`
+  (`backend/crates/services/qip-risk-engine/src/pretrade.rs:305-307`) is a
+  fiction for it: the bisection assumes a zero-size order passes and that the
+  predicate is monotone in size, and a self-referential denominator breaks
+  both. The property is encoded as
+  `LimitKind::denominator_moves_with_the_order`, a wildcard-free match so a
+  seventeenth kind cannot be added without someone answering the question,
+  and asserted against the shipped set by
+  `no_limit_in_the_default_set_divides_by_a_number_the_order_itself_moves`
+  in `qip-risk/tests/risk.rs`. `PreTradeChecker::new` deliberately keeps
+  taking a plain `LimitSet`: the type-level version of the same guarantee is
+  worth having, but its construction-site blast radius is unmeasured and
+  staging it separately is the honest call.
+- **The committed catalogue cannot exercise the sector cap.**
+  `data/datasets/universe.json` holds six instruments — two
+  `information_technology`, one each energy, financials, health care and
+  industrials; geographies US×4, GB, FR — so two IT names cap out at 0.20 of
+  equity. That is a property of a six-instrument fixture catalogue, not of the
+  limit. The production-path admission half therefore lives in `qip-api`'s
+  root test and the veto half in `qip-kernel/tests/risk_aggregates.rs`, whose
+  fixture universe puts four names in one sector.
+
+## What the decision gives up
+
+Composition enforcement on a thin book: a book at 20% gross entirely in one
+sector is 20% of equity in that sector and passes a 0.35 cap. The mitigation
+available and **not** taken here is a share-of-gross `MaxConcentration` in the
+*monitoring* set, named `sector-crowding` so it cannot be confused with the
+pre-trade limit in a log. That is a desk decision about what they want
+reported rather than vetoed, and it is a second decision this record does not
+make.
 
 ## Recommendation — marked as a recommendation, not a decision
 

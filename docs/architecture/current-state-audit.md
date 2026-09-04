@@ -83,7 +83,7 @@ described is the connection and the connection does not exist.
 | Capability | State | Where |
 |---|---|---|
 | Provider adapters (market, news, fundamental, macro, alt) | Partial | `qip-market-ingestion` — pull-based `DataAdapter`, synthetic implementations only |
-| Normalisation, dedup, time sync, enrichment | Built | `qip-normalization` |
+| Normalisation, dedup, time sync, enrichment | Removed | `qip-normalization` deleted under ADR 0029 — nothing constructed it; dedup and clock discipline live in `qip-sequencing`, and there is no normalisation or enrichment in the runtime path |
 | Sequence, gap, clock discipline | Built | `qip-sequencing` — A/B arbitration, PTP-style estimation, failover |
 | Wire decoders (FIX, ITCH, SBE, framed JSON) | Built | `qip-protocols` |
 | Point-in-time mesh (lakehouse, analytics, hot series, master, graph) | Partial | `qip-mesh` — ports and local adapters; managed services report unavailable |

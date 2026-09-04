@@ -33,8 +33,8 @@ carrying the bootstrap the chart reviewed and never applied.
 | Address | `http://127.0.0.1:910x`; every listener and the admin interface bind loopback |
 
 The listener and port scheme is unchanged from the chart: 9101 Cloud Storage
-and BigQuery, 9102 Vertex, 9103 IBM Quantum Runtime, 9104 IBM legacy, 9900
-health. The port is the destination selector, and that is the whole security
+and BigQuery, 9102 Vertex, 9103 IBM Quantum Runtime, 9104 IBM legacy, 9105
+Frankfurter (ECB reference rates), 9900 health. The port is the destination selector, and that is the whole security
 argument for the design: a process permitted to reach 9101 can reach Cloud
 Storage and BigQuery and has no way to express a wish to reach anything else.
 
@@ -82,6 +82,12 @@ from one that refuses everything.
 - **It does not give the execution node its proxy.** The node's unit is an
   image contract: the image ships `/usr/local/bin/envoy` and the startup
   script installs the unit. `modules/execution-node/README.md` carries it.
-- **It reaches no venue, no broker, no market-data vendor.** The variable's
-  validation refuses a host that names one, and the acceptance suite refuses a
-  bootstrap that does.
+- **It reaches no venue and no broker, and one market-data vendor.** The
+  variable's validation refuses a host whose name contains `venue`, `broker`
+  or `exchange`, and the acceptance suite refuses a bootstrap that dials one.
+  `api.frankfurter.app` is a republisher of the ECB's daily reference rates,
+  polled hourly for a table with a sixteen-hour dissemination delay; it is on
+  the list because a manifest in this workspace names it and its licence was
+  evaluated before it could be opened, not because a market-data path was
+  wanted. Nothing reads it yet — see the fast brain's missing sidecar in
+  `infrastructure/terraform/catalogue.tf`.

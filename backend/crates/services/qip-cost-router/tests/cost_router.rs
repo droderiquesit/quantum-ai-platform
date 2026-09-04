@@ -460,6 +460,53 @@ fn a_decision_routes_to_the_cheapest_rung_that_is_affordable_fast_enough_and_str
 }
 
 #[test]
+fn a_tolerated_estimate_that_settles_on_deterministic_code_is_still_judged_and_escalatable()
+-> Result<()> {
+    // `DeterministicRouting` is the type that proves no model was consulted,
+    // and it must stay reserved for `Determinism::Required`. A decision that
+    // merely tolerates an estimate (`NotRequired`) can still land on the
+    // `DeterministicCode` rung — its 0.50 resolving power is a coin flip
+    // against a judgement question, not a computed certainty, so a weak
+    // enough confidence bar accepts it. That outcome has to stay a
+    // `JudgedRouting`: an estimate that could be wrong, and one `escalate`
+    // can still climb past. Collapsing it into `DeterministicRouting` would
+    // hand a decision the type-level "this cannot be wrong" guarantee for a
+    // coin flip nobody required.
+    let router = Router::default();
+    let weak = context(
+        dec!("100000"),
+        Duration::from_hours(1),
+        0.4,
+        Determinism::NotRequired,
+    );
+    let routing = router.select(&weak)?;
+    let Routing::Judged(judged) = &routing else {
+        panic!("a NotRequired decision must never produce Routing::Deterministic");
+    };
+    assert_eq!(judged.tier(), IntelligenceTier::DeterministicCode);
+    assert!(
+        judged.model_tier().is_none(),
+        "deterministic code still reports no model, from inside the Judged variant"
+    );
+
+    // Being Judged rather than Deterministic is not cosmetic: it is what lets
+    // an unconvincing answer keep climbing. `DeterministicRouting` has no
+    // `escalate` path at all — there is no value of it to hand in.
+    let limits = EscalationLimits::new(IntelligenceTier::StatisticalModel, dec!("10"))?;
+    let unconvincing = Conviction::new(0.0, 1_000);
+    let escalation = router.escalate(judged, &weak, unconvincing, &limits)?;
+    assert!(
+        escalation.climbed(),
+        "a coin flip that misses a 0.4 bar must still be able to climb"
+    );
+    assert_eq!(
+        escalation.routing().tier(),
+        IntelligenceTier::StatisticalModel
+    );
+    Ok(())
+}
+
+#[test]
 fn routing_is_deterministic_given_the_same_context() -> Result<()> {
     // A routing decision that varied run to run would make a replay reproduce a
     // different reasoning trace for the same decision, and the attribution that

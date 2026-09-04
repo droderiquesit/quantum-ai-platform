@@ -1,0 +1,1627 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Algorik — Cognitive Investment Platform</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#F2F4F7;--panel:#FFFFFF;--panel2:#F7F9FB;--rule:#D3DAE4;--rule2:#E4E9F0;
+  --ink:#131A24;--ink2:#3D4756;--muted:#6C778A;
+  --exec:#0369A1;--opt:#0F766E;--intel:#4338CA;--ledger:#A16207;--cog:#6D28D9;
+  --ingest:#15803D;--val:#9A3412;--user:#BE185D;--ext:#64748B;--stop:#B91C1C;--wire:#94A3B8;
+  --shadow:0 1px 2px rgba(19,26,36,.06),0 8px 24px rgba(19,26,36,.05);
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0C1119;--panel:#141B26;--panel2:#101822;--rule:#26313F;--rule2:#1C2531;
+  --ink:#DCE3ED;--ink2:#B0BAC8;--muted:#78849A;
+  --exec:#4CC2FF;--opt:#3FCFA8;--intel:#9A9AFF;--ledger:#E5A54B;--cog:#C08BFF;
+  --ingest:#4ADE80;--val:#FB923C;--user:#FF7AB8;--ext:#7E8A9C;--stop:#FF7A7A;--wire:#3A4657;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.28);}}
+:root[data-theme="dark"]{
+  --bg:#0C1119;--panel:#141B26;--panel2:#101822;--rule:#26313F;--rule2:#1C2531;
+  --ink:#DCE3ED;--ink2:#B0BAC8;--muted:#78849A;
+  --exec:#4CC2FF;--opt:#3FCFA8;--intel:#9A9AFF;--ledger:#E5A54B;--cog:#C08BFF;
+  --ingest:#4ADE80;--val:#FB923C;--user:#FF7AB8;--ext:#7E8A9C;--stop:#FF7A7A;--wire:#3A4657;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.28);}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"IBM Plex Sans",ui-sans-serif,system-ui,-apple-system,sans-serif;font-size:15px;line-height:1.5}
+.wrap{max-width:1180px;margin:0 auto;padding:0 20px 72px}
+header{border-bottom:1px solid var(--rule);background:var(--panel);position:sticky;top:0;z-index:20}
+.mast{max-width:1180px;margin:0 auto;padding:18px 20px 0;display:flex;flex-wrap:wrap;gap:16px;align-items:baseline}
+.mark{font-weight:700;font-size:19px;letter-spacing:-.015em}
+.mast .sub{color:var(--muted);font-size:13.5px}
+.ver{margin-left:auto;color:var(--muted);font-size:12.5px}
+nav{max-width:1180px;margin:0 auto;padding:14px 20px 0;display:flex;gap:2px;overflow-x:auto}
+nav button{font:inherit;font-size:13px;color:var(--muted);background:none;border:0;border-bottom:2px solid transparent;padding:8px 12px 11px;cursor:pointer;white-space:nowrap}
+nav button:hover{color:var(--ink2)}
+nav button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--cog)}
+nav button:focus-visible{outline:2px solid var(--cog);outline-offset:-2px;border-radius:3px}
+h2{font-size:20px;font-weight:600;letter-spacing:-.01em;margin:0 0 6px}
+h3{font-size:14px;font-weight:600;margin:0 0 10px;color:var(--ink)}
+h4{font-size:12.5px;font-weight:600;margin:20px 0 9px;color:var(--ink2)}
+.lede{color:var(--ink2);max-width:66ch;margin:0 0 26px;font-size:14.5px}
+section{padding-top:38px}
+.panelbox{background:var(--panel);border:1px solid var(--rule);border-radius:4px;padding:22px 22px 18px;box-shadow:var(--shadow)}
+.panelbox .top{display:flex;flex-wrap:wrap;gap:10px 24px;align-items:baseline;margin-bottom:16px}
+.panelbox .top h3{margin:0}.panelbox .top p{margin:0;color:var(--muted);font-size:13px}
+.readout{display:flex;flex-wrap:wrap;gap:0;margin-top:20px;border-top:1px solid var(--rule2)}
+.readout div{flex:1 1 128px;padding:13px 16px 0;border-right:1px solid var(--rule2)}
+.readout div:last-child{border-right:0}
+.readout b{display:block;font-family:"IBM Plex Mono",monospace;font-size:21px;font-weight:500;letter-spacing:-.02em;line-height:1.15;font-variant-numeric:tabular-nums}
+.readout small{display:block;color:var(--muted);font-size:12px;margin-top:3px;line-height:1.35}
+.loopgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));border:1px solid var(--rule);border-radius:3px;overflow:hidden;background:var(--panel2)}
+.loopgrid > div{padding:13px 14px;border-right:1px solid var(--rule2);border-bottom:1px solid var(--rule2)}
+.loopgrid .st{font-family:"IBM Plex Mono",monospace;font-size:10.5px;color:var(--muted);margin-bottom:6px}
+.loopgrid b{display:block;font-size:13.5px;font-weight:600;margin-bottom:4px}
+.loopgrid p{margin:0;font-size:12px;color:var(--ink2);line-height:1.42}
+.ret{display:flex;align-items:center;gap:12px;margin-top:9px;padding:10px 14px;border:1px dashed var(--rule);border-radius:3px;font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--muted);background:var(--panel2)}
+.bar{display:flex;height:52px;border:1px solid var(--rule);border-radius:2px;overflow:hidden;background:var(--panel2)}
+.seg{position:relative;display:flex;align-items:center;justify-content:center;border-right:1px solid var(--bg);min-width:2px}
+.seg:last-child{border-right:0}
+.seg span{font-family:"IBM Plex Mono",monospace;font-size:10.5px;color:#fff;opacity:.95;white-space:nowrap;padding:0 4px}
+.seg.wire{background:var(--wire)}.seg.wire span{color:var(--ink);font-size:12px;font-weight:500;opacity:1}
+.axis{display:flex;margin-top:7px;font-size:11.5px;color:var(--muted)}
+.axis div{border-left:1px solid var(--rule);padding-left:7px;padding-top:3px}
+.lane{margin-top:14px}
+.lane-hd{display:flex;align-items:baseline;gap:12px;margin:0 0 9px}
+.lane-hd h3{margin:0;font-size:13px}
+.lane-hd .meta{color:var(--muted);font-size:12px;font-family:"IBM Plex Mono",monospace}
+.lane-hd::after{content:"";flex:1;height:1px;background:var(--rule2)}
+.plane{border:1px solid var(--rule);border-radius:4px;background:var(--panel);box-shadow:var(--shadow);overflow:hidden}
+.plane > .hd{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline;padding:13px 18px;border-bottom:1px solid var(--rule);background:var(--panel2)}
+.plane > .hd strong{font-size:14px;font-weight:600}
+.plane > .hd .k{color:var(--muted);font-size:12px;font-family:"IBM Plex Mono",monospace}
+.row{display:grid;grid-template-columns:120px 1fr;border-bottom:1px solid var(--rule2)}
+.row:last-child{border-bottom:0}
+.row > .tag{padding:15px 14px;font-size:11.5px;color:var(--muted);border-right:1px solid var(--rule2);background:var(--panel2);font-family:"IBM Plex Mono",monospace}
+.row > .body{padding:13px 14px;display:flex;flex-wrap:wrap;gap:8px;align-items:stretch}
+.mod{flex:1 1 168px;min-width:150px;border:1px solid var(--rule);border-left:3px solid var(--exec);border-radius:3px;padding:9px 11px;background:var(--panel)}
+.mod .n{font-size:13px;font-weight:500;line-height:1.3}
+.mod .d{color:var(--muted);font-size:11.5px;margin-top:3px;line-height:1.4}
+.mod .t{font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--exec);margin-top:6px}
+.mod.q{border-left-color:var(--opt)}.mod.q .t{color:var(--opt)}
+.mod.g{border-left-color:var(--ledger)}.mod.g .t{color:var(--ledger)}
+.mod.c{border-left-color:var(--cog)}.mod.c .t{color:var(--cog)}
+.mod.i{border-left-color:var(--intel)}.mod.i .t{color:var(--intel)}
+.mod.v{border-left-color:var(--val)}.mod.v .t{color:var(--val)}
+.mod.g2{border-left-color:var(--ingest)}.mod.g2 .t{color:var(--ingest)}
+.mod.u{border-left-color:var(--user)}.mod.u .t{color:var(--user)}
+.mod.x{border-left-color:var(--ext);background:var(--panel2)}.mod.x .t{color:var(--ext)}
+.mod.stop{border-left-color:var(--stop)}.mod.stop .t{color:var(--stop)}
+.pinch{flex:1 1 100%;border:1px solid var(--exec);border-radius:3px;background:color-mix(in srgb,var(--exec) 9%,var(--panel));padding:13px 15px}
+.pinch .n{font-size:14px;font-weight:600}
+.pinch .d{color:var(--ink2);font-size:12.5px;margin-top:4px;max-width:74ch}
+.pinch .t{font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--exec);margin-top:7px}
+.funnel{display:flex;align-items:center;gap:10px;padding:9px 14px 0;color:var(--muted);font-size:11.5px;font-family:"IBM Plex Mono",monospace}
+.funnel::before,.funnel::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,transparent,var(--exec),transparent);opacity:.5}
+.link{display:flex;align-items:center;gap:12px;margin:12px 0;color:var(--muted);font-size:12px;font-family:"IBM Plex Mono",monospace}
+.link i{flex:0 0 1px;height:22px;background:var(--rule);display:block;margin-left:58px}
+.grid{display:grid;gap:14px}
+.g2{grid-template-columns:repeat(auto-fit,minmax(310px,1fr))}
+.g3{grid-template-columns:repeat(auto-fit,minmax(228px,1fr))}
+.card{border:1px solid var(--rule);border-radius:4px;background:var(--panel);padding:16px 17px;box-shadow:var(--shadow)}
+.card.z{border-top:3px solid var(--exec)}
+.card.z.o{border-top-color:var(--opt)}.card.z.i{border-top-color:var(--intel)}
+.card.z.l{border-top-color:var(--ledger)}.card.z.c{border-top-color:var(--cog)}
+.card.z.v{border-top-color:var(--val)}.card.z.g{border-top-color:var(--ingest)}
+.card.z.e{border-top-color:var(--ext)}.card.z.s{border-top-color:var(--stop)}.card.z.u{border-top-color:var(--user)}
+.card p{margin:0 0 10px;color:var(--ink2);font-size:13px;line-height:1.5}
+.card ul{margin:0;padding:0;list-style:none}
+.card li{font-size:12.5px;padding:5px 0;border-top:1px solid var(--rule2);display:flex;gap:9px;justify-content:space-between;align-items:baseline}
+.card li:first-child{border-top:0}
+.card li span:last-child{font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--muted);text-align:right;flex:0 0 auto;max-width:54%}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{text-align:left;font-weight:600;font-size:11.5px;color:var(--muted);padding:0 12px 8px 0;border-bottom:1px solid var(--rule)}
+td{padding:8px 12px 8px 0;border-bottom:1px solid var(--rule2);vertical-align:top;color:var(--ink2)}
+td:first-child{color:var(--ink);font-weight:500}
+td.m,th.m{font-family:"IBM Plex Mono",monospace;font-size:11.5px}
+.nowrap{white-space:nowrap}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}.scroll table{min-width:640px}
+.ship{border:1px solid var(--cog);border-radius:4px;overflow:hidden;background:var(--panel);box-shadow:var(--shadow)}
+.ship .sh{padding:13px 17px;background:color-mix(in srgb,var(--cog) 10%,var(--panel));border-bottom:1px solid var(--rule);display:flex;flex-wrap:wrap;gap:6px 16px;align-items:baseline}
+.ship .sh strong{font-size:14px}
+.ship .sh .k{font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--muted)}
+.ship ol{margin:0;padding:0;list-style:none;counter-reset:p}
+.ship li{counter-increment:p;display:grid;grid-template-columns:28px 1fr;gap:12px;padding:10px 17px;border-bottom:1px solid var(--rule2)}
+.ship li:last-child{border-bottom:0}
+.ship li::before{content:counter(p);font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--cog);padding-top:2px}
+.ship li b{display:block;font-size:13px;font-weight:600}
+.ship li p{margin:2px 0 0;font-size:12.5px;color:var(--ink2);line-height:1.45}
+.ship li .k{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--muted);margin-top:3px;display:block}
+.rig{border:1px solid var(--rule);border-radius:4px;background:var(--panel);box-shadow:var(--shadow);overflow:hidden}
+.fan{display:flex;align-items:stretch;color:var(--muted);font-size:11px;font-family:"IBM Plex Mono",monospace;background:var(--panel2);border-bottom:1px solid var(--rule2)}
+.fan div{flex:1;text-align:center;padding:8px 6px;border-right:1px solid var(--rule2)}
+.fan div:last-child{border-right:0}
+.regions{display:grid;grid-template-columns:repeat(auto-fit,minmax(258px,1fr))}
+.reg{border-right:1px solid var(--rule2)}.reg:last-child{border-right:0}
+.reg .rh{padding:13px 15px 11px;border-bottom:1px solid var(--rule2)}
+.reg .rh b{font-size:14px;font-weight:600;display:block}
+.reg .rh .k{font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--exec);margin-top:2px;display:block}
+.reg dl{margin:0;padding:11px 15px 13px}
+.reg dt{font-size:11px;color:var(--muted);margin-top:9px}.reg dt:first-child{margin-top:0}
+.reg dd{margin:2px 0 0;font-size:12.5px;color:var(--ink2);line-height:1.45}
+.reg dd.m{font-family:"IBM Plex Mono",monospace;font-size:11.5px}
+.mirror{border-top:1px solid var(--rule);background:var(--panel2);padding:13px 18px;font-size:12.5px;color:var(--ink2)}
+.mirror b{color:var(--ink);font-weight:600}
+.legend{display:flex;flex-wrap:wrap;gap:7px 20px;padding:14px 0 0;border-top:1px solid var(--rule2);margin-top:24px;font-size:12px;color:var(--muted)}
+.legend b{display:inline-flex;align-items:center;gap:7px;font-weight:400}
+.sw{width:11px;height:11px;border-radius:2px;display:inline-block}
+.note{font-size:12.5px;color:var(--muted);max-width:74ch;margin:12px 0 0;line-height:1.55}
+.hidden{display:none}
+.arch{display:grid;gap:8px}
+.band{border:1px solid var(--rule);border-radius:4px;background:var(--panel);box-shadow:var(--shadow);overflow:hidden}
+.band>.bh{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:baseline;padding:9px 14px;border-bottom:1px solid var(--rule2);background:var(--panel2)}
+.band>.bh b{font-size:12.5px}.band>.bh .k{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--muted)}
+.band>.bb{display:flex;flex-wrap:wrap;gap:6px;padding:10px 12px}
+.box{border:1px solid var(--rule);border-radius:3px;padding:6px 9px;font-size:12px;line-height:1.35;background:var(--panel);flex:1 1 150px;min-width:120px}
+.box small{display:block;font-family:"IBM Plex Mono",monospace;font-size:10.5px;color:var(--muted);margin-top:2px}
+.box.r{border-left:3px solid var(--exec)}.box.g{border-left:3px solid var(--ext);background:var(--panel2)}.box.ibm{border-left:3px solid var(--intel)}.box.x{border:1px dashed var(--ext);background:transparent}
+.band.r>.bh{border-left:4px solid var(--exec)}.band.g>.bh{border-left:4px solid var(--ext)}.band.ibm>.bh{border-left:4px solid var(--intel)}.band.x>.bh{border-left:4px dashed var(--ext)}
+.flow{display:flex;justify-content:center;font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--muted);padding:2px 0}
+.flow.pol{color:var(--cog)}.flow.mkt{color:var(--exec)}.flow.usr{color:var(--user)}.flow.tre{color:var(--ledger)}
+.pipe{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:10px 12px;font-family:"IBM Plex Mono",monospace;font-size:11px;background:color-mix(in srgb,var(--exec) 8%,var(--panel));border-top:1px solid var(--rule2)}
+.pipe span{border:1px solid var(--exec);border-radius:2px;padding:3px 6px;color:var(--ink)}.pipe i{color:var(--exec);font-style:normal}
+.pipe span.x{border-style:dashed;border-color:var(--ext);color:var(--muted)}
+footer{border-top:1px solid var(--rule);margin-top:56px;padding:20px 0 0;color:var(--muted);font-size:12px}
+@media (max-width:640px){
+  .row{grid-template-columns:1fr}
+  .row > .tag{border-right:0;border-bottom:1px solid var(--rule2);padding:9px 14px}
+  .seg span{display:none}.seg.wire span{display:inline}
+  .link i{margin-left:12px}.reg{border-right:0;border-bottom:1px solid var(--rule2)}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<header>
+  <div class="mast">
+    <div class="mark">Algorik</div>
+    <div class="sub">Cognitive investment platform</div>
+    <div class="ver">Blueprint v10.1</div>
+  </div>
+  <nav role="tablist">
+    <button role="tab" id="t1" aria-controls="v1" aria-selected="true">Overview</button>
+    <button role="tab" id="t2" aria-controls="v2" aria-selected="false">Cognition</button>
+    <button role="tab" id="t3" aria-controls="v3" aria-selected="false">Valuation &amp; assets</button>
+    <button role="tab" id="t4" aria-controls="v4" aria-selected="false">Intelligence &amp; quantum</button>
+    <button role="tab" id="t5" aria-controls="v5" aria-selected="false">Capital &amp; money</button>
+    <button role="tab" id="t6" aria-controls="v6" aria-selected="false">Execution</button>
+    <button role="tab" id="t7" aria-controls="v7" aria-selected="false">Software</button>
+    <button role="tab" id="t8" aria-controls="v8" aria-selected="false">Cloud &amp; network</button>
+    <button role="tab" id="t9" aria-controls="v9" aria-selected="false">Web &amp; mobile</button>
+    <button role="tab" id="t11" aria-controls="v11" aria-selected="false">Experience</button>
+    <button role="tab" id="t10" aria-controls="v10" aria-selected="false">Roadmap &amp; evidence</button>
+  </nav>
+</header>
+<div class="wrap">
+<div id="v1" role="tabpanel" aria-labelledby="t1">
+<section>
+  <h2>Observe, understand, believe, value, allocate, act, remember</h2>
+  <p class="lede">Algorik observes the world through information rather than prices alone, models what causes what, remembers what it has seen, holds beliefs with stated confidence, values assets that have no continuous price, allocates with quantum optimisation, acts in microseconds through regional nodes, and learns from every path it declined.</p>
+  <div class="panelbox">
+    <div class="top"><h3>The cognitive loop</h3><p>Seven stages. Every outcome re-enters at three points.</p></div>
+    <div class="loopgrid">
+      <div><div class="st">1 · observe</div><b>Ingestion</b><p>Prices, books, news, filings, releases, chain events, registries, physical indices, and the platform's own fills and verdicts. Everything resolved to entities.</p></div>
+      <div><div class="st">2 · understand</div><b>World &amp; causality</b><p>Events update the entity graph. Causal edges are re-estimated. New relationships enter as hypotheses with a falsifier attached.</p></div>
+      <div><div class="st">3 · remember</div><b>Episodic memory</b><p>State compressed to a vector, stored with what followed, indexed so a similar situation can be retrieved later.</p></div>
+      <div><div class="st">4 · believe</div><b>Belief state</b><p>Evidence combined into explicit distributions with confidence that propagates directly into position size.</p></div>
+      <div><div class="st">5 · value</div><b>Valuation</b><p>Assets without a price are marked: curves, credit, surfaces, comparables, discounted cashflows, commitments. Each mark carries its method.</p></div>
+      <div><div class="st">6 · allocate</div><b>Capital &amp; quantum</b><p>Split across families, regimes and horizons under the risk envelope, with an explicit share reserved for information gain.</p></div>
+      <div><div class="st">7 · act</div><b>Regional execution</b><p>Nodes combine shipped intelligence with live local state, check feasibility, gate, and execute in microseconds.</p></div>
+      <div><div class="st">8 · learn</div><b>Counterfactuals</b><p>Outcomes and paths declined are both scored. The self-model updates. Exploration redirects toward where confidence is weakest.</p></div>
+    </div>
+    <div class="ret">every outcome returns three times — to the ledger as a fact, to cognition as an episode and a counterfactual, to intelligence as training signal</div>
+    <div class="readout">
+      <div><b>7</b><small>Planes</small></div>
+      <div><b>34</b><small>Bounded domains</small></div>
+      <div><b>12</b><small>Items shipped to each region</small></div>
+      <div><b>665&thinsp;µs</b><small>Software time, tick to order</small></div>
+      <div><b>0</b><small>Models with decision authority</small></div>
+    </div>
+  </div>
+</section>
+<section>
+  <h2>What made it cognitive</h2>
+  <p class="lede">Version 8 was a very well engineered reflex arc. It could act faster than almost anything else and could not tell you why an opportunity existed, whether it had seen the situation before, or what would have happened had it chosen differently.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Was missing</th><th>Consequence</th><th>Now</th></tr></thead>
+    <tbody>
+      <tr><td class="nowrap">Causal layer</td><td>When a regime broke, every model broke at once — they had all learned the same spurious structure</td><td>A causal graph over drivers, with interventional reasoning</td></tr>
+      <tr><td class="nowrap">Episodic memory</td><td>Estimators forget by design. The system could not recognise a situation it had lived through</td><td>Compressed episodes with analogical retrieval</td></tr>
+      <tr><td class="nowrap">Counterfactual scoring</td><td>Four hundred vetoed cycles a day carried an enormous signal that was discarded</td><td>Shadow execution and scoring of every path declined</td></tr>
+      <tr><td class="nowrap">Self-model</td><td>No way to direct attention toward its own blind spots</td><td>Capability estimation driving an exploration budget</td></tr>
+      <tr><td class="nowrap">World knowledge</td><td>Prediction markets, event-driven strategies and private assets unreachable</td><td>Information ingestion and an entity graph</td></tr>
+      <tr><td class="nowrap">Valuation without a price</td><td>Roughly sixty percent of investable wealth structurally excluded</td><td>Six valuation engines, each mark carrying method and confidence</td></tr>
+      <tr><td class="nowrap">Feasibility at size</td><td>At small capital, a day spent detecting opportunities it could not execute</td><td>A feasibility gate ahead of the profitability filter</td></tr>
+      <tr><td class="nowrap">After-tax reasoning</td><td>After-tax return is the only return that exists, and it was absent</td><td>Lot tracking, holding period, jurisdiction-aware exit selection</td></tr>
+      <tr><td class="nowrap">Source discovery</td><td>Ingestion consumed known sources; nothing found new ones</td><td>A crawler over the surface, deep and dark web that registers sources, never content. Deep web feeds training; dark web is defensive only</td></tr>
+      <tr><td class="nowrap">Experience architecture</td><td>The product had a surface but no architecture; landing, portal and platform were three stories</td><td>Public edge, application APIs, investor portal, mobile, entitlements and a frontend security boundary — one system, three surfaces. See the Experience tab</td></tr>
+      <tr><td class="nowrap">Breadth and divestment</td><td>Hundreds of classes were reachable but unlisted; divestment was a side effect</td><td>Asset registry, venue onboarding, calendars, hedge map, cross-margin, position lifecycle</td></tr>
+    </tbody>
+  </table></div>
+</section>
+<section>
+  <h2>The seven planes</h2>
+  <div class="grid g3">
+    <div class="card z g"><h3>Ingestion</h3><p>Observes: news, filings, releases, chains, registries, physical indices, prices, own outcomes. Resolves everything to entities.</p><ul><li><span>Scale</span><span>seconds to daily</span></li></ul></div>
+    <div class="card z c"><h3>Cognition</h3><p>Understands: world model, causal graph, episodic memory, beliefs with confidence, counterfactuals, self-model, hypotheses.</p><ul><li><span>Scale</span><span>minutes to days</span></li></ul></div>
+    <div class="card z v"><h3>Valuation</h3><p>Prices what has no price: term structure, credit, volatility surface, illiquid marks, cashflow forecasts, corporate actions.</p><ul><li><span>Scale</span><span>minutes to daily</span></li></ul></div>
+    <div class="card z i"><h3>Intelligence</h3><p>Trains models, generates and statistically gates strategies, models adversaries, simulates markets, sets policy.</p><ul><li><span>Scale</span><span>minutes to days</span></li></ul></div>
+    <div class="card z o"><h3>Optimisation</h3><p>Allocation across families, regimes and horizons. Cycle selection, path assignment, capital placement. Quantum and classical.</p><ul><li><span>Scale</span><span>seconds to hours</span></li></ul></div>
+    <div class="card z"><h3>Execution</h3><p>Regional nodes holding shipped models, beliefs, episodes, strategies and limits. Investing locally.</p><ul><li><span>Scale</span><span>microseconds</span></li></ul></div>
+    <div class="card z l"><h3>Ledger, wallet, treasury</h3><p>Authoritative money state per user and per strategy. Reconciles every holding, moves capital inside signed corridors.</p><ul><li><span>Scale</span><span>transactional</span></li></ul></div>
+  </div>
+</section>
+<section>
+  <h2>An honest word on capital</h2>
+  <p class="lede">At two hundred dollars, infrastructure at roughly a thousand dollars a month costs five times the capital every month. This belongs in the architecture rather than in a footnote.</p>
+  <div class="grid g2">
+    <div class="card z s">
+      <h3>The arithmetic</h3>
+      <ul>
+        <li><span>Infrastructure, Phase 0–4</span><span>~$1,015 / month</span></li>
+        <li><span>Round trip at 10 bp</span><span>$0.40</span></li>
+        <li><span>Crypto withdrawal fee</span><span>$1–25</span></li>
+        <li><span>Venue minimum order</span><span>$1–10 notional</span></li>
+        <li><span>Break-even on hosting alone</span><span>~500% monthly</span></li>
+      </ul>
+      <p class="note" style="margin-top:12px">Two hundred dollars is a correctness harness — real money at risk to prove the plumbing, which is exactly what the Phase 3 gate exists for. It is not an engine, and a platform that hid this would not be one worth trusting.</p>
+    </div>
+    <div class="card z c">
+      <h3>Where small capital genuinely wins</h3>
+      <ul>
+        <li><span>Prediction markets</span><span>thin books, research edges</span></li>
+        <li><span>Maker rebates on quiet pairs</span><span>earning, not paying</span></li>
+        <li><span>Funding capture</span><span>no repeated crossing cost</span></li>
+        <li><span>Small-notional inefficiencies</span><span>institutions cannot size in</span></li>
+        <li><span>Long-horizon private positions</span><span>access, not speed</span></li>
+      </ul>
+      <p class="note" style="margin-top:12px">The common thread is that the edge is informational rather than latency-based. Version 8 optimised a constraint that does not bind at this capital level. The cognitive and valuation planes address the one that does.</p>
+    </div>
+  </div>
+</section>
+<div class="legend">
+  <b><i class="sw" style="background:var(--ingest)"></i>Ingestion</b>
+  <b><i class="sw" style="background:var(--cog)"></i>Cognition</b>
+  <b><i class="sw" style="background:var(--val)"></i>Valuation</b>
+  <b><i class="sw" style="background:var(--intel)"></i>Intelligence</b>
+  <b><i class="sw" style="background:var(--opt)"></i>Optimisation</b>
+  <b><i class="sw" style="background:var(--exec)"></i>Execution</b>
+  <b><i class="sw" style="background:var(--ledger)"></i>Ledger and treasury</b>
+</div>
+</div>
+<div id="v2" role="tabpanel" aria-labelledby="t2" class="hidden">
+<section>
+  <h2>Cognition</h2>
+  <p class="lede">Every other plane reasons about instruments, prices and capital. This one reasons about the world that produces them, and about the platform itself. Four capabilities separate reaction from cognition: model the world causally, remember episodically, reason counterfactually, and know what you do not know.</p>
+  <div class="panelbox">
+    <div class="top"><h3>Why it is its own plane</h3><p>A statistical model predicts. A causal model explains. Only the second survives a regime it has never seen.</p></div>
+    <div class="readout">
+      <div><b>4</b><small>Capabilities that make it cognitive</small></div>
+      <div><b>~GB</b><small>Episodic memory per year, compressed</small></div>
+      <div><b>0</b><small>Trades a causal edge generates directly</small></div>
+      <div><b>1</b><small>Degradation mode — narrow, never halt</small></div>
+    </div>
+  </div>
+</section>
+<section>
+  <h2>World model</h2>
+  <p class="lede">A semantic substrate: what exists, how it relates, and what has happened to it. Without it there is no way to connect a filing to an instrument, a shipping delay to a commodity, or a court ruling to a prediction contract.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Object</th><th>Examples</th><th>Why it matters</th></tr></thead>
+    <tbody>
+      <tr><td>Entity</td><td>Company, person, sovereign, commodity, contract, venue, chain, index, event</td><td>The anchor everything resolves to. Without stable identity nothing connects</td></tr>
+      <tr><td>Relation</td><td>Owns, supplies, competes, depends on, is collateral for, settles</td><td>Turns a list of entities into a graph that can propagate a shock</td></tr>
+      <tr><td>Instrument link</td><td>This entity is represented by these instruments across these venues</td><td>The bridge from the world to the executable graph</td></tr>
+      <tr><td>Event</td><td>Filing, release, ruling, delivery, hack, election, weather outcome</td><td>What changes state, and what a prediction market resolves on</td></tr>
+      <tr><td>Resolution source</td><td>The authority that determines a contract's outcome</td><td>Prediction markets are unsafe without knowing who decides and when</td></tr>
+    </tbody>
+  </table></div>
+  <h4>What the graph lets you ask</h4>
+  <div class="scroll"><table>
+    <thead><tr><th>Query</th><th>Serves</th></tr></thead>
+    <tbody>
+      <tr><td>Which instruments are exposed to this entity, directly or through two hops?</td><td>Event-driven propagation</td></tr>
+      <tr><td>Which prediction contracts resolve on an event this entity controls?</td><td>Prediction market positioning</td></tr>
+      <tr><td>What is the shortest causal path from this release to this instrument?</td><td>Macro-conditional sizing</td></tr>
+      <tr><td>Which positions share an underlying exposure I have not counted?</td><td>Hidden concentration detection</td></tr>
+      <tr><td>Which entities does my portfolio depend on that I do not hold?</td><td>Second-order risk</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">Entity resolution will consume the most effort and it is worth naming plainly. The same company appears under a ticker, a legal name, a registry identifier and a colloquial name, and getting that wrong quietly corrupts everything downstream. Resolution confidence is recorded per link, and low-confidence links are excluded from sizing.</p>
+</section>
+<section>
+  <h2>Causal inference</h2>
+  <p class="lede">The largest gap in version 8. Everything there was association. When a regime broke, models that had learned the same spurious structure broke together, and nothing could say which relationships should have survived.</p>
+  <div class="grid g2">
+    <div class="card z c">
+      <h3>How edges are established</h3>
+      <ul>
+        <li><span>Natural experiments</span><span>releases, expiries, rebalances, forks</span></li>
+        <li><span>Instrumental variables</span><span>where a valid one exists</span></li>
+        <li><span>Structural constraints</span><span>arbitrage and accounting identities</span></li>
+        <li><span>Own order flow</span><span>the cleanest evidence available</span></li>
+        <li><span>Hypothesis + falsification</span><span>the only source of new edges</span></li>
+      </ul>
+      <p class="note" style="margin-top:12px">Own order flow deserves emphasis. It is the one intervention the platform controls, with a known cause and a measurable effect. Every fill is a small experiment.</p>
+    </div>
+    <div class="card z c">
+      <h3>What it is used for</h3>
+      <ul>
+        <li><span>Regime-break survivability</span><span>reduce before degradation, not after</span></li>
+        <li><span>Shock propagation</span><span>through mechanism, not correlation</span></li>
+        <li><span>Hidden concentration</span><span>positions sharing a driver</span></li>
+        <li><span>Feature validation</span><span>predictive with no causal path is capped</span></li>
+        <li><span>Explanation</span><span>a path through the graph, not a weight</span></li>
+      </ul>
+    </div>
+  </div>
+  <h4>Honest limits</h4>
+  <div class="scroll"><table>
+    <thead><tr><th>Limit</th><th>Handling</th></tr></thead>
+    <tbody>
+      <tr><td>Causal discovery from observational data is unreliable</td><td>Edges carry confidence. Low-confidence edges inform exploration, not sizing</td></tr>
+      <tr><td>Markets are non-stationary</td><td>Edges are conditioned on regime and re-estimated. An edge that fails its conditions is retired, not patched</td></tr>
+      <tr><td>Confounders are often unobserved</td><td>Recorded as such, and the edge is treated as suggestive rather than established</td></tr>
+      <tr><td>The graph will be wrong in places</td><td>Which is why it constrains sizing and explanation rather than generating trades. A wrong edge costs a suboptimal allocation, never an unbounded position</td></tr>
+    </tbody>
+  </table></div>
+</section>
+<section>
+  <h2>Episodic memory</h2>
+  <p class="lede">Streaming estimators forget by construction. An exponentially weighted covariance is a moving average; a reservoir is a thin cross-section. Neither answers the question a human trader answers instinctively — have I seen this before, and what happened?</p>
+  <div class="grid g2">
+    <div class="card z c">
+      <h3>What an episode holds</h3>
+      <ul>
+        <li><span>State vector</span><span>compressed market and world state</span></li>
+        <li><span>Regime</span><span>the label in force</span></li>
+        <li><span>Causal context</span><span>which edges were active</span></li>
+        <li><span>Beliefs</span><span>what was believed, with confidence</span></li>
+        <li><span>Actions</span><span>what was done, and declined</span></li>
+        <li><span>Outcome</span><span>what followed, over several horizons</span></li>
+        <li><span>Surprise</span><span>how far outcome was from expectation</span></li>
+      </ul>
+    </div>
+    <div class="card z c">
+      <h3>When one is stored</h3>
+      <ul>
+        <li><span>Every material action</span><span>irreplaceable</span></li>
+        <li><span>Every high-surprise moment</span><span>most informative, rarest</span></li>
+        <li><span>Every regime transition</span><span>where models fail</span></li>
+        <li><span>Periodic in calm</span><span>so normality is represented</span></li>
+        <li><span>Every veto and near-miss</span><span>as informative as action</span></li>
+      </ul>
+      <p class="note" style="margin-top:12px">Episodes are compressed meaning, not retained observation. Years of them at meaningful density is single-digit gigabytes, comfortably inside the data policy.</p>
+    </div>
+  </div>
+  <h4>Retrieval</h4>
+  <div class="scroll"><table>
+    <thead><tr><th>Query</th><th>Feeds</th></tr></thead>
+    <tbody>
+      <tr><td>What does now most resemble?</td><td>Sizing, strategy activation</td></tr>
+      <tr><td>What followed those situations?</td><td>Belief formation, expected value</td></tr>
+      <tr><td>Has this strategy faced this before?</td><td>Strategy-level confidence</td></tr>
+      <tr><td>Was this surprising last time too?</td><td>Self-model, exploration targeting</td></tr>
+      <tr><td>What did we decline then, and should we have?</td><td>Gate calibration</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">Retrieval is approximate nearest neighbour over a few hundred dimensions across a few million episodes — milliseconds on a warm-path service. Regions receive a compact digest of the outcome distribution for the current neighbourhood, not the index itself.</p>
+</section>
+<section>
+  <h2>Belief state</h2>
+  <p class="lede">Version 8 produced point estimates. A slippage number, a regime label, a pressure score. Nothing could distinguish a confident estimate from a coin flip, which meant both were sized identically.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Belief state</th><th>Sizing response</th></tr></thead>
+    <tbody>
+      <tr><td>High confidence, strong edge</td><td>Full size within the grant</td></tr>
+      <tr><td>High confidence, weak edge</td><td>Small size, taken because it is reliable</td></tr>
+      <tr><td>Low confidence, strong edge</td><td>Reduced size, and flagged to the exploration budget as worth learning about</td></tr>
+      <tr><td>Low confidence, weak edge</td><td>Not taken</td></tr>
+      <tr><td>Conflicting evidence</td><td>Distribution widens. Size scales down with its width; the conflict is stored as an episode</td></tr>
+      <tr><td>No evidence</td><td>Distinguished explicitly from conflict. Prior only, minimum size or abstain</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">Distinguishing an absence of evidence from a conflict of evidence is one of the sharpest practical differences between a cognitive system and a statistical one. Both look like a middling score to a point estimator, and they call for opposite responses — abstain in the first case, investigate in the second.</p>
+  <p class="note">Beliefs are formed centrally, where the evidence is, and shipped as priors with a TTL. A region never forms a belief — it has no world model to do so. Past the TTL, sizing falls back to a fixed conservative multiplier and the region reports operating without current belief.</p>
+</section>
+<section>
+  <h2>Counterfactual learning</h2>
+  <p class="lede">The cheapest large improvement available. The gate already logs every veto including silences; nothing scored them. If four hundred cycles are vetoed in a day and three hundred and eighty would have been profitable, that is an enormous signal discarded daily.</p>
+  <div class="grid g2">
+    <div class="card z c">
+      <h3>What gets shadow-executed</h3>
+      <ul>
+        <li><span>Vetoed by the risk gate</span><span>protective, or merely expensive?</span></li>
+        <li><span>Filtered by profitability</span><span>is the cost model too pessimistic?</span></li>
+        <li><span>Rejected by feasibility</span><span>which thresholds cost opportunity?</span></li>
+        <li><span>Not whitelisted</span><span>was the allocation right?</span></li>
+        <li><span>Alternative path</span><span>is routing choosing well?</span></li>
+        <li><span>Alternative sizing</span><span>where is sizing systematically wrong?</span></li>
+      </ul>
+    </div>
+    <div class="card z c">
+      <h3>Why it is nearly free</h3>
+      <p>Event-anchored snapshots already capture book state at every veto. That was designed for execution-quality analysis and turns out to be exactly what counterfactual reconstruction needs.</p>
+      <ul>
+        <li><span>Reconstruct</span><span>from existing snapshots</span></li>
+        <li><span>Simulate</span><span>venue's observed fill behaviour</span></li>
+        <li><span>Charge</span><span>realistic fee, slippage, impact</span></li>
+        <li><span>Attribute</span><span>to the rule that declined it</span></li>
+        <li><span>Runtime</span><span>batch, preemptible, spare capacity</span></li>
+      </ul>
+    </div>
+  </div>
+  <p class="note">A control may only be loosened through the full approval path, never automatically from counterfactual evidence. A rule that looks expensive may be the only thing standing between the platform and a tail event.</p>
+</section>
+<section>
+  <h2>Self-model and exploration</h2>
+  <div class="grid g2">
+    <div class="card z c">
+      <h3>What the self-model tracks</h3>
+      <ul>
+        <li><span>Estimator reliability</span><span>where error exceeds tolerance</span></li>
+        <li><span>Coverage</span><span>what has actually been observed</span></li>
+        <li><span>Calibration</span><span>does seventy percent happen seventy percent</span></li>
+        <li><span>Capacity</span><span>where each edge decays, and how sure</span></li>
+        <li><span>Regime experience</span><span>how many, how recently</span></li>
+        <li><span>Blind spots</span><span>state space with no episodes at all</span></li>
+      </ul>
+    </div>
+    <div class="card z c">
+      <h3>The exploration budget</h3>
+      <p>A declared share of deployed capital allocated to information gain rather than expected return. A line item in the capital engine, not a side effect.</p>
+      <ul>
+        <li><span>Selection</span><span>UCB or Thompson over uncertainty</span></li>
+        <li><span>Bounds</span><span>every probe has a maximum loss</span></li>
+        <li><span>Accounting</span><span>separate from return-seeking capital</span></li>
+        <li><span>Measured</span><span>uncertainty resolved per unit spent</span></li>
+      </ul>
+      <p class="note" style="margin-top:12px">Reporting exploration separately matters more than it looks. Mixed into performance it reads as drag and gets cut. Separated, its return is measurable in the improvement of the estimates it bought.</p>
+    </div>
+  </div>
+</section>
+<section>
+  <h2>Hypothesis generation</h2>
+  <p class="lede">Version 8 generated strategies by parameter sweep. That produces variation, not novelty — ten thousand near-substitutes of a few real ideas, which is exactly why effective breadth sits in the low hundreds.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Source</th><th>Produces</th></tr></thead>
+    <tbody>
+      <tr><td>Gaps in the causal graph</td><td>Two drivers that co-move with no known mechanism connecting them</td></tr>
+      <tr><td>High-surprise episodes</td><td>Where the model is most wrong, and therefore most improvable</td></tr>
+      <tr><td>Counterfactual anomalies</td><td>A rule vetoing profitable paths implies an unmodelled relationship</td></tr>
+      <tr><td>World model traversal</td><td>Structural exposures no current strategy expresses</td></tr>
+      <tr><td>Language model proposal</td><td>Mechanisms a statistical search would not reach</td></tr>
+      <tr><td>Cross-asset transfer</td><td>A mechanism established in one class, proposed in another</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">Requiring a falsifier is the discipline that separates this from a search over feature combinations. A hypothesis that cannot be refuted cannot be tested, and something untestable has no place sizing a position. The language model proposes and never decides — its output enters the identical statistical gate as any other candidate, with the same cumulative trial accounting.</p>
+</section>
+<section>
+  <h2>Degradation</h2>
+  <p class="lede">Each capability has a defined behaviour when unavailable. The platform narrows rather than halting, and says so.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Unavailable</th><th>Behaviour</th></tr></thead>
+    <tbody>
+      <tr><td>Ingestion stalls</td><td>World model ages. Event-driven and prediction strategies pause. Price-only strategies unaffected</td></tr>
+      <tr><td>Causal graph stale</td><td>Regime conditioning reverts to unconditional. Sizing becomes more conservative</td></tr>
+      <tr><td>Episodic memory down</td><td>Analogical retrieval unavailable. Strategies depending on recognition pause</td></tr>
+      <tr><td>Belief stale past TTL</td><td>Fixed conservative multiplier. Nothing halts</td></tr>
+      <tr><td>Counterfactual scoring down</td><td>Learning slows. Zero trading impact — entirely a warm-path function</td></tr>
+      <tr><td>Self-model stale</td><td>Exploration reverts to flat allocation instead of directed</td></tr>
+      <tr><td>Sources disagree materially</td><td>Distribution widens rather than picking a side. The disagreement itself is stored as an episode</td></tr>
+    </tbody>
+  </table></div>
+</section>
+<section>
+  <h2>Source discovery</h2>
+  <p class="lede">Ingestion consumes known sources. A discovery crawler finds ones it does not yet know about, across three tiers of the web — surface, deep and, under strict controls, dark. It does not pull content in. It registers useful, lawful, recurring sources and creates feeds; everything then flows through the ordinary pipeline.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Tier</th><th>What it is</th><th>Role</th><th class="m">Feeds training?</th></tr></thead>
+    <tbody>
+      <tr><td>Surface web</td><td>Indexed by search engines. News, exchange status pages, project sites, public forums</td><td>Discovery and feeds</td><td class="m">yes</td></tr>
+      <tr><td>Deep web</td><td>Not indexed. Database-driven portals, paywalled and licensed content, login-gated archives, records systems. The overwhelming majority of the web, and where the underused information lives</td><td>Discovery and feeds. The largest legitimate breadth gain available</td><td class="m">yes</td></tr>
+      <tr><td>Dark web</td><td>Tor and I2P hidden services</td><td>Defensive monitoring only. Registers threat indicators, never content</td><td class="m">no</td></tr>
+    </tbody>
+  </table></div>
+  <div class="grid g2" style="margin-top:14px">
+    <div class="card z g"><h3>The crawler is a scout, not a hoarder</h3><ul><li><span>Crawl</span><span>breadth-first over seeds and links</span></li><li><span>Assess</span><span>useful, lawful, recurring?</span></li><li><span>Register</span><span>the source, not the content</span></li><li><span>Feed</span><span>flows through the normal pipeline</span></li><li><span>Score</span><span>reliability, timeliness, uniqueness</span></li></ul><p class="note" style="margin-top:12px">The platform ends up with a catalogue of sources and a set of feeds, not a copy of the web. Pass-through applies without exception.</p></div>
+    <div class="card z s"><h3>The dark web, and the hard line</h3><p>Monitoring the dark web is legitimate and defensive — learning that the platform's own credentials leaked, or a venue it uses was breached. There is a bright, legal line.</p><ul><li><span>Permitted</span><span>own credentials, venue breaches, threat indicators, already-public sentiment</span></li><li><span>Excluded, hard</span><span>any material non-public information</span></li><li><span>Excluded, hard</span><span>stolen data, leaked documents, illicit sale</span></li><li><span>Enforced</span><span>at classification, before registration</span></li></ul><p class="note" style="margin-top:12px">Trading on non-public information is insider trading regardless of source. The line is legal, not technical, and is built so crossing it is not possible through the layer. The crawler runs in an isolated enclave with no path to any capital-moving component, and every crawl, rejection and registration is audited.</p></div>
+  </div>
+</section>
+<section>
+  <h2>The deep web — where the edge actually lives</h2>
+  <p class="lede">The deep web is not the dark web. It is the unindexed majority of the internet: content behind query forms, dynamic rendering, free registrations and licensed subscriptions. Regulatory databases, customs records, court dockets, procurement portals, shipping trackers, job boards, governance forums, pricing and inventory pages. All of it lawful and public, almost none of it read by the people who move markets. A hedge fund cannot deploy meaningful size on a customs filing. Algorik can, and this is where those signals appear first.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Category</th><th>Examples</th><th>Signal it carries</th></tr></thead>
+    <tbody>
+      <tr><td>Regulatory and legal</td><td>Full-text filing search, company and transparency registers, broker records, court dockets, patent and trademark offices</td><td>Corporate events before they are news. Litigation exposure. Ownership changes. Innovation pipelines</td></tr>
+      <tr><td>Government and trade</td><td>Customs and trade data, procurement portals, permit filings, drug and device approvals, energy regulators, statistical agencies</td><td>Real activity before it reaches an income statement. Supply chain movement. Regulatory outcomes</td></tr>
+      <tr><td>Corporate self-disclosure</td><td>Investor relations, product and pricing pages, job postings, press rooms, developer changelogs, status pages</td><td>Hiring velocity, price changes, launches, outages — all public, all leading</td></tr>
+      <tr><td>Physical and geospatial</td><td>Vessel tracking, port authorities, satellite imagery, commodity inventory reports, weather services</td><td>Physical flow that precedes financial flow. Commodity supply. Freight congestion</td></tr>
+      <tr><td>Community and technical</td><td>Developer forums, repository activity, on-chain governance forums, specialist trade forums</td><td>Sentiment and intent that is public but unaggregated. Protocol changes before they ship</td></tr>
+      <tr><td>Academic</td><td>Pre-print servers, working paper series, conference proceedings</td><td>Methods and findings before they are commercialised</td></tr>
+      <tr><td>Marketplace</td><td>Product listings, price histories, inventory levels, auction results</td><td>Direct input to product arbitrage and consumer demand signals</td></tr>
+      <tr><td>Resolution sources</td><td>The official pages that determine event outcomes</td><td>What prediction markets settle on. Knowing the source is knowing the answer's timing</td></tr>
+    </tbody>
+  </table></div>
+  <h4>Access modes — each needs an adapter, and the mode sets the policy</h4>
+  <div class="scroll"><table>
+    <thead><tr><th>Mode</th><th>How</th><th>Policy</th></tr></thead>
+    <tbody>
+      <tr><td>Open query</td><td>Parameterised requests to a form or search interface with no login</td><td>Respect robots.txt and rate limits. Enumerate parameters, do not hammer</td></tr>
+      <tr><td>Structured API</td><td>A published API exists beside the page</td><td>Always preferred over scraping. Registered as a feed directly</td></tr>
+      <tr><td>Free registration</td><td>A legitimate account is created and used</td><td>One account per source, credentials in Secret Manager, terms of service honoured</td></tr>
+      <tr><td>Licensed subscription</td><td>Paid access to a data product</td><td>Licensed in the operator's name. Redistribution terms recorded on the source</td></tr>
+      <tr><td>Rendered page</td><td>Content produced by client-side code</td><td>Headless rendering in the discovery enclave, at the source's rate limit</td></tr>
+      <tr><td>Bulk download</td><td>Periodic full extracts offered by the source</td><td>Fetched into the research cache, facts extracted, extract deleted per the data policy</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">Three things are never done regardless of mode: circumventing a paywall or access control, sharing or automating credentials beyond a source's terms, and collecting personal data on private individuals. A source that requires crossing one is rejected at classification, not registered and filtered later.</p>
+  <div class="grid g3" style="margin-top:22px">
+    <div class="card z g"><h3>The adapter pattern</h3><p>An adapter is small — a query plan and an extraction schema — because the ordinary pipeline does everything after extraction. Adding the hundredth source is a repeat of adding the first.</p><ul><li><span>source</span><span>the registered SourceCandidate</span></li><li><span>mode</span><span>open_query · api · registered · licensed · rendered · bulk</span></li><li><span>access</span><span>credentials ref, rate limit, ToS record</span></li><li><span>query_plan</span><span>what to ask, how often</span></li><li><span>extractor</span><span>page or response → facts</span></li><li><span>entity_links</span><span>which entity types it speaks about</span></li><li><span>freshness</span><span>how far ahead of the surface web</span></li></ul><p class="note" style="margin-top:12px">The crawler proposes adapters. A human approves a source category once; adapters within it are promoted automatically as extraction accuracy is measured.</p></div>
+    <div class="card z c"><h3>How it feeds training</h3><p>Deep-web facts enter training exactly as any other fact does — through the world model, causal graph, beliefs and episodes, never as raw content.</p><ul><li><span>Customs filing</span><span>WorldEvent → causal graph: supply drives revenue</span></li><li><span>Hiring surge</span><span>entity attribute → regime and event models</span></li><li><span>Procurement award</span><span>WorldEvent → belief for that entity</span></li><li><span>Governance proposal</span><span>resolution source and date → calibration</span></li><li><span>Port congestion</span><span>physical index → carry and basis models</span></li><li><span>Product price change</span><span>marketplace observation → product arbitrage</span></li></ul><p class="note" style="margin-top:12px">Freshness is the field that matters most, and it is measured, not assumed: the platform records how far each source's facts preceded the same fact appearing elsewhere, and ranks sources on it.</p></div>
+    <div class="card z s"><h3>Why this is the right kind of edge</h3><ul><li><span>Lawful</span><span>public, licensed, or a legitimate registration</span></li><li><span>Durable</span><span>does not decay under competition like latency</span></li><li><span>Small-capital compatible</span><span>too small for institutions to bother</span></li><li><span>Compounding</span><span>every source improves the world model</span></li><li><span>Explainable</span><span>a customs filing has a plain-language story</span></li></ul><p class="note" style="margin-top:12px">Governance: every source carries a terms-of-use status — public, licensed or restricted — and restricted sources are not registered. Politeness is enforced (robots directives, rate limits, back-off, an identified user agent). Licensed sources stay within licence with per-source credentials. The dark-web exclusions apply unchanged: material non-public information is excluded wherever it was found. Registration is not ingestion.</p></div>
+  </div>
+  <p class="note">The distinction between deep and dark is one of access, not legality. The deep web is crawled broadly and used fully, within terms. The dark web is crawled narrowly and used defensively. Both feed the same pipeline, and the same exclusions sit at the front of it.</p>
+</section>
+<div class="legend">
+  <b><i class="sw" style="background:var(--cog)"></i>Cognition</b>
+  <b><i class="sw" style="background:var(--ingest)"></i>Ingestion</b>
+  <b><i class="sw" style="background:var(--stop)"></i>Honest limits</b>
+</div>
+</div>
+<div id="v3" role="tabpanel" aria-labelledby="t3" class="hidden">
+<section>
+  <h2>Pricing what has no price</h2>
+  <p class="lede">Roughly sixty percent of global investable wealth has no continuous price. Version 8 assumed a book for everything, which structurally excluded fixed income, credit, private markets, real assets, royalties and collectibles. Six engines open them.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Engine</th><th>Produces</th><th>Unlocks</th></tr></thead>
+    <tbody>
+      <tr><td>Term structure</td><td>Yield curves, discount factors, forward rates, convexity, roll</td><td>Bonds, swaps, futures fair value, any discounted cashflow</td></tr>
+      <tr><td>Credit</td><td>Default probability, recovery, spread decomposition, covenant state</td><td>Corporate bonds, CDS, private credit, distressed</td></tr>
+      <tr><td>Volatility surface</td><td>Full surface with skew and term structure, dispersion, forward vol</td><td>Options beyond parity arbitrage, variance, structured payoffs</td></tr>
+      <tr><td>Illiquid valuation</td><td>A mark with a method and a confidence — comparables, DCF, model, last round</td><td>Private equity and venture, real estate, art, private credit</td></tr>
+      <tr><td>Cashflow and commitments</td><td>Irregular contingent stream forecasts, capital call schedules, J-curve</td><td>Private funds, royalties, litigation finance</td></tr>
+      <tr><td>Corporate actions</td><td>Splits, dividends, mergers, spinoffs, rights, delistings</td><td>Equities — without it positions and cost basis silently corrupt</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">Corporate actions looks like plumbing and is not. Without it an equity position quietly becomes wrong after the first split, cost basis drifts, reconciliation halts, and every downstream number is contaminated. It is a prerequisite, not an enhancement.</p>
+</section>
+<section>
+  <h2>Every mark carries its method</h2>
+  <p class="lede">A mark without a method is an assertion. Every valuation records how it was arrived at, so a portfolio holding a quoted equity and a venture position is not summing two numbers that mean different things without saying so.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Method</th><th>When used</th><th class="m">Confidence</th></tr></thead>
+    <tbody>
+      <tr><td>Quoted</td><td>A continuous two-sided market exists</td><td class="m">highest</td></tr>
+      <tr><td>Matrix</td><td>Similar instruments quote; this one is interpolated</td><td class="m">high</td></tr>
+      <tr><td>Comparables</td><td>Observable transactions in similar assets, adjusted</td><td class="m">moderate</td></tr>
+      <tr><td>Discounted cashflow</td><td>Forecast flows discounted at a risk-reflecting rate</td><td class="m">moderate</td></tr>
+      <tr><td>Model</td><td>A pricing model with observable inputs</td><td class="m">input-dependent</td></tr>
+      <tr><td>Last round</td><td>The most recent primary transaction price</td><td class="m">low, decays</td></tr>
+      <tr><td>Cost</td><td>Held at acquisition absent anything better</td><td class="m">lowest</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">Marks decay. A last-round valuation six months old carries less confidence than one six days old, and confidence enters sizing and the risk envelope — so an uncertain mark cannot silently support leverage. Past its staleness limit, a position is excluded from collateral and leverage until refreshed.</p>
+</section>
+<section>
+  <h2>Commitments and capital calls</h2>
+  <p class="lede">Private funds do not take capital when you offer it. They call it when they choose, and an uncalled commitment is a liability that must be reserved against.</p>
+  <div class="grid g2">
+    <div class="card z v">
+      <h3>What is modelled</h3>
+      <ul>
+        <li><span>Commitment</span><span>mostly unfunded, hard obligation</span></li>
+        <li><span>Call forecast</span><span>probability-weighted schedule</span></li>
+        <li><span>Liquidity reserve</span><span>held against expected calls</span></li>
+        <li><span>Default consequence</span><span>typically forfeits the position</span></li>
+        <li><span>J-curve</span><span>early negative returns from fees</span></li>
+        <li><span>Distribution forecast</span><span>feeds the liquidity ladder</span></li>
+      </ul>
+    </div>
+    <div class="card z s">
+      <h3>Private markets is a second operating mode</h3>
+      <p>Everything else assumes a continuously priced, instantly reconcilable position that can be exited. Private assets have none of those properties.</p>
+      <ul>
+        <li><span>Price</span><span>a mark with method and confidence</span></li>
+        <li><span>Reconciliation</span><span>against a statement, quarterly</span></li>
+        <li><span>Exit</span><span>locked for years</span></li>
+        <li><span>Capital timing</span><span>the fund's schedule, not yours</span></li>
+        <li><span>Shares with the fast path</span><span>ledger, wallet, identity, capital engine, frontend — little else</span></li>
+      </ul>
+    </div>
+  </div>
+</section>
+<section>
+  <h2>What the platform can reach</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Class</th><th>Requires</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td>Crypto spot and perpetual</td><td>The executable graph and eight paths</td><td>Reachable now</td></tr>
+      <tr><td>Dated futures, FX spot and forward</td><td>Term structure</td><td>With the valuation plane</td></tr>
+      <tr><td>Listed equities</td><td>Corporate actions, settlement bridge</td><td>With the valuation plane</td></tr>
+      <tr><td>Listed options</td><td>Volatility surface</td><td>With the valuation plane</td></tr>
+      <tr><td>Government and corporate bonds, CDS</td><td>Term structure, credit, matrix pricing</td><td>With the valuation plane</td></tr>
+      <tr><td>ETFs and index products</td><td>Basket decomposition, creation and redemption</td><td>With the valuation plane</td></tr>
+      <tr><td>Prediction markets, sports, event contracts</td><td>World model, event resolution, base rates, resolution source</td><td>With cognition. The best fit for small capital</td></tr>
+      <tr><td>Insurance-linked, weather, freight</td><td>Physical index ingestion, event resolution</td><td>With ingestion and cognition</td></tr>
+      <tr><td>Carbon and renewable certificates</td><td>Registry integration, vintage modelling</td><td>With ingestion</td></tr>
+      <tr><td>Private equity and venture</td><td>Illiquid valuation, commitments, calls, secondary access</td><td>Reachable as a second operating mode</td></tr>
+      <tr><td>Private credit, real estate</td><td>Credit engine, appraisal, illiquidity budget</td><td>With the valuation plane</td></tr>
+      <tr><td>Royalties, IP, litigation finance</td><td>Cashflow forecasting, outcome probability</td><td>With cognition and valuation</td></tr>
+      <tr><td>Art and collectibles</td><td>Provenance, condition, auction cycle, comparables</td><td>Reachable; authentication outside the platform</td></tr>
+      <tr><td>Physical commodities, product arbitrage</td><td>Storage, delivery, grade, logistics cost model</td><td>With a logistics engine</td></tr>
+      <tr><td>Auction-traded assets</td><td>Bidding strategy, winner's curse, reserve estimation</td><td>With an auction engine</td></tr>
+    </tbody>
+  </table></div>
+  <h4>Out of scope, and why</h4>
+  <div class="scroll"><table>
+    <thead><tr><th>Class</th><th>Why not</th></tr></thead>
+    <tbody>
+      <tr><td>Physical delivery requiring storage</td><td>Physical infrastructure, not software. Financially settled equivalents are in scope</td></tr>
+      <tr><td>Anything requiring a licence the operator lacks</td><td>A regulatory question, answered before it is built</td></tr>
+      <tr><td>Assets with no defensible valuation method</td><td>If no method produces a defensible mark, the position cannot be risk-managed</td></tr>
+    </tbody>
+  </table></div>
+</section>
+<div class="legend">
+  <b><i class="sw" style="background:var(--val)"></i>Valuation</b>
+  <b><i class="sw" style="background:var(--stop)"></i>Second operating mode</b>
+</div>
+</div>
+<div id="v4" role="tabpanel" aria-labelledby="t4" class="hidden">
+<section>
+  <h2>Where the intelligence is made</h2>
+  <p class="lede">One region. Trains the models, proves the strategies, models adversaries, simulates markets, and decides where capital should work. Everything a regional node knows how to do arrived from here.</p>
+  <div class="panelbox">
+    <div class="top"><h3>What central produces</h3><p>All signed, versioned, and shipped outward. None of it is an order.</p></div>
+    <div class="readout">
+      <div><b>10</b><small>Model classes, as signed ONNX</small></div>
+      <div><b>128</b><small>Strategy families, correlation-clustered</small></div>
+      <div><b>6</b><small>Quantum optimisation workloads</small></div>
+      <div><b>500</b><small>Trials per family per quarter, cumulative</small></div>
+    </div>
+  </div>
+</section>
+<section>
+  <h2>The ten model classes</h2>
+  <p class="lede">Fitted from streaming statistics, reservoir samples, event-anchored snapshots and episodes — never from a tick archive. Every model estimates a cost, a probability or a regime. None predicts price direction as a decision.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Model</th><th>Predicts</th><th class="m">Class</th><th class="m">Update</th><th>Feeds</th></tr></thead>
+    <tbody>
+      <tr><td>Slippage estimator</td><td>Expected slippage at size, per venue and instrument</td><td class="m">boosting / MLP</td><td class="m">online, every fill</td><td>Profitability filter, sizing</td></tr>
+      <tr><td>Fill-time dispersion</td><td>Expected arrival spread per venue combination</td><td class="m">quantile sketch</td><td class="m">streaming</td><td>Latency equalisation</td></tr>
+      <tr><td>Adverse-selection premium</td><td>Cost of a resting order, per venue</td><td class="m">regression</td><td class="m">exp. weighted</td><td>Quote spread, passive thresholds</td></tr>
+      <tr><td>Quote honour rate</td><td>Probability a firm quote is honoured</td><td class="m">beta-binomial</td><td class="m">conjugate</td><td>Firm-quote path gating</td></tr>
+      <tr><td>Basis convergence</td><td>Expected time and path to convergence</td><td class="m">sequence</td><td class="m">periodic refit</td><td>Carry, holding-period risk</td></tr>
+      <tr><td>Regime classifier</td><td>Trending, reverting, volatile, calm — feeds the belief state</td><td class="m">classifier</td><td class="m">refit from reservoir</td><td>Strategy activation, allocation</td></tr>
+      <tr><td>Book pressure</td><td>Short-horizon direction from book shape</td><td class="m">small MLP / CNN</td><td class="m">refit from snapshots</td><td>Microstructure, quote skew</td></tr>
+      <tr><td>Volatility and correlation</td><td>Realised vol and factor structure</td><td class="m">EW covariance</td><td class="m">streaming</td><td>Sizing, exposure limits</td></tr>
+      <tr><td>Leg-ordering policy</td><td>Aggressive or passive per leg</td><td class="m">small RL</td><td class="m">PPO in the simulator</td><td>Leg coordinator</td></tr>
+      <tr><td>Anomaly detector</td><td>Unusual market or transfer behaviour</td><td class="m">autoencoder</td><td class="m">periodic refit</td><td>Alerting, transfer gate</td></tr>
+    </tbody>
+  </table></div>
+  <h4>The training pipeline</h4>
+  <div class="plane">
+    <div class="hd"><strong>Cold path</strong><span class="k">Cloud Run Jobs</span><span class="k">spot GPU</span><span class="k">burn · linfa · polars · prost</span><span class="k">no Python, no Vertex AI</span></div>
+    <div class="row"><div class="tag">features</div><div class="body"><div class="mod i"><div class="n">feature-pipeline</div><div class="d">Training frames from statistics checkpoints, reservoirs, snapshots and episodes, using the same feature definitions the node uses</div><div class="t">daily</div></div></div></div>
+    <div class="row"><div class="tag">train</div><div class="body"><div class="mod i"><div class="n">trainer</div><div class="d">burn with autodiff on GPU for neural models; linfa for regression, trees and clustering. Restartable, so spot is safe</div><div class="t">daily to weekly</div></div></div></div>
+    <div class="row"><div class="tag">evaluate</div><div class="body"><div class="mod i"><div class="n">eval-harness</div><div class="d">Candidate against incumbent on held-out folds. Drift, calibration, error against declared bound</div><div class="t">on candidate</div></div></div></div>
+    <div class="row"><div class="tag">promote</div><div class="body"><div class="mod i"><div class="n">model-promoter</div><div class="d">Emits ONNX as protobuf, signs it, publishes to Artifact Registry, records version in Spanner</div><div class="t">prost · ring</div></div><div class="mod g"><div class="n">Registry</div><div class="d">Spanner rows plus Cloud Storage plus Artifact Registry. No separate registry product</div><div class="t">Spanner + GCS</div></div></div></div>
+    <div class="row"><div class="tag">ship</div><div class="body"><div class="mod"><div class="n">Atomic swap in every region</div><div class="d">Node verifies the signature, swaps the model set by pointer. Trading never pauses</div><div class="t">Pub/Sub</div></div></div></div>
+  </div>
+  <p class="note">Training and inference share the tract crate and the same feature code. Training-serving skew is removed structurally rather than by discipline.</p>
+</section>
+<section>
+  <h2>Proving a strategy before it is funded</h2>
+  <p class="lede">Test ten thousand candidates and roughly five hundred will look significant at two sigma by chance alone. The gate matters more than the generator.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Control</th><th>Mechanism</th><th>Prevents</th></tr></thead>
+    <tbody>
+      <tr><td>Deflated Sharpe</td><td>Adjusts for trial count, backtest length, skew, kurtosis</td><td>An in-sample number mistaken for evidence</td></tr>
+      <tr><td>Purged, embargoed CV</td><td>Removes overlapping samples; embargoes a gap after each fold</td><td>Lookahead leakage — the commonest silent error</td></tr>
+      <tr><td>Cumulative trial accounting</td><td>500 per family per quarter, against lifetime count, never per batch</td><td>A sweep laundering itself by being split up</td></tr>
+      <tr><td>Untouched holdout</td><td>Never seen during research, unlocked once per family</td><td>Overfitting to validation</td></tr>
+      <tr><td>Live canary</td><td>Minimal capital, consistent with holdout</td><td>Everything the previous four missed</td></tr>
+      <tr><td>Capacity estimate</td><td>Capital level at which the edge decays</td><td>A real edge funded into a loss</td></tr>
+      <tr><td>Hypothesis linkage</td><td>Must express a supported hypothesis with a mechanism</td><td>Variation without novelty</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">Humans approve families and thresholds — once, with a hardware key. Statistics approve strategies. A person who approves ten thousand individual strategies has approved none of them meaningfully.</p>
+</section>
+<section>
+  <h2>Meta-learning, adversaries, simulation</h2>
+  <div class="grid g3">
+    <div class="card z i"><h3>Meta-learning</h3><p>Learns which model works where, rather than only learning the models.</p><ul><li><span>By regime</span><span>which model class performs</span></li><li><span>Feature generality</span><span>venue quirk vs market truth</span></li><li><span>Warm starts</span><span>new venues inherit priors</span></li><li><span>Cross-asset transfer</span><span>crypto microstructure informs equities</span></li></ul></div>
+    <div class="card z i"><h3>Adversarial modelling</h3><p>Version 8 estimated adverse selection — the symptom. This models who causes it and how they adapt.</p><ul><li><span>Flow classification</span><span>informed vs uninformed</span></li><li><span>Pattern leakage</span><span>is my fingerprint being learned</span></li><li><span>Crowding</span><span>correlated external flow</span></li><li><span>Response</span><span>randomisation, widening, withdrawal</span></li></ul><p class="note" style="margin-top:12px">Irrelevant at $200, existential at scale. Instrumentation exists from the start or the history will not be there.</p></div>
+    <div class="card z i"><h3>Market simulation</h3><p>Recorded history cannot respond to you. Adaptive agents can.</p><ul><li><span>Agents</span><span>passive, informed, momentum, competitor, maker</span></li><li><span>Teaches</span><span>execution, crowding, impact, capacity</span></li><li><span>Calibrated</span><span>against actual fills continuously</span></li></ul><p class="note" style="margin-top:12px">An uncalibrated simulator is confident, expensive error.</p></div>
+  </div>
+</section>
+<section>
+  <h2>Quantum optimisation</h2>
+  <p class="lede">Finding an opportunity is cheap. Deciding which subset to fund with shared capital, and where that capital should physically sit, is NP-hard — and that is where the hardware is pointed.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Workload</th><th>Decides</th><th class="m">Variables</th><th class="m">Cadence</th></tr></thead>
+    <tbody>
+      <tr><td>Family allocation</td><td>Capital across 128 families under cardinality and an effective-breadth objective</td><td class="m">128 + encoding</td><td class="m">hourly, adaptive</td></tr>
+      <tr><td>Regime-conditional weighting</td><td>How that allocation shifts with the regime the belief state reports</td><td class="m">regime × family</td><td class="m">on regime change</td></tr>
+      <tr><td>Cycle selection</td><td>Which overlapping arbitrage cycles to fund</td><td class="m">80–150</td><td class="m">1–5 min per region</td></tr>
+      <tr><td>Path assignment</td><td>Which of eight mechanisms each cycle uses — solved jointly with selection</td><td class="m">per cycle-path</td><td class="m">same run</td></tr>
+      <tr><td>Capital and mirror placement</td><td>Where capital and inventory sit ahead of opportunity</td><td class="m">60–110 per region</td><td class="m">15–60 min</td></tr>
+      <tr><td>Multi-horizon reconciliation</td><td>How microsecond arbitrage and multi-year private positions coexist</td><td class="m">horizon × family</td><td class="m">daily</td></tr>
+    </tbody>
+  </table></div>
+  <div class="grid g2" style="margin-top:14px">
+    <div class="card z o"><h3>Hardware</h3><p>Every workload is sized to ~200 binaries, which is what current hardware handles directly. That sizing is a design constraint.</p><ul><li><span>Primary</span><span>Nighthawk, 120 qubits, 5,000 gates</span></li><li><span>Overflow</span><span>Heron r2/r3, 156 qubits</span></li><li><span>Reached by</span><span>Runtime REST, OpenQASM 3</span></li><li><span>Transpilation</span><span>IBM Transpiler Service</span></li><li><span>Python in the platform</span><span>none</span></li></ul></div>
+    <div class="card z o"><h3>Classical runs every time</h3><p>Both solvers scored on the same objective under the same constraints; the better feasible answer becomes policy.</p><ul><li><span>Classical</span><span>annealing, tempering, tabu — Rust</span></li><li><span>Routing gate</span><span>only hard instances reach a QPU</span></li><li><span>Recorded</span><span>delta per class and instance size</span></li><li><span>If quantum is queued</span><span>classical is used, no impact</span></li></ul></div>
+  </div>
+  <p class="note">When the regime belief is wide — the platform does not know what regime it is in — the correct response is not to guess but to concentrate in strategies whose edge is structural rather than conditional. Arbitrage is regime-agnostic; momentum is not.</p>
+</section>
+<div class="legend">
+  <b><i class="sw" style="background:var(--intel)"></i>Intelligence</b>
+  <b><i class="sw" style="background:var(--opt)"></i>Optimisation</b>
+  <b><i class="sw" style="background:var(--ledger)"></i>Registry</b>
+</div>
+</div>
+<div id="v5" role="tabpanel" aria-labelledby="t5" class="hidden">
+<section>
+  <h2>How much, from where, to where, within what</h2>
+  <p class="lede">Between what a user allocates and what a region executes sits the decision nobody else makes. The capital engine answers how much to deploy and where it should sit. The risk engine bounds it. Treasury moves it. The wallet sees it and can move none of it.</p>
+  <div class="ship">
+    <div class="sh"><strong>The decision chain</strong><span class="k">each layer bounded by the one above</span><span class="k">only three can say yes</span></div>
+    <ol>
+      <li><div><b>User mandate</b><p>Capital, risk tolerance, permitted families, drawdown ceiling, liquidity floor, exploration share, tax jurisdiction.</p><span class="k">set by the user · can say yes</span></div></li>
+      <li><div><b>Capital engine</b><p>Deployed share against reserve, exploration budget, split across families and regions, when moving is worth the cost.</p><span class="k">1–5 min · can say yes</span></div></li>
+      <li><div><b>Risk engine</b><p>The envelope at ten levels including causal-driver concentration. Constrains; never originates.</p><span class="k">30 s – 5 min · constrains only</span></div></li>
+      <li><div><b>Quantum optimiser</b><p>Solves the allocation inside the envelope, conditioned on regime and horizon.</p><span class="k">adaptive · can say yes</span></div></li>
+      <li><div><b>Capital grants</b><p>Bounded, expiring permission per family per region, shipped outward. A grant expires rather than being revoked.</p><span class="k">per run · carries the yes</span></div></li>
+      <li><div><b>Regional and transfer gates</b><p>Whether a specific intent or movement may proceed.</p><span class="k">µs / per transfer · veto only</span></div></li>
+    </ol>
+  </div>
+</section>
+<section>
+  <h2>The capital engine</h2>
+  <div class="grid g3">
+    <div class="card z i"><h3>How much to invest</h3><p>Total splits into deployed, reserve and exploration. The reserve is not idle money.</p><ul><li><span>Withdrawal liquidity</span><span>user can leave</span></li><li><span>Settlement float</span><span>T+1, T+2 gaps</span></li><li><span>Margin headroom</span><span>survives a move against</span></li><li><span>Unfunded commitments</span><span>a hard reservation</span></li><li><span>Exploration</span><span>a declared share</span></li></ul></div>
+    <div class="card z i"><h3>How much to move</h3><p>Enough to restore target, never more.</p><ul><li><span>Trigger</span><span>deviation beyond soft band</span></li><li><span>Size</span><span>restores target, no overshoot</span></li><li><span>Suppressed if</span><span>cost exceeds expected gain</span></li><li><span>Let trading rebalance first</span><span>direction gating corrects most drift</span></li></ul></div>
+    <div class="card z i"><h3>Where to move it</h3><p>Corridor choice is an optimisation over cost, latency and settlement time.</p><ul><li><span>Route</span><span>cheapest signed corridor that arrives in time</span></li><li><span>Tracked as</span><span>in-transit inventory</span></li><li><span>Required</span><span>a stated purpose, always</span></li></ul></div>
+  </div>
+  <h4>The liquidity ladder</h4>
+  <div class="scroll"><table>
+    <thead><tr><th>Rung</th><th class="m">Horizon</th><th>Cost to liquidate</th></tr></thead>
+    <tbody>
+      <tr><td>Cash and stablecoin at venue</td><td class="m">immediate</td><td>Zero</td></tr>
+      <tr><td>Liquid spot and perpetual</td><td class="m">seconds</td><td>Spread and fee</td></tr>
+      <tr><td>Listed equities and futures</td><td class="m">same day</td><td>Spread, fee, impact</td></tr>
+      <tr><td>Bonds and less liquid listed</td><td class="m">days</td><td>Wider spread, dealer inventory</td></tr>
+      <tr><td>Resting and anchored positions</td><td class="m">days</td><td>Opportunity plus unwind</td></tr>
+      <tr><td>Private credit and real assets</td><td class="m">months, if at all</td><td>Substantial discount</td></tr>
+      <tr><td>Private equity commitments</td><td class="m">years</td><td>Large discount, possibly no bid</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">A withdrawal is served from the top downward. It never forces a position closed at a bad price to meet a routine request — the reserve exists so it does not have to.</p>
+</section>
+<section>
+  <h2>Compounding policy</h2>
+  <p class="lede">At small capital the reinvestment schedule is not an accounting detail; it is a strategy in its own right, and version 9 had no layer that reasoned about it.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Decision</th><th>Detail</th></tr></thead>
+    <tbody>
+      <tr><td>Reinvestment cadence</td><td>How often realised profit is redeployed, against the transaction cost of redeploying it</td></tr>
+      <tr><td>Fee tier accumulation</td><td>Volume thresholds that reduce fees. Reaching one can be worth more than the trades that reach it</td></tr>
+      <tr><td>Threshold crossing</td><td>Capital levels at which new venues, strategies or sizes become feasible. Approaching one is worth planning for</td></tr>
+      <tr><td>Withdrawal drag</td><td>Every withdrawal resets compounding. The frontend shows that cost rather than hiding it</td></tr>
+      <tr><td>Minimum viable scale</td><td>The capital level at which the platform becomes economically sensible, computed and shown honestly</td></tr>
+    </tbody>
+  </table></div>
+</section>
+<section>
+  <h2>The risk envelope</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Level</th><th>Limit</th><th>Set by</th><th class="m">Enforced</th></tr></thead>
+    <tbody>
+      <tr><td>Per user</td><td>Total capital, drawdown ceiling, permitted families, liquidity floor, commitments</td><td>Mandate</td><td class="m">capital engine</td></tr>
+      <tr><td>Per strategy</td><td>Position, notional, loss cap, bounded by capacity</td><td>Allocator</td><td class="m">before netting</td></tr>
+      <tr><td>Per family</td><td>Aggregate exposure and drawdown across the cluster</td><td>Quantum allocator</td><td class="m">on net intent</td></tr>
+      <tr><td>Per instrument, class, venue</td><td>Net position and concentration</td><td>Risk policy</td><td class="m">on net intent</td></tr>
+      <tr><td>Per factor</td><td>Systematic exposure, decomposed at fill time</td><td>Portfolio construction</td><td class="m">on net intent</td></tr>
+      <tr><td>Per causal driver</td><td>Exposure to a shared mechanism, surfaced from the causal graph</td><td>Cognition</td><td class="m">on net intent</td></tr>
+      <tr><td>Per region</td><td>Aggregate exposure and capital deployed</td><td>Risk policy</td><td class="m">on net intent</td></tr>
+      <tr><td>Global</td><td>Gross, net, leverage, drawdown breaker</td><td>Human ceiling</td><td class="m">continuously</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">Per causal driver is what version 8 lacked. Positions that look diversified by instrument and by factor can still share a mechanism, and only the causal graph can see it. This is the concentration that ends firms.</p>
+</section>
+<section>
+  <h2>Treasury — moving money inside corridors</h2>
+  <p class="lede">Humans approve, once and with a delay, where money may go. Machines decide, continuously and inside hard caps, when it goes. The blast radius is the allowlist, not the correctness of the automation.</p>
+  <div class="grid g2">
+    <div class="card z l"><h3>A corridor</h3><ul><li><span>Route</span><span>source → destination, asset</span></li><li><span>Destination</span><span>on the signed allowlist</span></li><li><span>Caps</span><span>per transfer, hour, day, cumulative</span></li><li><span>Timing</span><span>minimum interval, permitted hours</span></li><li><span>Signed by</span><span>a human with a hardware key</span></li><li><span>Activates after</span><span>24 hours</span></li></ul></div>
+    <div class="card z s"><h3>Three independent gates on withdrawal</h3><p>All three must agree before a single unit leaves a venue.</p><ul><li><span>At the venue</span><span>allowlist set out of band</span></li><li><span>In the platform</span><span>signed corridor with caps</span></li><li><span>At signing</span><span>MPC share held by policy engine</span></li><li><span>New destination</span><span>hardware key + 24 h</span></li><li><span>Cap change, verified destination</span><span>two approvals, no delay</span></li><li><span>Restriction</span><span>always immediate</span></li></ul></div>
+  </div>
+  <p class="note">The delay applies to adding a destination, never to changing a cap on one already verified. Money still cannot reach anywhere no human verified a day earlier; what was removed was a delay on operations that cannot change where money goes.</p>
+</section>
+<section>
+  <h2>The wallet — sees everything, signs nothing</h2>
+  <div class="grid g2">
+    <div class="card z l"><h3>Read path</h3><ul><li><span>Purpose</span><span>balance aggregation across everything</span></li><li><span>Credentials</span><span>read-only keys, watch addresses</span></li><li><span>Trust zone</span><span>Wallet — lower privilege</span></li><li><span>Signing crate</span><span>NOT linked, verified by audit</span></li><li><span>If compromised</span><span>leaks balances, moves nothing</span></li></ul></div>
+    <div class="card z s"><h3>Write path</h3><ul><li><span>Purpose</span><span>moving capital</span></li><li><span>Credentials</span><span>withdrawal-scoped, MPC shares</span></li><li><span>Trust zone</span><span>Treasury — highest privilege</span></li><li><span>Code</span><span>transfer engine, gate, custody engine</span></li><li><span>If compromised</span><span>bounded by allowlist and caps</span></li></ul></div>
+  </div>
+  <h4>Adapters and reconciliation</h4>
+  <div class="scroll"><table>
+    <thead><tr><th>Adapter</th><th>Reads</th><th>Can initiate</th></tr></thead>
+    <tbody>
+      <tr><td>Exchange</td><td>Spot, margin, futures balances, collateral, funding</td><td>Withdrawal to a venue-allowlisted address only</td></tr>
+      <tr><td>Chain</td><td>Native and token balances at derived and watched addresses</td><td>Unsigned transaction construction only</td></tr>
+      <tr><td>Custodian, broker, bank</td><td>Holdings, settlement status, cash, margin</td><td>Requests into their own approval flows</td></tr>
+      <tr><td>Fund administrator</td><td>Commitments, calls, distributions, NAV</td><td>Nothing. Statements reconcile against marks</td></tr>
+      <tr><td>Watch-only, hardware</td><td>Balance only; public keys</td><td>Nothing</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">Reconciliation compares external balance to ledger expectation. Tolerance is a formula per asset class — the largest legitimate unmodelled accrual over one interval plus dust — never a round number. A break halts that venue-asset and is never auto-corrected. An excess is treated with the same severity as a shortfall.</p>
+</section>
+<div class="legend">
+  <b><i class="sw" style="background:var(--user)"></i>User mandate</b>
+  <b><i class="sw" style="background:var(--intel)"></i>Capital engine</b>
+  <b><i class="sw" style="background:var(--ledger)"></i>Wallet and corridors</b>
+  <b><i class="sw" style="background:var(--stop)"></i>Risk and treasury</b>
+</div>
+</div>
+<div id="v6" role="tabpanel" aria-labelledby="t6" class="hidden">
+<section>
+  <h2>What gets shipped to a region</h2>
+  <p class="lede">Central never sends an order. It sends everything a region needs to decide for itself — signed, versioned, held in memory, acted on without a round trip.</p>
+  <div class="ship">
+    <div class="sh"><strong>Twelve-item payload</strong><span class="k">signed at source</span><span class="k">verified before swap</span><span class="k">atomic pointer swap, no pause</span></div>
+    <ol>
+      <li><div><b>Trained models</b><p>Ten ONNX artifacts.</p><span class="k">on promotion</span></div></li>
+      <li><div><b>Compiled strategy plan</b><p>With belief and feasibility bindings.</p><span class="k">on change</span></div></li>
+      <li><div><b>Belief priors</b><p>With TTL. A region never forms its own.</p><span class="k">seconds to minutes</span></div></li>
+      <li><div><b>Episodic digest</b><p>Outcome distribution for the current neighbourhood.</p><span class="k">minutes</span></div></li>
+      <li><div><b>Causal graph digest</b><p>Which edges are currently active.</p><span class="k">on re-estimation</span></div></li>
+      <li><div><b>Regime state</b><p>And its confidence.</p><span class="k">on change</span></div></li>
+      <li><div><b>Family budgets and capital grants</b><p>Bounded, expiring.</p><span class="k">hourly, adaptive</span></div></li>
+      <li><div><b>Cycle whitelist and path assignments</b><p></p><span class="k">1–5 min</span></div></li>
+      <li><div><b>Risk envelope</b><p>Ten levels. The region cannot raise them.</p><span class="k">30 s – 5 min</span></div></li>
+      <li><div><b>Inventory targets, mirror bands, reference price</b><p></p><span class="k">fast clock</span></div></li>
+      <li><div><b>Feasibility constraints per venue</b><p>Minimums, fee floors, gas.</p><span class="k">on change</span></div></li>
+      <li><div><b>Adversary profiles per venue</b><p></p><span class="k">hourly</span></div></li>
+    </ol>
+  </div>
+  <p class="note">If any item goes stale past its threshold the region narrows rather than stopping: reduced size, then only strategies and cycles it can prove safe with the inventory it holds, then intra-venue only. Halting is the floor, not the first response.</p>
+</section>
+<section>
+  <h2>Three regions, one binary</h2>
+  <div class="rig">
+    <div class="fan"><div>models ↓</div><div>plan ↓</div><div>beliefs ↓</div><div>budgets ↓</div><div>whitelist ↓</div><div>limits ↓</div><div>targets ↓</div></div>
+    <div class="regions">
+      <div class="reg"><div class="rh"><b>Americas</b><span class="k">us-east4 · c3-highcpu-22</span></div><dl><dt>Venues</dt><dd>Coinbase, Kraken, Gemini, CME, US equities via broker, prediction markets</dd><dt>Classes</dt><dd>Crypto spot and perp, futures, equities, prediction</dd><dt>Strategies</dt><dd class="m">~3,600 · 1,000 hot tier</dd><dt>Mirror</dt><dd>BTC with Europe — first deployed</dd></dl></div>
+      <div class="reg"><div class="rh"><b>Europe</b><span class="k">europe-west2 · c3-highcpu-8</span></div><dl><dt>Venues</dt><dd>LSE, Euronext, LMAX, ICE Europe, Deribit, Bitstamp</dd><dt>Classes</dt><dd>Equities, FX, crypto spot and options, futures</dd><dt>Strategies</dt><dd class="m">~3,600 · 1,000 hot tier</dd><dt>Mirror</dt><dd>BTC with Americas</dd></dl></div>
+      <div class="reg"><div class="rh"><b>Asia-Pacific</b><span class="k">asia-northeast1 · c3-highcpu-8</span></div><dl><dt>Venues</dt><dd>Binance, OKX, Bybit, BitFlyer, Upbit, TSE, SGX</dd><dt>Classes</dt><dd>Crypto spot and perp, equities, futures</dd><dt>Strategies</dt><dd class="m">~3,600 · 1,000 hot tier</dd><dt>Mirror</dt><dd>Candidate for second pair</dd></dl></div>
+    </div>
+    <div class="mirror"><b>Mirrored inventory, not a runtime link.</b> No packet crosses between execution planes on the hot path — 28 ms each way makes that impossible. Regions hold the same asset on both sides and trade independently against a distributed reference. Direction gating makes same-side trading impossible by construction.</div>
+  </div>
+</section>
+<section>
+  <h2>Inside a node, from tick to order</h2>
+  <p class="lede">One Rust binary, twenty-three modules, no container, no orchestrator. Everything below happens in one process on pinned cores using models, beliefs and strategies that arrived from central.</p>
+  <div class="panelbox">
+    <div class="top"><h3>Latency budget, drawn to scale</h3><p>Software time against the venue round trip. The proportions are the point.</p></div>
+    <div class="bar" role="img" aria-label="Roughly 670 microseconds of internal processing followed by a venue round trip of 1 to 3 milliseconds">
+      <div class="seg" style="flex:0 0 9%;background:var(--exec)"><span>parse 330</span></div>
+      <div class="seg" style="flex:0 0 .55%;background:var(--exec);opacity:.82"></div>
+      <div class="seg" style="flex:0 0 1.7%;background:var(--exec);opacity:.72"><span>feat 12</span></div>
+      <div class="seg" style="flex:0 0 1.9%;background:var(--exec);opacity:.62"><span>eval 70</span></div>
+      <div class="seg" style="flex:0 0 .45%;background:var(--cog)"></div>
+      <div class="seg" style="flex:0 0 .45%;background:var(--opt)"></div>
+      <div class="seg" style="flex:0 0 .2%;background:var(--exec);opacity:.9"></div>
+      <div class="seg" style="flex:0 0 .5%;background:var(--ledger)"></div>
+      <div class="seg" style="flex:0 0 5.2%;background:var(--exec);opacity:.45"><span>encode 190</span></div>
+      <div class="seg" style="flex:0 0 .6%;background:var(--exec);opacity:.35"></div>
+      <div class="seg wire" style="flex:1 1 auto"><span>venue round trip — 1 to 3 ms</span></div>
+    </div>
+    <div class="axis"><div style="flex:0 0 18.5%">0</div><div style="flex:1">~670&thinsp;µs — everything the platform controls ends here</div></div>
+    <div class="readout">
+      <div><b>670&thinsp;µs</b><small>Internal, wire to dispatch</small></div>
+      <div><b>70&thinsp;µs</b><small>Strategy engine incl. belief and feasibility</small></div>
+      <div><b>15&thinsp;µs</b><small>Risk gate, whole cycle</small></div>
+      <div><b>7&thinsp;µs</b><small>Intent netting</small></div>
+      <div><b>18%</b><small>Share of the clock the software owns</small></div>
+    </div>
+  </div>
+  <div class="plane" style="margin-top:14px">
+    <div class="hd"><strong>algorik-node</strong><span class="k">one static Rust binary</span><span class="k">GCE C3-highcpu</span><span class="k">systemd, no container</span><span class="k">cores 2–15 isolated</span></div>
+    <div class="row"><div class="tag">ingest</div><div class="body">
+      <div class="mod"><div class="n">Connectivity</div><div class="d">Sessions, RFQ, quote streams, latency and rate budget</div><div class="t">cores 2–5 · busy poll</div></div>
+      <div class="mod"><div class="n">Normalizer</div><div class="d">Venue format to canonical event</div><div class="t">&lt;14 µs</div></div>
+      <div class="mod"><div class="n">Book engine</div><div class="d">Incremental depth per instrument per venue</div><div class="t">&lt;8 µs</div></div>
+    </div></div>
+    <div class="row"><div class="tag">derive</div><div class="body">
+      <div class="mod"><div class="n">Feature engine</div><div class="d">Dirty tracking, 5–20 features per event</div><div class="t">&lt;12 µs · cores 6–7</div></div>
+      <div class="mod c"><div class="n">Statistics engine</div><div class="d">Welford, EW covariance, t-digest, reservoir, snapshots</div><div class="t">constant memory</div></div>
+      <div class="mod stop"><div class="n">Raw stream ends here</div><div class="d">Bounded ring, seconds, then discarded</div><div class="t">never persisted</div></div>
+    </div></div>
+    <div class="row"><div class="tag">know</div><div class="body">
+      <div class="mod c"><div class="n">Inference — tract</div><div class="d">Ten shipped models, pure Rust, parallel to evaluation</div><div class="t">core 14 · advisory</div></div>
+      <div class="mod c"><div class="n">Belief cache</div><div class="d">Priors from central with TTL. Drives confidence-weighted sizing</div><div class="t">&lt;2 µs</div></div>
+      <div class="mod c"><div class="n">Episodic digest</div><div class="d">Outcome distribution for the current neighbourhood</div><div class="t">&lt;1 µs</div></div>
+    </div></div>
+    <div class="row"><div class="tag">evaluate</div><div class="body">
+      <div class="mod"><div class="n">Strategy executor</div><div class="d">Compiled plan. 840 woken, 650 evaluated, ~23 fire</div><div class="t">&lt;70 µs · cores 8–9</div></div>
+      <div class="mod q"><div class="n">Quote engine</div><div class="d">Two-sided, skew, adverse selection, belief-weighted</div><div class="t">&lt;8 µs · core 11</div></div>
+      <div class="mod"><div class="n">Graph, scanner, router</div><div class="d">Six edge classes; indexed cycles; one of eight paths</div><div class="t">&lt;15 µs · core 10</div></div>
+      <div class="mod g"><div class="n">Feasibility gate</div><div class="d">Minimum, tick, fee floor, gas, depth</div><div class="t">&lt;3 µs</div></div>
+      <div class="mod g"><div class="n">Mirror manager</div><div class="d">Direction gating, reference TTL</div><div class="t">&lt;2 µs</div></div>
+    </div></div>
+    <div class="funnel"><span>every intent, quote and cycle leg converges</span></div>
+    <div class="row"><div class="tag">converge</div><div class="body"><div class="pinch"><div class="n">Intent netting</div><div class="d">Aggregates by instrument and venue, crosses opposing intents internally at the reference mid, emits one net intent with its contributor vector. Cycle legs pass through under a no-net flag. Nothing reaches a venue without passing here.</div><div class="t">&lt;7 µs · core 12 · crossing capped at 40%</div></div></div></div>
+    <div class="row"><div class="tag">gate</div><div class="body">
+      <div class="mod g"><div class="n">Risk aggregator</div><div class="d">Nine counters incl. causal driver. Never iterates strategies</div><div class="t">O(1)</div></div>
+      <div class="mod g"><div class="n">Risk gate</div><div class="d">Whole cycle or net intent. Veto or silence, never approval</div><div class="t">&lt;15 µs</div></div>
+      <div class="mod g"><div class="n">Inventory manager</div><div class="d">Settlement-aware reservation, one CAS</div><div class="t">&lt;4 µs</div></div>
+      <div class="mod g"><div class="n">Greeks engine</div><div class="d">Delta, gamma, vega for options paths</div><div class="t">core 14</div></div>
+    </div></div>
+    <div class="row"><div class="tag">dispatch</div><div class="body">
+      <div class="mod"><div class="n">Leg coordinator</div><div class="d">Saga, latency-equalised release, compensation</div><div class="t">&lt;20 µs · timer wheel</div></div>
+      <div class="mod"><div class="n">Execution</div><div class="d">Order state machine, routing, resting orders, quotes</div><div class="t">&lt;190 µs · core 13</div></div>
+      <div class="mod c"><div class="n">Adversary monitor</div><div class="d">Fill drift, pattern leakage, fingerprint randomisation</div><div class="t">core 14</div></div>
+    </div></div>
+  </div>
+</section>
+<section>
+  <h2>The eight execution paths</h2>
+  <p class="lede">Each is defined by what it does about coordination, because coordination is what latency makes expensive.</p>
+  <div class="scroll"><table>
+    <thead><tr><th class="m">#</th><th>Path</th><th>Coordination at execution</th><th class="m">Latency</th></tr></thead>
+    <tbody>
+      <tr><td class="m">1</td><td>Intra-venue</td><td>None — one session</td><td class="m">2–6 ms</td></tr>
+      <tr><td class="m">2</td><td>Cross-venue, one region</td><td>None beyond one process</td><td class="m">5–15 ms</td></tr>
+      <tr><td class="m">3</td><td>Mirrored inventory</td><td>None — policy distributed in advance</td><td class="m">2–6 ms per side</td></tr>
+      <tr><td class="m">4</td><td>Hedged bridging</td><td>Loose — the hedge removes time pressure</td><td class="m">seconds to minutes</td></tr>
+      <tr><td class="m">5</td><td>Passive anchoring</td><td>None — remote leg pre-committed</td><td class="m">local speed</td></tr>
+      <tr><td class="m">6</td><td>Firm-quote bridging</td><td>Provided by the venue's commitment</td><td class="m">inside the window</td></tr>
+      <tr><td class="m">7</td><td>Representation basis</td><td>None</td><td class="m">5–15 ms to enter</td></tr>
+      <tr><td class="m">8</td><td>Payoff equivalence</td><td>None — Greeks-aware gate</td><td class="m">5–20 ms to enter</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">Latency-equalised dispatch staggers sends by measured per-venue latency so arrivals coincide rather than spread — a five to tenfold reduction in dispersion. Together with passive-first routing, size decomposition, venue-native order types and dispersion-aware sizing, it moves the Path 2 completion target from 85 to above 93 percent.</p>
+</section>
+<div class="legend">
+  <b><i class="sw" style="background:var(--exec)"></i>Execution</b>
+  <b><i class="sw" style="background:var(--cog)"></i>Shipped intelligence</b>
+  <b><i class="sw" style="background:var(--opt)"></i>Quoting</b>
+  <b><i class="sw" style="background:var(--ledger)"></i>Risk and inventory</b>
+  <b><i class="sw" style="background:var(--stop)"></i>Terminates</b>
+</div>
+</div>
+<div id="v7" role="tabpanel" aria-labelledby="t7" class="hidden">
+<section>
+  <h2>Software architecture</h2>
+  <p class="lede">One Cargo workspace. Shared type crates. Roughly seventy binaries — one execution node deployed three times, and the rest scale-to-zero services across seven planes. Every application is Rust.</p>
+  <div class="panelbox">
+    <div class="top"><h3>The workspace</h3><p>Crates grouped by plane. Anything tagged node + backtest is linked verbatim by both, so backtest and live cannot diverge.</p></div>
+    <div class="scroll"><table>
+      <thead><tr><th>Group</th><th>Crates</th><th>Linked by</th></tr></thead>
+      <tbody>
+        <tr><td>Foundations</td><td class="m">types · money · sketch · telemetry · gcp</td><td>everything</td></tr>
+        <tr><td>Ingestion</td><td class="m">ingest · entity</td><td>ingestion services</td></tr>
+        <tr><td>Cognition</td><td class="m">worldmodel · causal · episodic · belief · counterfactual · selfmodel · hypothesis</td><td>cognition services; belief + episodic digests in node</td></tr>
+        <tr><td>Valuation</td><td class="m">termstruct · credit · volsurface · illiquid · cashflow · corpactions</td><td>valuation services</td></tr>
+        <tr><td>Execution</td><td class="m">features · stratcomp · stratexec · netting · quoting · graph · cyclescan · pathrouter · inventory · mirror · riskagg · riskgate · feasibility · legcoord · greeks</td><td>node + backtest + sim</td></tr>
+        <tr><td>Optimisation</td><td class="m">qubo · qasm · ibmq</td><td>solver services</td></tr>
+        <tr><td>Platform</td><td class="m">stats · dataref · taxlots</td><td>lifecycle, research, ledger</td></tr>
+        <tr><td>Experience</td><td class="m">ui · pwa</td><td>portal-web, portal-pwa</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+</section>
+<section>
+  <h2>Services by plane</h2>
+  <div class="plane">
+    <div class="row"><div class="tag">ingestion</div><div class="body"><div class="mod g2"><div class="n">10 services</div><div class="d">source adapters, deep-web adapters (query, api, registered, licensed, rendered, bulk), source-access-manager, deduplicator, extractor, entity-resolver, source-scorer, discovery-crawler, source-classifier, freshness-tracker</div><div class="t">Cloud Run + Jobs</div></div></div></div>
+    <div class="row"><div class="tag">cognition</div><div class="body"><div class="mod c"><div class="n">9 services</div><div class="d">world-model, causal-estimator, episodic-store, episodic-retriever, belief-engine, counterfactual-scorer, self-model, hypothesis-generator, explanation-builder</div><div class="t">Cloud Run + Jobs</div></div></div></div>
+    <div class="row"><div class="tag">valuation</div><div class="body"><div class="mod v"><div class="n">7 services</div><div class="d">term-structure, credit-engine, vol-surface, illiquid-valuer, cashflow-forecaster, commitment-tracker, corp-actions</div><div class="t">Cloud Run + Jobs</div></div></div></div>
+    <div class="row"><div class="tag">intelligence</div><div class="body">
+      <div class="mod i"><div class="n">Lifecycle — 9</div><div class="d">strategy-generator, backtest-runner, statistical-validator, capacity-estimator, promotion-controller, canary-monitor, decay-detector, strategy-registry, strategy-compiler</div><div class="t">Cloud Run Jobs</div></div>
+      <div class="mod i"><div class="n">AI/ML — 4</div><div class="d">feature-pipeline, trainer, eval-harness, model-promoter</div><div class="t">Jobs + spot GPU</div></div>
+      <div class="mod i"><div class="n">Learning — 4</div><div class="d">meta-learner, adversary-modeller, market-simulator, risk-policy</div><div class="t">Jobs + spot GPU</div></div>
+    </div></div>
+    <div class="row"><div class="tag">optimisation</div><div class="body"><div class="mod q"><div class="n">12 services</div><div class="d">family-clusterer, regime-conditioner, problem-builder, classical-solver, quantum-solver, routing-gate, solution-scorer, policy-emitter, decomposition-coordinator, cadence-controller, advantage-tracker, scenario-engine</div><div class="t">Cloud Run + Jobs + IBM REST</div></div></div></div>
+    <div class="row"><div class="tag">capital</div><div class="body">
+      <div class="mod i"><div class="n">Capital and risk — 7</div><div class="d">capital-allocator, portfolio-engine, breadth-monitor, transfer-planner, liquidity-ladder, exploration-budgeter, crowding-monitor</div><div class="t">Cloud Run</div></div>
+      <div class="mod g"><div class="n">Ledger and treasury — 7</div><div class="d">reconciler, attribution-service, tax-engine, corridor-registry, transfer-engine, transfer-gate, custody-policy-engine</div><div class="t">Cloud Run</div></div>
+      <div class="mod g"><div class="n">Wallet and inventory — 8</div><div class="d">wallet-aggregator, wallet-adapters, wallet-reconciler, destination-registry, inventory-aggregator, settlement-tracker, mirror-coordinator, reference-price</div><div class="t">Cloud Run</div></div>
+      <div class="mod"><div class="n">Registries and lifecycle — 6</div><div class="d">asset-class-registry, venue-onboarding, settlement-calendar, hedge-map, cross-margin-model, position-lifecycle</div><div class="t">Cloud Run</div></div>
+    </div></div>
+    <div class="row"><div class="tag">experience</div><div class="body"><div class="mod u"><div class="n">10 services</div><div class="d">portal-api, portal-web, portal-pwa, auth-service, device-registry, stepup-service, mandate-service, recovery-service, approval-service, notification-service</div><div class="t">Cloud Run + CDN</div></div></div></div>
+    <div class="row"><div class="tag">platform</div><div class="body">
+      <div class="mod"><div class="n">Control fabric — 2</div><div class="d">policy-distributor, outcome-collector</div><div class="t">Cloud Run + Pub/Sub</div></div>
+      <div class="mod c"><div class="n">Data and observability — 4</div><div class="d">dataref-registry, dataref-resolver, cache-reaper, graph-builder</div><div class="t">Cloud Run</div></div>
+    </div></div>
+    <div class="row"><div class="tag">execution</div><div class="body"><div class="mod"><div class="n">algorik-node ×3</div><div class="d">23 modules in one static binary. The only dedicated machine class in the platform</div><div class="t">GCE C3 · systemd</div></div></div></div>
+  </div>
+  <p class="note">Everything except the execution node scales to zero, which is why the pre-revenue phases stay near a thousand dollars a month.</p>
+</section>
+<section>
+  <h2>Core assignment on a node</h2>
+  <div class="scroll"><table>
+    <thead><tr><th class="m">Cores</th><th>Threads</th><th>Rationale</th></tr></thead>
+    <tbody>
+      <tr><td class="m">0–1</td><td>OS, telemetry drainer, control-plane client, plan compiler</td><td>Never on an isolated core</td></tr>
+      <tr><td class="m">2–5</td><td>Venue I/O — one busy-poll slot per venue group</td><td>Isolated. Parallel fan-out for equalised dispatch</td></tr>
+      <tr><td class="m">6–7</td><td>Book, feature, statistics engines</td><td>Isolated. Feeds everything downstream</td></tr>
+      <tr><td class="m">8–9</td><td>Strategy executor with belief and feasibility</td><td>Isolated. Largest consumer of budget</td></tr>
+      <tr><td class="m">10</td><td>Graph, scanner, path router</td><td>Isolated</td></tr>
+      <tr><td class="m">11</td><td>Quote engine</td><td>Isolated. Own loop, own rate budget</td></tr>
+      <tr><td class="m">12</td><td>Netting, risk aggregator, risk gate</td><td>Isolated. Everything converges here</td></tr>
+      <tr><td class="m">13</td><td>Leg coordinator, execution dispatch</td><td>Isolated. Owns the timer wheel</td></tr>
+      <tr><td class="m">14</td><td>Inference, Greeks, adversary monitor</td><td>Isolated</td></tr>
+      <tr><td class="m">15</td><td>Tier 2 strategies, background sweep</td><td>Isolated but yields</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">Node configuration: minimal Debian, no container runtime, isolcpus for 2–15, governor performance, C-states disabled, huge pages preallocated, mlockall, no swap, one systemd unit with watchdog, no external IP.</p>
+</section>
+<section>
+  <h2>The data model</h2>
+  <p class="lede">Every object has one owning plane and one lifecycle, defined once in the types crate.</p>
+  <div class="grid g3">
+    <div class="card z c"><h3>World and cognition</h3><ul><li><span>Entity, EntityRelation</span><span>the graph</span></li><li><span>WorldEvent, ResolutionSource</span><span>what happened, who settles</span></li><li><span>CausalEdge, CausalGraph</span><span>what causes what</span></li><li><span>Episode</span><span>state, action, outcome, surprise</span></li><li><span>Belief</span><span>distribution, evidence, TTL</span></li><li><span>Counterfactual, Hypothesis</span><span>paths declined, claims to test</span></li><li><span>CapabilityEstimate, Regime</span><span>self-model</span></li><li><span>SourceCandidate</span><span>tier, category, access class, lawfulness verdict</span></li><li><span>DeepWebAdapter</span><span>mode, terms record, query plan, freshness</span></li></ul></div>
+    <div class="card z v"><h3>Valuation</h3><ul><li><span>YieldCurve, CreditProfile</span><span>curves, default</span></li><li><span>VolSurface</span><span>skew and term</span></li><li><span>Valuation</span><span>mark, method, confidence</span></li><li><span>Commitment, CapitalCall</span><span>private obligations</span></li><li><span>CashflowForecast</span><span>irregular streams</span></li><li><span>CorporateAction</span><span>position effects</span></li><li><span>LogisticsCost, AuctionState</span><span>physical, auction</span></li></ul></div>
+    <div class="card z"><h3>Execution and capital</h3><ul><li><span>Instrument, Venue, Representation</span><span>what and where</span></li><li><span>GraphNode, GraphEdge, Cycle, Path</span><span>arbitrage</span></li><li><span>Strategy, Family, Plan</span><span>compiled evaluation</span></li><li><span>Intent, NetIntent, InternalCross</span><span>netting</span></li><li><span>Feasibility, Quote, Reservation</span><span>gating</span></li><li><span>Mirror, SettlementBridge</span><span>placement</span></li><li><span>ExposureAggregate, RiskVerdict</span><span>risk</span></li><li><span>Order, Fill, Position, TaxLot</span><span>ledger</span></li><li><span>Corridor, Transfer, Destination</span><span>money</span></li><li><span>Mandate, Explanation</span><span>user</span></li></ul></div>
+  </div>
+  <h4>The attribution chain</h4>
+  <div class="scroll"><table>
+    <thead><tr><th>From a fill, reach</th><th>Through</th></tr></thead>
+    <tbody>
+      <tr><td>The user and their mandate</td><td>contributor vector → strategy → family → mandate</td></tr>
+      <tr><td>The observation that caused it</td><td>intent → belief → causal edge → world event → entity</td></tr>
+      <tr><td>What nearly stopped it</td><td>feasibility record, risk verdict and its counterfactual score</td></tr>
+      <tr><td>What the world looked like</td><td>the episode stored at that instant</td></tr>
+      <tr><td>Its tax consequence</td><td>tax lot with basis, holding period, jurisdiction</td></tr>
+      <tr><td>Which solver set the budget</td><td>capital grant → optimisation run</td></tr>
+      <tr><td>A plain-language explanation</td><td>the explanation object, rendered on demand</td></tr>
+    </tbody>
+  </table></div>
+</section>
+<section>
+  <h2>Key crates</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Function</th><th class="m">Crate</th><th>Note</th></tr></thead>
+    <tbody>
+      <tr><td>Money</td><td class="m">rust_decimal</td><td>Floating point for money is a review rejection</td></tr>
+      <tr><td>Hot-path structure</td><td class="m">crossbeam · bumpalo · core_affinity · io-uring</td><td>Lock-free, arena-allocated, pinned, zero-syscall</td></tr>
+      <tr><td>Inference</td><td class="m">tract</td><td>Pure Rust ONNX, no FFI. Same crate for training and serving</td></tr>
+      <tr><td>Training</td><td class="m">burn · linfa</td><td>Adequate for small tabular and short-sequence models</td></tr>
+      <tr><td>Dataframes</td><td class="m">polars · arrow-rs · parquet</td><td>Replaces pandas</td></tr>
+      <tr><td>Optimisation</td><td class="m">hand-rolled + rayon · argmin · nalgebra</td><td>Annealing, tempering, tabu; SPSA; linear algebra</td></tr>
+      <tr><td>Quantum</td><td class="m">hand-rolled QASM3 · reqwest</td><td>Circuit IR and emission; Runtime REST</td></tr>
+      <tr><td>Statistics</td><td class="m">hand-rolled · statrs</td><td>Deflated Sharpe, purged CV, Welford, t-digest, reservoir</td></tr>
+      <tr><td>Episodic retrieval</td><td class="m">hand-rolled HNSW</td><td>Approximate nearest neighbour, warm path</td></tr>
+      <tr><td>Services</td><td class="m">axum · tonic · google-cloud-rust</td><td>HTTP, gRPC, GCP clients</td></tr>
+      <tr><td>Signing and hashing</td><td class="m">ring · blake3</td><td>Corridors, artifacts, post-quantum; content hashes</td></tr>
+      <tr><td>Frontend</td><td class="m">leptos · plotters</td><td>SSR with WASM hydration; server-side SVG. PWA for mobile</td></tr>
+      <tr><td>Observability</td><td class="m">opentelemetry · tracing</td><td>To Cloud Trace and Managed Prometheus</td></tr>
+    </tbody>
+  </table></div>
+</section>
+<section>
+  <h2>Breadth: registries and lifecycle</h2>
+  <p class="lede">Hundreds of asset classes and every venue type are architecturally reachable because the graph node is class-agnostic and the valuation engines cover every pricing paradigm. Six components turn capable into supported, and make divestment first-class rather than a side effect.</p>
+  <div class="grid g3">
+    <div class="card z"><h3>Asset class registry</h3><p>One record per class: which valuation engine prices it, settlement convention, tick and lot, calendar, margin regime, tax class, eligible strategy families, hedge instruments.</p><ul><li><span>Gate</span><span>an unregistered class cannot be traded</span></li></ul></div>
+    <div class="card z"><h3>Venue onboarding</h3><p>What an adapter must provide — protocol, fees, order-type matrix, settlement, withdrawal policy, rate limits, measured latency — and promotion from observed to shadow to capped-live to full.</p><ul><li><span>Verified</span><span>against measurement, not documentation</span></li></ul></div>
+    <div class="card z"><h3>DeFi execution model</h3><p>A decentralised exchange is not an order book. Pool-math slippage, block-time execution, MEV and front-running risk, smart-contract risk as a distinct exposure.</p><ul><li><span>Default</span><span>observe-only until the model exists</span></li></ul></div>
+    <div class="card z"><h3>Settlement calendars</h3><p>Per-market sessions, holidays, settlement cycles, roll and expiry. A closed market is a known state, not a venue outage.</p><ul><li><span>Feeds</span><span>timeline, feasibility, mirror timing</span></li></ul></div>
+    <div class="card z"><h3>Cross-class hedge map</h3><p>What offsets what across classes, with ratio, basis risk, liquidity and degradation. Populated from the causal graph and realised performance.</p><ul><li><span>Feeds</span><span>Path 4 and divestment</span></li></ul></div>
+    <div class="card z"><h3>Cross-margin model</h3><p>A collateral graph: what backs what, with haircuts, per margin regime. Portfolio vs isolated margin, rehypothecation, liquidation cascades.</p><ul><li><span>Feeds</span><span>risk envelope and liquidity ladder</span></li></ul></div>
+  </div>
+  <h4>Position lifecycle — divestment as a first-class flow</h4>
+  <div class="scroll"><table>
+    <thead><tr><th>Question version 9 left open</th><th>Answer</th></tr></thead>
+    <tbody>
+      <tr><td>A retired strategy's open positions?</td><td>Reassigned to a funded strategy sharing the thesis, or scheduled for unwinding. A position with no owner is a reconciliation break, never a normal state</td></tr>
+      <tr><td>A reduced allocation, unwound how?</td><td>By explicit policy: worst-thesis-first, then tax-aware lot selection, then cost-aware ordering against the liquidity ladder. Never a forced close at a bad price</td></tr>
+      <tr><td>A position held past its thesis?</td><td>A thesis-expiry sweep flags a position whose strategy has no live signal and whose horizon has elapsed. Nothing is held by inertia</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">Unwind ordering never breaks a hedge that still protects a retained position, and never liquidates collateral out from under one that is staying. Divestment done badly is how a good book becomes a loss on the way out.</p>
+</section>
+<div class="legend">
+  <b><i class="sw" style="background:var(--ingest)"></i>Ingestion</b>
+  <b><i class="sw" style="background:var(--cog)"></i>Cognition and data</b>
+  <b><i class="sw" style="background:var(--val)"></i>Valuation</b>
+  <b><i class="sw" style="background:var(--intel)"></i>Intelligence and capital</b>
+  <b><i class="sw" style="background:var(--opt)"></i>Optimisation</b>
+  <b><i class="sw" style="background:var(--exec)"></i>Execution</b>
+  <b><i class="sw" style="background:var(--ledger)"></i>Ledger and wallet</b>
+  <b><i class="sw" style="background:var(--user)"></i>Experience</b>
+</div>
+</div>
+<div id="v8" role="tabpanel" aria-labelledby="t8" class="hidden">
+<section>
+  <h2>Cloud and network</h2>
+  <p class="lede">Two vendors. One global VPC with no peering layer, because a Google Cloud VPC is a global resource and subnets in different regions already share it. No Kubernetes in any phase, and exactly one class of dedicated machine.</p>
+  <div class="panelbox">
+    <div class="top"><h3>Compute substrates</h3><p>Every workload maps to one of these. Nothing else is used.</p></div>
+    <div class="readout">
+      <div><b>3</b><small>Dedicated VMs — execution nodes only</small></div>
+      <div><b>~70</b><small>Services on Cloud Run and Jobs, scale to zero</small></div>
+      <div><b>0</b><small>Kubernetes clusters, in any phase</small></div>
+      <div><b>1</b><small>Global VPC, no peering</small></div>
+      <div><b>2</b><small>Vendors</small></div>
+    </div>
+  </div>
+</section>
+<section>
+  <div class="lane"><div class="lane-hd"><h3>Three tiers</h3><span class="meta">frontend · backend · data</span></div>
+  <div class="plane">
+    <div class="row"><div class="tag">frontend</div><div class="body">
+      <div class="mod u"><div class="n">Edge</div><div class="d">Cloud CDN, Global HTTPS LB, Cloud Armor. In front of web and mobile only — never venue connectivity</div><div class="t">portal only</div></div>
+      <div class="mod u"><div class="n">Delivery</div><div class="d">portal-web (Leptos SSR + WASM), portal-pwa (service worker, Web Push, WebAuthn), server-side SVG graph renderer</div><div class="t">Cloud Run · Rust</div></div>
+      <div class="mod u"><div class="n">API and identity</div><div class="d">portal-api, auth-service, device-registry, stepup-service, mandate-service, recovery-service, approval-service, notification-service</div><div class="t">Cloud Run</div></div>
+    </div></div>
+    <div class="row"><div class="tag">backend</div><div class="body">
+      <div class="mod"><div class="n">Execution</div><div class="d">algorik-node ×3 on GCE C3. Titanium offload, gVNIC TIER_1, compact placement, isolated cores</div><div class="t">dedicated VM</div></div>
+      <div class="mod c"><div class="n">Cognition, ingestion, valuation</div><div class="d">21 services. World model, causal, episodic, belief, counterfactual, self-model, hypothesis, extraction, entity resolution, six valuation engines</div><div class="t">Cloud Run + Jobs</div></div>
+      <div class="mod i"><div class="n">Intelligence</div><div class="d">17 services. Lifecycle, training on spot GPU, meta-learning, adversary, simulation, risk policy</div><div class="t">Jobs + spot GPU</div></div>
+      <div class="mod q"><div class="n">Optimisation</div><div class="d">12 services. Solvers, routing gate, policy emitter. The only zone with external egress, to IBM alone</div><div class="t">Cloud Run + IBM REST</div></div>
+      <div class="mod g"><div class="n">Capital, ledger, wallet, treasury</div><div class="d">22 services. Allocation, liquidity ladder, tax, reconciliation, corridors, transfer gate, custody, wallet adapters</div><div class="t">Cloud Run</div></div>
+      <div class="mod"><div class="n">Control fabric</div><div class="d">Pub/Sub shipping the twelve-item payload down; outcomes and observations back</div><div class="t">Pub/Sub</div></div>
+    </div></div>
+    <div class="row"><div class="tag">data</div><div class="body">
+      <div class="mod g"><div class="n">Cloud Spanner</div><div class="d">Ledger with attribution, positions per user and strategy, tax lots, inventory, mirrors, corridors, mandates, entities, causal edges, beliefs, episodes, valuations, commitments</div><div class="t">grows with own activity</div></div>
+      <div class="mod c"><div class="n">BigQuery</div><div class="d">Derived series only — returns, dispersion, trials, counterfactual scores, solver deltas. No raw market history</div><div class="t">grows with elapsed time</div></div>
+      <div class="mod c"><div class="n">Cloud Storage</div><div class="d">Plans, models, statistics checkpoints, event snapshots on a 90-day roll, bar fallback, TTL research cache, audit under retention lock</div><div class="t">rolling window</div></div>
+      <div class="mod"><div class="n">Memorystore</div><div class="d">Warm cache. Never read from the hot path</div><div class="t">fixed</div></div>
+      <div class="mod x"><div class="n">External, referenced</div><div class="d">Market history, filings, registries — held by their owners, referenced by manifest with a content hash</div><div class="t">not ours to grow</div></div>
+    </div></div>
+  </div></div>
+  <p class="note">Not one store grows with tick rate across every venue. Storage scales with the platform's own activity and with elapsed time — both slow and predictable. In a conventional design, market history would be the largest line by the final phase and would keep growing after the platform stopped changing.</p>
+</section>
+<section>
+  <h2>Network topology</h2>
+  <div class="grid g2">
+    <div class="card z">
+      <h3>The VPC</h3>
+      <ul>
+        <li><span>VPC</span><span>one, global</span></li>
+        <li><span>Inter-region peering</span><span>none needed</span></li>
+        <li><span>Overlay or VPN mesh</span><span>none</span></li>
+        <li><span>External IPs on compute</span><span>none</span></li>
+        <li><span>Egress</span><span>Cloud NAT, allowlisted</span></li>
+        <li><span>Google service access</span><span>Private Service Connect</span></li>
+        <li><span>Subnet tiers per region</span><span>public, dmz, execution, data, management</span></li>
+      </ul>
+      <p class="note" style="margin-top:12px">A Google Cloud VPC spans regions natively. That single fact removed a transit gateway, a cross-connect provider and an overlay mesh — around eleven tools and their failure modes.</p>
+    </div>
+    <div class="card z s">
+      <h3>External egress, exhaustively</h3>
+      <ul>
+        <li><span>Execution → venues</span><span>trading only</span></li>
+        <li><span>Ingestion → information sources</span><span>read only</span></li>
+        <li><span>Wallet read → venues, chains, custodians</span><span>read only</span></li>
+        <li><span>Treasury → custodians, withdrawal APIs</span><span>inside corridors</span></li>
+        <li><span>Optimisation → IBM endpoints</span><span>the only non-counterparty egress</span></li>
+        <li><span>Everything else</span><span>none</span></li>
+      </ul>
+    </div>
+  </div>
+</section>
+<section>
+  <h2>Trust zones</h2>
+  <p class="lede">Thirteen zones, default deny between them. Only permitted paths exist.</p>
+  <div class="grid g2">
+    <div class="card z u"><h3>Public edge</h3><p>CDN, load balancer, Cloud Armor.</p><ul><li><span>Reaches</span><span>Application</span></li></ul></div>
+    <div class="card z u"><h3>Application and identity</h3><p>portal-api, auth, devices, step-up, mandate, recovery. The only path from an interface to platform data.</p><ul><li><span>Reaches</span><span>Intelligence, Ledger — read</span></li></ul></div>
+    <div class="card z g"><h3>Ingestion and discovery</h3><p>Source adapters, deep-web adapters, extraction, entity resolution, and the discovery crawler. Widest external surface, can reach nothing that moves money. Headless rendering and the dark-web crawler run in the isolated discovery enclave; per-source credentials live in Secret Manager.</p><ul><li><span>Reaches</span><span>External — read. Cognition</span></li></ul></div>
+    <div class="card z c"><h3>Cognition</h3><p>World model, causal, episodic, belief, counterfactual, self-model, hypothesis.</p><ul><li><span>Reaches</span><span>Ledger — read. Control fabric</span></li></ul></div>
+    <div class="card z v"><h3>Valuation</h3><p>Term structure, credit, surface, illiquid, cashflow, corporate actions.</p><ul><li><span>Reaches</span><span>Ledger — read. Cognition — read</span></li></ul></div>
+    <div class="card z i"><h3>Intelligence</h3><p>Lifecycle, training, meta-learning, adversary, simulation, risk policy.</p><ul><li><span>Reaches</span><span>Ledger, control fabric</span></li></ul></div>
+    <div class="card z o"><h3>Optimisation</h3><p>Solvers, routing gate, policy emitter.</p><ul><li><span>Reaches</span><span>Ledger — read. IBM only</span></li></ul></div>
+    <div class="card z"><h3>Control fabric</h3><p>Pub/Sub shipping the payload down, outcomes up.</p><ul><li><span>Reaches</span><span>Execution — publish only</span></li></ul></div>
+    <div class="card z"><h3>Execution</h3><p>Regional nodes. No external IP.</p><ul><li><span>Reaches</span><span>Venues, fabric, Ledger — append</span></li></ul></div>
+    <div class="card z l"><h3>Ledger</h3><p>Spanner.</p><ul><li><span>Reaches</span><span>nothing outbound</span></li></ul></div>
+    <div class="card z l"><h3>Wallet — read</h3><p>Aggregation and adapters. Signing crate not linked.</p><ul><li><span>Reaches</span><span>venues, chains, custodians — read</span></li></ul></div>
+    <div class="card z s"><h3>Treasury — write</h3><p>Corridors, transfer engine and gate, custody policy engine.</p><ul><li><span>Reaches</span><span>Ledger, custodians, withdrawal APIs</span></li></ul></div>
+    <div class="card z c"><h3>Management</h3><p>Cloud Build, Deploy, break-glass.</p><ul><li><span>Reaches</span><span>all — audited</span></li></ul></div>
+  </div>
+</section>
+<section>
+  <h2>Google Cloud services</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Service</th><th>Carries</th><th class="m">Tier</th><th class="m">Phase</th></tr></thead>
+    <tbody>
+      <tr><td>Compute Engine C3 / C3D</td><td>Execution nodes. Titanium, gVNIC TIER_1, compact placement, isolated cores</td><td class="m">backend</td><td class="m">3</td></tr>
+      <tr><td>Compute Engine spot GPU</td><td>Training, causal estimation, market simulation</td><td class="m">backend</td><td class="m">2</td></tr>
+      <tr><td>Cloud Run and Jobs</td><td>Every non-node service across all seven planes</td><td class="m">all</td><td class="m">0</td></tr>
+      <tr><td>Cloud Spanner</td><td>Ledger, world model, causal graph, beliefs, episodes, mandates, valuations</td><td class="m">data</td><td class="m">3</td></tr>
+      <tr><td>BigQuery</td><td>Derived series, counterfactual scores, trials, solver comparison</td><td class="m">data</td><td class="m">1</td></tr>
+      <tr><td>Cloud Storage</td><td>Plans, models, checkpoints, snapshots, research cache, audit</td><td class="m">data</td><td class="m">0</td></tr>
+      <tr><td>Memorystore</td><td>Warm cache</td><td class="m">data</td><td class="m">3</td></tr>
+      <tr><td>Pub/Sub</td><td>Control fabric</td><td class="m">backend</td><td class="m">1</td></tr>
+      <tr><td>VPC, Cloud NAT, PSC</td><td>One global VPC. Controlled egress, private service access</td><td class="m">network</td><td class="m">0</td></tr>
+      <tr><td>Secret Manager, KMS, HSM</td><td>Credentials, signing keys, custody key material</td><td class="m">security</td><td class="m">0 / 5</td></tr>
+      <tr><td>Workload Identity Federation</td><td>Keyless identity for build and runtime</td><td class="m">security</td><td class="m">0</td></tr>
+      <tr><td>Artifact Registry, Cloud Build, Deploy</td><td>Build, test, attest, roll out</td><td class="m">delivery</td><td class="m">0 / 1</td></tr>
+      <tr><td>Binary Authorization</td><td>Only attested images run</td><td class="m">security</td><td class="m">1</td></tr>
+      <tr><td>Cloud Armor, LB, CDN</td><td>Web and mobile only</td><td class="m">frontend</td><td class="m">1</td></tr>
+      <tr><td>Trace, Logging, Prometheus</td><td>Observability from OpenTelemetry</td><td class="m">platform</td><td class="m">1</td></tr>
+      <tr><td>Security Command Center</td><td>Posture and threat findings</td><td class="m">security</td><td class="m">1</td></tr>
+      <tr><td>Cloud Workflows</td><td>Lifecycle and ingestion orchestration</td><td class="m">backend</td><td class="m">2</td></tr>
+      <tr><td>Firebase Cloud Messaging</td><td>Push for the installable PWA</td><td class="m">frontend</td><td class="m">13</td></tr>
+    </tbody>
+  </table></div>
+</section>
+<section>
+  <h2>IBM</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Service</th><th>Carries</th><th class="m">Reached by</th></tr></thead>
+    <tbody>
+      <tr><td>IBM Quantum Platform</td><td>QPU access. Open plan through Phase 15; Flex when the routing gate proves need</td><td class="m">REST</td></tr>
+      <tr><td>Nighthawk QPU</td><td>Primary. 120 qubits, square lattice, 5,000 two-qubit gates</td><td class="m">Runtime</td></tr>
+      <tr><td>Heron r2 / r3</td><td>Overflow at 156 qubits</td><td class="m">Runtime</td></tr>
+      <tr><td>Qiskit Runtime</td><td>Sampler and Estimator with error mitigation and sessions</td><td class="m">REST, QASM 3</td></tr>
+      <tr><td>Transpiler Service</td><td>Logical QASM to backend ISA</td><td class="m">REST</td></tr>
+      <tr><td>Quantum Safe</td><td>Post-quantum algorithms for corridors and custody keys</td><td class="m">Rust libraries</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">Every IBM call is HTTPS from a Cloud Run job in the Optimisation zone, carrying an OpenQASM 3 payload. There is no Python anywhere in the platform.</p>
+</section>
+<section>
+  <h2>Delivery pipeline</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Stage</th><th>Gate</th></tr></thead>
+    <tbody>
+      <tr><td>Build and test</td><td>Unit, integration, replay against captured data for every path</td></tr>
+      <tr><td>Static analysis</td><td>clippy, cargo-audit, cargo-deny. A new critical advisory blocks the build</td></tr>
+      <tr><td>Gate fixtures</td><td>Every risk-gate and transfer-gate rule has a passing and a vetoing fixture. Coverage must be total</td></tr>
+      <tr><td>Simulation</td><td>Each path and family exercised in sim against recorded data before enablement</td></tr>
+      <tr><td>Attestation</td><td>Signed provenance. Unsigned artifacts cannot deploy</td></tr>
+      <tr><td>Infrastructure</td><td>OpenTofu, state in Cloud Storage with locking. GCP and IBM resources only</td></tr>
+      <tr><td>Deploy — services</td><td>Cloud Deploy with gradual rollout and automatic rollback</td></tr>
+      <tr><td>Deploy — node</td><td>Blue-green instance replacement. Shadow mode before taking venue sessions</td></tr>
+      <tr><td>Admission</td><td>Binary Authorization. Only attested images run</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">Three environments: dev (Cloud Run only, no node), sim (one node, replay harness, adaptive simulated venues), prod. No separate staging — sim answers whether the hot path is correct, prod whether it is correct against a live venue.</p>
+</section>
+<section>
+  <h2>Cost</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Line</th><th class="m">Phase 0–4</th><th class="m">Phase 5–13</th><th class="m">Phase 19</th></tr></thead>
+    <tbody>
+      <tr><td>Cloud Run services and jobs</td><td class="m">$110</td><td class="m">$340</td><td class="m">$700</td></tr>
+      <tr><td>Ingestion — feeds, extraction, rendering, licences</td><td class="m">$80</td><td class="m">$320</td><td class="m">$720</td></tr>
+      <tr><td>Cognition — causal, episodic, counterfactual</td><td class="m">$40</td><td class="m">$180</td><td class="m">$420</td></tr>
+      <tr><td>Valuation engines</td><td class="m">—</td><td class="m">$90</td><td class="m">$220</td></tr>
+      <tr><td>Backtest, validation, simulation</td><td class="m">$140</td><td class="m">$320</td><td class="m">$640</td></tr>
+      <tr><td>Training compute, spot GPU</td><td class="m">$100</td><td class="m">$220</td><td class="m">$400</td></tr>
+      <tr><td>BigQuery, Storage, episodic</td><td class="m">$55</td><td class="m">$160</td><td class="m">$370</td></tr>
+      <tr><td>Execution nodes</td><td class="m">$260 (1)</td><td class="m">$260 (1)</td><td class="m">$700 (3)</td></tr>
+      <tr><td>Spanner, Memorystore, Pub/Sub, network</td><td class="m">$150</td><td class="m">$300</td><td class="m">$700</td></tr>
+      <tr><td>Observability, KMS, HSM</td><td class="m">$80</td><td class="m">$300</td><td class="m">$600</td></tr>
+      <tr><td>IBM Quantum</td><td class="m">$0</td><td class="m">$0–300</td><td class="m">$600–2,000</td></tr>
+      <tr><td><b>Total</b></td><td class="m"><b>~$1,015</b></td><td class="m"><b>$2,490–2,790</b></td><td class="m"><b>$6,070–7,470</b></td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">Totals are the sum of the line items above; the v10 document raised the ingestion line for deep-web rendering and licences without recomputing its totals. Ingestion and cognition are compute and feed costs that begin before the capability they enable is earning. Against a two hundred dollar account, this platform is not economically sensible as an engine — it is sensible as a build, and the frontend says so plainly.</p>
+</section>
+<div class="legend">
+  <b><i class="sw" style="background:var(--user)"></i>Frontend and identity</b>
+  <b><i class="sw" style="background:var(--ingest)"></i>Ingestion</b>
+  <b><i class="sw" style="background:var(--cog)"></i>Cognition and data</b>
+  <b><i class="sw" style="background:var(--val)"></i>Valuation</b>
+  <b><i class="sw" style="background:var(--intel)"></i>Intelligence</b>
+  <b><i class="sw" style="background:var(--opt)"></i>Optimisation</b>
+  <b><i class="sw" style="background:var(--exec)"></i>Execution and fabric</b>
+  <b><i class="sw" style="background:var(--ledger)"></i>Ledger and wallet</b>
+  <b><i class="sw" style="background:var(--stop)"></i>Treasury and egress</b>
+</div>
+</div>
+<div id="v9" role="tabpanel" aria-labelledby="t9" class="hidden">
+<section>
+  <h2>The control surface for your money</h2>
+  <p class="lede">Web and mobile are where a user sees what they own, moves capital in and out, chooses which strategies to fund, reviews how they are doing, and asks why. One Leptos codebase in Rust, shared types with every backend service, an installable PWA rather than a native shell.</p>
+  <div class="panelbox">
+    <div class="top"><h3>What a user controls</h3><p>Everything a user can decide. Nothing a user should not decide alone.</p></div>
+    <div class="loopgrid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr))">
+      <div><div class="st">see</div><b>Portfolio</b><p>Value, allocation, performance, exposure. Marks carry method and confidence.</p></div>
+      <div><div class="st">see</div><b>Wallet</b><p>Every balance across venues, chains, custodians, brokers, banks — available, reserved, settling, committed.</p></div>
+      <div><div class="st">move</div><b>Capital</b><p>Deposit, withdraw, move between strategies and regions. All through the corridor path.</p></div>
+      <div><div class="st">choose</div><b>Strategies</b><p>Fund families that cleared the gate, with evidence, capacity, and correlation against what you hold.</p></div>
+      <div><div class="st">review</div><b>Running strategies</b><p>Exception-first. Live against holdout band, capacity headroom, attributed P&amp;L.</p></div>
+      <div><div class="st">ask</div><b>Explanation</b><p>What the platform believed, why, and which causal path supports it.</p></div>
+      <div><div class="st">commit</div><b>Private positions</b><p>Commitments, call schedule, expected distributions, mark and method.</p></div>
+      <div><div class="st">tune</div><b>Exploration</b><p>What the platform is spending to learn, and what it learned.</p></div>
+    </div>
+    <div class="readout">
+      <div><b>Rust</b><small>Leptos SSR with WASM hydration</small></div>
+      <div><b>1</b><small>Codebase for web and mobile</small></div>
+      <div><b>0</b><small>Lines of JavaScript framework, Swift or Kotlin</small></div>
+      <div><b>0</b><small>Manual trading paths on any surface</small></div>
+    </div>
+  </div>
+</section>
+<section>
+  <h2>Explanation</h2>
+  <p class="lede">Attribution says which strategy caused a fill. Explanation says what the system believed and why. Only the second earns trust.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>A user asks</th><th>What answers it</th></tr></thead>
+    <tbody>
+      <tr><td>Why did you take this position?</td><td>The belief that supported it, its confidence, and the evidence that formed it</td></tr>
+      <tr><td>Why do you believe that?</td><td>The causal path through the graph, and the episodes that resemble now</td></tr>
+      <tr><td>Why this size?</td><td>Edge, volatility, grant, and the confidence multiplier, shown separately</td></tr>
+      <tr><td>Why not the obvious trade?</td><td>The gate that declined it and the counterfactual score of declining it</td></tr>
+      <tr><td>Why this strategy and not that one?</td><td>The optimisation run, the objective, and the correlation that ruled the other out</td></tr>
+      <tr><td>What do you not know here?</td><td>The self-model — stated coverage gaps and unreliable estimates</td></tr>
+      <tr><td>Is this platform sensible at my capital?</td><td>Total cost against attributed return, stated plainly</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">The second-to-last row most distinguishes a cognitive system from a confident one. A platform that can say where it is guessing is more trustworthy than one that cannot.</p>
+</section>
+<section>
+  <h2>Ten thousand strategies is not a list</h2>
+  <div class="grid g2">
+    <div class="card z u"><h3>How the strategy view behaves</h3><ul><li><span>Default view</span><span>exceptions, not inventory</span></li><li><span>Rows on open</span><span>tens, not thousands</span></li><li><span>Rollup unit</span><span>128 families</span></li><li><span>Drill path</span><span>family, variant, parameterisation</span></li><li><span>Sort</span><span>attributed P&amp;L, capacity use, breadth</span></li><li><span>Full list</span><span>a query result, never a default</span></li></ul></div>
+    <div class="card z u"><h3>Adding a strategy</h3><p>Only families that cleared every gate appear. Each shows what it does, its evidence, and how much it can absorb before its edge decays.</p><ul><li><span>Evidence</span><span>holdout result, trial count, canary</span></li><li><span>Capacity</span><span>ceiling before decay</span></li><li><span>Correlation</span><span>overlap with what you already fund</span></li><li><span>You set</span><span>allocation and a maximum</span></li></ul><p class="note" style="margin-top:12px">Correlation overlap is shown at the point of funding. Adding a thousand variants of something you already own adds cost and risk without diversification, and the interface says so before you commit.</p></div>
+  </div>
+</section>
+<section>
+  <h2>Signing in, and staying in control</h2>
+  <div class="grid g2">
+    <div class="card z u"><h3>How a user signs in</h3><ul><li><span>Primary</span><span>passkey, WebAuthn platform authenticator</span></li><li><span>Key material</span><span>hardware-backed, non-exportable</span></li><li><span>Fallback</span><span>TOTP for a device that cannot register</span></li><li><span>Passwords</span><span>none, anywhere</span></li><li><span>Devices</span><span>registered, listed, individually revocable</span></li></ul></div>
+    <div class="card z s"><h3>Recovery is not a back door</h3><ul><li><span>Lost one device</span><span>sign in on another, revoke the lost one</span></li><li><span>Lost every device</span><span>identity verification, mandatory delay, every contact notified</span></li><li><span>Recovered account adds a destination</span><span>still hardware key, still 24 h</span></li><li><span>Fraudulent recovery gets</span><span>balance visibility, ability to halt</span></li><li><span>Fraudulent recovery cannot</span><span>send capital anywhere not already verified</span></li></ul></div>
+  </div>
+  <h4>Roles</h4>
+  <div class="scroll"><table>
+    <thead><tr><th>Role</th><th>Can</th><th>Cannot</th></tr></thead>
+    <tbody>
+      <tr><td>Owner</td><td>Everything: fund, move, sign destinations, approve families and market creation</td><td>Bypass the corridor delay or the two-approval rule</td></tr>
+      <tr><td>Operator</td><td>Monitor, halt, tighten limits, acknowledge, force an optimisation run</td><td>Move capital, sign destinations, loosen limits</td></tr>
+      <tr><td>Viewer</td><td>See portfolio, wallet, strategies, platform health</td><td>Change anything</td></tr>
+      <tr><td>Auditor</td><td>Read every ledger entry, verdict, approval, transfer, including silences</td><td>Act on any of it</td></tr>
+    </tbody>
+  </table></div>
+</section>
+<section>
+  <h2>Web and mobile</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Action</th><th class="m">Web</th><th class="m">Mobile</th><th class="m">Authentication</th></tr></thead>
+    <tbody>
+      <tr><td>View everything</td><td class="m">yes</td><td class="m">yes</td><td class="m">session</td></tr>
+      <tr><td>Halt: pause, flatten, kill switch</td><td class="m">yes</td><td class="m">yes</td><td class="m">biometric</td></tr>
+      <tr><td>Move capital between strategies</td><td class="m">yes</td><td class="m">yes</td><td class="m">session + confirm</td></tr>
+      <tr><td>Withdraw to a verified destination</td><td class="m">yes</td><td class="m">yes</td><td class="m">biometric</td></tr>
+      <tr><td>Second approval on a cap change</td><td class="m">yes</td><td class="m">yes</td><td class="m">biometric + enclave key</td></tr>
+      <tr><td>Fund a new strategy family</td><td class="m">yes</td><td class="m">no</td><td class="m">session + confirm</td></tr>
+      <tr><td>Commit to a private position</td><td class="m">yes</td><td class="m">no</td><td class="m">hardware key</td></tr>
+      <tr><td>Register and sign a destination</td><td class="m">yes</td><td class="m">no</td><td class="m">hardware key + 24 h</td></tr>
+      <tr><td>Loosen a risk limit</td><td class="m">yes</td><td class="m">no</td><td class="m">hardware key + second approval</td></tr>
+      <tr><td>Approve market creation</td><td class="m">yes</td><td class="m">no</td><td class="m">hardware key</td></tr>
+      <tr><td>Place a manual trade</td><td class="m">no</td><td class="m">no</td><td class="m">no path exists</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">Mobile ships as an installable PWA from the same codebase. Web Push and WebAuthn cover the two capabilities that justified going native. A push reliability drill (delivery above 99.5 percent, p99 under 15 seconds, over 30 days) is a Phase 13 exit criterion; the native shell is built only if it fails. Stopping is easy and available everywhere. Starting, loosening, committing capital for years, or sending money somewhere new is harder and available in fewer places.</p>
+</section>
+<div class="legend">
+  <b><i class="sw" style="background:var(--user)"></i>User control</b>
+  <b><i class="sw" style="background:var(--stop)"></i>Restricted or absent on mobile</b>
+</div>
+</div>
+<div id="v11" role="tabpanel" aria-labelledby="t11" class="hidden">
+<section>
+  <h2>One system, three surfaces</h2>
+  <p class="lede">The customer-facing product — public landing, investor portal, mobile — is one Rust codebase over one application plane, behind one Google-managed edge. It is a control surface for capital, not a trading terminal. There is no path from any surface to a strategy, an order, a venue, a QPU, a signing key or the ledger itself; every surface reads through application APIs and raises intents that enter the same workflows a machine-originated intent would.</p>
+  <div class="grid g3">
+    <div class="card z u"><h3>Customer path</h3><ul><li><span>Entry</span><span>Cloud Armor → HTTPS LB</span></li><li><span>Transport</span><span>HTTPS, session token</span></li><li><span>Terminates in</span><span>Cloud Run application API</span></li><li><span>Reads</span><span>Spanner, via API</span></li><li><span>Produces</span><span>an intent, never an order</span></li><li><span>Latency class</span><span>hundreds of ms</span></li></ul></div>
+    <div class="card z"><h3>Market path</h3><ul><li><span>Entry</span><span>node → Cloud NAT → venue</span></li><li><span>Transport</span><span>WebSocket · FIX · REST · RFQ · chain RPC</span></li><li><span>Terminates in</span><span>algorik-node connectivity</span></li><li><span>Reads</span><span>local book, inventory, aggregates</span></li><li><span>Produces</span><span>orders, inside grants and the gate</span></li><li><span>Latency class</span><span>microseconds</span></li></ul></div>
+    <div class="card z s"><h3>Never shared</h3><p>The two paths never share a load balancer, an identity, a credential, a subnet route or a message bus. Pub/Sub carries policy down and outcomes up; it is not on either path's hot leg.</p><ul><li><span>A client may reach</span><span>the edge, the static shell, the APIs</span></li><li><span>A client may never reach</span><span>Spanner · Pub/Sub · a node · a venue · IBM · a key</span></li></ul></div>
+  </div>
+</section>
+<section>
+  <h2>End to end</h2>
+  <p class="lede">Every box names what it is, where it runs and what owns it. Blue left border: Rust application. Slate: Google Cloud managed service. Indigo: IBM. Dashed: external.</p>
+  <div class="arch">
+    <div class="band x"><div class="bh"><b>Users</b><span class="k">external</span></div><div class="bb"><div class="box x">Public visitor</div><div class="box x">Investor</div><div class="box x">Institutional user</div><div class="box x">Operator / administrator</div><div class="box x">Mobile user</div></div></div>
+    <div class="flow usr">↓ customer traffic · HTTPS</div>
+    <div class="band r"><div class="bh"><b>Experience</b><span class="k">Rust · one Leptos codebase · installable PWA</span></div><div class="bb"><div class="box r">Landing<small>public · no account data</small></div><div class="box r">Investor portal<small>overview · invest · capital · intelligence · risk · activity · platform · account</small></div><div class="box r">Admin views<small>role-gated, same app</small></div><div class="box r">Mobile<small>home · invest · portfolio · wallet · activity</small></div></div></div>
+    <div class="flow usr">↓</div>
+    <div class="band g"><div class="bh"><b>Public security edge</b><span class="k">Google Cloud · the only internet-facing surface</span></div><div class="bb"><div class="box g">Cloud Armor<small>WAF, rate limits, geo policy</small></div><div class="box g">Global HTTPS Load Balancer</div><div class="box g">Cloud CDN<small>static shell only</small></div><div class="box r">auth-service<small>passkeys · step-up per action</small></div></div></div>
+    <div class="flow usr">↓ session-bound · Private Service Connect · workload identity</div>
+    <div class="band r"><div class="bh"><b>Application APIs</b><span class="k">Rust · Cloud Run · read the ledger, raise intents, hold no financial state</span></div><div class="bb"><div class="box r">portal-api<small>composes screens</small></div><div class="box r">account-api<small>identity · mandate · entitlements</small></div><div class="box r">portfolio-api<small>positions · marks · attribution</small></div><div class="box r">investment-api<small>raises InvestmentRequest</small></div><div class="box r">wallet-api<small>balances · expected inflow</small></div><div class="box r">treasury-api<small>raises transfer intent</small></div><div class="box r">strategy-api<small>reduce · pause · retire</small></div><div class="box r">research-api<small>explanations · beliefs</small></div><div class="box r">admin-api<small>approvals under hardware key</small></div></div></div>
+    <div class="flow">↓ intents and reads only</div>
+    <div class="band r"><div class="bh"><b>Global platform</b><span class="k">Rust · Cloud Run + Jobs + spot GPU · us-east4 · runs once</span></div><div class="bb"><div class="box r" style="border-left-color:var(--ingest)">Ingestion<small>adapters · deep-web adapters · extraction · entity resolution · discovery</small></div><div class="box r" style="border-left-color:var(--cog)">Cognition<small>world model · causal · episodic · belief · counterfactual · self-model · hypothesis</small></div><div class="box r" style="border-left-color:var(--val)">Valuation<small>six engines</small></div><div class="box r" style="border-left-color:var(--intel)">Intelligence<small>lifecycle · training · meta-learning · adversary · simulation · risk policy</small></div><div class="box r" style="border-left-color:var(--opt)">Optimisation<small>classical solvers · routing gate · policy emitter · capital engine</small></div><div class="box r" style="border-left-color:var(--ledger)">Treasury<small>corridors · transfer engine · transfer gate · custody policy</small></div><div class="box r" style="border-left-color:var(--ledger)">Ledger<small>attribution · reconciliation → Spanner</small></div></div></div>
+    <div class="band ibm"><div class="bh"><b>IBM Quantum</b><span class="k">IBM · reached only from Optimisation · HTTPS · output is policy, never an order</span></div><div class="bb"><div class="box ibm">Qiskit Runtime<small>Sampler · Estimator · sessions</small></div><div class="box ibm">Transpiler Service<small>QASM 3 → ISA</small></div><div class="box ibm">Nighthawk · Heron<small>120 / 156 qubits</small></div><div class="box ibm">Advantage Tracker<small>classical delta, recorded</small></div></div></div>
+    <div class="band g"><div class="bh"><b>Control fabric</b><span class="k">Google Pub/Sub · control-plane messaging only · not market data</span></div><div class="bb"><div class="box r">policy-distributor<small>signed 12-item payload DOWN</small></div><div class="box r">outcome-collector<small>fills · verdicts · statistics UP</small></div></div></div>
+    <div class="flow pol">↓ policy down · ↑ outcomes up</div>
+    <div class="band r"><div class="bh"><b>Regional execution</b><span class="k">Rust · algorik-node · static binary · systemd · GCE C3/C3D · isolated cores 2–15 · no container runtime</span></div><div class="bb"><div class="box r">Americas<small>us-east4 · c3-highcpu-22</small></div><div class="box r">Europe<small>europe-west2 · c3-highcpu-8</small></div><div class="box r">Asia-Pacific<small>asia-northeast1 · c3-highcpu-8</small></div></div>
+      <div class="pipe"><span class="x">venue</span><i>→</i><span class="x">WebSocket · FIX · REST · RFQ · chain RPC</span><i>→</i><span>connectivity</span><i>→</i><span>normalizer</span><i>→</i><span>book</span><i>→</i><span>features</span><i>→</i><span>strategies · quote · graph</span><i>→</i><span>feasibility</span><i>→</i><span>intent netting</span><i>→</i><span>risk gate</span><i>→</i><span>reservation</span><i>→</i><span>execution</span><i>→</i><span class="x">venue</span></div>
+      <p class="note" style="padding:0 12px 10px;margin:0">Market streaming is the Rust application. One process, isolated cores, no managed messaging anywhere in this path. Egress through Cloud NAT to an allowlist.</p></div>
+    <div class="flow mkt">↓ orders · ↑ market data</div>
+    <div class="band x"><div class="bh"><b>Markets</b><span class="k">external · traded against, never a managed service</span></div><div class="bb"><div class="box x">Crypto spot &amp; perps</div><div class="box x">Equities</div><div class="box x">Futures &amp; options</div><div class="box x">FX</div><div class="box x">Commodities</div><div class="box x">Fixed income</div><div class="box x">Prediction markets</div><div class="box x">DeFi<small>observe-only until modelled</small></div><div class="box x">Custodians · banks · administrators</div></div></div>
+    <div class="band g"><div class="bh"><b>Ledger and data</b><span class="k">Google Cloud · no raw-tick warehouse · nothing grows with tick rate</span></div><div class="bb"><div class="box g">Cloud Spanner<small>authoritative: ledger, positions, tax lots, inventory, corridors, mandates, entitlements, world model, beliefs, episodes, valuations</small></div><div class="box g">BigQuery<small>derived series only</small></div><div class="box g">Cloud Storage<small>plans · models · snapshots · TTL research cache · audit with retention lock</small></div><div class="box g">Memorystore Valkey<small>warm cache, never on the hot path</small></div></div></div>
+    <div class="band g"><div class="bh"><b>Treasury path</b><span class="k">three independent controls must agree before capital leaves</span></div><div class="bb"><div class="box r" style="border-left-color:var(--user)">Wallet experience</div><div class="box r">wallet-api · treasury-api</div><div class="box r" style="border-left-color:var(--ledger)">Transfer intent</div><div class="box r" style="border-left-color:var(--ledger)">Signed corridor<small>🔒 hardware key · 24 h</small></div><div class="box r" style="border-left-color:var(--ledger)">Transfer gate<small>veto only</small></div><div class="box r" style="border-left-color:var(--ledger)">Custody policy<small>🔒 MPC share</small></div><div class="box x">Custodian · bank · venue<small>🔒 allowlist set out of band</small></div><div class="box g">Ledger → reconciliation</div></div></div>
+    <div class="band g"><div class="bh"><b>Platform foundation</b><span class="k">Google Cloud</span></div><div class="bb"><div class="box g">Global VPC<small>one, no peering</small></div><div class="box g">Private Service Connect</div><div class="box g">Cloud NAT<small>allowlisted egress</small></div><div class="box g">Secret Manager</div><div class="box g">Cloud KMS</div><div class="box g">Cloud HSM</div><div class="box g">Workload Identity Federation</div><div class="box g">Cloud Build · Artifact Registry · Cloud Deploy</div><div class="box g">Binary Authorization</div><div class="box g">Security Command Center</div><div class="box g">Logging · Trace · Managed Prometheus</div><div class="box g">OpenTofu<small>tooling</small></div></div></div>
+  </div>
+</section>
+<section>
+  <h2>What each API may do</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Service</th><th>Reads</th><th>Raises</th><th>Never</th></tr></thead>
+    <tbody>
+      <tr><td>portal-api</td><td>Composes screens from the services below</td><td>—</td><td>Reaches a node</td></tr>
+      <tr><td>account-api</td><td>Identity, devices, mandate, entitlements</td><td>Mandate change, device registration</td><td>Custody material</td></tr>
+      <tr><td>portfolio-api</td><td>Positions, marks with method and confidence, attribution, performance</td><td>—</td><td>A mark</td></tr>
+      <tr><td>investment-api</td><td>Approved families, capacity, correlation with holdings</td><td>Investment request</td><td>An order</td></tr>
+      <tr><td>wallet-api</td><td>Reconciled balances, destinations, transfer status</td><td>Expected inflow</td><td>A transfer</td></tr>
+      <tr><td>treasury-api</td><td>Corridors, caps, gate history</td><td>Transfer intent</td><td>A signature, a gate bypass</td></tr>
+      <tr><td>strategy-api</td><td>Family state, exceptions, live against holdout</td><td>Reduce, pause, retire</td><td>Funding beyond capacity</td></tr>
+      <tr><td>research-api</td><td>Explanation, beliefs, episodes, counterfactuals, self-model</td><td>—</td><td>Anything</td></tr>
+      <tr><td>admin-api</td><td>Policy, corridors, families, platform health</td><td>Approvals under hardware key</td><td>A loosening without second approval</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">Interface services around the existing domains, not replacements for them. They hold no financial state, authorise server-side against role and entitlements, and emit an audit event for every authenticated action with actor, surface and authentication strength.</p>
+</section>
+<section>
+  <h2>Investing, and moving money</h2>
+  <div class="grid g2">
+    <div class="card z l"><h3>Investment</h3><p>The investable primitive is the strategy family that cleared the gate. Named portfolios are fixed-weight bundles of families with no ledger identity; attribution stays per family.</p><ul><li><span>Select</span><span>family or bundle · capacity · correlation with holdings</span></li><li><span>Allocation</span><span>ineligible families disabled, with the reason</span></li><li><span>Amount</span><span>≤ available ∩ capacity ∩ mandate</span></li><li><span>Risk review</span><span>ten levels before and after</span></li><li><span>Confirm</span><span>session + confirm · creates InvestmentRequest</span></li><li><span>Funded</span><span>capital engine, next run, possibly partial</span></li></ul><p class="note" style="margin-top:12px">Live performance is shown only against the holdout band; simulated performance is labelled. Never a projected return.</p></div>
+    <div class="card z l"><h3>Capital movement</h3><ul><li><span>Add capital</span><span>expected inflow → detected → settled → available</span></li><li><span>Move capital</span><span>intent → signed corridor → gate → executed → reconciled</span></li><li><span>Withdraw</span><span>biometric · second approval above threshold</span></li><li><span>New destination</span><span>hardware key · 24 h · web only</span></li></ul><p class="note" style="margin-top:12px">Every move is a transfer intent through the corridor gate in the Capital tab, unchanged. A veto is shown in plain language with the rule that fired. A withdrawal is served from reserve first and the top of the liquidity ladder second, never by forcing a position closed.</p></div>
+    <div class="card z u"><h3>Entitlements</h3><p>Capabilities are granted per account from jurisdiction, product eligibility, role and mandate, evaluated server-side on every request. Hidden when the account cannot have it; disabled with a reason when it could.</p><ul><li><span>can_view_portfolio</span><span>portfolio · positions · activity</span></li><li><span>can_invest</span><span>invest · fund · set a maximum</span></li><li><span>can_deposit · withdraw · transfer</span><span>the three capital flows</span></li><li><span>can_use_crypto · derivatives · private</span><span>class-scoped families and destinations</span></li><li><span>can_view_execution_trace</span><span>netting and gate trace on a fill</span></li><li><span>can_access_admin · approve · halt</span><span>admin, hardware-key approvals, halt</span></li></ul></div>
+    <div class="card z s"><h3>Frontend security boundary</h3><ul><li><span>Reach</span><span>edge · static shell · APIs with a session</span></li><li><span>Sessions</span><span>bearer, device-bound, passkey-issued, step-up per action</span></li><li><span>Client storage</span><span>a session identifier, nothing else</span></li><li><span>Never delivered</span><span>credentials · keys · signing shares</span></li><li><span>Unreachable by policy</span><span>Spanner · Pub/Sub · nodes · venues · IBM · custody</span></li></ul><p class="note" style="margin-top:12px">Enforced by network policy, not by convention. Halting is available on every surface; loosening anything is web-only with a hardware key.</p></div>
+  </div>
+</section>
+<div class="legend">
+  <b><i class="sw" style="background:var(--exec)"></i>Rust application</b>
+  <b><i class="sw" style="background:var(--ext)"></i>Google Cloud</b>
+  <b><i class="sw" style="background:var(--intel)"></i>IBM</b>
+  <b><i class="sw" style="background:var(--user)"></i>Customer traffic</b>
+  <b><i class="sw" style="background:var(--ledger)"></i>Treasury</b>
+</div>
+</div>
+<div id="v10" role="tabpanel" aria-labelledby="t10" class="hidden">
+<section>
+  <h2>What is practical, what is hard, what is experimental, what is not</h2>
+  <p class="lede">Every capability in the blueprint sits in one of four bins. The bins matter more than the capabilities, because they say where the risk is.</p>
+  <div class="grid g2">
+    <div class="card z o"><h3>Practical now</h3><ul><li><span>Strategy compilation, CSE, subscription index</span><span>compiler techniques</span></li><li><span>Intent netting, pro-rata attribution</span><span>arithmetic and bookkeeping</span></li><li><span>Hierarchical risk aggregation</span><span>atomic counters, O(1)</span></li><li><span>Executable graph, indexed cycles</span><span>standard graph algorithms</span></li><li><span>Paths 1 and 3</span><span>Path 3 is a band comparison</span></li><li><span>Latency-equalised dispatch</span><span>timer wheel, rolling percentile</span></li><li><span>Counterfactual scoring</span><span>batch arithmetic on captured data</span></li><li><span>Episodic memory</span><span>compression and ANN are mature</span></li><li><span>Belief state, confidence sizing</span><span>Bayesian update and a multiplier</span></li><li><span>Streaming statistics</span><span>Welford, EW cov, t-digest, reservoir</span></li><li><span>Deflated Sharpe, purged CV</span><span>published methods</span></li><li><span>Corridor-bounded transfers</span><span>institutional treasury practice</span></li><li><span>Term structure, corp actions, vol surface</span><span>standard quant finance</span></li><li><span>Passkey identity, step-up</span><span>mature web standards</span></li></ul></div>
+    <div class="card z i"><h3>Advanced but achievable</h3><ul><li><span>Ten thousand strategies in budget</span><span>compiler, index, tiering, layout together</span></li><li><span>Entity resolution at scale</span><span>wrong resolution corrupts everything downstream</span></li><li><span>Causal edges with honest confidence</span><span>natural experiments and own flow only</span></li><li><span>Belief calibration across classes</span><span>slow to accumulate resolved outcomes</span></li><li><span>Market making net of adverse selection</span><span>not being picked off</span></li><li><span>Family clustering under stress</span><span>calm correlation understates stress</span></li><li><span>Defensible illiquid marks</span><span>method choice, input quality, decay</span></li><li><span>Prediction-market edge</span><span>world model must beat the market</span></li><li><span>Rust quantum path</span><span>three to five weeks, one circuit family</span></li><li><span>Joint cycle selection and path assignment</span><span>may need decomposition</span></li></ul></div>
+    <div class="card z c"><h3>Experimental</h3><ul><li><span>Hypothesis generation with real novelty</span><span>effective breadth measures it</span></li><li><span>Regime-conditional beating unconditional</span><span>needs a calibrated regime classifier</span></li><li><span>Market simulation calibrated to reality</span><span>uncalibrated is confident expensive error</span></li><li><span>Adversarial modelling</span><span>value appears only at scale</span></li><li><span>Market creation</span><span>most lucrative, most dangerous</span></li><li><span>Path 8 payoff equivalence</span><span>Greeks, assignment, four-leg depth</span></li><li><span>Verified quantum advantage</span><span>the routing gate produces the evidence</span></li></ul></div>
+    <div class="card z s"><h3>Not feasible, and why that is fine</h3><ul><li><span>Ten thousand independent alpha sources</span><span>effective breadth is low hundreds</span></li><li><span>Evaluating every strategy on every event</span><span>compile, index, tier instead</span></li><li><span>Atomic cross-region cycles</span><span>speed of light; paths 3–6 remove the need</span></li><li><span>Quantum on the execution path</span><span>round trip exceeds budget by 1000×</span></li><li><span>Instrument-level causal discovery</span><span>unidentifiable; driver level is</span></li><li><span>Approving ten thousand strategies by judgement</span><span>humans approve families</span></li><li><span>A language model deciding a trade</span><span>latency and non-determinism</span></li><li><span>Economic sense at two hundred dollars</span><span>a correctness harness, and the frontend says so</span></li><li><span>Sub-millisecond execution on public cloud</span><span>requires colocation</span></li><li><span>Physical delivery requiring storage</span><span>financially settled equivalents instead</span></li></ul></div>
+  </div>
+</section>
+<section>
+  <h2>Twenty phases, four gates</h2>
+  <p class="lede">Reordered from version 8. Counterfactual scoring moves very early because it is nearly free and improves everything after it; prediction markets move far earlier because they are the one arena where small capital is an advantage.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Phase</th><th>Deliverable</th><th class="m">Duration</th><th>Exit</th></tr></thead>
+    <tbody>
+      <tr><td class="nowrap">0 — Foundation</td><td>GCP org, OpenTofu, global VPC, identity with passkeys, Cloud Build and Deploy, Cargo workspace, PQC keys</td><td class="m">4 wks</td><td>Signed artifact deploys end to end with no manual step</td></tr>
+      <tr><td class="nowrap">1 — Market data</td><td>Two venues, one asset class. Connectivity with latency measurement, normalisation, book, features, statistics engine, event-anchored capture</td><td class="m">5 wks</td><td>7 days stable streaming, statistics converged, no raw stream retained</td></tr>
+      <tr><td class="nowrap">2 — Research loop</td><td>Strategy spec and compiler, backtest runner linking production crates, data reference resolver, statistical validator with deflated Sharpe and purged CV, Rust classical solvers</td><td class="m">10 wks</td><td><b>GATE</b> — a family survives holdout with honest significance after cumulative trial correction</td></tr>
+      <tr><td class="nowrap">3 — One strategy live</td><td>Full hot path, feasibility gate, netting, risk aggregates, Spanner ledger with attribution, first C3 node, shadow mode</td><td class="m">8 wks</td><td><b>GATE</b> — 30 days live, performance inside the holdout band, no unexplained break</td></tr>
+      <tr><td class="nowrap">4 — Counterfactual scoring</td><td>Shadow execution and scoring of every veto, filter and rejection. Fill simulation calibrated against actuals</td><td class="m">4 wks</td><td>Every declined path scored daily. Rule calibration driven by evidence</td></tr>
+      <tr><td class="nowrap">5 — Ingestion and world model</td><td>Source adapters, extraction, entity resolution, entity graph, resolution sources</td><td class="m">10 wks</td><td>Entities resolved above confidence threshold. Events linked to instruments</td></tr>
+      <tr><td class="nowrap">6 — Prediction markets</td><td>Event resolution engine, base rates, calibrated probability estimation. First arena where small capital is an advantage</td><td class="m">8 wks</td><td><b>GATE</b> — calibrated positions live. Brier score beating the market's implied</td></tr>
+      <tr><td class="nowrap">7 — Episodic and belief</td><td>Episode store and retrieval, belief engine, confidence-weighted sizing shipped to regions</td><td class="m">8 wks</td><td>Belief calibration measured and within tolerance. Sizing responds to confidence</td></tr>
+      <tr><td class="nowrap">8 — Causal inference</td><td>Causal graph over drivers, natural experiments, own-flow interventions, regime conditioning</td><td class="m">12 wks</td><td><b>GATE</b> — edges with evidence. Regime-conditional allocation live and beating unconditional</td></tr>
+      <tr><td class="nowrap">9 — Self-model and exploration</td><td>Capability estimation, coverage mapping, exploration budget as a capital line item</td><td class="m">6 wks</td><td>Exploration directed by uncertainty. Value of information measured</td></tr>
+      <tr><td class="nowrap">10 — Multi-strategy</td><td>Compiled plan at scale, netting under real contention, promotion pipeline automated</td><td class="m">8 wks</td><td>500+ strategies. Netting ratio above 1.5. Attribution verified exact</td></tr>
+      <tr><td class="nowrap">11 — Arbitrage and market making</td><td>Executable graph, paths 1 and 2, dispersion control, quote engine with adverse selection</td><td class="m">10 wks</td><td>Path 2 completion above 93 percent. Quoting net positive after adverse selection</td></tr>
+      <tr><td class="nowrap">12 — Wallet and treasury</td><td>Wallet adapters, reconciliation, destination registry, corridors, transfer gate, custody, MPC</td><td class="m">10 wks</td><td>Every holding reconciled. Autonomous rebalancing, zero unauthorised attempts</td></tr>
+      <tr><td class="nowrap">13 — Web and mobile</td><td>Portal, portfolio, wallet, strategy marketplace, explanation, installable PWA, push drill</td><td class="m">8 wks</td><td>Every operational question answerable. Kill switch exercised from mobile</td></tr>
+      <tr><td class="nowrap">14 — Valuation plane</td><td>Term structure, credit, volatility surface, corporate actions. Bonds and options enter the graph</td><td class="m">12 wks</td><td>Fixed income and options live. Equities safe through a corporate action</td></tr>
+      <tr><td class="nowrap">15 — Optimisation at cadence</td><td>Family clustering, quantum solver in production, regime conditioning, multi-horizon, routing gate</td><td class="m">10 wks</td><td>Family allocation driving real capital. Solver delta measured</td></tr>
+      <tr><td class="nowrap">16 — Multi-region</td><td>Second and third region, mirrors, direction gating, paths 3 through 6</td><td class="m">12 wks</td><td>Three regions. Cross-region capture live via mirrors</td></tr>
+      <tr><td class="nowrap">17 — Illiquid and private</td><td>Illiquid valuation, commitments, capital calls, liquidity ladder, private markets workflow</td><td class="m">14 wks</td><td>Private positions held and marked with method and confidence</td></tr>
+      <tr><td class="nowrap">18 — Adversarial and simulation</td><td>Adversary modelling, market simulator with adaptive agents, execution RL against reactive counterparties</td><td class="m">12 wks</td><td>Simulator calibrated against actual fills. Execution tactics learned in simulation</td></tr>
+      <tr><td class="nowrap">19 — Market creation</td><td>Origination where no market exists, gated by valuation, causal explanation and human approval</td><td class="m">ongoing</td><td>Per instrument class, on evidence</td></tr>
+    </tbody>
+  </table></div>
+  <div class="grid g2" style="margin-top:22px">
+    <div class="card z s"><h3>The gates, and what a no means</h3><ul><li><span>End of Phase 2 — a family survives holdout with honest significance?</span><span>Stop. Do not build execution infrastructure. The most important gate in the document</span></li><li><span>End of Phase 3 — survives a live venue inside its holdout band?</span><span>Stop live trading. The gap is the finding</span></li><li><span>End of Phase 6 — calibrated probability beats the market's implied?</span><span>The world model is not producing edge. Fix it before building on it</span></li><li><span>End of Phase 8 — regime-conditional beats unconditional out of sample?</span><span>The causal graph is decorative. Keep it for explanation, stop sizing on it</span></li></ul></div>
+    <div class="card z o"><h3>Why this order</h3><ul><li><span>Counterfactual scoring at Phase 4</span><span>nearly free; every later phase learns faster</span></li><li><span>Ingestion and world model before arbitrage</span><span>prediction markets need knowledge, not speed</span></li><li><span>Belief before causality</span><span>confidence sizing pays immediately; causality acts through it</span></li><li><span>Self-model after belief and counterfactuals</span><span>it is built from their calibration data</span></li><li><span>Valuation before private markets</span><span>marks must be trustworthy before capital is locked</span></li><li><span>Market creation last</span><span>attempted earlier, the platform becomes exit liquidity</span></li></ul></div>
+  </div>
+</section>
+<section>
+  <h2>Empirical questions the roadmap answers</h2>
+  <p class="lede">Not design decisions. Questions no amount of design can settle, each with a phase that answers it and a defined consequence if the answer is unfavourable.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Question</th><th>Answered by</th><th>If no</th></tr></thead>
+    <tbody>
+      <tr><td>Does a durable, cost-adjusted edge exist at all?</td><td>Phase 2 — a family surviving holdout after cumulative trial correction</td><td>Stop. Do not build execution infrastructure</td></tr>
+      <tr><td>Does it survive contact with a live venue?</td><td>Phase 3 — 30 days live inside the holdout band</td><td>Stop live trading. The gap is the finding</td></tr>
+      <tr><td>Are the constraints protective or merely expensive?</td><td>Phase 4 — counterfactual scoring of every veto</td><td>Recalibrate with evidence. A finding either way</td></tr>
+      <tr><td>Can the platform beat a prediction market's implied probability?</td><td>Phase 6 — Brier score against market-implied</td><td>The world model is not producing edge. Fix it first</td></tr>
+      <tr><td>Is confidence calibrated?</td><td>Phase 7 — does seventy percent happen seventy percent</td><td>Stop sizing on confidence. Uncalibrated is worse than none</td></tr>
+      <tr><td>Does causal reasoning beat correlation out of sample?</td><td>Phase 8 — regime-conditional against unconditional</td><td>Keep the graph for explanation. Stop sizing on it</td></tr>
+      <tr><td>Does directed exploration beat undirected?</td><td>Phase 9 — uncertainty resolved per unit spent</td><td>Revert to flat allocation</td></tr>
+      <tr><td>Does netting pay off?</td><td>Phase 10 — netting ratio and effective breadth</td><td>The set lacks diversity. More variants make it worse</td></tr>
+      <tr><td>Is market making net profitable after adverse selection?</td><td>Phase 11</td><td>Disable the family</td></tr>
+      <tr><td>Do mirrors capture more than doubled capital costs?</td><td>Phase 16</td><td>Unwind. Revert to hedged and passive mechanisms</td></tr>
+      <tr><td>Are illiquid marks defensible enough to lock capital against?</td><td>Phase 17 — realised exits against prior marks</td><td>Do not hold private positions</td></tr>
+      <tr><td>Does the simulator predict actual fills?</td><td>Phase 18</td><td>Do not learn execution from it</td></tr>
+      <tr><td>Does quantum beat the classical baseline on real instances?</td><td>Continuously — the advantage tracker</td><td>Classical remains production. The instrumentation was worth building</td></tr>
+      <tr><td>Is the platform economically sensible at the user's capital?</td><td>Continuously — cost against attributed return</td><td>Say so plainly in the frontend</td></tr>
+    </tbody>
+  </table></div>
+</section>
+<section>
+  <h2>Reliability targets</h2>
+  <p class="lede">Every dependency loss has a defined reduced-capability mode, ending in flat and halted. These are the numbers the platform is held to.</p>
+  <div class="grid g2">
+    <div class="card z"><h3>Targets</h3><ul><li><span>Node availability during market hours</span><span>99.9 percent</span></li><li><span>Strategy evaluation, p99</span><span>under 90 µs</span></li><li><span>Wire to first order, p99 internal</span><span>under 1.3 ms</span></li><li><span>Belief calibration error</span><span>within tolerance, every class</span></li><li><span>Netting ratio</span><span>above 1.5</span></li><li><span>Cycle completion — Path 1 / Path 2</span><span>above 97 / 93 percent</span></li><li><span>Arrival dispersion after equalisation</span><span>under 1.5 ms p99</span></li><li><span>Quote message-to-trade ratio</span><span>inside every venue's requirement</span></li><li><span>Mirror drift inside soft band</span><span>95 percent of the time</span></li><li><span>Live-versus-holdout consistency</span><span>within band for 80 percent</span></li><li><span>Mark staleness</span><span>zero past limit supporting leverage</span></li><li><span>Effective breadth</span><span>above the allocator's floor</span></li><li><span>Reconciliation breaks</span><span>zero unexplained; any is severity one</span></li><li><span>Unauthorised transfers reaching execution</span><span>zero; any is a security incident</span></li></ul></div>
+    <div class="card z s"><h3>Failure modes that reach a human</h3><p>Most failures degrade automatically and recover on their own — a stale belief falls back to a fixed multiplier, a lost venue leg is resized or unwound, a quantum miss uses the classical solution. A few never self-heal by design.</p><ul><li><span>Reconciliation break</span><span>that venue-asset halts; never auto-corrected</span></li><li><span>Transfer velocity breaker</span><span>all transfers halt; human reset</span></li><li><span>Drawdown breaker</span><span>mass cancel, flatten, halt; human re-enable only</span></li><li><span>Unexpected capital call, reserve insufficient</span><span>ladder unwinds from the top; shortfall is severity one</span></li><li><span>Central unavailable</span><span>last shipment in force; narrows to intra-venue only</span></li><li><span>Node crash</span><span>reconciles every venue including resting orders before resuming; under 3 minutes</span></li></ul></div>
+  </div>
+</section>
+<section>
+  <h2>A filing arrives, and eleven minutes later a position exists</h2>
+  <p class="lede">Every plane participates. Steps 15 through 20 are the same microsecond hot path version 8 had. Everything before them is what version 8 could not do at all, and step 26 is what it could not explain.</p>
+  <div class="ship">
+    <div class="sh"><strong>End-to-end walkthrough</strong><span class="k">26 steps · 7 planes</span></div>
+    <ol>
+      <li><div><b>A regulatory filing is published</b><p>Ingestion fetches it and deduplicates against two other sources carrying the same story.</p><span class="k">ingestion · t = 0</span></div></li>
+      <li><div><b>Facts extracted</b><p>Party, action, amount, effective date. Each carries a confidence and a provenance.</p><span class="k">ingestion · +8 s</span></div></li>
+      <li><div><b>Parties resolved to entities</b><p>One is a supplier to three listed manufacturers already in the world model.</p><span class="k">ingestion · +2 s</span></div></li>
+      <li><div><b>A WorldEvent is emitted</b><p>Linked to four entities and to a prediction contract that resolves on the same action.</p><span class="k">ingestion · +1 s</span></div></li>
+      <li><div><b>The causal graph is traversed</b><p>Two edges are active from this driver: one to a commodity curve, one to sector equity volatility.</p><span class="k">cognition · +3 s</span></div></li>
+      <li><div><b>Episodic memory is queried</b><p>Eleven analogous situations retrieved, weighted by regime and causal context.</p><span class="k">cognition · +40 ms</span></div></li>
+      <li><div><b>A belief forms</b><p>Outcome distribution combined with base rates and the filing's confidence: the contract resolves yes with probability 0.71, confidence moderate.</p><span class="k">cognition · +2 s</span></div></li>
+      <li><div><b>The gap is material</b><p>The contract trades at an implied 0.58. The belief's confidence supports acting.</p><span class="k">cognition · +1 s</span></div></li>
+      <li><div><b>Valuation marks the exposed legs</b><p>One equity has a corporate action pending; its mark carries a wider confidence band.</p><span class="k">valuation · +4 s</span></div></li>
+      <li><div><b>The mandate is checked</b><p>This family is permitted; capital is available outside reserve and unfunded commitments.</p><span class="k">capital · +1 s</span></div></li>
+      <li><div><b>The envelope is confirmed</b><p>The platform already holds a position sharing this causal driver, so the size is reduced.</p><span class="k">risk · +1 s</span></div></li>
+      <li><div><b>The optimiser folds it in</b><p>Regime is event-dense, which favours this family.</p><span class="k">optimisation · +45 s</span></div></li>
+      <li><div><b>A grant is shipped</b><p>With the belief prior, the episodic digest and the causal digest.</p><span class="k">optimisation · +3 s</span></div></li>
+      <li><div><b>The Americas node swaps it in</b><p>Signatures verified, swapped by pointer. Trading never pauses.</p><span class="k">execution · +2 s</span></div></li>
+      <li><div><b>A strategy wakes on the new belief</b><p>Its predicate matches.</p><span class="k">execution · +40 µs</span></div></li>
+      <li><div><b>Feasibility gate</b><p>Minimum size $1, fee floor 1 percent, the intended size clears both.</p><span class="k">execution · +3 µs</span></div></li>
+      <li><div><b>Sizing applies the confidence multiplier</b><p>Moderate confidence produces roughly sixty percent of a high-confidence size.</p><span class="k">execution · +2 µs</span></div></li>
+      <li><div><b>Netting</b><p>No opposing intent, so it passes as a net intent of one contributor.</p><span class="k">execution · +4 µs</span></div></li>
+      <li><div><b>Risk gate</b><p>Reads eight aggregates including causal-driver exposure. Stays silent.</p><span class="k">execution · +14 µs</span></div></li>
+      <li><div><b>Inventory reserved, order dispatched, filled</b><span class="k">execution · +2 ms</span></div></li>
+      <li><div><b>The fill appends to the ledger</b><p>With a contributor vector reaching back through the belief, the causal edge and the world event to the filing.</p><span class="k">ledger · +30 ms</span></div></li>
+      <li><div><b>An episode is stored</b><p>What the world looked like, what was believed, what was done, what was declined.</p><span class="k">cognition · +1 s</span></div></li>
+      <li><div><b>Paths declined are scored</b><p>The larger size confidence did not support; the equity leg the driver limit reduced.</p><span class="k">cognition · batch</span></div></li>
+      <li><div><b>The self-model updates</b><p>One more observation on this driver; coverage improves; uncertainty narrows.</p><span class="k">cognition · batch</span></div></li>
+      <li><div><b>Resolution joins the episode</b><p>If the platform said 0.71 and this class resolves at 0.71, calibration holds.</p><span class="k">cognition · on resolution</span></div></li>
+      <li><div><b>The user asks why</b><p>The explanation traverses the chain in plain language: this filing, this supplier relationship, these eleven analogues, this confidence, this size.</p><span class="k">experience · on demand</span></div></li>
+    </ol>
+  </div>
+  <p class="note">The document closes with forty-odd closed decisions, each carrying a revisit trigger or a structural marker, and sixty-nine implementation rules written to be handed directly to an implementer or a coding agent. Neither is mirrored here; both live in the blueprint itself.</p>
+</section>
+<div class="legend">
+  <b><i class="sw" style="background:var(--opt)"></i>Practical, or why the order</b>
+  <b><i class="sw" style="background:var(--intel)"></i>Hard</b>
+  <b><i class="sw" style="background:var(--cog)"></i>Experimental</b>
+  <b><i class="sw" style="background:var(--stop)"></i>Not feasible, gates, human-only recovery</b>
+</div>
+</div>
+<footer>Derived from Algorik Master Architecture and Application Blueprint v10.1, complete. Observe, understand, believe, value, allocate, act, remember. See everything, sign nothing.</footer>
+</div>
+<script>
+(function(){
+  var ids=['1','2','3','4','5','6','7','8','9','11','10'];
+  var tabs=ids.map(function(i){return document.getElementById('t'+i)});
+  var views=ids.map(function(i){return document.getElementById('v'+i)});
+  function show(i){
+    tabs.forEach(function(t,n){t.setAttribute('aria-selected',n===i?'true':'false')});
+    views.forEach(function(v,n){v.classList.toggle('hidden',n!==i)});
+    try{window.scrollTo({top:0,behavior:'instant'})}catch(e){window.scrollTo(0,0)}
+  }
+  tabs.forEach(function(t,i){
+    t.addEventListener('click',function(){show(i)});
+    t.addEventListener('keydown',function(e){
+      var d=e.key==='ArrowRight'?1:(e.key==='ArrowLeft'?-1:0);
+      if(d){e.preventDefault();var n=(i+d+tabs.length)%tabs.length;show(n);tabs[n].focus();}
+    });
+  });
+})();
+</script>
+</body>
+</html>

@@ -674,7 +674,11 @@ pub fn parse_sending_time(text: &str) -> Option<Timestamp> {
     if !(0..24).contains(&hours) || !(0..60).contains(&minutes) || !(0..=60).contains(&seconds) {
         return None;
     }
-    if !fraction_text.bytes().all(|b| b.is_ascii_digit()) {
+    // FIX 4.4 allows at most nine fractional digits (millis, micros, or
+    // nanos — `fff[fff[fff]]`). Anything longer is not a longer-precision
+    // timestamp, it is a malformed field, and the loop below would otherwise
+    // silently drop the trailing digits instead of refusing the message.
+    if fraction_text.len() > 9 || !fraction_text.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
     let mut fraction_nanos: i64 = 0;

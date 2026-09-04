@@ -24,6 +24,12 @@
 //!   its payoff is a locked profit only for as much of it as the book holds,
 //!   so [`set_arbitrage`] walks the depth and reports the quantity it can
 //!   actually fill.
+//! * **Better than the market is a paired measurement, not a feeling.**
+//!   [`compare`] Brier-scores the platform's probability and the venue's
+//!   implied one on the same resolved contracts and reports the difference
+//!   with its standard error; [`ScoredForecast::new`] refuses a market quote
+//!   known later than the platform's probability, because scoring against a
+//!   quote the platform could not have seen is leakage dressed as skill.
 
 pub mod adapter;
 pub mod arbitrage;
@@ -32,6 +38,7 @@ pub mod market;
 pub mod oracle;
 pub mod pricing;
 pub mod resolution;
+pub mod scoring;
 
 pub use adapter::{
     PredictionAdapter, PredictionSource, PredictionUpdate, SyntheticPredictionVenue,
@@ -54,3 +61,4 @@ pub use resolution::{
     Comparison, Observation, Observations, Proposition, PropositionDifference, ResolutionCriteria,
     ResolutionSource, SettlementRule, SourceKind, UndeterminedRule, Verdict,
 };
+pub use scoring::{BrierComparison, ScoredForecast, brier_score, compare, market_brier_score};

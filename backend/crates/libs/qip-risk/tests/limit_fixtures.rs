@@ -17,6 +17,7 @@
 //! | `MaxLeverage` | `a_book_inside_the_leverage_limit_passes` | `a_book_beyond_the_leverage_limit_is_vetoed` |
 //! | `MaxNetExposure` | `a_book_inside_the_net_exposure_limit_passes` | `a_book_beyond_the_net_exposure_limit_is_vetoed` |
 //! | `MaxConcentration` | `a_spread_book_inside_the_concentration_limit_passes` | `a_bucket_beyond_the_concentration_limit_is_vetoed` |
+//! | `MaxAxisWeight` | `a_bucket_inside_the_axis_weight_limit_passes` | `a_bucket_beyond_the_axis_weight_limit_is_vetoed` |
 //! | `MaxBucketExposure` | `a_bucket_inside_its_exposure_limit_passes` | `a_bucket_beyond_its_exposure_limit_is_vetoed` |
 //! | `MaxVolatility` | `a_book_inside_the_volatility_limit_passes` | `a_book_beyond_the_volatility_limit_is_vetoed` |
 //! | `MaxValueAtRisk` | `a_book_inside_the_value_at_risk_limit_passes` | `a_book_beyond_the_value_at_risk_limit_is_vetoed` |
@@ -249,6 +250,93 @@ fn a_bucket_beyond_the_concentration_limit_is_vetoed() {
     assert!(breach.detail.contains("sector"));
 }
 
+// --- MaxAxisWeight ----------------------------------------------------------
+
+#[test]
+fn a_bucket_inside_the_axis_weight_limit_passes() {
+    let at = |limit: f64| LimitKind::MaxAxisWeight {
+        axis: "sector".into(),
+        limit,
+    };
+    // Each sector holds 300k of a million in equity, so the observed share is
+    // 0.30. The tightened bound is 0.25 and not 0.30: `Limit::assess` breaches
+    // on `observed > bound` strictly, so a bound equal to the observed share
+    // would fail the premise rather than prove the rule read the state.
+    passes(at(0.35), at(0.25), &state());
+}
+
+#[test]
+fn a_bucket_beyond_the_axis_weight_limit_is_vetoed() {
+    let at = |limit: f64| LimitKind::MaxAxisWeight {
+        axis: "sector".into(),
+        limit,
+    };
+    let mut state = state();
+    state.axis_exposures.insert(
+        "sector".into(),
+        BTreeMap::from([
+            ("energy".to_string(), Decimal::from_int(600_000)),
+            ("financials".to_string(), Decimal::from_int(300_000)),
+        ]),
+    );
+    // 600k of a million in equity is 0.60: beyond 0.35, inside 0.70.
+    let breach = vetoes(at(0.35), at(0.70), &state);
+    assert_eq!(breach.subject.as_deref(), Some("energy"));
+    assert!(breach.detail.contains("sector"));
+    assert!(
+        (breach.observed - 0.60).abs() < 1e-9,
+        "the share was measured against something other than equity: {}",
+        breach.observed
+    );
+}
+
+#[test]
+fn the_axis_weight_limit_does_not_depend_on_how_much_else_the_book_holds() {
+    // The property the share-of-gross rule did not have, and the reason this
+    // kind exists. The same bucket, alone in the book and beside two others,
+    // must produce the same number. Under `MaxConcentration` the first state
+    // reads 1.0 and the second 0.30, so the first order into an empty book
+    // was refused for holding nothing else.
+    //
+    // The bound is 0.10 and not the shipped 0.35 so that both states record a
+    // blocking breach outright: a breach is only recorded when `Limit::assess`
+    // returns `Some`, and relying on 0.30 tripping the 85% warning threshold
+    // of a 0.35 bound would make the lookup below an accident.
+    let kind = LimitKind::MaxAxisWeight {
+        axis: "sector".into(),
+        limit: 0.10,
+    };
+    let observed = |buckets: BTreeMap<String, Decimal>| -> f64 {
+        let mut state = state();
+        state.axis_exposures.insert("sector".into(), buckets);
+        check(kind.clone(), &state)
+            .breaches
+            .into_iter()
+            .find(|b| b.subject.as_deref() == Some("energy"))
+            .expect("the energy bucket was measured")
+            .observed
+    };
+    let alone = observed(BTreeMap::from([(
+        "energy".to_string(),
+        Decimal::from_int(300_000),
+    )]));
+    let among_others = observed(BTreeMap::from([
+        ("energy".to_string(), Decimal::from_int(300_000)),
+        ("financials".to_string(), Decimal::from_int(300_000)),
+        (
+            "information_technology".to_string(),
+            Decimal::from_int(300_000),
+        ),
+    ]));
+    // Premise: the measurement is not vacuously zero on either side.
+    assert!(alone > 0.0 && among_others > 0.0);
+    assert!(
+        (alone - among_others).abs() < 1e-9,
+        "the bucket's share moved with what else the book held: {alone} alone, \
+         {among_others} among others"
+    );
+}
+
 // --- MaxBucketExposure ------------------------------------------------------
 
 #[test]
@@ -447,6 +535,10 @@ fn every_limit_kind_has_both_fixtures() {
             axis: "sector".into(),
             limit: 1.0,
         },
+        LimitKind::MaxAxisWeight {
+            axis: "sector".into(),
+            limit: 1.0,
+        },
         LimitKind::MaxBucketExposure {
             axis: "sector".into(),
             bucket: "energy".into(),
@@ -471,7 +563,7 @@ fn every_limit_kind_has_both_fixtures() {
         LimitKind::MaxCounterpartyExposure { limit: 1.0 },
         LimitKind::MinCashBuffer { limit: 0.0 },
     ];
-    let fixtures: [(&str, &str); 16] = [
+    let fixtures: [(&str, &str); 17] = [
         (
             "an_order_inside_the_notional_limit_passes",
             "an_order_beyond_the_notional_limit_is_vetoed",
@@ -495,6 +587,10 @@ fn every_limit_kind_has_both_fixtures() {
         (
             "a_spread_book_inside_the_concentration_limit_passes",
             "a_bucket_beyond_the_concentration_limit_is_vetoed",
+        ),
+        (
+            "a_bucket_inside_the_axis_weight_limit_passes",
+            "a_bucket_beyond_the_axis_weight_limit_is_vetoed",
         ),
         (
             "a_bucket_inside_its_exposure_limit_passes",
@@ -546,6 +642,7 @@ fn every_limit_kind_has_both_fixtures() {
             LimitKind::MaxLeverage { .. } => "MaxLeverage",
             LimitKind::MaxNetExposure { .. } => "MaxNetExposure",
             LimitKind::MaxConcentration { .. } => "MaxConcentration",
+            LimitKind::MaxAxisWeight { .. } => "MaxAxisWeight",
             LimitKind::MaxBucketExposure { .. } => "MaxBucketExposure",
             LimitKind::MaxVolatility { .. } => "MaxVolatility",
             LimitKind::MaxValueAtRisk { .. } => "MaxValueAtRisk",

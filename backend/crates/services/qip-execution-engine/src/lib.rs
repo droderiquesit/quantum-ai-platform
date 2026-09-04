@@ -21,6 +21,7 @@
 //! order.
 
 pub mod broker;
+pub mod feasibility;
 pub mod multileg;
 pub mod oms;
 pub mod order;
@@ -28,6 +29,7 @@ pub mod order;
 pub use broker::{
     Broker, LiveBroker, LiveVenueConfig, SimulatedBroker, SimulationSettings, VenueCapabilities,
 };
+pub use feasibility::{Infeasible, VenueFeasibility};
 pub use multileg::{GroupState, Leg, LegGroup, Verdict};
 pub use oms::{OrderManager, RefusalReason, SubmissionResult, order_type_for};
 pub use order::{Fill, Order, OrderState, OrderType, Side};

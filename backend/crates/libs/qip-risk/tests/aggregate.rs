@@ -72,6 +72,10 @@ impl AggregateFigures for CountingProbe<'_> {
         self.note("strategy_gross");
         self.inner.strategy_gross(strategy)
     }
+    fn days_to_liquidate(&self) -> BTreeMap<String, f64> {
+        self.note("days_to_liquidate");
+        self.inner.days_to_liquidate()
+    }
 }
 
 const INSTRUMENTS: [&str; 4] = ["AAA", "BBB", "CCC", "DDD"];
@@ -383,4 +387,77 @@ fn a_mark_with_a_drawdown_the_halt_cannot_compare_is_refused() {
 fn an_aggregate_cannot_open_over_negative_equity() {
     assert!(RiskAggregates::new(Decimal::ZERO, Decimal::ZERO).is_ok());
     assert!(RiskAggregates::new(dec!("-1"), Decimal::ZERO).is_err());
+}
+
+// --- the liquidity floor, read through the aggregate ------------------------
+//
+// `MinLiquidity` reads `liquidatable_within`, which `check_aggregates` fills
+// from `RiskAggregates::mark_liquidity` via `RiskState::with_liquidity_horizons`.
+// Before that wiring existed, `check_aggregates` built a `RiskState` whose
+// `days_to_liquidate` was always empty — `AggregateFigures` had no accessor
+// for it at all — so `LimitSet::conservative_default`'s `liquidity` limit
+// took the `None` arm on every book `check_aggregates` ever checked. These
+// fixtures pin the wiring end to end, through the same call production uses.
+
+#[test]
+fn mark_liquidity_refuses_a_day_count_the_floor_cannot_compare() {
+    let mut book = RiskAggregates::new(dec!("100000"), dec!("100000")).expect("open");
+    book.apply_fill("alpha", "AAA", &axes("AAA"), dec!("5000"))
+        .expect("a well-formed fill");
+    // Premise: a well-formed mark is accepted.
+    book.mark_liquidity(BTreeMap::from([("AAA".to_string(), 3.0)]))
+        .expect("premise: a non-negative, finite day count is recorded");
+    assert!((book.days_to_liquidate()["AAA"] - 3.0).abs() < 1e-12);
+
+    for days in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+        let refused = book
+            .mark_liquidity(BTreeMap::from([("AAA".to_string(), days)]))
+            .expect_err("an unusable day count was recorded");
+        assert_eq!(refused.code(), "invalid");
+    }
+    // A refused mark must not have replaced the map: the last good mark is
+    // still the one the check would read.
+    assert!((book.days_to_liquidate()["AAA"] - 3.0).abs() < 1e-12);
+}
+
+#[test]
+fn a_book_checked_through_the_aggregate_path_is_refused_once_liquidity_is_marked_illiquid() {
+    let limits = LimitSet::conservative_default();
+    let mut book = RiskAggregates::new(dec!("140000"), dec!("140000")).expect("open");
+    book.apply_fill("alpha", "AAA", &axes("AAA"), dec!("80000"))
+        .expect("a well-formed fill");
+    book.apply_fill("alpha", "BBB", &axes("BBB"), dec!("60000"))
+        .expect("a well-formed fill");
+    let returns = [0.001, -0.002, 0.003, -0.001];
+
+    // Premise: unmarked, the book passes — there is nothing yet to say it
+    // cannot exit, and an aggregate that refuses by default would pass this
+    // test for the wrong reason.
+    let before = limits.check_aggregates(&book, &returns);
+    assert!(
+        !before
+            .breaches
+            .iter()
+            .any(|b| b.limit_kind == "min_liquidity"),
+        "an unmarked book already breached the liquidity floor: {}",
+        before.reason()
+    );
+
+    // AAA (80k) exits in a day; BBB (60k) is never marked, so it counts
+    // against the floor. 80k of 140k = 57%, under the default 80% floor.
+    book.mark_liquidity(BTreeMap::from([("AAA".to_string(), 1.0)]))
+        .expect("a well-formed mark");
+    let after = limits.check_aggregates(&book, &returns);
+    let breach = after
+        .blocking()
+        .into_iter()
+        .find(|b| b.limit_kind == "min_liquidity")
+        .unwrap_or_else(|| {
+            panic!(
+                "liquidity did not bind through the aggregate path: {}",
+                after.reason()
+            )
+        });
+    assert!(breach.observed < breach.bound, "a floor binds from below");
+    assert!(after.is_blocked());
 }

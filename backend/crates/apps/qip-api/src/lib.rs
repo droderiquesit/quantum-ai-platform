@@ -44,6 +44,7 @@ pub mod json;
 pub mod mesh;
 pub mod missing;
 pub mod openapi;
+pub mod openobserve;
 pub mod routes;
 pub mod stream;
 pub mod trust;
@@ -58,6 +59,9 @@ pub use http::{
 };
 pub use mesh::{MeshBackbone, MeshSettings, MeshStatus, pending_capital};
 pub use openapi::document;
+pub use openobserve::{
+    DrainHandle, ExportPass, OpenObserveConfig, SignalOutcome, export_once, record,
+};
 pub use routes::{Api, ROUTES, Route};
 pub use stream::{EventSource, EventStream, SseEvent, StreamKind, StreamLimits};
 pub use trust::{ENVELOPE_KEY_VARIABLE, KeyProvenance, harden_central};

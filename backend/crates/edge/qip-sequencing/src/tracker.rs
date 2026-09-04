@@ -180,6 +180,13 @@ pub struct SequenceTracker {
     contiguous_at: Timestamp,
     buffer: BTreeMap<u64, Vec<MarketMessage>>,
     buffered_messages: usize,
+    /// Set only by [`SequenceTracker::expecting`], and only consulted before the
+    /// first message is released. `contiguous` cannot represent "expect sequence
+    /// zero next" — there is no `u64` one below zero — so the expectation is kept
+    /// here instead of folded into `contiguous - 1`, which would silently wrap or
+    /// (via `checked_sub`) silently discard the caller's resume position and
+    /// treat the stream as fresh.
+    expected_start: Option<u64>,
     /// When the current hole opened, for the deadline.
     gap_opened_at: Option<Timestamp>,
     /// Kept so a reset can be attributed to the right venue, feed and partition
@@ -198,6 +205,7 @@ impl SequenceTracker {
             contiguous_at: Timestamp::EPOCH,
             buffer: BTreeMap::new(),
             buffered_messages: 0,
+            expected_start: None,
             gap_opened_at: None,
             template_origin: None,
             stats: StreamStats::default(),
@@ -208,14 +216,18 @@ impl SequenceTracker {
     ///
     /// For a cell resuming against a durable log: without it the first message
     /// to arrive defines the position, so anything lost while the cell was down
-    /// would be invisible instead of being the gap it is.
+    /// would be invisible instead of being the gap it is. `first_sequence` may be
+    /// `0` — a stream that numbers from zero must still be able to say so; the
+    /// expectation is not represented as `contiguous - 1`, which cannot hold a
+    /// value below zero and would otherwise fall back to "unconstrained" for
+    /// exactly the stream most likely to start there.
     pub fn expecting(
         stream: impl Into<String>,
         policy: ReorderPolicy,
         first_sequence: u64,
     ) -> Self {
         let mut tracker = Self::new(stream, policy);
-        tracker.contiguous = first_sequence.checked_sub(1);
+        tracker.expected_start = Some(first_sequence);
         tracker
     }
 
@@ -235,8 +247,22 @@ impl SequenceTracker {
     }
 
     /// The highest contiguous position, or `None` before the first message.
+    ///
+    /// Falls back to `expected_start - 1` when nothing has been accepted yet:
+    /// `expecting()` establishes that floor without touching `contiguous`
+    /// itself (`contiguous` means "confirmed by an actual accept"), but a
+    /// caller resuming a fetch from this position — the reason `expecting()`
+    /// exists at all — needs the floor immediately, before the first message
+    /// has arrived. Without this, a resumed stream reported `None` until its
+    /// first increment, which callers reasonably read as "resume from
+    /// nothing" and re-requested from the beginning of the stream. `0` still
+    /// yields `None` here (`checked_sub` on the boundary), the same
+    /// unresolvable ambiguity `position()` already had for a stream that
+    /// numbers from zero — resolved internally via `expected_start`, but a
+    /// `u64` return has no way to say "at zero" apart from "unknown".
     pub fn position(&self) -> Option<u64> {
         self.contiguous
+            .or_else(|| self.expected_start.and_then(|start| start.checked_sub(1)))
     }
 
     /// Whether a hole is currently open.
@@ -265,7 +291,16 @@ impl SequenceTracker {
             self.template_origin = Some(origin);
         }
 
-        let Some(contiguous) = self.contiguous else {
+        // The next sequence this tracker will accept as contiguous: either the
+        // position right after the last release, or — before anything has been
+        // released — the position `expecting` was told to resume at. `None`
+        // means neither has happened, so nothing is yet known to compare against.
+        let expected = match self.contiguous {
+            Some(contiguous) => Some(contiguous + 1),
+            None => self.expected_start,
+        };
+
+        let Some(expected) = expected else {
             // The first message seen defines the starting position. There is
             // nothing to compare it against, and refusing to start until some
             // configured sequence arrives would mean a cell joining a running
@@ -282,7 +317,7 @@ impl SequenceTracker {
             return batch;
         };
 
-        if sequence <= contiguous || self.buffer.contains_key(&sequence) {
+        if sequence < expected || self.buffer.contains_key(&sequence) {
             self.stats.duplicates += 1;
             batch.events.push(SequenceEvent::Duplicate {
                 stream: self.stream.clone(),
@@ -291,7 +326,7 @@ impl SequenceTracker {
             return batch;
         }
 
-        if sequence == contiguous + 1 {
+        if sequence == expected {
             let was_holding = !self.buffer.is_empty();
             self.release(sequence, messages, now, &mut batch);
             self.drain(now, &mut batch);
@@ -313,7 +348,7 @@ impl SequenceTracker {
                 self.stats.gaps_opened += 1;
                 batch.events.push(SequenceEvent::GapOpened {
                     stream: self.stream.clone(),
-                    missing_from: contiguous + 1,
+                    missing_from: expected,
                     missing_to: sequence - 1,
                 });
             }
@@ -379,13 +414,23 @@ impl SequenceTracker {
     /// consumer applying this batch in order is told its book is stale before it
     /// is handed anything that assumes otherwise.
     fn abandon(&mut self, reason: GapReason, now: Timestamp, batch: &mut SequencedBatch) {
-        let Some(contiguous) = self.contiguous else {
-            return;
+        // The same "next expected sequence" computation `accept_unit` uses:
+        // a gap can open before anything has ever been released, when
+        // `expecting` was told to resume at a position and something further
+        // ahead arrives first. Reading `self.contiguous` alone would miss that
+        // case and silently do nothing — the buffer stays full and the deadline
+        // stays open, having declared the gap unrecoverable in stats but never
+        // actually resynchronised it.
+        let missing_from = match self.contiguous {
+            Some(contiguous) => contiguous + 1,
+            None => match self.expected_start {
+                Some(expected) => expected,
+                None => return,
+            },
         };
         let Some(&resume_at) = self.buffer.keys().next() else {
             return;
         };
-        let missing_from = contiguous + 1;
         let missing_to = resume_at - 1;
 
         if let Some(template) = &self.template_origin {

@@ -30,6 +30,17 @@
 //!    its reference. Each later round compares the current window against it
 //!    with [`DriftReport::compare`] and records the largest population
 //!    stability index across features.
+//! 4. **Distil.** `qip_training::distill::distil` had the same shape of gap:
+//!    fully implemented, well tested, and reachable only from its own crate's
+//!    tests -- nothing ever turned a registered teacher into the
+//!    [`qip_strategy::model::DistilledModel`] the execution path is actually
+//!    allowed to run. Every round that registers a teacher now distils it on
+//!    the same holdout tail the fit's own diagnostics were scored against,
+//!    and the result -- or, when the probe set could not support a fit, the
+//!    reason -- is held on [`LearningRound::distillation`]. This module still
+//!    does not promote a distillate any more than it promotes a teacher: the
+//!    student is a fact this round produced, for whatever governs
+//!    `qip-contracts::policy::PendingPolicy::trained_models` to act on.
 //!
 //! # Why the maximum across features and not the mean
 //!
@@ -55,6 +66,7 @@ use qip_kernel::central::models::{ModelRegistration, register_fit};
 use qip_market::bar::Bar;
 use qip_quant::signal::Horizon;
 use qip_training::dataset::TrainingDataset;
+use qip_training::distill::{Distillation, FidelityPolicy, StudentForm, distil};
 use qip_training::job::TrainingSpec;
 use qip_training::local::{LocalTrainer, ModelFamily, SkillPolicy};
 use std::collections::BTreeMap;
@@ -118,6 +130,20 @@ pub struct LearningRound {
     pub drift: Vec<DriftObservation>,
     /// Models the registry will no longer let inform a decision, with why.
     pub ineligible: Vec<String>,
+    /// The student distilled from this round's teacher onto the same holdout
+    /// tail the fit's own diagnostics were scored against.
+    ///
+    /// Held here rather than acted on: promoting a distillate to the model
+    /// the execution path actually runs is a decision for whatever governs
+    /// `qip-contracts::policy::PendingPolicy`, not for the desk that fits it.
+    /// `None` when no teacher was registered this round, or when the probe
+    /// set could not support a fit -- see `distillation_refusal` for why.
+    pub distillation: Option<Distillation>,
+    /// Why `distillation` is `None` despite a teacher having been
+    /// registered this round: the specific reason `distil` refused, so a
+    /// caller need not guess whether nothing was attempted or something
+    /// failed.
+    pub distillation_refusal: Option<String>,
 }
 
 impl LearningRound {
@@ -126,8 +152,22 @@ impl LearningRound {
             Some(registration) => registration.summarise(),
             None => "no fit this round".to_string(),
         };
+        let distilled = match &self.distillation {
+            Some(distillation) => {
+                let approved = distillation.is_promotable(&FidelityPolicy::default());
+                format!(
+                    "; distilled a {} student whose fidelity is {} the default policy",
+                    distillation.form().as_str(),
+                    if approved { "within" } else { "short of" }
+                )
+            }
+            None => match &self.distillation_refusal {
+                Some(reason) => format!("; no student distilled: {reason}"),
+                None => String::new(),
+            },
+        };
         format!(
-            "learning: {registered}; {} model(s) measured for drift, {} ineligible",
+            "learning: {registered}; {} model(s) measured for drift, {} ineligible{distilled}",
             self.drift.len(),
             self.ineligible.len()
         )
@@ -287,30 +327,34 @@ impl LearningDesk {
             self.stats.drift_measurements += 1;
         }
 
-        let registration = match self.fit(subject, bars, &columns, now) {
-            Ok(registration) => {
-                if registration.passed {
-                    self.stats.registered += 1;
-                } else {
-                    self.stats.without_skill += 1;
+        let (registration, distillation, distillation_refusal) =
+            match self.fit(subject, bars, &columns, now) {
+                Ok((registration, distillation, distillation_refusal)) => {
+                    if registration.passed {
+                        self.stats.registered += 1;
+                    } else {
+                        self.stats.without_skill += 1;
+                    }
+                    self.reference
+                        .insert(registration.reference.clone(), columns);
+                    (Some(registration), distillation, distillation_refusal)
                 }
-                self.reference
-                    .insert(registration.reference.clone(), columns);
-                Some(registration)
-            }
-            // A round that could not fit is not a round that found nothing:
-            // too little history, a degenerate target, a dataset the trainer
-            // refused. Returned on the round rather than propagated, so one
-            // unfittable subject does not stop the node.
-            Err(error) => {
-                return Ok(LearningRound {
-                    subject: subject.as_str().to_string(),
-                    registration: None,
-                    drift,
-                    ineligible: vec![error.message().to_string()],
-                });
-            }
-        };
+                // A round that could not fit is not a round that found
+                // nothing: too little history, a degenerate target, a
+                // dataset the trainer refused. Returned on the round rather
+                // than propagated, so one unfittable subject does not stop
+                // the node.
+                Err(error) => {
+                    return Ok(LearningRound {
+                        subject: subject.as_str().to_string(),
+                        registration: None,
+                        drift,
+                        ineligible: vec![error.message().to_string()],
+                        distillation: None,
+                        distillation_refusal: None,
+                    });
+                }
+            };
 
         let ineligible = self
             .registry
@@ -324,6 +368,8 @@ impl LearningDesk {
             registration,
             drift,
             ineligible,
+            distillation,
+            distillation_refusal,
         })
     }
 
@@ -333,7 +379,7 @@ impl LearningDesk {
         bars: &[Bar],
         columns: &BTreeMap<String, Vec<f64>>,
         now: Timestamp,
-    ) -> Result<ModelRegistration> {
+    ) -> Result<(ModelRegistration, Option<Distillation>, Option<String>)> {
         let targets = next_bar_returns(bars);
         let times: Vec<Timestamp> = bars
             .iter()
@@ -396,13 +442,33 @@ impl LearningDesk {
         .with_seed(self.seed);
 
         let teacher = LocalTrainer::new().fit(&spec, &dataset, now)?;
-        register_fit(
+        let registration = register_fit(
             &mut self.registry,
             &teacher,
             &self.policy,
             "central-research",
             now,
-        )
+        )?;
+
+        // Distil the teacher into the linear form the execution path is
+        // actually allowed to run, probed on the same holdout tail the
+        // fit's own diagnostics were scored against. Reusing the training
+        // rows as a probe would measure how well the student memorised the
+        // teacher's training set, not how well it tracks the teacher's
+        // actual behaviour -- the same reason the fit itself is scored on a
+        // holdout rather than in sample.
+        let (distillation, distillation_refusal) =
+            match dataset.split_at_fraction(spec.holdout_fraction) {
+                Ok((_, probe)) => {
+                    match distil(&teacher, &probe, StudentForm::Linear { ridge: 1e-3 }, 0.0) {
+                        Ok(distillation) => (Some(distillation), None),
+                        Err(error) => (None, Some(error.message().to_string())),
+                    }
+                }
+                Err(error) => (None, Some(error.message().to_string())),
+            };
+
+        Ok((registration, distillation, distillation_refusal))
     }
 }
 
@@ -811,6 +877,127 @@ mod tests {
         assert!(!desk.enabled());
         assert_eq!(desk.tracked(), 0);
         assert_eq!(desk.stats().rounds, 0);
+    }
+
+    #[test]
+    fn a_round_that_registers_a_teacher_also_carries_a_student_distilled_on_its_holdout_tail()
+    -> Result<()> {
+        // `qip_training::distill::distil` was fully implemented, tested in
+        // its own crate, and reachable from no running process: nothing ever
+        // turned a registered teacher into the `DistilledModel` the
+        // execution path is allowed to run. This proves the wiring reaches
+        // it, and that the probe set it is scored on is genuinely the same
+        // holdout tail the teacher's own diagnostics were scored against
+        // rather than a second, disconnected split.
+        let mut desk = learning_desk();
+        let bars = super::tests_support::learnable(400);
+        let round = desk
+            .maybe_learn(&subject(), &bars, 1, at())?
+            .ok_or_else(|| Error::not_found("a round on a cadence of every cycle"))?;
+
+        let registration = round
+            .registration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a registration to distil from"))?;
+
+        // The premise: a teacher was actually registered this round, so a
+        // `None` distillation below would mean nothing was attempted rather
+        // than something failed.
+        assert!(
+            !registration.reference.is_empty(),
+            "the registration carries no reference to distil against"
+        );
+
+        let distillation = round.distillation.as_ref().ok_or_else(|| {
+            Error::not_found(format!(
+                "a distillation; refused because: {:?}",
+                round.distillation_refusal
+            ))
+        })?;
+        assert!(
+            round.distillation_refusal.is_none(),
+            "a distillation is present and a refusal reason is too -- at most one of the two \
+             should ever be set"
+        );
+        assert_eq!(
+            distillation.teacher_reference(),
+            registration.reference,
+            "the student was distilled from a teacher other than the one this round registered"
+        );
+        assert_eq!(
+            distillation.form(),
+            StudentForm::Linear { ridge: 1e-3 },
+            "the student's form does not match what the desk asked to distil"
+        );
+
+        // The probe set actually used must be the same size as the holdout
+        // tail `TrainingDataset::split_at_fraction` would carve from this
+        // subject's dataset with the desk's configured fraction -- not the
+        // full dataset, and not the fit set.
+        let rows = bars.len() - LOOKBACK - 1;
+        let expected_holdout =
+            ((rows as f64) * LearningConfig::default().holdout_fraction).round() as usize;
+        let expected_holdout = expected_holdout.clamp(1, rows - 1);
+        assert_eq!(
+            distillation.fidelity().probe_samples,
+            expected_holdout,
+            "the student was probed on {} row(s), not the {} the fit's own holdout tail holds",
+            distillation.fidelity().probe_samples,
+            expected_holdout
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_holdout_tail_too_small_to_fit_a_student_reports_why_rather_than_a_silent_none()
+    -> Result<()> {
+        // `distillation: None` alone cannot distinguish "no teacher this
+        // round" from "distillation was attempted and refused". Forcing a
+        // holdout so small the linear student cannot be determined proves
+        // the refusal reason reaches the round rather than being swallowed.
+        let mut desk = LearningDesk::new(
+            LearningConfig {
+                every_cycles: 1,
+                minimum_bars: 64,
+                // Five percent of ~53 fitted rows rounds to a probe of a
+                // handful of observations -- fewer than the five features
+                // plus an intercept a linear student needs to be determined,
+                // while the teacher's own diagnostics (which impose no
+                // minimum) still fit without complaint.
+                holdout_fraction: 0.05,
+                ..LearningConfig::default()
+            },
+            7,
+        );
+        let bars = super::tests_support::learnable(64);
+        let round = desk
+            .maybe_learn(&subject(), &bars, 1, at())?
+            .ok_or_else(|| Error::not_found("a round on a cadence of every cycle"))?;
+
+        // The premise: a teacher was still registered this round, so the
+        // refusal below is about the student and not about the fit never
+        // having happened at all.
+        assert!(
+            round.registration.is_some(),
+            "the fixture must still produce a teacher for this to test the distillation path \
+             and not just an unfit round"
+        );
+
+        assert!(
+            round.distillation.is_none(),
+            "a student was distilled from a probe set too small to determine its coefficients"
+        );
+        let reason = round.distillation_refusal.ok_or_else(|| {
+            Error::not_found(
+                "a reason distillation produced nothing, distinguishing a refusal from a round \
+                 that never attempted one",
+            )
+        })?;
+        assert!(
+            reason.contains("coefficient"),
+            "the refusal reason does not name why the fit could not be determined: {reason}"
+        );
+        Ok(())
     }
 
     #[test]

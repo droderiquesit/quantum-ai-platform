@@ -411,6 +411,13 @@ const NODE_MODULE: &str = "infrastructure/terraform/modules/execution-node/main.
 const NODE_STARTUP: &str =
     "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl";
 const TRUST_ZONES_MODULE: &str = "infrastructure/terraform/modules/trust-zones/main.tf";
+const NETWORK_VARIABLES: &str = "infrastructure/terraform/modules/network/variables.tf";
+const NETWORK_MODULE: &str = "infrastructure/terraform/modules/network/main.tf";
+const SECRETS_MODULE: &str = "infrastructure/terraform/modules/secrets/main.tf";
+/// The two Cloud Run services this repository deploys outside the catalogue.
+/// `docs/ops/missing-infrastructure-register.md` gaps 1 to 4 are all in this
+/// one file, and each of them was invisible to a suite that never read it.
+const DEPLOY_SCRIPT: &str = "scripts/deploy-frontends.sh";
 
 /// The catalogue's workload entries, as `(name, body)`, comments stripped.
 ///
@@ -566,22 +573,50 @@ fn every_cloud_run_service_is_internal_and_mounts_secrets_as_files_never_as_envi
     // Read from the code and not the variable's description, which names
     // the open setting precisely to say why it is absent.
     assert!(
-        !module.contains("INGRESS_TRAFFIC_ALL"),
-        "the Cloud Run module can produce INGRESS_TRAFFIC_ALL, which answers the \
-         internet at the service's own URL"
+        // INGRESS_TRAFFIC_ALL was absent from this module until ADR 0030
+        // recorded an owner decision to expose OpenObserve anonymously. It is
+        // reachable through exactly one posture, and asserting the pairing is
+        // what keeps the setting from drifting onto a second arm: the failure
+        // this replaces the old absence-check with is a `public-edge` or a
+        // default branch quietly learning to answer the internet.
+        module.contains("var.ingress_posture == \"open-anonymous\" ? \"INGRESS_TRAFFIC_ALL\" :"),
+        "the Cloud Run module produces INGRESS_TRAFFIC_ALL from something other than the \
+         open-anonymous posture ADR 0030 governs, or no longer produces it at all"
     );
     assert!(
-        variables.contains("contains([\"internal\", \"public-edge\"], var.ingress_posture)"),
-        "the ingress posture admits a value other than internal or public-edge"
+        variables.contains(
+            "contains([\"internal\", \"public-edge\", \"open-anonymous\"], var.ingress_posture)"
+        ),
+        "the ingress posture admits a value other than internal, public-edge or open-anonymous"
     );
     assert!(
         module.contains("INGRESS_TRAFFIC_INTERNAL_ONLY"),
         "the Cloud Run module no longer names the internal-only ingress"
     );
+
+    // The anonymous set is exactly one workload, and it is the one ADR 0030
+    // names. `sets` asserted every service was internal until that record; the
+    // honest successor is not to drop the check but to pin the exception, so a
+    // second workload going anonymous fails here rather than passing on a
+    // precedent.
     let catalogue = without_comments(&read(CATALOGUE));
+    let anonymous: Vec<&str> = catalogue
+        .split("module \"")
+        .skip(1)
+        .filter(|block| block.contains("ingress_posture = \"open-anonymous\""))
+        .filter_map(|block| block.split('"').next())
+        .collect();
+    assert_eq!(
+        anonymous,
+        ["openobserve"],
+        "the set of anonymously-reachable workloads is not exactly the one ADR 0030 names. \
+         Adding one is an amendment to that record, not an edit to this list"
+    );
     assert!(
-        sets(&catalogue, "ingress_posture", "\"internal\""),
-        "catalogue.tf does not place every service behind the internal posture"
+        sets(&catalogue, "ingress_posture", "\"internal\"")
+            || catalogue.matches("ingress_posture = \"internal\"").count() > 0,
+        "catalogue.tf places no service behind the internal posture, so the default that \
+         every workload but OpenObserve relies on has gone"
     );
 
     // Secrets as files. The module mounts a `secret` volume per entry and the
@@ -590,12 +625,79 @@ fn every_cloud_run_service_is_internal_and_mounts_secrets_as_files_never_as_envi
         module.contains("secret {") && module.contains("volume_mounts {"),
         "the Cloud Run module no longer mounts secrets as volumes"
     );
-    for forbidden in ["value_source", "secret_key_ref"] {
+    // `value_source` reads a secret into an environment value, which this test
+    // forbade outright until ADR 0031. It is now permitted for exactly one
+    // shape and the assertions below are what keep it to that shape, because
+    // the rule this amends is still the rule for everything else.
+    //
+    // The exception exists because a vendored image can be a binary that
+    // cannot read a file at all -- OpenObserve carries no shell, so no
+    // entrypoint can bridge a mount, and no symbol in it offers `_FILE`
+    // indirection for the credential. A built workload has `qip_core::secret`
+    // and no such excuse.
+    assert_eq!(
+        module.matches("secret_key_ref").count(),
+        1,
+        "the Cloud Run module names secret_key_ref more than once, so the single \
+         ADR 0031 exception has become a second credential path"
+    );
+    // Every way a secret reaches a container carries its own accessor grant.
+    //
+    // ADR 0031 added `secret_env` and added no grant, because the only
+    // `secretAccessor` resource in the module was keyed on `secret_mounts`.
+    // Cloud Run resolves a `secret_key_ref` before it starts the instance, so
+    // the workload did not fail slowly — it had no instance at all, and its
+    // URL answered the load balancer's 500 with nothing in the container's
+    // own logs. The apply that did it reported success, because it destroyed
+    // the old mount grants and created the new revision unordered.
+    //
+    // Both halves are pinned: the grant, and the ordering that made a broken
+    // deployment look like a clean one.
+    for (resource, keyed_on) in [
+        ("\"mounted\"", "var.secret_mounts"),
+        ("\"env\"", "var.secret_env"),
+    ] {
+        let header = format!("resource \"google_secret_manager_secret_iam_member\" {resource}");
+        let start = module.find(&header).unwrap_or_else(|| {
+            panic!(
+                "the Cloud Run module has no secretAccessor grant {resource}, so a workload \
+                 taking a secret that way is granted nothing and never starts"
+            )
+        });
+        let body = &module[start..];
+        let body = &body[..body.find("\n}").unwrap_or(body.len())];
         assert!(
-            !module.contains(forbidden),
-            "the Cloud Run module reads a secret into an environment value through `{forbidden}`"
+            body.contains(&format!("for_each = {keyed_on}")),
+            "the {resource} grant is no longer keyed on {keyed_on}, so a secret passed \
+             that way carries no accessor grant"
+        );
+        assert!(
+            body.contains("roles/secretmanager.secretAccessor"),
+            "the {resource} grant no longer grants secretAccessor"
         );
     }
+    assert!(
+        module.contains("google_secret_manager_secret_iam_member.mounted,")
+            && module.contains("google_secret_manager_secret_iam_member.env,"),
+        "the Cloud Run service no longer depends on both secret grants, so terraform \
+         may create a revision before the grant it needs exists — the apply succeeds \
+         and the service cannot restart"
+    );
+
+    assert!(
+        module.contains("length(var.secret_env) == 0 || var.image_source == \"vendored\""),
+        "the precondition refusing secret_env on a built workload is gone, so any \
+         workload could take a credential from the environment -- ADR 0031's whole \
+         guarantee is that one line"
+    );
+    // In `main.tf` and not `variables.tf`: a validation reading a second
+    // variable is a cross-variable reference terraform skips silently, which
+    // ADR 0030's pairing rules were caught by first.
+    assert!(
+        !variables.contains("var.image_source == \"vendored\""),
+        "the secret_env refusal has moved into a variable validation, where it \
+         reads a second variable and terraform will skip it without saying so"
+    );
     assert!(
         variables.contains("(TOKEN|SECRET|CREDENTIAL|PASSWORD|PRIVATE_KEY|_KEY)$"),
         "the module's `env` validation no longer refuses a credential-shaped variable name"
@@ -869,6 +971,54 @@ fn the_execution_nodes_are_one_module_rather_than_nine_copies() {
 }
 
 #[test]
+fn the_console_egress_cidr_validation_refuses_a_range_smaller_than_a_26_rather_than_only_its_syntax()
+ {
+    // The variable's validation used to check only that the value parsed as
+    // *some* CIDR (`can(cidrnetmask(...))`), while its own comment claimed
+    // "refusing a smaller one here rather than at apply time" — a /28 passed
+    // that check and would have failed only when Google's API refused direct
+    // VPC egress on it, after the subnet and instance template already
+    // existed. A second validation now reads the prefix and refuses
+    // anything smaller than the documented /26 floor.
+    let module = without_comments(&read(NETWORK_VARIABLES));
+    assert!(
+        module.contains("can(cidrnetmask(var.console_egress_cidr))"),
+        "the syntax check on console_egress_cidr is gone"
+    );
+    assert!(
+        module.contains("tonumber(split(\"/\", var.console_egress_cidr)[1]) <= 26"),
+        "nothing refuses a console_egress_cidr smaller than a /26 at plan time; Google's \
+         direct VPC egress API would refuse it only at apply, after the subnet and template \
+         already exist"
+    );
+
+    // The gate has to both fire and admit: prove it against the two prefixes
+    // by mirroring the exact HCL expression in Rust, the same way
+    // `console_route.rs`'s `parse_cidr` proves the committed dev value.
+    let admits = |cidr: &str| -> bool {
+        let prefix: u32 = cidr
+            .split('/')
+            .nth(1)
+            .expect("cidr has a prefix")
+            .parse()
+            .expect("numeric");
+        prefix <= 26
+    };
+    assert!(
+        admits("10.0.16.0/26"),
+        "a /26, the documented floor, must be admitted"
+    );
+    assert!(
+        admits("10.0.16.0/24"),
+        "a /24, wider than the floor, must be admitted"
+    );
+    assert!(
+        !admits("10.0.16.0/28"),
+        "a /28, smaller than the /26 floor Google enforces at apply, must be refused"
+    );
+}
+
+#[test]
 fn no_service_account_key_exists_anywhere_in_the_terraform() {
     // Workload Identity Federation only. A downloaded key would survive the
     // machine or the revision it was made for, and the machine is the only
@@ -918,6 +1068,10 @@ fn every_service_account_terraform_creates_runs_something_or_signs_something() {
         ("cicd".to_string(), "infra".to_string()),
         // The portal, deployed by scripts/deploy-frontends.sh.
         ("secrets".to_string(), "console".to_string()),
+        // The landing, deployed by the same script. It holds no grant; it
+        // exists so the landing is not the project's default compute
+        // identity (missing-infrastructure-register gap 2).
+        ("secrets".to_string(), "landing".to_string()),
     ];
     expected.sort();
     assert_eq!(
@@ -952,6 +1106,637 @@ fn no_workload_runs_as_the_projects_default_compute_identity() {
     assert!(
         node.contains("email = google_service_account.node.email"),
         "the execution node's template does not run as the account the module creates for it"
+    );
+
+    // The two workloads deployed outside Terraform. Register gap 2: the
+    // landing was deployed with no `--service-account` at all, which is how
+    // gcloud spells "the default compute identity", and this test could not
+    // fail on it because the script was not among the paths it read. The
+    // premise is asserted as an exact list: a walk that found zero deploys
+    // would otherwise pass forever.
+    let script = shell_without_comment_lines(&read(DEPLOY_SCRIPT));
+    assert!(
+        !script.contains("compute@developer.gserviceaccount.com"),
+        "{DEPLOY_SCRIPT} names the default compute identity"
+    );
+    let deploys = cloud_run_deploys(&script);
+    assert_eq!(
+        deploys
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        ["algorik-portal", "algorik-landing"],
+        "{DEPLOY_SCRIPT} deploys something other than the portal then the landing; the \
+         walk below is reading the wrong invocations"
+    );
+    let secrets = without_comments(&read(SECRETS_MODULE));
+    let declared: Vec<String> = terraform_resources(&secrets, "google_service_account")
+        .iter()
+        .filter_map(|(_, body)| {
+            body.lines().find_map(|line| {
+                collapsed(line)
+                    .strip_prefix("account_id = ")
+                    .map(|value| value.trim_matches('"').to_string())
+            })
+        })
+        .collect();
+    let mut identities: Vec<String> = Vec::new();
+    for (service, args) in &deploys {
+        let account = flag_value(args, "--service-account").unwrap_or_else(|| {
+            panic!(
+                "{DEPLOY_SCRIPT} deploys {service} with no --service-account, so gcloud runs it \
+                 as the project's default compute identity"
+            )
+        });
+        let email = resolve_shell(&script, &account);
+        let (local_part, domain) = email.split_once('@').unwrap_or_else(|| {
+            panic!("{service} runs as `{email}`, which is not a service-account email")
+        });
+        assert!(
+            domain.ends_with(".iam.gserviceaccount.com"),
+            "{service} runs as `{email}`, which is not a service account of this project"
+        );
+        // `qip-dev-console` in the script is `qip-${var.environment}-console`
+        // in the module that declares it. An account the script names and
+        // Terraform never creates is a deploy that fails, or an identity
+        // somebody made by hand and nothing reviews.
+        let template = local_part
+            .strip_prefix("qip-")
+            .and_then(|rest| rest.split_once('-'))
+            .map(|(_, suffix)| format!("qip-${{var.environment}}-{suffix}"))
+            .unwrap_or_else(|| {
+                panic!("{service} runs as `{email}`, not a qip-<env>-<name> account")
+            });
+        assert!(
+            declared.contains(&template),
+            "{service} runs as `{email}`, and {SECRETS_MODULE} declares no account with \
+             account_id `{template}`; it declares {declared:?}"
+        );
+        identities.push(email);
+    }
+    identities.sort();
+    identities.dedup();
+    assert_eq!(
+        identities.len(),
+        deploys.len(),
+        "the portal and the landing share one identity; a grant to the landing's session \
+         would be a grant to the portal's platform token"
+    );
+}
+
+// --- what the frontends script deploys, read as the catalogue is read -------
+//
+// `scripts/deploy-frontends.sh` is the only thing in this repository that
+// puts a workload on Cloud Run without passing through `modules/cloudrun`, so
+// every property that module holds structurally has to be re-asserted here on
+// the script's text. `docs/ops/missing-infrastructure-register.md` gaps 1 to 4
+// are the four the suite missed by never reading it.
+
+/// A shell script with its whole-line comments removed.
+///
+/// Whole lines only: a `#` inside a quoted argument is data, and stripping
+/// from the first `#` on every line would cut a `${VAR#prefix}` expansion in
+/// half. The script's comments say what the deploy must not do, in the exact
+/// words a substring check would then find.
+fn shell_without_comment_lines(script: &str) -> String {
+    script
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Every `gcloud run deploy` invocation in a script, as the service it names
+/// and its arguments, line continuations folded and quotes removed.
+fn cloud_run_deploys(script: &str) -> Vec<(String, Vec<String>)> {
+    let mut deploys = Vec::new();
+    let mut lines = script.lines();
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("gcloud run deploy ") {
+            continue;
+        }
+        let mut joined = trimmed.to_string();
+        while joined.ends_with('\\') {
+            joined.pop();
+            joined.push(' ');
+            let Some(next) = lines.next() else { break };
+            joined.push_str(next.trim());
+        }
+        let tokens: Vec<String> = joined
+            .split_whitespace()
+            .map(|token| token.trim_matches('"').trim_matches('\'').to_string())
+            .collect();
+        let service = tokens.get(3).cloned().unwrap_or_default();
+        deploys.push((service, tokens.get(4..).unwrap_or(&[]).to_vec()));
+    }
+    deploys
+}
+
+/// The value of a `--flag value` or `--flag=value` argument.
+///
+/// Matched on the whole token, so `--service-account` is not found inside a
+/// longer flag that starts the same way.
+fn flag_value(args: &[String], flag: &str) -> Option<String> {
+    let mut tokens = args.iter();
+    while let Some(token) = tokens.next() {
+        if token == flag {
+            return tokens.next().cloned();
+        }
+        if let Some(value) = token.strip_prefix(&format!("{flag}=")) {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+/// What a script assigns to a shell variable — `NAME=value`,
+/// `readonly NAME="value"` or `export NAME=value` — quotes removed.
+///
+/// The name is matched up to the `=`, so `CONSOLE_SA` does not find
+/// `CONSOLE_SUBNET`.
+fn shell_assignment(script: &str, name: &str) -> Option<String> {
+    script.lines().find_map(|line| {
+        let line = line.trim();
+        let line = line
+            .strip_prefix("readonly ")
+            .or_else(|| line.strip_prefix("export "))
+            .unwrap_or(line);
+        let rest = line.strip_prefix(name)?.strip_prefix('=')?;
+        Some(rest.trim().trim_matches('"').to_string())
+    })
+}
+
+/// The tfvars file the script's `tfvar` helper reads, as a repository path.
+///
+/// The script names it absolutely under `${REPO_ROOT}`; the test reads the
+/// same file so a value the script derives from it resolves here to what the
+/// script would see, and not to a `dev` this test assumed.
+fn script_tfvars(script: &str) -> String {
+    let assigned = shell_assignment(script, "TFVARS")
+        .unwrap_or_else(|| panic!("{DEPLOY_SCRIPT} no longer names a TFVARS file"));
+    let start = assigned.find("infrastructure/").unwrap_or_else(|| {
+        panic!("{DEPLOY_SCRIPT} reads tfvars from outside infrastructure/: {assigned}")
+    });
+    assigned[start..].to_string()
+}
+
+/// `${NAME}` references replaced by what the script assigns them, and
+/// `$(tfvar key)` by what the tfvars the script reads set for `key`, repeated
+/// until nothing more resolves. Any other `$(...)` substitution is left as
+/// written, because what it would produce is a fact about the project, not
+/// the script.
+fn resolve_shell(script: &str, text: &str) -> String {
+    let mut current = text.to_string();
+    for _ in 0..8 {
+        let mut next = String::new();
+        let mut rest = current.as_str();
+        let mut changed = false;
+        while let Some(start) = rest.find("$(tfvar ") {
+            next.push_str(&rest[..start]);
+            let after = &rest[start + "$(tfvar ".len()..];
+            let Some(end) = after.find(')') else {
+                next.push_str(&rest[start..]);
+                rest = "";
+                break;
+            };
+            let key = after[..end].trim();
+            let tfvars = read(&script_tfvars(script));
+            let value = tfvars_value(&tfvars, key).unwrap_or_else(|| {
+                panic!("{DEPLOY_SCRIPT} reads `{key}` from the tfvars, which do not set it")
+            });
+            next.push_str(&value);
+            changed = true;
+            rest = &after[end + 1..];
+        }
+        next.push_str(rest);
+        current = next;
+        let mut next = String::new();
+        let mut rest = current.as_str();
+        while let Some(start) = rest.find("${") {
+            next.push_str(&rest[..start]);
+            let after = &rest[start + 2..];
+            let Some(end) = after.find('}') else {
+                next.push_str(&rest[start..]);
+                rest = "";
+                break;
+            };
+            let name = &after[..end];
+            let plain = name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+            match shell_assignment(script, name) {
+                Some(value) if plain => {
+                    next.push_str(&value);
+                    changed = true;
+                }
+                _ => next.push_str(&rest[start..start + 2 + end + 1]),
+            }
+            rest = &after[end + 1..];
+        }
+        next.push_str(rest);
+        current = next;
+        if !changed {
+            break;
+        }
+    }
+    current
+}
+
+#[test]
+fn every_cloud_run_service_this_repository_deploys_is_subject_to_the_admission_policy() {
+    // Register gap 1. `modules/cloudrun` opts every catalogue service into the
+    // project's Binary Authorization policy with `use_default = true`, and
+    // the policy requires the build attestor's signature. A `gcloud run
+    // deploy` that does not pass `--binary-authorization` is not evaluated
+    // against that policy at all, so the two services that face the internet
+    // were the two the platform's only admission control never saw — and
+    // they were named by a mutable tag, so nothing signed could have named
+    // them anyway. The binaryauthorization module's own header describes the
+    // previous form of this failure: a control that reads as on and admits
+    // every image.
+    let module = without_comments(&read(CLOUD_RUN_MODULE));
+    assert!(
+        sets(&module, "use_default", "true"),
+        "the Cloud Run module no longer opts its services into the default admission policy"
+    );
+
+    let script = shell_without_comment_lines(&read(DEPLOY_SCRIPT));
+    let deploys = cloud_run_deploys(&script);
+    assert_eq!(
+        deploys
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        ["algorik-portal", "algorik-landing"],
+        "{DEPLOY_SCRIPT} deploys something other than the portal then the landing; a walk \
+         over zero deploys would pass forever, so the list is pinned"
+    );
+    for (service, args) in &deploys {
+        assert!(
+            flag_value(args, "--binary-authorization").as_deref() == Some("default"),
+            "{DEPLOY_SCRIPT} deploys {service} without --binary-authorization=default, so the \
+             admission policy modules/binaryauthorization enforces never evaluates its image"
+        );
+        let image = flag_value(args, "--image")
+            .unwrap_or_else(|| panic!("{DEPLOY_SCRIPT} deploys {service} with no --image"));
+        let image = resolve_shell(&script, &image);
+        // `repository/name@sha256:...`, never `repository/name:tag`. A tag
+        // is a pointer anyone with push may move after the attestation was
+        // made; a digest is the thing the attestation was made about.
+        let (repository, digest) = image.split_once('@').unwrap_or_else(|| {
+            panic!(
+                "{DEPLOY_SCRIPT} deploys {service} from `{image}`, an image named by tag; \
+                 the admission policy can only admit a digest something attested"
+            )
+        });
+        let last = repository.rsplit('/').next().unwrap_or(repository);
+        assert!(
+            !last.contains(':'),
+            "{DEPLOY_SCRIPT} deploys {service} from `{image}`, which carries a tag beside its \
+             digest; the tag is what a reader trusts and the digest is what runs"
+        );
+        // Either the literal digest form, or a substitution that reads one
+        // back from the registry or the build — which is the shape a script
+        // that builds the image it deploys has to take.
+        assert!(
+            digest.starts_with("sha256:") || digest.to_ascii_lowercase().contains("digest"),
+            "{DEPLOY_SCRIPT} deploys {service} from `{image}`, whose reference after the `@` \
+             is neither a sha256 digest nor read from one"
+        );
+    }
+}
+
+/// A firewall rule as this file reads it, with the fields the deny-coverage
+/// check compares.
+struct FirewallRule {
+    name: String,
+    direction: String,
+    priority: u32,
+    denies: bool,
+    /// The `target_tags` or `target_service_accounts` expression, or `None`
+    /// for a rule that applies to every instance in the network.
+    targets: Option<String>,
+    destinations: Option<String>,
+}
+
+/// Every `google_compute_firewall` in a module.
+fn firewall_rules(text: &str) -> Vec<FirewallRule> {
+    let field = |body: &str, key: &str| -> Option<String> {
+        body.lines().find_map(|line| {
+            collapsed(line)
+                .strip_prefix(&format!("{key} = "))
+                .map(str::to_string)
+        })
+    };
+    terraform_resources(text, "google_compute_firewall")
+        .into_iter()
+        .map(|(name, body)| FirewallRule {
+            direction: field(&body, "direction")
+                .map(|value| value.trim_matches('"').to_string())
+                .unwrap_or_else(|| panic!("firewall rule `{name}` names no direction")),
+            priority: field(&body, "priority")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or_else(|| panic!("firewall rule `{name}` has no literal priority")),
+            denies: body.lines().any(|line| line.trim() == "deny {"),
+            targets: field(&body, "target_tags")
+                .or_else(|| field(&body, "target_service_accounts")),
+            destinations: field(&body, "destination_ranges"),
+            name,
+        })
+        .collect()
+}
+
+/// The identifiers in an HCL expression, so `local.zone_tag[each.key]` is
+/// asked whether it names `zone` as a whole word rather than as a substring.
+fn identifiers(expression: &str) -> Vec<&str> {
+    expression
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect()
+}
+
+#[test]
+fn every_subnet_in_the_network_is_covered_by_an_egress_deny() {
+    // Register gap 3. The trust-zone module writes a deny-egress per zone and
+    // says why: "delete this one and the zone talks to everything". The
+    // console's subnet was created outside the zone model — for a sound
+    // reason, in `modules/network` — and inherited none of its rules, so the
+    // one subnet holding an internet-facing service was the one subnet where
+    // Terraform's implied allow-all egress at 65535 applied. Coverage is
+    // checked in both directions: a deny that names no target covers every
+    // subnet in the VPC, which is the trust-zone model dissolved into one
+    // rule, and a test that only failed on under-coverage would pass that.
+    let modules = [
+        ("network", NETWORK_MODULE),
+        ("trust-zones", TRUST_ZONES_MODULE),
+        ("execution-node", NODE_MODULE),
+    ];
+    let read_modules: Vec<(&str, &str, String)> = modules
+        .iter()
+        .map(|(label, path)| (*label, *path, without_comments(&read(path))))
+        .collect();
+
+    // The premise: the walk finds subnets, and the console's is among them.
+    let subnets: Vec<(&str, String)> = read_modules
+        .iter()
+        .flat_map(|(label, _, text)| {
+            terraform_resources(text, "google_compute_subnetwork")
+                .into_iter()
+                .map(move |(name, _)| (*label, name))
+        })
+        .collect();
+    assert!(
+        subnets
+            .iter()
+            .any(|(label, name)| *label == "network" && name == "console_egress"),
+        "the console's subnet is no longer `google_compute_subnetwork.console_egress` in \
+         modules/network; found {subnets:?}"
+    );
+    assert!(
+        subnets.len() >= 3,
+        "only {subnets:?} subnets were read; the walk is not reaching every module"
+    );
+
+    // Over-broad first. An untargeted deny-egress is not a stronger version
+    // of the per-subnet one; it is every subnet's rule at once, and the zone
+    // whose deny it happens to be declared beside no longer owns its boundary.
+    for (label, _, text) in &read_modules {
+        for rule in firewall_rules(text)
+            .iter()
+            .filter(|rule| rule.direction == "EGRESS" && rule.denies)
+        {
+            assert!(
+                rule.targets.is_some(),
+                "{label}'s deny-egress rule `{}` names no target_tags or \
+                 target_service_accounts, so it covers every subnet in the VPC rather than \
+                 the one it was declared beside",
+                rule.name
+            );
+        }
+    }
+
+    // Then coverage: every subnet has a deny in its own module whose target
+    // names it, denying everything, at a priority below every allow that
+    // names the same target and above the implied allow-all.
+    let mut allows_compared = 0usize;
+    for (label, path, text) in &read_modules {
+        let rules = firewall_rules(text);
+        for (_, subnet) in subnets.iter().filter(|(owner, _)| owner == label) {
+            // `console_egress` is targeted by whatever names `console`;
+            // `zone` by `local.zone_tag[...]`; `node` by `local.node_tag`.
+            let key = subnet.split('_').next().unwrap_or(subnet);
+            let names_subnet = |rule: &&FirewallRule| {
+                rule.targets
+                    .as_deref()
+                    .is_some_and(|targets| identifiers(targets).contains(&key))
+            };
+            let denies: Vec<&FirewallRule> = rules
+                .iter()
+                .filter(|rule| rule.direction == "EGRESS" && rule.denies)
+                .filter(names_subnet)
+                .collect();
+            assert!(
+                !denies.is_empty(),
+                "{label}'s subnet `{subnet}` is targeted by no deny-egress rule in {path} \
+                 (one whose target_tags or target_service_accounts names `{key}`), so \
+                 Terraform's implied allow-all egress at 65535 is what applies to it"
+            );
+            let allows: Vec<&FirewallRule> = rules
+                .iter()
+                .filter(|rule| rule.direction == "EGRESS" && !rule.denies)
+                .filter(names_subnet)
+                .collect();
+            for deny in &denies {
+                assert_eq!(
+                    deny.destinations.as_deref(),
+                    Some("[\"0.0.0.0/0\"]"),
+                    "{label}'s deny-egress `{}` for `{subnet}` denies something narrower than \
+                     everything, so what it does not name is allowed by default",
+                    deny.name
+                );
+                assert!(
+                    deny.priority < 65535,
+                    "{label}'s deny-egress `{}` sits at the implied rules' own priority",
+                    deny.name
+                );
+                for allow in &allows {
+                    assert!(
+                        allow.priority < deny.priority,
+                        "{label}'s allow `{}` at priority {} does not take precedence over the \
+                         deny `{}` at {}, so the path it opens is closed and the failure reads \
+                         as the destination being down",
+                        allow.name,
+                        allow.priority,
+                        deny.name,
+                        deny.priority
+                    );
+                    allows_compared += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        allows_compared >= 2,
+        "only {allows_compared} allow rules were compared against a deny; the zone and node \
+         modules each open at least the Google APIs path, so the comparison is not running"
+    );
+
+    // The console's rules target a tag, and a Cloud Run interface carries a
+    // tag only if the deploy passes `--network-tags`. A rule targeting a tag
+    // no interface carries binds nothing and reads, in the console, as a deny
+    // in place — the "control that cannot fire" the product rules name, and
+    // the same silent failure the zone module warns of for its own tags. So
+    // the tag is read from the one place it is declared and the portal's
+    // deploy is required to carry exactly it.
+    let (_, _, network) = read_modules
+        .iter()
+        .find(|(label, _, _)| *label == "network")
+        .expect("the network module was read above");
+    let tag = network
+        .lines()
+        .find_map(|line| {
+            collapsed(line)
+                .strip_prefix("console_egress_tag = ")
+                .map(|value| value.trim_matches('"').to_string())
+        })
+        .unwrap_or_else(|| {
+            panic!("{NETWORK_MODULE} no longer declares `local.console_egress_tag`")
+        });
+    for rule in firewall_rules(network)
+        .iter()
+        .filter(|rule| rule.direction == "EGRESS")
+    {
+        assert_eq!(
+            rule.targets.as_deref(),
+            Some("[local.console_egress_tag]"),
+            "{NETWORK_MODULE}'s egress rule `{}` targets something other than the one tag \
+             the portal's deploy is told to carry",
+            rule.name
+        );
+    }
+    // The module's `${var.environment}` is the `environment` the tfvars the
+    // script reads set — the same value the script derives its own tag
+    // from, so neither side of the comparison is a literal this test chose.
+    let script = shell_without_comment_lines(&read(DEPLOY_SCRIPT));
+    let environment = tfvars_value(&read(&script_tfvars(&script)), "environment")
+        .unwrap_or_else(|| panic!("the tfvars {DEPLOY_SCRIPT} reads set no `environment`"));
+    let expected = tag.replace("${var.environment}", &environment);
+    let deploys = cloud_run_deploys(&script);
+    let (_, portal) = deploys
+        .iter()
+        .find(|(name, _)| name == "algorik-portal")
+        .unwrap_or_else(|| panic!("{DEPLOY_SCRIPT} no longer deploys algorik-portal"));
+    let tags = flag_value(portal, "--network-tags").unwrap_or_else(|| {
+        panic!(
+            "{DEPLOY_SCRIPT} deploys algorik-portal with no --network-tags, so the console's \
+             deny-egress rule in {NETWORK_MODULE} targets a tag no interface carries and \
+             cannot fire"
+        )
+    });
+    let carried: Vec<String> = tags
+        .split(',')
+        .map(|tag| resolve_shell(&script, tag))
+        .collect();
+    assert!(
+        carried.iter().any(|tag| tag == &expected),
+        "{DEPLOY_SCRIPT} deploys algorik-portal with the network tags {carried:?}, none of \
+         which is `{expected}`, the tag the console's egress rules target"
+    );
+}
+
+#[test]
+fn no_secret_this_repository_deploys_reaches_a_process_as_an_environment_value() {
+    // Register gap 4. A `--set-secrets` entry whose left-hand side is a path
+    // mounts the secret as a file; one whose left-hand side is a name sets an
+    // environment variable, which is the secret in /proc/<pid>/environ, in
+    // every child and in every crash dump. The portal's session secret — the
+    // key that signs its cookies — was in the same comma-separated argument
+    // as the correctly mounted platform token, four lines under the comment
+    // saying why it must not be. Matched on the delimited left-hand side of
+    // each entry: `contains("ALGORIK_SESSION_SECRET")` is true of the `_FILE`
+    // variable that is the fix.
+    let script = shell_without_comment_lines(&read(DEPLOY_SCRIPT));
+    let deploys = cloud_run_deploys(&script);
+    assert_eq!(
+        deploys
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        ["algorik-portal", "algorik-landing"],
+        "{DEPLOY_SCRIPT} deploys something other than the portal then the landing"
+    );
+
+    // Every secret entry, as (service, resolved left-hand side, secret ref).
+    let mut entries: Vec<(&str, String, String)> = Vec::new();
+    for (service, args) in &deploys {
+        for flag in ["--set-secrets", "--update-secrets"] {
+            let Some(value) = flag_value(args, flag) else {
+                continue;
+            };
+            for entry in value.split(',') {
+                let (lhs, rhs) = entry.split_once('=').unwrap_or_else(|| {
+                    panic!("{service}: the {flag} entry `{entry}` is not `target=secret:version`")
+                });
+                entries.push((service, resolve_shell(&script, lhs), rhs.to_string()));
+            }
+        }
+    }
+    assert!(
+        !entries.is_empty(),
+        "{DEPLOY_SCRIPT} passes no --set-secrets at all; the portal reads a session secret \
+         and a platform token, so the parse is finding nothing"
+    );
+    for (service, target, secret) in &entries {
+        assert!(
+            target.starts_with('/'),
+            "{DEPLOY_SCRIPT} gives {service} the secret `{secret}` as the environment \
+             variable `{target}`; a secret reaches a process as a mounted file, and the \
+             environment carries only its path"
+        );
+    }
+
+    // The session secret in particular: mounted exactly once, and the portal
+    // told where through the `_FILE` indirection its own `secret.ts`
+    // resolves, so nothing has to guess the path.
+    let session: Vec<&(&str, String, String)> = entries
+        .iter()
+        .filter(|(_, _, secret)| secret.split(':').next() == Some("algorik-session-secret"))
+        .collect();
+    assert_eq!(
+        session.len(),
+        1,
+        "algorik-session-secret is mounted {} times across the deploys; the portal needs it \
+         once",
+        session.len()
+    );
+    let (service, mount, _) = session[0];
+    let (_, args) = deploys
+        .iter()
+        .find(|(name, _)| name == service)
+        .expect("the service the entry came from is one of the deploys");
+    let env = flag_value(args, "--set-env-vars")
+        .unwrap_or_else(|| panic!("{service} sets no environment at all"));
+    let mut names: Vec<&str> = Vec::new();
+    let mut file_variable: Option<String> = None;
+    for entry in env.split(',') {
+        let (name, value) = entry
+            .split_once('=')
+            .unwrap_or_else(|| panic!("{service}: the env entry `{entry}` is not NAME=value"));
+        names.push(name);
+        if name == "ALGORIK_SESSION_SECRET_FILE" {
+            file_variable = Some(resolve_shell(&script, value));
+        }
+    }
+    assert!(
+        !names
+            .iter()
+            .any(|name| name.ends_with("_SECRET") || name.ends_with("_TOKEN")),
+        "{service} sets a credential-shaped variable in its environment: {names:?}"
+    );
+    assert_eq!(
+        file_variable.as_deref(),
+        Some(mount.as_str()),
+        "{service} mounts the session secret at `{mount}` but ALGORIK_SESSION_SECRET_FILE is \
+         {file_variable:?}; the process reads the path from that variable and nothing else"
     );
 }
 
@@ -1051,6 +1836,262 @@ fn a_cloud_run_service_cannot_be_deleted_by_a_plan_nobody_read() {
 }
 
 #[test]
+fn a_rollout_that_fails_says_why_rather_than_naming_a_console_url() {
+    // What `gcloud run services update` gives you on a failed rollout is one
+    // true sentence that is not a cause —
+    //
+    //   ERROR: The user-provided container failed the configured startup
+    //   probe checks. Logs for this revision might contain more information.
+    //   Logs URL: https://console.cloud.google.com/logs/viewer?...
+    //
+    // — and a link. In CI nobody opens the link, so the run ends with the
+    // fact that something failed and no statement of what. The cause is one
+    // API call away and this platform's composition roots put it in the
+    // first lines they print: they refuse to start on a configuration they
+    // cannot honour and each refusal names what to do instead.
+    // Through `workflow_jobs` first: `job_steps` reads one job's list and
+    // deploy.yml has several, so handing it the whole file parses the first
+    // job only and finds nothing here.
+    let deploy = read(".github/workflows/deploy.yml");
+    let jobs = workflow_jobs(&deploy);
+    let (_, body) = jobs
+        .iter()
+        .find(|(name, _)| name == "deploy")
+        .expect("deploy.yml has a deploy job");
+    let steps = job_steps(body);
+    let rollout = steps
+        .iter()
+        .find(|step| step.contains("gcloud run services update"))
+        .expect("deploy.yml still rolls out with `services update`");
+
+    // Premise: the rollout can still fail. A step that cannot fail needs no
+    // diagnosis, and this test would then be guarding a branch nothing takes.
+    assert!(
+        rollout.contains("exit 1"),
+        "the rollout no longer fails the job, so there is no failure for a \
+         diagnosis to explain"
+    );
+
+    assert!(
+        rollout.contains("gcloud logging read"),
+        "a failed rollout prints gcloud's console URL and nothing else, so \
+         the run says something failed and never says what"
+    );
+    // Keyed on the revision that actually failed, not on the service: a
+    // service-wide read returns the last healthy revision's lines too, and
+    // the reader cannot tell which run they came from.
+    assert!(
+        rollout.contains("resource.labels.revision_name="),
+        "the log read is not keyed on the failed revision, so it returns \
+         lines from revisions that were fine"
+    );
+    // And both containers, because a workload that refused its configuration
+    // and a sidecar that never listened are indistinguishable from outside.
+    assert!(
+        rollout.contains("labels.container_name"),
+        "the log read does not say which container spoke, so a sidecar \
+         failure reads as a workload failure"
+    );
+}
+
+#[test]
+fn a_service_that_failed_its_first_revision_is_repaired_rather_than_left_unfixable() {
+    // The deadlock this closes, found by the migration's first successful
+    // create phase. A Cloud Run service whose first revision is refused —
+    // there, an egress sidecar whose image was not yet attested — exists as
+    // an object and does not serve. Terraform marks it tainted; a tainted
+    // resource is planned destroy-then-create; and the destroy is refused:
+    //
+    //   Error: cannot destroy service without setting
+    //   deletion_protection=false and running `terraform apply`
+    //
+    // So the environment holds a broken service Terraform can neither repair
+    // nor remove, which is the GKE cluster of August in a new place. The
+    // answer is the same one: untaint on evidence, so the apply updates in
+    // place. This test exists mostly to stop the *other* answer, which is to
+    // make deletion_protection a variable — the test above refuses that, and
+    // a future reader hitting this error will reach for it first.
+    let infra = read(".github/workflows/infra.yml");
+    let steps = job_steps(&infra);
+
+    let position = |needle: &str| {
+        steps
+            .iter()
+            .position(|step| step.contains(needle))
+            .unwrap_or_else(|| panic!("infra.yml has no step containing {needle}"))
+    };
+    // By step name: the comment block explaining this sits *above* the step,
+    // and job_steps attaches leading comments to the step before, so a search
+    // for "untaint" finds the plan step and every assertion below then reads
+    // the wrong block. That is how the first draft of this test failed.
+    let repair = position("name: repair a tainted service");
+    let apply = position("apply -input=false -auto-approve");
+
+    // Ordering: an untaint after the apply is an untaint that changed nothing
+    // about the apply that just failed.
+    assert!(
+        repair < apply,
+        "the repair runs at step {repair} and the apply at {apply}, so the \
+         apply still plans a replacement it cannot perform"
+    );
+
+    let step = &steps[repair];
+
+    // It only ever runs on an apply. A plan that mutated state would be a
+    // read-only action that is not one.
+    assert!(
+        step.contains("inputs.action == 'up'"),
+        "the repair is not gated on the apply, so `plan` mutates state"
+    );
+
+    // Evidence, not assumption: the taint is cleared only for a service Cloud
+    // Run confirms it still has. Without the describe this is "untaint
+    // everything", which would hide a service that genuinely needs recreating.
+    assert!(
+        step.contains("gcloud run services describe"),
+        "the repair untaints without asking Cloud Run whether the service is \
+         there, so a service that must be recreated silently is not"
+    );
+    let describe = step
+        .find("gcloud run services describe")
+        .expect("checked above");
+    let untaint = step
+        .find("terraform -chdir=infrastructure/terraform untaint")
+        .expect("the repair untaints");
+    assert!(
+        describe < untaint,
+        "the untaint precedes the read that is supposed to justify it"
+    );
+
+    // And the deletion guard itself is untouched — this is the whole point of
+    // taking this route rather than the other one.
+    let module = without_comments(&read(CLOUD_RUN_MODULE));
+    assert!(
+        sets(&module, "deletion_protection", "true"),
+        "the repair path was taken and the guard was weakened anyway"
+    );
+}
+
+/// A secret Cloud Run resolves a version of is seeded before the apply that
+/// needs it, and never re-seeded over a credential somebody is using.
+///
+/// Not hypothetical. Two applies failed on
+/// `Secret .../versions/latest was not found`: terraform creates a secret as
+/// a *container*, `secret_key_ref` resolves a *version*, and nothing between
+/// the two ever wrote one. Thirteen of fifteen resources landed and the only
+/// service that needed a credential did not start.
+///
+/// The ordering and the emptiness check are the whole of it. Seeding after
+/// the apply seeds nothing the apply could have used; seeding without
+/// checking for an existing version mints a new password on every dispatch
+/// and locks the operator out of the console they just logged into.
+#[test]
+fn a_credential_with_no_version_is_seeded_before_the_apply_that_resolves_it() {
+    let infra = read(".github/workflows/infra.yml");
+    let steps = job_steps(&infra);
+
+    let position = |needle: &str| {
+        steps
+            .iter()
+            .position(|step| step.contains(needle))
+            .unwrap_or_else(|| panic!("infra.yml has no step containing {needle}"))
+    };
+    let seed = position("name: seed any credential that has no version");
+    let apply = position("apply -input=false -auto-approve");
+
+    assert!(
+        seed < apply,
+        "the seeding runs at step {seed} and the apply at {apply}, so the apply \
+         still resolves a secret version that does not exist yet"
+    );
+
+    let step = &steps[seed];
+
+    // On an apply only. A `plan` that wrote a secret version would be a
+    // read-only action that is not one.
+    assert!(
+        step.contains("inputs.action == 'up'"),
+        "the seeding is not gated on the apply, so `plan` writes a credential"
+    );
+
+    // The emptiness check. Without it every dispatch mints a new password.
+    assert!(
+        step.contains("state:ENABLED") && step.contains("already has an enabled version"),
+        "the seeding no longer skips a secret that has a version, so every `up` \
+         replaces a credential an operator may be signed in with"
+    );
+
+    // A secret terraform has not created yet is skipped, not fatal: on a
+    // first apply the container does not exist until the apply below runs.
+    assert!(
+        step.contains("does not exist yet"),
+        "a secret terraform has not created yet now fails the run, so a first \
+         `up` in a fresh environment cannot get past this step"
+    );
+
+    // The payload never becomes an argument. `gcloud ... --data-file=X` is
+    // visible in `ps` for the life of the call; the value itself must not be.
+    assert!(
+        step.contains("--data-file=\"$scratch/payload\""),
+        "the credential is passed to gcloud as something other than the private \
+         file, so it may be readable from the process table"
+    );
+    assert!(
+        !step.contains("echo \"$value\"") && !step.contains("$GITHUB_OUTPUT"),
+        "the seeding step echoes the generated credential or carries it out in a \
+         workflow output, so it lands in the Actions log"
+    );
+
+    // Where the permission to add a version actually comes from.
+    //
+    // The first version of this test asserted that the workflow self-granted
+    // `secretVersionManager` and not `secretAccessor`, and read as though
+    // that kept the runner from reading a payload back. It did not.
+    // `modules/cicd` grants this same account `roles/secretmanager.admin`,
+    // which includes `secretmanager.versions.access`, so the narrower role
+    // added nothing and forbade nothing — an assertion that passed while
+    // guaranteeing a boundary that was never there.
+    //
+    // What is worth pinning is the real dependency: the seeding step works
+    // because of the declarative admin grant, so narrowing that grant without
+    // giving this step its own version-add permission breaks the apply in the
+    // one place nobody looks.
+    let cicd = read("infrastructure/terraform/modules/cicd/main.tf");
+    assert!(
+        cicd.contains("\"roles/secretmanager.admin\""),
+        "the infra account no longer holds secretmanager.admin, so the seeding \
+         step in infra.yml cannot add a version and every fresh environment \
+         fails on the secret it was written to seed"
+    );
+
+    // And the workflow must not paper over that by self-granting a secret
+    // role, which is what made the earlier claim look true.
+    let grants = steps
+        .iter()
+        .find(|step| step.contains("name: the permissions the plan needs"))
+        .expect("infra.yml has no step granting the roles the plan needs");
+    // Read the loop's own role list, not the step. The comment above it
+    // explains why no secret role is granted and therefore names two of them;
+    // a scan of the whole step reads that prose as a grant, which is exactly
+    // how the module descriptions tripped this suite once before.
+    let role_list = grants
+        .lines()
+        .find(|line| line.trim_start().starts_with("for role in "))
+        .expect("infra.yml's grant step no longer loops over a role list");
+    assert!(
+        role_list.contains("roles/run.admin"),
+        "the premise: this is the role list, and it should still carry the \
+         roles that are only granted here"
+    );
+    assert!(
+        !role_list.contains("roles/secretmanager."),
+        "infra.yml self-grants a secretmanager role again; the account already \
+         holds secretmanager.admin declaratively, so the grant adds nothing and \
+         reads as a narrowing that is not one"
+    );
+}
+
+#[test]
 fn every_key_rotates_and_the_ones_that_hold_data_cannot_be_destroyed() {
     let secrets = read("infrastructure/terraform/modules/secrets/main.tf");
     assert_eq!(
@@ -1112,12 +2153,32 @@ fn the_venue_credential_is_bound_to_the_fast_brain_and_only_where_the_ceiling_pe
         "the venue-credential grant lands on something other than the named reader"
     );
     // And nothing else in the secrets module creates an identity to grant it
-    // to: the workload accounts left with the cluster.
+    // to: the workload accounts left with the cluster. The set is pinned
+    // exactly — the two browser surfaces `scripts/deploy-frontends.sh`
+    // deploys, and nothing that runs a binary — because `all(name ==
+    // "console")` would have had to become `all(name is one of the names)`
+    // when the landing arrived, and a list anyone may append to is not a
+    // refusal.
+    let mut identities: Vec<String> = terraform_resources(&secrets, "google_service_account")
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    identities.sort();
+    assert_eq!(
+        identities,
+        ["console", "landing"],
+        "the secrets module creates an identity other than the console's and the landing's; \
+         every workload's account is the Cloud Run module's, and a fourth browser surface \
+         is a decision to record here rather than an entry to add"
+    );
+    // The landing's identity carries no grant at all: it has no secret to
+    // read and no platform to reach, and an account with a credential it
+    // cannot use is a standing grant with no purpose. A grant that names it
+    // anywhere in this module is the thing this line refuses.
     assert!(
-        terraform_resources(&secrets, "google_service_account")
-            .iter()
-            .all(|(name, _)| name == "console"),
-        "the secrets module creates a workload identity again; every workload's account is the Cloud Run module's"
+        !secrets.contains("google_service_account.landing"),
+        "the secrets module grants something to the landing's identity, which reads no \
+         secret and reaches no platform; the portal's URL is inlined at build time"
     );
 }
 
@@ -1482,6 +2543,50 @@ fn no_environment_can_be_applied_at_a_ceiling_that_reaches_a_real_venue() {
 }
 
 #[test]
+fn the_pipeline_may_read_the_log_it_prints_when_a_rollout_fails() {
+    // The same shape as the attestation grants below, one product over, and
+    // found the same way — by a run that had already built, signed and
+    // attested four images before it asked:
+    //
+    //   ERROR: (gcloud.logging.read) PERMISSION_DENIED: Permission denied for
+    //   all log views. This command is authenticated as qip-ci-dev@...
+    //
+    // A diagnosis step with no grant behind it replaces one unhelpful message
+    // with a different unhelpful message, which is worse than not having it:
+    // the reader now believes the pipeline tried to explain and had nothing
+    // to say, when in fact it was refused.
+    let workflow = read(".github/workflows/deploy.yml");
+    let cicd = read("infrastructure/terraform/modules/cicd/main.tf");
+
+    // Premise: the pipeline really does read logs, so this is a grant for a
+    // live command rather than one somebody removed.
+    assert!(
+        workflow.contains("gcloud logging read"),
+        "deploy.yml no longer reads a revision's log; this test's premise \
+         needs rewriting"
+    );
+
+    let granted = cicd.split("resource \"").any(|block| {
+        block.contains("roles/logging.viewer") && block.contains("google_service_account.ci")
+    });
+    assert!(
+        granted,
+        "nothing grants the pipeline account the role that lets it read a \
+         failed revision's log (roles/logging.viewer), so the diagnosis step \
+         prints a permission error where the cause should be"
+    );
+
+    // And not the role that reads who called what. The pipeline explains its
+    // own rollouts; data-access logs are a different question and a wider
+    // grant than this step can justify.
+    assert!(
+        !cicd.contains("roles/logging.privateLogViewer"),
+        "the pipeline account may read data-access logs, which no step it \
+         runs needs"
+    );
+}
+
+#[test]
 fn every_attestation_command_the_pipeline_runs_has_a_grant_that_permits_it() {
     // Three permission failures in a row taught the shape of this bug: a role
     // named for the neighbouring half of the same product. `cloudkms.admin`
@@ -1717,22 +2822,44 @@ fn the_image_registry_is_not_world_readable_and_nothing_can_delete_from_it() {
         for line in content.lines() {
             let opened = line.matches('{').count();
             let closed = line.matches('}').count();
-            let entering =
-                validation_depth == 0 && line.trim_start().starts_with("validation") && opened > 0;
+            // `precondition` alongside `validation`: both are constructs that
+            // can name an anonymous principal in order to REFUSE it, and
+            // neither grants anything. ADR 0030's pairing rules live in
+            // preconditions because a validation reading a second variable is
+            // skipped by terraform, so without this the scanner reads the
+            // guard against anonymity as the grant it exists to prevent.
+            let entering = validation_depth == 0
+                && (line.trim_start().starts_with("validation")
+                    || line.trim_start().starts_with("precondition"))
+                && opened > 0;
             if entering || validation_depth > 0 {
                 validation_depth += opened;
                 validation_depth -= closed.min(validation_depth);
                 continue;
             }
             scanned += 1;
-            for member in ["allUsers", "allAuthenticatedUsers"] {
-                assert!(
-                    !line.contains(member),
-                    "{} grants a role to {member}, which tells an attacker exactly \
-                     what is running and lets them read it",
-                    path.display()
-                );
-            }
+            // `allAuthenticatedUsers` has no exception anywhere and no record
+            // permitting one: it admits every Google account in existence,
+            // which is a larger set than any caller anyone meant, while
+            // reading as authenticated in an audit.
+            assert!(
+                !line.contains("allAuthenticatedUsers"),
+                "{} grants a role to allAuthenticatedUsers, which admits every Google \
+                 account in existence rather than the caller you meant",
+                path.display()
+            );
+            // `allUsers` has exactly one, recorded in ADR 0030: the
+            // OpenObserve workload's own invoker list. The line is matched
+            // whole rather than by substring so that a second grant elsewhere
+            // in the same file still fails — the exception is one line, not
+            // one file.
+            assert!(
+                !line.contains("allUsers") || line.trim() == "invokers        = [\"allUsers\"]",
+                "{} grants a role to allUsers somewhere other than the OpenObserve invoker \
+                 list ADR 0030 names, which tells an attacker exactly what is running and \
+                 lets them read it:\n{line}",
+                path.display()
+            );
         }
     }
 
@@ -1930,6 +3057,286 @@ fn the_infrastructure_workflow_cannot_touch_production() {
             "infra.yml runs an untargeted destroy: `{destroy}` is not followed by a target"
         );
     }
+}
+
+#[test]
+fn no_variable_validation_reads_through_the_null_it_is_guarding_against() {
+    // `a == null || a.field` does not protect `a.field`. Terraform evaluates
+    // both sides of `||`, so a null value there fails the whole plan with
+    // "Attempt to get attribute from null value" — which is how the first
+    // plan of the Cloud Run migration ended, on
+    // `var.market_data_connector == null || startswith(var.market_data_connector.base_url, ...)`
+    // with the variable at its own default of null. `can()` and `try()` swallow
+    // that error, which is why the neighbouring validations survived; the
+    // conditional operator is the one that genuinely does not evaluate the
+    // branch it did not take.
+    let mut unguarded = Vec::new();
+    let mut guarded_forms = 0usize;
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        let content = std::fs::read_to_string(&path).expect("readable");
+        for line in content.lines() {
+            let line = line.trim();
+            if !line.starts_with("condition") {
+                continue;
+            }
+            let Some((left, right)) = line.split_once("== null") else {
+                continue;
+            };
+            // The variable being guarded, as the condition names it.
+            let Some(name) = left.split("var.").nth(1).map(str::trim) else {
+                continue;
+            };
+            let dereference = format!("var.{name}.");
+            if !right.contains(&dereference) {
+                continue;
+            }
+            guarded_forms += 1;
+            if !right.contains("can(") && !right.contains("try(") && !right.contains('?') {
+                unguarded.push(format!("{}: {line}", path.display()));
+            }
+        }
+    }
+
+    // Premise: the scan found conditions of this shape at all, so an empty
+    // result means they are guarded rather than that the walk reads nothing.
+    assert!(
+        guarded_forms >= 3,
+        "only {guarded_forms} null-guarded validations were seen; the scan is \
+         not reading the conditions it is meant to judge"
+    );
+    assert!(
+        unguarded.is_empty(),
+        "a validation dereferences the value it is checking for null, which \
+         Terraform evaluates anyway and fails the plan on:\n{}",
+        unguarded.join("\n")
+    );
+}
+
+#[test]
+fn an_environment_can_be_brought_up_before_anything_has_been_deployed_to_it() {
+    // The deadlock this closes. `catalogue.tf` refuses to create a Cloud Run
+    // service without a digest for it, `image_digests` defaults to empty, and
+    // the digests live in `images.tfvars` — which the bootstrap, the script
+    // that creates the services and the only path prod has, never passed. So
+    // the apply stopped at "No digest is recorded for qip-api, ...", the
+    // services were never created, and deploy.yml — which only ever *moves* a
+    // service — had nothing to move. Neither end could go first.
+    let bootstrap = read("scripts/bootstrap-deploy.sh");
+
+    // Premise: the script still applies, and the precondition it tripped on
+    // is still there to trip on.
+    assert!(
+        bootstrap.contains("terraform -chdir=\"${TF_DIR}\" apply"),
+        "the bootstrap no longer applies, so this test guards nothing"
+    );
+    let catalogue = read("infrastructure/terraform/catalogue.tf");
+    assert!(
+        catalogue.contains("No digest is recorded for"),
+        "catalogue.tf no longer refuses a workload with no digest; the \
+         deadlock this guards is gone and so is its premise"
+    );
+
+    assert!(
+        bootstrap.contains("images.tfvars"),
+        "the bootstrap passes no images.tfvars, so its apply cannot create a \
+         Cloud Run service and the environment it bootstraps has none"
+    );
+    assert!(
+        bootstrap.contains("tf_var_files+=(-var-file=\"${IMAGES_TFVARS}\")"),
+        "the bootstrap knows the file but does not pass it to terraform"
+    );
+
+    // And deploy.yml says which of the two runs first, rather than leaving a
+    // raw `Service could not be found` in the log with no fix beside it.
+    let deploy = read(".github/workflows/deploy.yml");
+    assert!(
+        deploy.contains("Terraform creates the Cloud Run services"),
+        "deploy.yml does not say that a missing service is Terraform's to make"
+    );
+    assert!(
+        deploy.contains("action=up"),
+        "deploy.yml names no way to create the service it could not find"
+    );
+}
+
+#[test]
+fn the_workflow_grants_itself_the_reads_before_terraform_refreshes_with_them() {
+    // Terraform refreshes existing state before it applies anything, so a
+    // role this same run would grant declaratively is already too late for
+    // the refresh that needs it. Seven roles have been added to this loop one
+    // failed apply at a time; the last was found by a teardown that issued a
+    // GKE node pool delete, had it accepted, and then could not poll the
+    // operation it was handed:
+    //
+    //   Error waiting for deleting GKE NodePool: googleapi: Error 403:
+    //   Required "container.operations.get" permission(s)
+    //
+    // The delete had happened. The apply reported failure anyway and stopped
+    // with the runtime ADR 0024 retires half torn down.
+    let infra = read(".github/workflows/infra.yml");
+    let steps = job_steps(&infra);
+
+    let position = |needle: &str| {
+        steps
+            .iter()
+            .position(|step| step.contains(needle))
+            .unwrap_or_else(|| panic!("infra.yml has no step containing {needle}"))
+    };
+
+    let grant = position("for role in roles/");
+    let init = position("terraform init");
+
+    // Premise: the loop still grants, and grants to the account that plans.
+    let step = &steps[grant];
+    assert!(
+        step.contains("gcloud projects add-iam-policy-binding")
+            && step.contains("steps.identity.outputs.account"),
+        "the step no longer grants the planning account anything, so what \
+         this test asserts about its roles guards nothing"
+    );
+
+    // Ordering is the whole point: after init, every one of these is too late.
+    assert!(
+        grant < init,
+        "the self-grant runs at step {grant} and terraform init at {init}, so \
+         the refresh that needs these roles happens before they are held"
+    );
+
+    for role in [
+        "roles/cloudkms.publicKeyViewer",
+        "roles/binaryauthorization.attestorsAdmin",
+        "roles/run.admin",
+        "roles/dns.admin",
+        "roles/iap.admin",
+        "roles/identityplatform.admin",
+        // The one the halted teardown needed, in both halves: polling the
+        // node pool delete GKE had already accepted, and then issuing the
+        // cluster delete after this same teardown destroyed the declarative
+        // grant that carried it.
+        "roles/container.clusterAdmin",
+    ] {
+        assert!(
+            step.contains(&format!("{role} ")) || step.contains(&format!("{role};")),
+            "the self-grant loop no longer carries {role}, so the read it \
+             permits fails on the refresh ahead of the apply"
+        );
+    }
+
+    // And nothing in this loop may reach past what it needs. The teardown
+    // manages clusters and node pools; container.admin adds full access to
+    // the Kubernetes API objects inside a cluster, which no step here
+    // touches. The two names differ by one segment, so this matches the
+    // delimited token — `contains("roles/container.admin")` would also be
+    // true of a hypothetical `roles/container.adminViewer`.
+    for delimiter in [' ', ';', '\n'] {
+        assert!(
+            !step.contains(&format!("roles/container.admin{delimiter}")),
+            "the self-grant loop takes container.admin, which carries the \
+             inside of a cluster as well as the cluster"
+        );
+    }
+}
+
+#[test]
+fn the_retired_backup_plan_is_forgotten_rather_than_deleted_with_its_backups() {
+    // The first apply of the Cloud Run runtime planned the GKE-era backup
+    // plan for destruction and the API refused:
+    //
+    //   Error 400: Resource '"...backupPlans/qip-dev-journal"' has nested
+    //   resources. If the API supports cascading delete, set 'force' to true.
+    //
+    // The nested resources are backups of the journal. `force = true` is the
+    // available answer and it deletes the evidence to unblock a migration.
+    let module = read("infrastructure/terraform/modules/backup/main.tf");
+
+    // Premise: the module is still the journal's backup mechanism, so this is
+    // a test about how it retires the old one rather than about a stub.
+    assert!(
+        module.contains("resource \"google_compute_resource_policy\" \"journal_snapshots\""),
+        "modules/backup no longer declares the snapshot schedule, so there is \
+         no mechanism here for the removed blocks to be retiring in favour of"
+    );
+    assert!(
+        !module.contains("resource \"google_gke_backup_backup_plan\""),
+        "modules/backup declares a GKE backup plan again, which ADR 0024 \
+         retired with the cluster"
+    );
+
+    // Forgotten, with the backups left where they are.
+    let forgotten = module
+        .split("removed {")
+        .skip(1)
+        .filter(|block| block.contains("destroy = false"))
+        .collect::<Vec<_>>();
+    assert!(
+        forgotten
+            .iter()
+            .any(|block| block.contains("from = google_gke_backup_backup_plan.journal")),
+        "the backup plan is not forgotten with destroy = false, so the apply \
+         either halts on it again or deletes it"
+    );
+
+    // Nothing anywhere may reach for the cascading delete.
+    for path in files_with_extension("infrastructure", "tf") {
+        // `terraform fmt` aligns the `=` of a block's arguments, so the
+        // literal spacing here is whatever its neighbours make it. This scan
+        // lost a mutation to exactly that before it was written this way.
+        let text = without_comments(&std::fs::read_to_string(&path).expect("readable"))
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            !text.contains("force = true"),
+            "{} sets force = true, which is how a backup plan is deleted \
+             together with the backups under it",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn the_infrastructure_workflow_reports_no_resource_count_it_did_not_read() {
+    // `terraform state list | wc -l` printed `0` for a backend it could not
+    // read exactly as it did for an environment holding nothing, so a broken
+    // bootstrap reported "0 resources in dev state" as a fact about the
+    // cloud. And `always()` ran it after the prod refusal, before terraform
+    // was installed, burying the real failure under its own. A step that
+    // reports a number nobody computed is the failure mode this repository
+    // exists to refuse.
+    let infra = read(".github/workflows/infra.yml");
+    let steps = job_steps(&infra);
+    let count = steps
+        .iter()
+        .find(|step| step.contains("what exists now"))
+        .expect("infra.yml has a step that says what exists");
+
+    // Premise: the step still counts state, so what follows is about how.
+    assert!(
+        count.contains("terraform -chdir=infrastructure/terraform state list"),
+        "the step no longer lists state, so this test guards nothing"
+    );
+    assert!(
+        !count.contains("state list | wc -l"),
+        "the step still pipes the listing straight into wc, which counts a \
+         failure as zero"
+    );
+    assert!(
+        count.contains("set -euo pipefail"),
+        "the step does not stop on a listing that failed"
+    );
+    assert!(
+        count.contains("steps.init.outcome == 'success'"),
+        "the step runs whether or not init succeeded, so it can fail before \
+         terraform exists and hide the failure that mattered"
+    );
+    // And the id that condition names is on the init step, or the condition
+    // is never true and the step never runs at all.
+    assert!(
+        steps
+            .iter()
+            .any(|step| step.contains("terraform init") && step.contains("id: init")),
+        "no step carries `id: init`, so the condition above can never hold"
+    );
 }
 
 #[test]
@@ -2193,6 +3600,30 @@ fn workflow_jobs(workflow: &str) -> Vec<(String, String)> {
 }
 
 /// The steps of one job body, each as its own text.
+// A `removed` block says an instance leaves Terraform's management. It is not
+// a declaration, and a scan looking for declarations must not read it as one.
+fn without_removed_blocks(text: &str) -> String {
+    let mut out = String::new();
+    let mut depth: Option<usize> = None;
+    for line in text.lines() {
+        match depth {
+            None => {
+                if line.trim_start().starts_with("removed ") && line.contains('{') {
+                    depth = Some(line.matches('{').count() - line.matches('}').count());
+                    continue;
+                }
+                out.push_str(line);
+                out.push('\n');
+            }
+            Some(open) => {
+                let next = open + line.matches('{').count() - line.matches('}').count();
+                depth = if next == 0 { None } else { Some(next) };
+            }
+        }
+    }
+    out
+}
+
 fn job_steps(job: &str) -> Vec<String> {
     let mut steps: Vec<Vec<&str>> = Vec::new();
     let mut item_indent: Option<usize> = None;
@@ -2920,17 +4351,49 @@ fn the_metrics_collector_runs_only_under_a_digest_pinned_image_and_nothing_claim
         "the collector is attached to something other than the two brains; the API's /metrics is behind Role::Monitor and answers a tokenless scrape 401"
     );
 
-    // And no environment names a digest, because none has been reviewed,
-    // mirrored and attested. The tfvars comment says how one would be.
+    // An environment may name a collector digest, and only one
+    // `vendored-images.txt` actually carries.
+    //
+    // This asserted that *no* environment names one, on the premise that no
+    // digest had been reviewed. That premise expired when the
+    // `cloud-run-gmp-sidecar` line was uncommented, and a test whose premise
+    // has expired is worse than no test: it would have had to be deleted to
+    // let the review land, and deleting it would have removed the only check
+    // that a named digest was ever mirrored.
+    //
+    // The invariant it was really protecting survives the change and is
+    // stronger stated directly. Binary Authorization admits only what this
+    // platform's attestor signed, and `vendor.yml` signs exactly the lines in
+    // that file. A digest in tfvars that is absent from the list is therefore
+    // a revision that cannot be admitted — an apply that fails at the last
+    // step, having already reported a plan a person approved.
+    let vendored = read("infrastructure/egress/vendored-images.txt");
     for environment in ["dev", "test", "stage", "prod"] {
         let tfvars = read(&format!(
             "infrastructure/environments/{environment}/terraform.tfvars"
         ));
+        let Some(named) = tfvars
+            .lines()
+            .map(str::trim_start)
+            .find(|line| line.starts_with("metrics_collector_image_digest"))
+        else {
+            continue;
+        };
+        // The digest as written, between the quotes, matched as a delimited
+        // value rather than as a substring of the line — a `contains` over
+        // the whole line would be satisfied by the variable's own name.
+        let digest = named.split('"').nth(1).unwrap_or_else(|| {
+            panic!("{environment} sets a collector digest with no quoted value")
+        });
         assert!(
-            !tfvars.lines().any(|line| line
-                .trim_start()
-                .starts_with("metrics_collector_image_digest")),
-            "{environment} names a collector digest that vendored-images.txt does not carry"
+            vendored
+                .lines()
+                .filter(|line| !line.trim_start().starts_with('#'))
+                .any(|line| line.contains(digest) && line.contains("vendor/cloud-run-gmp-sidecar")),
+            "{environment} names collector digest {digest}, which is not an uncommented \
+             vendor/cloud-run-gmp-sidecar line in vendored-images.txt — nothing mirrored or \
+             attested it, so Binary Authorization refuses the revision after the apply is \
+             already under way"
         );
     }
 }
@@ -3087,15 +4550,21 @@ fn every_workload_that_reads_the_universe_is_given_the_committed_catalogue_as_a_
         "catalogue.tf no longer hands each entry's config_files to modules/cloudrun"
     );
 
-    // The module: the path the variable carries is /etc/qip/<file_name>, the
-    // object's content is the input's content under a hash-named directory,
-    // and the volume is read-only at that directory alone, on both kinds.
+    // The module: the path the variable carries is
+    // /etc/qip/<hash>/<file_name>, the object's content is the input's
+    // content under that same hash-named directory, and the volume is a
+    // read-only mount of the bucket, on both kinds. The hash is in the path
+    // rather than in the mount because the GA provider has no `mount_options`
+    // to select a directory with; either way the variable names exactly the
+    // bytes the plan carried, which is the property.
     let module = without_comments(&read(CLOUD_RUN_MODULE));
     assert!(
         sets(&module, "config_root", "\"/etc/qip\"")
-            && module.contains("key => \"${local.config_root}/${file.file_name}\"")
+            && module.contains(
+                "key => \"${local.config_root}/${local.config_prefix}/${file.file_name}\""
+            )
             && module.contains("file.env_file_variable => local.config_files[key]"),
-        "the module no longer writes /etc/qip/<file_name> into the _PATH variable"
+        "the module no longer writes /etc/qip/<hash>/<file_name> into the _PATH variable"
     );
     let objects = terraform_resources(&module, "google_storage_bucket_object");
     let (_, object) = objects
@@ -3134,12 +4603,18 @@ fn every_workload_that_reads_the_universe_is_given_the_committed_catalogue_as_a_
             .join("\n");
         let block = piece.as_str();
         if block.contains("gcs {") {
+            // Read-only, from the workload's own bucket. The hash-named
+            // directory used to be selected by `only-dir`, which the GA
+            // provider has no argument for — it refused the first plan of
+            // this runtime — so the whole bucket mounts and the hash is
+            // carried in the path the environment names instead. The
+            // guarantee is the same and it is asserted below, on the path.
             assert!(
                 sets(block, "read_only", "true")
-                    && block.contains("only-dir=${volumes.value}")
+                    && !block.contains("mount_options")
                     && block.contains("google_storage_bucket.config_files[0].name"),
-                "a config-files volume is not read-only at the hash-named directory of the \
-                 workload's own bucket:\n{block}"
+                "a config-files volume is not a plain read-only mount of the workload's own \
+                 bucket:\n{block}"
             );
             volumes += 1;
         } else {
@@ -3437,8 +4912,16 @@ fn no_kubernetes_manifest_helm_chart_or_gitops_controller_remains() {
     }
 
     // No GKE resource in the Terraform.
+    //
+    // A `removed` block is exempt and has to be: it names the type precisely
+    // because it is telling Terraform to stop managing an instance of it, and
+    // forbidding the name would force the alternative — leaving the resource
+    // in the plan to be destroyed, which for the journal backup plan means
+    // deleting the backups. Only the declaring form is refused here.
     for path in files_with_extension("infrastructure/terraform", "tf") {
-        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        let content = without_removed_blocks(&without_comments(
+            &std::fs::read_to_string(&path).expect("readable"),
+        ));
         for resource in [
             "google_container_cluster",
             "google_container_node_pool",
@@ -3801,15 +5284,61 @@ fn a_promotion_names_who_verifies_it() {
         "the rollout step deploys by tag rather than by the digest the attestation names"
     );
 
-    // The proof.
+    // Every global flag precedes `--container`, which opens a scope only
+    // container-level flags may enter. This is not style: with `--quiet`
+    // after it, gcloud refused the whole command — `unrecognized arguments:
+    // --quiet` — and every deployment between the sidecars landing and the
+    // fix failed there, run 33636602162 among them.
+    let update = rollout
+        .split("gcloud run services update")
+        .nth(1)
+        .expect("the rollout step runs `gcloud run services update`");
+    let update = update.split("\n\n").next().unwrap_or(update);
+    let container_at = update
+        .find("--container")
+        .expect("the update names the container it moves");
+    for global in ["--quiet", "--project", "--region"] {
+        let at = update
+            .find(global)
+            .unwrap_or_else(|| panic!("the update no longer passes {global}"));
+        assert!(
+            at < container_at,
+            "the update passes {global}, a global flag, after --container; gcloud refuses that"
+        );
+    }
+
+    // The proof. Read by name, never by position: every service carries the
+    // egress sidecar and may carry the metrics collector, so an index picks
+    // a sidecar as readily as the workload, and nothing documents the first
+    // condition as Ready. And the revisions read are the ones traffic
+    // routes to — `spec.template` is what was asked for, which is the half
+    // a traffic split that never moved would also satisfy.
+    // Comment lines go first: the step's own comment names both positional
+    // selectors in order to say why they are wrong, and a check that read
+    // prose would refuse the explanation along with the defect.
+    let rollout_code: String = rollout
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
-        rollout.contains("spec.template.spec.containers[0].image")
-            && rollout.contains("status.conditions[0].status"),
-        "the rollout step does not read back which image the serving revision runs and whether it is Ready"
+        !rollout_code.contains("containers[0]") && !rollout_code.contains("conditions[0]"),
+        "the rollout step selects a container or a condition by position again"
     );
     assert!(
-        rollout.contains("if [ \"$serving\" != \"$image\" ] || [ \"$ready\" != \"True\" ]; then")
-            && rollout.contains("exit 1"),
+        rollout.contains("c.get(\"type\") == \"Ready\""),
+        "the rollout step does not select the Ready condition by type"
+    );
+    assert!(
+        rollout.contains("c.get(\"name\") == wanted"),
+        "the rollout step does not select the workload's own container by name"
+    );
+    assert!(
+        rollout.contains("status.get(\"traffic\", [])"),
+        "the rollout step does not read the revisions traffic actually routes to"
+    );
+    assert!(
+        rollout.contains("if [ \"$serving\" != \"$image\" ]; then") && rollout.contains("exit 1"),
         "the rollout step reads the serving revision back and does not fail when it is not the one asked for"
     );
 

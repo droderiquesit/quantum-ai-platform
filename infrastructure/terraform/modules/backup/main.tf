@@ -103,3 +103,48 @@ resource "google_compute_resource_policy" "journal_snapshots" {
     }
   }
 }
+
+# The GKE-era mechanism, forgotten rather than deleted.
+#
+# Backup for GKE left with the cluster under ADR 0024, so these three
+# resources are in no configuration any more and the first apply of the Cloud
+# Run runtime planned all three for destruction. Two went. The third refused:
+#
+#   Error: Error when reading or editing BackupPlan: googleapi: Error 400:
+#   Resource '"projects/.../backupPlans/qip-dev-journal"' has nested
+#   resources. If the API supports cascading delete, set 'force' to true.
+#
+# The nested resources are backups of the journal — what a cell decided and
+# why, the one record §5 says cannot be recomputed. `force = true` is the
+# available answer and it is the wrong one: it would delete the evidence to
+# unblock a migration, which is the trade this repository does not make. So
+# the plan leaves Terraform's management with its backups intact, and stays
+# in the project for whatever retention the compliance answer needs.
+#
+# `google_project_service_identity.gkebackup` is listed for the same reason:
+# it destroyed cleanly here (a service identity is a state entry, not a thing
+# Terraform deletes), but if this apply is ever replayed against state that
+# still holds it, forgetting it is what should happen, not another delete.
+#
+# What this does not restore: `google_kms_crypto_key_iam_member.backup_agent`
+# was destroyed before the plan refused, so the backup service agent no longer
+# holds cryptoKeyEncrypterDecrypter on `qip-dev-journal-backups`. The backups
+# are still there and the key is still there — `google_kms_crypto_key.backups`
+# above carries prevent_destroy — but a restore needs that grant put back
+# first. NOT-COVERED.md carries the step. Re-declaring the grant here would
+# put a GKE-era resource back into a configuration that has no GKE in it.
+removed {
+  from = google_gke_backup_backup_plan.journal
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = google_project_service_identity.gkebackup
+
+  lifecycle {
+    destroy = false
+  }
+}

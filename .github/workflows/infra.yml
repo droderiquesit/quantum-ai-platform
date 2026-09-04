@@ -133,6 +133,25 @@ jobs:
             --member="serviceAccount:${{ steps.identity.outputs.account }}" \
             --role="roles/storage.objectAdmin" --quiet >/dev/null
 
+      # Run 25 found the second bucket this same reasoning applies to: every
+      # rendering of the egress bootstrap (envoy.yaml, keyed by its own
+      # content hash) is a new object in `modules/egress-proxy`'s bucket, and
+      # a changed bootstrap makes Terraform delete the old one —
+      #
+      #   Error deleting contents of object envoy-16bc4c53e18e7501.yaml:
+      #   googleapi: Error 403: ...does not have storage.objects.delete
+      #   access to the Google Cloud Storage object.
+      #
+      # The state bucket grant above does not cover this bucket; it is a
+      # second bucket with the same missing permission, not a wider deny that
+      # one grant already closed. Idempotent, same shape as the grant above.
+      - name: the egress bootstrap bucket grant
+        run: |
+          gcloud storage buckets add-iam-policy-binding \
+            "gs://qip-egress-${{ inputs.environment }}-${{ steps.identity.outputs.project }}" \
+            --member="serviceAccount:${{ steps.identity.outputs.account }}" \
+            --role="roles/storage.objectAdmin" --quiet >/dev/null
+
       # Terraform refreshes existing state — reading the attestor's public
       # key, the attestor resource itself — before it applies anything, so a
       # role this same apply would grant declaratively is too late for the
@@ -144,18 +163,62 @@ jobs:
       # new with the Cloud Run runtime — run.admin and dns.admin, which the
       # first plan against an environment applied before ADR 0024 reads
       # nothing with, but which every plan afterwards refreshes the services
-      # and the private zone with. The account grants each to itself here —
+      # and the private zone with. Then two the first such plan found, both
+      # on resources the GKE runtime left in state: iap.admin, because the
+      # console's IAP access binding cannot be read — and so cannot be
+      # destroyed — without `iap.webTypes.getIamPolicy`, and
+      # identityplatform.admin, because the Identity Platform config the
+      # blueprint keeps is refreshed on every plan and answered 403 to a
+      # caller holding nothing on it. Then a seventh the apply after them
+      # found: container.clusterAdmin, for the teardown of the runtime ADR
+      # 0024 retires. It was reached in two steps, and the second is why the
+      # role is an admin one. First the account could issue the node pool
+      # delete but not poll the operation it returned — `Required
+      # "container.operations.get"` — so a delete GKE had accepted was
+      # reported as a failure. clusterViewer closed that, the pool went, and
+      # the cluster delete behind it answered `Required
+      # "container.clusters.delete"`: this same teardown had already destroyed
+      # the declarative grant carrying it, so the apply was removing the
+      # account's own ability to finish itself. clusterAdmin manages clusters
+      # and node pools and nothing inside them, which is the whole of what a
+      # teardown does; container.admin would add full access to the Kubernetes
+      # API objects of the cluster being deleted, and a test refuses it. The
+      # account grants each to itself here —
       # its projectIamAdmin makes that possible; modules/cicd documents why
       # that is accepted — waiting only when a binding is new, since a fresh
-      # grant can take a minute to bite. All exist declaratively in
-      # modules/cicd too, so an environment applied by the bootstrap (whose
-      # identity already holds project owner) never takes this path at all.
+      # grant can take a minute to bite.
+      #
+      # Four of the seven — cloudkms.publicKeyViewer,
+      # binaryauthorization.attestorsAdmin, run.admin, dns.admin — also exist
+      # declaratively in modules/cicd, so an environment applied by the
+      # bootstrap (whose identity already holds project owner) never takes
+      # this path for those. The other three — iap.admin,
+      # identityplatform.admin, container.clusterAdmin — exist *only* here,
+      # and this comment previously claimed all of them were declared. That
+      # mattered: a reader trusting it would conclude this loop is a
+      # belt-and-braces convenience and could be deleted, when for three
+      # roles it is the sole grant and deleting it breaks the plan.
       - name: the permissions the plan needs before it can grant them
         run: |
           set -euo pipefail
           account="${{ steps.identity.outputs.account }}"
           project="${{ steps.identity.outputs.project }}"
-          for role in roles/cloudkms.publicKeyViewer roles/binaryauthorization.attestorsAdmin roles/run.admin roles/dns.admin; do
+          # No secret role is self-granted here, and the seeding step below
+          # deliberately does not add one.
+          #
+          # A first draft of that step granted itself
+          # `roles/secretmanager.secretVersionManager` and said in a comment
+          # that it therefore "must never be able to read a payload back".
+          # That was false when it was written: `modules/cicd` grants this
+          # same account `roles/secretmanager.admin` declaratively
+          # (`modules/cicd/main.tf`, the `infra_roles` set), and admin
+          # includes `secretmanager.versions.access`. The narrower role added
+          # no permission the account lacked and removed none it held, so the
+          # sentence described a boundary that did not exist -- protection by
+          # assertion, which is the thing this repository refuses most often.
+          # It is gone rather than reworded, because a redundant grant that
+          # exists to make a comment true is worse than no grant at all.
+          for role in roles/cloudkms.publicKeyViewer roles/binaryauthorization.attestorsAdmin roles/run.admin roles/dns.admin roles/iap.admin roles/identityplatform.admin roles/container.clusterAdmin; do
             held="$(gcloud projects get-iam-policy "$project" \
               --flatten="bindings[].members" \
               --filter="bindings.role:$role AND bindings.members:serviceAccount:$account" \
@@ -174,6 +237,7 @@ jobs:
           terraform_version: "1.9.8"
 
       - name: terraform init
+        id: init
         run: |
           terraform -chdir=infrastructure/terraform init -input=false \
             -backend-config="bucket=${{ steps.identity.outputs.project }}-qip-tfstate"
@@ -199,6 +263,157 @@ jobs:
           terraform -chdir=infrastructure/terraform plan -input=false \
             ${{ steps.vars.outputs.files }}
 
+      # Repair a service that exists rather than replacing it.
+      #
+      # A Cloud Run service whose first revision is refused — an unattested
+      # sidecar, a bad digest — is created as an object and then fails to
+      # serve, so Terraform marks it tainted, and a tainted resource is
+      # planned destroy-then-create. `modules/cloudrun` sets
+      # `deletion_protection = true` and deliberately offers no way to turn it
+      # off, so the destroy half is refused and the environment is stuck with
+      # a broken service Terraform can neither repair nor remove:
+      #
+      #   Error: cannot destroy service without setting
+      #   deletion_protection=false and running `terraform apply`
+      #
+      # This is the GKE deadlock of August in a new place, and it takes the
+      # same answer rather than the tempting one. Making the flag a variable
+      # would reopen the teardown hole `a_cloud_run_service_cannot_be_deleted_by_a_plan_nobody_read`
+      # closed on purpose; untainting costs no safety property at all, because
+      # an in-place update fully specifies the service and creates a new
+      # revision — which is exactly what the run that found this did to the
+      # fast brain, in the same apply that refused the other two.
+      #
+      # On evidence, never on assumption: a service is untainted only when
+      # Cloud Run says it still has it. Anything else keeps its taint and is
+      # replaced, which is what taint is for.
+      - name: repair a tainted service Cloud Run still has
+        if: inputs.action == 'up'
+        run: |
+          set -euo pipefail
+          cat >"${RUNNER_TEMP}/tainted-services.py" <<'PYEOF'
+          import json
+          import sys
+
+          # `terraform show -json` marks each state resource, and the flag is
+          # the only place the taint is visible: `state list` does not show it
+          # and the plan only says "must be replaced", which is also what a
+          # genuine configuration change says.
+          def walk(module, out):
+              for resource in module.get("resources", []):
+                  if resource.get("type") != "google_cloud_run_v2_service":
+                      continue
+                  if not resource.get("tainted"):
+                      continue
+                  name = resource.get("values", {}).get("name")
+                  if name:
+                      out.append((resource["address"], name))
+              for child in module.get("child_modules", []):
+                  walk(child, out)
+
+          found = []
+          walk(json.load(sys.stdin).get("values", {}).get("root_module", {}), found)
+          for address, name in found:
+              print(address, name)
+          PYEOF
+          region="$(sed -n 's/^region[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' \
+            "infrastructure/environments/${{ inputs.environment }}/terraform.tfvars" | head -1)"
+          [ -n "$region" ] || { echo "the tfvars name no region" >&2; exit 1; }
+          tainted="$(terraform -chdir=infrastructure/terraform show -json \
+            | python3 "${RUNNER_TEMP}/tainted-services.py")"
+          if [ -z "$tainted" ]; then
+            echo "no Cloud Run service is tainted; nothing to repair."
+          else
+            printf '%s\n' "$tainted" | while read -r address name; do
+              [ -n "$address" ] || continue
+              if gcloud run services describe "$name" \
+                --project "${{ steps.identity.outputs.project }}" \
+                --region "$region" --format='value(name)' >/dev/null 2>&1; then
+                echo "$name exists in Cloud Run; untainting $address so the apply updates it in place."
+                terraform -chdir=infrastructure/terraform untaint "$address"
+              else
+                echo "$name is tainted and Cloud Run does not have it; keeping the taint so the apply recreates it."
+              fi
+            done
+          fi
+
+      # Seed a first version into a secret that terraform declared and
+      # nothing has ever written to.
+      #
+      # This exists because the apply that created the OpenObserve service
+      # failed on `Secret .../versions/latest was not found`: terraform
+      # creates the secret as a container, a Cloud Run `secret_key_ref`
+      # resolves a *version*, and no step between the two ever put one there.
+      # Thirteen of fifteen resources landed and the one service that needed
+      # a credential did not.
+      #
+      # The value is generated here and this step reads it back nowhere: not
+      # echoed, not written to the log, not carried out through a workflow
+      # output. It reaches gcloud as a mode-600 file in a private directory
+      # removed on every exit path, never as an argument, because an argument
+      # is visible in `ps` for as long as the call takes.
+      #
+      # State plainly what that is and is not. It is a property of this step,
+      # not a boundary around the workflow: the account running it holds
+      # `roles/secretmanager.admin` from `modules/cicd`, so it *could* read
+      # any secret in the project, this one included. Nothing here prevents
+      # that; this step simply does not do it. Anyone narrowing the blast
+      # radius of `infra.yml` should start at that declarative grant, and
+      # should not read the care taken below as evidence the grant is already
+      # narrow.
+      #
+      # Seeding only when a secret has no enabled version is what makes this
+      # safe to run on every `up`: a rotated or operator-set credential is
+      # left alone, so this can never silently replace a password somebody
+      # is using. A secret terraform has not created yet is skipped rather
+      # than treated as an error, because on a first apply the container does
+      # not exist until the apply below runs — that environment needs a
+      # second `up`, and this comment is where that is recorded rather than
+      # discovered.
+      - name: seed any credential that has no version
+        if: inputs.action == 'up'
+        run: |
+          set -euo pipefail
+          project="${{ steps.identity.outputs.project }}"
+          suffix="${{ inputs.environment }}"
+          seeded=0
+          umask 077
+          scratch="$(mktemp -d)"
+          trap 'rm -rf "$scratch"' EXIT
+          for secret in qip-openobserve-root-email qip-openobserve-root-password; do
+            name="$secret-$suffix"
+            if ! gcloud secrets describe "$name" --project "$project" >/dev/null 2>&1; then
+              echo "$name does not exist yet; the apply below creates it and the next up seeds it"
+              continue
+            fi
+            existing="$(gcloud secrets versions list "$name" --project "$project" \
+              --filter="state:ENABLED" --format="value(name)" --limit=1)"
+            if [ -n "$existing" ]; then
+              echo "$name already has an enabled version; leaving it alone"
+              continue
+            fi
+            case "$secret" in
+              *-email)
+                # Not a real mailbox and deliberately not a person's address:
+                # OpenObserve wants this to parse, nothing delivers to it,
+                # and an operator identifier does not belong in a committed
+                # file.
+                value="admin@algorik.internal" ;;
+              *-password)
+                value="$(openssl rand -base64 30)" ;;
+            esac
+            printf '%s' "$value" > "$scratch/payload"
+            gcloud secrets versions add "$name" --project "$project" \
+              --data-file="$scratch/payload" >/dev/null
+            rm -f "$scratch/payload"
+            echo "seeded $name with a first version"
+            seeded=1
+          done
+          if [ "$seeded" = 1 ]; then
+            echo "A generated credential was written. This step did not log it; read it with:"
+            echo "  gcloud secrets versions access latest --secret qip-openobserve-root-password-$suffix --project $project"
+          fi
+
       # -auto-approve because there is nobody at a prompt: the review is the
       # dispatch itself, recorded in the Actions log with who pressed it. The
       # prod refusal above is what keeps that acceptable.
@@ -223,8 +438,17 @@ jobs:
             -target=module.execution_node \
             ${{ steps.vars.outputs.files }}
 
+      # Only where init succeeded, and only counting what was actually
+      # listed. `state list | wc -l` printed 0 for a backend that could not
+      # be read exactly as it did for an environment holding nothing, and
+      # `always()` ran it after the prod refusal, before terraform was even
+      # installed — so the step could report a number nobody computed, or
+      # bury the real failure under its own. Now a listing that fails stops
+      # the step with terraform's own message.
       - name: what exists now
-        if: always()
+        if: always() && steps.init.outcome == 'success'
         run: |
-          terraform -chdir=infrastructure/terraform state list | wc -l | \
-            xargs -I{} echo "{} resources in ${{ inputs.environment }} state"
+          set -euo pipefail
+          listed="$(terraform -chdir=infrastructure/terraform state list)"
+          count="$(printf '%s\n' "$listed" | grep -c . || true)"
+          echo "${count} resources in ${{ inputs.environment }} state"

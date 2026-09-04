@@ -246,6 +246,23 @@ fn config_redacts_secret_looking_keys() {
 }
 
 #[test]
+fn a_secret_named_key_holding_an_object_has_its_entire_subtree_redacted() {
+    // A key whose name says secret (`api_key`) used to only redact a *nested*
+    // leaf that independently looked secret, because `redact_object` checked
+    // `!v.is_object()` before masking. A credential nested under a secret
+    // key by a value that is itself structured — `{"live": "...", "test":
+    // "..."}` under `api_key` — survived untouched into `/system/config`
+    // because neither `live` nor `test` matches a secret marker on its own.
+    let c = Config::from_json(
+        r#"{"broker":{"api_key":{"live":"sk_live_abc123","test":"sk_test_xyz789"}}}"#,
+    )
+    .unwrap();
+    let text = serde_json::to_string(&c.redacted()).unwrap();
+    assert!(!text.contains("sk_live_abc123"), "secret leaked: {text}");
+    assert!(!text.contains("sk_test_xyz789"), "secret leaked: {text}");
+}
+
+#[test]
 fn config_flatten_produces_dotted_keys() {
     let c = Config::from_json(r#"{"a":{"b":{"c":1}}}"#).unwrap();
     let flat = c.flatten();

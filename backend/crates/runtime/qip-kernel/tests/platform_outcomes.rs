@@ -351,7 +351,16 @@ fn a_fill_is_the_demand_observation_the_forecaster_is_fitted_on() -> Result<()> 
     assert_eq!(lanes.len(), 1, "{lanes:?}");
     assert_eq!(lanes[0].1, DemandKind::Cash);
 
-    let forecasts = platform.forecast_capital_demand(start(), Duration::from_days(1));
+    // Recorded at `fill.at`, not the order's submission instant: the
+    // simulated broker's default latency (50ms) lands the fill after
+    // `start()`. Forecasting from `start()` itself would be asking about an
+    // instant before the observation existed — exactly the leakage
+    // DemandForecaster::forecast now refuses — so this reads from a moment
+    // that has actually seen the fill, the same guarantee the real DECIDE
+    // stage has structurally: its own fills always land in ACT, later in the
+    // same cycle whose `now` it already fixed.
+    let after_the_fill = start().saturating_add(Duration::from_millis(50));
+    let forecasts = platform.forecast_capital_demand(after_the_fill, Duration::from_days(1));
     assert_eq!(forecasts.len(), 1);
     let interval = forecasts[0].interval();
     assert!(
@@ -359,7 +368,7 @@ fn a_fill_is_the_demand_observation_the_forecaster_is_fitted_on() -> Result<()> 
         "a point forecast wearing an interval's clothes is the failure this floor prevents"
     );
     assert!(interval.lower() <= interval.point() && interval.point() <= interval.upper());
-    assert!(forecasts[0].needed_by() > start());
+    assert!(forecasts[0].needed_by() > after_the_fill);
     Ok(())
 }
 
@@ -377,7 +386,11 @@ fn the_decide_stage_reports_where_capital_will_be_needed() -> Result<()> {
     );
 
     fill_one(&mut platform, start())?;
-    let report = platform.run_cycle(start());
+    // Same reasoning as the forecaster test above: the fill lands 50ms after
+    // `start()` (the simulated broker's default latency), so the cycle that
+    // is meant to see it in DECIDE has to run at or after that instant.
+    let after_the_fill = start().saturating_add(Duration::from_millis(50));
+    let report = platform.run_cycle(after_the_fill);
     let detail = &report.stage(Stage::Decide).expect("decide ran").detail;
     assert!(detail.contains("funding lane(s) forecast"), "{detail}");
     Ok(())

@@ -40,6 +40,12 @@ pub enum Node {
     /// Text, escaped when rendered.
     Text(String),
     Element(Element),
+    /// Unescaped content, for `<style>` alone. Never exposed outside this
+    /// crate: `Element::raw` that builds it is `pub(crate)`, so nothing an
+    /// API layer assembles into a [`crate::view::ViewModel`] or
+    /// [`crate::console::ConsoleModel`] can reach it, and the only caller is
+    /// [`crate::style::STYLESHEET`], a compile-time constant.
+    Raw(String),
 }
 
 impl Node {
@@ -47,6 +53,7 @@ impl Node {
         match self {
             Self::Text(text) => escape(text),
             Self::Element(element) => element.render(),
+            Self::Raw(text) => text.clone(),
         }
     }
 }
@@ -83,6 +90,26 @@ impl Element {
     /// Add escaped text.
     pub fn text(mut self, text: impl AsRef<str>) -> Self {
         self.children.push(Node::Text(text.as_ref().to_string()));
+        self
+    }
+
+    /// Add unescaped content. `pub(crate)` and used for exactly one call
+    /// site: embedding [`crate::style::STYLESHEET`] into a `<style>`
+    /// element.
+    ///
+    /// `<style>` is a "raw text" element in the HTML5 parsing model — a
+    /// browser never decodes an entity reference inside one — so routing the
+    /// stylesheet through [`Element::text`] did not protect anything and
+    /// instead corrupted it: `"SF Mono"` shipped as the literal characters
+    /// `&quot;SF Mono&quot;`, `/* ... */` comments shipped as `&#47;* ... *&#47;`
+    /// (no longer a comment to a CSS parser), and `font: 15px/1.55` shipped
+    /// as `font: 15px&#47;1.55`. This method exists so the stylesheet can be
+    /// embedded as the CSS it actually is, without adding a raw-markup path
+    /// any value from a platform record could reach — every other call site
+    /// in this crate still goes through `text`, and this method is not
+    /// re-exported.
+    pub(crate) fn raw(mut self, text: &str) -> Self {
+        self.children.push(Node::Raw(text.to_string()));
         self
     }
 

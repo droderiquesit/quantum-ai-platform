@@ -20,15 +20,103 @@
 # in the target environment's registry. The tag is for humans browsing the
 # registry; everything that matters references the digest.
 #
-# One entry. Argo CD, Kargo, KEDA, cert-manager and redis were vendored for
+# Two entries. Argo CD, Kargo, KEDA, cert-manager and redis were vendored for
 # the GKE runtime and left with it (ADR 0024); nothing else third-party runs.
 #
-# The second adoption is pending: Google's managed-Prometheus collector for
-# Cloud Run (`cloud-run-gmp-sidecar`), which modules/cloudrun runs beside the
-# two brains once `metrics_collector_image_digest` names a digest mirrored
-# from a line here as `vendor/cloud-run-gmp-sidecar`. No digest has been
-# reviewed, so there is no line, no mirror and no sidecar —
-# modules/observability/NOT-SCRAPED.md records the state.
+# The third adoption is reviewed and REFUSED, not merely unreviewed: Google's
+# managed-Prometheus collector for Cloud Run (`cloud-run-gmp-sidecar`), which
+# modules/cloudrun would run beside the two brains once
+# `metrics_collector_image_digest` names a digest mirrored from a line here as
+# `vendor/cloud-run-gmp-sidecar`. The
+# digest below was resolved from the registry v2 API and confirmed two ways —
+# the `docker-content-digest` header for tag 1.9.2, and the sha256 of the
+# manifest bytes that header names, which are equal — and the image was
+# confirmed to be Google's own by reading
+# `github.com/GoogleCloudPlatform/run-gmp-sidecar/confgenerator` and
+# `confgenerator.Version=1.9.2` out of the entrypoint binary in its third
+# layer. Unlike the two entries below it is a single
+# application/vnd.docker.distribution.manifest.v2+json manifest, not a
+# multi-arch index, so vendor.yml's child-manifest loop signs exactly one
+# digest and the index/child admission failure recorded in that workflow
+# cannot recur here.
+#
+# The review this paragraph was waiting for HAS NOW HAPPENED, and its result
+# is that the line stays commented — for a reason, rather than for want of a
+# reviewer. Recorded here because "resolved but nobody looked" and "looked at
+# and refused" are different states, and the next person to reach for this
+# adoption needs to know which one this is.
+#
+# Two of the three checks passed.
+#
+# The digest still resolves. The command below was re-run against the live
+# registry and returned exactly the digest this paragraph names — the half
+# that would have been silently false had the tag moved since resolution, and
+# which no later gate looks at:
+#
+#   curl -sSI -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+#     https://us-docker.pkg.dev/v2/cloud-ops-agents-artifacts/cloud-run-gmp-sidecar/cloud-run-gmp-sidecar/manifests/1.9.2 \
+#     | grep -i docker-content-digest
+#
+#   docker-content-digest: sha256:ff1fc68871118f1032a3ce17e2b0abd703292e883989d220244330ebdf522fd1
+#
+# The configuration half holds too. The collector reads
+# `/etc/rungmp/config.yaml` — the only such literal in its entrypoint binary,
+# with no argument naming another — so a mirrored image scrapes nothing a
+# person chose unless the module publishes a document at that path.
+# `modules/cloudrun/main.tf` does: `collector_mount = "/etc/rungmp"` and an
+# object named `config.yaml` beneath it.
+#
+# The third check refused it. vendor.yml run 11 mirrored the image and Trivy
+# — the same gate the platform's own images pass — failed it:
+#
+#   run-gmp-entrypoint (gobinary)  Total: 1 (CRITICAL: 1)
+#   rungmpcol (gobinary)           Total: 1 (CRITICAL: 1)
+#   golang.org/x/crypto  CVE-2026-56854  CRITICAL  fixed
+#     installed v0.54.0, fixed 0.55.0
+#     golang.org/x/crypto/ssh: authentication bypass due to unenforced
+#     source-address restrictions
+#
+# There is no patched release to move to. The registry's tag list carries
+# 1.0.0 through 1.9.2 and nothing above it, so 1.9.2 is the newest Google
+# publishes and every version behind it is older than the vulnerable
+# dependency's fix. The adoption is therefore blocked upstream, not here.
+#
+# It is deliberately NOT waved through, and the temptation is worth naming
+# because it is a good argument: the finding is in `x/crypto/ssh` and a
+# metrics collector opens no SSH server, so it is very likely unreachable.
+# That reasoning is how a scanner exception gets written, and an exception
+# written once is an exception that outlives the release that needed it. This
+# platform's rule is to fix rather than suppress; the fix here is Google's to
+# ship. Re-check the tag list when observability is next picked up — a 1.9.3
+# or 1.10.0 carrying x/crypto >= 0.55.0 makes this a one-line change.
+#
+# us-docker.pkg.dev/cloud-ops-agents-artifacts/cloud-run-gmp-sidecar/cloud-run-gmp-sidecar@sha256:ff1fc68871118f1032a3ce17e2b0abd703292e883989d220244330ebdf522fd1 vendor/cloud-run-gmp-sidecar 1.9.2
+#
+# The second entry, OpenObserve, IS deployed — this paragraph used to say it
+# was not, and both decisions it was waiting on have been taken and recorded.
+#
+# (1) That a vendored image is a new *kind* of top-level workload, whose
+# digest comes from this file rather than from `images.tfvars`, was the ADR
+# `.claude/rules/architecture/00-boundaries.md` asked for: ADR 0028 adopts it,
+# ADR 0030 records that its URL answers the internet anonymously on the
+# owner's instruction, and ADR 0031 records why its credential is an
+# environment value — that image carries no shell and no `_FILE` symbol, so
+# the file mount the security rule mandates was satisfied and inert.
+# `modules/cloudrun` gained `image_source = "vendored"` for exactly this
+# lifecycle.
+#
+# (2) Storage was decided the other way: ephemeral, and the loss named rather
+# than disguised. OpenObserve's only durable backend is S3-compatible
+# (`ZO_S3_*`), there is no workload-identity-native GCS path, and a GCS HMAC
+# key pair is the class of static credential
+# `.claude/rules/01-security-and-safety.md` forbids outright. So a cold start
+# loses every dashboard, which ADR 0028's own "what it costs" states.
+#
+# What follows from that is recorded in ADR 0033 and belongs here because it
+# governs this line: nothing has yet sent telemetry to the deployed service,
+# and before anything does it stops being reachable anonymously. An anonymous
+# invoker is anonymous in both directions, and a store anyone may write to
+# cannot be evidence for anything.
 
 # Envoy v1.38.3, distroless. The TLS-terminating egress proxy in
 # infrastructure/egress/envoy.yaml runs this image as a Cloud Run sidecar
@@ -39,3 +127,14 @@
 # reads this digest back out of this file, so the plan and this list cannot
 # disagree about which proxy runs.
 docker.io/envoyproxy/envoy@sha256:574348fada8eb1130b448132287d76626dfb07525b16668075382f8e154a45a8 vendor/envoy distroless-v1.38.3
+
+# OpenObserve v0.92.2. The multi-arch index digest for
+# docker.io/openobserve/openobserve@sha256:88fb692ac791d3eaff69653a4a4686f1c7eceb9e105491d58d29ac2739560b3b,
+# resolved directly from Docker Hub's registry v2 API (not from the floating
+# `latest` tag, which happened to name the identical digest at review time —
+# confirmed by cross-checking both resolve to the same bytes) and confirmed
+# against the tags list as v0.92.2, the newest plain-version release as of
+# this review. Mirrored so the reviewed bytes are available; not deployed —
+# see the note above this file's second paragraph for the two decisions
+# still outstanding before it can be.
+docker.io/openobserve/openobserve@sha256:88fb692ac791d3eaff69653a4a4686f1c7eceb9e105491d58d29ac2739560b3b vendor/openobserve v0.92.2

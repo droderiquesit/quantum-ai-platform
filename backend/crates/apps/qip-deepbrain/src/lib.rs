@@ -41,6 +41,7 @@ pub mod evolution;
 pub mod health;
 pub mod learning;
 pub mod node;
+pub mod openobserve;
 pub mod reference;
 pub mod roster;
 pub mod status;

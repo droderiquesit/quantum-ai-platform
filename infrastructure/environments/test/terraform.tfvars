@@ -53,6 +53,11 @@ execution_nodes = {}
 # on its first run against a provisioned project.
 image_digests = {}
 
+# OpenObserve (ADR 0028) is not deployed here either: vendored_openobserve_image_digest
+# stays at its default of null, the same closed state as every other environment,
+# and see dev/terraform.tfvars for what setting it requires — a digest and a
+# `management` entry in trust_zones above, neither declared here.
+
 enable_bigquery      = false
 enable_cloud_storage = false
 enable_alloydb       = false

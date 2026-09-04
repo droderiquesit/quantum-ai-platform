@@ -180,8 +180,36 @@ fn the_console_reaches_the_api_as_a_named_invoker_and_nothing_else_may() {
     // route in.
     let variables = read(CLOUD_RUN_VARIABLES);
     assert!(
-        variables.contains("!contains(var.invokers, \"allUsers\") && !contains(var.invokers, \"allAuthenticatedUsers\")"),
-        "the Cloud Run module no longer refuses an anonymous invoker"
+        variables.contains("!contains(var.invokers, \"allAuthenticatedUsers\")"),
+        "the Cloud Run module no longer refuses allAuthenticatedUsers, which has no \
+         exception anywhere"
+    );
+    // Conditional since ADR 0030, not absent: refused on every posture except
+    // the one that declares the exposure. The console's API is `internal`, so
+    // the refusal still binds it exactly as before — what changed is that the
+    // exception now has to be written down where a reader sees it.
+    // In `main.tf`, as a precondition, and asserted there specifically. It
+    // was first written as a `validation` on `invokers` and silently did
+    // nothing: a validation that reads a second variable is a cross-variable
+    // reference terraform skips, and `terraform validate` reported success on
+    // a configuration pairing `allUsers` with `ingress_posture = "internal"`.
+    // This test names the file so the guard cannot drift back to the block
+    // where it cannot fire.
+    let module = read(CLOUD_RUN_MODULE);
+    assert!(
+        module.contains(
+            "!contains(var.invokers, \"allUsers\") || var.ingress_posture == \"open-anonymous\""
+        ),
+        "the module no longer refuses an anonymous invoker outside the open-anonymous \
+         posture, or the refusal moved back to a variable validation where a \
+         cross-variable reference is skipped"
+    );
+    assert!(
+        module.contains(
+            "var.ingress_posture != \"open-anonymous\" || contains(var.invokers, \"allUsers\")"
+        ),
+        "the module no longer refuses the open-anonymous posture without an anonymous \
+         invoker, so a public URL that answers 403 to everyone would plan clean"
     );
 }
 
@@ -190,16 +218,35 @@ fn the_api_is_reachable_only_from_inside_the_vpc_and_its_address_is_a_terraform_
     // The security argument of ADR 0018, restated for Cloud Run: without
     // internal ingress the API's own URL answers the internet, and `POST
     // /api/v1/kill-switch` acquires a public address.
+    // Scoped to the API's own entry. A bare `contains` over the whole file
+    // was enough while every workload was internal; since ADR 0030 put one on
+    // the internet it would pass on a neighbour's posture while the API sat
+    // anywhere at all.
     let catalogue = without_comments(&read(CATALOGUE));
+    let api_entry = catalogue
+        .split("api = {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n    }").next())
+        .expect("catalogue.tf declares an `api` entry in the Cloud Run catalogue");
     assert!(
-        catalogue.contains("ingress_posture = \"internal\""),
-        "the catalogue no longer places the API behind the internal posture"
+        !api_entry.contains("ingress_posture"),
+        "the API's catalogue entry now names an ingress posture of its own; it relied on \
+         the module default of internal, and a value here is the thing to read:\n{api_entry}"
     );
     let module = without_comments(&read(CLOUD_RUN_MODULE));
     assert!(
-        module.contains("\"INGRESS_TRAFFIC_INTERNAL_ONLY\"")
-            && !module.contains("INGRESS_TRAFFIC_ALL"),
-        "the Cloud Run module can publish a service to the internet"
+        module.contains("\"INGRESS_TRAFFIC_INTERNAL_ONLY\""),
+        "the Cloud Run module no longer names the internal-only ingress"
+    );
+    // Since ADR 0030 the module *can* publish a service, through exactly one
+    // posture. The property that matters to this test is unchanged and is
+    // asserted directly rather than by the absence of the setting: no arm
+    // reaches the internet except the one named, so a workload that does not
+    // ask for it cannot get it.
+    assert!(
+        module.contains("var.ingress_posture == \"open-anonymous\" ? \"INGRESS_TRAFFIC_ALL\" :"),
+        "INGRESS_TRAFFIC_ALL is produced by something other than the open-anonymous \
+         posture, so a workload could reach the internet without declaring it"
     );
 
     // The address the console dials is the API's URL as Terraform reports

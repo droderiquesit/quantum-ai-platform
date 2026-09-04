@@ -100,3 +100,28 @@ export const NOT_YET_SERVED: Record<string, MissingEndpoint> = {
       "assembled here from /system, /mesh, /regions and /agents; the platform serves no single topology document.",
   },
 } as const;
+
+/**
+ * Whether this console declares a write on that method and that path.
+ *
+ * The gateway asks before it forwards. Until it did, the "three writes and no
+ * fourth" rule lived in `client.ts` — in the browser bundle, where any page
+ * could reach past it with a bare `fetch` and the gateway would attach the
+ * deployment credential to whatever came through. `/order-entry` was that page
+ * once: it composed an instrument, a side, a quantity and a price and posted
+ * them, waiting for the platform to grow the route. A write this table does
+ * not name now never reaches the platform, and never reaches it wearing the
+ * platform's credential.
+ *
+ * The match is on the whole path, not a prefix: `/kill-switch/all` is a
+ * different route from `/kill-switch` and is not declared.
+ *
+ * GET is not asked about. A read cannot submit an order, and a gateway that
+ * refused an unlisted read would make this console lie about a route the
+ * platform had started serving.
+ */
+export function declaresWrite(method: string, path: string): boolean {
+  return Object.values(REST).some(
+    (spec) => spec.method !== "GET" && spec.method === method && spec.path === path,
+  );
+}

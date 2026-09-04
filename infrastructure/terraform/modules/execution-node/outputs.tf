@@ -67,3 +67,16 @@ output "venue_credential_bound" {
 
   value = local.venue_credential_bound
 }
+
+output "running" {
+  description = <<-EOT
+    Whether this node group starts a machine.
+
+    False means provisioned and not running: every rule, binding and template
+    exists and no instance does. Exported because a group of zero is invisible
+    in a plan summary that counts resources, and a report saying "the node is
+    deployed" would be true of a node measuring nothing.
+  EOT
+
+  value = var.node_count > 0
+}

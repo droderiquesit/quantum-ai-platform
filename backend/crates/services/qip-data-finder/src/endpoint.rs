@@ -358,12 +358,23 @@ impl SourceEndpoint {
             }
             None => (authority, None),
         };
-        if host.is_empty() {
-            return Err(Error::invalid(format!("`{url}` names no host")));
+        // A host this crate cannot key a rule on is refused rather than
+        // guessed at. `https://collector.example@denied.example/x` parsed into
+        // the host `collector.example@denied.example`, which a denylist entry
+        // for `denied.example` does not cover — the character before it is
+        // `@`, not `.` — so the request the denylist exists to prevent was
+        // made. It failed open, in the one direction a denylist has.
+        let host = host.to_ascii_lowercase();
+        if let Some(reason) = crate::legal::unkeyable_host_reason(&host) {
+            return Err(Error::invalid(format!(
+                "`{url}` names the host `{host}`, which every legality check has to be keyed \
+                 on, and {reason}. Write `scheme://host[:port]/path` with a bare host and \
+                 supply any credential through the access mechanism"
+            )));
         }
         Ok(Self {
             scheme,
-            host: host.to_ascii_lowercase(),
+            host,
             port,
             path,
             mechanism,

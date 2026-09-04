@@ -264,6 +264,19 @@ variable "execution_nodes" {
       port = number
     }))
     create_egress_nat = optional(bool, false)
+    # The capital this node may reserve across its strategies, as a positive
+    # decimal string. Required per entry and never defaulted: `qip-edge-node`
+    # refuses to start without QIP_REGION_ALLOCATION, and a value that
+    # appeared from nowhere would be the one number in a cell's envelope no
+    # reviewer had read.
+    region_allocation = string
+    # How the node prices the intents of every strategy it deploys, and where
+    # it reads the compiled plan from. Empty is "deploy nothing", which is
+    # what the node does with them unset; they are written into `node.env`
+    # regardless so the choice is visible here rather than nowhere. The
+    # module validates both.
+    default_pricing    = optional(string, "")
+    strategy_plan_path = optional(string, "")
   }))
 
   default = {}
@@ -279,9 +292,18 @@ variable "egress_allowed_upstreams" {
     The hosts the egress proxy may dial, checked at plan time against the
     hosts `infrastructure/egress/envoy.yaml` actually dials. The two must be
     the same set, so widening the proxy is an edit to the bootstrap and an
-    edit here, reviewed together. The default is the five hosts the adapters
+    edit here, reviewed together. The default is the six hosts the adapters
     name and the bootstrap declares; an environment that needs fewer narrows
     the bootstrap, not this list.
+
+    Five of the six are Google's or IBM's — infrastructure this platform runs
+    on. `api.frankfurter.app` is the first that is neither: a market-data
+    vendor, reached on one path by one connector whose licensing posture is
+    evaluated in `qip-fastbrain`'s catalogue before the feed opens. It is
+    listed here rather than folded in silently because it is the entry that
+    changes what this list *is* — no longer only the platform's own
+    dependencies — and the acceptance suite fails if this set and the
+    bootstrap disagree in either direction.
   EOT
 
   type = list(string)
@@ -291,6 +313,7 @@ variable "egress_allowed_upstreams" {
     "europe-west2-aiplatform.googleapis.com",
     "quantum.cloud.ibm.com",
     "api.quantum.ibm.com",
+    "api.frankfurter.app",
   ]
 }
 
@@ -356,7 +379,7 @@ variable "market_data_connector" {
   default = null
 
   validation {
-    condition     = var.market_data_connector == null || startswith(var.market_data_connector.base_url, "http://127.0.0.1:")
+    condition     = var.market_data_connector == null ? true : startswith(var.market_data_connector.base_url, "http://127.0.0.1:")
     error_message = "The connector's base URL is the egress proxy on loopback, http://127.0.0.1:<port>. `qip_transport::http` refuses https by name, and an address off the instance is a route that does not exist."
   }
 }
@@ -685,6 +708,38 @@ variable "metrics_collector_image_digest" {
   validation {
     condition     = var.metrics_collector_image_digest == null || can(regex("^sha256:[a-f0-9]{64}$", var.metrics_collector_image_digest))
     error_message = "The metrics collector digest is `sha256:<64 hex>` or null. A tag is a name someone can move after the attestation was signed."
+  }
+}
+
+variable "vendored_openobserve_image_digest" {
+  description = <<-EOT
+    The digest of OpenObserve — the platform's metrics, logs and traces
+    backend (ADR 0028) — as `sha256:<64 hex>`, or null to deploy nothing.
+
+    The same adoption shape `metrics_collector_image_digest` uses, for the
+    same reason: Binary Authorization admits only what the platform's own
+    attestor signed, so a third-party image is adopted by mirroring it —
+    a reviewed line in `infrastructure/egress/vendored-images.txt`, copied
+    and attested by `vendor.yml` — rather than by exempting its upstream
+    repository from the policy. `catalogue.tf` composes the value with the
+    registry prefix and passes it to `modules/cloudrun` as
+    `vendored_image_digest` on the one workload whose `source` is
+    `"vendored"`, so the upstream repository cannot be named here and an
+    unmirrored image cannot reach a plan.
+
+    Null by default and null is the closed state: no OpenObserve service, in
+    any environment, until an operator has reviewed the mirrored digest for
+    that environment and named it here. Unlike the metrics collector, this is
+    not a sidecar attached to an existing workload — it is its own top-level
+    Cloud Run service, created only once this is set.
+  EOT
+
+  type    = string
+  default = null
+
+  validation {
+    condition     = var.vendored_openobserve_image_digest == null || can(regex("^sha256:[a-f0-9]{64}$", var.vendored_openobserve_image_digest))
+    error_message = "The OpenObserve digest is `sha256:<64 hex>` or null. A tag is a name someone can move after the attestation was signed."
   }
 }
 

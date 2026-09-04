@@ -22,6 +22,7 @@ fn processor() -> StreamProcessor {
         reorder: ReorderPolicy::new(64, Duration::from_millis(50)),
         ..ProcessingPolicy::default()
     })
+    .expect("the default policy's bounds are usable")
 }
 
 fn sequences(envelopes: &[StreamEnvelope]) -> Vec<u64> {
@@ -244,7 +245,7 @@ fn a_malformed_event_is_rejected_with_a_named_reason_and_does_not_abort_the_batc
 #[test]
 fn an_event_older_than_the_replay_window_is_refused() -> Result<()> {
     let policy = ProcessingPolicy::default();
-    let mut processor = StreamProcessor::new(policy);
+    let mut processor = StreamProcessor::new(policy)?;
 
     let stale = hot_tick(1, at(0), at(0))?;
     let now = at(0).saturating_add(policy.replay_window + Duration::from_secs(1));

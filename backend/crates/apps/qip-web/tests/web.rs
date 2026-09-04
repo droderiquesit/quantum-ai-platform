@@ -172,6 +172,35 @@ fn the_banner_appears_on_every_surface() {
     }
 }
 
+// --- the stylesheet -----------------------------------------------------------
+
+#[test]
+fn the_inlined_stylesheet_reaches_the_page_as_css_rather_than_as_escaped_text() {
+    // `<style>` is a "raw text" element in the HTML5 parsing model: a browser
+    // never decodes an entity reference inside one. Routing the stylesheet
+    // through the same escaping path as page content shipped broken CSS on
+    // every surface — a quoted font-family became the literal characters
+    // `&quot;SF Mono&quot;`, and every `/* ... */` comment became
+    // `&#47;* ... *&#47;`, which is not a comment to a CSS parser.
+    let page = render(Surface::Overview, &ViewModel::default());
+    assert!(
+        page.contains("\"SF Mono\""),
+        "the quoted font name was HTML-escaped: {page}"
+    );
+    assert!(
+        page.contains("/* A panel with nothing behind it."),
+        "a CSS comment delimiter was HTML-escaped: {page}"
+    );
+    assert!(
+        !page.contains("&quot;SF Mono&quot;"),
+        "the stylesheet is still escaped: {page}"
+    );
+    assert!(
+        !page.contains("&#47;*"),
+        "a CSS comment delimiter is still escaped: {page}"
+    );
+}
+
 // --- the surfaces -----------------------------------------------------------
 
 #[test]
@@ -298,4 +327,152 @@ fn surfaces_round_trip_through_their_paths() {
         assert_eq!(Surface::from_path(surface.path()), Some(surface));
     }
     assert_eq!(Surface::from_path("/nonexistent"), None);
+}
+
+// --- facts the platform did not record --------------------------------------
+
+/// A model in which every new panel carries a value, so the banner tests
+/// below render pages that show a platform fact rather than an empty page.
+fn with_platform_facts() -> ViewModel {
+    use qip_web::panel::Panel;
+    use qip_web::view::{
+        EdgeCellRow, Fact, FactRow, ShippedPolicyRow, UniverseExclusionRow, UniverseView,
+    };
+    let as_of = "2025-10-09T00:00:00Z";
+    ViewModel {
+        cells: Panel::current(
+            vec![EdgeCellRow {
+                cell: "eu-west".to_string(),
+                reported_at: as_of.to_string(),
+                age: "0s".to_string(),
+                stale: false,
+                positions: 0,
+                strategies: 1,
+                breaks_shipped: 0,
+                orders_sent: Fact::not_recorded("kept nowhere"),
+                fills_confirmed: Fact::not_recorded("kept nowhere"),
+                halted_by_centre: false,
+                policy_halt_flag: false,
+                cell_reports_halted: Fact::recorded("no (delta 4)"),
+                polled_halt_flag: Fact::not_recorded("stays on the node"),
+            }],
+            as_of,
+        ),
+        settlement: vec![FactRow::new(
+            "central_orders_sent",
+            "Orders sent",
+            Fact::recorded("3"),
+        )],
+        shipped_policy: Panel::current(
+            vec![ShippedPolicyRow {
+                cell: "eu-west".to_string(),
+                issued_at: as_of.to_string(),
+                sequence: Fact::not_recorded("not journaled"),
+                whitelist: "cycle whitelist for eu-west: empty, CentralConfig::arbitrage is unset"
+                    .to_string(),
+                slots: vec![FactRow::new(
+                    "cycle_whitelist",
+                    "cycle_whitelist",
+                    Fact::recorded("produced"),
+                )],
+            }],
+            as_of,
+        ),
+        universe: UniverseView {
+            version: Fact::not_recorded("not on the platform"),
+            sha256: Fact::not_recorded("not on the platform"),
+            instruments: Fact::not_recorded("not on the platform"),
+            not_decision_grade: Panel::current(
+                vec![UniverseExclusionRow {
+                    object: "obj-AAA".to_string(),
+                    reason: "licensing class Synthetic is not production-eligible".to_string(),
+                }],
+                as_of,
+            ),
+        },
+        ..ViewModel::default()
+    }
+}
+
+#[test]
+fn a_figure_the_platform_did_not_record_renders_as_not_recorded_and_never_as_zero() {
+    // The scrape surface's rule, on HTML. A default model has no platform
+    // behind it, so every new figure must say so; a `0` anywhere in one of
+    // these cells would be a claim about a platform that made none.
+    let model = ViewModel::default();
+    assert!(
+        !model.universe.version.is_recorded(),
+        "the premise is a model nothing reported"
+    );
+    assert!(model.cells.is_absent() && model.shipped_policy.is_absent());
+
+    let overview = render(Surface::Overview, &model);
+    for key in [
+        "universe.version",
+        "universe.sha256",
+        "universe.instruments",
+    ] {
+        assert!(
+            overview.contains(&format!(
+                r#"data-fact="{key}" data-state="not-recorded">not recorded<"#
+            )),
+            "{key} is not rendered as not recorded: {overview}"
+        );
+        assert!(
+            !overview.contains(&format!(r#"data-fact="{key}" data-state="recorded">0<"#)),
+            "{key} rendered a zero the platform never recorded"
+        );
+    }
+    // The count of not-decision-grade instruments is a panel, and an absent
+    // panel is not a zero either.
+    assert!(
+        overview.contains(r#"data-fact="universe.not_decision_grade" data-state="not-recorded">"#),
+        "{overview}"
+    );
+    let execution = render(Surface::Execution, &model);
+    assert!(
+        execution.contains(r#"data-panel="Cells" data-state="absent""#),
+        "{execution}"
+    );
+    assert!(execution.contains("Not recorded."), "{execution}");
+    assert!(!execution.contains("<table"), "{execution}");
+
+    // And the same figures, once recorded, render the recorded value and not
+    // the placeholder — the renderer distinguishes the two arms.
+    let page = render(Surface::Execution, &with_platform_facts());
+    assert!(
+        page.contains(r#"data-fact="central_orders_sent" data-state="recorded">3<"#),
+        "{page}"
+    );
+    assert!(
+        page.contains(
+            r#"data-fact="cell.eu-west.orders_sent" data-state="not-recorded">not recorded<"#
+        ),
+        "{page}"
+    );
+}
+
+#[test]
+fn every_surface_that_renders_a_platform_fact_still_says_paper_trading() {
+    // The three surfaces that gained platform facts, each rendered with a
+    // fact on it, each still carrying the posture as its own delimited token.
+    // `>PAPER TRADING<` rather than the bare words, so a mention inside a
+    // reason or a rationale cannot satisfy the test on the banner's behalf.
+    let model = with_platform_facts();
+    assert!(!model.live, "the premise is a paper platform");
+    assert!(!model.cells.is_absent(), "the premise is a rendered cell");
+    for surface in [Surface::Overview, Surface::Execution, Surface::Governance] {
+        let page = render(surface, &model);
+        let fact_rendered = match surface {
+            Surface::Overview => page.contains("obj-AAA"),
+            Surface::Execution => page.contains("eu-west"),
+            _ => page.contains("cycle whitelist for eu-west"),
+        };
+        assert!(fact_rendered, "{} shows no platform fact", surface.title());
+        assert!(
+            page.contains(">PAPER TRADING<"),
+            "{} renders a platform fact without its posture",
+            surface.title()
+        );
+    }
 }

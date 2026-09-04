@@ -37,7 +37,6 @@ members = [
     # --- domain services: each owns one stage of the intelligence loop ---
     "crates/services/qip-data-finder",
     "crates/services/qip-market-ingestion",
-    "crates/services/qip-normalization",
     "crates/services/qip-entity-resolution",
     "crates/services/qip-world-model",
     "crates/services/qip-opportunity-engine",
@@ -126,7 +125,6 @@ qip-edge = { path = "crates/edge/qip-edge" }
 
 qip-data-finder = { path = "crates/services/qip-data-finder" }
 qip-market-ingestion = { path = "crates/services/qip-market-ingestion" }
-qip-normalization = { path = "crates/services/qip-normalization" }
 qip-entity-resolution = { path = "crates/services/qip-entity-resolution" }
 qip-world-model = { path = "crates/services/qip-world-model" }
 qip-opportunity-engine = { path = "crates/services/qip-opportunity-engine" }

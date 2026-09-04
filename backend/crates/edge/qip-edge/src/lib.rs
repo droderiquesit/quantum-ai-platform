@@ -33,6 +33,7 @@ pub mod feasibility;
 pub mod journal;
 pub mod mesh;
 pub mod policy;
+pub mod reservation;
 pub mod seam;
 pub mod telemetry;
 
@@ -52,5 +53,6 @@ pub use mesh::{
     UplinkConfig, UplinkStats,
 };
 pub use policy::{VerifiedHalt, VerifiedPolicy};
+pub use reservation::RegionAllocation;
 pub use seam::{CellLiquidity, value_kind, value_type};
 pub use telemetry::CellMetrics;

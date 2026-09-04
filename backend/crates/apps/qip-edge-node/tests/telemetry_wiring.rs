@@ -21,6 +21,7 @@
 use qip_contracts::venue::VenueId;
 use qip_core::{Duration, SystemClock};
 use qip_edge::cell::CellConfig;
+use qip_edge_node::allocation::RegionCapital;
 use qip_edge_node::telemetry::respond;
 use qip_edge_node::{NodeAssembly, assemble};
 use qip_feature_dag::engine::FeatureEngine;
@@ -36,7 +37,9 @@ const REGION: &str = "europe-west2";
 fn assembled() -> NodeAssembly {
     let config = CellConfig::new(CELL, REGION).with_venue(VenueId::new("XLON"));
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
-    assemble(config, features, Arc::new(SystemClock)).expect("a well-formed cell assembles")
+    let allocation = RegionCapital::read(Some("1000000000")).expect("a positive amount");
+    assemble(config, features, Arc::new(SystemClock), allocation)
+        .expect("a well-formed cell assembles")
 }
 
 #[test]

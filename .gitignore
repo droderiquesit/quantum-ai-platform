@@ -57,3 +57,9 @@ __pycache__/
 # infrastructure/docker/. Committing a copy would fork them.
 /frontend/Dockerfile
 /frontend/landing/Dockerfile
+
+# Per-agent git worktrees created by the Agent tool's isolation:"worktree"
+# mode. Each is a scratch checkout for one background agent's branch; the
+# branch itself is what gets pushed, so committing the worktree directory
+# would duplicate history that already exists on its branch.
+/.claude/worktrees/

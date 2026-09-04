@@ -1,4 +1,37 @@
-# What the tree deploys today, against what the blueprint requires
+# What the tree deploys today, against what the blueprint requires — superseded by ADR 0024
+
+> **Correction, 2026-09-03 — the runtime this document scored no longer
+> exists.** This whole document was written against the working tree at
+> `bcad2d3`, where `infrastructure/terraform/modules/cluster/` declared a GKE
+> cluster, `modules/cloudrun`, `modules/execution-node` and
+> `modules/trust-zones` were unwired (`cloudrun/NOT-WIRED.md`,
+> `trust-zones/NOT-ENFORCED-HERE.md` describing an identity model of one
+> service account per zone bound to a Kubernetes service account), and
+> `infrastructure/{helm,gitops,kubernetes}/` held the chart, the Argo CD stack
+> and the raw manifests. Under ADR 0024, `808ca32` wired the blueprint runtime
+> into the root module and deleted the cluster's Terraform; `67b3e92` and
+> `7d79161` deleted the Helm chart, the raw manifests and the Argo CD stack;
+> `c924191` wired `modules/egress-proxy`. None of `infrastructure/helm/`,
+> `infrastructure/gitops/` or `infrastructure/kubernetes/` exists in the tree
+> today — confirmed by `ls infrastructure/` at the time of this correction,
+> which lists only `docker`, `egress`, `environments` and `terraform`. The
+> `trust-zones` module's per-zone Kubernetes-service-account binding this
+> document cites at `main.tf:251-257` is also gone: the module now takes
+> `zone_identities` computed in `catalogue.tf` from the workloads the
+> catalogue places in each zone — one Cloud Run/GCE service account per
+> workload, not one per zone — and its header comment now reads "Wired from
+> `infrastructure/terraform/main.tf` under ADR 0024." Every row below that
+> cites a deleted path, calls a module "UNWIRED", or lists a resolution step
+> for G10 (the trust-zones identity rework, `§Gap matrix` below) describes a
+> tree that predates that wiring. The rows are left as scored, because they
+> are the record of what was found then and how a migration engineer reasoned
+> about it; for the runtime as it is configured today, read
+> [`algorik-blueprint-traceability.md`](algorik-blueprint-traceability.md)'s
+> Layer 6/7 entry, which was re-scored after `808ca32`. Nothing in the new
+> modules has been applied — `execution_nodes = {}` in every environment and
+> no `terraform` binary exists in this session either — so "wired" here means
+> "reachable from `main.tf`", not "running".
+
 
 **Scope.** The runtime this repository would produce if its committed
 infrastructure were applied, compared resource by resource with the runtime

@@ -420,6 +420,83 @@ fn an_envelope_to_a_cell_that_is_down_stays_in_the_spool_rather_than_being_lost(
 }
 
 #[test]
+fn a_dispatch_behind_an_already_held_envelope_does_not_jump_the_queue() -> Result<()> {
+    // If `dispatch` tried to send this second envelope immediately regardless
+    // of the first one still sitting in the spool, a later — possibly
+    // narrower — grant could reach the cell ahead of an earlier one that
+    // `recover` has not yet delivered. That is the exact reordering the
+    // module documentation says the spool exists to prevent, and it is only
+    // proven for `recover`'s own loop unless a second `dispatch` call is
+    // checked too.
+    let store = disk();
+    let mut dispatch = dispatcher(&dead_peer()?, Arc::clone(&store))?;
+
+    // Premise: the first envelope is genuinely stuck, not merely persisted.
+    let first = dispatch.dispatch(envelope(CELL, 1_000, "sig-one")?, t(10))?;
+    assert!(
+        matches!(
+            first,
+            CapitalDispatch::Held {
+                reason: HeldReason::Undelivered { .. },
+                ..
+            }
+        ),
+        "the first envelope was not actually held, so this test proves nothing: {first:?}"
+    );
+    let attempts_after_first = dispatch.publisher().stats().attempts;
+    assert!(
+        attempts_after_first > 0,
+        "the first envelope was never attempted"
+    );
+
+    let second = dispatch.dispatch(envelope(CELL, 2_000, "sig-two")?, t(11))?;
+    assert!(
+        matches!(
+            second,
+            CapitalDispatch::Held {
+                reason: HeldReason::Queued,
+                ..
+            }
+        ),
+        "the second envelope was sent (or held for its own reason) instead of \
+         queuing behind the first: {second:?}"
+    );
+    assert_eq!(
+        dispatch.publisher().stats().attempts,
+        attempts_after_first,
+        "dispatch attempted a network call for an envelope queued behind an \
+         earlier held one"
+    );
+    assert_eq!(
+        dispatch.pending()?,
+        2,
+        "both envelopes must still be in the spool, in order"
+    );
+
+    // And once the cell comes back, `recover` delivers them in the order they
+    // were dispatched, not the order a race would have sent them.
+    let inbox = MeshInbox::new("london-1-inbox", 64, 256)?;
+    let server = MeshServer::spawn(Behaviour::Endpoint(Box::new(MeshEndpoint::new(
+        inbox.clone(),
+    ))))?;
+    let mut replacement = dispatcher(&server.url(), Arc::clone(&store))?;
+    let report = replacement.recover(t(60))?;
+    assert_eq!(report.delivered(), 2, "{report:?}");
+    let response = inbox.read(0, Timestamp::MAX, 16);
+    let signatures: Vec<String> = response
+        .frames
+        .iter()
+        .filter_map(|entry| {
+            serde_json::from_value::<CapitalEnvelope>(entry.frame.payload.clone())
+                .ok()
+                .map(|grant| grant.signature().to_string())
+        })
+        .collect();
+    assert_eq!(signatures, vec!["sig-one", "sig-two"]);
+    Ok(())
+}
+
+#[test]
 fn a_spooled_envelope_survives_a_restart_and_is_delivered_when_the_cell_returns() -> Result<()> {
     // The restart is a *drop*. A spool tested without one proves nothing about
     // the only claim it makes.
@@ -473,8 +550,13 @@ fn a_spooled_envelope_survives_a_restart_and_is_delivered_when_the_cell_returns(
 }
 
 #[test]
-fn a_second_envelope_to_a_down_cell_is_held_by_the_circuit_without_spending_a_ladder() -> Result<()>
-{
+fn a_second_envelope_to_a_down_cell_is_held_without_spending_a_ladder() -> Result<()> {
+    // Two independent reasons must both hold this entry back from the wire:
+    // an earlier entry is still queued ahead of it (the FIFO ordering
+    // `dispatch` now enforces on its own), and — proven below through
+    // `recover`, which is the path that actually reaches the breaker for a
+    // spooled entry — the circuit to the cell is open. Neither may spend the
+    // entry's retry ladder.
     let store = disk();
     let mut dispatch = CapitalDispatcher::open(
         DispatcherConfig::new(CELL, mesh_config("capital:london-1", &dead_peer()?)).with_breaker(
@@ -500,24 +582,47 @@ fn a_second_envelope_to_a_down_cell_is_held_by_the_circuit_without_spending_a_la
         matches!(
             second,
             CapitalDispatch::Held {
-                reason: HeldReason::CircuitOpen(_),
+                reason: HeldReason::Queued,
                 ..
             }
         ),
-        "the second envelope went to the network anyway: {second:?}"
+        "the second envelope went to the network, or was held for a reason \
+         other than the queue ahead of it: {second:?}"
     );
     assert_eq!(
         dispatch.publisher().stats().attempts,
         after_first,
-        "the circuit was open and the transport tried anyway"
+        "dispatch attempted a network call for an envelope queued behind a held one"
     );
-    // Refused by the circuit and still persisted: nothing about the breaker
-    // makes a capital instruction disappear.
+    // Refused before the wire and still persisted: nothing about the queue or
+    // the breaker makes a capital instruction disappear.
     assert_eq!(dispatch.pending()?, 2);
     let backlog = dispatch.backlog()?;
     assert_eq!(
         backlog[1].attempts, 0,
-        "a call the circuit never made was counted against the entry's retry budget"
+        "a call that was never made was counted against the entry's retry budget"
+    );
+
+    // `recover` is the path that reaches the breaker for a spooled entry, and
+    // the front of the spool is still behind the open circuit: it must be
+    // held for that reason specifically, and the ladder still must not spend.
+    let report = dispatch.recover(t(12))?;
+    assert_eq!(report.outcomes.len(), 1, "{report:?}");
+    assert!(
+        matches!(
+            &report.outcomes[0],
+            CapitalDispatch::Held {
+                reason: HeldReason::CircuitOpen(_),
+                ..
+            }
+        ),
+        "the front of the spool was not refused by the open circuit: {:?}",
+        report.outcomes[0]
+    );
+    assert_eq!(
+        dispatch.publisher().stats().attempts,
+        after_first,
+        "the open circuit was reached and the transport tried anyway"
     );
     Ok(())
 }

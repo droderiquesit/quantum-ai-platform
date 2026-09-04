@@ -56,6 +56,25 @@ pub enum LimitKind {
     MaxNetExposure { limit: f64 },
     /// Maximum share of gross exposure in one bucket of a named axis.
     MaxConcentration { axis: String, limit: f64 },
+    /// Maximum gross exposure in any one bucket of a named axis, as a
+    /// fraction of equity.
+    ///
+    /// [`LimitKind::MaxBucketExposure`] with the bucket left unnamed: the
+    /// same arithmetic over every bucket the axis carries, so a book cannot
+    /// concentrate into a bucket nobody thought to write down in advance.
+    ///
+    /// It exists because [`LimitKind::MaxConcentration`] divides one bucket
+    /// by the sum of the buckets, and the first position in an empty book is
+    /// the whole of its axis. That cap therefore read 1.0 for the first order
+    /// of any size, in any instrument, in any deployment carrying the shipped
+    /// defaults — a desk that loaded a real catalogue traded nothing at all.
+    /// It is the mirror of the `MaxExpectedShortfall` defect this file
+    /// already records: that limit could never fire, this one could never
+    /// not, and both read as protection. Equity is the denominator because it
+    /// is known before an order exists and the order under check does not
+    /// move it; a ratio a pre-trade veto divides by is not allowed to be a
+    /// number the order itself creates.
+    MaxAxisWeight { axis: String, limit: f64 },
     /// Maximum gross exposure to one named bucket, as a fraction of equity.
     MaxBucketExposure {
         axis: String,
@@ -91,6 +110,7 @@ impl LimitKind {
             Self::MaxLeverage { .. } => "max_leverage",
             Self::MaxNetExposure { .. } => "max_net_exposure",
             Self::MaxConcentration { .. } => "max_concentration",
+            Self::MaxAxisWeight { .. } => "max_axis_weight",
             Self::MaxBucketExposure { .. } => "max_bucket_exposure",
             Self::MaxVolatility { .. } => "max_volatility",
             Self::MaxValueAtRisk { .. } => "max_value_at_risk",
@@ -107,6 +127,44 @@ impl LimitKind {
     /// Whether the limit is a floor rather than a ceiling.
     pub fn is_minimum(&self) -> bool {
         matches!(self, Self::MinLiquidity { .. } | Self::MinCashBuffer { .. })
+    }
+
+    /// Whether the limit's denominator is part of the same state the order
+    /// under check changes.
+    ///
+    /// A pre-trade veto is a question about one order, so its answer must
+    /// depend on that order's size. `MaxConcentration` divides a bucket by
+    /// the sum of the buckets, so an order that creates the only bucket
+    /// creates its own denominator: the observed value is 1.0 at every
+    /// non-zero size and the bisection in `PreTradeChecker::largest_permissible`
+    /// — which assumes a zero-size order passes and that the predicate is
+    /// monotone in size — converges to zero and refuses everything. Nothing
+    /// about the threshold could have fixed that.
+    ///
+    /// The match is exhaustive with no wildcard, so a seventeenth kind cannot
+    /// be added without someone answering this question about it. That is the
+    /// whole point of the method: the question was never asked of
+    /// `MaxConcentration`, and it shipped in every default set.
+    pub fn denominator_moves_with_the_order(&self) -> bool {
+        match self {
+            Self::MaxConcentration { .. } => true,
+            Self::MaxOrderNotional { .. }
+            | Self::MaxPositionNotional { .. }
+            | Self::MaxPositionWeight { .. }
+            | Self::MaxLeverage { .. }
+            | Self::MaxNetExposure { .. }
+            | Self::MaxAxisWeight { .. }
+            | Self::MaxBucketExposure { .. }
+            | Self::MaxVolatility { .. }
+            | Self::MaxValueAtRisk { .. }
+            | Self::MaxExpectedShortfall { .. }
+            | Self::MaxDrawdown { .. }
+            | Self::MaxDailyLoss { .. }
+            | Self::MinLiquidity { .. }
+            | Self::MaxDaysToLiquidate { .. }
+            | Self::MaxCounterpartyExposure { .. }
+            | Self::MinCashBuffer { .. } => false,
+        }
     }
 }
 
@@ -266,19 +324,29 @@ impl RiskState {
     /// every book, so every deployment believed it held two controls it did
     /// not have. A control that cannot fire reads as protection and is not.
     ///
-    /// The keys are derived from each configured limit's own confidence,
-    /// formatted exactly as the limit formats it when it reads. Computing a
-    /// fixed set of confidences here instead would put the key on one side
-    /// of a rounding boundary and the lookup on the other — `{:.2}` of 0.975
-    /// is `0.97`, and the default expected-shortfall limit uses 0.975 — and
-    /// the limit would go on silently never evaluating.
+    /// [`LimitKind::MaxVolatility`] read the same way: no key, just
+    /// `RiskState::volatility` itself, which no production caller ever set —
+    /// `RiskState::from_figures` does not touch it and `PreTradeChecker::project`
+    /// deliberately leaves it alone, so the shipped volatility limit was the
+    /// same defect under a different name, just without a map to expose it.
+    /// It is filled here because this is the one place a return series and the
+    /// limit set that needs it are already both in hand.
+    ///
+    /// The value-at-risk and expected-shortfall keys are derived from each
+    /// configured limit's own confidence, formatted exactly as the limit
+    /// formats it when it reads. Computing a fixed set of confidences here
+    /// instead would put the key on one side of a rounding boundary and the
+    /// lookup on the other — `{:.2}` of 0.975 is `0.97`, and the default
+    /// expected-shortfall limit uses 0.975 — and the limit would go on
+    /// silently never evaluating.
     ///
     /// `returns` are period returns of the whole book, already in `f64`:
     /// this is the crossing point from the book's [`Decimal`] equity to a
     /// statistic, and the caller makes it by dividing consecutive equity
-    /// samples. A series shorter than two leaves the maps empty rather than
-    /// recording zero, because a zero that nobody computed would pass the
-    /// limit and look like evidence the book has no tail.
+    /// samples. A series shorter than two leaves the maps empty and the
+    /// volatility field untouched rather than recording zero, because a zero
+    /// nobody computed would pass every one of these limits and look like
+    /// evidence the book has no risk at all.
     pub fn with_tail_risk(mut self, limits: &LimitSet, returns: &[f64]) -> Self {
         if returns.len() < 2 {
             return self;
@@ -297,7 +365,74 @@ impl RiskState {
                         crate::metrics::expected_shortfall(returns, confidence),
                     );
                 }
+                LimitKind::MaxVolatility { .. } => {
+                    self.volatility = crate::metrics::annualised_volatility(returns);
+                }
                 _ => {}
+            }
+        }
+        self
+    }
+
+    /// Populate the fraction of the book liquidatable within each configured
+    /// [`LimitKind::MinLiquidity`] horizon, from `days_to_liquidate` and
+    /// `position_notionals` this state already carries.
+    ///
+    /// [`LimitKind::MinLiquidity`] looks its figure up in `liquidatable_within`,
+    /// keyed by horizon, and records nothing when the key is absent — the same
+    /// shape of failure [`Self::with_tail_risk`] closed for the tail limits.
+    /// [`LimitSet::conservative_default`] has shipped a `liquidity` limit since
+    /// before this method existed, and nothing filled the map it reads: the
+    /// limit took its `None` arm on every book. A control that cannot fire
+    /// reads as protection and is not.
+    ///
+    /// An instrument with no entry in `days_to_liquidate` is **not** treated
+    /// as liquidatable — its notional still counts in the denominator, so it
+    /// pulls the ratio down rather than being dropped from both sides. A
+    /// fraction computed only over the positions with a known exit time would
+    /// read more liquid the less anyone had told it, which is the wrong
+    /// direction for a floor to fail in; refusing to guess an unknown exit
+    /// time is the fail-closed choice.
+    ///
+    /// The key is `{days:.0}`, formatted exactly as the limit's own lookup
+    /// formats it when it reads — one rule, not two copies of the same
+    /// format a rounding boundary could separate.
+    ///
+    /// Leaves `liquidatable_within` untouched when the book holds no
+    /// positions: an empty book has nothing to be illiquid, and recording a
+    /// fabricated `1.0` for a ratio nobody measured is the same mistake in
+    /// the other direction.
+    ///
+    /// Also leaves it untouched when `days_to_liquidate` itself is empty —
+    /// nobody has marked a single instrument, which is a book that has never
+    /// been measured, not a book with zero liquid positions. The fail-closed
+    /// rule above governs *partial* coverage, once measurement has started;
+    /// it does not manufacture a floor-breaching `0.0` for a book a caller
+    /// has not marked at all, the same way an all-too-short return series
+    /// leaves the tail maps empty in [`Self::with_tail_risk`] rather than
+    /// recording a zero nobody computed.
+    pub fn with_liquidity_horizons(mut self, limits: &LimitSet) -> Self {
+        if self.days_to_liquidate.is_empty() {
+            return self;
+        }
+        let total: Decimal = self.position_notionals.values().map(|v| v.abs()).sum();
+        if !total.is_positive() {
+            return self;
+        }
+        for limit in &limits.limits {
+            if let LimitKind::MinLiquidity { days, .. } = limit.kind {
+                let liquidatable: Decimal = self
+                    .position_notionals
+                    .iter()
+                    .filter(|(instrument, _)| {
+                        self.days_to_liquidate
+                            .get(instrument.as_str())
+                            .is_some_and(|exit_days| *exit_days <= days)
+                    })
+                    .map(|(_, notional)| notional.abs())
+                    .sum();
+                self.liquidatable_within
+                    .insert(format!("{days:.0}"), liquidatable.to_f64() / total.to_f64());
             }
         }
         self
@@ -498,6 +633,31 @@ impl LimitSet {
                     );
                 }
             }
+            LimitKind::MaxAxisWeight { axis, limit: bound } => {
+                let Some(buckets) = state.axis_exposures.get(axis) else {
+                    // An instrument the catalogue holds no record for reaches
+                    // no bucket at all (`qip-kernel`'s `exposure_axes`), so an
+                    // absent axis is a fact about the reference data and not a
+                    // concentration. Refusing here would refuse an order for
+                    // something the book did not do.
+                    return out;
+                };
+                for (bucket, value) in buckets {
+                    // No guard on a zero denominator and no early return:
+                    // `RiskState::ratio` answers `f64::INFINITY` on
+                    // non-positive equity, so a book with no equity fails
+                    // every weight limit instead of silently skipping them.
+                    // The share-of-gross arm above returns early on a zero
+                    // axis total, and that early return is the fail-open half
+                    // of the same defect.
+                    record(
+                        state.ratio(value.abs()),
+                        *bound,
+                        Some(bucket.clone()),
+                        format!("{axis} bucket {bucket} as a fraction of equity"),
+                    );
+                }
+            }
             LimitKind::MaxBucketExposure {
                 axis,
                 bucket,
@@ -615,6 +775,16 @@ impl LimitSet {
     ///
     /// Deliberately conservative. These are the defaults a deployment starts
     /// from and tightens; they are not calibrated to any particular mandate.
+    ///
+    /// The two per-axis caps measure a bucket against **equity**, not against
+    /// gross exposure. They were share-of-gross until ADR 0027, and a share of
+    /// gross is 100% for the first position in an empty book, so the set
+    /// refused the first order of every deployment that fed it a real
+    /// catalogue. The bounds are unchanged at 0.35 and 0.60 so that the
+    /// denominator is the only thing this change moved; against a
+    /// `position-weight` of 0.10 they bind at four names in one sector and six
+    /// in one country, which is a real control and not a calibrated one. The
+    /// numbers are the desk's.
     pub fn conservative_default() -> Self {
         Self::new("conservative-paper")
             .with(
@@ -641,17 +811,20 @@ impl LimitSet {
             .with(
                 Limit::new(
                     "sector-concentration",
-                    LimitKind::MaxConcentration {
+                    LimitKind::MaxAxisWeight {
                         axis: "sector".into(),
                         limit: 0.35,
                     },
                 )
-                .with_rationale("a sector bet must be deliberate, not accumulated"),
+                .with_rationale(
+                    "a sector bet must be deliberate, not accumulated: no sector may hold more \
+                     than this share of equity",
+                ),
             )
             .with(
                 Limit::new(
                     "country-concentration",
-                    LimitKind::MaxConcentration {
+                    LimitKind::MaxAxisWeight {
                         axis: "country".into(),
                         limit: 0.60,
                     },

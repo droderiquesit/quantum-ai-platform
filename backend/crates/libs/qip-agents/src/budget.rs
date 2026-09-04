@@ -256,7 +256,16 @@ impl BudgetLedger {
 
     fn exceed(&mut self, line: BudgetLine, limit: u64) -> Result<()> {
         self.exhausted = Some(line);
-        Err(Error::denied(format!(
+        // `Guard`, not `Denied`: a budget line is a limit tripping, the same
+        // failure kind every other limit in the platform reports (see
+        // `qip_core::error::Error::Guard`'s doc comment, which names "budget
+        // exhausted" explicitly). Using `Denied` here made a budget overrun
+        // indistinguishable, by error code, from a plain capability refusal —
+        // `CapabilitySet::require` and `AgentContext::authorise` both raise
+        // `Denied` for "you were never granted this" — collapsing two
+        // different operational facts (misconfigured manifest vs. an agent
+        // that ran too long) into one code in every metric and API response.
+        Err(Error::guard(format!(
             "agent {} exhausted its {line} budget (limit {limit})",
             self.agent
         )))

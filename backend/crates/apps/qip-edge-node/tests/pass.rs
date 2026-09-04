@@ -22,6 +22,7 @@ use qip_core::{Decimal, SystemClock, dec};
 use qip_edge::cell::{CellConfig, PolledHalt, PricingPolicy};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::telemetry::EDGE_FILLS_CONFIRMED;
+use qip_edge_node::allocation::RegionCapital;
 use qip_edge_node::feed::{FEED_VARIABLE, FeedChoice, SimulatedFeed};
 use qip_edge_node::gateway::SimulatedGateway;
 use qip_edge_node::pass::{PassOutcome, PassStats, run_pass};
@@ -108,7 +109,10 @@ fn node_with_feed(
 ) -> Result<(NodeAssembly, SimulatedGateway, SimulatedFeed)> {
     let config = CellConfig::new(CELL, REGION).with_venue(venue());
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
-    let mut node = assemble(config, features, Arc::new(SystemClock))?;
+    // Far above the one strategy's grant, so the pass loop is what decides;
+    // the region bound has its own suite in `allocation.rs`.
+    let allocation = RegionCapital::read(Some("1000000000"))?;
+    let mut node = assemble(config, features, Arc::new(SystemClock), allocation)?;
     let gateway = SimulatedGateway::new(venue(), 7, t(0))?;
     let feed = SimulatedFeed::new(venue());
     feed.attach(&mut node.cell)?;
@@ -565,4 +569,101 @@ fn a_venue_feed_other_than_the_simulator_is_refused_at_start_naming_adr_0003() {
             "the refusal does not echo the value: {message}"
         );
     }
+}
+
+/// A fill counted twice is a fill the centre attributes twice.
+///
+/// A partial fill leaves its order open, so the fill stays in the cell's
+/// cumulative record; when that order later reaches its time to live, the
+/// node used to match it by expired order id and count it again — in
+/// `stats.fills` and in `report.fills`, which `main.rs` publishes to the
+/// centre. The venue counter is the independent claim about the same fact
+/// and is recorded once per confirmation, so the two disagreeing is the
+/// defect. Nothing here has ever been seen in production, because no node
+/// is deployed; it is reachable on the first one that is.
+#[test]
+fn a_partial_fill_on_an_order_that_later_expires_is_counted_once() -> Result<()> {
+    // A five-second time to live and a timeline inside ten seconds, because
+    // nothing in the pass loop answers a heartbeat and the simulated venue
+    // degrades its session after thirty (`ExchangeSettings::orderly`). The
+    // shape the defect needs is what matters and not the interval: the fill
+    // must land on one pass and the expiry on a *later* one, so that the old
+    // fill is still in the cumulative record when the withdrawal runs.
+    let (mut node, mut gateway, mut feed) =
+        node_with_feed(PricingPolicy::rest_at_mid(Duration::from_secs(5))?)?;
+    gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
+    gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
+    let mut stats = PassStats::default();
+
+    let first = run_pass(&mut node.cell, &mut gateway, &mut feed, &mut stats, t(4))?;
+    let PassOutcome::Ran { report, .. } = first else {
+        panic!("a running node reported its pass as halted: {first:?}");
+    };
+    assert_eq!(report.orders.len(), 1, "the premise is one resting order");
+    let resting = report.orders[0].clone();
+
+    // Somebody else takes part of it, so the order stays open with a fill
+    // against it — the premise the whole test rests on.
+    let taken = gateway.seed_aggressor(&object(), Side::Sell, dec!("100"), dec!("1"), t(6))?;
+    assert!(
+        taken > Decimal::ZERO && taken < resting.quantity,
+        "the premise is a partial fill: {taken} of {}",
+        resting.quantity
+    );
+
+    let second = run_pass(&mut node.cell, &mut gateway, &mut feed, &mut stats, t(8))?;
+    let PassOutcome::Ran { report, breaks, .. } = second else {
+        panic!("the node halted on the pass after a partial fill: {second:?}");
+    };
+    assert!(breaks.is_empty(), "{breaks:?}");
+    assert_eq!(
+        report
+            .fills
+            .iter()
+            .filter(|fill| fill.order_id == resting.order_id)
+            .count(),
+        1,
+        "the premise is the partial fill confirmed exactly once: {:?}",
+        report.fills
+    );
+    assert!(
+        node.cell
+            .open_orders()
+            .iter()
+            .any(|order| order.order_id == resting.order_id),
+        "the premise is that a partly filled order is still open"
+    );
+    let after_fill = stats.fills;
+    assert_eq!(after_fill, 1, "the premise is one fill counted so far");
+
+    // Past the time to live of the order that filled, so the withdrawal runs
+    // on a turn where the old fill is still in the cumulative record.
+    let third = run_pass(&mut node.cell, &mut gateway, &mut feed, &mut stats, t(12))?;
+    let PassOutcome::Ran { report, breaks, .. } = third else {
+        panic!("the node halted on the expiry pass: {third:?}");
+    };
+    assert!(breaks.is_empty(), "{breaks:?}");
+    assert!(
+        stats.expired >= 1,
+        "the premise is that the resting order reached its time to live"
+    );
+    assert!(
+        !report
+            .fills
+            .iter()
+            .any(|fill| fill.order_id == resting.order_id),
+        "the expiry pass re-published a fill from an earlier pass: {:?}",
+        report.fills
+    );
+    assert_eq!(
+        stats.fills, after_fill,
+        "withdrawing an order counted its earlier fill again"
+    );
+    let snapshot = node.scrape_registry().snapshot();
+    assert_eq!(
+        snapshot.counter(EDGE_FILLS_CONFIRMED, &by("venue", VENUE)),
+        stats.fills,
+        "the node's fill count and the venue counter disagree about the same fact"
+    );
+    Ok(())
 }

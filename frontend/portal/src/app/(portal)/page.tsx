@@ -145,7 +145,7 @@ export default function ExecutiveDashboard() {
                 {status.data ? `autonomy ${status.data.autonomy}` : "autonomy —"}
               </span>
               <span className="px-3 py-1 rounded-full bg-indigo-500/10 text-indigo-400 text-xs font-bold">
-                PAPER ONLY
+                PAPER TRADING
               </span>
               {health.data && health.data.reconciliation_breaks > 0 ? (
                 <span className="px-3 py-1 rounded-full bg-red-500/10 text-red-500 text-xs font-bold">

@@ -82,10 +82,17 @@ fn run() -> Result<()> {
     let mut config = PlatformConfig::default().with_live_ceiling(ceiling);
     config.central.arbitrage = arbitrage;
     let context = qip_core::Context::new(clock.clone(), config.seed);
+    // Cloned before the platform takes it: `Telemetry` holds `Arc`s over its
+    // registry, tracer and logger, so the clone shares the same underlying
+    // state rather than starting a second, disconnected one. The OpenObserve
+    // drain thread, if configured below, reads from this handle; the platform
+    // records into the same one.
+    let telemetry = Telemetry::new("qip-api", clock.clone());
+    let telemetry_for_export = telemetry.clone();
     let mut platform = Platform::new(
         config,
         context,
-        Telemetry::new("qip-api", clock.clone()),
+        telemetry,
         catalogue.universe,
         LimitSet::conservative_default(),
     )?;
@@ -136,6 +143,21 @@ fn run() -> Result<()> {
             // signing with something nobody verifies.
             envelope_key.as_ref().map(|key| key.as_bytes().to_vec()),
         )?))),
+        None => None,
+    };
+
+    // The OpenObserve drain (ADR 0028): absent configuration means this
+    // process's telemetry stays local, exactly as it always has. Set means a
+    // thread starts that POSTs this process's metrics and spans on an
+    // interval, and the handle must outlive `serve()` below — dropping it
+    // would stop the thread while the process still runs.
+    let openobserve_config = qip_api::openobserve::OpenObserveConfig::from_env()?;
+    let _openobserve_drain = match &openobserve_config {
+        Some(config) => Some(qip_api::openobserve::spawn(
+            telemetry_for_export,
+            config.clone(),
+            clock.clone(),
+        )?),
         None => None,
     };
 
@@ -302,6 +324,14 @@ fn run() -> Result<()> {
             qip_api::mesh::CELLS_VARIABLE
         ),
     }
+    match &openobserve_config {
+        Some(config) => println!("  openobserve:      draining to {}", config.describe()),
+        None => println!(
+            "  openobserve:      not draining ({} is not set); telemetry stays local to \
+             this process",
+            qip_api::openobserve::URL_VARIABLE
+        ),
+    }
     for line in storage.banner_lines(
         &[
             "the event log's hash chain, at each completed cycle",
@@ -428,15 +458,13 @@ mod tests {
     //! Two things this root pins. The operator page's example policy is one
     //! the plane accepts, so the page cannot drift from the type it
     //! documents — a runbook whose example is refused at start-up is worse
-    //! than none. And, pinned but not endorsed: what the committed catalogue
-    //! does to the first desk order under the conservative default. ADR 0027 (proposed) frames
-    //! the decision — whether a share-of-gross concentration cap belongs in
-    //! a pre-trade set at all — and it is the risk desk's, not this root's.
-    //! Until it is taken, the state is that a catalogued universe turns the
-    //! two `MaxConcentration` entries on and they refuse the first order into
-    //! an empty book, because one position is the whole of the axis. This
-    //! test exists so that state is visible in a test name rather than
-    //! discovered in a deployment.
+    //! than none. And what the committed catalogue does to the first desk
+    //! order under the conservative default, which ADR 0027 has now decided:
+    //! the two entries are `MaxAxisWeight` against equity rather than
+    //! `MaxConcentration` against gross, so one position in an empty book is
+    //! no longer the whole of its axis and the first order is admitted. The
+    //! test asserts both halves, because a cap that admits everything is the
+    //! `MaxExpectedShortfall` defect wearing the other mask.
 
     // The workspace denies `panic_in_result_fn` for production code; in a
     // test the assertion is the deliverable and `?` keeps the setup readable.
@@ -488,7 +516,7 @@ mod tests {
     );
 
     #[test]
-    fn the_first_order_into_a_catalogued_universe_is_refused_by_the_default_concentration_cap_until_adr_0027_is_decided()
+    fn the_first_order_into_a_catalogued_universe_is_admitted_and_a_sector_past_the_cap_is_still_refused()
     -> Result<()> {
         let now = Timestamp::from_civil(2026, 9, 2);
         let text = std::fs::read_to_string(COMMITTED).expect("the committed catalogue is readable");
@@ -545,10 +573,37 @@ mod tests {
             vec!["hyp-adr-0027".to_string()],
             now,
         );
-        let refusal = match platform.submit_order(order, now) {
+        platform.submit_order(order, now).map_err(|error| {
+            Error::invalid(format!(
+                "the first order into a catalogued universe was refused: {}. ADR 0027 replaced \
+                 the share-of-gross denominator precisely so that one position in an empty book \
+                 is no longer the whole of its axis",
+                error.message()
+            ))
+        })?;
+
+        // Half the test. Admitting the first order is only an improvement if
+        // the control that replaced the old one can still veto, and the
+        // failure this second half prevents is the one ADR 0027 is a reaction
+        // to: `MaxExpectedShortfall` shipped in every default set and could
+        // never fire, and a cap that admits everything is that defect wearing
+        // the other mask. So the same axis is driven past 0.35 of equity and
+        // must be refused by name.
+        let equity = platform.risk_figures().equity();
+        let breaching_quantity = (equity * dec!("0.5")) / first.price;
+        let breach = platform.order_from(
+            first.object_id.clone(),
+            side,
+            breaching_quantity,
+            first.price,
+            "prop-adr-0027",
+            vec!["hyp-adr-0027".to_string()],
+            now,
+        );
+        let refusal = match platform.submit_order(breach, now) {
             Ok(()) => panic!(
-                "the first order into a catalogued universe was admitted under the conservative \
-                 default; ADR 0027 has been decided and this test should now say how"
+                "half of this book's equity in one sector was admitted under a 0.35 axis-weight \
+                 cap; the control ADR 0027 installed cannot fire"
             ),
             Err(error) => error.message().to_string(),
         };
@@ -560,11 +615,6 @@ mod tests {
                 .split_whitespace()
                 .any(|token| token == "sector-concentration:"),
             "the refusal does not name sector-concentration as the control that fired: {refusal}"
-        );
-        assert_eq!(
-            platform.risk_figures().fills(),
-            0,
-            "the refused order filled"
         );
         Ok(())
     }

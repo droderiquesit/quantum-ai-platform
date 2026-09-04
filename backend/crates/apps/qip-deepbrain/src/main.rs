@@ -107,6 +107,12 @@ fn run() -> Result<()> {
     // nothing could reach.
     let telemetry = Telemetry::new("qip-deepbrain", clock.clone());
     let metrics = telemetry.metrics.clone();
+    // A second handle on the same three `Arc`s, taken for the same reason the
+    // registry handle above is: the drain thread must read the registry the
+    // cycle writes to. A `Telemetry::new` of its own would export an empty
+    // surface for ever while the platform recorded into one nothing could
+    // reach — the defect the comment above describes, one level up again.
+    let telemetry_for_export = telemetry.clone();
 
     let status = Arc::new(Mutex::new(
         qip_deepbrain::status::NodeStatus::opening(&cleared, &config, started)
@@ -183,10 +189,30 @@ fn run() -> Result<()> {
         .open_trial_book(config.storage.key_value("trial-book")?, "trial-book")
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
 
+    // The OpenObserve drain (ADR 0028): absent configuration means this
+    // process's telemetry stays where it already is, on /metrics on the health
+    // port bound above. Set means a thread starts that POSTs this node's
+    // metrics and spans on an interval. Refused here, before the banner, so a
+    // deployment that got the configuration wrong exits 78 rather than
+    // starting and draining nowhere; and see `openobserve`'s module doc for
+    // why nothing this process can reach answers on the other end today.
+    let openobserve_config = qip_deepbrain::openobserve::OpenObserveConfig::from_env()?;
+    // Bound rather than discarded: `DrainHandle::drop` stops the loop, so a
+    // `_` pattern here would start the thread and stop it on the same line.
+    // This binding must outlive `node::run` below.
+    let _openobserve_drain = match &openobserve_config {
+        Some(config) => Some(qip_deepbrain::openobserve::spawn(
+            telemetry_for_export,
+            config.clone(),
+            clock.clone(),
+        )?),
+        None => None,
+    };
+
     // Read once, immediately after assembly, and carried through the run. It is
     // the boundary between what this process inherited from a previous run's
     // log and what it is itself accountable for handing to the archive.
-    let inherited = node::restored_through(platform.event_log().records());
+    let inherited = platform.inherited_through();
 
     banner(
         provenance, &config, &cleared, &platform, &ceiling, bound, &archive, inherited,
@@ -197,6 +223,14 @@ fn run() -> Result<()> {
          sector-concentration, and the decision is the risk desk's, not this process's",
         catalogue.manifest.describe()
     );
+    match &openobserve_config {
+        Some(config) => println!("  openobserve:      draining to {}", config.describe()),
+        None => println!(
+            "  openobserve:      not draining ({} is not set); telemetry stays local to \
+             /metrics on the health port",
+            qip_deepbrain::openobserve::URL_VARIABLE
+        ),
+    }
 
     // The evolution engine, and the research node's first data source. The
     // adapter is the synthetic exchange, seeded from the platform so a session
@@ -281,6 +315,15 @@ fn run() -> Result<()> {
             println!("{}", outcome.report.summarise());
             if let Some(round) = &outcome.evolution {
                 println!("  {}", round.describe());
+                // The champion/challenger contest, computed every round `turn`
+                // runs and until now never printed: an operator watching the
+                // cycle line saw candidates registered but never learned
+                // whether any of them displaced the strategy that speaks for
+                // an instrument, which is the question the succession desk
+                // exists to answer.
+                if let Some(challenge) = &round.challenge {
+                    println!("  {}", challenge.describe());
+                }
             }
             if let Some(round) = &outcome.learning {
                 println!("  {}", round.describe());

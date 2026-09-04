@@ -454,8 +454,71 @@ jobs:
           PAIRS: ${{ steps.catalogue.outputs.pairs }}
         run: |
           set -euo pipefail
+          # Selection by name, in one place. An index is what this step got
+          # wrong; a gcloud projection filter is not something this
+          # repository can test before it runs, and python3 is on every
+          # runner. Each question fails loudly rather than returning an
+          # empty string that a comparison would read as a mismatch it
+          # cannot explain.
+          cat > "${RUNNER_TEMP}/prove-serving.py" <<'PY'
+          import json
+          import sys
+
+          question, path, wanted = sys.argv[1], sys.argv[2], sys.argv[3]
+          with open(path, encoding="utf-8") as handle:
+              described = json.load(handle)
+
+          if question == "routed":
+              status = described.get("status", {})
+              conditions = status.get("conditions", [])
+              ready = next((c for c in conditions if c.get("type") == "Ready"), None)
+              if ready is None:
+                  sys.exit(
+                      f"{wanted} reports no Ready condition; it reports "
+                      f"{[c.get('type') for c in conditions]}"
+                  )
+              if ready.get("status") != "True":
+                  sys.exit(
+                      f"{wanted} is not Ready: {ready.get('status')} — "
+                      f"{ready.get('message', 'no message given')}"
+                  )
+              routed = [t for t in status.get("traffic", []) if t.get("percent")]
+              if not routed:
+                  sys.exit(f"{wanted} is Ready and routes traffic to no revision")
+              for entry in routed:
+                  revision = entry.get("revisionName")
+                  if not revision:
+                      sys.exit(f"{wanted} routes {entry.get('percent')}% to an unnamed revision")
+                  print(revision)
+          elif question == "image":
+              containers = described.get("spec", {}).get("containers", [])
+              named = [c for c in containers if c.get("name") == wanted]
+              if not named:
+                  sys.exit(
+                      f"the revision runs no container named {wanted}; it runs "
+                      f"{[c.get('name') for c in containers]}"
+                  )
+              print(named[0]["image"])
+          else:
+              sys.exit(f"prove-serving.py was asked an unknown question: {question}")
+          PY
+
           prefix="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/qip-${TARGET_ENVIRONMENT}"
           images_file="infrastructure/environments/${TARGET_ENVIRONMENT}/images.tfvars"
+          # `terraform fmt` aligns the `=` of every attribute in a block to the
+          # longest key, and `ci.yml` runs `terraform fmt -check`. A file this
+          # step writes unaligned therefore fails the gate on the very next
+          # push — which is exactly what happened the first time this step
+          # succeeded: run 33780092495 recorded three digests, `qip-api` was
+          # six characters shorter than its neighbours, and the branch went
+          # red on formatting alone with every service correctly deployed.
+          # Computed from PAIRS rather than hardcoded, so adding a binary
+          # cannot silently reintroduce it.
+          key_width=0
+          for pair in $PAIRS; do
+            binary="${pair#*=}"
+            [ "${#binary}" -gt "$key_width" ] && key_width="${#binary}"
+          done
           {
             echo "# ${TARGET_ENVIRONMENT}'s deployed image digests — written by .github/workflows/deploy.yml."
             echo "#"
@@ -490,27 +553,95 @@ jobs:
             # now has more than one — the egress proxy, the metrics collector
             # — and gcloud refuses an unqualified `--image` on a
             # multi-container service rather than guess which one to move.
-            gcloud run services update "$service" \
+            # Terraform owns the service — its ingress, its secrets, its
+            # sidecars, its identity, its scaling floor. This step only moves
+            # the image, so a service that does not exist yet is not
+            # something to create here: `gcloud run deploy` would make a bare
+            # one carrying none of that, and the next apply would fight it.
+            # Say what is missing and what makes it, rather than dying on
+            # `Service could not be found` with the fix nowhere in the log.
+            if ! gcloud run services describe "$service" \
               --project "${GCP_PROJECT}" --region "${GCP_REGION}" \
-              --container "$name" \
-              --image "$image" --quiet
-
-            # The second half: the revision that is serving runs the digest
-            # that was signed. `services update` returning is not that; a
-            # traffic split or a previous revision still routing would look
-            # identical from the exit code.
-            serving=$(gcloud run services describe "$service" \
-              --project "${GCP_PROJECT}" --region "${GCP_REGION}" \
-              --format='value(spec.template.spec.containers[0].image)')
-            ready=$(gcloud run services describe "$service" \
-              --project "${GCP_PROJECT}" --region "${GCP_REGION}" \
-              --format='value(status.conditions[0].status)')
-            if [ "$serving" != "$image" ] || [ "$ready" != "True" ]; then
-              echo "${service} is serving '${serving}' with Ready=${ready}; asked for ${image}" >&2
+              --format='value(name)' >/dev/null 2>&1; then
+              echo "${service} does not exist in ${GCP_PROJECT}/${GCP_REGION}." >&2
+              echo "Terraform creates the Cloud Run services; this step only moves them to a digest it has attested." >&2
+              echo "Run the infra workflow first with action=up and environment=${TARGET_ENVIRONMENT}, then re-run this one." >&2
               exit 1
             fi
-            echo "${service} serves ${image}"
-            echo "  ${binary} = \"${digest}\"" >> "$images_file"
+
+            # Every global flag precedes `--container`. `--container` opens
+            # a scope that only container-level flags may enter, so a global
+            # one after it makes gcloud refuse the whole command with
+            # `unrecognized arguments: --quiet` — which is how every
+            # deployment failed between the sidecars landing and this fix.
+            # On a rollout failure, say why here rather than printing a
+            # console URL nobody in CI can open.
+            #
+            # `services update` fails with one line — "the user-provided
+            # container failed the configured startup probe checks" — and a
+            # Logs URL. That is the true statement and it is not a cause: the
+            # cause is in the revision's own log, one API call away, and a
+            # pipeline that makes a person go and fetch it is a pipeline that
+            # reports failures nobody reads. This platform's roots refuse to
+            # start on a configuration they cannot honour (an unwritable
+            # journal, a live autonomy ceiling, a missing trust root), and
+            # each refusal names what to do instead — so the message that
+            # matters is almost always in those first lines.
+            if ! gcloud run services update "$service" \
+              --project "${GCP_PROJECT}" --region "${GCP_REGION}" --quiet \
+              --container "$name" \
+              --image "$image"; then
+              echo "::group::${service}: why the revision did not start"
+              revision="$(gcloud run revisions list \
+                --project "${GCP_PROJECT}" --region "${GCP_REGION}" \
+                --service "$service" --sort-by=~metadata.creationTimestamp \
+                --limit 1 --format='value(metadata.name)' || true)"
+              if [ -n "$revision" ]; then
+                echo "revision ${revision}:"
+                # Both containers: a workload that refused its configuration
+                # and a sidecar that never listened look identical from
+                # outside, and the difference is the whole diagnosis.
+                gcloud logging read \
+                  "resource.type=cloud_run_revision AND resource.labels.revision_name=${revision}" \
+                  --project "${GCP_PROJECT}" --limit 50 --order asc \
+                  --format='value(timestamp,labels.container_name,textPayload)' || true
+              else
+                echo "no revision was created; the failure is ahead of the container."
+              fi
+              echo "::endgroup::"
+              exit 1
+            fi
+
+            # The second half, and the claim the GitOps cut-over lost: the
+            # revision that is *serving* runs the digest that was signed.
+            # `services update` returning is not that, and neither is
+            # reading `spec.template` — that is what was asked for, which a
+            # traffic split that never moved satisfies just as well. So the
+            # revisions read are the ones `status.traffic` routes to.
+            #
+            # Both selections are by name, never by position: every service
+            # carries the egress sidecar and may carry the metrics
+            # collector, so the first container is as likely to be a sidecar
+            # as the workload, and nothing documents the first condition as
+            # Ready.
+            gcloud run services describe "$service" \
+              --project "${GCP_PROJECT}" --region "${GCP_REGION}" \
+              --format=json > "${RUNNER_TEMP}/service-${name}.json"
+            routed=$(python3 "${RUNNER_TEMP}/prove-serving.py" \
+              routed "${RUNNER_TEMP}/service-${name}.json" "$service")
+            for revision in $routed; do
+              gcloud run revisions describe "$revision" \
+                --project "${GCP_PROJECT}" --region "${GCP_REGION}" \
+                --format=json > "${RUNNER_TEMP}/revision-${revision}.json"
+              serving=$(python3 "${RUNNER_TEMP}/prove-serving.py" \
+                image "${RUNNER_TEMP}/revision-${revision}.json" "$name")
+              if [ "$serving" != "$image" ]; then
+                echo "${service} routes traffic to ${revision}, whose ${name} container runs '${serving}'; asked for ${image}" >&2
+                exit 1
+              fi
+              echo "${service} serves ${image} from ${revision}"
+            done
+            printf '  %-*s = "%s"\n' "$key_width" "$binary" "$digest" >> "$images_file"
           done
           echo "}" >> "$images_file"
           echo "wrote ${images_file}:"
@@ -546,6 +677,20 @@ jobs:
 
       # Record what was deployed, beside the tfvars that describe the
       # environment. Nothing to commit means the digests are already current.
+      #
+      # The checkout above is pinned to `${{ env.DEPLOY_SHA }}` — a commit,
+      # not a branch — so the working tree is a detached HEAD here. `git
+      # push` alone has nothing to push *to* and fails with "You are not
+      # currently on a branch"; the deployment this step is recording had
+      # already succeeded when that happened, which is a worse failure to
+      # read than an honest one, since the run ends red over bookkeeping
+      # after doing the thing that mattered. `GITHUB_REF_NAME` is the branch
+      # this workflow was actually asked to run against — set by GitHub for
+      # both triggers this file has: the branch a person chose in
+      # `workflow_dispatch`, or the branch `ci` just ran on for the
+      # automatic path — so pushing `HEAD` to it names the real target
+      # explicitly instead of asking git to infer one from a detached state
+      # that carries no branch to infer.
       - name: commit the deployed digests
         run: |
           set -euo pipefail
@@ -560,4 +705,24 @@ jobs:
 
           Written by .github/workflows/deploy.yml after each Cloud Run service was
           moved to the attested digest for ${DEPLOY_SHA} and proven serving it."
-          git push
+
+          # `origin/${GITHUB_REF_NAME}` moves whenever anything else lands on
+          # this branch while a deploy is mid-run — this repo pushes crate
+          # fixes to it continuously, and a deploy takes minutes. The first
+          # `git push` failing with a non-fast-forward rejection is that race,
+          # not a real conflict: this commit only ever touches one generated
+          # file (images.tfvars) and its own predecessor's content, so
+          # rebasing onto whatever landed in the meantime is always safe.
+          # Retry a bounded number of times rather than once, since a branch
+          # under continuous push traffic can move again between the rebase
+          # and the retry.
+          for attempt in 1 2 3 4 5; do
+            if git push origin "HEAD:refs/heads/${GITHUB_REF_NAME}"; then
+              exit 0
+            fi
+            echo "push rejected (attempt ${attempt}/5); rebasing onto origin/${GITHUB_REF_NAME} and retrying"
+            git fetch origin "${GITHUB_REF_NAME}"
+            git rebase "origin/${GITHUB_REF_NAME}"
+          done
+          echo "::error::commit the deployed digests: push kept losing the race after 5 attempts"
+          exit 1

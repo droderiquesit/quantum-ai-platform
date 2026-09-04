@@ -158,6 +158,40 @@ fn whoever_holds_the_seed_recovers_the_true_statistic() -> Result<()> {
 }
 
 #[test]
+fn debug_formatting_a_gate_does_not_print_the_seed() -> Result<()> {
+    // The seed is key material: `noise_for` above recovers every release's
+    // true value from it. A derived `Debug` on `ReleaseGate` would print it
+    // in full the first time anything logs a gate for troubleshooting — a
+    // leak through a formatting trait rather than through the mechanism the
+    // crate's own threat model documents. Pick a seed distinctive enough
+    // that no other field could coincidentally contain its digits.
+    let seed: u64 = 8_675_309_123_456;
+    let set = contributions(&FLOW)?;
+    let query = Query::new(
+        CohortId::new("global-net-exposure")?,
+        Statistic::Sum,
+        bounds()?,
+        Epsilon::new(0.5)?,
+    )?;
+
+    let mut gate = ReleaseGate::new(Policy::default(), seed);
+    // Release once so the gate carries a non-empty history too, and the
+    // seed still must not appear anywhere in the formatted output.
+    gate.release(&query, &set)?;
+
+    let rendered = format!("{gate:?}");
+    assert!(
+        !rendered.contains(&seed.to_string()),
+        "the gate's Debug output names the seed: {rendered}"
+    );
+    assert!(
+        rendered.contains("redacted"),
+        "the gate's Debug output does not say the seed was withheld: {rendered}"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_cohort_where_only_one_cell_has_anything_to_report_is_still_released() -> Result<()> {
     // The threshold counts contributors, not contributions. Five cells of which
     // four report zero is arithmetically one cell's number, and this gate

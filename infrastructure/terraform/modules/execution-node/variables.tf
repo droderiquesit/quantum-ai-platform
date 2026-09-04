@@ -128,8 +128,8 @@ variable "boot_image" {
 
 variable "node_count" {
   description = <<-EOT
-    How many instances the group holds. One, per §41.4 — a single dedicated
-    machine per region.
+    How many instances the group holds. Zero or one, per §41.4 — a single
+    dedicated machine per region, or none while the node is only provisioned.
 
     Blue-green replacement does not need a second permanent instance: the
     update policy below surges one, proves it, and retires the old one. A
@@ -141,8 +141,16 @@ variable "node_count" {
   default = 1
 
   validation {
-    condition     = var.node_count >= 1 && var.node_count <= 2
-    error_message = "An execution node group holds one instance, or two only while a replacement is being observed."
+    # Zero is "provisioned, not running", and it was previously refused. That
+    # refusal made a reviewable node and a billing node the same act: the only
+    # way to see a node's real surface in a plan — subnet, identity, four IAM
+    # bindings, template, health check, five firewall rules — was to start a
+    # machine that then runs continuously whether or not anyone is reading it.
+    # The `ignore_changes = [target_size]` below is what makes zero stable: an
+    # operator's resize to one for a bounded soak is a deployment decision, not
+    # drift for the next apply to undo.
+    condition     = var.node_count >= 0 && var.node_count <= 2
+    error_message = "An execution node group holds zero instances (provisioned, not running), one, or two only while a replacement is being observed."
   }
 }
 
@@ -273,9 +281,28 @@ variable "egress_bootstrap" {
     error_message = "The egress bootstrap is not an Envoy configuration. Pass `file(\"../egress/envoy.yaml\")` — the one committed bootstrap — not a path to it."
   }
 
+  # `health` is the one listener that binds 0.0.0.0, so that Cloud Run's
+  # sidecar startup probe — issued from outside the container's network
+  # namespace — can reach it; a loopback bind there answers nothing and the
+  # instance never starts. This one bootstrap is shared by both renderings
+  # (this module's own doc comment above says so), so the node inherits that
+  # bind whether or not its own check needs it.
+  #
+  # It does not need it, and is not weakened by carrying it. The node's
+  # proxy unit is checked locally — "on the execution node the unit's health
+  # check does the same", i.e. systemd on the same host — and
+  # `google_compute_firewall.deny_ingress` in `main.tf` denies all inbound
+  # from `0.0.0.0/0` except `var.health_port` (the binary's own health
+  # endpoint, checked from Google's health-check ranges). Port 9900 is on no
+  # allow list, so what stops a neighbour in the subnet reaching the wide
+  # bind is the firewall, not the socket. Any listener other than `health`
+  # binding wide would still be a mistake this validation exists to catch.
   validation {
-    condition     = !strcontains(var.egress_bootstrap, "address: 0.0.0.0")
-    error_message = "The egress bootstrap binds a listener to 0.0.0.0. On the node every listener is loopback: a proxy reachable from the network is a proxy every neighbour can reach."
+    condition = alltrue([
+      for line in regexall("- name: ([a-z-]+)\n\\s+address:\n\\s+socket_address: \\{ address: ([0-9.]+),", var.egress_bootstrap) :
+      line[1] == "127.0.0.1" || line[0] == "health"
+    ])
+    error_message = "The egress bootstrap binds a listener other than `health` to something other than loopback. On the node every traffic listener must stay loopback: a proxy reachable from the network is a proxy every neighbour can reach. `health` is the sole named exception, and it is covered by the firewall instead."
   }
 }
 
@@ -452,4 +479,99 @@ variable "create_egress_nat" {
 variable "labels" {
   type    = map(string)
   default = {}
+}
+
+variable "default_pricing" {
+  description = <<-EOT
+    How every strategy this node deploys prices its intents, written into
+    `node.env` as `QIP_DEFAULT_PRICING`.
+
+    Two forms and no others: `marketable`, which prices at the touch, and
+    `rest-at-mid:<seconds>`, which rests at mid and withdraws after that many
+    seconds. Empty is the default and is the same as unset — the node deploys
+    no strategy and says so at start-up.
+
+    Written even when empty, on purpose. An optional variable no deployment
+    sets is a capability no environment can select: the binary takes its
+    fallback, the node is healthy, and nothing anywhere says the feature is
+    off. The key being present with an empty value is what makes the choice
+    reviewable in the tfvars rather than invisible.
+  EOT
+
+  type    = string
+  default = ""
+
+  validation {
+    condition = var.default_pricing == "" || var.default_pricing == "marketable" || (
+      startswith(var.default_pricing, "rest-at-mid:")
+      && can(tonumber(trimprefix(var.default_pricing, "rest-at-mid:")))
+    )
+    error_message = <<-EOT
+      default_pricing must be "", "marketable", or "rest-at-mid:<seconds>"
+      with a whole number of seconds — `rest-at-mid:30`, not `rest-at-mid:30s`.
+      The node refuses anything else at start-up; refusing it here means the
+      operator reads the mistake instead of a node that came up quiet.
+    EOT
+  }
+}
+
+variable "strategy_plan_path" {
+  description = <<-EOT
+    The file the node reads its compiled strategy plan from, written into
+    `node.env` as `QIP_STRATEGY_PLAN_PATH`.
+
+    Empty is the default and the same as unset: the payload names a plan by
+    digest and the node has no bytes to check it against, so it deploys
+    nothing. Written even when empty, for the reason `default_pricing` gives.
+  EOT
+
+  type    = string
+  default = ""
+
+  validation {
+    # The path is interpolated into an unquoted heredoc that writes node.env
+    # (templates/startup.sh.tftpl:164 and :183). `startswith("/")` alone
+    # admitted a value containing a newline, which writes a second variable
+    # nobody reviewed, and one containing $(...) or a backtick, which the shell
+    # expands as root at boot. A character class, not just a prefix.
+    condition     = var.strategy_plan_path == "" || can(regex("^/[A-Za-z0-9._/-]*$", var.strategy_plan_path))
+    error_message = <<-EOT
+      strategy_plan_path must be absolute and may contain only letters, digits,
+      dot, underscore, dash and slash. The node's working directory is
+      systemd's, so a relative path resolves somewhere nobody chose; and the
+      value is written verbatim into node.env by an unquoted heredoc, so a
+      newline or a command substitution in it is an injection, not a path.
+    EOT
+  }
+}
+
+variable "region_allocation" {
+  description = <<-EOT
+    The capital this node may hold in reservation across all its strategies,
+    written into `node.env` as `QIP_REGION_ALLOCATION`.
+
+    Required, with no default, because a default is a number nobody chose.
+    `qip-edge-node` refuses to start without it (ADR 0008: a cell that has
+    lost the centre still refuses its own second proposal, and it can only do
+    that against a per-region allocation it was given at assembly). Zero is
+    refused by the binary as well: "send nothing" is what the halt flag is
+    for, and an allocation of zero that starts a node is a control that reads
+    as protection and is not.
+  EOT
+
+  type = string
+
+  validation {
+    # Same heredoc-injection reasoning as `strategy_plan_path`: this is
+    # interpolated unquoted into node.env, so the shape is a character class,
+    # not a parse. A plain decimal with an optional fraction and nothing else.
+    condition     = can(regex("^[0-9]+(\\.[0-9]+)?$", var.region_allocation)) && var.region_allocation != "0" && !can(regex("^0+(\\.0+)?$", var.region_allocation))
+    error_message = <<-EOT
+      region_allocation must be a positive decimal such as "250000.50" — digits,
+      an optional fraction, nothing else. It is written verbatim into node.env by
+      an unquoted heredoc, so any other character is an injection rather than a
+      number; and zero is refused because a node that can reserve nothing should
+      be halted, not started.
+    EOT
+  }
 }

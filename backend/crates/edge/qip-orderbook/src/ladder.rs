@@ -145,10 +145,20 @@ impl Ladder {
 
     /// Change a level's size without touching its queue, for the one case that
     /// keeps time priority: a resting order shrinking in place.
-    pub(crate) fn resize_level(&mut self, price: Decimal, delta: Decimal) {
-        if let Some(level) = self.levels.get_mut(&price) {
-            level.size += delta;
-        }
+    ///
+    /// Returns false when no level rests at `price`, which means the order
+    /// index and the ladder have already diverged. Silently doing nothing
+    /// here would leave the caller's order record showing a new quantity
+    /// while the level total it is supposed to be part of never moved — the
+    /// aggregate size would then understate what the index believes is
+    /// resting, and nothing downstream could tell the book was wrong. The
+    /// caller must say so, the same way [`Self::detach_order`] already does.
+    pub(crate) fn resize_level(&mut self, price: Decimal, delta: Decimal) -> bool {
+        let Some(level) = self.levels.get_mut(&price) else {
+            return false;
+        };
+        level.size += delta;
+        true
     }
 }
 
@@ -177,5 +187,49 @@ impl Iterator for LevelWalk<'_> {
             WalkInner::Descending(iter) => iter.next()?,
         };
         Some(level.to_level(*price))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qip_core::dec;
+
+    /// `resize_level` must report a level it cannot find rather than quietly
+    /// doing nothing to it.
+    ///
+    /// `L3Book::reduce` and `L3Book::replace` trust this return value to
+    /// decide whether the order index and the ladder still agree; if it
+    /// silently succeeded on an absent level, a future divergence between the
+    /// two would leave a caller's order marked with a new quantity while no
+    /// level total ever moved to match it — the exact "looks healthy, is
+    /// missing depth" failure this crate's module documentation warns against
+    /// for `LevelSet` on the wrong book kind.
+    #[test]
+    fn resizing_a_level_that_does_not_rest_is_reported_rather_than_ignored() {
+        let mut ladder = Ladder::new(BookSide::Bid);
+        // The premise: no level rests at this price yet.
+        assert!(ladder.level_at(dec!("100.00")).is_none());
+
+        let resized = ladder.resize_level(dec!("100.00"), dec!("10"));
+
+        assert!(!resized, "resizing an absent level must report failure");
+        assert!(
+            ladder.level_at(dec!("100.00")).is_none(),
+            "an absent level must not spring into existence by being resized"
+        );
+    }
+
+    /// The ordinary case: resizing a level that does rest succeeds and the
+    /// change lands on its size.
+    #[test]
+    fn resizing_a_level_that_rests_changes_its_size_and_reports_success() {
+        let mut ladder = Ladder::new(BookSide::Bid);
+        ladder.insert_order(dec!("100.00"), 1, dec!("50"));
+
+        let resized = ladder.resize_level(dec!("100.00"), dec!("-20"));
+
+        assert!(resized, "resizing a level that rests must report success");
+        assert_eq!(ladder.size_at(dec!("100.00")), dec!("30"));
     }
 }

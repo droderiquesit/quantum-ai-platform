@@ -50,16 +50,54 @@ pub struct CatalogueEntry {
 /// research, derivation and trading while withholding redistribution. No
 /// expiry is stated in the terms; the entry carries none, and a change in
 /// the vendor's terms is a change to this entry, reviewed like code.
+///
+/// # frankfurter-ecb-reference-rates
+///
+/// The euro foreign-exchange reference rates the ECB publishes each working
+/// day, served unauthenticated by Frankfurter. The terms read for this
+/// evaluation: the ECB permits reuse of its published reference rates,
+/// including for commercial purposes, provided the source is acknowledged;
+/// Frankfurter is a free relay of that same series and adds no term of its
+/// own restricting it. That is `Public` — the one class in this catalogue
+/// whose grant includes `Redistribute`, and the reason a number derived from
+/// it may be shown to a client where a Coinbase-derived one may not.
+///
+/// The acknowledgement obligation is the thing to notice and the thing this
+/// entry cannot enforce: `LicensingClass::Public` is a statement about what
+/// the platform may do, not a mechanism that attributes anything. Displaying
+/// these rates in the console without naming the ECB would satisfy every
+/// check in this file and still breach the terms it cites. Nothing displays
+/// them today; whoever first does owns that.
+///
+/// No expiry is stated, so the entry carries none. This posture was written
+/// from the published terms and not from a negotiated agreement — there is
+/// no contract to read — so a change in either party's terms is a change to
+/// this entry, reviewed like code.
 pub fn catalogue() -> Result<Vec<CatalogueEntry>> {
     use qip_contracts::governance::Usage;
-    Ok(vec![CatalogueEntry {
-        source_id: "coinbase-spot-ticker",
-        expected_class: LicensingClass::Internal,
-        posture: LicensingPosture::declared(SourceLicense::new(
-            "coinbase-exchange-market-data-terms",
-            [Usage::Research, Usage::Derive, Usage::Trade],
-        )?),
-    }])
+    Ok(vec![
+        CatalogueEntry {
+            source_id: "coinbase-spot-ticker",
+            expected_class: LicensingClass::Internal,
+            posture: LicensingPosture::declared(SourceLicense::new(
+                "coinbase-exchange-market-data-terms",
+                [Usage::Research, Usage::Derive, Usage::Trade],
+            )?),
+        },
+        CatalogueEntry {
+            source_id: "frankfurter-ecb-reference-rates",
+            expected_class: LicensingClass::Public,
+            posture: LicensingPosture::declared(SourceLicense::new(
+                "ecb-reference-rates-via-frankfurter",
+                [
+                    Usage::Research,
+                    Usage::Derive,
+                    Usage::Trade,
+                    Usage::Redistribute,
+                ],
+            )?),
+        },
+    ])
 }
 
 /// Admit a source for this node's use, or refuse it with the reason.

@@ -277,6 +277,24 @@ fn a_buffer_that_never_completes_a_frame_is_refused_before_it_exhausts_memory() 
 }
 
 #[test]
+fn a_newline_delimited_frame_over_the_bound_is_corruption_even_when_the_delimiter_arrived() {
+    // check_frame_bound already refuses a stream that has grown past the
+    // bound without ever finding a delimiter. Before this test, a single
+    // read carrying an oversized frame that does end in `\n` skipped that
+    // guard entirely and would have been handed to `serde_json` whole.
+    let mut bytes = vec![b'"'];
+    bytes.resize(qip_protocols::decoder::MAX_FRAME_BYTES + 2, b'a');
+    bytes.push(b'"');
+    bytes.push(b'\n');
+
+    let mut decoder = json_decoder(Framing::NewlineDelimited);
+    let error = decoder
+        .decode(&bytes, at())
+        .expect_err("a frame past the bound must be refused, delimiter or not");
+    assert!(error.message().contains("exceeds"), "{error}");
+}
+
+#[test]
 fn a_registry_routes_a_read_to_the_decoder_registered_for_that_feed() {
     let mut registry = ProtocolRegistry::new();
     registry

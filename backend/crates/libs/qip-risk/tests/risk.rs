@@ -546,7 +546,7 @@ fn a_leverage_breach_blocks_and_forces_reduction() {
 }
 
 #[test]
-fn a_concentration_breach_names_the_offending_bucket() {
+fn an_axis_weight_breach_names_the_offending_bucket() {
     let mut state = state();
     state.axis_exposures.insert(
         "sector".to_string(),
@@ -563,11 +563,39 @@ fn a_concentration_breach_names_the_offending_bucket() {
     let breach = check
         .blocking()
         .into_iter()
-        .find(|b| b.limit_kind == "max_concentration")
-        .expect("a concentration breach");
+        .find(|b| b.limit_kind == "max_axis_weight")
+        .expect("a sector-weight breach");
     assert_eq!(breach.subject.as_deref(), Some("information_technology"));
-    assert!(breach.observed > 0.9);
+    // 850k of a million in equity. The exact value, not `> 0.9`: the old
+    // assertion held only because the denominator was the axis total (900k),
+    // and a loose inequality would have survived the denominator changing
+    // under it without anyone noticing which number was being read.
+    assert!((breach.observed - 0.85).abs() < 1e-9, "{}", breach.observed);
     assert!(breach.detail.contains("sector"));
+}
+
+#[test]
+fn no_limit_in_the_default_set_divides_by_a_number_the_order_itself_moves() {
+    let limits = LimitSet::conservative_default();
+    // Premise: the set is not empty, so an empty filter below would not be
+    // mistaken for a set that satisfies the property.
+    assert!(limits.len() >= 12);
+    let offenders: Vec<&str> = limits
+        .limits
+        .iter()
+        .filter(|limit| limit.kind.denominator_moves_with_the_order())
+        .map(|limit| limit.name.as_str())
+        .collect();
+    // `sector-concentration` and `country-concentration` were share-of-gross
+    // caps here until ADR 0027, and a share of gross is 100% for the first
+    // position in an empty book — so the shipped set refused the first order
+    // of every deployment that fed it a catalogue. This is the assertion that
+    // would have caught it before a deployment did.
+    assert!(
+        offenders.is_empty(),
+        "the shipped set holds a pre-trade veto whose answer does not depend on \
+         the order's size: {offenders:?}"
+    );
 }
 
 #[test]
@@ -728,6 +756,15 @@ fn state_with_no_tail_figures() -> RiskState {
     state
 }
 
+/// The shared fixture with `volatility` reset to zero, so a nonzero figure
+/// found after `with_tail_risk` can only have come from the derivation under
+/// test rather than the `0.18` the fixture otherwise carries.
+fn state_with_no_volatility_figure() -> RiskState {
+    let mut state = state();
+    state.volatility = 0.0;
+    state
+}
+
 #[test]
 fn a_book_whose_expected_shortfall_breaches_the_limit_is_refused() {
     let limits = LimitSet::conservative_default();
@@ -828,4 +865,233 @@ fn a_series_too_short_to_measure_leaves_the_maps_empty_rather_than_recording_zer
     let bare = state_with_no_tail_figures().with_tail_risk(&limits, &[0.01]);
     assert!(bare.expected_shortfall.is_empty());
     assert!(bare.value_at_risk.is_empty());
+}
+
+// --- liquidity horizons ------------------------------------------------------
+//
+// `LimitKind::MinLiquidity` reads `liquidatable_within`, keyed by horizon,
+// exactly the way `MaxExpectedShortfall` read `expected_shortfall` before
+// `RiskState::with_tail_risk` existed — and nothing filled it.
+// `LimitSet::conservative_default` has shipped a `liquidity` limit since
+// before `with_liquidity_horizons` existed. These fixtures pin the
+// derivation that fills the map from `days_to_liquidate` and
+// `position_notionals`, keyed the way the limit reads them.
+
+/// The shared fixture with its liquidity map emptied, so a figure found
+/// under a key can only have been put there by the derivation under test.
+fn state_with_no_liquidity_figures() -> RiskState {
+    let mut state = state();
+    state.liquidatable_within.clear();
+    state
+}
+
+#[test]
+fn a_book_whose_liquidity_falls_below_the_default_floor_is_refused_once_marked() {
+    let limits = LimitSet::conservative_default();
+    // AAPL (80k) exits in a day; MSFT (60k) has no declared exit time at
+    // all, which must count against the floor rather than drop out of it.
+    let mut state = state_with_no_liquidity_figures();
+    state.days_to_liquidate = BTreeMap::from([("AAPL".to_string(), 1.0)]);
+    let state = state.with_liquidity_horizons(&limits);
+
+    // Premise: the figure exists under the key the default limit reads. If
+    // the map is empty the breach assertion below measures nothing.
+    let fraction = state
+        .liquidatable_within
+        .get("5")
+        .copied()
+        .unwrap_or_else(|| {
+            panic!(
+                "no liquidatable fraction under the default limit's key; the map holds {:?}",
+                state.liquidatable_within.keys().collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        (fraction - (80_000.0 / 140_000.0)).abs() < 1e-9,
+        "80k of 140k is liquid inside 5 days, MSFT has no declared exit time: got {fraction}"
+    );
+    assert!(
+        fraction < 0.80,
+        "premise: the fraction sits below the default 80% floor, got {fraction}"
+    );
+
+    let check = limits.check(&state);
+    let breach = check
+        .blocking()
+        .into_iter()
+        .find(|b| b.limit_kind == "min_liquidity")
+        .unwrap_or_else(|| panic!("liquidity did not bind: {}", check.reason()));
+    assert!(breach.observed < breach.bound, "a floor binds from below");
+    assert!(check.is_blocked());
+}
+
+#[test]
+fn a_book_whose_liquidity_sits_above_the_default_floor_passes() {
+    let limits = LimitSet::conservative_default();
+    // Both names exit well inside the 5-day horizon the default limit uses.
+    let mut state = state_with_no_liquidity_figures();
+    state.days_to_liquidate =
+        BTreeMap::from([("AAPL".to_string(), 1.0), ("MSFT".to_string(), 2.0)]);
+    let state = state.with_liquidity_horizons(&limits);
+
+    // Premise: computed, not skipped.
+    assert!(
+        state.liquidatable_within.contains_key("5"),
+        "nothing was computed, so nothing can be said about passing"
+    );
+    let check = limits.check(&state);
+    assert!(
+        !check
+            .breaches
+            .iter()
+            .any(|b| b.limit_kind == "min_liquidity"),
+        "a fully liquid book breached the liquidity floor: {}",
+        check.reason()
+    );
+}
+
+#[test]
+fn an_instrument_with_no_declared_exit_time_counts_against_the_floor_not_outside_it() {
+    let limits = LimitSet::new("fixture").with(Limit::new(
+        "liquidity",
+        LimitKind::MinLiquidity {
+            days: 5.0,
+            fraction: 0.80,
+        },
+    ));
+    // AAPL and MSFT are equal-sized (80k, 60k in the shared fixture is
+    // uneven, so use a state where the split is exact): two 50k positions,
+    // one with a declared exit time inside the horizon and one without.
+    let mut state = state_with_no_liquidity_figures();
+    state.position_notionals = BTreeMap::from([
+        ("AAPL".to_string(), Decimal::from_int(50_000)),
+        ("MSFT".to_string(), Decimal::from_int(50_000)),
+    ]);
+    state.days_to_liquidate = BTreeMap::from([("AAPL".to_string(), 1.0)]);
+    let state = state.with_liquidity_horizons(&limits);
+
+    let fraction = state.liquidatable_within["5"];
+    // Had the undeclared name been dropped from both sides instead of
+    // counted illiquid, this would read 1.0 — fully liquid on half the
+    // information. Fail-closed keeps it at one half.
+    assert!(
+        (fraction - 0.5).abs() < 1e-9,
+        "an unmeasured exit time was not counted against the floor: {fraction}"
+    );
+}
+
+#[test]
+fn an_empty_book_leaves_the_liquidity_map_untouched() {
+    let limits = LimitSet::conservative_default();
+    let mut state = state_with_no_liquidity_figures();
+    state.position_notionals = BTreeMap::new();
+    let state = state.with_liquidity_horizons(&limits);
+    assert!(
+        state.liquidatable_within.is_empty(),
+        "a book with no positions recorded a liquidity fraction nobody measured"
+    );
+}
+
+#[test]
+fn a_book_nobody_has_ever_marked_leaves_the_liquidity_map_untouched_rather_than_all_illiquid() {
+    // Held positions, but `days_to_liquidate` is empty: nobody has run a
+    // liquidity model over this book yet. That must read as "not measured",
+    // not as "everything is illiquid" — the latter would breach the default
+    // floor on every unmarked book in the platform, which is a much louder
+    // and much wronger failure than the one this derivation exists to fix.
+    let limits = LimitSet::conservative_default();
+    let mut state = state_with_no_liquidity_figures();
+    state.days_to_liquidate = BTreeMap::new();
+    assert!(
+        !state.position_notionals.is_empty(),
+        "premise: the book holds positions, so a wrongly-fired floor has something to bind on"
+    );
+    let state = state.with_liquidity_horizons(&limits);
+    assert!(
+        state.liquidatable_within.is_empty(),
+        "an unmarked book recorded a liquidity fraction nobody measured: {:?}",
+        state.liquidatable_within
+    );
+}
+
+// --- volatility --------------------------------------------------------
+//
+// `RiskState::volatility` had exactly the defect
+// `RiskState::expected_shortfall` once had, just without a map to make the
+// absence visible: `RiskState::from_figures` never touches it and
+// `PreTradeChecker::project` says outright that it leaves volatility as it
+// stands, so `MaxVolatility` shipped in `LimitSet::conservative_default` and
+// took the seeded default on every book that never happened to set the
+// field by hand. `RiskState::with_tail_risk` now derives it from the same
+// return series it already uses for value at risk and expected shortfall.
+
+#[test]
+fn a_book_whose_volatility_breaches_the_limit_is_refused() {
+    let limits = LimitSet::conservative_default();
+    let state = state_with_no_volatility_figure().with_tail_risk(&limits, &returns_with_a_tail());
+
+    // Premise: the derivation actually computed something, and it is well
+    // past the default 25% annualised bound — not a value the fixture's
+    // zeroed starting point could have produced by accident.
+    assert!(
+        state.volatility > 0.25,
+        "a tail this sharp should annualise well past the default bound, got {}",
+        state.volatility
+    );
+
+    let check = limits.check(&state);
+    let breach = check
+        .blocking()
+        .into_iter()
+        .find(|b| b.limit_kind == "max_volatility")
+        .unwrap_or_else(|| panic!("volatility did not bind: {}", check.reason()));
+    assert!(breach.observed > breach.bound);
+    assert!(check.is_blocked());
+}
+
+#[test]
+fn a_book_whose_volatility_sits_below_the_limit_passes() {
+    let limits = LimitSet::conservative_default();
+    let state = state_with_no_volatility_figure().with_tail_risk(&limits, &quiet_returns());
+
+    // Premise: computed, not left at the zero the fixture was reset to, and
+    // still comfortably under the bound.
+    assert!(
+        state.volatility > 0.0,
+        "nothing was computed, so nothing can be said about passing"
+    );
+    assert!(state.volatility < 0.25);
+
+    let check = limits.check(&state);
+    assert!(
+        !check
+            .breaches
+            .iter()
+            .any(|b| b.limit_kind == "max_volatility"),
+        "a quiet book breached the volatility limit: {}",
+        check.reason()
+    );
+}
+
+#[test]
+fn a_volatility_series_too_short_to_measure_leaves_the_field_untouched() {
+    // A zero nobody computed would pass the limit and read as evidence the
+    // book is calm, the same failure a recorded-zero tail figure would be.
+    let limits = LimitSet::conservative_default();
+    let seeded = state_with_no_volatility_figure();
+    assert_eq!(
+        seeded.volatility, 0.0,
+        "premise: the fixture starts at zero"
+    );
+
+    let measurable = seeded
+        .clone()
+        .with_tail_risk(&limits, &returns_with_a_tail());
+    assert!(measurable.volatility > 0.0);
+
+    let bare = seeded.with_tail_risk(&limits, &[0.01]);
+    assert_eq!(
+        bare.volatility, 0.0,
+        "a series too short to measure must leave the field alone, not record zero"
+    );
 }

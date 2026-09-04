@@ -510,7 +510,7 @@ pub fn attempt_promotion(
         ))
     })?;
     let evidence = charge_holdout_trials(ledger, strategy, evidence, promotion.to(), now)?;
-    let admission = gate.admit(&evidence, now);
+    let admission = gate.admit(strategy, &evidence, now);
     ledger.record_promotion(strategy, promotion, admission, rationale)
 }
 

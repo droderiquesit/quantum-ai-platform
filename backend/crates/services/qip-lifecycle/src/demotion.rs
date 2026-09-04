@@ -4,8 +4,8 @@
 //! be fast, and anything fast enough to matter cannot wait for a person. The
 //! triggers here run on live observations and push a strategy down themselves.
 //!
-//! Six things end a strategy's run at its current rung, and none of them is a
-//! judgement call:
+//! Seven things end a strategy's run at its current rung, and none of them is
+//! a judgement call:
 //!
 //! * **Performance decay** against the pilot baseline. Measured with
 //!   [`qip_simulation_engine::validation::assess_overfitting`], which is
@@ -29,10 +29,28 @@
 //!   the holdout admission carries. Distinct from decay: decay compares live
 //!   to the pilot, the band compares live to the validation the whole walk
 //!   rests on, and it is two-sided.
+//! * **Sustained underperformance** at the floor. A strategy that was pushed
+//!   off capital and is still decaying against its pilot once the
+//!   [`RetirementThreshold`] has elapsed is retired, not demoted — the
+//!   blueprint's §20.3, "retirement is as automated as promotion". A platform
+//!   that only ever adds strategies accumulates dead weight consuming
+//!   evaluation budget while contributing nothing.
 //!
 //! Every trigger demotes to a rung that holds no capital, except performance
-//! decay, which steps down one rung. The reasoning is in
-//! [`DemotionTrigger::demote_to`].
+//! decay, which steps down one rung, and sustained underperformance, which
+//! retires. The reasoning is in [`DemotionTrigger::demote_to`].
+//!
+//! The retirement is judged on time at the floor rather than on a count of
+//! reviews, and the reason is where the count would have to live. The
+//! monitor is `Copy` and stateless — every review copies it out of the
+//! factory — and the ledger records moves and nothing else, so a review that
+//! found decay and moved nothing leaves no record a later review could count.
+//! A counter kept anywhere else would be a fact the ledger cannot replay,
+//! and a retirement decided on it would not be reproducible from the record.
+//! The instant the strategy was pushed off capital *is* in the ledger, so
+//! "still decaying this long after being demoted" is a decision the ledger
+//! and one observation reproduce exactly, and one that does not depend on
+//! how often the LEARN stage happened to run.
 
 use crate::evidence::KillCondition;
 use crate::ledger::LifecycleLedger;
@@ -40,8 +58,8 @@ use qip_ai::registry::ModelRegistry;
 use qip_contracts::CapitalEnvelope;
 use qip_contracts::gate::{GateStage, Promotion};
 use qip_contracts::signal::StrategyId;
-use qip_core::error::Result;
-use qip_core::{Decimal, Timestamp};
+use qip_core::error::{Error, Result};
+use qip_core::{Decimal, Duration, Timestamp};
 use qip_numerics::stats;
 use qip_simulation_engine::validation::assess_overfitting;
 use serde::{Deserialize, Serialize};
@@ -157,6 +175,16 @@ pub enum DemotionTrigger {
         upper: f64,
         observations: usize,
     },
+    /// The strategy was pushed off capital, has stayed in decay against its
+    /// pilot for at least the retirement threshold, and is now retired.
+    SustainedUnderperformance {
+        /// When the demotion that put it at the floor was recorded.
+        at_floor_since: Timestamp,
+        /// How long it has been there, still decaying.
+        decaying_for: Duration,
+        /// The threshold it passed.
+        threshold: Duration,
+    },
 }
 
 impl DemotionTrigger {
@@ -198,6 +226,17 @@ impl DemotionTrigger {
                 "live Sharpe {live_sharpe:.2} over {observations} observation(s) is outside \
                  the holdout band [{lower:.2}, {upper:.2}]"
             ),
+            Self::SustainedUnderperformance {
+                at_floor_since,
+                decaying_for,
+                threshold,
+            } => format!(
+                "pushed off capital at {} and still decaying {:.1} day(s) later, past the \
+                 {:.1}-day retirement threshold",
+                at_floor_since.to_rfc3339(),
+                decaying_for.as_days_f64(),
+                threshold.as_days_f64()
+            ),
         }
     }
 
@@ -210,6 +249,7 @@ impl DemotionTrigger {
             Self::ModelReviewOverdue { .. } => "model_review_overdue",
             Self::CapitalEnvelopeExpired { .. } => "capital_envelope_expired",
             Self::OutsideHoldoutBand { .. } => "outside_holdout_band",
+            Self::SustainedUnderperformance { .. } => "sustained_underperformance",
         }
     }
 
@@ -219,21 +259,61 @@ impl DemotionTrigger {
     /// its edge at pilot size may well be fine at pilot size — what has been
     /// falsified is the case for the larger allocation, not the strategy.
     ///
+    /// Sustained underperformance retires. It fires only for a strategy that
+    /// is already at the floor and has stayed in decay there for the whole
+    /// [`RetirementThreshold`], so by the time it fires the recoverable case
+    /// has had its chance and not taken it.
+    ///
     /// Everything else drops to shadow, the highest rung that holds no
     /// capital. Drift, a breached kill condition, an unreviewable model and an
     /// expired grant all say the same thing: the reason this strategy was
     /// trusted with money no longer holds. Shadow rather than retired because
     /// these are recoverable — the strategy keeps computing decisions, and if
-    /// it re-earns the shadow and pilot gates it can come back. Retirement is
-    /// a human's call.
+    /// it re-earns the shadow and pilot gates it can come back.
     pub const fn demote_to(&self, from: GateStage) -> GateStage {
         match self {
             Self::PerformanceDecay { .. } => match from {
                 GateStage::Scaled => GateStage::Pilot,
                 _ => GateStage::Shadow,
             },
+            Self::SustainedUnderperformance { .. } => GateStage::Retired,
             _ => GateStage::Shadow,
         }
+    }
+}
+
+/// How long a strategy may sit at the floor, still decaying, before it is
+/// retired without anyone being asked.
+///
+/// Built only through [`Self::after_decaying_for`], which refuses a zero or
+/// negative span: a zero threshold would retire a strategy on the very review
+/// that demoted it, which is a demotion wearing retirement's terminal
+/// consequences, and a negative one would fire on every review after the
+/// demotion regardless of what the clock said.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetirementThreshold {
+    sustained_for: Duration,
+}
+
+impl RetirementThreshold {
+    /// Retire a strategy that is still in decay this long after being pushed
+    /// off capital.
+    pub fn after_decaying_for(sustained_for: Duration) -> Result<Self> {
+        if sustained_for <= Duration::ZERO {
+            return Err(Error::invalid(format!(
+                "a retirement threshold of {:.1} day(s) is refused: a strategy retired the \
+                 instant it is demoted has had no time at the floor to recover, so nothing \
+                 about its retirement was sustained. Give the threshold a positive span, such \
+                 as `Duration::from_days(90)`",
+                sustained_for.as_days_f64()
+            )));
+        }
+        Ok(Self { sustained_for })
+    }
+
+    /// The span a strategy must have been decaying at the floor.
+    pub const fn sustained_for(&self) -> Duration {
+        self.sustained_for
     }
 }
 
@@ -247,11 +327,26 @@ pub struct DemotionPolicy {
     pub maximum_regime_shift: f64,
     /// Live observations below which decay and drift are not yet judged.
     pub minimum_live_observations: usize,
+    /// How long a strategy pushed off capital may keep decaying before it is
+    /// retired.
+    pub retirement: RetirementThreshold,
 }
 
 impl Default for DemotionPolicy {
     fn default() -> Self {
         Self {
+            // A quarter at the floor, still decaying. The decay judgement
+            // itself needs twenty live sessions, so a strategy has had at
+            // least that long to re-earn its rung before the clock matters;
+            // ninety days is long enough that a regime the strategy was not
+            // sized for has had time to pass, and short enough that a dead
+            // strategy does not hold its evaluation slot for a year. Built
+            // from the literal rather than the refusing constructor because a
+            // default cannot fail, and the literal is positive — the unit
+            // test beside this module holds it to that.
+            retirement: RetirementThreshold {
+                sustained_for: Duration::from_days(90),
+            },
             // The same 30% bar the overfitting assessment uses for a backtest.
             // Live performance losing 70% of the pilot's is the same finding
             // as out-of-sample losing 70% of in-sample, arriving later and
@@ -365,6 +460,27 @@ impl DemotionMonitor {
     /// that is harder to read back. Returns the triggers and the demotion, or
     /// the triggers and `None` when the strategy is already at or below where
     /// they would put it.
+    ///
+    /// Retires instead when the strategy is already at the floor and
+    /// [`Self::retirement_due`] finds it has been decaying there past the
+    /// policy's [`RetirementThreshold`] — through the ledger's own `retire`,
+    /// with the same attribution a demotion carries and no approver, because
+    /// a demotion needs none and this is the demotion that was always going
+    /// to follow.
+    ///
+    /// A strategy that is already retired is reported and left alone: its
+    /// triggers are returned so the review can say what it found, and nothing
+    /// is moved, because a cell keeps reporting on a strategy for a while
+    /// after the centre withdraws it and a review that failed on every such
+    /// report would stop the whole learn tick for every other strategy in it.
+    ///
+    /// What retirement does *not* do yet: disposition the strategy's open
+    /// positions. Blueprint §35.2 says a retired strategy's positions are
+    /// reassigned or scheduled for unwinding, never left ownerless, and
+    /// nothing here or anywhere in the tree does that — the ledger records
+    /// the withdrawal and the books are untouched. That composition crosses
+    /// the lifecycle, portfolio and capital services and belongs in the
+    /// kernel; §35 owes it, and this crate does not pretend to have paid it.
     pub fn enforce(
         &self,
         ledger: &mut LifecycleLedger,
@@ -392,8 +508,17 @@ impl DemotionMonitor {
             }
         }
 
-        if triggers.is_empty() {
+        if triggers.is_empty() || current == GateStage::Retired {
             return Ok((triggers, None));
+        }
+
+        if let Some(retirement) =
+            self.retirement_due(ledger, &baseline.strategy, current, &triggers, now)
+        {
+            triggers.push(retirement);
+            let (raised_by, reason) = Self::attribution(&triggers);
+            let retired = ledger.retire(&baseline.strategy, raised_by, reason, now)?;
+            return Ok((triggers, Some(retired)));
         }
 
         let Some(target) = triggers
@@ -407,17 +532,97 @@ impl DemotionMonitor {
             return Ok((triggers, None));
         }
 
-        let reason = triggers
+        let (raised_by, reason) = Self::attribution(&triggers);
+        let demotion = ledger.demote(&baseline.strategy, target, raised_by, reason, now)?;
+        Ok((triggers, Some(demotion)))
+    }
+
+    /// Whether this review is the one that retires the strategy.
+    ///
+    /// Three things have to be true at once, and each is read from the record
+    /// rather than remembered: the strategy holds no capital; its last move
+    /// was downward, so it was *pushed* to where it stands rather than still
+    /// climbing; and this review found performance decay, at least the
+    /// policy's threshold after that push. Only decay counts as the sustained
+    /// signal — a breached kill condition or an expired envelope at the floor
+    /// says nothing about whether the edge is gone.
+    ///
+    /// Returns the trigger to record rather than a bool, so the ledger's
+    /// rationale carries the two instants and the span an incident review
+    /// will want to check.
+    fn retirement_due(
+        &self,
+        ledger: &LifecycleLedger,
+        strategy: &StrategyId,
+        current: GateStage,
+        triggers: &[DemotionTrigger],
+        now: Timestamp,
+    ) -> Option<DemotionTrigger> {
+        if current.holds_capital() {
+            return None;
+        }
+        if !triggers
             .iter()
-            .map(DemotionTrigger::describe)
-            .collect::<Vec<_>>()
-            .join("; ");
+            .any(|trigger| matches!(trigger, DemotionTrigger::PerformanceDecay { .. }))
+        {
+            return None;
+        }
+        let last = ledger.history(strategy).last()?;
+        if last.promotion.to >= last.promotion.from {
+            return None;
+        }
+        let at_floor_since = last.promotion.at;
+        let decaying_for = now.since(at_floor_since);
+        let threshold = self.policy.retirement.sustained_for();
+        if decaying_for < threshold {
+            return None;
+        }
+        Some(DemotionTrigger::SustainedUnderperformance {
+            at_floor_since,
+            decaying_for,
+            threshold,
+        })
+    }
+
+    /// The `raised_by` and `reason` a move records: every trigger's name, and
+    /// every trigger's account of itself.
+    fn attribution(triggers: &[DemotionTrigger]) -> (String, String) {
         let raised_by = triggers
             .iter()
             .map(|trigger| trigger.name())
             .collect::<Vec<_>>()
             .join(",");
-        let demotion = ledger.demote(&baseline.strategy, target, raised_by, reason, now)?;
-        Ok((triggers, Some(demotion)))
+        let reason = triggers
+            .iter()
+            .map(DemotionTrigger::describe)
+            .collect::<Vec<_>>()
+            .join("; ");
+        (raised_by, reason)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The default policy is built from a literal rather than the refusing
+    /// constructor, so nothing checks it at runtime. A zero here would retire
+    /// every strategy on the review that demoted it, in every composition
+    /// root that takes the default.
+    #[test]
+    fn the_default_retirement_threshold_is_a_positive_span() {
+        let threshold = DemotionPolicy::default().retirement.sustained_for();
+        assert!(
+            threshold > Duration::ZERO,
+            "the default threshold is {threshold:?}"
+        );
+        let admitted = RetirementThreshold::after_decaying_for(threshold)
+            .map(|admitted| admitted.sustained_for())
+            .ok();
+        assert_eq!(
+            admitted,
+            Some(threshold),
+            "the default must be a value the constructor would have admitted"
+        );
     }
 }

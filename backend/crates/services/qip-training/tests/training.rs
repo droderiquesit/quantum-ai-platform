@@ -490,6 +490,59 @@ fn a_fit_refuses_data_that_cannot_determine_it() -> Result<()> {
 }
 
 #[test]
+fn a_boosted_fit_refuses_a_zero_minimum_leaf_or_zero_candidate_splits_rather_than_defaulting_them()
+-> Result<()> {
+    // Zero is not "use the default"; it is a caller error. A boosted spec
+    // built from something upstream that computed zero by mistake must not
+    // silently fit as if it had asked for one leaf or two candidates — that
+    // is exactly the "value silently corrected is a caller bug that
+    // survives" failure the house style names.
+    let data = humped_dataset("zero-leaf", 400, 211)?;
+
+    let zero_leaf = ModelFamily::BoostedStumps {
+        rounds: 20,
+        learning_rate: 0.2,
+        min_samples_leaf: 0,
+        candidate_splits: 16,
+    };
+    let error =
+        fit(zero_leaf, &data).expect_err("a minimum leaf size of zero must be refused, not 1");
+    assert_eq!(error.code(), "invalid");
+    assert!(
+        error.message().contains("leaf"),
+        "the refusal must name what was wrong: {}",
+        error.message()
+    );
+
+    let zero_splits = ModelFamily::BoostedStumps {
+        rounds: 20,
+        learning_rate: 0.2,
+        min_samples_leaf: 12,
+        candidate_splits: 0,
+    };
+    let error = fit(zero_splits, &data)
+        .expect_err("zero candidate splits must be refused, not silently raised to two");
+    assert_eq!(error.code(), "invalid");
+    assert!(
+        error.message().contains("candidate"),
+        "the refusal must name what was wrong: {}",
+        error.message()
+    );
+
+    // The bar is a bar, not a blanket refusal: the same shape with a genuine
+    // one-candidate configuration is accepted rather than being folded into
+    // the same refusal.
+    let one_split = ModelFamily::BoostedStumps {
+        rounds: 20,
+        learning_rate: 0.2,
+        min_samples_leaf: 12,
+        candidate_splits: 1,
+    };
+    assert!(fit(one_split, &data).is_ok());
+    Ok(())
+}
+
+#[test]
 fn a_teacher_refuses_inputs_it_cannot_read() -> Result<()> {
     let data = linear_dataset("arity", 60, 0.0, &[1.0, 2.0], 0.0, 17)?;
     let teacher = fit(ModelFamily::Linear { ridge: 0.0 }, &data)?;
@@ -1093,6 +1146,70 @@ fn a_distilled_tree_is_bounded_and_evaluable_everywhere() -> Result<()> {
     }
     // The distillation is a real fit, not a constant.
     assert!(distillation.fidelity().agreement_r2 > 0.5);
+    Ok(())
+}
+
+#[test]
+fn a_tree_student_refuses_a_zero_minimum_leaf_or_zero_candidate_splits_rather_than_defaulting_them()
+-> Result<()> {
+    // The same defect as on the boosted teacher, on the distillation side: a
+    // caller who names zero for either field must be told so, not handed a
+    // student fitted as though it had asked for one leaf or two candidates.
+    let training = humped_dataset("tree-zero-teacher", 500, 223)?;
+    let teacher = fit(ModelFamily::boosted(), &training)?;
+    let probe = humped_dataset("tree-zero-probe", 400, 227)?;
+
+    let error = distil(
+        &teacher,
+        &probe,
+        StudentForm::Tree {
+            max_depth: 3,
+            min_samples_leaf: 0,
+            candidate_splits: 24,
+        },
+        0.0,
+    )
+    .expect_err("a minimum leaf size of zero must be refused, not 1");
+    assert_eq!(error.code(), "invalid");
+    assert!(
+        error.message().contains("leaf"),
+        "the refusal must name what was wrong: {}",
+        error.message()
+    );
+
+    let error = distil(
+        &teacher,
+        &probe,
+        StudentForm::Tree {
+            max_depth: 3,
+            min_samples_leaf: 20,
+            candidate_splits: 0,
+        },
+        0.0,
+    )
+    .expect_err("zero candidate splits must be refused, not silently raised to two");
+    assert_eq!(error.code(), "invalid");
+    assert!(
+        error.message().contains("candidate"),
+        "the refusal must name what was wrong: {}",
+        error.message()
+    );
+
+    // A genuine one-candidate tree is accepted, not folded into the same
+    // refusal as zero.
+    assert!(
+        distil(
+            &teacher,
+            &probe,
+            StudentForm::Tree {
+                max_depth: 3,
+                min_samples_leaf: 20,
+                candidate_splits: 1,
+            },
+            0.0,
+        )
+        .is_ok()
+    );
     Ok(())
 }
 

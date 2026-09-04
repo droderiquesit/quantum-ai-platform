@@ -95,17 +95,30 @@ pub fn run_pass(
     // stopped listening.
     let mut already_out = cell.confirm_execution_reports(gateway, now);
     // And withdraw what has rested past its time to live, on a halted node
-    // too: withdrawing is not sending. The fills a withdrawal turns up are
-    // in the cell's record; this counts the withdrawals.
+    // too: withdrawing is not sending. Withdrawing confirms internally, so
+    // the fills it books arrive on the tail of the cell's record and this
+    // takes them by position.
+    //
+    // By position, and not by expired order id, because the record is
+    // cumulative. A partially filled order stays open — `confirm` closes at
+    // `filled >= quantity` — and its fill stays in `fills()` until a clean
+    // reconciliation settles a *closed* order. Filtering by id therefore
+    // matched that old fill again on the turn the order expired, counted it
+    // in `stats.fills` a second time and spliced it into `report.fills` a
+    // second time, and `main.rs` publishes that report to the centre, which
+    // attributes fill shares and calls quantity beyond what it saw sent an
+    // `unsent_fill` break. The same filter dropped the other direction: the
+    // internal confirm drains every pending report, so a fill on a still
+    // working order was excluded here and `Cell::work` then found the
+    // channel empty — booked by the cell, charted by the venue counter, and
+    // in no delta the centre ever saw.
+    let known = cell.fills().len();
     let expired = cell.withdraw_expired(gateway, now);
     stats.expired = stats.expired.saturating_add(expired.len() as u64);
-    let late: Vec<ConfirmedFill> = cell
-        .fills()
-        .iter()
-        .filter(|fill| expired.contains(&fill.order_id) && !already_out.contains(fill))
-        .cloned()
-        .collect();
-    already_out.extend(late);
+    // Nothing between the two lines above removes from the record — only
+    // `settle`, reached from `reconcile`, does — so the tail is exactly what
+    // the withdrawal confirmed, and empty when it confirmed nothing.
+    already_out.extend_from_slice(&cell.fills()[known..]);
     stats.fills = stats.fills.saturating_add(already_out.len() as u64);
     if cell.is_halted() {
         stats.halted = stats.halted.saturating_add(1);

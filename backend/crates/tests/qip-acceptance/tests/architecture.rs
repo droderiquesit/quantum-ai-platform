@@ -759,7 +759,6 @@ const NO_MONEY_AUTHORITY: &[&str] = &[
     "qip-learning-engine",
     "qip-market-ingestion",
     "qip-mesh",
-    "qip-normalization",
     "qip-opportunity-engine",
     "qip-optimization-engine",
     "qip-portfolio-engine",
@@ -791,11 +790,22 @@ fn every_service_crate_is_classified_for_money_authority() {
     // would mean classifying sixteen crates that mostly hold no authority at
     // all, so the honest position is that this catches the likely case and not
     // every case.
+    // The premise: the walk reaches every service crate. This used to be a
+    // floor — `services.len() >= 25` — which protected against `cargo
+    // metadata` returning a partial graph, but had to be lowered by hand
+    // whenever a crate was removed (ADR 0029 removed one), and lowering a
+    // number to obtain a pass is the move this repository forbids. Equality
+    // with the directory cannot be lowered, tracks the tree on its own, and
+    // catches what the floor never could: a crate on disk that nobody added
+    // to `[workspace.members]`, which builds nothing, is tested by nothing and
+    // would have read as classified here.
     let services = crates_under("backend/crates/services");
-    assert!(
-        services.len() >= 25,
-        "only {} service crates were found; the walk is not reaching them",
-        services.len()
+    let on_disk = crate_directories_under("backend/crates/services");
+    assert_eq!(
+        services, on_disk,
+        "the service crates cargo metadata reports differ from the crate directories under \
+         backend/crates/services; a directory with no member entry, or a member whose package \
+         name differs from its directory, is a crate this test cannot classify"
     );
     let mut classified: BTreeSet<String> = BTreeSet::new();
     classified.extend(NO_SOLVER_AUTHORITY.iter().map(|name| name.to_string()));
@@ -1399,6 +1409,40 @@ fn crates_under(relative: &str) -> BTreeSet<String> {
         }
     }
     assert!(!names.is_empty(), "no crates found under {relative}");
+    names
+}
+
+/// The directories under a workspace directory that hold a `Cargo.toml`, by
+/// directory name.
+///
+/// Read from the filesystem rather than from `cargo metadata`, on purpose:
+/// this is the other side of the comparison `crates_under` is checked
+/// against. Cargo only reports what `[workspace.members]` names, so a crate
+/// directory that was never added — or was removed from the manifest and left
+/// on disk — is visible here and nowhere else in this file. The directory
+/// name is compared with the package name, which every crate in this
+/// workspace keeps equal; one that did not would fail the comparison loudly
+/// rather than be excused.
+fn crate_directories_under(relative: &str) -> BTreeSet<String> {
+    let root = repository_root().join(relative);
+    assert!(root.is_dir(), "cannot read {}", root.display());
+    let entries = std::fs::read_dir(&root)
+        .unwrap_or_else(|error| panic!("cannot list {}: {error}", root.display()));
+    let mut names = BTreeSet::new();
+    for entry in entries {
+        let path = entry
+            .unwrap_or_else(|error| panic!("cannot list {}: {error}", root.display()))
+            .path();
+        if path.join("Cargo.toml").is_file()
+            && let Some(name) = path.file_name().and_then(|name| name.to_str())
+        {
+            names.insert(name.to_string());
+        }
+    }
+    assert!(
+        !names.is_empty(),
+        "no crate directories found under {relative}"
+    );
     names
 }
 

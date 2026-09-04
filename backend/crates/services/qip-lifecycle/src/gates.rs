@@ -18,7 +18,12 @@
 //! means. So the gate does not take it from the evidence's own run: it reads
 //! the family's lifetime count from the [`TrialAccount`] the ledger's trial
 //! book charged for this evaluation, and an evaluation with no account fails
-//! the `lifetime_trial_count_known` check. Unknown is not zero.
+//! the `lifetime_trial_count_known` check. Unknown is not zero. Nor may that
+//! account belong to a different strategy: the same check refuses an account
+//! whose [`TrialAccount::strategy`] disagrees with the strategy the evidence
+//! is offered for, so a heavily-searched strategy cannot dress up as a
+//! barely-tried one just because the two runs happened to try the same
+//! number of configurations.
 //!
 //! Missing evidence fails rather than errors. "Not submitted" and "submitted
 //! and inadequate" are the same answer at a gate, and returning an error for
@@ -29,6 +34,7 @@ use crate::evidence::{HoldoutEvidence, StrategyEvidence};
 use crate::trials::TrialAccount;
 use qip_contracts::gate::{GateOutcome, GateStage};
 use qip_contracts::governance::Approval;
+use qip_contracts::signal::StrategyId;
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, Timestamp};
 use qip_numerics::stats;
@@ -48,16 +54,31 @@ pub trait Gate {
     fn stage(&self) -> GateStage;
 
     /// Run every check and report each one.
-    fn evaluate(&self, evidence: &StrategyEvidence, now: Timestamp) -> GateOutcome;
+    ///
+    /// `strategy` is the strategy this evidence is offered for. The holdout
+    /// gate checks it against [`TrialAccount::strategy`] so that a trial
+    /// account charged for one strategy cannot be attached to another
+    /// strategy's evidence to borrow a smaller lifetime count.
+    fn evaluate(
+        &self,
+        strategy: &StrategyId,
+        evidence: &StrategyEvidence,
+        now: Timestamp,
+    ) -> GateOutcome;
 
     /// Run every check and hand back what the run produced besides a verdict.
     ///
     /// Only the holdout gate produces anything: the [`HoldoutBand`] its
     /// validation defines. The default is the outcome alone, so a gate that
     /// produces nothing does not have to say so.
-    fn admit(&self, evidence: &StrategyEvidence, now: Timestamp) -> Admission {
+    fn admit(
+        &self,
+        strategy: &StrategyId,
+        evidence: &StrategyEvidence,
+        now: Timestamp,
+    ) -> Admission {
         Admission {
-            outcome: self.evaluate(evidence, now),
+            outcome: self.evaluate(strategy, evidence, now),
             band: None,
         }
     }
@@ -117,12 +138,21 @@ impl HoldoutGate {
 
     /// The count this evaluation deflates against, or why it has none.
     ///
-    /// Three refusals, each naming the act that would clear it. No account:
+    /// Four refusals, each naming the act that would clear it. No account:
     /// the family's lifetime count is unknown, and the gate will not stand in
-    /// for it with the run's own number. An account whose charge disagrees
-    /// with the evidence: one of the two describes a different run. A count
-    /// too large for the deflation arithmetic: refuse rather than truncate.
-    fn charged_trials(holdout: &HoldoutEvidence, account: Option<&TrialAccount>) -> Result<usize> {
+    /// for it with the run's own number. An account charged to a different
+    /// strategy: a trial account is not a bearer instrument, and accepting
+    /// one on the strength of a matching trial count alone would let a
+    /// strategy borrow another's — typically a rarely-tried one's — much
+    /// smaller lifetime count and read as barely searched at all. An account
+    /// whose charge disagrees with the evidence: one of the two describes a
+    /// different run. A count too large for the deflation arithmetic: refuse
+    /// rather than truncate.
+    fn charged_trials(
+        strategy: &StrategyId,
+        holdout: &HoldoutEvidence,
+        account: Option<&TrialAccount>,
+    ) -> Result<usize> {
         let account = account.ok_or_else(|| {
             Error::denied(
                 "the lifetime trial count is unknown: no trial account was charged for this \
@@ -131,6 +161,14 @@ impl HoldoutGate {
                  family's lifetime count before the gate reads it; an unknown count is not zero",
             )
         })?;
+        if account.strategy() != strategy {
+            return Err(Error::denied(format!(
+                "the trial account was charged to {} but this evidence is offered for \
+                 {strategy}; a trial account belongs to the strategy it was charged for and \
+                 cannot be attached to another strategy's evidence to borrow its lifetime count",
+                account.strategy()
+            )));
+        }
         let reported = u64::try_from(holdout.trials).map_err(|_| {
             Error::numeric(format!(
                 "{} trials does not fit the trial account",
@@ -154,17 +192,22 @@ impl HoldoutGate {
     }
 
     /// The deflated Sharpe exactly as the gate reads it: the holdout series,
-    /// corrected against the family's lifetime trial count.
+    /// corrected against the family's lifetime trial count charged to
+    /// `strategy`.
     ///
     /// Public so a caller can see the statistic behind the verdict rather
     /// than re-deriving it, and so a test can prove the count used was the
     /// lifetime one.
-    pub fn deflated(&self, evidence: &StrategyEvidence) -> Result<DeflatedSharpe> {
+    pub fn deflated(
+        &self,
+        strategy: &StrategyId,
+        evidence: &StrategyEvidence,
+    ) -> Result<DeflatedSharpe> {
         let holdout = evidence
             .holdout
             .as_ref()
             .ok_or_else(|| Error::invalid("no holdout evidence was submitted"))?;
-        let trials = Self::charged_trials(holdout, evidence.trial_account.as_ref())?;
+        let trials = Self::charged_trials(strategy, holdout, evidence.trial_account.as_ref())?;
         deflated_sharpe(&holdout.holdout_returns, trials, holdout.periods_per_year)
     }
 
@@ -207,11 +250,21 @@ impl Gate for HoldoutGate {
         GateStage::Holdout
     }
 
-    fn evaluate(&self, evidence: &StrategyEvidence, now: Timestamp) -> GateOutcome {
-        self.admit(evidence, now).outcome
+    fn evaluate(
+        &self,
+        strategy: &StrategyId,
+        evidence: &StrategyEvidence,
+        now: Timestamp,
+    ) -> GateOutcome {
+        self.admit(strategy, evidence, now).outcome
     }
 
-    fn admit(&self, evidence: &StrategyEvidence, now: Timestamp) -> Admission {
+    fn admit(
+        &self,
+        strategy: &StrategyId,
+        evidence: &StrategyEvidence,
+        now: Timestamp,
+    ) -> Admission {
         let outcome = GateOutcome::new(GateStage::Holdout, now);
         let Some(holdout) = evidence.holdout.as_ref() else {
             return Admission {
@@ -237,7 +290,7 @@ impl Gate for HoldoutGate {
         // The count comes from the trial book's charge, never from the run.
         // Recorded as its own check so a refusal for an unknown count reads
         // as what it is rather than as a Sharpe that could not be computed.
-        let charged = Self::charged_trials(holdout, evidence.trial_account.as_ref());
+        let charged = Self::charged_trials(strategy, holdout, evidence.trial_account.as_ref());
         outcome = outcome.record(
             "lifetime_trial_count_known",
             charged.is_ok(),
@@ -413,7 +466,12 @@ impl Gate for PaperGate {
         GateStage::Paper
     }
 
-    fn evaluate(&self, evidence: &StrategyEvidence, now: Timestamp) -> GateOutcome {
+    fn evaluate(
+        &self,
+        _strategy: &StrategyId,
+        evidence: &StrategyEvidence,
+        now: Timestamp,
+    ) -> GateOutcome {
         let outcome = GateOutcome::new(GateStage::Paper, now);
         let Some(paper) = evidence.paper.as_ref() else {
             return outcome.record(
@@ -547,7 +605,12 @@ impl Gate for ShadowGate {
         GateStage::Shadow
     }
 
-    fn evaluate(&self, evidence: &StrategyEvidence, now: Timestamp) -> GateOutcome {
+    fn evaluate(
+        &self,
+        _strategy: &StrategyId,
+        evidence: &StrategyEvidence,
+        now: Timestamp,
+    ) -> GateOutcome {
         let outcome = GateOutcome::new(GateStage::Shadow, now);
         let Some(shadow) = evidence.shadow.as_ref() else {
             return outcome.record(
@@ -679,7 +742,12 @@ impl Gate for PilotGate {
         GateStage::Pilot
     }
 
-    fn evaluate(&self, evidence: &StrategyEvidence, now: Timestamp) -> GateOutcome {
+    fn evaluate(
+        &self,
+        _strategy: &StrategyId,
+        evidence: &StrategyEvidence,
+        now: Timestamp,
+    ) -> GateOutcome {
         let outcome = GateOutcome::new(GateStage::Pilot, now);
         let Some(pilot) = evidence.pilot.as_ref() else {
             return outcome.record(
@@ -779,7 +847,12 @@ impl Gate for ScaledGate {
         GateStage::Scaled
     }
 
-    fn evaluate(&self, evidence: &StrategyEvidence, now: Timestamp) -> GateOutcome {
+    fn evaluate(
+        &self,
+        _strategy: &StrategyId,
+        evidence: &StrategyEvidence,
+        now: Timestamp,
+    ) -> GateOutcome {
         let outcome = GateOutcome::new(GateStage::Scaled, now);
         let Some(scaled) = evidence.scaled.as_ref() else {
             return outcome.record(

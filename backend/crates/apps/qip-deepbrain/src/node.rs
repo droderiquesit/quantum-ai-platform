@@ -48,7 +48,13 @@
 //! archive positions, and the result would verify perfectly — a chain in which
 //! the platform's history appears twice, once per restart, with nothing to say
 //! which entries are the duplicates. So this node hands over only what *it*
-//! appended, and the watermark it filters on is read from the log at assembly.
+//! appended, and the watermark it filters on is
+//! [`qip_kernel::Platform::inherited_through`] — the platform's own answer,
+//! not one derived from the log here. That distinction is load-bearing now
+//! that `Platform::new` appends the universe record: after assembly the log's
+//! last record is one *this* run wrote, so deriving the boundary from the log
+//! marks it inherited and the node hands the first record of its own chain to
+//! nobody.
 
 use qip_core::error::Result;
 use qip_core::{Duration, Timestamp};
@@ -161,14 +167,15 @@ fn monotonic(began: std::time::Instant) -> Duration {
     Duration::from_nanos(i64::try_from(began.elapsed().as_nanos()).unwrap_or(i64::MAX))
 }
 
-/// The highest sequence a log already held, before this process appended to it.
-///
-/// Read once at assembly. Zero for a log that started empty — including every
-/// in-memory log, which is why a node that keeps nothing behaves exactly as it
-/// did before the destination was configurable.
-pub fn restored_through(records: &[LogRecord]) -> u64 {
-    records.last().map_or(0, |record| record.sequence)
-}
+// The watermark this module used to derive here — the last sequence of the
+// log's records — is now `Platform::inherited_through`, and the move is not
+// tidying. `Platform::new` appends the universe record as the log's first
+// entry, so from the moment assembly returns, "the last record" is one this
+// process wrote. Deriving the boundary out here read that record as
+// inherited and the archive never sealed it: the first record of the chain,
+// the one a replay needs before it can read a single cycle. Only the
+// platform can answer, because only it holds the instant between opening the
+// log and writing to it.
 
 /// The records this process appended, as opposed to the ones it inherited.
 ///
@@ -852,14 +859,26 @@ mod tests {
     fn the_watermark_of_a_log_that_started_empty_is_zero_so_everything_is_new() {
         let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(start()));
         let mut platform = platform(clock);
-        assert_eq!(restored_through(platform.event_log().records()), 0);
+        assert_eq!(platform.inherited_through(), 0);
+
+        // The premise, and the reason this test was rewritten: assembly is no
+        // longer silent. `Platform::new` appends the universe record, so an
+        // in-memory log is already non-empty here, and a watermark derived
+        // from the log's last record would read 1 and quietly exclude that
+        // record from everything the node hands over.
+        assert!(
+            !platform.event_log().records().is_empty(),
+            "assembly wrote no record, so this test no longer distinguishes \
+             the platform's watermark from a derived one"
+        );
 
         let _ = step(&mut platform, start(), Duration::from_secs(300));
         let records = platform.event_log().records();
         assert_eq!(
-            appended_since(records, 0).len(),
+            appended_since(records, platform.inherited_through()).len(),
             records.len(),
-            "a node that inherited nothing must hand over everything it appended"
+            "a node that inherited nothing must hand over everything it \
+             appended, the universe record of its own assembly included"
         );
     }
 
@@ -877,7 +896,7 @@ mod tests {
             let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(start()));
             let mut platform =
                 platform_with(PlatformConfig::default().with_event_log_file(&path), clock);
-            let inherited = restored_through(platform.event_log().records());
+            let inherited = platform.inherited_through();
             assert_eq!(inherited, 0, "the premise: the first run inherits nothing");
 
             let _ = step(&mut platform, start(), Duration::from_secs(300));
@@ -893,10 +912,25 @@ mod tests {
         let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(start()));
         let mut platform =
             platform_with(PlatformConfig::default().with_event_log_file(&path), clock);
-        let inherited = restored_through(platform.event_log().records());
+        let inherited = platform.inherited_through();
         assert_eq!(
             inherited as usize, first_run_records,
             "the premise: the second process read the first run's log back"
+        );
+        // And the boundary is the first run's last record, not the second
+        // run's own universe record, which assembly has already appended
+        // above this line. Derived from the log instead, `inherited` would be
+        // one higher and the second run would hand its own first record to
+        // nobody.
+        assert!(
+            platform
+                .event_log()
+                .records()
+                .last()
+                .map_or(0, |r| r.sequence)
+                > inherited,
+            "assembly appended nothing, so this no longer distinguishes the \
+             platform's watermark from a derived one"
         );
 
         let archive = ChainArchive::open(store.clone()).expect("the archive reopens");

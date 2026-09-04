@@ -7,11 +7,33 @@
 
 use qip_core::ObjectId;
 use qip_core::error::{Error, Result};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
 use crate::asset_class::{AssetClass, InstrumentType};
 use crate::identifiers::{IdentifierKind, Identifiers};
 use crate::object::FinancialObject;
+
+/// Which catalogue a universe was read from, as the loader computed it.
+///
+/// Carried *on* the universe rather than beside it so the kernel, which is
+/// handed the universe and nothing else, can write on its own hash-chained
+/// event log which catalogue the run saw. Until this travelled with the
+/// universe the catalogue's hash could only be journaled in a key-value
+/// namespace beside the log, so the first fact a replay needs — which
+/// instruments this run was assembled from, by hash — sat outside the record
+/// a replay is built from. The hash is over the catalogue's text and is
+/// computed once, by `catalogue::load`; nothing here recomputes it, because
+/// two computations of one fact are two claims that will one day disagree.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CatalogueOrigin {
+    /// The catalogue's own version label.
+    pub version: String,
+    /// SHA-256 of the catalogue text, lowercase hex.
+    pub sha256: String,
+    /// The catalogue's own name, as its provenance records it.
+    pub source: String,
+}
 
 /// An indexed collection of financial objects.
 #[derive(Debug, Default)]
@@ -20,6 +42,9 @@ pub struct Universe {
     by_symbol: HashMap<String, Vec<String>>,
     by_identifier: HashMap<(IdentifierKind, String), String>,
     by_asset_class: BTreeMap<AssetClass, Vec<String>>,
+    /// The catalogue this universe still is, or `None` once it has been
+    /// edited or was never read from one. See [`Universe::origin`].
+    origin: Option<CatalogueOrigin>,
 }
 
 impl Universe {
@@ -35,7 +60,31 @@ impl Universe {
         self.objects.is_empty()
     }
 
+    /// Name the catalogue this universe was read from.
+    ///
+    /// Set by `catalogue::load` after its last record is inserted, because
+    /// insertion clears it. A caller that builds a universe by hand has no
+    /// catalogue to name, and leaving this unset is the honest state for it.
+    pub fn with_origin(mut self, origin: CatalogueOrigin) -> Self {
+        self.origin = Some(origin);
+        self
+    }
+
+    /// The catalogue this universe is, if it still is one.
+    ///
+    /// `None` for a universe built in-process, and `None` again for a loaded
+    /// universe that has since had an object inserted or removed: a hash
+    /// names the catalogue whose contents these were, and once the contents
+    /// differ the hash would name a universe that does not exist. The kernel
+    /// records whatever this says at assembly, so a replay reads either the
+    /// catalogue by hash or the plain statement that there was none.
+    pub fn origin(&self) -> Option<&CatalogueOrigin> {
+        self.origin.as_ref()
+    }
+
     /// Insert or replace an object, rebuilding its index entries.
+    ///
+    /// Drops the catalogue origin: see [`Universe::origin`].
     pub fn insert(&mut self, object: FinancialObject) -> Result<()> {
         let issues = object.validate();
         if !issues.is_empty() {
@@ -45,6 +94,7 @@ impl Universe {
                 issues.join("; ")
             )));
         }
+        self.origin = None;
         let key = object.object_id.as_str().to_string();
         if self.objects.contains_key(&key) {
             self.remove(&object.object_id);
@@ -66,9 +116,14 @@ impl Universe {
         Ok(())
     }
 
+    /// Remove an object and its index entries.
+    ///
+    /// Drops the catalogue origin when something was removed: see
+    /// [`Universe::origin`].
     pub fn remove(&mut self, id: &ObjectId) -> Option<FinancialObject> {
         let key = id.as_str();
         let object = self.objects.remove(key)?;
+        self.origin = None;
         if let Some(list) = self.by_symbol.get_mut(&normalise_symbol(&object.symbol)) {
             list.retain(|k| k != key);
         }

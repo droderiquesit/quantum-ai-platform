@@ -59,6 +59,19 @@ export default function SystemTopology() {
         <PanelHead
           title="Process and event chain"
           meta={<Freshness resource={system} name="system" />}
+          actions={
+            // Posture is on this panel, so the paper label is on it too. The
+            // hint beside the autonomy metric carries the lowercase word
+            // "paper" inside a sentence, which is a substring and not a label:
+            // it read as a declaration to nobody and would satisfy a test
+            // matching on "paper" while this panel carried no posture at all.
+            system.data === null ? null : (
+              <StatusChip
+                tone={system.data.live ? "bad" : "ok"}
+                label={system.data.live ? "LIVE-CAPABLE" : "PAPER TRADING"}
+              />
+            )
+          }
         />
         <PanelBody>
           <ResourceView resource={system} loadingRows={2}>

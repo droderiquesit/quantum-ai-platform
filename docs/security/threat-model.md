@@ -203,11 +203,12 @@ the case it exists for — declares an unrecoverable gap and emits
 silent hole, with a bounded reorder buffer so a permanent gap cannot become an
 out-of-memory kill. `qip_sequencing::arbitration` publishes whichever redundant
 copy arrives first under one canonical feed name and holds a bounded seen-set,
-so a slow line cannot re-deliver a morning. At the ingestion boundary
-`qip_normalization::contract::DataContract` asserts field presence, ranges and
-staleness, and `ScaleGuard` flags a price that moves by more than a configured
-ratio. Whatever survives all of that is still bounded by the cell's
-`CapitalEnvelope`.
+so a slow line cannot re-deliver a morning. There is **no** data contract and
+**no** scale guard at the ingestion boundary: `qip-normalization`, which held
+both, was constructed by nothing and was deleted under ADR 0029 rather than
+left in the tree reading as a control. A field out of range or a price that
+jumps by an order of magnitude reaches the book, and what bounds the damage
+is the cell's `CapitalEnvelope` and nothing earlier.
 
 **What does not.** **The feed is not authenticated.** There is no session MAC,
 no TLS, no venue certificate check. Sequencing catches duplication, reordering
