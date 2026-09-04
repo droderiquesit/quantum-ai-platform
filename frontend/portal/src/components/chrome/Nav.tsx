@@ -145,11 +145,6 @@ export function Sidebar({
                     {item.href === "/signals" ? (
                       <span className="live-dot ml-auto nav-text" aria-hidden="true" />
                     ) : null}
-                    {item.simulated ? (
-                      <span className="ml-auto text-[9px] font-bold px-1.5 py-0.5 rounded-md bg-secondary/15 text-secondary nav-text">
-                        SIM
-                      </span>
-                    ) : null}
                   </Link>
                 );
               })}

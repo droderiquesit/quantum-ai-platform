@@ -4,9 +4,12 @@ import { useMemo } from "react";
 import { Chip, Metric, MetricRow, StreamControls } from "@/components/data/Bits";
 import { EventFeed } from "@/components/data/EventFeed";
 import { Panel, PanelBody, PanelHead } from "@/components/data/Panel";
-import { StateBlock } from "@/components/data/States";
+import { ResourceView, StateBlock } from "@/components/data/States";
+import { platform } from "@/lib/api/client";
+import type { RegimesRefusal } from "@/lib/api/types";
 import { formatClock, formatCount } from "@/lib/format";
 import { useEventStream } from "@/lib/hooks/useEventStream";
+import { useResource } from "@/lib/hooks/useResource";
 import { summarisePayload, type StreamEnvelope } from "@/lib/sse/envelope";
 
 /**
@@ -25,6 +28,13 @@ import { summarisePayload, type StreamEnvelope } from "@/lib/sse/envelope";
  * With no `regime.changed` recorded, the page says so. It does not pick a
  * regime to show: an invented "range-bound" on a page an operator reads to
  * learn the market state is a fabrication however plausible the choice.
+ *
+ * The gap beside the stream is no longer this page's own prose. `GET
+ * /api/v1/regimes` answers `available: false` with the platform's reason and
+ * with the stream topic it declares — `regime.changed`, on which stream, and
+ * whether anything publishes it — and the panel renders that body verbatim.
+ * If the platform ever answers available, the panel says so and shows the
+ * body it has no renderer for, rather than keeping the old text.
  */
 
 const REGIME_TOPIC = "regime.changed";
@@ -54,6 +64,12 @@ export default function RegimesPage() {
     channel: "signals",
     label: "SSE /stream/signals (regimes)",
     maxEvents: 200,
+  });
+
+  const regimes = useResource<unknown>(platform.regimes, {
+    key: "regimes",
+    label: "GET /regimes",
+    intervalMs: 60_000,
   });
 
   const changes = useMemo(() => signals.events.filter(isRegimeChange), [signals.events]);
@@ -132,27 +148,70 @@ export default function RegimesPage() {
       </div>
 
       <Panel>
-        <PanelHead title="What the platform does not serve" actions={<Chip tone="warn">gap</Chip>} />
+        <PanelHead
+          title="What the platform says about this view"
+          actions={<Chip>GET /api/v1/regimes</Chip>}
+        />
         <PanelBody>
-          <StateBlock
-            tone="warn"
-            label="not served"
-            headline="Classification confidence and the transition matrix have no platform surface."
-            compact
-          >
-            <p>
-              The world model in <code className="num">backend/crates/services/qip-world-model</code>{" "}
-              tracks the believed state of the world in-process, and{" "}
-              <code className="num">/stream/signals</code> declares <code className="num">regime.changed</code>{" "}
-              as a topic it carries. No component in this deployment publishes that topic yet, and
-              nothing exposes a classification with its confidence or a transition matrix. Those
-              would need a <code className="num">GET /api/v1/regimes</code> answering the current
-              regime, its confidence and the row of transition probabilities from it. Until then this
-              page shows the changes the stream delivers and no figure it cannot source.
-            </p>
-          </StateBlock>
+          {regimes.outcome !== null && regimes.outcome.kind === "unavailable" ? (
+            <RegimesRefusalBlock
+              reason={regimes.outcome.reason}
+              body={regimes.outcome.body as unknown as RegimesRefusal}
+            />
+          ) : (
+            <ResourceView resource={regimes} loadingRows={3}>
+              {(data) => (
+                <StateBlock
+                  tone="info"
+                  label="served"
+                  headline="The platform now answers this route with a regime view."
+                  compact
+                >
+                  <p>This console has no renderer for its shape yet; the body is shown as received.</p>
+                  <pre className="num mt-1.5 whitespace-pre-wrap text-[10.5px]" data-testid="regimes-body">
+                    {JSON.stringify(data, null, 2)}
+                  </pre>
+                </StateBlock>
+              )}
+            </ResourceView>
+          )}
         </PanelBody>
       </Panel>
     </div>
+  );
+}
+
+/**
+ * The platform's own account of why there is no regime view, and what the
+ * declared stream topic is worth — the reason as served, and the topic's
+ * `published` flag stated in words so "declared" cannot be read as "carried".
+ */
+function RegimesRefusalBlock({ reason, body }: { reason: string; body: RegimesRefusal }) {
+  const topic = body.stream_topic;
+  return (
+    <StateBlock
+      tone="warn"
+      label="not served"
+      headline="The platform serves no regime view, in its own words."
+      compact
+    >
+      <p data-testid="regimes-reason">{reason}</p>
+      {topic ? (
+        <p className="mt-1.5" data-testid="regimes-stream-topic">
+          Stream topic <code className="num">{topic.name}</code>, declared on{" "}
+          <code className="num">{topic.declared_on}</code> —{" "}
+          <span className={topic.published ? "text-[color:var(--color-up)]" : "text-[color:var(--color-warn)]"}>
+            {topic.published ? "published" : "not published"}
+          </span>
+          {topic.published
+            ? ": something in this process emits it, and the stream above carries it."
+            : ": nothing in this process emits it, so the stream above will carry none."}
+        </p>
+      ) : (
+        <p className="mt-1.5 text-[color:var(--color-ink-faint)]" data-testid="regimes-stream-topic">
+          The route named no stream topic.
+        </p>
+      )}
+    </StateBlock>
   );
 }

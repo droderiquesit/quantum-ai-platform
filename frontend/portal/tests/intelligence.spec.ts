@@ -176,3 +176,34 @@ test("a signal stream with no regime change leaves the current regime unnamed ra
   // None of the old illustration's regime names may appear anywhere.
   await expect(page.getByText(/range-bound|stressed \/ correlated selloff/)).toHaveCount(0);
 });
+
+/** `GET /api/v1/regimes`, copied verbatim from a running `qip-api` on 2026-09-04. */
+const REGIMES_BODY = {
+  subject: "regimes",
+  available: false,
+  reason:
+    "no regime classifier runs in this process. The kernel labels each routing decision with a market and volatility regime computed on demand from its surprise series, with no confidence and no state kept between decisions, and the label below the evidence floor is a default rather than a finding. Nothing in the cycle publishes `regime.changed`: the topic is declared on /stream/signals so a subscriber's filter admits it, and the stream carries none until an UNDERSTAND-stage classifier records one to the event log. That classifier is what would produce this view.",
+  stream_topic: { name: "regime.changed", declared_on: "/api/v1/stream/signals", published: false },
+};
+
+test("the regimes page renders the platform's own reason for the missing view and says the declared topic is not published", async ({
+  page,
+}) => {
+  await servePlatform(page, { ...healthy(), "/regimes": REGIMES_BODY });
+  await serveStream(page, "signals", sseBody("signals", []));
+  await page.goto("/intelligence/regimes");
+
+  // The reason as the platform served it — not this console's old prose,
+  // which named a route that "would need" to exist.
+  const reason = page.getByTestId("regimes-reason");
+  await expect(reason).toContainText("no regime classifier runs in this process");
+  await expect(reason).toContainText("UNDERSTAND-stage classifier");
+  await expect(page.getByText("Those would need a")).toHaveCount(0);
+
+  // "Declared" is not "carried": the topic's published flag, in words.
+  const topic = page.getByTestId("regimes-stream-topic");
+  await expect(topic).toContainText("regime.changed");
+  await expect(topic).toContainText("/api/v1/stream/signals");
+  await expect(topic).toContainText("not published");
+  await expect(topic).not.toContainText(/[^ ]published:/);
+});

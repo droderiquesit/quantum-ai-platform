@@ -6,8 +6,6 @@ export interface NavItem {
   readonly description: string;
   /** The platform surfaces this page reads, shown in the palette. */
   readonly reads: readonly string[];
-  /** True where the page's figures are a labelled deterministic illustration. */
-  readonly simulated?: boolean;
 }
 
 export interface NavGroup {
@@ -18,11 +16,13 @@ export interface NavGroup {
 /**
  * The console's map: the eight PEOS sections.
  *
- * Every entry resolves to a page, and every page is one of three honest
- * things: a client of an endpoint the platform serves; a rendering of the
- * platform's own `available: false` reason; or a deterministic illustration
- * labelled SIMULATED DATA and written against the typed contract the real
- * surface will have. Nothing here invents a live number, and nothing is a
+ * Every entry resolves to a page, and every page is one of two honest
+ * things: a client of an endpoint the platform serves, or a rendering of the
+ * platform's own `available: false` reason. There used to be a third — a
+ * deterministic illustration labelled SIMULATED DATA, written against the
+ * contract a surface would have — and the last three pages that used it
+ * (predictions, correlation, backtesting) stopped when the platform started
+ * serving those routes. Nothing here invents a live number, and nothing is a
  * dead link kept to make a section look finished.
  *
  * Trading & Execution reads the platform's execution record and nothing more.
@@ -92,17 +92,15 @@ export const NAV: readonly NavGroup[] = [
         href: "/intelligence/predictions",
         label: "Market predictions",
         mark: "PR",
-        description: "Model forecasts with confidence — illustrated until the surface exists",
-        reads: [],
-        simulated: true,
+        description: "Every claim the loop wrote down, per instrument, and whether it held",
+        reads: ["/predictions"],
       },
       {
         href: "/intelligence/correlation",
         label: "Cross-market correlation",
         mark: "CX",
-        description: "Pairwise co-movement across the universe — illustrated",
-        reads: [],
-        simulated: true,
+        description: "Pearson correlation of returns over the tape, or the reason there is none",
+        reads: ["/correlation"],
       },
       {
         href: "/intelligence/news",
@@ -115,8 +113,8 @@ export const NAV: readonly NavGroup[] = [
         href: "/intelligence/regimes",
         label: "Regime detection",
         mark: "RG",
-        description: "The newest regime change the signal stream carried, and the gap beside it",
-        reads: ["/stream/signals"],
+        description: "The newest regime change the signal stream carried, and the platform's own account of the gap",
+        reads: ["/regimes", "/stream/signals"],
       },
     ],
   },
@@ -141,8 +139,8 @@ export const NAV: readonly NavGroup[] = [
         href: "/research/backtesting",
         label: "Backtesting",
         mark: "BT",
-        description: "The simulator that gates promotion, and where its results live",
-        reads: ["/strategies"],
+        description: "Holdout evidence, gate findings and the band the ledger recorded, per strategy",
+        reads: ["/backtests"],
       },
       {
         href: "/research/quantum",
