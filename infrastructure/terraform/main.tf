@@ -224,9 +224,12 @@ module "secrets" {
     # redacts it from every Debug rendering.
     "qip-market-data-key",
     # OpenObserve's own root login (ADR 0028), not a cloud credential: the
-    # email and password `catalogue.tf` mounts as files on the OpenObserve
-    # workload, generated and written out of band the same as every other
-    # secret here. Created in every environment for the same reason the venue
+    # email and password `catalogue.tf` projects into the OpenObserve
+    # workload's environment under ADR 0031, because that image carries no
+    # shell and no `_FILE` indirection, so a mount could never have reached
+    # the process. A first version is seeded by `infra.yml` when the secret
+    # has none, which is what makes an `up` that creates this service able to
+    # start it. Created in every environment for the same reason the venue
     # credential is — a uniform deployment — even though the workload that
     # mounts it exists only once `vendored_openobserve_image_digest` names a
     # digest.

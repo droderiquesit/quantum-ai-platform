@@ -1288,6 +1288,94 @@ fn a_service_that_failed_its_first_revision_is_repaired_rather_than_left_unfixab
     );
 }
 
+/// A secret Cloud Run resolves a version of is seeded before the apply that
+/// needs it, and never re-seeded over a credential somebody is using.
+///
+/// Not hypothetical. Two applies failed on
+/// `Secret .../versions/latest was not found`: terraform creates a secret as
+/// a *container*, `secret_key_ref` resolves a *version*, and nothing between
+/// the two ever wrote one. Thirteen of fifteen resources landed and the only
+/// service that needed a credential did not start.
+///
+/// The ordering and the emptiness check are the whole of it. Seeding after
+/// the apply seeds nothing the apply could have used; seeding without
+/// checking for an existing version mints a new password on every dispatch
+/// and locks the operator out of the console they just logged into.
+#[test]
+fn a_credential_with_no_version_is_seeded_before_the_apply_that_resolves_it() {
+    let infra = read(".github/workflows/infra.yml");
+    let steps = job_steps(&infra);
+
+    let position = |needle: &str| {
+        steps
+            .iter()
+            .position(|step| step.contains(needle))
+            .unwrap_or_else(|| panic!("infra.yml has no step containing {needle}"))
+    };
+    let seed = position("name: seed any credential that has no version");
+    let apply = position("apply -input=false -auto-approve");
+
+    assert!(
+        seed < apply,
+        "the seeding runs at step {seed} and the apply at {apply}, so the apply \
+         still resolves a secret version that does not exist yet"
+    );
+
+    let step = &steps[seed];
+
+    // On an apply only. A `plan` that wrote a secret version would be a
+    // read-only action that is not one.
+    assert!(
+        step.contains("inputs.action == 'up'"),
+        "the seeding is not gated on the apply, so `plan` writes a credential"
+    );
+
+    // The emptiness check. Without it every dispatch mints a new password.
+    assert!(
+        step.contains("state:ENABLED") && step.contains("already has an enabled version"),
+        "the seeding no longer skips a secret that has a version, so every `up` \
+         replaces a credential an operator may be signed in with"
+    );
+
+    // A secret terraform has not created yet is skipped, not fatal: on a
+    // first apply the container does not exist until the apply below runs.
+    assert!(
+        step.contains("does not exist yet"),
+        "a secret terraform has not created yet now fails the run, so a first \
+         `up` in a fresh environment cannot get past this step"
+    );
+
+    // The payload never becomes an argument. `gcloud ... --data-file=X` is
+    // visible in `ps` for the life of the call; the value itself must not be.
+    assert!(
+        step.contains("--data-file=\"$scratch/payload\""),
+        "the credential is passed to gcloud as something other than the private \
+         file, so it may be readable from the process table"
+    );
+    assert!(
+        !step.contains("echo \"$value\"") && !step.contains("$GITHUB_OUTPUT"),
+        "the seeding step echoes the generated credential or carries it out in a \
+         workflow output, so it lands in the Actions log"
+    );
+
+    // The role that can add a version and cannot read one back. secretAccessor
+    // here would let every dispatch of this workflow read the venue credential.
+    let grants = steps
+        .iter()
+        .find(|step| step.contains("name: the permissions the plan needs"))
+        .expect("infra.yml has no step granting the roles the plan needs");
+    assert!(
+        grants.contains("roles/secretmanager.secretVersionManager"),
+        "the seeding step cannot add a secret version, because the role that \
+         lets it is no longer granted"
+    );
+    assert!(
+        !grants.contains("roles/secretmanager.secretAccessor"),
+        "this workflow grants itself the ability to read secret payloads, so \
+         every dispatch can read the venue credential"
+    );
+}
+
 #[test]
 fn every_key_rotates_and_the_ones_that_hold_data_cannot_be_destroyed() {
     let secrets = read("infrastructure/terraform/modules/secrets/main.tf");
