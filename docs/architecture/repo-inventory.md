@@ -80,6 +80,10 @@ itself into a deployment it has not earned.
 | `/data-sources` | GET |
 | `/training` | GET |
 | `/quantum` | GET |
+| `/ledger/users` | GET |
+| `/wallet` | GET |
+| `/corridors` | GET |
+| `/transfer-gate` | GET |
 
 **OpenAPI:** `backend/crates/apps/qip-api/src/openapi.rs` exists.
 **Streaming:** No WebSocket, SSE, or EventSource found.

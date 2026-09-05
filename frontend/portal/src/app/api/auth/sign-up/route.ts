@@ -8,6 +8,14 @@ export const dynamic = "force-dynamic";
 
 const ACCOUNT_TYPES = new Set(["individual", "institutional", "partner", "developer"]);
 
+/**
+ * Sign-up with an email and a password.
+ *
+ * @deprecated The password half is retired under ADR 0038 (proposed, not
+ * applied): sign-up becomes an enrolment ceremony — email as the identifier,
+ * still verified, and a passkey as the credential. The never-reveal-existence
+ * discipline below survives that rewrite unchanged. Working until then.
+ */
 export async function POST(request: NextRequest): Promise<NextResponse> {
   const refused = requireCsrf(request);
   if (refused) return refused;

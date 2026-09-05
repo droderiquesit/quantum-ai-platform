@@ -9,6 +9,12 @@
 
 #![allow(clippy::panic_in_result_fn)]
 
+// The loopback server is shared by every integration-test binary and compiled
+// into each on its own; this binary scripts one of its four answers, and the
+// other three are genuinely unused here rather than a helper nobody calls.
+#[allow(dead_code)]
+mod server;
+
 use qip_core::error::Result;
 use qip_core::{Duration, ObjectId, Timestamp};
 use qip_market_ingestion::adapter::SensedRecord;
@@ -622,5 +628,181 @@ fn every_known_source_opens_by_name_through_the_bridge_over_its_own_fixture() ->
             "{source_id}'s descriptor promises a topic its records do not carry"
         );
     }
+    Ok(())
+}
+
+// --- two credential headers over a real socket -------------------------------
+
+use qip_market_ingestion::connector::manifest::SecretRef;
+use qip_market_ingestion::connector::transport::{HttpSourceTransport, REDACTED, SourceRequest};
+use server::{Action, TestServer, address_with_no_listener};
+
+const SECRET_KEY_VALUE: &str = "test-secret-value-9f2a";
+const KEY_ID_VALUE: &str = "test-key-id-7b3c";
+
+/// The shipped Alpaca manifest pointed at `base_url`, and a resolver that
+/// reads its two credentials from two files through the `_FILE` variables —
+/// the shape a Secret Manager volume gives a deployment — and nothing from
+/// the process environment.
+fn alpaca_at(
+    base_url: &str,
+    tag: &str,
+) -> Result<(
+    qip_market_ingestion::connector::SourceManifest,
+    std::path::PathBuf,
+    BTreeMap<String, String>,
+)> {
+    let mut manifest = AlpacaBarsConnector::shipped_manifest()?;
+    manifest.endpoint.base_url = Some(base_url.to_string());
+    let dir = std::env::temp_dir().join(format!(
+        "qip-alpaca-two-header-{tag}-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("secret-key"), format!("{SECRET_KEY_VALUE}\n"))?;
+    std::fs::write(dir.join("key-id"), format!("{KEY_ID_VALUE}\n"))?;
+    let lookup: BTreeMap<String, String> = [
+        ("QIP_ALPACA_API_SECRET_KEY_FILE", dir.join("secret-key")),
+        ("QIP_ALPACA_API_KEY_ID_FILE", dir.join("key-id")),
+    ]
+    .into_iter()
+    .map(|(name, path)| (name.to_string(), path.display().to_string()))
+    .collect();
+    Ok((manifest, dir, lookup))
+}
+
+#[test]
+fn the_alpaca_transport_sends_both_headers_from_two_files_and_writes_neither_to_any_line()
+-> Result<()> {
+    // The failure this guards has two halves. First, the connector shipped at
+    // 712c5d3 sent only `apca-api-secret-key`, which Alpaca answers 401; the
+    // server here sees both headers with the values the two files hold, in
+    // the order the manifest names them. Second, a vendor's error body can
+    // echo the request headers, and `body_excerpt` is quoted into the health
+    // detail by design — so the body below echoes both values and the test
+    // proves no line the runtime produces carries either.
+    let echo = format!(
+        r#"{{"error":"upstream fault","echoed_headers":{{"apca-api-key-id":"{KEY_ID_VALUE}","apca-api-secret-key":"{SECRET_KEY_VALUE}"}}}}"#
+    );
+    assert!(
+        echo.contains(SECRET_KEY_VALUE) && echo.contains(KEY_ID_VALUE),
+        "premise: the vendor's body echoes both credentials"
+    );
+    let server = TestServer::always(Action::json(503, echo));
+    let (manifest, dir, lookup) = alpaca_at(&server.url(), "echo")?;
+    let environment = |name: &str| lookup.get(name).cloned();
+    let resolve = |secret: &SecretRef| secret.resolve_with(&environment);
+
+    let mut transport = HttpSourceTransport::connect_with(&manifest, &resolve)?;
+    assert_eq!(
+        transport.credential_headers(),
+        [
+            AlpacaBarsConnector::SECRET_KEY_HEADER,
+            AlpacaBarsConnector::KEY_ID_HEADER
+        ],
+        "the primary header is written first and the companion second"
+    );
+    let debug = format!("{transport:?}");
+    assert!(
+        debug.contains(AlpacaBarsConnector::KEY_ID_HEADER)
+            && !debug.contains(SECRET_KEY_VALUE)
+            && !debug.contains(KEY_ID_VALUE),
+        "Debug names the headers and never a value: {debug}"
+    );
+
+    // One request straight through the transport: both headers arrive with
+    // the files' contents, newline stripped, and the body comes back scrubbed.
+    let request = SourceRequest::get(&manifest.endpoint.path).for_health();
+    let response = transport.request(&request, alpaca_horizon())?;
+    assert_eq!(response.status, 503);
+    assert_eq!(
+        server.served(),
+        1,
+        "premise: exactly one request reached the socket"
+    );
+    let received = server.requests();
+    assert_eq!(
+        received[0].method, "GET",
+        "premise: the transport issues GET and only GET"
+    );
+    let headers = &received[0].headers;
+    assert_eq!(
+        headers
+            .get(AlpacaBarsConnector::SECRET_KEY_HEADER)
+            .map(String::as_str),
+        Some(SECRET_KEY_VALUE),
+        "{headers:?}"
+    );
+    assert_eq!(
+        headers
+            .get(AlpacaBarsConnector::KEY_ID_HEADER)
+            .map(String::as_str),
+        Some(KEY_ID_VALUE),
+        "{headers:?}"
+    );
+    assert!(
+        !response.body.contains(SECRET_KEY_VALUE) && !response.body.contains(KEY_ID_VALUE),
+        "a credential the vendor echoed left the transport in the body"
+    );
+    assert_eq!(
+        response.body.matches(REDACTED).count(),
+        2,
+        "both echoed values are marked, not silently cut: {}",
+        response.body
+    );
+
+    // And through the runtime's health probe, which quotes the excerpt into
+    // its detail: the vendor's words survive, the credentials do not.
+    let (mut connector, _) = alpaca()?;
+    let mut runtime = runtime_for(&connector)?;
+    let health = runtime.health(&mut connector, &mut transport, alpaca_horizon())?;
+    assert!(!health.reachable);
+    assert!(
+        health.detail.contains("upstream fault") && health.detail.contains(REDACTED),
+        "the health detail no longer quotes the vendor's body: {}",
+        health.detail
+    );
+    assert!(
+        !health.detail.contains(SECRET_KEY_VALUE) && !health.detail.contains(KEY_ID_VALUE),
+        "a credential reached the health detail: {}",
+        health.detail
+    );
+
+    std::fs::remove_dir_all(dir)?;
+    Ok(())
+}
+
+#[test]
+fn an_alpaca_transport_missing_one_of_its_two_files_names_that_variable_and_no_value() -> Result<()>
+{
+    // A deployment that mounted the secret key and forgot the key id must be
+    // told which one, at connect and not at the first 401 — and the message
+    // that tells it must not quote the credential it did find.
+    let (manifest, dir, lookup) = alpaca_at(&address_with_no_listener(), "half")?;
+    let only_secret_key = |name: &str| {
+        (name == "QIP_ALPACA_API_SECRET_KEY_FILE")
+            .then(|| lookup.get(name).cloned())
+            .flatten()
+    };
+    let resolve = |secret: &SecretRef| secret.resolve_with(&only_secret_key);
+    assert!(
+        resolve(manifest.auth.secret.as_ref().expect("the primary is named"))?.is_some(),
+        "premise: the secret key resolves"
+    );
+
+    let error = HttpSourceTransport::connect_with(&manifest, &resolve)
+        .expect_err("a transport with half its credential opened");
+    let message = error.message();
+    assert!(
+        message.contains("`QIP_ALPACA_API_KEY_ID`")
+            && !message.contains("`QIP_ALPACA_API_SECRET_KEY`"),
+        "the refusal names the wrong variable: {message}"
+    );
+    assert!(
+        !message.contains(SECRET_KEY_VALUE),
+        "the refusal quotes the credential that was found: {message}"
+    );
+
+    std::fs::remove_dir_all(dir)?;
     Ok(())
 }

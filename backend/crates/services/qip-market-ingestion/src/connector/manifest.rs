@@ -26,7 +26,9 @@
 //! [`SecretRef::new`] refuses any name that is not `SCREAMING_SNAKE_CASE` —
 //! which is exactly the shape a pasted API key (`sk-live-9f2a…`) is not. A
 //! manifest is checked into git and printed in support tickets; the failure
-//! prevented is a live key in both.
+//! prevented is a live key in both. A source that reads two headers — an
+//! account id beside a secret key — names a [`CompanionHeader`], which holds
+//! a second [`SecretRef`] under the same rule and nothing else.
 
 use qip_core::Duration;
 use qip_core::error::{Error, Result};
@@ -339,6 +341,114 @@ impl SecretRef {
     pub fn resolve(&self) -> Result<Option<String>> {
         qip_core::secret_from_environment(&self.variable)
     }
+
+    /// Read the credential from a lookup that stands in for the environment.
+    ///
+    /// The same rule as [`Self::resolve`] — the variable, its `_FILE` variant,
+    /// both refused — applied to whatever `environment` answers for a name.
+    /// This exists because the process environment cannot be written in a
+    /// test (`set_var` is `unsafe` since the 2024 edition and this workspace
+    /// forbids `unsafe`), and a resolver that could only be exercised against
+    /// the real environment would be one whose `_FILE` path nothing proved.
+    pub fn resolve_with(
+        &self,
+        environment: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<Option<String>> {
+        let file_variable = format!("{}{}", self.variable, qip_core::secret::FILE_SUFFIX);
+        qip_core::secret::resolve_from(
+            &self.variable,
+            environment(&self.variable),
+            environment(&file_variable),
+        )
+    }
+}
+
+/// How a credential reaches a request; the function type every resolver has.
+///
+/// [`SecretRef::resolve`] is one, reading the deployment's environment; a
+/// test supplies another over a map and two files. The transport and
+/// [`SourceManifest::missing_configuration_with`] take one of these rather
+/// than reading the environment themselves, so the two-header path can be
+/// proven end to end without a socket to a vendor or a variable set on the
+/// machine running the build.
+pub type SecretResolver<'a> = &'a dyn Fn(&SecretRef) -> Result<Option<String>>;
+
+/// Headers a credential may not be routed to.
+///
+/// The first four are the ones `qip_transport::HttpRequest::with_header`
+/// silently drops because the client writes them itself; a manifest routing a
+/// secret to `host` would send no credential at all and answer every 401 with
+/// a shrug. The rest are content-negotiation headers the transport sets or a
+/// vendor reads for something other than identity; a secret sent as `accept`
+/// is a credential in a header every proxy on the path logs as routine.
+const NON_CREDENTIAL_HEADERS: [&str; 8] = [
+    "host",
+    "content-length",
+    "connection",
+    "transfer-encoding",
+    "accept",
+    "accept-encoding",
+    "content-type",
+    "user-agent",
+];
+
+/// The rule every credential header name is held to.
+///
+/// Lower-case, printable ASCII, no colon, and not one of the headers the
+/// client owns. The colon and space rule is about the wire: a name that
+/// contained either would end the header and let the rest be read as another.
+fn validate_credential_header(header: &str) -> Result<()> {
+    if header.is_empty() {
+        return Err(Error::invalid(
+            "a credential header with no name; the credential is never put in the URL, because \
+             a URL is written to every access log on the path",
+        ));
+    }
+    if !header
+        .chars()
+        .all(|c| c.is_ascii_graphic() && c != ':' && !c.is_ascii_uppercase())
+    {
+        return Err(Error::invalid(format!(
+            "{header:?} is not a usable header name: it must be lower-case ASCII with no colon \
+             or space, or it would end the header and let the rest be read as another"
+        )));
+    }
+    if NON_CREDENTIAL_HEADERS.contains(&header) {
+        return Err(Error::invalid(format!(
+            "`{header}` is not a credential header: the transport writes it itself, so a secret \
+             routed there is either dropped before the socket or sent where every proxy logs it \
+             as routine. Name the header the vendor reads the credential from"
+        )));
+    }
+    Ok(())
+}
+
+/// A second credential header, for a source that identifies the account in
+/// one header and authenticates it in another.
+///
+/// Alpaca is the case in hand: `apca-api-key-id` and `apca-api-secret-key`,
+/// and a request carrying only the second answers 401. The failure prevented
+/// by making this a named field rather than a free list is a manifest that
+/// declares three headers, or the same one twice, or one that routes the key
+/// id to `accept`; each is a shape this type cannot take or
+/// [`AuthSpec::validate`] refuses by name.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompanionHeader {
+    /// The header the second credential travels in.
+    pub header: String,
+    /// Where its value is read from: a name, never a value, under the same
+    /// rule as [`AuthSpec::secret`].
+    pub secret: SecretRef,
+}
+
+impl CompanionHeader {
+    pub fn new(header: impl Into<String>, secret: SecretRef) -> Self {
+        Self {
+            header: header.into(),
+            secret,
+        }
+    }
 }
 
 /// How the source authenticates a request.
@@ -355,6 +465,11 @@ pub struct AuthSpec {
     pub header: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret: Option<SecretRef>,
+    /// A second header the source requires beside [`Self::header`], for
+    /// [`AuthScheme::Header`] only. Absent in every manifest written before
+    /// it existed, which is why it defaults rather than being required.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub companion: Option<CompanionHeader>,
 }
 
 impl AuthSpec {
@@ -369,16 +484,43 @@ impl AuthSpec {
             scheme: AuthScheme::Header,
             header: Some(header.into()),
             secret: Some(secret),
+            companion: None,
         }
+    }
+
+    /// The same, with a second header the source reads beside the first.
+    pub fn two_headers(
+        header: impl Into<String>,
+        secret: SecretRef,
+        companion: CompanionHeader,
+    ) -> Self {
+        Self {
+            scheme: AuthScheme::Header,
+            header: Some(header.into()),
+            secret: Some(secret),
+            companion: Some(companion),
+        }
+    }
+
+    /// Every secret this spec names, in the order the transport sends the
+    /// headers they fill: the primary first, the companion second.
+    pub fn secrets(&self) -> Vec<&SecretRef> {
+        self.secret
+            .iter()
+            .chain(self.companion.iter().map(|companion| &companion.secret))
+            .collect()
     }
 
     pub fn validate(&self) -> Result<()> {
         if let Some(secret) = &self.secret {
             secret.validate()?;
         }
+        if let Some(companion) = &self.companion {
+            companion.secret.validate()?;
+        }
         match self.scheme {
             AuthScheme::None => {
-                if self.secret.is_some() || self.header.is_some() {
+                if self.secret.is_some() || self.header.is_some() || self.companion.is_some() {
                     return Err(Error::invalid(
                         "the auth scheme is `none` but a header or secret is named; an open \
                          endpoint that quietly carries a credential is one nobody audits",
@@ -394,20 +536,31 @@ impl AuthSpec {
                          the path",
                     ));
                 }
-                if !header
-                    .chars()
-                    .all(|c| c.is_ascii_graphic() && c != ':' && !c.is_ascii_uppercase())
-                {
-                    return Err(Error::invalid(format!(
-                        "{header:?} is not a usable header name: it must be lower-case ASCII \
-                         with no colon or space, or it would end the header and let the rest be \
-                         read as another"
-                    )));
-                }
+                validate_credential_header(header)?;
                 if self.secret.is_none() {
                     return Err(Error::invalid(
                         "the auth scheme is `header` but no secret variable is named",
                     ));
+                }
+                if let Some(companion) = &self.companion {
+                    let second = companion.header.trim();
+                    validate_credential_header(second)?;
+                    if second == header {
+                        return Err(Error::invalid(format!(
+                            "`{header}` is named as both the credential header and its \
+                             companion. Two values under one name reach the vendor as whichever \
+                             its parser keeps, so the manifest would authenticate with a \
+                             credential nobody chose; name the second header the vendor reads"
+                        )));
+                    }
+                    if self.secrets().windows(2).any(|pair| pair[0] == pair[1]) {
+                        return Err(Error::invalid(format!(
+                            "`{header}` and `{second}` both read `{}`. One credential sent under \
+                             two names means one of the two headers is carrying the wrong \
+                             thing; name a variable for each",
+                            companion.secret.variable()
+                        )));
+                    }
                 }
             }
             AuthScheme::Bearer => {
@@ -415,6 +568,12 @@ impl AuthSpec {
                     return Err(Error::invalid(
                         "a bearer credential travels in `authorization`; naming a second header \
                          would send it twice or not at all",
+                    ));
+                }
+                if self.companion.is_some() {
+                    return Err(Error::invalid(
+                        "a bearer credential has no companion header; a source that reads an \
+                         identifier beside its token is declared as `header` with both named",
                     ));
                 }
                 if self.secret.is_none() {
@@ -658,6 +817,17 @@ impl SourceManifest {
     /// What the deployment has not supplied, each named on its own so an
     /// operator with two of three learns which one is left.
     pub fn missing_configuration(&self) -> Vec<String> {
+        self.missing_configuration_with(&SecretRef::resolve)
+    }
+
+    /// [`Self::missing_configuration`] against a resolver the caller supplies.
+    ///
+    /// Every secret the manifest names is checked — the primary and, where
+    /// there is one, the companion — each reported on its own line. A
+    /// deployment that mounted Alpaca's secret key and forgot the key id
+    /// would otherwise pass this check and answer 401 at the health probe,
+    /// which names neither variable.
+    pub fn missing_configuration_with(&self, resolve: SecretResolver<'_>) -> Vec<String> {
         let mut missing = Vec::new();
         if self.endpoint.base_url.is_none() {
             missing.push(format!(
@@ -668,8 +838,8 @@ impl SourceManifest {
                 self.endpoint.path
             ));
         }
-        if let Some(secret) = &self.auth.secret {
-            let present = matches!(secret.resolve(), Ok(Some(_)));
+        for secret in self.auth.secrets() {
+            let present = matches!(resolve(secret), Ok(Some(_)));
             if !present {
                 missing.push(format!(
                     "no credential: the deployment must set `{}` (or `{}_FILE`), which this \

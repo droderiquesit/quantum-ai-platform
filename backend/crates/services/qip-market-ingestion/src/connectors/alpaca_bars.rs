@@ -27,19 +27,21 @@
 //! This connector describes one `GET` of bars and nothing else, and the
 //! secret it names is the market-data one.
 //!
-//! # The credential the schema can hold, and the one it cannot yet
+//! # Two credential headers, both by reference
 //!
-//! Alpaca wants two headers, `apca-api-key-id` and `apca-api-secret-key`.
-//! [`crate::connector::manifest::AuthSpec`] holds one header and one
-//! [`crate::connector::manifest::SecretRef`], by design — a shape with no
-//! room for a value. The manifest names the secret key, which is the
-//! credential; the key id has no field to be named in, and this connector
-//! does not smuggle it in through a request, because a request that can
+//! Alpaca wants two headers, `apca-api-key-id` and `apca-api-secret-key`,
+//! and a request carrying only one answers 401. The manifest names the
+//! secret key as [`crate::connector::manifest::AuthSpec::header`] and the
+//! key id as its [`crate::connector::manifest::CompanionHeader`]; each is a
+//! [`crate::connector::manifest::SecretRef`] — a variable name, never a
+//! value — and the transport sends both. Before the companion existed the
+//! manifest could name only the secret key, and the transport would have
+//! authenticated with half a credential; [`AlpacaBarsConnector::new`] now
+//! refuses a manifest without the key id's companion so that a manifest
+//! edited back to the old shape fails at construction rather than at the
+//! vendor. The connector itself never sees either value: a request that can
 //! carry a credential is the thing the transport's design exists to make
-//! impossible. Until `AuthSpec` grows a second named header the transport
-//! sends one of the two and Alpaca answers 401 — which is a refusal at the
-//! vendor, visible in the health check, rather than a plaintext key. The
-//! schema change belongs beside the transport, not here.
+//! impossible.
 //!
 //! # Why a daily bar is knowable seventeen hours after it is stamped
 //!
@@ -130,13 +132,12 @@ impl AlpacaBarsConnector {
     /// [`Self::new`] refuses a manifest whose feed says otherwise.
     pub const VENUE: &'static str = "IEXG";
 
-    /// The header Alpaca reads the key id from. Named so the gap the module
-    /// documentation describes is a constant a reviewer can grep for, and so
-    /// [`Self::new`] can refuse a manifest that put the key id where the
-    /// secret belongs.
+    /// The header Alpaca reads the key id from: the manifest's companion
+    /// header. A constant so [`Self::new`] can refuse a manifest that put
+    /// the secret key under this name, or that names no companion at all.
     pub const KEY_ID_HEADER: &'static str = "apca-api-key-id";
 
-    /// The header the manifest's one secret travels in.
+    /// The header the manifest's primary secret — the secret key — travels in.
     pub const SECRET_KEY_HEADER: &'static str = "apca-api-secret-key";
 
     /// The shortest delay under which a daily bar could be final: the
@@ -197,6 +198,21 @@ impl AlpacaBarsConnector {
                 manifest.source_id,
                 Self::KEY_ID_HEADER,
                 Self::SECRET_KEY_HEADER
+            )));
+        }
+        let companion = manifest
+            .auth
+            .companion
+            .as_ref()
+            .map(|companion| companion.header.as_str());
+        if companion != Some(Self::KEY_ID_HEADER) {
+            return Err(Error::invalid(format!(
+                "`{}` names {companion:?} as its companion header and Alpaca reads the key id \
+                 from `{}`. A request carrying the secret key alone answers 401 at the health \
+                 check, so a manifest without the key id's companion is refused before a \
+                 socket opens",
+                manifest.source_id,
+                Self::KEY_ID_HEADER
             )));
         }
         if instruments.is_empty() {
@@ -423,15 +439,46 @@ mod tests {
             "the shipped manifest's provider is {:?} and does not name {named}",
             manifest.provider
         );
-        // The one header the schema can name is the secret key's, and the
-        // key id is not it.
+        // The primary header is the secret key's and the companion is the
+        // key id's; the two are distinct names reading distinct variables.
         assert_eq!(
             manifest.auth.header.as_deref(),
             Some(AlpacaBarsConnector::SECRET_KEY_HEADER)
         );
+        assert_eq!(
+            manifest
+                .auth
+                .companion
+                .as_ref()
+                .map(|companion| companion.header.as_str()),
+            Some(AlpacaBarsConnector::KEY_ID_HEADER)
+        );
         assert_ne!(
             AlpacaBarsConnector::SECRET_KEY_HEADER,
             AlpacaBarsConnector::KEY_ID_HEADER
+        );
+        Ok(())
+    }
+
+    /// The shape the manifest had before the companion existed: one header,
+    /// the secret key. It validated then and validates now, and the vendor
+    /// would answer it 401 — so the connector is what refuses it.
+    #[test]
+    fn a_manifest_that_names_only_the_secret_key_header_is_refused_before_a_socket_opens()
+    -> Result<()> {
+        let mut manifest = AlpacaBarsConnector::shipped_manifest()?;
+        manifest.auth.companion = None;
+        assert!(
+            manifest.validate().is_ok(),
+            "premise: the one-header shape is a valid manifest in general"
+        );
+        let error = AlpacaBarsConnector::new(manifest, instruments())
+            .expect_err("a manifest without the key id header built a connector");
+        assert!(
+            error.message().contains("answers 401")
+                && error.message().contains(AlpacaBarsConnector::KEY_ID_HEADER),
+            "{}",
+            error.message()
         );
         Ok(())
     }
@@ -576,8 +623,18 @@ mod tests {
 
     #[test]
     fn a_manifest_that_sends_the_secret_under_the_key_id_header_is_refused() -> Result<()> {
+        // Both headers swapped, so the manifest still validates in general —
+        // two distinct names reading two distinct variables — and it is the
+        // connector, which knows what each header means, that refuses it.
         let mut manifest = AlpacaBarsConnector::shipped_manifest()?;
         manifest.auth.header = Some(AlpacaBarsConnector::KEY_ID_HEADER.to_string());
+        if let Some(companion) = manifest.auth.companion.as_mut() {
+            companion.header = AlpacaBarsConnector::SECRET_KEY_HEADER.to_string();
+        }
+        assert!(
+            manifest.validate().is_ok(),
+            "premise: the swapped manifest is valid as a manifest"
+        );
         let error = AlpacaBarsConnector::new(manifest, instruments())
             .expect_err("the secret key was routed to the key id header");
         assert!(

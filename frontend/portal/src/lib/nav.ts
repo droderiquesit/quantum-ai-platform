@@ -207,6 +207,44 @@ export const NAV: readonly NavGroup[] = [
     ],
   },
   {
+    // The ledger plane, read-only. Every page here renders a record the
+    // platform holds and offers nothing that proposes, approves, signs or
+    // transfers: ADR 0021 refuses the half of the treasury by which capital
+    // leaves, and a section that offered a control for it would imply a
+    // path that does not exist.
+    label: "Treasury",
+    items: [
+      {
+        href: "/treasury/ledger",
+        label: "Ledger",
+        mark: "LG",
+        description: "Users, mandates, per-strategy balances with expected inflows kept apart, and entitlements",
+        reads: ["/ledger/users"],
+      },
+      {
+        href: "/treasury/wallet",
+        label: "Wallet",
+        mark: "WL",
+        description: "Holdings observed at venues beside the ledger's view, and every reconciliation outcome",
+        reads: ["/wallet"],
+      },
+      {
+        href: "/treasury/corridors",
+        label: "Corridors",
+        mark: "CR",
+        description: "Where capital may go, under what caps, at what stage, and when each destination becomes usable",
+        reads: ["/corridors"],
+      },
+      {
+        href: "/treasury/transfer-gate",
+        label: "Transfer gate",
+        mark: "TG",
+        description: "The seven veto-only checks and the last assessment, or that there has been none",
+        reads: ["/transfer-gate"],
+      },
+    ],
+  },
+  {
     label: "Risk & Compliance",
     items: [
       {

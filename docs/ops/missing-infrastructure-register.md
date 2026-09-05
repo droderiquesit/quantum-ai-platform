@@ -550,6 +550,40 @@ therefore cannot flip on this path; ADR 0032's own fallback (a second, narrow
 egress-proxy route, accepting the public-internet hop under ADR 0033's
 mitigation) is the remaining route, and nothing in this tree has taken it yet.
 
+**Re-checked 2026-09-05, and the refusal stands on today's evidence rather
+than on 2026-09-04's.** The registry's tag list
+(`https://us-docker.pkg.dev/v2/cloud-ops-agents-artifacts/cloud-run-gmp-sidecar/cloud-run-gmp-sidecar/tags/list`,
+anonymous, HTTP 200) carries the version tags `1.0.0 1.1.0 1.1.1 1.2.0 1.3.0
+1.4.0 1.6.0 1.7.0 1.8.0 1.9.1 1.9.2` and `latest`; `latest` and `1.9.2` both
+name `sha256:ff1fc68871118f1032a3ce17e2b0abd703292e883989d220244330ebdf522fd1`
+(uploaded 2026-07-15), the digest run 11 refused. Nothing newer is published.
+The twenty manifests the registry gained on 2026-09-05 are not images: each is
+an Artifact Analysis attachment (`application/vnd.in-toto.vuln+dsse` or
+`.triage+dsse`, `artifactregistry.attachment_namespace:
+artifactanalysis.googleapis.com`) whose `subject` is one of the existing
+tagged digests. Google's own vulnerability attestation on `ff1fc688…`
+(`scanFinishedOn: 2026-09-04T18:40:40-07:00`) lists CVE-2026-33997,
+CVE-2026-84304 and GHSA-hrxh-6v49-42gf with every triage decision
+`TRIAGE_STATUS_UNSPECIFIED` — nothing Google has waived, and nothing that
+names the finding this platform's gate fires on. A Trivy 0.74.0 scan of that
+digest from this checkout on 2026-09-05 (`trivy image --severity
+CRITICAL,HIGH --ignore-unfixed --exit-code 1 --scanners vuln
+us-docker.pkg.dev/…/cloud-run-gmp-sidecar@sha256:ff1fc688…`, the same flags
+`vendor.yml` runs, DB from `mirror.gcr.io/aquasec/trivy-db:2`) exited 1:
+
+    run-gmp-entrypoint (gobinary)  Total: 10 (HIGH: 9, CRITICAL: 1)
+    rungmpcol (gobinary)           Total: 12 (HIGH: 11, CRITICAL: 1)
+    golang.org/x/crypto  CVE-2026-56854  CRITICAL  fixed  v0.54.0 -> 0.55.0
+
+The CRITICAL is the one run 11 found; the HIGHs (grpc-go CVE-2026-84304 and
+GHSA-hrxh-6v49-42gf, and nine Go 1.26.4 stdlib advisories fixed in 1.26.6)
+are new to the database since, not to the image. `vendor.yml`'s refusing
+pass is `--severity CRITICAL --exit-code 1`, so the image still fails on
+exactly the finding it failed on before. No digest was added to
+`vendored-images.txt` and no tfvars line changed. Re-check the tag list
+before the next observability pass; the condition for adoption is unchanged
+— a published tag carrying `x/crypto >= 0.55.0`, scanned to zero CRITICAL.
+
 **F1–F4 are in progress this wave, not closed.** Other agents are working the
 follow-ups this register lists (`scripts/deploy-frontends.sh`'s missing
 `--binary-authorization` flags, the landing's missing service account, the

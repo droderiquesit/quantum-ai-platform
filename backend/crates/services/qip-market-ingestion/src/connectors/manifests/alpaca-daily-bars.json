@@ -14,7 +14,11 @@
   "auth": {
     "scheme": "header",
     "header": "apca-api-secret-key",
-    "secret": { "variable": "QIP_ALPACA_API_SECRET_KEY" }
+    "secret": { "variable": "QIP_ALPACA_API_SECRET_KEY" },
+    "companion": {
+      "header": "apca-api-key-id",
+      "secret": { "variable": "QIP_ALPACA_API_KEY_ID" }
+    }
   },
   "endpoint": {
     "path": "/v2/stocks/bars",

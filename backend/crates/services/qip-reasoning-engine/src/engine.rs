@@ -22,6 +22,7 @@ use qip_core::error::{Error, Result};
 use qip_core::ids::{ChallengeId, EvidenceId, HypothesisId, ObjectId, OpportunityId};
 use qip_core::time::{Duration, Timestamp};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// Everything the engine needs to form one hypothesis.
 #[derive(Clone, Debug)]
@@ -109,6 +110,11 @@ pub struct ReasoningEngine {
     sequence: u64,
     /// Confidence a hypothesis must reach to be worth proposing.
     action_bar: f64,
+    /// The self-model's factor per evidence origin, as the LEARN stage last
+    /// handed it over. Empty until something has resolved, which leaves
+    /// every origin at full weight — the only honest weighting of a
+    /// component nobody has measured.
+    origin_factors: BTreeMap<String, f64>,
 }
 
 impl ReasoningEngine {
@@ -117,11 +123,28 @@ impl ReasoningEngine {
             red_team: RedTeam::new(policy),
             sequence: 0,
             action_bar: 0.60,
+            origin_factors: BTreeMap::new(),
         }
     }
 
     pub fn red_team(&self) -> &RedTeam {
         &self.red_team
+    }
+
+    /// Replace the per-origin factors every later hypothesis is formed with.
+    ///
+    /// Handed in by the composition root from the self-model, rather than
+    /// read from it here, so this crate holds no view of the learning
+    /// engine and the pair meet only in the kernel. Replaced whole rather
+    /// than merged: an origin whose sample fell below the minimum — a window
+    /// that rolled — must lose its factor, and a merge would keep it.
+    pub fn set_origin_factors(&mut self, factors: BTreeMap<String, f64>) {
+        self.origin_factors = factors;
+    }
+
+    /// The factors the next hypothesis will be formed with.
+    pub fn origin_factors(&self) -> &BTreeMap<String, f64> {
+        &self.origin_factors
     }
 
     /// Form and review one hypothesis.
@@ -166,7 +189,7 @@ impl ReasoningEngine {
             ));
         }
 
-        let hypothesis = Hypothesis::form(HypothesisDraft {
+        let draft = HypothesisDraft {
             hypothesis_id: input.hypothesis_id,
             opportunity_id: input.opportunity_id,
             formed_at: input.now,
@@ -187,7 +210,10 @@ impl ReasoningEngine {
                 .map(|f| f.run_id.as_str().to_string())
                 .collect(),
             models: input.models,
-        })?;
+        };
+        // Each origin's evidence scaled by what the self-model has measured
+        // of it; the factors applied travel on the hypothesis.
+        let hypothesis = Hypothesis::form_with_factors(draft, &self.origin_factors)?;
 
         let base = self.sequence;
         let mut counter = 0u64;

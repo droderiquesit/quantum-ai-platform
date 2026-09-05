@@ -324,6 +324,49 @@ pub const ROUTES: &[Route] = &[
         summary: "narrative items the platform absorbed, where an adapter feeds it",
         success: 200,
     },
+    // --- the treasury read surface -------------------------------------------
+    //
+    // The blueprint's per-account entitlements and wallet, corridor and
+    // transfer-gate views, read-only at the viewer role. ADR 0021 permits the
+    // deterministic half of the treasury and refuses the path by which
+    // capital leaves, so there is no route here that could submit, approve,
+    // sign or move anything, and `api_boundary.rs` pins the mutating set to
+    // the three above. What this process does not hold — a wallet, either
+    // registry, a gate assessment — is stated in the body, not zero-filled.
+    // The shapes are `crate::ledger_views` and `ROUTES-LEDGER.md`.
+    Route {
+        method: Method::Get,
+        pattern: "/ledger/users",
+        required_role: Role::Viewer,
+        summary: "every enrolled user: mandate, per-strategy balances with expected inflows \
+                  kept apart, and the viewer-role entitlement evaluation, in which withdrawal \
+                  is never granted",
+        success: 200,
+    },
+    Route {
+        method: Method::Get,
+        pattern: "/wallet",
+        required_role: Role::Viewer,
+        summary: "the wallet read model and its reconciliation outcomes, or that none is \
+                  assembled in this process",
+        success: 200,
+    },
+    Route {
+        method: Method::Get,
+        pattern: "/corridors",
+        required_role: Role::Viewer,
+        summary: "the corridor registry and destination allowlist as records with stage and \
+                  caps, or that neither is held in this process",
+        success: 200,
+    },
+    Route {
+        method: Method::Get,
+        pattern: "/transfer-gate",
+        required_role: Role::Viewer,
+        summary: "the transfer gate's seven checks in order, the last assessment (none has \
+                  ever been made here) and the kill switch its seventh check reads",
+        success: 200,
+    },
     // --- the live surface ---------------------------------------------------
     //
     // In the same table as everything else, so a security review reads one
@@ -711,6 +754,37 @@ impl Api {
                 200,
                 unavailable("news", crate::missing::NO_NARRATIVE_ADAPTER),
             ),
+            // The treasury read surface. Each body is a `Serialize` view
+            // built from what the platform holds at this instant; a view
+            // that does not serialise answers 500 with the reason rather
+            // than panicking under the lock every other route waits on.
+            (Method::Get, "/ledger/users") => {
+                match crate::ledger_views::ledger_users(&platform, now) {
+                    Ok(view) => {
+                        let (status, body) = crate::ledger_views::render(&view);
+                        Response::json(status, body)
+                    }
+                    Err(reason) => {
+                        Response::json(500, format!(r#"{{"error":{}}}"#, json::string(&reason)))
+                    }
+                }
+            }
+            (Method::Get, "/wallet") => {
+                let (status, body) =
+                    crate::ledger_views::render(&crate::ledger_views::wallet(&platform, now));
+                Response::json(status, body)
+            }
+            (Method::Get, "/corridors") => {
+                let (status, body) =
+                    crate::ledger_views::render(&crate::ledger_views::corridors(&platform, now));
+                Response::json(status, body)
+            }
+            (Method::Get, "/transfer-gate") => {
+                let (status, body) = crate::ledger_views::render(
+                    &crate::ledger_views::transfer_gate(&platform, now),
+                );
+                Response::json(status, body)
+            }
             // A stream asked for through the handler rather than over a socket
             // — by a test, an embedder, or a client library that buffers a
             // whole response before returning it. Answering with the stream's

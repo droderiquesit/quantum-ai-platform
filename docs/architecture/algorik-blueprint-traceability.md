@@ -131,6 +131,98 @@ at current scale, and process proliferation was rejected.
   four crates already provides the isolation, and a fifth process would add
   deployment surface without adding a boundary.
 
+  **Re-scored 2026-09-05 — the self-model exists and is used.** "No
+  self-model at all" above stopped being true with
+  `qip-learning-engine/src/self_model.rs`: a `SelfModel` is a `BTreeMap` of
+  `CapabilityEstimate`s keyed by `ComponentKey` (`detector:<class>`,
+  `analyst:<manifest id>`, and the `rung` and `strategy` kinds, typed but not
+  yet fed), each a window of at most 128 graded outcomes, the model capped at
+  512 components evicting the least recently updated. `estimate()` is the hit
+  rate shrunk toward one half by four pseudo-counts — `(h + 2) / (n + 4)`,
+  stated in the doc comment — and is *refused* below ten outcomes rather than
+  reported as `0.5`. Fed from LEARN: `Platform::learn_from` charges every
+  informative evaluation to the detector named by the hypothesis class and to
+  each roster analyst whose `run-<id>-<n>` is among the contributors
+  (`Platform::components_of`), then hands
+  `SelfModel::origin_factors()` to the reasoning engine whole
+  (`ReasoningEngine::set_origin_factors`). Consumed in exactly one place:
+  `Hypothesis::form_with_factors` multiplies each evidence item's signed
+  weight by its origin's factor before the log-odds update, records the
+  factors applied in `Hypothesis::origin_factors` so a replay re-forms the
+  same confidence, and leaves an unmeasured origin at full weight; the prior,
+  the review bar and the action bar are untouched. Evidence:
+  `qip-learning-engine/tests/self_model.rs` (refusal below the minimum,
+  always-wrong near 0 and always-right near 1, bounded window, bounded model),
+  `qip-kernel/tests/self_model.rs::grading_a_resolved_thesis_moves_the_self_model_for_the_components_that_produced_it`
+  and `::the_reason_factor_scales_an_origin_only_with_a_sufficient_sample_and_is_recorded_on_the_hypothesis`,
+  and `platform.rs::self_model_tests` for the LEARN→REASON handover, every
+  test mutation-verified. `Platform::self_model()` is exposed for the API and
+  not yet served by a route. Still open on this row: the rung and strategy
+  kinds are unfed — the routing record is per cycle, not per hypothesis, and
+  a strategy session has no stated confidence to grade — and §13.2's
+  exploration budget reads nothing from the model.
+
+  **Re-scored 2026-09-05 — episodic memory is the §10 episode vector with
+  bounded, bitemporal approximate retrieval, consumed as precedent only.**
+  "Episodic memory holds one agent's research conclusion" described
+  `qip-agents/src/memory.rs`, which still does that and is untouched; the
+  blueprint's episode now lives in `qip-ai/src/memory/` (`episode.rs`,
+  `store.rs`). An `Episode` carries the instrument, the regime label in
+  force (market and volatility, as the cost router's closed enums print
+  them), a `FindingsSummary` (runs, findings, coverage, contested), the
+  panel's `AnalystStance`s in agent-id order, the `ClaimRecord` (class,
+  claim label, implied direction, effective confidence after review), the
+  `DecisionTaken` (approved, rejected on review, not sizeable), the
+  `EpisodeOutcome` once resolved (realised move in bps, realised P&L), and
+  `at`/`known_at`. The embedding is a stated 32-dimensional encoding with no
+  learned weight — eight instrument signs from `sha256`, one-hot regime,
+  volatility and claim blocks, direction, confidence, coverage, mean
+  conviction, stance shares and a log-scaled horizon, laid out index by
+  index in the doc comment on `EPISODE_DIMENSIONS`. `EpisodicMemory` is
+  capacity-bounded (4,096 by default) with oldest-`known_at`-first eviction,
+  and recall is locality-sensitive hashing in four six-bit tables of random
+  hyperplanes drawn by splitmix64 from the constant `LSH_SEED`, buckets in
+  `BTreeMap`, home buckets then one-bit neighbours probed in a fixed order,
+  at most 256 candidates gathered and re-ranked by exact cosine —
+  deterministic across constructions and bounded whatever the memory holds.
+  `recall(query, now, k)` returns only episodes whose `known_at` is strictly
+  before `now`; the boundary is refused rather than admitted because the
+  deterministic clock can hand two cycles one reading. In the kernel, REASON
+  recalls the five nearest before the panel convenes and records them on the
+  hypothesis as a `HypothesisPrecedent` (`Platform::precedents()`): the
+  entries, their outcomes, and a `PrecedentDigest` — the share of the nearest
+  resolved episodes whose realised move went the claim's way, `None` where
+  nothing resolved rather than zero. LEARN's resolve path
+  (`Platform::remember_resolved`, from `calibrate_resolved`) moves each
+  resolved thesis's pending episode into memory with its outcome, stamped
+  knowable at the resolution instant, so memory fills from real cycles. **The
+  precedent does not touch the confidence arithmetic in this slice**, and the
+  proof is a control rather than a sentence:
+  `qip-kernel/tests/episodic.rs::the_kernel_records_precedents_on_a_hypothesis_once_prior_episodes_resolved_and_leaves_the_confidence_alone`
+  drives two platforms through the same tape and the same three REASONs, one
+  whose resolution is known before the third question and one whose
+  resolution shares the third question's clock reading, and asserts the two
+  confidences are bit-identical while the digests differ; the mutation that
+  adds the recall count to the synthesis prior fails it. The precedent is
+  also deliberately *not* written into the `AgentBrief` context, because
+  `brief.context` is the string the reviewer's lesson matcher
+  substring-matches against, so a block there could change which objections
+  are raised and, through them, the confidence; the language-model context
+  block the blueprint describes waits on a channel that is not also a
+  matching key. The route by which precedent could later bear on confidence
+  is ADR 0005's evidence-weighted update — a digest entering as an
+  `Evidence` item with a stated diagnosticity, subject to the same origin
+  factors and review as every other item — and never a multiplier applied
+  after review. Library evidence: `qip-ai/tests/episodic.rs` (not recalled
+  before or at `known_at`; a record knowable before it was true is refused;
+  capacity evicts the oldest-known; the bound binds and re-ranking is exact;
+  two constructions bucket and recall identically; the digest excludes
+  unresolved and directionless cases), every test mutation-verified. Still
+  open: the outcome's realised move is on the precedent's own observable, so
+  an agreement between a volatility episode and a price claim is a weak
+  analogy the entry exposes by naming its claim; no digest is shipped to a
+  cell; and the encoder is fixed rather than learned.
+
 - **[PLANE 3/7 — Valuation]** *Ownership:* **none.** *Placement:* n/a.
   *Authority:* would be informs-only per §39 layer 4. *State:* n/a.
   *Degradation:* n/a. *Tests:* none. MISSING-CURRENT, blueprint Phase 14.

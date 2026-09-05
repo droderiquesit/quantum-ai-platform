@@ -44,6 +44,10 @@ use qip_agents::memory::ResearchMemory;
 use qip_agents::runtime::{Reading, Upstream};
 use qip_agents::{Budget, RunStatus};
 use qip_ai::language::{DeterministicModel, LanguageModel};
+use qip_ai::memory::{
+    AnalystStance, ClaimRecord, DecisionTaken, Episode, EpisodeOutcome, EpisodeQuery,
+    EpisodicMemory, FindingsSummary, PrecedentDigest, Recall, RegimeLabel, StanceDirection,
+};
 use qip_ai::retrieval::SearchIndex;
 use qip_capital::ledger::{AttributedFill, UserId, UserLedger};
 use qip_capital::reservation::ReservationLedger;
@@ -94,6 +98,7 @@ use qip_learning_engine::evaluation::{
     Evaluation, Outcome as ThesisOutcome, ThesisClaim, ThesisEvaluator,
 };
 use qip_learning_engine::feedback::{CalibrationReport, FeedbackEngine, FeedbackReport};
+use qip_learning_engine::self_model::{ComponentKey, SelfModel};
 use qip_lifecycle::trials::TrialBook;
 use qip_market::bar::Bar;
 use qip_market::corporate_action::CorporateActionKind;
@@ -212,6 +217,21 @@ pub struct Platform {
     bridges: BridgeLedger,
     /// Falsifiable claims the REASON stage has made, and their verdicts.
     predictions: Vec<RecordedPrediction>,
+    /// Resolved episodes, for precedent (blueprint §10): what this platform
+    /// reasoned in situations like the one in front of it, and what
+    /// followed. Bounded by the memory's own capacity, and readable only
+    /// from each episode's `known_at`, so REASON cannot recall a resolution
+    /// LEARN has not yet seen.
+    episodes: EpisodicMemory,
+    /// Episodes REASON formed whose claim has not resolved, oldest first,
+    /// bounded by [`PREDICTION_HISTORY`] like the claims they stand behind.
+    /// Held apart from memory rather than in it with an empty outcome,
+    /// because a precedent with no outcome is not a precedent, and a memory
+    /// that returned one would report "no evidence" as a neighbour.
+    pending_episodes: Vec<Episode>,
+    /// The precedent recorded beside each hypothesis, most recent last,
+    /// bounded by [`PREDICTION_HISTORY`].
+    precedents: Vec<HypothesisPrecedent>,
     /// Theses scored against what was published, oldest first, bounded by
     /// [`PREDICTION_HISTORY`] like the claims they came from.
     ///
@@ -223,6 +243,11 @@ pub struct Platform {
     evaluations: Vec<Evaluation>,
     /// The most recent calibration, for the health surfaces and the tests.
     last_calibration: Option<CalibrationReport>,
+    /// What the platform has measured of its own components — each detector
+    /// kind and each analyst — from the theses they produced that resolved.
+    /// Fed by [`Platform::learn_from`]; read by the REASON stage through the
+    /// per-origin factors it hands the reasoning engine (blueprint §13.1).
+    self_model: SelfModel,
     /// What the LEARN stage calibrated this cycle, for the journal. Cleared
     /// as each cycle's LEARN begins so a cycle that scored nothing journals
     /// nothing rather than the previous cycle's figure.
@@ -713,6 +738,60 @@ impl RecordedPrediction {
     pub fn held(&self) -> bool {
         self.verdict.as_ref().is_some_and(Verdict::holds)
     }
+}
+
+/// How many prior episodes REASON recalls for a situation.
+///
+/// Five is what a brief can carry and a reviewer can read; the memory ranks
+/// by exact cosine, so these are the five nearest of the bounded candidate
+/// set, not the first five found.
+const PRECEDENT_K: usize = 5;
+
+/// The precedent recorded beside a hypothesis: the resolved episodes nearest
+/// to the situation when REASON asked, and how their outcomes sat against
+/// the claim's direction.
+///
+/// Evidence context, not an input. `confidence` is a copy of what review
+/// produced, kept here so a reader sees the two side by side and a test can
+/// prove the digest did not move it. The route by which precedent could
+/// later bear on confidence is ADR 0005's evidence-weighted update — a
+/// digest entering as an `Evidence` item with a stated diagnosticity — and
+/// not a multiplier applied after review.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HypothesisPrecedent {
+    pub hypothesis_id: String,
+    pub cycle: u64,
+    /// The hypothesis's effective confidence after review, as recorded.
+    pub confidence: f64,
+    /// Candidates the index examined before re-ranking; never above the
+    /// memory's bound.
+    pub examined: usize,
+    /// Episodes in memory when the question was asked.
+    pub memory_size: usize,
+    /// The nearest, best first.
+    pub nearest: Vec<PrecedentEntry>,
+    /// The share of the nearest whose outcome went the claim's way.
+    pub digest: PrecedentDigest,
+}
+
+/// One recalled episode, as the precedent record keeps it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PrecedentEntry {
+    pub episode_id: String,
+    pub instrument: String,
+    /// When the earlier situation was true, and when its outcome became
+    /// knowable — the second is what made it recallable now.
+    pub at: Timestamp,
+    pub known_at: Timestamp,
+    pub similarity: f32,
+    pub claim: String,
+    pub decision: DecisionTaken,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub realised_move_bps: Option<f64>,
+    /// Whether the outcome went the current claim's way; `None` where
+    /// either side has no sign.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub agreed: Option<bool>,
 }
 
 /// What absorbing a batch of chain observations did.
@@ -1531,6 +1610,7 @@ impl Platform {
             predictions: Vec::new(),
             evaluations: Vec::new(),
             last_calibration: None,
+            self_model: SelfModel::new(),
             cycle_calibration: None,
             bar_history: BTreeMap::new(),
             declined: Vec::new(),
@@ -1558,6 +1638,9 @@ impl Platform {
             last_correlation: None,
             constructor: PortfolioConstructor::new(config.mandate, router)?,
             pending_theses: Vec::new(),
+            episodes: EpisodicMemory::default(),
+            pending_episodes: Vec::new(),
+            precedents: Vec::new(),
             reasoning: ReasoningEngine::new(config.review),
             opportunities: OpportunityEngine::new(
                 DetectorRegistry::standard(),
@@ -2292,6 +2375,57 @@ impl Platform {
         &self.user_ledger
     }
 
+    /// What every enrolled user may do, evaluated fresh under the viewer
+    /// role against every product the central factory has registered.
+    ///
+    /// Evaluated here rather than in the API because the API is forbidden
+    /// the capital crate (`api_boundary.rs`, `FORBIDDEN_CRATES`) and so
+    /// cannot name the evaluator; what it may do is read the result. The
+    /// products are the registered strategies' families, each under an
+    /// eligibility record cleared in no jurisdiction, because this process
+    /// holds no product-eligibility registry — a family nobody has cleared
+    /// is refused everywhere, which is the type's own default and the honest
+    /// one. The viewer role is fixed rather than mapped from the caller's
+    /// API role: an operator credential on the API is not an investor in the
+    /// ledger, and the surface that reads this is the viewer's. Ordered by
+    /// user then family, so a report renders the same on every machine.
+    /// Empty when no strategy is registered, which the caller states rather
+    /// than fills in.
+    pub fn viewer_entitlements(&self, now: Timestamp) -> Vec<qip_capital::ledger::Entitlement> {
+        let families: std::collections::BTreeSet<&str> = self
+            .central()
+            .factory()
+            .candidates()
+            .map(|candidate| candidate.family().as_str())
+            .collect();
+        self.user_ledger
+            .mandates()
+            .iter()
+            .flat_map(|(user, mandate)| {
+                families.iter().map(move |family| {
+                    qip_capital::ledger::Entitlement::evaluate(
+                        user,
+                        mandate,
+                        qip_capital::ledger::Role::Viewer,
+                        &qip_capital::ledger::ProductEligibility::new(*family),
+                        now,
+                    )
+                })
+            })
+            .collect()
+    }
+
+    /// The seven checks of the transfer gate, in the order it runs them.
+    ///
+    /// Passed through from the fabric so the API, which may not depend on
+    /// the fabric, lists the checks the gate actually runs rather than a
+    /// copy that would drift the day an eighth was added. The gate itself
+    /// has no caller in this process — no intent is ever assessed — and this
+    /// returns the roster, not an assessment.
+    pub fn transfer_gate_checks() -> &'static [qip_capital_fabric::gate::GateCheck; 7] {
+        &qip_capital_fabric::gate::GateCheck::ALL
+    }
+
     pub fn proposals(&self) -> &[Proposal] {
         &self.proposals
     }
@@ -2408,6 +2542,25 @@ impl Platform {
             self.evaluations.drain(..excess);
         }
 
+        // Charge every graded outcome to the components that produced the
+        // thesis: the detector whose kind is the hypothesis class, and each
+        // analyst whose run is among the contributors. Then hand the REASON
+        // stage the factors the record now supports. Replaced whole every
+        // time, so an origin whose window rolled below the minimum sample
+        // loses its factor rather than keeping a stale one.
+        let roster: Vec<String> = self
+            .organisation
+            .roster()
+            .iter()
+            .map(|manifest| manifest.id.clone())
+            .collect();
+        for evaluation in &evaluations {
+            let components = Self::components_of(evaluation, &roster)?;
+            self.self_model.absorb(evaluation, &components)?;
+        }
+        self.reasoning
+            .set_origin_factors(self.self_model.origin_factors());
+
         let informative = self
             .evaluations
             .iter()
@@ -2446,6 +2599,12 @@ impl Platform {
     /// The most recent calibration, if any thesis has resolved informatively.
     pub fn calibration(&self) -> Option<&CalibrationReport> {
         self.last_calibration.as_ref()
+    }
+
+    /// What the platform has measured of its own components, for the API and
+    /// the tests. Empty until a thesis has resolved informatively.
+    pub fn self_model(&self) -> &SelfModel {
+        &self.self_model
     }
 
     /// Every thesis evaluation in the calibration window, oldest first.
@@ -3757,6 +3916,15 @@ impl Platform {
             Some(PANEL),
         ));
 
+        // Precedent: the nearest resolved episodes memory holds for this
+        // situation, as known before `now`. Recorded beside the hypothesis
+        // as evidence context, and deliberately *not* written into the
+        // brief: `brief.context` is the string the reviewer's lesson matcher
+        // substring-matches against, so a precedent block there could
+        // change which objections are raised and, through them, the
+        // confidence — the one thing this record must not do. Nothing here
+        // reaches the confidence arithmetic; see `HypothesisPrecedent`.
+        let precedent = self.recall_precedent(&opportunity, now);
         let brief = qip_agents::finding::AgentBrief::new(
             opportunity.headline.clone(),
             now,
@@ -3859,9 +4027,10 @@ impl Platform {
                         error.message()
                     ));
                 }
-                if !approved {
+                let decision = if !approved {
                     outcome = outcome
                         .with_problem(format!("rejected on review: {}", reasoned.review.rationale));
+                    DecisionTaken::RejectedOnReview
                 } else {
                     match self.thesis_from(&opportunity, &reasoned) {
                         Ok(thesis) => {
@@ -3873,6 +4042,7 @@ impl Platform {
                                 self.pending_theses
                                     .drain(..self.pending_theses.len() - PROPOSAL_HISTORY);
                             }
+                            DecisionTaken::Approved
                         }
                         // An approved thesis that cannot be sized is reported,
                         // not dropped silently — the difference between "we
@@ -3883,7 +4053,34 @@ impl Platform {
                                 "approved but not sizeable: {}",
                                 reason.message()
                             ));
+                            DecisionTaken::NotSizeable
                         }
+                    }
+                };
+                // The episode this cycle is, written down with what was
+                // decided, and the precedent it was decided beside. The
+                // episode waits in `pending_episodes` until LEARN resolves
+                // the claim; only then does it enter memory.
+                match self.record_precedent(
+                    &opportunity,
+                    &reasoned,
+                    &report,
+                    precedent.as_ref(),
+                    decision,
+                    now,
+                ) {
+                    Ok(Some(digest)) => {
+                        outcome.detail.push_str(&format!(
+                            "; precedent: {} nearest, {} resolved, {} agreed",
+                            digest.nearest, digest.resolved, digest.agreeing
+                        ));
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        outcome = outcome.with_problem(format!(
+                            "the episode could not be recorded: {}",
+                            error.message()
+                        ));
                     }
                 }
                 outcome
@@ -3907,6 +4104,206 @@ impl Platform {
         problems
             .into_iter()
             .fold(outcome, |acc, problem| acc.with_problem(problem))
+    }
+
+    /// The regime in force for `subject`, as the labels memory encodes.
+    fn regime_label(&self, subject: &str) -> RegimeLabel {
+        RegimeLabel {
+            market: self.market_regime(subject).as_str().to_string(),
+            volatility: self.volatility_regime(subject).as_str().to_string(),
+        }
+    }
+
+    /// The situation as REASON sees it before the panel reports — the
+    /// instrument, the regime, the claim the anomaly implies and the
+    /// horizon — and the precedent memory holds for it at `now`.
+    ///
+    /// The query carries no stances, no findings and a zero confidence,
+    /// because none of those exist yet; the encoding leaves those blocks at
+    /// zero rather than guessing them. `None` where the opportunity names no
+    /// instrument, which is also where no hypothesis can be formed.
+    fn recall_precedent(
+        &self,
+        opportunity: &Opportunity,
+        now: Timestamp,
+    ) -> Option<(EpisodeQuery, Recall)> {
+        let subject = opportunity.affected_objects.first()?;
+        let claim = opportunity.anomalies.first().and_then(|anomaly| {
+            mechanism_for(anomaly).map(|(_, claim)| ClaimRecord {
+                class: anomaly.kind.as_str().to_string(),
+                claim: claim.as_str().to_string(),
+                direction: claim.implied_sign().unwrap_or(0.0),
+                confidence: 0.0,
+            })
+        });
+        let query = EpisodeQuery {
+            instrument: subject.as_str().to_string(),
+            regime: self.regime_label(subject.as_str()),
+            claim,
+            findings: None,
+            stances: Vec::new(),
+            horizon: opportunity.horizon,
+        };
+        let recall = self.episodes.recall(&query, now, PRECEDENT_K);
+        Some((query, recall))
+    }
+
+    /// Write the precedent beside the hypothesis and hold the episode until
+    /// its claim resolves.
+    ///
+    /// Returns the digest where a precedent was recorded, `None` where the
+    /// opportunity names no instrument, and an error where the episode would
+    /// not validate — a finding with a conviction outside `[0, 1]`, say —
+    /// which the stage reports rather than remembering a record the memory
+    /// would refuse at resolution.
+    fn record_precedent(
+        &mut self,
+        opportunity: &Opportunity,
+        reasoned: &ReasoningOutcome,
+        report: &qip_investment_agents::OrganisationReport,
+        precedent: Option<&(EpisodeQuery, Recall)>,
+        decision: DecisionTaken,
+        now: Timestamp,
+    ) -> Result<Option<PrecedentDigest>> {
+        let Some(subject) = opportunity.affected_objects.first() else {
+            return Ok(None);
+        };
+        let hypothesis = &reasoned.hypothesis;
+        let direction = hypothesis.claim.implied_sign().unwrap_or(0.0);
+        let claim = ClaimRecord {
+            class: hypothesis.class.clone(),
+            claim: hypothesis.claim.as_str().to_string(),
+            direction,
+            confidence: hypothesis.effective_confidence(),
+        };
+        // Agent-id order, so the same panel encodes identically whatever
+        // order its runs returned in.
+        let stances: Vec<AnalystStance> = report
+            .findings
+            .iter()
+            .map(|finding| {
+                (
+                    finding.agent_id.clone(),
+                    AnalystStance {
+                        agent_id: finding.agent_id.clone(),
+                        direction: match finding.direction {
+                            qip_agents::finding::Direction::Positive => StanceDirection::Positive,
+                            qip_agents::finding::Direction::Negative => StanceDirection::Negative,
+                            qip_agents::finding::Direction::Ambiguous => StanceDirection::Ambiguous,
+                            qip_agents::finding::Direction::Neutral => StanceDirection::Neutral,
+                        },
+                        conviction: finding.conviction,
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>()
+            .into_values()
+            .collect();
+
+        let empty = Recall {
+            examined: 0,
+            probed: 0,
+            nearest: Vec::new(),
+        };
+        let recall = precedent.map_or(&empty, |(_, recall)| recall);
+        let digest = PrecedentDigest::of(&recall.nearest, direction);
+        let nearest = recall
+            .nearest
+            .iter()
+            .map(|recalled| PrecedentEntry {
+                episode_id: recalled.episode.episode_id.clone(),
+                instrument: recalled.episode.instrument.clone(),
+                at: recalled.episode.at,
+                known_at: recalled.episode.known_at,
+                similarity: recalled.similarity,
+                claim: recalled.episode.claim.claim.clone(),
+                decision: recalled.episode.decision,
+                realised_move_bps: recalled
+                    .episode
+                    .outcome
+                    .as_ref()
+                    .map(|outcome| outcome.realised_move_bps),
+                agreed: recalled
+                    .episode
+                    .outcome
+                    .as_ref()
+                    .and_then(|outcome| outcome.agrees_with(direction)),
+            })
+            .collect();
+        self.precedents.push(HypothesisPrecedent {
+            hypothesis_id: hypothesis.hypothesis_id.as_str().to_string(),
+            cycle: self.cycle,
+            confidence: claim.confidence,
+            examined: recall.examined,
+            memory_size: self.episodes.len(),
+            nearest,
+            digest: digest.clone(),
+        });
+        if self.precedents.len() > PREDICTION_HISTORY {
+            self.precedents
+                .drain(..self.precedents.len() - PREDICTION_HISTORY);
+        }
+
+        let draft = Episode {
+            episode_id: episode_id_for(hypothesis.hypothesis_id.as_str()),
+            instrument: subject.as_str().to_string(),
+            regime: self.regime_label(subject.as_str()),
+            findings: FindingsSummary {
+                runs: report.runs.len(),
+                findings: report.findings.len(),
+                coverage: report.coverage(),
+                contested: report.is_contested(),
+            },
+            stances,
+            claim,
+            horizon: hypothesis.horizon,
+            decision,
+            outcome: None,
+            // Knowable at formation for now; LEARN restamps `known_at` to
+            // the resolution instant when the outcome arrives, and nothing
+            // reads a pending episode before then.
+            at: now,
+            known_at: now,
+        };
+        draft.validate()?;
+        self.pending_episodes.push(draft);
+        if self.pending_episodes.len() > PREDICTION_HISTORY {
+            self.pending_episodes
+                .drain(..self.pending_episodes.len() - PREDICTION_HISTORY);
+        }
+        Ok(Some(digest))
+    }
+
+    /// Move each resolved thesis's episode from pending into memory, with its
+    /// outcome and knowable from `now`.
+    ///
+    /// Called from the LEARN stage's resolve path, which is the only place an
+    /// outcome exists. A thesis whose episode is no longer pending — evicted
+    /// as stale, or formed before this field existed — is skipped: memory
+    /// holds what was reasoned, and a record reconstructed from the claim
+    /// alone would not be that. Returns how many entered memory.
+    fn remember_resolved(&mut self, outcomes: &[ThesisOutcome], now: Timestamp) -> Result<usize> {
+        let mut remembered = 0usize;
+        for outcome in outcomes {
+            let wanted = episode_id_for(&outcome.hypothesis_id);
+            let Some(index) = self
+                .pending_episodes
+                .iter()
+                .position(|episode| episode.episode_id == wanted)
+            else {
+                continue;
+            };
+            let mut episode = self.pending_episodes.remove(index);
+            episode.outcome = Some(EpisodeOutcome {
+                resolved_at: outcome.observed_at,
+                realised_move_bps: outcome.realised_move_bps,
+                realised_pnl: outcome.realised_pnl,
+            });
+            episode.known_at = now;
+            self.episodes.remember(episode)?;
+            remembered += 1;
+        }
+        Ok(remembered)
     }
 
     /// Turn an approved hypothesis into the thesis construction can size.
@@ -4946,6 +5343,38 @@ impl Platform {
         (Some(detail), None)
     }
 
+    /// The components a graded thesis is charged to.
+    ///
+    /// The detector is the hypothesis class — [`Self::synthesise`] sets the
+    /// class to the anomaly's kind, and the direct evidence's origin is the
+    /// detector that raised it, so the class is the key the REASON factor is
+    /// looked up under. Each analyst is recovered from its contributor run
+    /// id, which the chief mints as `run-<manifest id>-<sequence>`, matched
+    /// against the roster rather than parsed: an id with a hyphen in it —
+    /// every analyst on this roster has one — would split wrong, and a run
+    /// of an agent no longer on the roster is charged to nobody rather than
+    /// to whichever prefix happened to fit.
+    fn components_of(evaluation: &Evaluation, roster: &[String]) -> Result<Vec<ComponentKey>> {
+        let mut components = vec![ComponentKey::detector(&evaluation.class)?];
+        for contributor in &evaluation.contributors {
+            let Some(rest) = contributor.strip_prefix("run-") else {
+                continue;
+            };
+            let analyst = roster.iter().find(|id| {
+                rest.strip_prefix(id.as_str())
+                    .and_then(|tail| tail.strip_prefix('-'))
+                    .is_some_and(|sequence| sequence.parse::<u64>().is_ok())
+            });
+            if let Some(analyst) = analyst {
+                let key = ComponentKey::analyst(analyst)?;
+                if !components.contains(&key) {
+                    components.push(key);
+                }
+            }
+        }
+        Ok(components)
+    }
+
     /// Settle the claims whose horizon has passed against the platform's own
     /// series, grade them, and recompute the calibration.
     ///
@@ -5060,6 +5489,12 @@ impl Platform {
                 });
             }
             None => summary.push_str("; nothing informative yet to calibrate on"),
+        }
+        // Each resolved thesis's episode enters memory here, knowable from
+        // now, so the next REASON can recall it as precedent.
+        let remembered = self.remember_resolved(&outcomes, now)?;
+        if remembered > 0 {
+            summary.push_str(&format!("; {remembered} episode(s) remembered"));
         }
         Ok(Some(summary))
     }
@@ -5825,6 +6260,11 @@ impl Platform {
 
     // --- predictions --------------------------------------------------------
 
+    /// The precedent recorded beside each hypothesis, most recent last.
+    pub fn precedents(&self) -> &[HypothesisPrecedent] {
+        &self.precedents
+    }
+
     /// Every falsifiable claim the platform has made, open and resolved.
     pub fn predictions(&self) -> &[RecordedPrediction] {
         &self.predictions
@@ -6466,6 +6906,12 @@ fn central_signing_secret(seed: u64) -> [u8; 32] {
 /// A volume spike is a fact about volume; it does not on its own imply a
 /// direction, and mapping it to one would be inventing a mechanism to fill a
 /// gap — which is exactly what the reasoning stage exists to prevent.
+/// The episode id a hypothesis's episode is kept under, on both sides of
+/// the resolve seam.
+fn episode_id_for(hypothesis_id: &str) -> String {
+    format!("ep-{hypothesis_id}")
+}
+
 fn mechanism_for(
     anomaly: &qip_opportunity_engine::detector::Anomaly,
 ) -> Option<(
@@ -7800,6 +8246,181 @@ mod user_ledger_tests {
             platform.capture_problems.is_empty(),
             "nothing was left unjournalled: {:?}",
             platform.capture_problems
+        );
+    }
+}
+
+#[cfg(test)]
+mod self_model_tests {
+    //! The LEARN stage charging a graded thesis to the components that
+    //! produced it. A unit test because the attribution seam is
+    //! `Platform::components_of`, private on purpose: the only road into the
+    //! self-model is an evaluation the learning engine graded.
+
+    use super::*;
+    use qip_financial::universe::Universe;
+    use qip_learning_engine::self_model::ComponentKind;
+    use qip_observability::Telemetry;
+    use qip_risk::limits::LimitSet;
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    fn platform() -> Platform {
+        let config = PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles")
+    }
+
+    #[test]
+    fn a_graded_thesis_is_charged_to_its_detector_and_to_every_roster_analyst_that_ran_on_it() {
+        // The failure this guards: a thesis resolved, the calibration moved,
+        // and no component was charged — so the self-model stayed empty and
+        // the REASON stage kept weighting a detector that had been wrong
+        // sixty times at full weight. The run id of an analyst no longer on
+        // the roster, and a contributor that is not a run id at all, must
+        // charge nobody rather than whichever roster prefix happened to fit.
+        let mut platform = platform();
+        let roster: Vec<String> = platform
+            .organisation
+            .roster()
+            .iter()
+            .map(|manifest| manifest.id.clone())
+            .collect();
+        // Premise: the roster carries the analyst the claim will name, and
+        // its id contains a hyphen — the case a naive split gets wrong.
+        let analyst = "macro-analyst";
+        assert!(
+            roster.iter().any(|id| id == analyst),
+            "the fixture analyst is not on the roster: {roster:?}"
+        );
+        assert!(
+            platform.self_model().is_empty(),
+            "the premise is an empty self-model"
+        );
+
+        let resolves_at = start().saturating_add(Duration::from_days(5));
+        let claim = ThesisClaim {
+            hypothesis_id: "hyp-1".to_string(),
+            class: "price_dislocation".to_string(),
+            subject: "obj-AAA".to_string(),
+            formed_at: start(),
+            resolves_at,
+            direction: 1.0,
+            expected_move_bps: 200.0,
+            confidence: 0.7,
+            falsifiers: vec!["it reverts".to_string()],
+            contributors: vec![
+                format!("run-{analyst}-7"),
+                "run-retired-analyst-3".to_string(),
+                "not-a-run-id".to_string(),
+            ],
+        };
+        let outcome = ThesisOutcome {
+            hypothesis_id: "hyp-1".to_string(),
+            observed_at: resolves_at,
+            realised_move_bps: 180.0,
+            realised_pnl: 0.0,
+            falsifiers_triggered: Vec::new(),
+            mechanism_confirmed: None,
+        };
+        let learned = platform
+            .learn_from(&[claim], &[outcome], resolves_at)
+            .expect("a resolvable claim grades");
+        assert_eq!(
+            learned.evaluations.len(),
+            1,
+            "the premise is one graded thesis"
+        );
+        assert!(
+            learned.evaluations[0].verdict.is_informative(),
+            "an informative verdict is the premise; got {:?}",
+            learned.evaluations[0].verdict
+        );
+
+        let charged: Vec<String> = platform
+            .self_model()
+            .iter()
+            .map(|(key, _)| key.to_string())
+            .collect();
+        assert_eq!(
+            charged,
+            vec![
+                "detector:price_dislocation".to_string(),
+                format!("analyst:{analyst}"),
+            ],
+            "the wrong components were charged"
+        );
+        let detector = ComponentKey::new(ComponentKind::Detector, "price_dislocation")
+            .expect("a named component");
+        let record = platform
+            .self_model()
+            .get(&detector)
+            .expect("the detector was charged");
+        assert_eq!(record.sample_count(), 1);
+        assert_eq!(record.hits(), 1, "a vindicated thesis is a hit");
+        assert_eq!(record.last_updated(), Some(resolves_at));
+        // One outcome is below the minimum sample, so the REASON stage was
+        // handed no factor: an unmeasured component stays at full weight.
+        assert!(
+            platform.reasoning.origin_factors().is_empty(),
+            "a factor was handed over on one outcome: {:?}",
+            platform.reasoning.origin_factors()
+        );
+
+        // Nine more misses reach the minimum sample, and the factors the
+        // record now supports reach the reasoning engine — the handover
+        // that makes the self-model something REASON uses rather than
+        // something LEARN reports. One hit in ten: (1 + 2) / (10 + 4).
+        for n in 2..=qip_learning_engine::self_model::MINIMUM_SAMPLE {
+            let id = format!("hyp-{n}");
+            let claim = ThesisClaim {
+                hypothesis_id: id.clone(),
+                class: "price_dislocation".to_string(),
+                subject: "obj-AAA".to_string(),
+                formed_at: start(),
+                resolves_at,
+                direction: 1.0,
+                expected_move_bps: 200.0,
+                confidence: 0.7,
+                falsifiers: vec!["it reverts".to_string()],
+                contributors: vec![format!("run-{analyst}-{n}")],
+            };
+            let outcome = ThesisOutcome {
+                hypothesis_id: id,
+                observed_at: resolves_at,
+                realised_move_bps: -180.0,
+                realised_pnl: 0.0,
+                falsifiers_triggered: Vec::new(),
+                mechanism_confirmed: None,
+            };
+            platform
+                .learn_from(&[claim], &[outcome], resolves_at)
+                .expect("a resolvable claim grades");
+        }
+        let handed = platform.reasoning.origin_factors();
+        let expected = 3.0 / 14.0;
+        for origin in ["price_dislocation", analyst] {
+            let factor = handed.get(origin).unwrap_or_else(|| {
+                panic!("{origin} reached the minimum and REASON holds no factor for it: {handed:?}")
+            });
+            assert!(
+                (factor - expected).abs() < 1e-12,
+                "{origin} was handed {factor}, not the {expected} its record supports"
+            );
+        }
+        assert_eq!(
+            handed.len(),
+            2,
+            "an origin nobody measured was handed a factor: {handed:?}"
         );
     }
 }

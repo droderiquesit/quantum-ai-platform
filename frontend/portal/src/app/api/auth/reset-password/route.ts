@@ -6,6 +6,15 @@ import { resetPassword } from "@/lib/server/identity";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/**
+ * Redeem a reset code and set a new password.
+ *
+ * @deprecated Retired under ADR 0038 (proposed, not applied), together with
+ * `forgot-password`: a password-free account has nothing for this route to
+ * set. The one-time-code discipline it uses — HMAC-stored, spend-down
+ * attempts, short life — is what the re-enrolment code reuses. Working until
+ * then.
+ */
 export async function POST(request: NextRequest): Promise<NextResponse> {
   const refused = requireCsrf(request);
   if (refused) return refused;
