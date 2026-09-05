@@ -35,7 +35,7 @@ variable "management_subnet_id" {
 }
 
 variable "management_subnet_cidr" {
-  description = "The management zone's range: the only network that may reach the private endpoint. There is no public endpoint to allow anything else."
+  description = "The management zone's range: the only network that may reach the private endpoint, and one of the two destinations the nodes may reach each other on. There is no public endpoint to allow anything else."
   type        = string
 
   validation {

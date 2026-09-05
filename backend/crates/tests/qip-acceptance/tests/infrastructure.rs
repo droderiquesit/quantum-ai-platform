@@ -5640,4 +5640,119 @@ fn the_infrastructure_account_may_register_the_cluster_with_the_fleet_and_holds_
     }
 }
 
+#[test]
+fn the_control_plane_nodes_may_reach_their_endpoint_and_the_cluster_waits_for_that_rule() {
+    // Run 37 (2026-09-05, `dev` `up`): the fleet grant held, the addon was
+    // gone, and the create waited thirty-eight minutes for `only 0 nodes out
+    // of 1 have registered`. The node's serial log timed out on every call to
+    // `10.0.36.2` — the private endpoint, a peered range outside the VPC —
+    // because the management zone's deny-egress drops everything the zone
+    // did not open, and the zone opens the restricted VIP and GitHub. The
+    // rule that closes it lives in the control-plane module, because only
+    // that module knows the endpoint's /28; it is targeted at the zone's tag
+    // and at that /28 and nothing wider; and the cluster's `depends_on`
+    // names it, because a rule Terraform creates in parallel with a
+    // forty-minute wait is a rule that may arrive after the wait gave up —
+    // and a failed create taints a cluster `deletion_protection` will not
+    // let the next apply replace.
+    let module = without_comments(&read(CONTROL_PLANE_MODULE));
+    let rules = terraform_resources(&module, "google_compute_firewall");
+    let (_, rule) = rules
+        .iter()
+        .find(|(name, _)| name == "nodes_reach_control_plane")
+        .unwrap_or_else(|| {
+            panic!(
+                "{CONTROL_PLANE_MODULE} declares no `nodes_reach_control_plane` firewall rule; \
+                 the zone's deny then drops the kubelet's registration and the create waits \
+                 forty minutes for a node that cannot answer (run 37). It has {:?}",
+                rules.iter().map(|(name, _)| name).collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        sets(rule, "direction", "\"EGRESS\""),
+        "`nodes_reach_control_plane` is not an egress rule; the node dials out and GKE's own \
+         `-master` ingress rule already covers the way back"
+    );
+    assert!(
+        rule.contains("allow {") && !rule.contains("deny {"),
+        "`nodes_reach_control_plane` is not an allow"
+    );
+    assert!(
+        sets(rule, "destination_ranges", "[var.master_ipv4_cidr_block]"),
+        "`nodes_reach_control_plane` names a destination other than the endpoint's /28: {rule}"
+    );
+    assert!(
+        sets(rule, "target_tags", "[var.management_network_tag]"),
+        "`nodes_reach_control_plane` targets something other than the management zone's tag, \
+         which is the one every node carries: {rule}"
+    );
+    let ports = rule
+        .lines()
+        .map(collapsed)
+        .find_map(|line| line.strip_prefix("ports = ").map(str::to_string))
+        .expect("`nodes_reach_control_plane` lists ports");
+    let listed: Vec<String> = ports
+        .trim_matches(|c| c == '[' || c == ']')
+        .split(',')
+        .map(|port| port.trim().to_string())
+        .filter(|port| !port.is_empty())
+        .collect();
+    for port in ["\"443\"", "\"10250\"", "\"8132\""] {
+        assert!(
+            listed.iter().any(|entry| entry == port),
+            "`nodes_reach_control_plane` opens {listed:?} and not {port}: 443 is the API \
+             server the serial log timed out on, 10250 and 8132 (Konnectivity) are what GKE \
+             documents for a node whose egress is restricted"
+        );
+    }
+    // Below the zone's deny, or it opens nothing. The deny's priority is
+    // read from the zone module rather than assumed, so the two cannot
+    // drift apart with this test still green.
+    let zones = without_comments(&read(TRUST_ZONES_MODULE));
+    let (_, deny) = terraform_resources(&zones, "google_compute_firewall")
+        .into_iter()
+        .find(|(name, _)| name == "deny_egress")
+        .expect("the trust-zone module declares deny_egress");
+    let priority_of = |body: &str| -> u32 {
+        body.lines()
+            .map(collapsed)
+            .find_map(|line| {
+                line.strip_prefix("priority = ")
+                    .and_then(|p| p.parse().ok())
+            })
+            .unwrap_or_else(|| panic!("no literal priority in {body}"))
+    };
+    assert!(
+        sets(&deny, "destination_ranges", "[\"0.0.0.0/0\"]"),
+        "the zone's deny_egress no longer denies everything, so the premise of this test — \
+         that the endpoint is refused unless named — no longer holds"
+    );
+    assert!(
+        priority_of(rule) < priority_of(&deny),
+        "`nodes_reach_control_plane` at priority {} does not take precedence over the zone's \
+         deny at {}",
+        priority_of(rule),
+        priority_of(&deny)
+    );
+    // The cluster waits for the rule.
+    let cluster = module
+        .split("resource \"google_container_cluster\"")
+        .nth(1)
+        .and_then(|rest| rest.split("\nresource ").next())
+        .expect("the module declares a cluster");
+    let depends_on = cluster
+        .split("depends_on = [")
+        .nth(1)
+        .and_then(|rest| rest.split(']').next())
+        .expect("the cluster declares depends_on");
+    assert!(
+        depends_on
+            .lines()
+            .map(collapsed)
+            .any(|line| line == "google_compute_firewall.nodes_reach_control_plane,"),
+        "the cluster's depends_on does not name `nodes_reach_control_plane`; the create then \
+         races the rule its node needs, and loses by up to forty minutes"
+    );
+}
+
 // --- the safety property that outranks all of this --------------------------

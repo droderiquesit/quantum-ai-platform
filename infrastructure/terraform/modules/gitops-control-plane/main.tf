@@ -126,9 +126,18 @@ resource "google_container_cluster" "control_plane" {
   # consumed by the one create call, so both must exist before it — and
   # IAM propagation being what it is, a binding created seconds before the
   # call can still be refused; a second `up` then finds it held.
+  #
+  # And the node's route to its own control plane, for the same reason with
+  # the opposite cost: Terraform infers nothing from a firewall rule, the
+  # create call waits up to forty minutes for a node that cannot register
+  # without it, and a create that fails leaves the cluster tainted behind
+  # `deletion_protection` — which is a person's decision to clear, not a
+  # second `up`. infra.yml run 37 is what that looks like; the rule below
+  # says why.
   depends_on = [
     google_kms_crypto_key_iam_member.gke_uses_etcd_key,
     google_project_iam_member.infra_registers_fleet,
+    google_compute_firewall.nodes_reach_control_plane,
   ]
 
   project  = var.project_id
@@ -220,9 +229,11 @@ resource "google_container_cluster" "control_plane" {
     project = var.project_id
   }
 
-  # Every node carries the management zone's tag, so the zone's default deny
-  # and its one egress allowlist are the rules that bind the controllers'
-  # traffic. A node without the tag is a node outside every zone.
+  # Every node carries the management zone's tag, so the zone's default deny,
+  # its Google-APIs rule and its one egress allowlist are the rules that bind
+  # the controllers' traffic — plus the two rules under "what a node needs"
+  # below, which the zone cannot write because it does not know the
+  # endpoint's range. A node without the tag is a node outside every zone.
   node_pool_auto_config {
     network_tags {
       tags = [var.management_network_tag]
@@ -236,6 +247,120 @@ resource "google_container_cluster" "control_plane" {
       condition     = var.master_ipv4_cidr_block != null
       error_message = "gitops_enabled is true and no master_ipv4_cidr_block was given. The control plane's endpoint needs a /28 of its own that overlaps no subnet; set gitops_master_ipv4_cidr_block in the environment's tfvars."
     }
+  }
+}
+
+# --- what a node needs that the zone's deny refuses ---------------------------
+#
+# The management zone's `deny_egress` (modules/trust-zones, priority 65000,
+# `0.0.0.0/0`, every protocol) binds every node through the tag above, and
+# the zone opens exactly two things: TCP 443 to the restricted VIP and TCP 443
+# to GitHub's ranges. A GKE node needs a third, and the zone cannot name it
+# because the endpoint's /28 is this module's input and not the zone's: the
+# kubelet registers with, and every credential on the node is issued by, the
+# API server at the second address of `master_ipv4_cidr_block`, which is
+# outside the VPC — a peered range Google holds — so the packet leaves the
+# node, meets the zone's deny, and is dropped with nothing on the node to
+# say so except a timeout.
+#
+# That is infra.yml run 37 (2026-09-05, `dev` `up` on 3848a89): the create
+# waited thirty-eight minutes and failed with `All cluster resources were
+# brought up, but: only 0 nodes out of 1 have registered`. The node's serial
+# log said the same thing three ways — `failed to get node info: node ...
+# not found`; `unable to lock file, error: context deadline exceeded`; and
+# `Post https://10.0.36.2/api/v1/namespaces/default/events: getting
+# credentials: exec: executable /home/kubernetes/bin/gke-exec-auth-plugin
+# failed with exit code 1 ... Client.Timeout exceeded while awaiting
+# headers`. Every address in the log is `10.0.36.2`, the endpoint; nothing
+# the node reaches over the restricted VIP or the metadata server failed
+# (the metadata server is not subject to VPC firewall rules at all, and the
+# Google-APIs rule already admits the VIP). The return path needs nothing
+# here: GKE writes its own `gke-<cluster>-<hash>-master` INGRESS rule at
+# priority 1000 admitting the endpoint's range to the nodes on 443 and 10250,
+# and the zone's `deny_ingress` sits at 65000 beneath it.
+#
+# One rule, to the /28 and nothing wider, on the three ports the node dials:
+# 443 is the API server (registration, leases, events, and the certificate
+# `gke-exec-auth-plugin` fetches); 10250 is the kubelet port the control
+# plane's documentation lists for the node's own outbound calls; 8132 is
+# Konnectivity, the tunnel a private cluster's control plane reaches its
+# nodes back through — admission webhooks, `logs`, `exec` — and without
+# which the bootstrap's cert-manager webhook is unreachable from the API
+# server even once the node has registered. 443 is the port run 37's log
+# proves; the other two are what GKE documents for a cluster whose egress is
+# restricted, added here rather than found by the next forty-minute wait.
+# Priority 1000 like every allow the zone writes, below its 65000 deny.
+resource "google_compute_firewall" "nodes_reach_control_plane" {
+  project = var.project_id
+  name    = "${local.name}-nodes-to-endpoint"
+  network = var.network_id
+
+  direction = "EGRESS"
+  priority  = 1000
+
+  allow {
+    protocol = "tcp"
+    ports    = ["443", "10250", "8132"]
+  }
+
+  destination_ranges = [var.master_ipv4_cidr_block]
+  target_tags        = [var.management_network_tag]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.master_ipv4_cidr_block != null
+      error_message = "gitops_enabled is true and no master_ipv4_cidr_block was given. The nodes' route to their control plane has no destination without it; set gitops_master_ipv4_cidr_block in the environment's tfvars."
+    }
+  }
+}
+
+# The cluster's own traffic between its nodes. Not observed by run 37 — a
+# single node registering needs none of it — and named here because the
+# mechanism is certain and the next failure would cost another forty
+# minutes and another cluster: Autopilot's Pods hold VPC-native addresses
+# from a secondary range GKE chose (`ip_allocation_policy {}` above), so a
+# Pod on one node reaching a Pod on another leaves the first node's
+# interface and meets the zone's deny like any other packet. kube-dns,
+# Konnectivity's agents, metrics and every controller the bootstrap
+# installs across more than one node are that traffic. The destinations are
+# the zone's own subnet and the range the cluster reports for its Pods —
+# both this cluster's, neither a boundary crossing, which is why
+# `modules/trust-zones` refuses a path from a zone to itself ("traffic
+# inside a zone needs no declaration") and why this is not one. The Pod
+# range is known only after the cluster exists, so this rule follows the
+# cluster rather than preceding it; registration does not need it.
+resource "google_compute_firewall" "nodes_reach_each_other" {
+  project = var.project_id
+  name    = "${local.name}-nodes-intra-cluster"
+  network = var.network_id
+
+  direction = "EGRESS"
+  priority  = 1000
+
+  allow {
+    protocol = "tcp"
+  }
+
+  allow {
+    protocol = "udp"
+  }
+
+  allow {
+    protocol = "icmp"
+  }
+
+  destination_ranges = [
+    var.management_subnet_cidr,
+    google_container_cluster.control_plane.cluster_ipv4_cidr,
+  ]
+  target_tags = [var.management_network_tag]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
   }
 }
 
