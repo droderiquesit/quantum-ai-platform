@@ -1,0 +1,7 @@
+{
+  "venue": "kalshi",
+  "source_id": "kalshi-markets",
+  "signup_url": "https://kalshi.com/sign-up",
+  "identity_verification_required": true,
+  "notes": "Kalshi is a CFTC-regulated designated contract market; opening an account means the venue's identity verification — a person's documents, a person's consent. The job refuses before opening a browser and says the account must be opened by a person (docs/operations/registering-a-venue.md, 'What may not be automated'). Its API terms are unread (ADR 0034), so nothing here should reach the venue at all until the operator has read them."
+}

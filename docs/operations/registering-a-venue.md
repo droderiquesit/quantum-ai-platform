@@ -142,3 +142,90 @@ repository file.
 
 If a step in a venue's flow cannot be completed without one of those, that
 step is yours, and the platform waits.
+
+## The signup job
+
+`scripts/venue-signup/signup.mjs` types a venue's signup form under the
+company's own identity, after a named operator has approved that venue's
+terms, and stops at every step the list above says is a person's. It is
+dev tooling for the operator's machine; nothing in `backend/` or `frontend/`
+imports it. It does not change what may be automated: the approval record
+is the person's agreement, and the job is the typing.
+
+```
+COMPANY_IDENTITY_FILE=/run/company/identity.json \
+node scripts/venue-signup/signup.mjs --venue alpaca --approval approval.json
+node --test scripts/venue-signup/signup.test.mjs
+```
+
+**Inputs.** `--venue <id>` names a recipe at
+`scripts/venue-signup/recipes/<id>.json` — committed, reviewed data listing
+the signup URL and the form as `{selector, field}` pairs, with no secret in
+it; a key a recipe may not carry is refused, and so is a plaintext URL
+anywhere but loopback. `COMPANY_IDENTITY_FILE` is a JSON file outside the
+repository holding exactly `legal_name`, `contact_email`, `phone`, `address`
+and `country` (ISO 3166-1 alpha-2); a sixth field is refused by name, and a
+value shaped like a credential or a tax id (the model gateway's screen plus
+SSN, EIN, NINO and nine-digit shapes) is refused without being echoed.
+`--approval <path>` is the platform's registration record exported as JSON
+plus the Secret Manager slot names: `source_id` (must match the recipe),
+`operator` (blank is the anonymous registration this page refuses),
+`terms_read_at` (refused if absent, unparseable, in the future, or older
+than 24 hours), `terms` (must equal the reference the recipe's terms
+checkbox cites, or the box is not ticked and the run stops), and
+`secret_slots.password` with `secret_slots.api_key` when the recipe reads a
+key on success.
+
+**What it does.** Refuses before a browser exists if `gcloud` is not on
+PATH, if `NODE_TLS_REJECT_UNAUTHORIZED=0` is set, or if the recipe declares
+`identity_verification_required: true` (`kalshi.json` does, and the job says
+the account must be opened by a person). Otherwise it opens the page,
+inventories every visible field, and only if every field is one the recipe
+lists fills them from the identity file with a 32-character password from
+the CSPRNG held only in memory, ticks the one terms box the approval names,
+and submits. On success the password, and any API key the page shows, go to
+`gcloud secrets versions add <slot> --data-file=-` on stdin — never to disk,
+never to stdout, never to an argument. Its stdout is one JSON line naming
+the outcome and the slots written; the values appear nowhere.
+
+**Hard stops.** A captcha or bot challenge of any kind; an identity-document
+upload, selfie, tax-id, SSN or date-of-birth field; a verification or
+second-factor code prompt; a consent box the approval does not cover; any
+field the recipe does not list. Each is exit 70 with a named reason and a
+screenshot under `VENUE_SIGNUP_SCRATCH_DIR` (default
+`$TMPDIR/venue-signup/`). None is solved, worked around or retried. Treat
+the screenshot as identity data: it shows what was typed, with password
+fields masked by the browser. If the stop comes after submit — `alpaca.json`
+declares e-mail verification as exactly that — the password is written to
+its slot first, because the venue may have created the account and losing
+the password would leave one nobody can enter; the verification is yours.
+Exit codes: 64 usage, 65 recipe, 66 identity, 67 approval, 69 prerequisite,
+70 hand-back, 71 the venue did something the recipe does not describe, 72 a
+secret could not be stored (the reason says which, and what to recover).
+
+**What it cannot do, and why.** It cannot read your mail, so an e-mail
+verification ends every run that reaches one, and for Alpaca that is every
+run: the account exists, the password is in its slot, and the code is
+yours. It cannot open a Kalshi account at all, because that means the
+venue's identity verification — your documents, your face — and it refuses
+before a browser opens. It cannot tell a venue a person is present, so a
+captcha is a hand-back even when it is a trivially "solvable" one; a script
+that defeats one is a statement that nobody was there. It cannot create the
+API key Alpaca issues from the dashboard after signup — that is step 3, with
+the read-only scope, by you. It has never been run against a real venue:
+the two recipes are reviewed data whose selectors were written from the
+public forms and not exercised against them, and the first real run should
+be watched, knowing that a field the page has and the recipe does not is a
+hand-back rather than a guess. It drives Chromium over the DevTools
+protocol with plain Node rather than Playwright, because Playwright is not
+resolvable from this repository and a browser-automation dependency for one
+job is not worth the supply chain; the browser is the one Playwright's
+bundle provides at `/opt/pw-browsers/chromium` (override with
+`VENUE_SIGNUP_CHROMIUM`), launched with `--remote-debugging-pipe` so no port
+is opened for anything else to attach to. It honours `HTTPS_PROXY` and
+`NO_PROXY` as the rest of the repository does, and if the egress proxy's
+certificate is not in the system store it fails on TLS — the fix is the CA,
+never `--ignore-certificate-errors`, which it does not pass. Run as root it
+drops Chromium's own sandbox (`--no-sandbox`) and says so; do not run it as
+root. Nothing here reads the registration record the platform holds or
+writes one: after a successful run, step 5 is still yours.
