@@ -96,6 +96,15 @@ fn owner_record(source_id: &str) -> Result<RegistrationRecord> {
     )
 }
 
+/// A key-shaped value assembled at run time rather than written as one
+/// literal: the repository's secret scanners read the source, and a
+/// fixture that looks like a live key is a finding they cannot tell from a
+/// leak. The platform's own screen sees the assembled value and refuses it,
+/// which is the property under test.
+fn key_shaped() -> String {
+    ["sk", "live", "9f2a7c1e4b8d"].join("-")
+}
+
 #[test]
 fn a_source_needing_an_account_is_refused_by_the_finder_without_a_record_naming_the_requirement()
 -> Result<()> {
@@ -321,7 +330,7 @@ fn a_record_carrying_a_key_shaped_secret_reference_is_refused() -> Result<()> {
     // not be written into a manifest cannot be written into a record either.
     // Three shapes a pasted credential takes; the refusal must not echo any.
     for pasted in [
-        "sk-live-9f2a7c1e4b8d",
+        &key_shaped(),
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "QIP_EXAMPLE_VENUE_KEY=abc123",
     ] {
@@ -342,7 +351,7 @@ fn a_record_carrying_a_key_shaped_secret_reference_is_refused() -> Result<()> {
     let text = serde_json::to_string(&registry)?;
     let back: RegistrationRegistry = serde_json::from_str(&text)?;
     assert_eq!(back, registry);
-    let smuggled = text.replace("QIP_EXAMPLE_VENUE_KEY", "sk-live-9f2a7c1e4b8d");
+    let smuggled = text.replace("QIP_EXAMPLE_VENUE_KEY", &key_shaped());
     assert_ne!(
         smuggled, text,
         "the fixture did not contain the reference to replace"

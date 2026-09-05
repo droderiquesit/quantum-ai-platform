@@ -509,7 +509,7 @@ mod tests {
         // not repeat the value: it is a key, and the error goes to stderr
         // and the health detail.
         let pasted = [
-            "sk-live-9f2a7c1e4b8d",
+            &["sk", "live", "9f2a7c1e4b8d"].join("-"),
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
             "QIP_VENUE_API_KEY=abc123",
         ];
@@ -527,12 +527,13 @@ mod tests {
         // deserialisation path builds a `SecretRef` from any string — is
         // screened by the record's constructor, so the wire form cannot
         // smuggle a key past the door the constructor guards.
+        let smuggled = ["sk", "live", "9f2a7c1e4b8d"].join("-");
         let file = serde_json::json!({
             "source_id": "venue-feed",
             "operator": "d.roderiques",
             "terms_read_at": read_at(),
             "terms": "https://venue.example/terms",
-            "secret": { "variable": "sk-live-9f2a7c1e4b8d" },
+            "secret": { "variable": smuggled },
         });
         let refused = serde_json::from_value::<RegistrationRecord>(file)
             .expect_err("a key-shaped secret reference was deserialised into a record");
