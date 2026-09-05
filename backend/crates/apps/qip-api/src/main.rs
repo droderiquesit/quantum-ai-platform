@@ -173,6 +173,15 @@ fn run() -> Result<()> {
         .open_trial_book(storage.key_value("trial-book")?, "trial-book")
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
 
+    // The wallet statement, read and observed into the platform before
+    // anything is served, on the wall clock — a statement is a document a
+    // person dated. See `load_wallet_statement` for why unset is no feed and
+    // set-but-unreadable is a refusal to start. Observed here rather than in
+    // a route so that the very first cycle's LEARN stage reconciles it, and
+    // wrapped around the router below so each admitted `POST /cycle`
+    // re-reads a file that has changed.
+    let (statement_feed, statement_banner) = load_wallet_statement(&mut platform, now)?;
+
     // The mesh backbone, where the deployment names cells to serve. Absent
     // configuration means the routes are absent: no listener binds, and the
     // banner says the deltas have nowhere to land here.
@@ -286,8 +295,22 @@ fn run() -> Result<()> {
         clock.clone(),
     ));
     let router = Router::new(api, web).with_console(console);
+    // With a statement feed, the router is wrapped so an admitted
+    // `POST /cycle` re-reads the file before the API runs the cycle. Without
+    // one the router is served bare: no code on the cycle path can re-read
+    // anything, which is the structural form of "no feed".
+    let handler: Arc<dyn qip_api::http::Handler> = match statement_feed {
+        Some(feed) => Arc::new(qip_api::statement::StatementRefresh::new(
+            router,
+            Arc::new(Mutex::new(feed)),
+            platform.clone(),
+            authenticator.clone(),
+            clock.clone(),
+        )),
+        None => Arc::new(router),
+    };
 
-    let server = Server::bind(&address, Arc::new(router), ServerLimits::default())?;
+    let server = Server::bind(&address, handler, ServerLimits::default())?;
     let bound = server.local_address()?;
 
     // The start-up banner. An operator should be able to read what this
@@ -350,6 +373,7 @@ fn run() -> Result<()> {
         }
     }
     println!("  arbitrage desk:   {arbitrage_banner}");
+    println!("  wallet statement: {statement_banner}");
     match &mesh {
         Some(mesh) => {
             // The addresses come from the bound sockets rather than from the
@@ -515,6 +539,36 @@ fn load_arbitrage_policy() -> Result<(Option<ArbitragePolicy>, String)> {
         policy.funding_instrument
     );
     Ok((Some(policy), banner))
+}
+
+/// The wallet statement the deployment names, observed into `platform`, and
+/// the banner line that says what was read.
+///
+/// `QIP_WALLET_STATEMENT_PATH` unset is not a refusal: it is the operator
+/// saying no custodian has reported to this process, and the platform's
+/// answer is the honest one — nothing is observed, LEARN reconciles nothing,
+/// and `/wallet` answers `assembled: false`. Set and unreadable, or readable
+/// and not a statement, or dated in the future, or past the kernel's bound,
+/// is a refusal to start naming the field: a process that fell back to no
+/// feed because the file the operator pointed at was wrong would run
+/// healthy with the wallet silently unobserved, which is the state every
+/// deployment was in before this feed existed. Nothing is clamped — a
+/// statement of 257 holdings is refused, not truncated to 256.
+fn load_wallet_statement(
+    platform: &mut Platform,
+    now: qip_core::Timestamp,
+) -> Result<(Option<qip_api::statement::StatementFeed>, String)> {
+    let Some(feed) =
+        qip_api::statement::StatementFeed::from_env(&|name| std::env::var(name).ok(), now)
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?
+    else {
+        return Ok((None, qip_api::statement::absent_banner()));
+    };
+    feed.statement()
+        .observe_into(platform)
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    let banner = feed.describe();
+    Ok((Some(feed), banner))
 }
 
 #[cfg(test)]

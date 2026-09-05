@@ -696,6 +696,12 @@ fn the_api_owns_no_field_typed_as_money_and_every_store_it_holds_is_named_here()
     //   cursor and clock, or a connector's runtime. Records in transit from
     //   a source into the platform, never a figure the API keeps; the
     //   platform holds what was observed.
+    // * `StatementFeed` — the custodian's statement file the root opened
+    //   (`QIP_WALLET_STATEMENT_PATH`): its path, the mtime and length last
+    //   read, and the parsed document as validated decimal *text*, never a
+    //   number (the field scan above holds that). Records in transit from a
+    //   file into `Platform::observe_statement`; the wallet the platform
+    //   assembles from them is the platform's, not the API's.
     //
     // A new store is a reviewed change: name it here with its reason.
     let known_stores: BTreeSet<&str> = [
@@ -707,6 +713,7 @@ fn the_api_owns_no_field_typed_as_money_and_every_store_it_holds_is_named_here()
         "crate::mesh::MeshBackbone",
         "Option<HealthReading>",
         "crate::feed::ApiFeed",
+        "StatementFeed",
     ]
     .into_iter()
     .collect();
@@ -878,6 +885,14 @@ fn the_api_calls_no_platform_mutator_beyond_the_seven_it_is_allowed() {
     //   tape file or a connector the root admitted through the licensing
     //   gate at start-up — so it is the loop's own input, not a mutation a
     //   client can shape.
+    // * `observe_statement` — the same class as `observe`: a custodian's
+    //   statement the composition root read from the file
+    //   `QIP_WALLET_STATEMENT_PATH` names, validated at start and re-read
+    //   before an admitted `POST /cycle` when the file has moved. No request
+    //   body reaches it — the route reads none — so what the wallet
+    //   reconciles against is a document a person put on the mount, never a
+    //   figure a caller sent, and the kernel keeps its own bound and asset
+    //   check on every holding.
     let allowed: BTreeSet<&str> = [
         "run_cycle",
         "autonomy_mut",
@@ -886,6 +901,7 @@ fn the_api_calls_no_platform_mutator_beyond_the_seven_it_is_allowed() {
         "ingest_cell_report",
         "issue_cycle_whitelist",
         "observe",
+        "observe_statement",
     ]
     .into_iter()
     .collect();

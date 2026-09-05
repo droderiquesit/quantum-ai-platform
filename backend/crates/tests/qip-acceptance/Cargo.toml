@@ -77,5 +77,11 @@ qip-storage.workspace = true
 qip-capital.workspace = true
 qip-twin.workspace = true
 
+# The region-share suite issues grants through `CentralPlane::issue`, the
+# door a deployment uses, and that door refuses a strategy below pilot;
+# walking one there needs the lifecycle's family and evidence types, which
+# nothing re-exports. An in-tree crate; the two-dependency rule is untouched.
+qip-lifecycle.workspace = true
+
 [lints]
 workspace = true

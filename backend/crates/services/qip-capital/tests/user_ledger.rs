@@ -14,18 +14,51 @@
 #![allow(clippy::panic_in_result_fn)]
 
 use qip_capital::ledger::{
-    AttributedFill, Capability, DESK_MANDATE_ID, Entitlement, InvestmentOutcome, InvestmentRequest,
-    Jurisdiction, MAX_USER_ID_LENGTH, Mandate, MandateId, MandateRegistry, MandateTerms,
-    PermittedFamilies, ProductEligibility, RefusedLimit, Role, UserId, UserLedger, UserShare,
-    WithdrawalEntitlement,
+    AttributedFill, Capability, DESK_MANDATE_ID, DecidedBy, Eligibility, EligibilityDecision,
+    EligibilityRecord, EligibilityRegistry, EligibilityTerms, Entitlement, Ineligible,
+    InvestmentOutcome, InvestmentRequest, Jurisdiction, MAX_USER_ID_LENGTH, Mandate, MandateId,
+    MandateRegistry, MandateTerms, PermittedFamilies, ProductEligibility, RefusedLimit, Role,
+    UserId, UserLedger, UserShare, WithdrawalEntitlement,
 };
 use qip_contracts::signal::StrategyId;
 use qip_core::error::Result;
-use qip_core::{Currency, Decimal, Timestamp, dec};
+use qip_core::{Currency, Decimal, Duration, Timestamp, dec};
 use std::collections::BTreeSet;
 
 fn now() -> Timestamp {
     Timestamp::from_secs(1_700_000_000)
+}
+
+/// The operator every fixture decision is attributed to.
+fn operator() -> DecidedBy {
+    DecidedBy::operator("ops-alice", "oidc").expect("a named operator is valid")
+}
+
+/// An eligibility verified at `now()`, cleared to invest in GB — the fixture
+/// mandate's jurisdiction — for a day.
+fn eligibility(can_invest: bool, jurisdiction: &str) -> Eligibility {
+    Eligibility::new(EligibilityTerms {
+        verified_at: now(),
+        can_invest,
+        jurisdiction: Jurisdiction::new(jurisdiction).expect("a fixture jurisdiction is valid"),
+        expires_at: now().saturating_add(Duration::from_days(1)),
+    })
+    .expect("the fixture eligibility is valid")
+}
+
+fn granted(name: &str, eligibility: Eligibility) -> EligibilityRecord {
+    EligibilityRecord {
+        user: user(name),
+        decision: EligibilityDecision::Granted { eligibility },
+        by: operator(),
+        decided_at: now(),
+    }
+}
+
+/// Admit a user on the fixture terms, so a test about a limit other than
+/// eligibility is not refused at the eligibility.
+fn clear(ledger: &mut UserLedger, name: &str) -> Result<()> {
+    ledger.decide_eligibility(granted(name, eligibility(true, "GB")))
 }
 
 fn user(name: &str) -> UserId {
@@ -596,6 +629,7 @@ fn an_investment_request_is_admitted_or_refused_by_the_named_limit_before_anythi
     // funds nothing.
     let mut ledger = ledger();
     enrol(&mut ledger, "alice", "1000")?;
+    clear(&mut ledger, "alice")?;
     let product = momentum_in_gb();
     let admitted = ledger.admit(&request("alice", "150"), Role::Investor, &product, now());
     assert!(
@@ -643,6 +677,7 @@ fn an_investment_request_is_admitted_or_refused_by_the_named_limit_before_anythi
         Mandate::new(wide_open)?,
         now(),
     )?;
+    clear(&mut generous, "bram")?;
     generous.fund(&user("bram"), &strategy(), dec!("150"), now())?;
     let mut elsewhere = request("bram", "851");
     elsewhere.strategy = StrategyId::new("carry-v1");
@@ -713,6 +748,7 @@ fn the_same_request_against_the_same_books_gets_the_same_decision() -> Result<()
     // first — they were computed apart.
     let mut ledger = ledger();
     enrol(&mut ledger, "alice", "1000")?;
+    clear(&mut ledger, "alice")?;
     let product = momentum_in_gb();
     let first = ledger.admit(&request("alice", "500"), Role::Investor, &product, now());
     let second = ledger.admit(&request("alice", "500"), Role::Investor, &product, now());
@@ -938,6 +974,7 @@ fn a_realised_loss_is_booked_as_a_loss_and_never_floored() -> Result<()> {
     let alice = user("alice");
     let mut ledger = ledger();
     enrol(&mut ledger, "alice", "1000")?;
+    clear(&mut ledger, "alice")?;
     ledger.fund(&alice, &strategy(), dec!("100"), now())?;
     assert_eq!(
         ledger
@@ -972,6 +1009,7 @@ fn funding_past_the_investable_capital_is_refused_and_the_liquidity_floor_is_hon
         Mandate::new(floored)?,
         now(),
     )?;
+    clear(&mut ledger, "alice")?;
     ledger.fund(&alice, &strategy(), dec!("500"), now())?;
 
     let refused = ledger
@@ -1011,6 +1049,7 @@ fn a_pro_rata_split_reconciles_to_the_fill_exactly_and_the_remainder_is_recorded
     let mut ledger = ledger();
     for name in ["cara", "alice", "bram"] {
         enrol(&mut ledger, name, "1000")?;
+        clear(&mut ledger, name)?;
         ledger.fund(&user(name), &strategy(), dec!("100"), now())?;
     }
     let fill = attributed("100");
@@ -1091,6 +1130,9 @@ fn a_pro_rata_split_follows_the_entitlements_and_the_largest_holder_takes_the_re
     enrol(&mut ledger, "alice", "1000")?;
     enrol(&mut ledger, "bram", "1000")?;
     enrol(&mut ledger, "cara", "1000")?;
+    for name in ["alice", "bram", "cara"] {
+        clear(&mut ledger, name)?;
+    }
     ledger.fund(&user("alice"), &strategy(), dec!("100"), now())?;
     ledger.fund(&user("bram"), &strategy(), dec!("900"), now())?;
     ledger.fund(&user("cara"), &strategy(), dec!("50"), now())?;
@@ -1169,4 +1211,398 @@ fn a_fill_with_no_capital_at_work_behind_it_is_not_split_and_nothing_is_booked()
     assert!(ledger.books().is_empty(), "nothing was booked");
     assert_eq!(ledger.fills_journalled(), 0);
     Ok(())
+}
+
+// --- eligibility --------------------------------------------------------------
+
+#[test]
+fn an_unverified_user_cannot_be_funded_and_the_refusal_names_the_reason() -> Result<()> {
+    // The failure this closes: a mandate said whose capital it was and
+    // nothing said that anybody had checked who they were, so `fund` put
+    // capital to work for a user no operator had ever verified. Premise
+    // first: the same user, once an operator admits them, funds — so every
+    // refusal below is the registry's and not some other gate's.
+    let alice = user("alice");
+    let mut admitted = ledger();
+    enrol(&mut admitted, "alice", "1000")?;
+    clear(&mut admitted, "alice")?;
+    admitted.fund(&alice, &strategy(), dec!("100"), now())?;
+    assert_eq!(
+        admitted
+            .balance(&alice, &strategy(), Currency::USD)
+            .map(|cash| cash.settled()),
+        Some(dec!("100")),
+        "the premise: a verified user funds"
+    );
+
+    // No decision on record at all.
+    let mut ledger = ledger();
+    enrol(&mut ledger, "alice", "1000")?;
+    assert_eq!(
+        ledger.eligibility_of(&alice, now()).err(),
+        Some(Ineligible::UnknownUser)
+    );
+    let refused = ledger
+        .fund(&alice, &strategy(), dec!("100"), now())
+        .expect_err("a user no operator verified is refused");
+    assert!(
+        refused.message().contains("(unknown_user)"),
+        "the refusal names the reason: {}",
+        refused.message()
+    );
+    assert!(ledger.books().is_empty(), "a refused funding opens no book");
+    let decision = ledger.admit(
+        &request("alice", "100"),
+        Role::Investor,
+        &momentum_in_gb(),
+        now(),
+    );
+    assert_eq!(
+        decision.refused_by(),
+        Some(RefusedLimit::Eligibility(Ineligible::UnknownUser)),
+        "and an investment request is refused at the same gate, by name"
+    );
+
+    // Verified, and cleared to view only.
+    ledger.decide_eligibility(granted("alice", eligibility(false, "GB")))?;
+    assert_eq!(
+        ledger.eligibility_of(&alice, now()).err(),
+        Some(Ineligible::CannotInvest)
+    );
+    let refused = ledger
+        .fund(&alice, &strategy(), dec!("100"), now())
+        .expect_err("view-only is not invest");
+    assert!(
+        refused.message().contains("(cannot_invest)"),
+        "{}",
+        refused.message()
+    );
+
+    // Verified somewhere the mandate is not.
+    ledger.decide_eligibility(granted("alice", eligibility(true, "US")))?;
+    assert_eq!(
+        ledger.eligibility_of(&alice, now()).err(),
+        Some(Ineligible::JurisdictionAbsent {
+            verified: Jurisdiction::new("US")?,
+            mandate: Jurisdiction::new("GB")?,
+        })
+    );
+    let refused = ledger
+        .fund(&alice, &strategy(), dec!("100"), now())
+        .expect_err("a verification in US says nothing about GB");
+    assert!(
+        refused.message().contains("(jurisdiction_absent)"),
+        "{}",
+        refused.message()
+    );
+
+    // Verified at an instant that has not arrived.
+    let later = Eligibility::new(EligibilityTerms {
+        verified_at: now().saturating_add(Duration::from_hours(1)),
+        can_invest: true,
+        jurisdiction: Jurisdiction::new("GB")?,
+        expires_at: now().saturating_add(Duration::from_days(1)),
+    })?;
+    ledger.decide_eligibility(granted("alice", later))?;
+    assert_eq!(
+        ledger.eligibility_of(&alice, now()).err(),
+        Some(Ineligible::NotYetVerified)
+    );
+    assert!(
+        ledger
+            .fund(&alice, &strategy(), dec!("100"), now())
+            .expect_err("a future verification is not one")
+            .message()
+            .contains("(not_yet_verified)")
+    );
+
+    // Verified, then revoked: a different answer from never verified.
+    clear(&mut ledger, "alice")?;
+    ledger.fund(&alice, &strategy(), dec!("100"), now())?;
+    ledger.decide_eligibility(EligibilityRecord {
+        user: alice.clone(),
+        decision: EligibilityDecision::Revoked {
+            reason: "verification withdrawn on review".to_string(),
+        },
+        by: operator(),
+        decided_at: now(),
+    })?;
+    assert_eq!(
+        ledger.eligibility_of(&alice, now()).err(),
+        Some(Ineligible::Revoked)
+    );
+    let refused = ledger
+        .fund(&alice, &strategy(), dec!("100"), now())
+        .expect_err("a revoked user is refused");
+    assert!(
+        refused.message().contains("(revoked)"),
+        "{}",
+        refused.message()
+    );
+    assert_eq!(
+        ledger
+            .balance(&alice, &strategy(), Currency::USD)
+            .map(|cash| cash.settled()),
+        Some(dec!("100")),
+        "what was funded while eligible stays booked; the revocation stops new capital"
+    );
+
+    // A revocation of a user with nothing on record is refused: recording it
+    // would make "never verified" read as "verified and revoked".
+    let mut nobody = ledger.clone();
+    enrol(&mut nobody, "bram", "1000")?;
+    let refused = nobody
+        .decide_eligibility(EligibilityRecord {
+            user: user("bram"),
+            decision: EligibilityDecision::Revoked {
+                reason: "nothing to revoke".to_string(),
+            },
+            by: operator(),
+            decided_at: now(),
+        })
+        .expect_err("nothing to revoke");
+    assert!(
+        refused.message().contains("nothing to revoke"),
+        "{}",
+        refused.message()
+    );
+    // And a decision about a user with no mandate is a decision about
+    // nobody's capital.
+    let refused = nobody
+        .decide_eligibility(granted("cara", eligibility(true, "GB")))
+        .expect_err("cara holds no mandate");
+    assert!(
+        refused.message().contains("holds no mandate"),
+        "{}",
+        refused.message()
+    );
+    Ok(())
+}
+
+#[test]
+fn an_expired_eligibility_refuses_funding_on_the_instant_it_expires() -> Result<()> {
+    // The failure: a verification taken once and honoured forever. Premise:
+    // the same funding one second before the expiry is admitted, so the
+    // refusal at the expiry is the expiry's and the bound is exclusive.
+    let alice = user("alice");
+    let expires_at = now().saturating_add(Duration::from_hours(1));
+    let mut ledger = ledger();
+    enrol(&mut ledger, "alice", "1000")?;
+    ledger.decide_eligibility(granted(
+        "alice",
+        Eligibility::new(EligibilityTerms {
+            verified_at: now(),
+            can_invest: true,
+            jurisdiction: Jurisdiction::new("GB")?,
+            expires_at,
+        })?,
+    ))?;
+    let just_before = expires_at.saturating_sub(Duration::from_secs(1));
+    ledger.fund(&alice, &strategy(), dec!("50"), just_before)?;
+    assert!(
+        ledger.eligibility_of(&alice, just_before).is_ok(),
+        "the premise: admitted one second before the expiry"
+    );
+
+    assert_eq!(
+        ledger.eligibility_of(&alice, expires_at).err(),
+        Some(Ineligible::Expired)
+    );
+    let refused = ledger
+        .fund(&alice, &strategy(), dec!("50"), expires_at)
+        .expect_err("refused on the instant it expires");
+    assert!(
+        refused.message().contains("(expired)"),
+        "{}",
+        refused.message()
+    );
+    assert_eq!(
+        ledger
+            .balance(&alice, &strategy(), Currency::USD)
+            .map(|cash| cash.settled()),
+        Some(dec!("50")),
+        "the refused funding moved nothing"
+    );
+
+    // An eligibility that expires when it is verified would never admit
+    // anyone, and is refused at construction rather than recorded.
+    let never = Eligibility::new(EligibilityTerms {
+        verified_at: now(),
+        can_invest: true,
+        jurisdiction: Jurisdiction::new("GB")?,
+        expires_at: now(),
+    });
+    assert!(
+        never
+            .expect_err("an expiry at the verification is refused")
+            .message()
+            .contains("must be after the verification")
+    );
+    Ok(())
+}
+
+#[test]
+fn an_eligibility_cannot_be_decided_without_a_named_operator() -> Result<()> {
+    // The failure ADR 0021 names among the things that must not decide:
+    // "a configuration value". A `can_invest: true` in a file is a flag;
+    // the operator who set it is the decision. Premise: the same record
+    // with an operator named deserialises and is applied.
+    let named = serde_json::json!({
+        "user": "alice",
+        "decision": {
+            "decision": "granted",
+            "eligibility": {
+                "verified_at": now(),
+                "can_invest": true,
+                "jurisdiction": "GB",
+                "expires_at": now().saturating_add(Duration::from_days(1)),
+            }
+        },
+        "by": { "subject": "ops-alice", "method": "oidc" },
+        "decided_at": now(),
+    });
+    let record: EligibilityRecord =
+        serde_json::from_value(named.clone()).expect("the premise: a named decision reads");
+    assert_eq!(record.by.subject(), "ops-alice");
+    let mut ledger = ledger();
+    enrol(&mut ledger, "alice", "1000")?;
+    ledger.decide_eligibility(record)?;
+    assert!(ledger.eligibility_of(&user("alice"), now()).is_ok());
+
+    // No operator at all.
+    let mut unsigned = named.clone();
+    unsigned
+        .as_object_mut()
+        .expect("a record is an object")
+        .remove("by");
+    assert!(
+        serde_json::from_value::<EligibilityRecord>(unsigned).is_err(),
+        "a decision with no operator is not a record"
+    );
+
+    // An operator field that names nobody.
+    let mut blank = named.clone();
+    blank["by"]["subject"] = serde_json::Value::String("   ".to_string());
+    let error = serde_json::from_value::<EligibilityRecord>(blank)
+        .expect_err("a blank subject is refused on the way in");
+    assert!(
+        error.to_string().contains("names no operator"),
+        "the refusal says what is missing: {error}"
+    );
+    assert!(
+        DecidedBy::operator("", "oidc").is_err(),
+        "and the constructor refuses the same"
+    );
+    assert!(
+        DecidedBy::operator("ops-alice", " ").is_err(),
+        "an identity nobody authenticated is a name, not an operator"
+    );
+
+    // A second approver who is the same person is not a second approver.
+    let by = DecidedBy::operator("ops-alice", "oidc")?.with_second_approver("ops-alice");
+    assert_eq!(by.second_approver(), None);
+    let by = by.with_second_approver("ops-bram");
+    assert_eq!(by.second_approver(), Some("ops-bram"));
+    Ok(())
+}
+
+#[test]
+fn a_registry_replayed_from_its_decisions_in_order_is_the_live_one_and_out_of_order_is_refused()
+-> Result<()> {
+    // The failure: a registry rebuilt from the log that disagrees with the
+    // one the platform acted on, which is two sources of truth for who was
+    // eligible. Premise: the sequence is non-trivial — a grant superseded
+    // by a grant, and a grant revoked — so a replay that applied only the
+    // first record per user, or ignored order, would build something else.
+    let mut ledger = ledger();
+    enrol(&mut ledger, "alice", "1000")?;
+    enrol(&mut ledger, "bram", "1000")?;
+    let t0 = now();
+    let t1 = now().saturating_add(Duration::from_secs(60));
+    let t2 = now().saturating_add(Duration::from_secs(120));
+    let decisions = vec![
+        EligibilityRecord {
+            decided_at: t0,
+            ..granted("alice", eligibility(false, "GB"))
+        },
+        EligibilityRecord {
+            decided_at: t0,
+            ..granted("bram", eligibility(true, "GB"))
+        },
+        EligibilityRecord {
+            decided_at: t1,
+            ..granted("alice", eligibility(true, "GB"))
+        },
+        EligibilityRecord {
+            user: user("bram"),
+            decision: EligibilityDecision::Revoked {
+                reason: "verification withdrawn on review".to_string(),
+            },
+            by: operator(),
+            decided_at: t2,
+        },
+    ];
+    for record in &decisions {
+        ledger.decide_eligibility(record.clone())?;
+    }
+    assert!(ledger.eligibility_of(&user("alice"), t2).is_ok());
+    assert_eq!(
+        ledger.eligibility_of(&user("bram"), t2).err(),
+        Some(Ineligible::Revoked)
+    );
+    assert_eq!(ledger.eligibility().records().len(), 2);
+
+    let replayed = EligibilityRegistry::replay(decisions.clone())?;
+    assert_eq!(&replayed, ledger.eligibility());
+    let stored: EligibilityRegistry = serde_json::from_str(
+        &serde_json::to_string(ledger.eligibility()).expect("a registry serialises"),
+    )
+    .expect("a stored registry reads back");
+    assert_eq!(&stored, ledger.eligibility());
+
+    // Out of order: the revocation before the grant it revokes.
+    let mut reversed = decisions.clone();
+    reversed.swap(1, 3);
+    let refused = EligibilityRegistry::replay(reversed).expect_err("out of order is refused");
+    assert!(
+        refused.message().contains("nothing to revoke"),
+        "{}",
+        refused.message()
+    );
+    let mut backdated = decisions;
+    backdated[2].decided_at = t0.saturating_sub(Duration::from_secs(1));
+    let refused =
+        EligibilityRegistry::replay(backdated).expect_err("a backdated decision is refused");
+    assert!(
+        refused.message().contains("earlier than the one standing"),
+        "{}",
+        refused.message()
+    );
+    Ok(())
+}
+
+#[test]
+fn an_eligibility_record_carries_no_withdrawal_field() {
+    // ADR 0021 held by the shape of the record: blueprint §43.3 names
+    // `can_withdraw` beside `can_invest`, and a field that is always false
+    // is still a field a transfer path could read. The serialised form is
+    // exactly the four terms and nothing else, so adding one fails here.
+    let value = serde_json::to_value(eligibility(true, "GB")).expect("an eligibility serialises");
+    let keys: Vec<&str> = value
+        .as_object()
+        .expect("an eligibility is an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        ["can_invest", "expires_at", "jurisdiction", "verified_at"],
+        "the record's fields are the four terms, and no withdrawal flag"
+    );
+    assert!(
+        !serde_json::to_string(&value)
+            .expect("serialises")
+            .contains("withdraw"),
+        "nothing on the record names a withdrawal"
+    );
 }

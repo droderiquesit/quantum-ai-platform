@@ -1509,9 +1509,12 @@ and at the node by
 The cross-process property is **joined in code at both ends**; what keeps
 F6 short of TESTED-in-deployment is the same fact as every edge row —
 `execution_nodes = {}` and `QIP_MESH_CELLS` unset on Cloud Run, so no
-deployed centre ships any payload — and the one honest gap left in code:
-the payload a kernel produced applied by a `qip-edge` cell in a single
-`qip-acceptance` test, which the two halves prove separately today. The
+deployed centre ships any payload. The one gap the previous sentence of
+this paragraph named — a kernel-produced payload applied by a `qip-edge`
+cell in one test — closed the same day:
+`qip-acceptance/tests/region_share.rs` (five tests, three mutations) does
+exactly that with a real `CentralPlane`, door-issued grants and two cells
+opened unfunded. The
 §41.5 producer count is unchanged at three of twelve, because the share
 travels inside a slot that was already produced. Undeclared membership is
 the status quo and says so in the cycle, naming the variable, rather than

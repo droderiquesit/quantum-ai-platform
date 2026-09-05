@@ -29,6 +29,14 @@
 //!   not yet seen. [`CashBalance::available`] excludes them and every
 //!   reservation, so a deposit that was announced and never arrived cannot be
 //!   spent.
+//! * [`EligibilityRegistry`] — an operator's decision per user that the
+//!   user was verified, where, whether they may invest and until when, as an
+//!   [`Eligibility`] created or revoked only by an [`EligibilityDecision`]
+//!   carrying the [`DecidedBy`] who took it. Consulted by [`UserLedger::fund`]
+//!   at the one place capital enters a book and by [`UserLedger::admit`]
+//!   before it, refusing by an [`Ineligible`] reason named. There is no
+//!   `can_withdraw` on the record — see the module's own comment and ADR
+//!   0021.
 //! * [`MandateRegistry`] — the mandates, keyed by [`UserId`] and each under
 //!   a [`MandateId`] of its own, admitted against the desk's mandate as a
 //!   ceiling term by term and in aggregate. An id seen twice, or a mandate
@@ -84,6 +92,7 @@
 
 mod book;
 mod cash;
+mod eligibility;
 mod entitlement;
 mod identity;
 mod mandate;
@@ -92,6 +101,10 @@ mod request;
 
 pub use book::{AttributedFill, LedgerKey, ProRataSplit, StrategyBook, UserLedger, UserShare};
 pub use cash::{CashBalance, ExpectedInflow};
+pub use eligibility::{
+    DecidedBy, DecidedByRecord, Eligibility, EligibilityDecision, EligibilityRecord,
+    EligibilityRegistry, EligibilityTerms, Ineligible,
+};
 pub use entitlement::{Capability, Entitlement, ProductEligibility, Role, WithdrawalEntitlement};
 pub use identity::{Jurisdiction, MAX_MANDATE_ID_LENGTH, MAX_USER_ID_LENGTH, MandateId, UserId};
 pub use mandate::{Mandate, MandateTerms, PermittedFamilies};

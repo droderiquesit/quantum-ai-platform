@@ -672,9 +672,19 @@ Still not applied, and why:
   see the deviation above. The delta carries neither `free` nor the bound.
 - The payload cadence (decision 4), the traceability F6 row, and
   `.claude/rules/domains/risk-and-execution.md` are untouched.
-- The cross-crate end-to-end test — a payload the kernel produced, applied
-  by a `qip-edge` cell — belongs in `qip-acceptance`, which this slice may
-  not edit; the two halves are each proven on their own side of the wire.
+- The cross-crate end-to-end test now exists:
+  `qip-acceptance/tests/region_share.rs` (five tests) builds a real
+  `CentralPlane` with two cells under one region, issues grants through
+  the plane's own door, signs the payloads the way the API does, and
+  applies them to two real `qip-edge` cells opened unfunded — each funded
+  to exactly its share, the two never exceeding the grant, a grant one
+  unit short shipping nothing, a centre that stops naming a grant
+  narrowing the cell to nothing under the region gate, a replayed lower
+  sequence changing neither table, and the funded cell still paper-only.
+  Three mutations fired (the partition's grant check, the cell's sequence
+  check, the API's manifest production). It cost `qip-acceptance` one
+  in-tree dev-dependency, `qip-lifecycle`, because a grant issued through
+  the plane's door needs a strategy family.
 
 The paper-trading boundary is unchanged: `Cell::new` remains the only
 constructor and takes no ceiling; `with_unfunded_region` is a builder over

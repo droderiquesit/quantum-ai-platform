@@ -439,6 +439,70 @@ fn a_causal_claim_recorded_later_is_invisible_earlier() {
 }
 
 #[test]
+fn absorbing_a_claim_moves_the_causal_graphs_last_update_and_nothing_else_does() {
+    // The failure this prevents: §6.2 row 2 read "fresh by construction" at
+    // the centre because nothing recorded when the graph last absorbed a
+    // claim, so a graph nobody had re-estimated in a year sized like one
+    // re-estimated this morning. The fact is now written at the seam —
+    // `add` — from the edge's own `recorded_at`, and only there.
+    let mut causal = CausalGraph::new();
+    // Premise: a graph that has absorbed nothing reports nothing, and no
+    // query against it invents an instant.
+    assert_eq!(causal.last_updated(), None);
+    assert!(causal.propagate("a", 1.0, 2, 1e-6, now(), now()).is_empty());
+    assert!(causal.explanations("b", now()).is_empty());
+    assert!(causal.outgoing("a", now()).is_empty());
+    assert_eq!(
+        causal.last_updated(),
+        None,
+        "a query against an empty graph invented an update instant"
+    );
+
+    let edge = |cause: &str, effect: &str, recorded_at: Timestamp| {
+        CausalEdge::new(
+            cause,
+            effect,
+            Mechanism::SupplyChain,
+            0.5,
+            Duration::ZERO,
+            recorded_at,
+        )
+    };
+    causal.add(edge("a", "b", days_ago(10)));
+    assert_eq!(
+        causal.last_updated(),
+        Some(days_ago(10)),
+        "absorbing the first claim did not record its instant"
+    );
+
+    // A backfilled claim with an older instant is absorbed but does not
+    // rewind the fact: the graph is as current as the newest thing it holds.
+    causal.add(edge("b", "c", days_ago(30)));
+    assert_eq!(causal.len(), 2);
+    assert_eq!(
+        causal.last_updated(),
+        Some(days_ago(10)),
+        "a backfilled claim rewound the graph's last update"
+    );
+
+    // A newer claim moves it forward.
+    causal.add(edge("c", "d", days_ago(1)));
+    assert_eq!(causal.last_updated(), Some(days_ago(1)));
+
+    // And reading the populated graph — the only other thing anyone does
+    // with it — leaves the instant where absorption put it. Premise: the
+    // reads actually find something, so this is not a test of empty paths.
+    assert!(!causal.propagate("a", 1.0, 3, 1e-6, now(), now()).is_empty());
+    assert_eq!(causal.explanations("d", now()).len(), 1);
+    assert_eq!(causal.unevidenced().len(), 3);
+    assert_eq!(
+        causal.last_updated(),
+        Some(days_ago(1)),
+        "a query moved the graph's last update"
+    );
+}
+
+#[test]
 fn explanations_rank_the_most_likely_cause_first() {
     let causal = causal_chain();
     let explanations = causal.explanations("northwind", now());

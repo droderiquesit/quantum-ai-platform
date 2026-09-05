@@ -17,7 +17,8 @@
 #![allow(clippy::panic_in_result_fn)]
 
 use qip_capital::ledger::{
-    Jurisdiction, Mandate, MandateId, MandateTerms, PermittedFamilies, UserId, UserShare,
+    DecidedBy, Eligibility, EligibilityDecision, EligibilityTerms, Jurisdiction, Mandate,
+    MandateId, MandateTerms, PermittedFamilies, UserId, UserShare,
 };
 use qip_capital_fabric::corridor::{CorridorCaps, CorridorId, PermittedHours};
 use qip_capital_fabric::custody::{CorridorKind, CustodyClass};
@@ -38,12 +39,15 @@ use qip_financial::object::FinancialObject;
 use qip_financial::quality::Provenance;
 use qip_financial::universe::Universe;
 use qip_kernel::central::CellReport;
-use qip_kernel::config::{PlatformConfig, UserMandate};
+use qip_kernel::config::{PlatformConfig, UserEligibility, UserMandate};
 use qip_kernel::cycle::Stage;
-use qip_kernel::platform::{BookingBasis, LedgerEntry, Platform};
+use qip_kernel::platform::{
+    BookingBasis, EligibilityEntry, EligibilitySource, LedgerEntry, Platform,
+};
 use qip_mesh::delta::DeltaOrder;
 use qip_observability::Telemetry;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
+use qip_risk_engine::autonomy::OperatorIdentity;
 
 const CELL: &str = "cell-lon-1";
 const INSTRUMENT: &str = "obj-AAA";
@@ -101,6 +105,69 @@ fn enrolment(user: &str, capital: Decimal) -> Result<UserMandate> {
 fn platform(config: PlatformConfig) -> Result<Platform> {
     let (context, _clock) = Context::deterministic(start(), config.seed);
     Platform::new(config, context, Telemetry::silent(), universe()?, limits())
+}
+
+/// The operator every committed eligibility in this suite is attributed to.
+fn operator() -> DecidedBy {
+    DecidedBy::operator("ops-carol", "oidc").expect("a named operator is valid")
+}
+
+/// A committed eligibility: verified at `start()` in GB — the fixture
+/// mandate's jurisdiction — cleared to invest until `expires_at`.
+fn cleared(user: &str, expires_at: Timestamp) -> Result<UserEligibility> {
+    Ok(UserEligibility {
+        user: UserId::new(user)?,
+        eligibility: Eligibility::new(EligibilityTerms {
+            verified_at: start(),
+            can_invest: true,
+            jurisdiction: Jurisdiction::new("GB")?,
+            expires_at,
+        })?,
+        decided_by: operator(),
+    })
+}
+
+/// An eligibility that outlives every instant this suite reasons about.
+fn cleared_for_a_year(user: &str) -> Result<UserEligibility> {
+    cleared(user, start().saturating_add(Duration::from_days(365)))
+}
+
+/// The producer the kernel writes eligibility records under. A literal
+/// here so the test reads the log the way an auditor would — by what the
+/// record says about itself — rather than through the kernel's constant.
+const ELIGIBILITY_PRODUCER: &str = "kernel/eligibility";
+
+/// Every eligibility decision the event log holds, oldest first, decoded
+/// strictly: a record under the eligibility producer that does not decode
+/// is a failure, not a record to pass over.
+fn eligibility_entries(platform: &Platform) -> Result<Vec<EligibilityEntry>> {
+    platform
+        .event_log()
+        .records()
+        .iter()
+        .filter(|record| {
+            record.event.topic == Topic::ComplianceEvaluated
+                && record.event.lineage.producer == ELIGIBILITY_PRODUCER
+        })
+        .map(|record| {
+            Ok(
+                qip_streaming::envelope::StreamEnvelope::from_frame(&record.event)?
+                    .decode::<EligibilityEntry>()?
+                    .body,
+            )
+        })
+        .collect()
+}
+
+/// The funding refusals the ledger journal holds, as `(user, gate)`.
+fn funding_refusals(platform: &Platform) -> Result<Vec<(UserId, String)>> {
+    Ok(ledger_entries(platform)?
+        .into_iter()
+        .filter_map(|entry| match entry {
+            LedgerEntry::FundingRefused { user, gate, .. } => Some((user, gate)),
+            LedgerEntry::Funded { .. } | LedgerEntry::Booked { .. } => None,
+        })
+        .collect())
 }
 
 /// One order sent and filled whole for `alpha`, as a cell reports it — the
@@ -197,15 +264,20 @@ fn a_fill_across_two_entitled_users_books_two_shares_that_sum_to_the_fill_with_t
     let alice = UserId::new("alice")?;
     let bob = UserId::new("bob")?;
     let alpha = StrategyId::new("alpha");
-    let config = PlatformConfig::default().with_user_mandates(vec![
-        enrolment("alice", dec!("1000"))?,
-        enrolment("bob", dec!("1000"))?,
-    ]);
+    let config = PlatformConfig::default()
+        .with_user_mandates(vec![
+            enrolment("alice", dec!("1000"))?,
+            enrolment("bob", dec!("1000"))?,
+        ])
+        .with_user_eligibilities(vec![
+            cleared_for_a_year("alice")?,
+            cleared_for_a_year("bob")?,
+        ]);
     let mut platform = platform(config)?;
 
-    // Premise: both users hold a mandate under the desk's, both have
-    // capital at work at alpha in a one-to-two ratio, the desk has no book
-    // there, and nothing has been booked yet.
+    // Premise: both users hold a mandate under the desk's and are cleared
+    // to invest, both have capital at work at alpha in a one-to-two ratio,
+    // the desk has no book there, and nothing has been booked yet.
     assert_eq!(
         platform.user_ledger().mandates().len(),
         3,
@@ -527,5 +599,319 @@ fn the_fabric_journal_replays_from_the_platforms_event_log_to_the_live_state_aft
         })
         .count();
     assert_eq!(refused_records, 1);
+    Ok(())
+}
+
+// --- eligibility ------------------------------------------------------------------
+
+#[test]
+fn an_unverified_user_cannot_be_funded_and_the_refusal_names_the_reason() -> Result<()> {
+    // The failure this closes: `fund_user` funded on the mandate alone,
+    // because the process held no eligibility registry and `admit` would
+    // have refused everyone — so a user nobody had verified had capital at
+    // work. Premise: a user the configuration cleared, under the same desk
+    // and mandate terms, funds; the refusal below is therefore the
+    // registry's and not the mandate's.
+    let alice = UserId::new("alice")?;
+    let bob = UserId::new("bob")?;
+    let alpha = StrategyId::new("alpha");
+    let mut platform = platform(
+        PlatformConfig::default()
+            .with_user_mandates(vec![
+                enrolment("alice", dec!("1000"))?,
+                enrolment("bob", dec!("1000"))?,
+            ])
+            .with_user_eligibilities(vec![cleared_for_a_year("bob")?]),
+    )?;
+    platform.fund_user(&bob, &alpha, dec!("100"), start())?;
+    assert_eq!(
+        settled(&platform, &bob, &alpha),
+        Some(dec!("100")),
+        "the premise: a cleared user funds"
+    );
+    assert!(
+        platform
+            .user_ledger()
+            .eligibility()
+            .record(&alice)
+            .is_none(),
+        "the premise: no operator decided anything about alice"
+    );
+
+    let refused = platform
+        .fund_user(&alice, &alpha, dec!("100"), start())
+        .expect_err("a user no operator verified is refused");
+    assert!(
+        refused.message().contains("(unknown_user)"),
+        "the refusal names the registry's reason: {}",
+        refused.message()
+    );
+    assert!(
+        platform.user_ledger().book(&alice, &alpha).is_none(),
+        "a refused funding opened a book"
+    );
+    assert_eq!(
+        funding_refusals(&platform)?,
+        vec![(alice.clone(), "unknown_user".to_string())],
+        "the refusal is on the record with its gate named"
+    );
+
+    // And the one committed decision is in the log, attributed to the
+    // operator who committed it, from the configuration and not from
+    // anywhere else.
+    let entries = eligibility_entries(&platform)?;
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0].record.user, bob);
+    assert_eq!(entries[0].source, EligibilitySource::Configuration);
+    assert_eq!(entries[0].record.by.subject(), "ops-carol");
+    Ok(())
+}
+
+#[test]
+fn an_expired_eligibility_refuses_funding_from_the_instant_it_expires() -> Result<()> {
+    // The failure: a verification taken once at deployment and honoured
+    // for the life of the process. Premise: the same user funds inside the
+    // window, so the refusal at the expiry is the expiry's.
+    let alice = UserId::new("alice")?;
+    let alpha = StrategyId::new("alpha");
+    let expires_at = start().saturating_add(Duration::from_hours(1));
+    let mut platform = platform(
+        PlatformConfig::default()
+            .with_user_mandates(vec![enrolment("alice", dec!("1000"))?])
+            .with_user_eligibilities(vec![cleared("alice", expires_at)?]),
+    )?;
+    platform.fund_user(&alice, &alpha, dec!("100"), start())?;
+    assert_eq!(settled(&platform, &alice, &alpha), Some(dec!("100")));
+
+    let refused = platform
+        .fund_user(&alice, &alpha, dec!("100"), expires_at)
+        .expect_err("refused on the instant the eligibility expires");
+    assert!(
+        refused.message().contains("(expired)"),
+        "the refusal names the expiry: {}",
+        refused.message()
+    );
+    assert_eq!(
+        settled(&platform, &alice, &alpha),
+        Some(dec!("100")),
+        "the refused funding moved nothing"
+    );
+    assert_eq!(
+        funding_refusals(&platform)?,
+        vec![(alice, "expired".to_string())]
+    );
+    Ok(())
+}
+
+#[test]
+fn an_operators_eligibility_decision_is_journaled_and_replays_to_the_live_registry() -> Result<()> {
+    // The failure: a decision that lived only in the registry's memory,
+    // which is a second source of truth for who may be funded. Premise:
+    // the user is refused before the decision, so the funding after it is
+    // the decision's doing, and the sequence includes a revocation so a
+    // replay that kept only the first decision per user would differ.
+    let alice = UserId::new("alice")?;
+    let alpha = StrategyId::new("alpha");
+    let mut platform = platform(
+        PlatformConfig::default().with_user_mandates(vec![enrolment("alice", dec!("1000"))?]),
+    )?;
+    assert!(
+        platform
+            .fund_user(&alice, &alpha, dec!("100"), start())
+            .is_err(),
+        "the premise: nobody has verified alice"
+    );
+    assert!(eligibility_entries(&platform)?.is_empty());
+
+    let operator = OperatorIdentity::verified("ops-dana", "hardware-token", start());
+    let granted = platform.decide_eligibility(
+        &alice,
+        EligibilityDecision::Granted {
+            eligibility: Eligibility::new(EligibilityTerms {
+                verified_at: start(),
+                can_invest: true,
+                jurisdiction: Jurisdiction::new("GB")?,
+                expires_at: start().saturating_add(Duration::from_days(365)),
+            })?,
+        },
+        &operator,
+        "identity verified against the passport on file",
+        start(),
+    )?;
+    assert_eq!(granted.by.subject(), "ops-dana");
+    assert_eq!(granted.by.method(), "hardware-token");
+    platform.fund_user(&alice, &alpha, dec!("100"), start())?;
+    assert_eq!(settled(&platform, &alice, &alpha), Some(dec!("100")));
+
+    let later = start().saturating_add(Duration::from_secs(60));
+    let operator = OperatorIdentity::verified("ops-dana", "hardware-token", later);
+    platform.decide_eligibility(
+        &alice,
+        EligibilityDecision::Revoked {
+            reason: "verification withdrawn on review".to_string(),
+        },
+        &operator,
+        "the review found the document lapsed",
+        later,
+    )?;
+    let refused = platform
+        .fund_user(&alice, &alpha, dec!("100"), later)
+        .expect_err("a revoked user is refused");
+    assert!(
+        refused.message().contains("(revoked)"),
+        "{}",
+        refused.message()
+    );
+
+    // Two decisions on the record, each from an operator, in order.
+    let entries = eligibility_entries(&platform)?;
+    assert_eq!(entries.len(), 2, "{entries:?}");
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry.source == EligibilitySource::Operator)
+    );
+    assert!(matches!(
+        entries[0].record.decision,
+        EligibilityDecision::Granted { .. }
+    ));
+    assert!(matches!(
+        entries[1].record.decision,
+        EligibilityDecision::Revoked { .. }
+    ));
+    assert_eq!(entries[1].reason, "the review found the document lapsed");
+
+    // The property: the log alone rebuilds the registry the platform
+    // acted on.
+    let replayed = platform.replay_eligibility()?;
+    assert_eq!(&replayed, platform.user_ledger().eligibility());
+    assert_eq!(replayed.records().len(), 1);
+    assert!(matches!(
+        replayed
+            .record(&alice)
+            .expect("alice's standing decision")
+            .decision,
+        EligibilityDecision::Revoked { .. }
+    ));
+    Ok(())
+}
+
+#[test]
+fn an_eligibility_cannot_be_granted_from_a_config_value_alone_without_an_operator_identity()
+-> Result<()> {
+    // ADR 0021 names "a configuration value" among the things that must
+    // never decide. A committed eligibility is a decision only because it
+    // carries the operator who took it: strip the operator and the
+    // configuration does not read; blank the operator and it does not
+    // assemble; hand the runtime path a stale credential and it refuses
+    // and journals nothing. Premise: the same configuration with the
+    // operator named assembles and funds.
+    let alice = UserId::new("alice")?;
+    let alpha = StrategyId::new("alpha");
+    let config = PlatformConfig::default()
+        .with_user_mandates(vec![enrolment("alice", dec!("1000"))?])
+        .with_user_eligibilities(vec![cleared_for_a_year("alice")?]);
+    let mut named = platform(config.clone())?;
+    named.fund_user(&alice, &alpha, dec!("100"), start())?;
+    assert_eq!(settled(&named, &alice, &alpha), Some(dec!("100")));
+
+    let stored = serde_json::to_value(&config).expect("a configuration serialises");
+    let entry = |mut stored: serde_json::Value, edit: &dyn Fn(&mut serde_json::Value)| {
+        edit(&mut stored["user_eligibilities"][0]);
+        stored
+    };
+    assert!(
+        stored["user_eligibilities"][0]["decided_by"]["subject"] == "ops-carol",
+        "the premise: the stored form carries the operator to be removed"
+    );
+
+    // No operator at all: the configuration is not one.
+    let unsigned = entry(stored.clone(), &|entry| {
+        entry
+            .as_object_mut()
+            .expect("an entry is an object")
+            .remove("decided_by");
+    });
+    assert!(
+        serde_json::from_value::<PlatformConfig>(unsigned).is_err(),
+        "a committed eligibility with no operator is not a configuration"
+    );
+
+    // An operator field naming nobody: refused with the reason named.
+    let blank = entry(stored, &|entry| {
+        entry["decided_by"]["subject"] = serde_json::Value::String(String::new());
+    });
+    let error = serde_json::from_value::<PlatformConfig>(blank)
+        .expect_err("a blank operator is refused on the way in");
+    assert!(
+        error.to_string().contains("names no operator"),
+        "the refusal says what is missing: {error}"
+    );
+
+    // A committed decision about a user with no mandate stops assembly.
+    let nobody = platform(
+        PlatformConfig::default().with_user_eligibilities(vec![cleared_for_a_year("alice")?]),
+    );
+    let error = match nobody {
+        Ok(_) => panic!("an eligibility for a user with no mandate assembled a platform"),
+        Err(error) => error,
+    };
+    assert!(
+        error.message().contains("holds no mandate"),
+        "the refusal names the missing mandate: {}",
+        error.message()
+    );
+
+    // The runtime path: a credential older than the freshness bound is
+    // refused, as an autonomy change would be, and nothing is journaled.
+    let mut unsigned = platform(
+        PlatformConfig::default().with_user_mandates(vec![enrolment("alice", dec!("1000"))?]),
+    )?;
+    let stale = OperatorIdentity::verified(
+        "ops-dana",
+        "oidc",
+        start().saturating_sub(Duration::from_mins(16)),
+    );
+    let grant = EligibilityDecision::Granted {
+        eligibility: cleared_for_a_year("alice")?.eligibility,
+    };
+    let refused = unsigned
+        .decide_eligibility(
+            &alice,
+            grant.clone(),
+            &stale,
+            "identity verified against the passport on file",
+            start(),
+        )
+        .expect_err("a stale credential is refused");
+    assert!(
+        refused.message().contains("re-authenticate"),
+        "{}",
+        refused.message()
+    );
+    let terse = unsigned
+        .decide_eligibility(
+            &alice,
+            grant,
+            &OperatorIdentity::verified("ops-dana", "oidc", start()),
+            "ok",
+            start(),
+        )
+        .expect_err("a decision without a stated reason is refused");
+    assert!(
+        terse.message().contains("stated reason"),
+        "{}",
+        terse.message()
+    );
+    assert!(
+        eligibility_entries(&unsigned)?.is_empty(),
+        "a refused decision left a record"
+    );
+    assert!(
+        unsigned
+            .fund_user(&alice, &alpha, dec!("100"), start())
+            .is_err(),
+        "and alice is still not fundable"
+    );
     Ok(())
 }

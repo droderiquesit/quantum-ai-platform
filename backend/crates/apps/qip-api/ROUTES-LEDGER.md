@@ -101,7 +101,7 @@ event log carries the booking and its basis.
       ],
       "entitlements_note": null
     },
-    { "user_id": "desk", "mandate": { "capital": "10000000", "...": "..." }, "balances": [], "entitlements": [], "entitlements_note": null }
+    { "user_id": "desk", "mandate": { "capital": "10000000", "...": "..." }, "eligibility": { "eligible": false, "verified_at": null, "can_invest": null, "jurisdiction": null, "expires_at": null, "refused": "unknown_user", "reason": "desk is not eligible (unknown_user): ..." }, "balances": [], "entitlements": [], "entitlements_note": null }
   ]
 }
 ```
@@ -122,6 +122,7 @@ Field by field:
 | `users[].mandate.exploration_share` | decimal string in `[0, 1]` | Share spendable on information gain. |
 | `users[].mandate.jurisdiction` | 2-letter string | ISO 3166 alpha-2; `"ZZ"` is the desk's own. |
 | `users[].mandate.permitted_families` | `{any: bool, families: string[]}` | `any: true` means every family; otherwise `families` lists the only ones. |
+| `users[].eligibility` | `{eligible: bool, verified_at, can_invest, jurisdiction, expires_at, refused, reason}` | The ledger's own verdict at request time on whether this user may have capital put to work. When `eligible` is `true` the four terms are the record an operator wrote (timestamps, a bool, a 2-letter string) and `refused`/`reason` are `null`; when `false` the terms are `null`, `refused` is the ledger's stable token (`no_mandate`, `unknown_user`, `revoked`, `not_yet_verified`, `cannot_invest`, `expired`, `jurisdiction_absent`) and `reason` its sentence naming what to do. The desk reads `unknown_user` until an operator decides otherwise; no field about withdrawing exists on the record (ADR 0021). |
 | `users[].balances[]` | list | One row per `(strategy, currency)` book the user holds. Empty until the user's mandate has funded a strategy or a fill has been attributed to the user. |
 | `balances[].settled` | money string | Cash the ledger has said is here: funded, plus the user's exact share of every fill since. |
 | `balances[].reserved` | money string | Settled cash held against an unresolved proposal. |
@@ -145,6 +146,18 @@ venue-asset — the desk's cash at its venue, with reservations against it —
 and reconciling each against the tolerance supplied with the statement. Until
 a statement has been handed in and a cycle has run, the body reports that no
 wallet is assembled and fabricates no holding.
+
+A statement reaches the kernel through the composition root: `QIP_WALLET_STATEMENT_PATH`
+names a JSON file — `{"as_of": <RFC 3339>, "venue": "...", "tolerance": "<decimal>",
+"holdings": [{"asset": "...", "quantity": "<decimal>", "tolerance": "<decimal>"}]}`,
+decimals as strings and never JSON numbers, each holding's `tolerance` optional
+where the statement sets one. The root reads it at start and refuses to start on
+a malformed file, a future `as_of`, an empty holdings list or more than 256
+holdings, naming the field; an admitted `POST /cycle` re-reads the file when its
+modification time or length has moved, and refuses the cycle with `503` naming
+the variable if the file has gone or stopped parsing. Unset means no feed, the
+banner says so, and this body answers `assembled: false`. No deployment mounts a
+statement yet; `manifest_wiring.rs` records why.
 
 ```json
 {

@@ -49,7 +49,10 @@ use qip_ai::memory::{
     EpisodicMemory, FindingsSummary, PrecedentDigest, Recall, RegimeLabel, StanceDirection,
 };
 use qip_ai::retrieval::SearchIndex;
-use qip_capital::ledger::{AttributedFill, UserId, UserLedger, UserShare};
+use qip_capital::ledger::{
+    AttributedFill, DecidedBy, EligibilityDecision, EligibilityRecord, EligibilityRegistry, UserId,
+    UserLedger, UserShare,
+};
 use qip_capital::reservation::ReservationLedger;
 use qip_capital::{AllocationLimits, CapitalAllocator, DrawdownSchedule};
 use qip_capital_fabric::journal::{
@@ -132,7 +135,7 @@ use qip_reasoning_engine::engine::{ReasoningEngine, ReasoningOutcome};
 use qip_reasoning_engine::hypothesis::Claim;
 use qip_risk::aggregate::{AggregateFigures, RiskAggregates};
 use qip_risk::limits::{LimitSet, RiskState};
-use qip_risk_engine::autonomy::AutonomyController;
+use qip_risk_engine::autonomy::{AutonomyController, OperatorIdentity};
 use qip_risk_engine::monitor::RiskMonitor;
 use qip_risk_engine::pretrade::PreTradeChecker;
 use qip_simulation_engine::costs::CostModel;
@@ -565,6 +568,19 @@ const DESK_STRATEGY: &str = "central-desk";
 /// [`DESK_STRATEGY`], so the ledger's user set is bounded by the source
 /// until a mandate registry enrols anyone else.
 const DESK_USER: &str = "desk";
+
+/// How recently an operator must have authenticated to decide a user's
+/// eligibility — the same fifteen minutes `AutonomyController` holds an
+/// autonomy change to, because the two are the same kind of act: a person
+/// widening what the platform may do with capital. A session token from
+/// this morning is not evidence that anyone is at the keyboard now.
+const ELIGIBILITY_CREDENTIAL_AGE: Duration = Duration::from_mins(15);
+
+/// The producer every eligibility record in the event log carries, and the
+/// one [`Platform::replay_eligibility`] selects on. Distinct from the fabric
+/// journal's producer on the topic they share, so each replay passes over
+/// the other's records rather than refusing them as undecodable.
+const ELIGIBILITY_ORIGIN: &str = "kernel/eligibility";
 
 /// The most venue-assets the platform keeps a statement about.
 ///
@@ -1317,6 +1333,17 @@ pub enum LedgerEntry {
         amount: Decimal,
         basis: BookingBasis,
     },
+    /// A funding the eligibility registry refused before any book moved.
+    /// `gate` is the [`qip_capital::ledger::Ineligible`] name — the stable
+    /// token — and `reason` the sentence; on the record because a refusal
+    /// that leaves no trace is indistinguishable from a request never made.
+    FundingRefused {
+        user: UserId,
+        strategy: StrategyId,
+        amount: Decimal,
+        gate: String,
+        reason: String,
+    },
 }
 
 impl EventBody for LedgerEntry {
@@ -1333,6 +1360,39 @@ impl EventBody for UniverseAssembled {
     // Reference data is what an instrument catalogue is. See the type's
     // comment for the retention consequence of the topic.
     const TOPIC: Topic = Topic::ReferenceDataUpdated;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+/// Where an eligibility decision came from. Two sources and no third: the
+/// committed configuration, or an authenticated operator at runtime. ADR
+/// 0021 names what may never be one — a model output, an agent finding, a
+/// blueprint revision — and there is no variant for any of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EligibilitySource {
+    Configuration,
+    Operator,
+}
+
+/// One eligibility decision as the event log keeps it: the record the
+/// registry applied, where it came from, and the reason stated.
+///
+/// Journalled so the registry is reproducible from the log alone:
+/// [`Platform::replay_eligibility`] rebuilds it from these records and
+/// nothing else, and a decision that lived only in the registry's memory
+/// would be a second source of truth for who was allowed to be funded.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EligibilityEntry {
+    pub record: EligibilityRecord,
+    pub source: EligibilitySource,
+    pub reason: String,
+}
+
+impl EventBody for EligibilityEntry {
+    /// A compliance decision about a person, in the Decide group the log
+    /// never evicts. Shared with the fabric journal's records, which are
+    /// told apart by producer — see [`ELIGIBILITY_ORIGIN`].
+    const TOPIC: Topic = Topic::ComplianceEvaluated;
     const SCHEMA_VERSION: u32 = 1;
 }
 
@@ -1885,6 +1945,28 @@ impl Platform {
         // a platform running cycles whose log never says what universe they
         // ran over — is the state this record exists to end.
         platform.record_universe_assembled(now)?;
+        // The committed eligibility decisions, after the universe record and
+        // after every mandate is enrolled, through the same journaled path
+        // an operator's runtime decision takes. A decision the registry
+        // refuses — a user with no mandate, a blank operator — stops
+        // assembly with the user named, because a platform that assembled
+        // anyway would either fund that user on nobody's say-so or silently
+        // hold a configuration it did not apply.
+        for committed in platform.config.user_eligibilities.clone() {
+            platform.apply_eligibility(
+                EligibilityRecord {
+                    user: committed.user,
+                    decision: EligibilityDecision::Granted {
+                        eligibility: committed.eligibility,
+                    },
+                    by: committed.decided_by,
+                    decided_at: now,
+                },
+                EligibilitySource::Configuration,
+                "committed in the deployment's configuration".to_string(),
+                now,
+            )?;
+        }
         Ok(platform)
     }
 
@@ -2448,13 +2530,23 @@ impl Platform {
     /// journal it.
     ///
     /// The one way a user comes to have capital at work — and so a share of
-    /// what the strategy realises. Every refusal is [`UserLedger::fund`]'s:
-    /// no mandate, a non-positive amount, or a total past the mandate's
-    /// investable capital. [`UserLedger::admit`] is deliberately not called
-    /// first: it evaluates the product's eligibility in the user's
-    /// jurisdiction, and this process holds no eligibility registry, so it
-    /// would refuse every request — a gate that always refuses is not a
-    /// gate, and inventing an eligibility to pass it would be worse.
+    /// what the strategy realises. The eligibility registry is consulted
+    /// first, through [`UserLedger::eligibility_of`], and a user it does not
+    /// admit is refused with the registry's own reason and the refusal
+    /// journalled as [`LedgerEntry::FundingRefused`] — before any book is
+    /// touched, which is where a limit belongs. Every other refusal is
+    /// [`UserLedger::fund`]'s: a non-positive amount, or a total past the
+    /// mandate's investable capital. `fund` consults the registry again on
+    /// its own; the check here is what puts the refusal on the record, and
+    /// the check there is what makes the gate hold for a caller that did
+    /// not ask.
+    ///
+    /// Until the registry existed this method funded on the mandate alone,
+    /// because [`UserLedger::admit`] evaluated a product's eligibility this
+    /// process had no registry for and would have refused every request.
+    /// The product gate is still not consulted here — no product-eligibility
+    /// registry exists yet — and that is stated rather than passed by
+    /// inventing one.
     pub fn fund_user(
         &mut self,
         user: &UserId,
@@ -2468,6 +2560,21 @@ impl Platform {
             )));
         };
         let currency = mandate.currency();
+        if let Err(why) = self.user_ledger.eligibility_of(user, now) {
+            let reason = why.describe(user);
+            self.journal_record(
+                LedgerEntry::FundingRefused {
+                    user: user.clone(),
+                    strategy: strategy.clone(),
+                    amount,
+                    gate: why.name().to_string(),
+                    reason: reason.clone(),
+                },
+                "kernel/ledger",
+                now,
+            )?;
+            return Err(Error::denied(reason));
+        }
         self.user_ledger.fund(user, strategy, amount, now)?;
         self.journal_record(
             LedgerEntry::Funded {
@@ -2479,6 +2586,108 @@ impl Platform {
             "kernel/ledger",
             now,
         )
+    }
+
+    // --- eligibility ------------------------------------------------------------
+
+    /// Decide a user's eligibility, as an authenticated operator.
+    ///
+    /// The one runtime path, and it takes the same identity type an autonomy
+    /// change does, held to the same two conditions: a stated reason and a
+    /// credential fresh within [`ELIGIBILITY_CREDENTIAL_AGE`]. There is no
+    /// overload taking a subject string, a flag, or anything an agent or a
+    /// model could produce — an [`OperatorIdentity`] is constructed only
+    /// where a credential was verified, and that is the point of taking it.
+    /// The decision is journalled before the registry adopts it, so the log
+    /// never lacks a decision the platform is acting on.
+    pub fn decide_eligibility(
+        &mut self,
+        user: &UserId,
+        decision: EligibilityDecision,
+        operator: &OperatorIdentity,
+        reason: impl Into<String>,
+        now: Timestamp,
+    ) -> Result<EligibilityRecord> {
+        let reason = reason.into();
+        if reason.trim().len() < 10 {
+            return Err(Error::denied(
+                "an eligibility decision needs a stated reason; the audit trail is the point",
+            ));
+        }
+        if !operator.is_fresh(now, ELIGIBILITY_CREDENTIAL_AGE) {
+            return Err(Error::denied(format!(
+                "operator {} authenticated more than {:?} ago; re-authenticate to decide \
+                 eligibility",
+                operator.subject(),
+                ELIGIBILITY_CREDENTIAL_AGE
+            )));
+        }
+        let mut by = DecidedBy::operator(operator.subject(), operator.method())?;
+        if let Some(approver) = operator.second_approver() {
+            by = by.with_second_approver(approver);
+        }
+        let record = EligibilityRecord {
+            user: user.clone(),
+            decision,
+            by,
+            decided_at: now,
+        };
+        self.apply_eligibility(record.clone(), EligibilitySource::Operator, reason, now)?;
+        Ok(record)
+    }
+
+    /// Journal an eligibility decision and apply it — in that order, and
+    /// only after the registry has been shown to accept it.
+    ///
+    /// Checked on a scratch copy first so a decision the registry would
+    /// refuse is never written to the log as though it stood; then
+    /// journalled; then applied to the live registry. The same discipline
+    /// the fabric journal keeps: the log has the record before the state
+    /// moves, and never a record of a state that did not.
+    fn apply_eligibility(
+        &mut self,
+        record: EligibilityRecord,
+        source: EligibilitySource,
+        reason: String,
+        now: Timestamp,
+    ) -> Result<()> {
+        let mut scratch = self.user_ledger.clone();
+        scratch.decide_eligibility(record.clone())?;
+        self.journal_record(
+            EligibilityEntry {
+                record: record.clone(),
+                source,
+                reason,
+            },
+            ELIGIBILITY_ORIGIN,
+            now,
+        )?;
+        self.user_ledger.decide_eligibility(record)
+    }
+
+    /// Rebuild the eligibility registry from the event log alone.
+    ///
+    /// Selects this kernel's eligibility records by topic and producer and
+    /// replays them in log order through [`EligibilityRegistry::replay`],
+    /// which refuses one out of order. The result is what the log says
+    /// stands; a caller compares it to [`UserLedger::eligibility`] to prove
+    /// the platform acted on nothing the log does not hold.
+    pub fn replay_eligibility(&self) -> Result<EligibilityRegistry> {
+        let mut records = Vec::new();
+        for record in self.event_log.records() {
+            if record.event.topic != EligibilityEntry::TOPIC
+                || record.event.lineage.producer != ELIGIBILITY_ORIGIN
+            {
+                continue;
+            }
+            // The kernel appends the stream envelope's frame, so the body
+            // is one envelope down from the log record — the same path
+            // `replay_journal` takes, read here from the log rather than
+            // the transport because the log is the record.
+            let envelope = StreamEnvelope::from_frame(&record.event)?;
+            records.push(envelope.decode::<EligibilityEntry>()?.body.record);
+        }
+        EligibilityRegistry::replay(records)
     }
 
     // --- the fabric journal ---------------------------------------------------
@@ -4916,30 +5125,39 @@ impl Platform {
     /// The §6.2 degradation table as the centre reads it at `now`, for the
     /// central sizing path.
     ///
-    /// Only the self-model row is measured, from
+    /// Three rows are measured, each from the one fact its object records
+    /// at the seam where it changes. Row 6, the self-model, from
     /// [`SelfModel::sample_facts`] against the engine's own minimum sample
     /// and [`SELF_MODEL_HORIZON`]: a model that has never absorbed an
     /// outcome reads unavailable, one thin or older than the horizon reads
-    /// stale, and each narrows by its own multiplier. The causal-graph and
-    /// belief-state rows start fresh here, deliberately and stated: at the
-    /// centre those are the live objects this process itself maintains and
-    /// ships, not a copy past a TTL, so the table has no shipped age to
-    /// judge them on — and observing them as unavailable would narrow every
-    /// proposal by a constant nobody computed. Measuring the centre's own
-    /// world-model staleness is remaining work, and until it exists the
-    /// row that can narrow here is the one that is measured. The edge
-    /// cell's table is untouched: a cell never holds a self-model, and its
-    /// floor is its own.
+    /// stale. Row 2, the causal graph, from the world model's
+    /// `CausalGraph::last_updated` against [`CAUSAL_GRAPH_HORIZON`]: a graph
+    /// that has never absorbed a claim reads unavailable and one whose
+    /// newest claim is older than a quarter reads stale. Row 4, the belief
+    /// state, from the reasoning engine's `BeliefState::last_updated`
+    /// against [`BELIEF_HORIZON`]: before the first belief is formed in a
+    /// process it reads unavailable, and one formed more than a session ago
+    /// reads stale. Each narrows by its own multiplier, and every reading
+    /// is the object's own fact rather than a constant. An earlier version
+    /// of this method started rows 2 and 4 fresh, on the argument that the
+    /// centre holds the live objects and has no shipped age to judge them
+    /// on; that was true of the age and false of the freshness — a graph
+    /// seeded from claims a year old is the live object and is stale, and
+    /// the demo seed backdates every claim by a year, so the centre sized
+    /// at full budget against relationships a year's evidence has not
+    /// re-estimated. The edge cell's table is untouched: a cell never holds
+    /// a self-model, and its floor is its own.
     ///
     /// Fallible on purpose: a record claiming outcomes with no newest
-    /// instant is the reporter's bug, and sizing as though the row were
-    /// fresh would hide it.
+    /// instant, or an instant after `now`, is the reporter's bug, and sizing
+    /// as though the row were fresh would hide it.
     pub fn central_degradation(
         &self,
         now: Timestamp,
     ) -> Result<qip_contracts::degradation::DegradationState> {
         use qip_contracts::degradation::{
-            Capability, DegradationState, SELF_MODEL_HORIZON, SelfModelFreshness,
+            BELIEF_HORIZON, BeliefFreshness, CAUSAL_GRAPH_HORIZON, Capability,
+            CausalGraphFreshness, DegradationState, SELF_MODEL_HORIZON, SelfModelFreshness,
         };
         let mut state = DegradationState::fully_available();
         let self_model = SelfModelFreshness::assess(
@@ -4949,6 +5167,15 @@ impl Platform {
             now,
         )?;
         state.observe(Capability::SelfModel, self_model.freshness());
+        let causal = CausalGraphFreshness::assess(
+            self.world.read().causal().last_updated(),
+            CAUSAL_GRAPH_HORIZON,
+            now,
+        )?;
+        state.observe(Capability::CausalGraph, causal.freshness());
+        let belief =
+            BeliefFreshness::assess(self.reasoning.beliefs().last_updated(), BELIEF_HORIZON, now)?;
+        state.observe(Capability::BeliefState, belief.freshness());
         Ok(state)
     }
 
@@ -7668,6 +7895,37 @@ mod decide_tests {
         .expect("the platform assembles")
     }
 
+    /// A platform whose book is large enough that one sized leg exceeds the
+    /// conservative single-order notional limit under the centre's own
+    /// degradation table.
+    ///
+    /// The limit is untouched, as in [`small_book_platform`]. The default
+    /// ten-million book used to serve this purpose, when the table started
+    /// the causal-graph and belief-state rows fresh; now that both are
+    /// measured, a platform that has seeded no world and formed no belief
+    /// sizes against 0.1875 of its free balance, and a leg off ten million
+    /// lands at 150k — inside the 250k cap. Forty million puts the same leg
+    /// at 600k. Every test that uses this fixture asserts that premise
+    /// before asserting the refusal, so a future narrowing cannot turn a
+    /// refusal test into a release test silently.
+    fn over_limit_order_notional() -> Decimal {
+        Decimal::from_int(250_000)
+    }
+
+    fn over_limit_book_platform() -> Platform {
+        let config = PlatformConfig::default().with_initial_equity(Decimal::from_int(40_000_000));
+        let (context, _clock) =
+            qip_core::Context::deterministic(Timestamp::from_secs(1_760_000_000), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles")
+    }
+
     fn thesis(object: &str, conviction: f64) -> ApprovedThesis {
         ApprovedThesis {
             hypothesis_id: format!("HYP-{object}"),
@@ -8055,16 +8313,17 @@ mod decide_tests {
     #[test]
     fn an_order_over_the_notional_limit_is_refused_and_recorded() {
         // The other half of the release path, and the more important half. The
-        // controls are not decoration: a leg sized against the default test
-        // book is 800k against a 250k single-order notional cap, and the
+        // controls are not decoration: a leg sized against the over-limit
+        // book is 600k against a 250k single-order notional cap, and the
         // deterministic pre-trade check refuses it before it reaches the
         // broker.
         //
         // This test is why `a_sized_proposal_is_signed_by_two_controls_and_released_as_orders`
         // uses a smaller book rather than a larger limit. Both paths are real
         // and both are asserted; relaxing the limit would have deleted this
-        // one silently.
-        let mut platform = platform();
+        // one silently — and so would a narrowing of the budget that took
+        // the leg under the cap, which is why the premise is asserted.
+        let mut platform = over_limit_book_platform();
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
         platform.pending_theses.push(thesis("AAPL", 0.6));
@@ -8077,6 +8336,15 @@ mod decide_tests {
         assert!(
             !sized.is_empty(),
             "the premise failed: nothing was sized, so nothing could be refused"
+        );
+        assert!(
+            sized
+                .legs
+                .iter()
+                .any(|leg| leg.quantity * leg.reference_price > over_limit_order_notional()),
+            "the premise failed: no leg exceeds the {} cap, so a release below would not be \
+             the control failing",
+            over_limit_order_notional()
         );
 
         let outcome = platform.stage_act(now, &correlation);
@@ -8202,20 +8470,24 @@ mod decide_tests {
         );
 
         // Refused: the over-limit book, every leg refused, the hold releases.
-        let mut refused = platform();
+        let mut refused = over_limit_book_platform();
         feed_history(&mut refused, "AAPL", 30);
         feed_history(&mut refused, "MSFT", 30);
         refused.pending_theses.push(thesis("AAPL", 0.6));
         refused.pending_theses.push(thesis("MSFT", -0.4));
         refused.stage_decide(now);
+        let sized = refused.proposals.last().expect("a proposal");
         assert!(
-            refused
-                .proposals
-                .last()
-                .expect("a proposal")
-                .traded_notional()
-                .is_positive(),
+            sized.traded_notional().is_positive(),
             "the premise failed: nothing sized, so nothing could be refused"
+        );
+        assert!(
+            sized
+                .legs
+                .iter()
+                .any(|leg| leg.quantity * leg.reference_price > over_limit_order_notional()),
+            "the premise failed: no leg exceeds the {} cap",
+            over_limit_order_notional()
         );
         let outcome = refused.stage_act(now, &correlation);
         assert_eq!(outcome.produced, 0, "the over-limit book placed an order");
@@ -9026,6 +9298,13 @@ mod central_sizing_tests {
 
         // Premise: the fresh platform's self-model is empty and the table
         // reads it unavailable — the reading the sizing below must follow.
+        // The other two measured rows are unavailable on a fresh platform
+        // too: the causal graph has absorbed no claim (this test seeds no
+        // world) and no belief has been formed before the first `reason()`
+        // in a process, so the shared multiplier is 0.75 × 0.5 = 0.375 and
+        // the self-model's unavailable halving takes it to 0.1875. Until
+        // rows 2 and 4 were measured this read 0.5, which was the table
+        // reading two absent objects as fresh.
         let mut unfed = platform();
         assert!(
             unfed.self_model().is_empty(),
@@ -9035,7 +9314,12 @@ mod central_sizing_tests {
             .central_degradation(now)
             .expect("the table reads")
             .central_sizing_multiplier();
-        assert_eq!(unfed_multiplier, dec!("0.5"), "unavailable narrows by half");
+        assert_eq!(
+            unfed_multiplier,
+            dec!("0.1875"),
+            "unavailable self-model halves the 0.375 that an unavailable causal graph and \
+             belief state already narrowed to"
+        );
         // With no hold active the free balance `stage_decide` anchors is
         // the whole equity.
         let free_before = unfed.capital.equity();
@@ -9068,20 +9352,131 @@ mod central_sizing_tests {
             .central_degradation(sized_at)
             .expect("the table reads")
             .central_sizing_multiplier();
+        // A fresh self-model narrows nothing of its own: the 0.375 is the
+        // two rows this test leaves unavailable — no causal claim absorbed,
+        // no belief formed — and is the same shared factor the unfed
+        // platform carried, so the difference between the two multipliers
+        // is the self-model row alone.
         assert_eq!(
             fed_multiplier,
-            Decimal::ONE,
-            "a fresh self-model narrows nothing"
+            dec!("0.375"),
+            "a fresh self-model narrows nothing beyond the unavailable causal graph and \
+             belief state"
+        );
+        assert_eq!(
+            fed_multiplier,
+            unfed_multiplier * dec!("2"),
+            "the self-model row is exactly the halving between the two platforms"
         );
         let fed_free = fed.capital.equity();
         let (fed_budget, fed_notional) = size(&mut fed, sized_at);
         assert_eq!(
-            fed_budget, fed_free,
-            "the fed budget is the whole free balance"
+            fed_budget,
+            fed_free * fed_multiplier,
+            "the fed budget is the free balance at the fed multiplier"
         );
         assert!(
             fed_notional > unfed_notional,
             "a fed self-model sized {fed_notional}, not wider than the unfed {unfed_notional}"
+        );
+    }
+
+    #[test]
+    fn a_backdated_causal_graph_narrows_the_central_multiplier_to_the_stale_value_and_a_fresh_one_does_not()
+     {
+        // The failure this closes: the centre's table started row 2 fresh
+        // on the argument that the live graph has no shipped age, so a
+        // graph whose every claim was a year old — which is what the demo
+        // seed builds — sized at full budget. Premise: the fresh platform's
+        // graph has absorbed nothing and reads unavailable, and the two
+        // platforms below differ only in when their one claim was recorded.
+        use qip_contracts::degradation::{Capability, Freshness};
+        use qip_world_model::causal::{CausalEdge, Mechanism};
+
+        let now = Timestamp::from_secs(1_760_000_100);
+        let claim = |recorded_at: Timestamp| {
+            CausalEdge::new(
+                "ent-cause",
+                "ent-effect",
+                Mechanism::SupplyChain,
+                0.5,
+                Duration::from_days(1),
+                recorded_at,
+            )
+        };
+        let unseeded = platform();
+        assert!(
+            unseeded.world().causal().last_updated().is_none(),
+            "the premise is a graph that has absorbed nothing"
+        );
+        let unseeded_state = unseeded.central_degradation(now).expect("the table reads");
+        assert_eq!(
+            unseeded_state.freshness(Capability::CausalGraph),
+            Freshness::Unavailable
+        );
+
+        let fresh = platform();
+        fresh
+            .world
+            .update(|world| world.claim_causal(claim(now.saturating_sub(Duration::from_days(1)))));
+        let fresh_state = fresh.central_degradation(now).expect("the table reads");
+        assert_eq!(
+            fresh_state.freshness(Capability::CausalGraph),
+            Freshness::Fresh,
+            "a claim absorbed yesterday is inside the quarter horizon"
+        );
+
+        let stale = platform();
+        stale.world.update(|world| {
+            world.claim_causal(claim(now.saturating_sub(Duration::from_days(365))));
+        });
+        let stale_state = stale.central_degradation(now).expect("the table reads");
+        assert_eq!(
+            stale_state.freshness(Capability::CausalGraph),
+            Freshness::Stale,
+            "a claim absorbed a year ago is past the quarter horizon"
+        );
+
+        // The multipliers: the stale graph narrows by exactly the row 2
+        // factor against the fresh one, and reads the same as no graph at
+        // all — the table does not distinguish stale from unavailable on
+        // this row, which is stated here so nobody reads it as a bug.
+        let fresh_multiplier = fresh_state.central_sizing_multiplier();
+        let stale_multiplier = stale_state.central_sizing_multiplier();
+        assert_eq!(
+            fresh_multiplier,
+            dec!("0.25"),
+            "belief unavailable (0.5) and self-model unavailable (0.5); the graph narrows nothing"
+        );
+        assert_eq!(
+            stale_multiplier,
+            fresh_multiplier * dec!("0.75"),
+            "the stale graph narrows by the row 2 factor and nothing else"
+        );
+        assert_eq!(stale_multiplier, unseeded_state.central_sizing_multiplier());
+
+        // And the demo seed itself, as a deployed process would carry it:
+        // every claim backdated a year from the context's clock, so the
+        // graph the demo reasons over reads stale and the centre narrows.
+        let demo = platform();
+        demo.world.update(|world| {
+            qip_world_model::world::seed_demo_world(world, &demo.context).expect("the demo seeds")
+        });
+        let seeded_at = demo
+            .world()
+            .causal()
+            .last_updated()
+            .expect("the demo seed absorbed a claim");
+        assert!(
+            now.since(seeded_at) > qip_contracts::degradation::CAUSAL_GRAPH_HORIZON,
+            "the premise: the demo's newest claim is older than the horizon"
+        );
+        assert_eq!(
+            demo.central_degradation(now)
+                .expect("the table reads")
+                .freshness(Capability::CausalGraph),
+            Freshness::Stale,
+            "the demo seed's year-old claims read stale at the centre"
         );
     }
 }

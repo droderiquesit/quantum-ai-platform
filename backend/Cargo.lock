@@ -47,6 +47,7 @@ dependencies = [
  "qip-investment-agents",
  "qip-kernel",
  "qip-learning-engine",
+ "qip-lifecycle",
  "qip-market",
  "qip-market-ingestion",
  "qip-mesh",

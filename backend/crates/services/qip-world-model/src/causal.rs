@@ -238,6 +238,14 @@ pub struct CausalGraph {
     /// Cause to the indices of its outgoing edges.
     by_cause: BTreeMap<String, Vec<usize>>,
     by_effect: BTreeMap<String, Vec<usize>>,
+    /// The newest instant at which the graph absorbed a claim, recorded in
+    /// [`Self::add`] and nowhere else. `None` until the first claim.
+    ///
+    /// This is the fact §6.2 row 2 is judged on. It is recorded at the seam
+    /// rather than derived from the edges on demand so that the answer the
+    /// degradation table reads is the one the graph wrote when the claim
+    /// landed, not a scan somebody could later change the rule of.
+    last_updated: Option<Timestamp>,
 }
 
 impl CausalGraph {
@@ -253,6 +261,15 @@ impl CausalGraph {
         self.edges.is_empty()
     }
 
+    /// Record a claim, and the instant the platform recorded it as the
+    /// graph's newest update.
+    ///
+    /// The instant is the edge's own `recorded_at` — the one fact the edge
+    /// carries about when the platform absorbed it — and it only ever moves
+    /// forward: a claim backfilled with an older `recorded_at` is still a
+    /// claim the graph absorbed, but it does not make the graph *less*
+    /// current than the newest thing it holds, and letting it rewind would
+    /// turn a replay of history into a stale reading.
     pub fn add(&mut self, edge: CausalEdge) {
         let index = self.edges.len();
         self.by_cause
@@ -263,7 +280,21 @@ impl CausalGraph {
             .entry(edge.effect.clone())
             .or_default()
             .push(index);
+        self.last_updated = Some(match self.last_updated {
+            Some(held) if held >= edge.recorded_at => held,
+            _ => edge.recorded_at,
+        });
         self.edges.push(edge);
+    }
+
+    /// The newest instant at which a claim was absorbed, or `None` if none
+    /// ever was.
+    ///
+    /// What `qip_contracts::degradation::CausalGraphFreshness::assess` reads.
+    /// Queries — propagation, explanation, the point-in-time views — never
+    /// move it: reading the graph is not evidence about the world.
+    pub fn last_updated(&self) -> Option<Timestamp> {
+        self.last_updated
     }
 
     pub fn edges(&self) -> &[CausalEdge] {

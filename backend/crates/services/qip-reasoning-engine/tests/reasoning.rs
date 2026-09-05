@@ -1076,6 +1076,92 @@ fn disagreement_is_carried_through_rather_than_averaged_away() -> Result<()> {
 }
 
 #[test]
+fn forming_a_hypothesis_moves_the_belief_states_last_update_and_nothing_else_does() -> Result<()> {
+    // The failure this prevents: §6.2 row 4 read "fresh by construction" at
+    // the centre because nothing recorded when evidence last became a
+    // belief, so a centre whose REASON stage had silently stopped sized on a
+    // confidence from whenever it last ran. The fact is now written at the
+    // seam — a hypothesis forming in `reason` — and only there.
+    let mut engine = ReasoningEngine::new(ReviewPolicy::default());
+    // Premise: a fresh engine has formed nothing and says so.
+    assert_eq!(engine.beliefs().last_updated(), None);
+    assert_eq!(engine.beliefs().hypotheses_formed(), 0);
+
+    // The self-model's factors weight the next belief; they are not
+    // evidence, and handing them over must not call the belief state
+    // current.
+    engine.set_origin_factors(std::collections::BTreeMap::from([(
+        "credit".to_string(),
+        0.9,
+    )]));
+    assert_eq!(
+        engine.beliefs().last_updated(),
+        None,
+        "handing over origin factors moved the belief state's last update"
+    );
+
+    // A refused draft is not evidence absorbed. Reasoning at a clock before
+    // its own as-of is the refusal `reason` makes before forming anything.
+    let mut refused = synthesis(
+        vec![finding("credit", Direction::Negative, 0.8, 3)],
+        Some(0.2),
+    );
+    refused.now = now().saturating_sub(Duration::from_secs(1));
+    assert!(
+        engine.reason(refused).is_err(),
+        "the premise failed: not refused"
+    );
+    assert_eq!(
+        engine.beliefs().last_updated(),
+        None,
+        "a refused hypothesis moved the belief state's last update"
+    );
+
+    let formed_at = now();
+    let outcome = engine.reason(synthesis(
+        vec![finding("credit", Direction::Negative, 0.8, 3)],
+        Some(0.2),
+    ))?;
+    assert_eq!(outcome.hypothesis.formed_at, formed_at);
+    assert_eq!(
+        engine.beliefs().last_updated(),
+        Some(formed_at),
+        "forming a hypothesis did not record its instant"
+    );
+    assert_eq!(engine.beliefs().hypotheses_formed(), 1);
+
+    // Reading the outcome against the action bar is not evidence either.
+    let _ = engine.clears_action_bar(&outcome);
+    assert_eq!(engine.beliefs().last_updated(), Some(formed_at));
+    assert_eq!(engine.beliefs().hypotheses_formed(), 1);
+
+    // A later belief moves it forward; an earlier one — a replay — counts
+    // but does not rewind it.
+    let mut later = synthesis(
+        vec![finding("credit", Direction::Negative, 0.8, 3)],
+        Some(0.2),
+    );
+    later.as_of = formed_at.saturating_add(Duration::from_hours(1));
+    later.now = later.as_of;
+    engine.reason(later)?;
+    assert_eq!(
+        engine.beliefs().last_updated(),
+        Some(formed_at.saturating_add(Duration::from_hours(1)))
+    );
+    engine.reason(synthesis(
+        vec![finding("credit", Direction::Negative, 0.8, 3)],
+        Some(0.2),
+    ))?;
+    assert_eq!(engine.beliefs().hypotheses_formed(), 3);
+    assert_eq!(
+        engine.beliefs().last_updated(),
+        Some(formed_at.saturating_add(Duration::from_hours(1))),
+        "a replayed hypothesis rewound the belief state's last update"
+    );
+    Ok(())
+}
+
+#[test]
 fn an_agent_that_defers_is_recorded_and_not_counted_as_agreement() -> Result<()> {
     let deferred = AgentFinding::deferred(
         AgentRunId::from_string("run-macro"),

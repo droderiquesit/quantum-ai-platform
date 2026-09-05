@@ -25,6 +25,7 @@
 //! in nobody's book.
 
 use super::cash::CashBalance;
+use super::eligibility::{Eligibility, EligibilityRecord, EligibilityRegistry, Ineligible};
 use super::identity::{MandateId, UserId};
 use super::mandate::Mandate;
 use super::registry::MandateRegistry;
@@ -131,6 +132,12 @@ impl StrategyBook {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UserLedger {
     registry: MandateRegistry,
+    /// Who an operator has verified. Defaulted on deserialisation to a
+    /// registry in which nobody is eligible, so a ledger stored before
+    /// eligibility existed comes back refusing every funding rather than
+    /// admitting everyone it used to.
+    #[serde(default)]
+    eligibility: EligibilityRegistry,
     books: BTreeMap<LedgerKey, StrategyBook>,
     /// Fills journalled across every book, for the same reason each book
     /// counts its own.
@@ -153,9 +160,48 @@ impl UserLedger {
     pub fn opened_by(desk: UserId, mandate: Mandate, at: Timestamp) -> Result<Self> {
         Ok(Self {
             registry: MandateRegistry::new(desk, mandate, at)?,
+            eligibility: EligibilityRegistry::new(),
             books: BTreeMap::new(),
             fills_journalled: 0,
         })
+    }
+
+    /// Record an operator's eligibility decision about a mandate holder.
+    ///
+    /// Refuses a decision about a user who holds no mandate — eligibility is
+    /// a statement about whose capital may be put to work, and a record
+    /// about nobody's capital is one nothing can read — and whatever
+    /// [`EligibilityRegistry::decide`] refuses. The operator is in the
+    /// record; there is no way to call this with a bare flag.
+    pub fn decide_eligibility(&mut self, record: EligibilityRecord) -> Result<()> {
+        if self.registry.mandate(&record.user).is_none() {
+            return Err(Error::denied(format!(
+                "{} holds no mandate; register the mandate before deciding eligibility, or \
+                 the decision is about nobody's capital",
+                record.user
+            )));
+        }
+        self.eligibility.decide(record)
+    }
+
+    /// The standing eligibility decisions.
+    pub fn eligibility(&self) -> &EligibilityRegistry {
+        &self.eligibility
+    }
+
+    /// Whether a user may have capital put to work at `now`, by name.
+    ///
+    /// The mandate first — its jurisdiction is what the eligibility is
+    /// checked against — then [`EligibilityRegistry::admit`].
+    pub fn eligibility_of(
+        &self,
+        user: &UserId,
+        now: Timestamp,
+    ) -> std::result::Result<&Eligibility, Ineligible> {
+        let Some(mandate) = self.registry.mandate(user) else {
+            return Err(Ineligible::NoMandate);
+        };
+        self.eligibility.admit(user, mandate.jurisdiction(), now)
     }
 
     /// Give a user a mandate, under the desk's ceiling. Every refusal is
@@ -234,11 +280,14 @@ impl UserLedger {
 
     /// Move capital from a user's mandate into one strategy's book.
     ///
-    /// Refuses a user without a mandate, a currency other than the
-    /// mandate's, a non-positive amount, and any amount that would take the
-    /// user's settled total across strategies past the mandate's investable
-    /// capital — the liquidity floor is honoured here, at the one place
-    /// capital enters a book, rather than checked by every reader.
+    /// Refuses a user without a mandate, a user the eligibility registry
+    /// does not admit at `at` (by the [`Ineligible`] reason named), a
+    /// non-positive amount, and any amount that would take the user's
+    /// settled total across strategies past the mandate's investable
+    /// capital — the liquidity floor and the eligibility are both honoured
+    /// here, at the one place capital enters a book, rather than checked by
+    /// every caller. A caller that consulted the registry first gets the
+    /// same answer twice; one that did not is refused all the same.
     pub fn fund(
         &mut self,
         user: &UserId,
@@ -251,6 +300,9 @@ impl UserLedger {
                 "{user} holds no mandate; enrol one before funding a strategy"
             )));
         };
+        if let Err(why) = self.eligibility.admit(user, mandate.jurisdiction(), at) {
+            return Err(Error::denied(why.describe(user)));
+        }
         let currency = mandate.currency();
         let investable = mandate.investable();
         if !amount.is_positive() {

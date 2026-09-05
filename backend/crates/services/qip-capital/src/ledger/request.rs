@@ -18,6 +18,7 @@
 //! have moved between the decision and the act.
 
 use super::book::UserLedger;
+use super::eligibility::Ineligible;
 use super::entitlement::{Capability, Entitlement, ProductEligibility, Role};
 use super::identity::UserId;
 use qip_contracts::signal::StrategyId;
@@ -45,6 +46,9 @@ pub struct InvestmentRequest {
 pub enum RefusedLimit {
     /// The user holds no mandate at all.
     NoMandate,
+    /// No operator has admitted the user: the eligibility registry refused,
+    /// and the variant carries which of its gates did.
+    Eligibility(Ineligible),
     /// The entitlement refused: role, jurisdiction, family or no investable
     /// capital. The reason carries which.
     Entitlement,
@@ -109,8 +113,10 @@ impl UserLedger {
     /// changing anything.
     ///
     /// The gates run in a fixed order and the first to refuse is the
-    /// answer: mandate held, entitlement (role, product eligibility in the
-    /// user's jurisdiction, family permitted, investable capital positive),
+    /// answer: mandate held, eligibility (an operator's decision that the
+    /// user was verified, may invest, has not lapsed, in the mandate's
+    /// jurisdiction), entitlement (role, product eligibility in the user's
+    /// jurisdiction, family permitted, investable capital positive),
     /// currency, amount, investable capital net of what is already at work,
     /// and the risk tolerance applied to what would be at the one strategy.
     /// Two requests that differ only in when they were asked get the same
@@ -145,6 +151,12 @@ impl UserLedger {
                 reason: format!("{user} holds no mandate; register one before requesting"),
             };
         };
+        if let Err(why) = self.eligibility().admit(user, mandate.jurisdiction(), now) {
+            return InvestmentOutcome::Refused {
+                limit: RefusedLimit::Eligibility(why),
+                reason: why.describe(user),
+            };
+        }
         if product.family != request.family {
             return InvestmentOutcome::Refused {
                 limit: RefusedLimit::Entitlement,

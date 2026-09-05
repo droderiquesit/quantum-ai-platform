@@ -28,6 +28,7 @@
 //! the deep brain (ADR 0037).
 
 pub mod bayes;
+pub mod belief;
 pub mod engine;
 pub mod evidence;
 pub mod hypothesis;
@@ -35,6 +36,7 @@ pub mod providers;
 pub mod redteam;
 
 pub use bayes::{BaseRate, BeliefUpdate, EvidenceStrength};
+pub use belief::BeliefState;
 pub use engine::{ReasoningEngine, ReasoningOutcome, SynthesisInput};
 pub use evidence::{Evidence, EvidenceKind, EvidenceSet, Stance};
 pub use hypothesis::{

@@ -161,11 +161,31 @@ pub struct BalanceView {
     pub last_entry_at: Option<String>,
 }
 
+/// Whether a user may have capital put to work, as the ledger decides it
+/// at request time.
+///
+/// `eligible` is the ledger's own verdict and the terms are read off the
+/// record an operator wrote; `refused` carries the ledger's stable token
+/// (`unknown_user`, `expired`, …) and its sentence when the verdict is no.
+/// The failure this guards: a page listing a user with balances and no way
+/// to tell whether the next funding would be refused, and why.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct EligibilityView {
+    pub eligible: bool,
+    pub verified_at: Option<String>,
+    pub can_invest: Option<bool>,
+    pub jurisdiction: Option<String>,
+    pub expires_at: Option<String>,
+    pub refused: Option<String>,
+    pub reason: Option<String>,
+}
+
 /// One enrolled user.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct UserView {
     pub user_id: String,
     pub mandate: MandateView,
+    pub eligibility: EligibilityView,
     pub balances: Vec<BalanceView>,
     pub entitlements: Vec<EntitlementView>,
     /// Set when `entitlements` is empty, saying why.
@@ -257,6 +277,26 @@ pub fn ledger_users(platform: &Platform, now: Timestamp) -> Result<LedgerUsersVi
             });
         }
         let entitlements_note = rows.is_empty().then(|| NO_PRODUCTS.to_string());
+        let eligibility = match ledger.eligibility_of(user, now) {
+            Ok(record) => EligibilityView {
+                eligible: true,
+                verified_at: Some(record.verified_at().to_rfc3339()),
+                can_invest: Some(record.can_invest()),
+                jurisdiction: Some(record.jurisdiction().to_string()),
+                expires_at: Some(record.expires_at().to_rfc3339()),
+                refused: None,
+                reason: None,
+            },
+            Err(ineligible) => EligibilityView {
+                eligible: false,
+                verified_at: None,
+                can_invest: None,
+                jurisdiction: None,
+                expires_at: None,
+                refused: Some(ineligible.name().to_string()),
+                reason: Some(ineligible.describe(user)),
+            },
+        };
         users.push(UserView {
             user_id: user.as_str().to_string(),
             mandate: MandateView {
@@ -270,6 +310,7 @@ pub fn ledger_users(platform: &Platform, now: Timestamp) -> Result<LedgerUsersVi
                 permitted_families,
             },
             balances,
+            eligibility,
             entitlements: rows,
             entitlements_note,
         });

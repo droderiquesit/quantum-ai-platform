@@ -1268,6 +1268,203 @@ fn the_self_model_row_refuses_the_inputs_that_would_widen_it() {
     );
 }
 
+// --- degradation: §6.2 rows 2 and 4 at the centre ---------------------------
+//
+// The causal graph and the belief state each record one fact — when they
+// last absorbed evidence — and these tests hand that fact to the assessment
+// directly, exactly as the kernel does. What is tested is the table's
+// arithmetic over the instant, not the graph's or the engine's record; those
+// are proven in their own crates.
+
+use qip_contracts::degradation::{
+    BELIEF_HORIZON, BeliefFreshness, CAUSAL_GRAPH_HORIZON, CausalGraphFreshness,
+};
+
+#[test]
+fn a_causal_graph_beyond_its_horizon_reads_stale_and_narrows_central_sizing() -> Result<()> {
+    // The failure this prevents: the centre's causal-graph row read fresh by
+    // construction, so a graph nobody had re-estimated in a quarter sized
+    // like one re-estimated that morning. At the horizon exactly it is
+    // fresh; one second past it, stale — the boundary a `>=` for a `>`
+    // would get wrong.
+    let now = t(1_000_000);
+    let at_horizon = now.saturating_sub(CAUSAL_GRAPH_HORIZON);
+    // Premise: the boundary really is the boundary.
+    assert_eq!(now.since(at_horizon), CAUSAL_GRAPH_HORIZON);
+    let fresh = CausalGraphFreshness::assess(Some(at_horizon), CAUSAL_GRAPH_HORIZON, now)?;
+    assert_eq!(
+        fresh,
+        CausalGraphFreshness::Fresh {
+            last_updated: at_horizon
+        }
+    );
+    assert_eq!(fresh.freshness(), Freshness::Fresh);
+    let mut healthy = DegradationState::fully_available();
+    healthy.observe(Capability::CausalGraph, fresh.freshness());
+    assert_eq!(healthy.central_sizing_multiplier(), dec!("1"));
+
+    let past = now.saturating_sub(CAUSAL_GRAPH_HORIZON + Duration::from_secs(1));
+    let outcome = CausalGraphFreshness::assess(Some(past), CAUSAL_GRAPH_HORIZON, now)?;
+    assert_eq!(
+        outcome,
+        CausalGraphFreshness::BeyondHorizon {
+            last_updated: past,
+            age: CAUSAL_GRAPH_HORIZON + Duration::from_secs(1),
+            horizon: CAUSAL_GRAPH_HORIZON,
+        }
+    );
+    assert_eq!(outcome.freshness(), Freshness::Stale);
+    let said = outcome.to_string();
+    assert!(
+        said.starts_with("causal graph stale:") && said.contains("past the"),
+        "the reason must name the row and the horizon: {said}"
+    );
+
+    let mut state = DegradationState::fully_available();
+    state.observe(Capability::CausalGraph, outcome.freshness());
+    assert!(
+        state.central_sizing_multiplier() < healthy.central_sizing_multiplier(),
+        "a stale causal graph did not narrow central sizing"
+    );
+    assert_eq!(state.central_sizing_multiplier(), dec!("0.75"));
+    assert_eq!(state.allocation_mode(), AllocationMode::Unconditional);
+    assert!(!state.halts());
+    Ok(())
+}
+
+#[test]
+fn a_causal_graph_that_has_never_absorbed_a_claim_reads_unavailable() -> Result<()> {
+    // Absence is the worst case: a graph with no claim has no relationship
+    // to reason about, which is a different fact from one whose claims are
+    // old, and the table keeps the distinction even though row 2 narrows
+    // both by the same multiplier.
+    let now = t(1_000_000);
+    let outcome = CausalGraphFreshness::assess(None, CAUSAL_GRAPH_HORIZON, now)?;
+    assert_eq!(outcome, CausalGraphFreshness::NeverUpdated);
+    assert_eq!(outcome.freshness(), Freshness::Unavailable);
+    assert!(
+        outcome.to_string().contains("never absorbed a claim"),
+        "the reason must say why: {outcome}"
+    );
+
+    let mut state = DegradationState::fully_available();
+    state.observe(Capability::CausalGraph, outcome.freshness());
+    assert_eq!(
+        state.narrowed().get(&Capability::CausalGraph),
+        Some(&Freshness::Unavailable)
+    );
+    assert_eq!(state.central_sizing_multiplier(), dec!("0.75"));
+    assert_eq!(state.allocation_mode(), AllocationMode::Unconditional);
+    Ok(())
+}
+
+#[test]
+fn a_belief_state_beyond_its_horizon_reads_stale_and_a_never_formed_one_unavailable() -> Result<()>
+{
+    // Row 4's fixed fallback, from the belief state's own record rather than
+    // from a shipped TTL. The three readings are asserted together so that
+    // a function returning any one of them for everything fails here.
+    let now = t(1_000_000);
+    let at_horizon = now.saturating_sub(BELIEF_HORIZON);
+    assert_eq!(now.since(at_horizon), BELIEF_HORIZON);
+    let fresh = BeliefFreshness::assess(Some(at_horizon), BELIEF_HORIZON, now)?;
+    assert_eq!(
+        fresh,
+        BeliefFreshness::Fresh {
+            last_updated: at_horizon
+        }
+    );
+    assert_eq!(fresh.freshness(), Freshness::Fresh);
+
+    let past = now.saturating_sub(BELIEF_HORIZON + Duration::from_secs(1));
+    let stale = BeliefFreshness::assess(Some(past), BELIEF_HORIZON, now)?;
+    assert_eq!(
+        stale,
+        BeliefFreshness::BeyondHorizon {
+            last_updated: past,
+            age: BELIEF_HORIZON + Duration::from_secs(1),
+            horizon: BELIEF_HORIZON,
+        }
+    );
+    assert_eq!(stale.freshness(), Freshness::Stale);
+    assert!(
+        stale.to_string().starts_with("belief state stale:"),
+        "the reason must name the row: {stale}"
+    );
+
+    let never = BeliefFreshness::assess(None, BELIEF_HORIZON, now)?;
+    assert_eq!(never, BeliefFreshness::NeverUpdated);
+    assert_eq!(never.freshness(), Freshness::Unavailable);
+    assert!(
+        never.to_string().contains("no belief has ever been formed"),
+        "the reason must say why: {never}"
+    );
+
+    let healthy = DegradationState::fully_available();
+    let mut state = DegradationState::fully_available();
+    state.observe(Capability::BeliefState, stale.freshness());
+    assert!(
+        state.central_sizing_multiplier() < healthy.central_sizing_multiplier(),
+        "a stale belief state did not narrow central sizing"
+    );
+    assert_eq!(state.central_sizing_multiplier(), dec!("0.5"));
+    assert!(!state.halts());
+    Ok(())
+}
+
+#[test]
+fn a_last_update_in_the_future_or_a_non_positive_horizon_is_refused_by_both_rows() {
+    // Refuse rather than guess. A last update after the sizing clock is a
+    // clock bug — these instants are recorded by this process at the seam,
+    // not replayed from LEARN — and reading it as fresh would size on the
+    // strength of the bug; a non-positive horizon is one nothing can be
+    // within. Neither is clamped to a value that happens to work.
+    let now = t(1_000_000);
+    let future = now.saturating_add(Duration::from_secs(1));
+    // Premise: the same instant at `now` exactly assesses, so the refusals
+    // below are about the future and not about the instant.
+    assert!(CausalGraphFreshness::assess(Some(now), CAUSAL_GRAPH_HORIZON, now).is_ok());
+    assert!(BeliefFreshness::assess(Some(now), BELIEF_HORIZON, now).is_ok());
+
+    let causal_future = CausalGraphFreshness::assess(Some(future), CAUSAL_GRAPH_HORIZON, now)
+        .expect_err("a causal graph updated in the future was accepted");
+    assert!(
+        causal_future.message().contains("causal graph")
+            && causal_future.message().contains("clock bug"),
+        "{}",
+        causal_future.message()
+    );
+    let belief_future = BeliefFreshness::assess(Some(future), BELIEF_HORIZON, now)
+        .expect_err("a belief state updated in the future was accepted");
+    assert!(
+        belief_future.message().contains("belief state")
+            && belief_future.message().contains("clock bug"),
+        "{}",
+        belief_future.message()
+    );
+
+    let causal_no_horizon = CausalGraphFreshness::assess(Some(now), Duration::ZERO, now)
+        .expect_err("a zero causal-graph horizon was accepted");
+    assert!(
+        causal_no_horizon.message().contains("positive horizon"),
+        "{}",
+        causal_no_horizon.message()
+    );
+    let belief_negative_horizon = BeliefFreshness::assess(Some(now), Duration::from_secs(-1), now)
+        .expect_err("a negative belief horizon was accepted");
+    assert!(
+        belief_negative_horizon
+            .message()
+            .contains("positive horizon"),
+        "{}",
+        belief_negative_horizon.message()
+    );
+    // A never-updated row is refused on the horizon too: the horizon is
+    // checked before the instant, so a misconfiguration cannot hide behind
+    // an empty record.
+    assert!(CausalGraphFreshness::assess(None, Duration::ZERO, now).is_err());
+}
+
 #[test]
 fn a_freshness_survives_the_round_trip_through_its_own_wire_format() {
     // Principle 6, caught by review: two independent claims about the same

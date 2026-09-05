@@ -1021,7 +1021,30 @@ const NO_ENVIRONMENT_NAMES_A_MODEL_UNTIL_ITS_TERMS_ARE_READ: &str = "ADR 0037 \
      `only_the_deep_brain_reads_the_language_model_variables` refuses them \
      there.";
 
+/// The wallet statement, which no custodian has issued to any environment.
+const NO_CUSTODIAN_HAS_ISSUED_A_STATEMENT: &str = "The API reads a JSON \
+     statement of what the desk's broker or custodian reported, observes it \
+     into the kernel at start and again before each admitted POST /cycle when \
+     the file changes, and LEARN reconciles the wallet against it; unset, the \
+     banner says there is no feed and /wallet answers `assembled: false`, \
+     which is the truthful answer for a process nothing has reported to. No \
+     environment can mount one honestly today. The catalogue's config_files \
+     convention mounts committed bytes, and a statement is a dated document \
+     from a counterparty: the kernel holds a statement fresh for one day, so a \
+     committed file would be a refused assembly on every cycle after the day \
+     it was written, charted as a wallet the desk never observed. Every \
+     environment trades on the in-process simulated venue (ADR 0003), which \
+     issues no statement, and no custodian relationship exists for the \
+     paper book. The entry ends when a custodian reports to an environment \
+     and a person mounts that day's statement as a Secret Manager file from a \
+     root variable, so an absent value still means no feed.";
+
 const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
+    (
+        "qip-api",
+        "QIP_WALLET_STATEMENT_PATH",
+        NO_CUSTODIAN_HAS_ISSUED_A_STATEMENT,
+    ),
     (
         "qip-deepbrain",
         "QIP_LANGUAGE_MODEL_PROVIDER",

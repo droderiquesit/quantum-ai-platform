@@ -24,7 +24,8 @@ use qip_api::http::{Handler, Method, Request, Response};
 use qip_api::ledger_views::{EVALUATED_AS_ROLE, GATE_NOTE, NO_PRODUCTS, NO_WALLET, POSTURE};
 use qip_api::routes::{Api, ROUTES};
 use qip_capital::ledger::{
-    Jurisdiction, Mandate, MandateId, MandateTerms, PermittedFamilies, UserId,
+    Eligibility, EligibilityDecision, EligibilityTerms, Jurisdiction, Mandate, MandateId,
+    MandateTerms, PermittedFamilies, UserId,
 };
 use qip_contracts::intent::Contributor;
 use qip_contracts::message::BookSide;
@@ -45,6 +46,7 @@ use qip_lifecycle::trials::StrategyFamily;
 use qip_mesh::delta::DeltaOrder;
 use qip_observability::Telemetry;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
+use qip_risk_engine::autonomy::OperatorIdentity;
 use qip_strategy::catalogue::FeatureCatalogue;
 use qip_strategy::compile::{CompiledStrategy, StrategyCompiler};
 use qip_strategy::ir::{Expr, Rule, StrategySpec, Type};
@@ -673,6 +675,36 @@ fn a_fill_across_two_enrolled_users_is_served_as_each_users_share_and_none_of_th
     ]))?;
     let alpha = StrategyId::new("alpha");
     rig.with_platform(|platform| -> Result<()> {
+        // A user is fundable only once an operator has decided their
+        // eligibility, through the same journaled path the API's operator
+        // route takes; the fixture records that decision for each user and
+        // asserts it stands before funding, so a refusal below would be the
+        // route's and not the registry's.
+        let operator = OperatorIdentity::verified("ops-carol", "oidc", start());
+        for name in ["alice", "bob"] {
+            let user = UserId::new(name)?;
+            platform.decide_eligibility(
+                &user,
+                EligibilityDecision::Granted {
+                    eligibility: Eligibility::new(EligibilityTerms {
+                        verified_at: start(),
+                        can_invest: true,
+                        jurisdiction: Jurisdiction::new("GB")?,
+                        expires_at: start().saturating_add(Duration::from_days(365)),
+                    })?,
+                },
+                &operator,
+                "identity verified against the passport on file",
+                start(),
+            )?;
+            assert!(
+                platform
+                    .user_ledger()
+                    .eligibility_of(&user, start())
+                    .is_ok(),
+                "the premise: {name} is eligible before funding"
+            );
+        }
         platform.fund_user(&UserId::new("alice")?, &alpha, dec!("100"), start())?;
         platform.fund_user(&UserId::new("bob")?, &alpha, dec!("200"), start())?;
         Ok(())
@@ -950,5 +982,103 @@ fn the_transfer_gate_lists_the_seven_checks_in_order_with_no_assessment_and_the_
     // Still no assessment: a tripped switch is state the gate would read,
     // not an assessment it made.
     assert_eq!(body["last_assessment"], serde_json::Value::Null, "{text}");
+    Ok(())
+}
+
+/// The failure this guards: a page listing a user with a mandate and
+/// balances and no way to tell whether the next funding would be refused,
+/// and why — the eligibility gate at the one place capital enters a book
+/// was invisible from the surface an analyst reads. Premise first: one
+/// user is decided eligible through the journaled operator path and the
+/// other is not decided at all, and the ledger itself agrees before the
+/// route is read.
+#[test]
+fn each_user_row_says_whether_the_ledger_would_fund_them_and_names_the_refusal() -> Result<()> {
+    let rig = rig_with(PlatformConfig::default().with_user_mandates(vec![
+        enrolment("alice", dec!("1000"))?,
+        enrolment("bob", dec!("1000"))?,
+    ]))?;
+    rig.with_platform(|platform| -> Result<()> {
+        let operator = OperatorIdentity::verified("ops-carol", "oidc", start());
+        let alice = UserId::new("alice")?;
+        platform.decide_eligibility(
+            &alice,
+            EligibilityDecision::Granted {
+                eligibility: Eligibility::new(EligibilityTerms {
+                    verified_at: start(),
+                    can_invest: true,
+                    jurisdiction: Jurisdiction::new("GB")?,
+                    expires_at: start().saturating_add(Duration::from_days(365)),
+                })?,
+            },
+            &operator,
+            "identity verified against the passport on file",
+            start(),
+        )?;
+        let ledger = platform.user_ledger();
+        assert!(
+            ledger.eligibility_of(&alice, start()).is_ok(),
+            "the premise: alice is eligible"
+        );
+        assert!(
+            ledger
+                .eligibility_of(&UserId::new("bob")?, start())
+                .is_err(),
+            "the premise: nobody has decided bob"
+        );
+        Ok(())
+    })??;
+    let (text, body) = body_of(rig.get("/ledger/users"));
+    let users = body["users"].as_array().expect("a list");
+    let row = |id: &str| {
+        users
+            .iter()
+            .find(|user| user["user_id"] == serde_json::json!(id))
+            .unwrap_or_else(|| panic!("no row for {id}: {text}"))
+            .clone()
+    };
+    let alice = row("alice");
+    assert_eq!(
+        alice["eligibility"]["eligible"],
+        serde_json::json!(true),
+        "{text}"
+    );
+    assert_eq!(
+        alice["eligibility"]["can_invest"],
+        serde_json::json!(true),
+        "{text}"
+    );
+    assert_eq!(
+        alice["eligibility"]["jurisdiction"],
+        serde_json::json!("GB"),
+        "{text}"
+    );
+    assert!(
+        alice["eligibility"]["refused"].is_null(),
+        "an eligible row carries a refusal: {text}"
+    );
+    let bob = row("bob");
+    assert_eq!(
+        bob["eligibility"]["eligible"],
+        serde_json::json!(false),
+        "{text}"
+    );
+    assert_eq!(
+        bob["eligibility"]["refused"],
+        serde_json::json!("unknown_user"),
+        "{text}"
+    );
+    assert!(
+        bob["eligibility"]["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("(unknown_user)") && reason.contains("bob")),
+        "the refusal does not name the user and the token: {text}"
+    );
+    assert!(bob["eligibility"]["verified_at"].is_null(), "{text}");
+    // The record has no withdrawal field, on the surface or underneath.
+    assert!(
+        !text.contains("can_withdraw\":true") && alice["eligibility"].get("can_withdraw").is_none(),
+        "a withdrawal capability appeared on the eligibility record: {text}"
+    );
     Ok(())
 }

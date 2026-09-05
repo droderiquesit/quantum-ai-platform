@@ -49,6 +49,7 @@ pub mod openapi;
 pub mod openobserve;
 pub mod routes;
 pub mod self_model_views;
+pub mod statement;
 pub mod stream;
 pub mod trust;
 pub mod web;
