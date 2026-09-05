@@ -26,12 +26,14 @@ use qip_data_finder::finder::{DataFinder, FinderConfig};
 use qip_data_finder::legal::{LicensingPosture, RateLimit, SourceLicense};
 use qip_data_finder::probe::{HeadResponse, InMemoryProbe};
 use qip_data_finder::quality::SourceCost;
+use qip_data_finder::registration::{RegistrationRecord, RegistrationRequirement};
 use qip_data_finder::source::{SourceCandidate, SourceIdentity};
 use qip_data_finder::tier::{
     AccessMode, BulkCadence, CredentialReference, DeepWebAdapter, DefensiveMonitoring,
     DiscoveryEnclave, RenderingBudget, RobotsPosture, SourceTier, TierEvidence,
 };
 use qip_events::Topic;
+use qip_market_ingestion::connector::manifest::SecretRef;
 
 fn candidate_with(
     id: &str,
@@ -83,6 +85,22 @@ fn finder(config: FinderConfig) -> DataFinder {
 
 fn config() -> Result<FinderConfig> {
     FinderConfig::new(AGENT, Usage::Derive, "market-data", 7)
+}
+
+/// A registration the owner made for `source_id`, so a keyed fixture has a
+/// person's name behind its credential. The finder refuses a credentialed
+/// source without one, and that refusal is proven in `registration.rs`;
+/// here it is the premise of tests about something else.
+fn registered_by_owner(config: FinderConfig, source_id: &str) -> Result<FinderConfig> {
+    config
+        .with_registration_requirement(source_id, RegistrationRequirement::SelfServiceApiKey)
+        .with_registration(RegistrationRecord::new(
+            source_id,
+            "desk-owner",
+            now(),
+            "https://portal.example/api-terms",
+            SecretRef::new("QIP_EXAMPLE_PORTAL_KEY")?,
+        )?)
 }
 
 fn enclave_reaching(host: &str) -> Result<DiscoveryEnclave> {
@@ -404,10 +422,11 @@ fn a_registered_mode_needs_a_named_credential_the_deployment_projects_as_a_file(
     );
     assert!(unnamed.registry().is_empty());
 
-    let mut named = finder(
+    let mut named = finder(registered_by_owner(
         config()?
             .with_credential_reference("portal.example", CredentialReference::new("portal-key")?),
-    );
+        "registered-portal",
+    )?);
     let decisions = named.assess(vec![candidate], &mut probe, now())?;
     let decision = first(&decisions)?;
     assert!(
@@ -498,10 +517,13 @@ fn a_paid_credentialed_source_routes_as_licensed_under_its_declared_licence() ->
         )?,
     )?;
     let mut probe = probe_for(url, "terminal.example", permissive_robots());
-    let mut finder = finder(config()?.with_credential_reference(
-        "terminal.example",
-        CredentialReference::new("terminal-account")?,
-    ));
+    let mut finder = finder(registered_by_owner(
+        config()?.with_credential_reference(
+            "terminal.example",
+            CredentialReference::new("terminal-account")?,
+        ),
+        "paid",
+    )?);
     let decisions = finder.assess(vec![candidate], &mut probe, now())?;
     let decision = first(&decisions)?;
     assert!(

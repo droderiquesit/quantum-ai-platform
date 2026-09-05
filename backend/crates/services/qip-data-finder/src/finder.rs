@@ -18,6 +18,7 @@ use crate::endpoint::AccessMechanism;
 use crate::health::{HealthObservation, SourceHealth};
 use crate::legal::{HostRules, LegalAssessment, Legality, RateLimit, SourcePolicy};
 use crate::probe::{ProbeEvidence, SourceProbe};
+use crate::registration::{RegistrationRecord, RegistrationRegistry, RegistrationRequirement};
 use crate::replacement::{self, ReplacementOutcome};
 use crate::robots::PathVerdict;
 use crate::schema::{SchemaDrift, SourceSchema};
@@ -51,6 +52,12 @@ pub struct FinderConfig {
     /// refused, because there is nowhere for them to run safely.
     #[serde(default)]
     enclave: Option<DiscoveryEnclave>,
+    /// What each source demands of whoever reads it, and the registrations
+    /// the owner made. A credentialed source with no record is refused —
+    /// the credential reference above says *where* the key is, and this
+    /// says *whose* it is.
+    #[serde(default)]
+    registrations: RegistrationRegistry,
 }
 
 impl FinderConfig {
@@ -87,7 +94,29 @@ impl FinderConfig {
             owner,
             credential_references: BTreeMap::new(),
             enclave: None,
+            registrations: RegistrationRegistry::empty(),
         })
+    }
+
+    /// Declare what a source demands before it may be read.
+    pub fn with_registration_requirement(
+        mut self,
+        source_id: impl Into<String>,
+        requirement: RegistrationRequirement,
+    ) -> Self {
+        self.registrations = self.registrations.with_requirement(source_id, requirement);
+        self
+    }
+
+    /// Record a registration the owner made. Refused for a source whose
+    /// requirement was not declared first.
+    pub fn with_registration(mut self, record: RegistrationRecord) -> Result<Self> {
+        self.registrations = self.registrations.with_record(record)?;
+        Ok(self)
+    }
+
+    pub fn registrations(&self) -> &RegistrationRegistry {
+        &self.registrations
     }
 
     pub fn with_host_rules(mut self, rules: HostRules) -> Self {
@@ -512,6 +541,40 @@ impl DataFinder {
                 reasoning.record(
                     LifecycleStage::Route,
                     format!("rejected on tier {}: {reason}", tier.as_str()),
+                );
+                return RegistrationDecision::new(
+                    id,
+                    DecisionOutcome::Rejected { reason },
+                    reasoning,
+                    now,
+                )
+                .map(|decision| decision.with_legality(legality).with_scores(scores));
+            }
+        }
+
+        // Who registered, after where the credential is. The tier routing
+        // above has already refused a credentialed source with no named
+        // credential; this refuses one with no named person behind it. A
+        // source that declares no credential and has no declared requirement
+        // is keyless by its own description, which is a fact and not a
+        // default.
+        let needs_credential = source
+            .endpoint()
+            .mechanism()
+            .poll_plan()
+            .credential_required
+            .is_some();
+        match self
+            .config
+            .registrations
+            .standing_for_endpoint(&id, needs_credential)
+        {
+            Ok(standing) => reasoning.record(LifecycleStage::Register, standing.describe()),
+            Err(error) => {
+                let reason = error.message().to_string();
+                reasoning.record(
+                    LifecycleStage::Register,
+                    format!("rejected on registration: {reason}"),
                 );
                 return RegistrationDecision::new(
                     id,

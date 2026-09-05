@@ -39,6 +39,13 @@
 //!   [`tier::DeepWebAdapter::admissible`] refuses every access mode for the
 //!   dark web by name, and refuses the rendered and bulk modes without a
 //!   named [`tier::DiscoveryEnclave`].
+//! * **A registration has a person's name on it.**
+//!   [`registration::RegistrationRecord::new`] is the only constructor and
+//!   refuses a blank operator; the `Deserialize` impl goes through it. A
+//!   source whose [`registration::RegistrationRequirement`] is anything but
+//!   `Keyless` is refused by both admission gates until a record exists, and
+//!   the refusal says that anonymous or automated registration is not a path
+//!   this platform offers.
 //!
 //! Everything else — rate limits, denylists, drift severity — is advisory in
 //! the sense that a caller could compute the same numbers differently. The
@@ -63,6 +70,7 @@ pub mod ingestion;
 pub mod legal;
 pub mod probe;
 pub mod quality;
+pub mod registration;
 pub mod replacement;
 pub mod robots;
 pub mod schema;
@@ -70,7 +78,9 @@ pub mod scoring;
 pub mod source;
 pub mod tier;
 
-pub use admission::{CatalogueEntry, LicensingDecision, admit, admit_from};
+pub use admission::{
+    CatalogueEntry, LicensingDecision, admit, admit_from, admit_from_registered, admit_registered,
+};
 pub use coverage::{CoverageGap, CoverageMatch, SourceCoverage, SourceRegion, UpdateFrequency};
 pub use decision::{
     DecisionOutcome, LifecycleStage, ReasonStep, Reasoning, RegisteredSource, RegistrationDecision,
@@ -90,6 +100,10 @@ pub use probe::{
     SourceProbe,
 };
 pub use quality::{SourceCost, SourceQuality};
+pub use registration::{
+    NOT_OFFERED, RegistrationRecord, RegistrationRegistry, RegistrationRequirement,
+    RegistrationStanding,
+};
 pub use replacement::{PartialCandidate, RankedReplacement, ReplacementOutcome};
 pub use robots::{PathVerdict, RobotsGroup, RobotsPolicy, RobotsRule};
 pub use schema::{DriftSeverity, FieldRetype, FieldType, SchemaDrift, SourceSchema};

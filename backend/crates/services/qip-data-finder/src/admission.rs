@@ -30,6 +30,15 @@
 //! state, in its banner, which licence admitted the source for which usages
 //! at which instant — a gate whose only output is silence is one an operator
 //! cannot tell from a gate that never ran.
+//!
+//! The gate asks a second question after the licence: who registered with
+//! the venue. A [`crate::registration::RegistrationRegistry`] declares what
+//! each source demands and holds the records the owner made; a source that
+//! needs an account and has no record is refused by name, with a refusal that
+//! says anonymous or automated registration is not a path this platform
+//! offers. [`admit`] and [`admit_from`] consult the shipped registry, which
+//! records nobody; [`admit_registered`] and [`admit_from_registered`] take
+//! the owner's.
 
 use qip_contracts::governance::Usage;
 use qip_core::Timestamp;
@@ -38,6 +47,7 @@ use qip_financial::quality::LicensingClass;
 use qip_market_ingestion::connector_feed::KNOWN_SOURCES;
 
 use crate::legal::{LicensingPosture, SourceLicense};
+use crate::registration::{RegistrationRegistry, RegistrationStanding};
 
 /// One catalogued source: the evaluation of its actual terms.
 #[derive(Debug)]
@@ -66,6 +76,10 @@ pub struct LicensingDecision {
     pub class: LicensingClass,
     /// The usages the licence was found to permit at `decided_at`.
     pub usages: Vec<Usage>,
+    /// Who registered with the venue, or that nobody had to. Carried so the
+    /// banner names the person the credential is attributed to, and so a
+    /// decision on a keyless source says "keyless" rather than nothing.
+    pub registration: RegistrationStanding,
     pub decided_at: Timestamp,
 }
 
@@ -73,7 +87,7 @@ impl LicensingDecision {
     /// One line an operator can read at start-up.
     pub fn describe(&self) -> String {
         format!(
-            "admitted under licence `{}` (class {:?}) for {} at {}",
+            "admitted under licence `{}` (class {:?}) for {} at {}; {}",
             self.licence,
             self.class,
             self.usages
@@ -81,7 +95,8 @@ impl LicensingDecision {
                 .map(|usage| usage.as_str())
                 .collect::<Vec<_>>()
                 .join(" and "),
-            self.decided_at.to_rfc3339()
+            self.decided_at.to_rfc3339(),
+            self.registration.describe()
         )
     }
 }
@@ -207,8 +222,48 @@ pub fn admit(
 /// Split from [`admit`] so the refusal arms are testable with entries the
 /// real catalogue must never contain — a research-only licence, a class
 /// disagreement — without weakening the real catalogue to host them.
+///
+/// Consults [`RegistrationRegistry::shipped`], which declares every known
+/// source's requirement and records no registration: a root that calls this
+/// can open the keyless sources and nothing that needs an account. A root
+/// with the owner's registration records passes them to
+/// [`admit_from_registered`] instead.
 pub fn admit_from(
     entries: &[CatalogueEntry],
+    source_id: &str,
+    manifest_class: LicensingClass,
+    now: Timestamp,
+) -> Result<LicensingDecision> {
+    admit_from_registered(
+        entries,
+        &RegistrationRegistry::shipped(),
+        source_id,
+        manifest_class,
+        now,
+    )
+}
+
+/// [`admit`] with the owner's registration records.
+pub fn admit_registered(
+    registrations: &RegistrationRegistry,
+    source_id: &str,
+    manifest_class: LicensingClass,
+    now: Timestamp,
+) -> Result<LicensingDecision> {
+    admit_from_registered(&catalogue()?, registrations, source_id, manifest_class, now)
+}
+
+/// The full gate: the catalogue's licensing evaluation, then the registry's
+/// answer to who registered.
+///
+/// The order is the order the work happens in. The terms are read first —
+/// a registration record carries the instant they were read — so a source
+/// whose terms are unread is refused for that, and only a source whose terms
+/// admit it is then asked who holds its account. An operator paged on the
+/// first refusal goes to the terms; on the second, to the runbook.
+pub fn admit_from_registered(
+    entries: &[CatalogueEntry],
+    registrations: &RegistrationRegistry,
     source_id: &str,
     manifest_class: LicensingClass,
     now: Timestamp,
@@ -247,6 +302,11 @@ pub fn admit_from(
             "{source_id} is catalogued but no connector in this build carries it"
         )));
     }
+    // Who registered. A source needing an account with nobody's name on it
+    // is refused here by name, and the refusal says the platform will not
+    // register on anyone's behalf: the request for a scraper that signs up
+    // anonymously ends at this line.
+    let registration = registrations.standing(source_id)?;
     let licence = entry
         .posture
         .license()
@@ -263,6 +323,7 @@ pub fn admit_from(
         licence,
         class: manifest_class,
         usages: REQUIRED_USAGES.to_vec(),
+        registration,
         decided_at: now,
     })
 }
@@ -307,6 +368,113 @@ mod tests {
             refused.is_err(),
             "a source with no licensing evaluation was admitted, so terms \
              nobody read were treated as read"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_keyless_source_is_admitted_as_before_and_its_decision_says_keyless() -> Result<()> {
+        // Premise: the shipped registry declares the source keyless, so an
+        // admission below is the keyless arm and not a record nobody made.
+        assert_eq!(
+            RegistrationRegistry::shipped().requirement("coinbase-spot-ticker"),
+            Some(crate::registration::RegistrationRequirement::Keyless)
+        );
+        let class = qip_market_ingestion::connector_feed::shipped_class("coinbase-spot-ticker")?;
+        let decision = admit("coinbase-spot-ticker", class, now())?;
+        assert_eq!(decision.registration, RegistrationStanding::Keyless);
+        assert!(
+            decision
+                .describe()
+                .contains("keyless; no registration needed"),
+            "the banner does not say the source is keyless: {}",
+            decision.describe()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_source_needing_an_account_is_refused_by_the_gate_until_the_owner_records_a_registration()
+    -> Result<()> {
+        // A catalogue entry the real catalogue does not yet contain: Alpaca
+        // with its terms read and every usage granted. Under that entry the
+        // licensing questions all pass, so the refusal below can only be the
+        // registration question — and it must name the requirement, name who
+        // registers, and say the platform will not do it for them.
+        let terms_read = vec![CatalogueEntry {
+            source_id: "alpaca-daily-bars",
+            expected_class: LicensingClass::Restricted,
+            posture: LicensingPosture::declared(SourceLicense::new(
+                "alpaca-terms-as-read",
+                [Usage::Research, Usage::Derive, Usage::Trade],
+            )?),
+        }];
+        // Premise: the usage questions pass, and the shipped registry says
+        // the source needs an account and holds no record for it.
+        assert!(
+            terms_read[0]
+                .posture
+                .legality_for(Usage::Trade, now())
+                .is_permitted()
+        );
+        let shipped = RegistrationRegistry::shipped();
+        assert!(
+            shipped
+                .requirement("alpaca-daily-bars")
+                .is_some_and(|requirement| requirement.needs_registration())
+        );
+        assert!(shipped.record("alpaca-daily-bars").is_none());
+
+        let refused = admit_from_registered(
+            &terms_read,
+            &shipped,
+            "alpaca-daily-bars",
+            LicensingClass::Restricted,
+            now(),
+        )
+        .expect_err("a source needing an account was admitted with nobody registered");
+        let message = refused.message();
+        assert!(
+            message.contains("`alpaca-daily-bars` requires an account with the venue"),
+            "the refusal does not name the source and its requirement: {message}"
+        );
+        assert!(
+            message.contains("owner must register with the venue under their own identity"),
+            "the refusal does not say who must register: {message}"
+        );
+        assert!(
+            message.contains(crate::registration::NOT_OFFERED),
+            "the refusal does not say anonymous registration is not offered: {message}"
+        );
+
+        // With the owner's record, the same entry admits and the decision
+        // carries the operator's name for the banner.
+        let secret =
+            qip_market_ingestion::connector::manifest::SecretRef::new("QIP_ALPACA_API_SECRET_KEY")?;
+        let registered = shipped.with_record(crate::registration::RegistrationRecord::new(
+            "alpaca-daily-bars",
+            "desk-owner",
+            now(),
+            "https://alpaca.markets/terms-and-conditions",
+            secret,
+        )?)?;
+        let decision = admit_from_registered(
+            &terms_read,
+            &registered,
+            "alpaca-daily-bars",
+            LicensingClass::Restricted,
+            now(),
+        )?;
+        match &decision.registration {
+            RegistrationStanding::Registered { record } => {
+                assert_eq!(record.operator(), "desk-owner");
+            }
+            RegistrationStanding::Keyless => panic!("an account source was admitted as keyless"),
+        }
+        assert!(
+            decision.describe().contains("registered by desk-owner"),
+            "the banner does not name who registered: {}",
+            decision.describe()
         );
         Ok(())
     }
