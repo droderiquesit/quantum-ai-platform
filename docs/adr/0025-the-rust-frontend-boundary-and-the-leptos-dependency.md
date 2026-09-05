@@ -1,8 +1,32 @@
 # 0025 — The Rust frontend boundary, and whether Leptos is a dependency this platform takes
 
-**Status:** proposed — the owner decides. This record decides nothing; it
-frames a decision two other records have named and left open, and it carries a
-recommendation marked as one.
+**Status:** **half decided, half still the owner's.** Corrected 2026-09-05 by
+the architecture sweep, which was asked to resolve every *proposed* record or
+say precisely what would resolve it. This one splits cleanly and it is more
+honest to split it than to leave the whole thing open or to claim the whole
+thing settled.
+
+- **Decided, and it takes nothing:** Leptos is **a reversal of ADR 0001 and
+  ADR 0012, not a dependency request under ADR 0009's edge tier.** Option C's
+  pre-classification is accepted, because it only narrows: it adds no crate,
+  reverses no refusal, and asserts what the tree already enforces —
+  `scripts/check-dependencies.sh` permits eleven packages, all serde's
+  closure, and `architecture.rs::no_crate_declares_a_third_party_dependency_beyond_the_two_permitted`
+  holds every crate to the two. Anyone bringing Leptos brings an async runtime
+  and `wasm-bindgen` and must supersede 0001 and amend 0012 in a record that
+  says so. That is now written down rather than inferable.
+- **Not decided, and an agent may not decide it:** whether `qip-web` becomes
+  the canonical portal and the fifty-four TypeScript pages are rewritten into
+  it. That is weeks of a team's work, it re-scores the architecture of record
+  (§40) by name, and Option B's alternative would require amending
+  `.claude/rules/architecture/00-boundaries.md`, which is the owner's file and
+  not an agent's. **What would decide it:** the owner choosing between C's
+  migration and D's amendment of ADR 0022 item 4 — nothing in the tree can
+  settle it, because both are coherent and the choice is about what the
+  blueprint's name is worth against its outcomes.
+
+The recommendation below is Option C and stands as one for the half that is
+still open.
 **Would amend, if accepted in one direction:** ADR 0001 (the browser has no
 JavaScript), ADR 0012 (a web framework fails the three-part test), and the
 "no async runtime" line in `.claude/rules/architecture/00-boundaries.md`.
@@ -168,6 +192,25 @@ landing.
    The consequence for this record: "cut over in a deployment, then retire"
    has no deployment on either side to cut over in, and ADR 0024 already
    records that nothing has been applied anywhere.
+
+   **Corrected 2026-09-05.** The last sentence is now false, and it inverts
+   this record's cutover assumption without changing its recommendation. Both
+   TypeScript applications *are* deployed — by `scripts/deploy-frontends.sh`
+   rather than through the catalogue, which is why the grep above found
+   nothing — and both were observed serving over the public internet on
+   2026-09-04: `algorik-portal-rgxpsss2lq-uk.a.run.app` answered 200 with the
+   title "Algorik — paper trading", `algorik-landing-rgxpsss2lq-uk.a.run.app`
+   answered 200, recorded in
+   [the missing-infrastructure register](../ops/missing-infrastructure-register.md)
+   under "Observed on 2026-09-04, from outside the project". The Rust side has
+   no deployment at all: `qip-web` is a library linked into `qip-api`, whose
+   service answers Google Frontend's 404 on internal ingress. The asymmetry is
+   therefore the opposite of what this record assumed — the surface to be
+   retired is the one that is running, and the surface that would replace it
+   is the one nobody outside the VPC can reach. Cutover evidence point 5
+   ("nothing is deleted on the strength of a deployment observation") gains
+   force rather than losing it: a deployed portal is precisely the thing whose
+   users notice a deletion.
 
 3. **Identity lives in the Next.js server, not in `qip-api`.** The sealed
    session cookie, CSRF and the gateway that presents the viewer token to

@@ -1,10 +1,44 @@
 # 0039 — A region's grant is shared across its cells over the mesh, as disjoint per-cell shares the centre signs
 
-**Status:** *proposed*. Nothing here is applied. No crate is changed, no
-slot is produced, no test named below exists, and no environment is affected.
-The owner accepts, amends or declines the recommendation in "Decision to be
-taken", and the record moves to *accepted* only with the commit that applies
-it.
+**Status:** **accepted, and applied in-process; not deployed.** Corrected
+2026-09-05 by the architecture sweep.
+
+This record was written as *proposed* and carried, verbatim, "Nothing here is
+applied. No crate is changed, no slot is produced, no test named below exists,
+and no environment is affected." Every clause of that sentence is now false,
+and it had already been false for as long as the "Applied" section below has
+existed — a record marked *proposed* with three slices of applied work under
+it is drift of the kind this repository exists to prevent, because a reader
+who stops at the status line concludes the double-spend window is still open
+when it has been closed in the tree. Option (a) is the decision, taken and
+implemented, with the one deviation the "Applied" section states first: the
+share travels **by reference** (the manifest of grants), not as an explicit
+`RegionShare` field in `qip-contracts`.
+
+Three of the four owner decisions under "What this does not decide" have been
+taken by the implementation and are recorded there as taken; the fourth
+(payload cadence) is untaken and is the only thing still waiting on the owner.
+The status of the *deployment* is unchanged and is not improved by this
+correction: `execution_nodes = {}` in every environment, so no cell, funded or
+unfunded, runs anywhere. "Proven in-process" and "proven deployed" are two
+states and this record is in the first.
+
+**What proves it, and the command that establishes it.** The cross-process
+property is proven end to end by
+`backend/crates/tests/qip-acceptance/tests/region_share.rs`, five tests,
+counted on 2026-09-05 with
+
+```
+grep -c '^#\[test\]' backend/crates/tests/qip-acceptance/tests/region_share.rs
+```
+
+which returns `5`; their names are
+`a_payload_the_centre_built_funds_each_cell_to_exactly_its_share_and_the_two_never_exceed_the_grant`,
+`each_cell_places_within_its_share_and_a_cell_driven_past_its_share_is_refused_before_the_grant_is`,
+`a_centre_that_no_longer_names_a_cells_grant_narrows_it_to_nothing_and_the_region_gate_refuses`,
+`a_replayed_lower_sequence_payload_from_the_centre_changes_neither_cells_table`
+and `a_cell_funded_by_the_centres_share_is_still_assembled_paper_only`. The
+last of those is the paper-boundary conformance test this record promised.
 **Decides:** how one region's capital grant is shared by that region's cells
 when each cell runs in its own process, without a cell ever waiting on the
 centre or on a sibling.
@@ -333,7 +367,11 @@ problem between two processes in miniature.
 sentence: the centre re-partitions from the deltas it receives, on its own
 cadence, and the cadence is the owner's to shorten.
 
-## Recommendation — marked as a recommendation, not a decision
+## Recommendation — taken as the decision
+
+Written as a recommendation; accepted and implemented as option (a) with the
+by-reference deviation. The paragraphs below are kept in their original voice
+so the argument that was weighed can still be read as it was weighed.
 
 **Option (a).** Disjoint per-cell shares the centre computes from the
 allocation plan it already produces, signed into the `capital_grants` slot
@@ -479,25 +517,39 @@ above.
 
 ## What this does not decide, and what the owner must decide
 
-Nothing is applied. In order:
+Written when nothing was applied. Corrected 2026-09-05: three of the four have
+been answered by the implementation, and the answer is recorded beside each
+rather than the question being deleted, so that a reader can see which were
+decided by an owner and which were decided by a commit.
 
-1. **Accept, amend or decline option (a).** Declining leaves F6's
+1. **Accepted, as option (a) with the by-reference deviation.** Declining leaves F6's
    cross-process half as operator discipline, which is the status quo the
    matrix records honestly; it should then be recorded as a deliberate
    absence beside `execution_nodes = {}` rather than left as a gap.
-2. **A fresh node opens unfunded (recommended) or at its ceiling.** Unfunded
+2. **Answered: unfunded.** `qip_edge_node::assemble` calls
+   `Cell::with_unfunded_region(ceiling)`, and the node's health body carries a
+   `region_share` block saying why a node that places nothing places nothing.
+   The original argument, kept: unfunded
    is "capital granted in advance" read strictly and changes what the ADR
    0035 probe does until the API ships it a share; at-ceiling keeps today's
    behaviour and keeps today's double-spend window open until the first
    payload lands. The record recommends unfunded and says what it costs.
-3. **Where region membership and *G* come from.** Recommended:
+3. **Answered in code, not by an owner: `QIP_MESH_REGIONS`, read at the API
+   root.** Membership is an argument to `region_shares`, not a `CentralConfig`
+   field, and the root parses it beside `QIP_MESH_CELLS` and refuses a served
+   cell the declaration does not file. This is the one answer an owner may
+   still want to move, and moving it is a one-line change at the root. The
+   original recommendation, kept:
    `CentralConfig`, operator-set and committed, as the arbitrage policy is.
    The alternative — deriving *G* from `qip-capital-fabric`'s location
    balances — ties a grant to treasury on hand, which is a different
    number with a different owner, and is not recommended without its own
    record.
-4. **The payload cadence** the region's efficiency depends on. A number,
-   from the owner, once the probe has shown what idle share looks like.
+4. **Still open, and the only one: the payload cadence** the region's
+   efficiency depends on. A number, from the owner, once the probe has shown
+   what idle share looks like — which needs a deployed node, and
+   `execution_nodes` is empty in every environment, so the probe has shown
+   nothing yet.
 
 This record does not decide the settlement timeline of §33, does not touch
 the family budget of §54.1, does not add a crate, and does not change the
@@ -527,9 +579,13 @@ as the whole of the contract, deliberately.
 
 ## Applied
 
-**Partially, on 2026-09-05, in `qip-edge` and `qip-kernel`'s central plane
-only.** The status line above is the owner's to move; this section records
-what is in the tree and what is not, so the two are not confused.
+**In four slices on 2026-09-05, across `qip-kernel`'s central plane,
+`qip-edge`, `qip-edge-node`, `qip-api` and `qip-acceptance`.** The status line
+above has been moved to match this section rather than the section being left
+to contradict it; what follows records what is in the tree and what is not, so
+the two are not confused. The first slice's heading read "Partially … in
+`qip-edge` and `qip-kernel`'s central plane only", which was true of that
+slice and stopped being true of the record three slices later.
 
 What is applied is the part of option (a) that needs none of the four
 decisions above, with one deviation from the shape described, stated first
@@ -672,7 +728,12 @@ Still not applied, and why:
   see the deviation above. The delta carries neither `free` nor the bound.
 - The payload cadence (decision 4), the traceability F6 row, and
   `.claude/rules/domains/risk-and-execution.md` are untouched.
-- The cross-crate end-to-end test now exists:
+- **Nothing is deployed.** `execution_nodes = {}` in every environment, so no
+  cell of any funding state runs in any project, and every sentence above
+  about what a cell does is a sentence about what `cargo test` observed.
+
+Applied and mis-filed under "still not applied" when it was written — the
+cross-crate end-to-end test exists:
   `qip-acceptance/tests/region_share.rs` (five tests) builds a real
   `CentralPlane` with two cells under one region, issues grants through
   the plane's own door, signs the payloads the way the API does, and

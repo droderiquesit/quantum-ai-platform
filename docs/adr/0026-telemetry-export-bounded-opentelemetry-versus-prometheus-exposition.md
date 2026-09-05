@@ -1,10 +1,65 @@
 # 0026 — Telemetry export: bounded OpenTelemetry emission against the Prometheus exposition that exists
 
-**Status:** proposed — the owner decides. This record decides nothing; it
-frames one decision the blueprint's observability section requires and no
-record has yet named, and it carries a recommendation marked as one.
+**Status:** **resolved, 2026-09-05, and not by this record.** It was written
+as *proposed* and the question it framed has since been answered elsewhere,
+in three parts, none of which needs this record to move and all of which
+leave it reading as an open question if its status line is not corrected.
+
+- **Option (c), an OpenTelemetry crate, is rejected and stays rejected.** No
+  crate was added: `scripts/check-dependencies.sh` still permits eleven
+  packages, all serde's closure, and
+  `architecture.rs::no_crate_declares_a_third_party_dependency_beyond_the_two_permitted`
+  still holds every crate to the two. This is the one part of the record that
+  was a decision when written and remains one.
+- **Option (a)'s recommendation for metrics is superseded by ADR 0028**, by
+  explicit owner instruction, which chose OpenObserve over OTLP as the
+  observability backend rather than Managed Prometheus. ADR 0028's own header
+  says so ("Supersedes: ADR 0026's recommendation"); this line is the other
+  half of that cross-reference, which was missing.
+- **Option (a)'s collector was then refused on its own terms.** The record's
+  first reversal condition below reads "Google's managed-Prometheus sidecar
+  cannot be admitted — a digest that will not attest". That is exactly what
+  happened, twice: `cloud-run-gmp-sidecar` carries `CVE-2026-56854`
+  (`golang.org/x/crypto`, CRITICAL, fixed in 0.55.0, installed 0.54.0) with no
+  published tag above 1.9.2 to move to, refused by `vendor.yml`'s
+  `--severity CRITICAL --exit-code 1` pass at run 11 and re-checked against
+  the registry's tag list on 2026-09-05 with the same result. The evidence is
+  quoted in full in [the missing-infrastructure register](../ops/missing-infrastructure-register.md),
+  under "A6 … is REFUSED, not open". So the scrape path this record
+  recommended for Cloud Run has no collector, and — as the same reversal
+  condition predicted — **the push shape of option (b) becomes the only path
+  off a Cloud Run service, carrying metrics as well as spans.** ADR 0032 is
+  the record that takes it, to a vendored collector on a private address
+  inside the VPC rather than to a service on the internet.
+
+What survives unchanged: option (a) remains the answer for the **execution
+node**, whose Ops Agent Prometheus receiver on the health port is declared in
+the node's startup template and needs no sidecar. No node exists —
+`execution_nodes = {}` in every environment — so it has scraped nothing.
+
+**Option (b)'s drain half is applied in code and inert in every deployment.**
+Each of the three central composition roots carries an `openobserve.rs` that
+takes the registry snapshot and the tracer's ring and POSTs
+`Snapshot::to_otlp_metrics` and `Tracer::export` — `qip-api/src/openobserve.rs:392`,
+`qip-fastbrain/src/openobserve.rs:373`, `qip-deepbrain/src/openobserve.rs:366`,
+each the `.tracer.export()` call, found with `grep -rn '\.tracer' backend/crates`
+on 2026-09-05. The layering this record argued for held: the encoder is in the
+lib, the socket is in the app. It reaches nothing, because no deployment sets
+`QIP_OPENOBSERVE_URL` — `terraform_contract.rs::no_deployment_points_telemetry_at_openobserve_while_it_is_anonymous`
+refuses the first one that does, under ADR 0033.
+
+What is still open is a **producer** gap rather than an export gap, exactly as
+this record argued it would be. The same grep finds `Tracer::start` called
+only from `qip-observability`'s own tests: no production code opens a span, so
+the ring the drain posts is empty, blueprint rule 74 is unmet and §47's
+platform graph has no source. The first slice named below —
+`Platform::run_cycle` and `Cell::work` each opening a span per stage with a
+`node_id` and the correlation id, into the ring that exists, with the drop
+counter §44.2 asks for — is unwritten, and it needs no further export
+decision: the exporter it would feed is already there and waiting for a URL.
+
 **Would amend, if accepted in one direction:** ADR 0002 and ADR 0009 (a
-crate), or nothing at all (the other two options add no dependency).
+crate) — not taken; nothing was amended.
 **Does not touch:** `.claude/rules/domains/observability.md`, which is the
 owner's and is quoted here rather than corrected.
 
@@ -312,10 +367,16 @@ Why, in the order the reasons weigh:
   `node_id` that appears in this repository's source. Both are things a
   reviewer can see, which the product rule asks of every proposal.
 
-The honest limit: none of it can be observed from this environment. ADR 0024
-records no Terraform binary, no project reachable, nothing applied. This
-record can decide a shape; only an apply and a scrape can decide whether the
-shape works.
+The honest limit, as written: none of it can be observed from this
+environment. ADR 0024 recorded no Terraform binary, no project reachable,
+nothing applied. **Corrected 2026-09-05:** `dev` has since been applied — a
+Terraform binary exists, `infra.yml` runs 34 through 38 planned and applied
+against `algorik-dev`, and three Cloud Run services and OpenObserve are
+observed serving. What has *not* changed is the sentence that matters to this
+record: nothing has been observed scraping or ingesting from any process, on
+either path. This record can decide a shape; only an apply and an ingested
+sample can decide whether the shape works, and the second half has still not
+happened.
 
 ## What it costs
 

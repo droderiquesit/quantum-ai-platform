@@ -68,12 +68,30 @@
 #
 #   docker-content-digest: sha256:ff1fc68871118f1032a3ce17e2b0abd703292e883989d220244330ebdf522fd1
 #
-# The configuration half holds too. The collector reads
-# `/etc/rungmp/config.yaml` — the only such literal in its entrypoint binary,
-# with no argument naming another — so a mirrored image scrapes nothing a
-# person chose unless the module publishes a document at that path.
-# `modules/cloudrun/main.tf` does: `collector_mount = "/etc/rungmp"` and an
-# object named `config.yaml` beneath it.
+# The configuration half does NOT hold, and this paragraph used to say it did.
+# The collector reads `/etc/rungmp/config.yaml` — the only such literal in its
+# entrypoint binary, with no argument naming another — so a mirrored image
+# scrapes nothing a person chose unless that exact path holds the document.
+# Two things are true and neither is that:
+#
+#   * `modules/cloudrun/main.tf` writes the `RunMonitoring` document to a
+#     bucket object named `${local.collector_prefix}/config.yaml` (`:382`) —
+#     under a content-hash directory, so even mounted it would land at
+#     `/etc/rungmp/<hash>/config.yaml` and the collector would not read it.
+#   * Nothing mounts it at all. `collector_mount = "/etc/rungmp"` (`:141`) is
+#     declared and consumed nowhere — `grep -n collector_mount` returns that
+#     one line — because ADR 0036 moved the service resource to a `RunService`
+#     manifest, and `grep -rn 'rungmp\|collector\|gmp' infrastructure/gitops/
+#     envs/dev/*.yaml` returns nothing. The bucket, the object and the reader
+#     binding exist; the sidecar and its volume do not.
+#
+# This matters more than the CVE below, because it fails silently in the
+# direction of looking fine. The day a fixed release ships, someone reads this
+# file, pins the digest, and gets a collector that falls back to its built-in
+# default and scrapes a target nobody chose — with every alert policy still
+# gated off by `workload_metrics_exist`, so nothing contradicts them. Fix the
+# object path and write the sidecar and volume into the `RunService` manifests
+# BEFORE any digest is pinned, not after.
 #
 # The third check refused it. vendor.yml run 11 mirrored the image and Trivy
 # — the same gate the platform's own images pass — failed it:

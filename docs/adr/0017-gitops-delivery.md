@@ -1,6 +1,14 @@
 # 0017 — Delivery becomes GitOps: a Helm chart, Argo CD, and Kargo
 
-**Status:** superseded by [ADR 0024](0024-the-blueprint-runtime-is-provisioned-in-code-and-the-gitops-runtime-is-retired.md) — the chart, Argo CD and Kargo are retired and the acceptance suite refuses their return; `deploy.yml` moves each Cloud Run service to the attested digest and proves it serves it. The path that replaced this one is documented in [docs/operations/deployment-path.md](../operations/deployment-path.md). The text below is kept as written, as the record of what was decided and why; none of it describes anything that exists.
+**Status:** superseded by [ADR 0024](0024-the-blueprint-runtime-is-provisioned-in-code-and-the-gitops-runtime-is-retired.md), then **re-taken in part by [ADR 0036](0036-argo-cd-and-kargo-return-on-a-control-plane-cluster.md)**. The text below is kept as written, as the record of what was decided and why, and of the first attempt.
+
+*Corrected 2026-09-05.* This line used to end "the chart, Argo CD and Kargo are retired and the acceptance suite refuses their return; `deploy.yml` moves each Cloud Run service to the attested digest and proves it serves it." Both halves have been overtaken and it is worth being exact about which way:
+
+- **Argo CD and Kargo are coming back; the chart is not.** By owner instruction, ADR 0036 puts both — with cert-manager and Config Connector — on a GKE Autopilot control-plane cluster per environment that runs no `qip-*` binary, from vendored digest-pinned manifests. The chart this record introduced is refused there by name: "a chart's `required` values guarded a templating engine that no longer exists, and a rendered, pinned manifest is reviewable as bytes." The acceptance suite's `no_kubernetes_manifest_helm_chart_or_gitops_controller_remains` was re-scoped rather than deleted — it still refuses a chart, `infrastructure/kubernetes`, Helm, and a Pod running a `qip-*` image.
+- **`deploy.yml` no longer moves a service.** ADR 0036 decision 8 removed the rollout, and it is removed in the tree: `.github/workflows/deploy.yml:397-405` carries a comment reading "What this job did until ADR 0036 — `gcloud run services update`, the serving proof, the `images.tfvars` write and its commit — belongs to the …" and points at the Argo CD post-sync hook that asks the two questions `prove-serving.py` asked. So the sentence this status line used to make is now false of the workflow as well as of the design.
+- **What runs today is neither.** No controller has been installed: the control-plane cluster in `dev` exists tainted with no bootstrap having executed, so the pull path this record wanted does not run, and the push path that replaced it has been removed. See ADR 0036's "What is applied, and what is not".
+
+The path of record is documented in [docs/operations/deployment-path.md](../operations/deployment-path.md), which ADR 0036 requires to walk the new trace in both directions.
 
 ## Decision
 

@@ -102,6 +102,20 @@ with its cost, not defaulted into silently.
    digest bump is then ignored on apply and needs an explicit
    `terraform apply -replace=...` naming the service. Nothing vendored is
    deployed today, so the exposure is zero until someone pins that digest.
+
+   **The digest has been pinned and the exposure is no longer zero —
+   corrected 2026-09-05.** `vendored_openobserve_image_digest` is set in
+   `infrastructure/environments/dev/terraform.tfvars`, so `dev` plans and has
+   created the service, and OpenObserve was observed serving at
+   `qip-dev-openobserve-rgxpsss2lq-uk.a.run.app` on 2026-09-04 (a `308` to
+   `/web/`, `200` there, and `401 {"code":401,"message":"Unauthorized Access"}`
+   on `/api/default/`). So the sentence above has flipped: an internet-facing
+   third-party image is pinned at v0.92.2 and Terraform will not move it on a
+   plain apply. ADR 0030's cost section named exactly this — "an
+   internet-facing service that Terraform will not update on apply is one
+   whose next CVE is nobody's alarm" — and it is now a live cost rather than
+   a predicted one. The `-replace` remains the only path, and it is nobody's
+   scheduled act.
    Should a hands-off upgrade path for vendored images become worth its
    machinery, that is a new decision — not a silent reinterpretation of this
    one.
@@ -122,7 +136,13 @@ with its cost, not defaulted into silently.
    never an environment value — is the shape such a record would need to
    defend, not assume).
 
-5. **Ingress stays internal for this first deployment.** Building a public-
+5. **Ingress stays internal for this first deployment** — *amended by ADR
+   0030 on the owner's repeated instruction (the service is anonymous on the
+   public internet), and ADR 0033 then fired ADR 0030's own trigger and
+   decided it becomes authenticated before the first byte of telemetry lands.
+   ADR 0033 is accepted and not applied: the running service is still
+   anonymous. Read all three; the paragraph below is the original argument
+   and is no longer the posture.* Building a public-
    facing edge (external HTTPS load balancer, backend service, URL map,
    certificate, and a real access-control decision — IAP, or OpenObserve's
    own auth behind it, or both) is a materially separate project: it would

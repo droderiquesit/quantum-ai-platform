@@ -135,19 +135,55 @@ commented out in `environments/dev/terraform.tfvars` — and flipping it still
 requires evidence something actually scraped. All seven alert policies in
 `modules/observability/main.tf` are gated on it and name descriptors the
 binaries do record: four central-plane policies, `edge_halted`,
-`edge_reconciliation_break` and `central_reconciliation_break`. Since
+`edge_reconciliation_break` and `central_reconciliation_break`. Seven, and
+exactly two of them query a `qip_edge_*` series — recount with
+`grep -c '^resource "google_monitoring_alert_policy"' …/main.tf` and
+`grep -n 'query *= *"[^"]*qip_edge' …/main.tf` before quoting either number;
+`NOT-SCRAPED.md` said "three edge policies" for a while, which made the two
+groups sum to eight. Verified 2026-09-05 that each of the seven names has a
+production recording site rather than only a registered constant: the four
+central ones and `qip_central_reconciliation_breaks_total` in
+`runtime/qip-kernel/src/{platform.rs,central/plane.rs}`, and `EDGE_HALTED`
+and `EDGE_RECONCILIATION_BREAKS` in `edge/qip-edge/src/telemetry.rs` outside
+`tests/`. A registered constant nothing calls would satisfy the acceptance
+test and still page nobody, so check the caller, not the name. Since
 `cd16f79` the `edge_halted` policy's documentation names the `polled` source
 beside `kill_switch` and `policy` (`main.tf:200`), so an operator paged on
 the third source is not reading text that says it does not exist. What
 collects
 is the runtime's business (ADR 0024) and `modules/observability/NOT-SCRAPED.md`
 is the record: the `PodMonitoring` that once selected the two brains left
-with the cluster, and nothing scrapes a Cloud Run service — the managed
-Prometheus sidecar is not attached because its image is not yet vendored and
-attested. The execution node's startup script declares an Ops Agent
-Prometheus receiver on the health port, so `qip-edge-node` is scraped once a
-node exists; `execution_nodes` is empty in every environment, so none does.
-What is missing is proof of ingestion, not emission.
+with the cluster, and nothing scrapes a Cloud Run service. The execution
+node's startup script declares an Ops Agent Prometheus receiver on the health
+port (`startup.sh.tftpl:209-231`), so `qip-edge-node` is scraped once a node
+exists; `execution_nodes = {}` in every environment
+(`grep -rn execution_nodes infrastructure/environments/*/terraform.tfvars`),
+so none does. What is missing is proof of ingestion, not emission.
+
+The two halves of the collection gap are in **different states**, and an
+earlier version of this paragraph flattened them into one. The node's
+receiver is merely waiting on a node. The Cloud Run half is **refused, not
+pending**: the managed-Prometheus sidecar is declared in `modules/cloudrun`
+and rendered only under `metrics_collector_image_digest`, which is null
+everywhere, because the only version Google publishes fails the platform's
+own Trivy gate. `vendor.yml` run 11 failed `cloud-run-gmp-sidecar` 1.9.2 on
+`CVE-2026-56854`, an unfixed CRITICAL in `golang.org/x/crypto` v0.54.0.
+Re-checked 2026-09-05 and the position has degraded rather than improved: the
+registry's tag list still ends at 1.9.2 with no 1.9.3 or 1.10.0, the
+`docker-content-digest` for 1.9.2 is still
+`sha256:ff1fc688...df522fd1` so the scanned bytes are unchanged, and two
+further `x/crypto/ssh` advisories fixed in 0.56.0 landed on 2026-09-02
+(`GO-2026-6354`/`CVE-2026-78662`, `GO-2026-6355`/`CVE-2026-56855`), putting
+the image three advisories behind. The commands are in `NOT-SCRAPED.md`.
+The blocker is upstream and no change in this repository clears it; do not
+clear it with a scanner exception.
+
+One correction of fact this file used to get wrong by inheritance:
+`NOT-SCRAPED.md` said "nothing has been applied", and `dev` has been —
+`module.observability` is instantiated unconditionally at
+`terraform/main.tf:400`, so it was in `infra.yml`'s `up`. With the gate
+false, `count = 0` on all seven, so that apply created no policy. The gate
+has run, not merely been declared. This changes nothing about ingestion.
 
 Do not describe this platform as observable. That still holds, on today's
 evidence: nothing has been shown to scrape any process, no Cloud Run service

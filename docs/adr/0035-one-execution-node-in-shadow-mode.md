@@ -1,6 +1,16 @@
 # ADR 0035 — One execution node, in shadow mode, in one region
 
-- **Status:** accepted
+- **Status:** accepted, **not applied** — added 2026-09-05 by the architecture
+  sweep, because a record whose decision is "deploy one node" and whose status
+  reads only "accepted" is read as a node that exists.
+  `grep -n execution_nodes infrastructure/environments/*/terraform.tfvars`
+  returns `execution_nodes = {}` in all four environments, `dev` included, and
+  `dev/terraform.tfvars:11-16` names what blocks it: no boot image exists and
+  nothing in this repository builds one, and nobody has chosen the node's
+  capital allocation. Both are values a person supplies and neither is a value
+  Terraform can derive, so the empty map is "a working configuration, not an
+  incomplete one". The authorisation this record gives stands and is unused;
+  the whole edge plane still runs only under `cargo test`.
 - **Date:** 2026-09-04
 - **Decides:** whether to deploy execution nodes at all
 - **Relates to:** ADR 0024 (one node per region), ADR 0008 (cells decide

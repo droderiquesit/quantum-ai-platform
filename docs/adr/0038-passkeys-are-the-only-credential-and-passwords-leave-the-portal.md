@@ -1,6 +1,25 @@
 # 0038 — Passkeys are the only end-user credential, and passwords leave the portal
 
-**Status:** *proposed*, 2026-09-05. Nothing below is applied: the portal
+**Status:** *proposed*, 2026-09-05, and **deliberately still proposed** after
+the architecture sweep of the same day, which was asked to resolve every open
+record or say exactly what would close it. This one cannot be closed from
+inside the repository, and the reason is worth stating rather than leaving as
+an omission: the shape turns entirely on the four checks below, every one of
+which is a call against Google's Identity Platform on the dev project. No
+reading of this tree answers any of them, and guessing at the answer would
+pick between Shape A (no dependency anywhere) and Shape B (one npm dependency
+and a two-passkey cap) on no evidence — which is the one thing a record about
+a credential must not do. **What closes it:** the four checks, run by the
+owner against `algorik-dev`, with their outputs quoted into this status line.
+Nothing else does, and no amount of further design work substitutes.
+
+Re-verified on 2026-09-05 that nothing has moved:
+`grep -n 'AuthMethod' frontend/packages/auth/src/index.ts` still returns
+`export type AuthMethod = "password" | "google" | "passkey" | "saml" | "oidc" | "development";`
+at `:24`, so the password is still a listed peer of the passkey, which is the
+sentence this record exists to reverse.
+
+Nothing below is applied: the portal
 still signs in with an email and a password, and every passkey ceremony
 named here is a design, not a route. The only code that moved with this
 record is copy and doc comments — the sign-in page stops presenting the

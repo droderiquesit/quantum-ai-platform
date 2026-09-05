@@ -1,7 +1,11 @@
 # 0036 — Argo CD and Kargo return, on a control-plane cluster that runs no trading binary
 
 **Status:** accepted, by explicit and repeated owner instruction given on
-2026-09-04. Nothing in it is applied; see "Nothing is applied by this record".
+2026-09-04. **Partly applied in `dev` since 2026-09-05**, under ADR 0040's
+authorisation, and not applied anywhere else. The section formerly headed
+"Nothing is applied by this record" is now "What is applied, and what is not"
+and carries the run-by-run account; read it before citing any sentence in this
+record as describing something that runs.
 **Supersedes:** ADR 0017 (its decision is re-taken here on a different
 runtime; its text stays as the record of the first attempt and of why the
 chart is not coming back). ADR 0024 decision 2 — "the GitOps runtime is
@@ -343,9 +347,15 @@ still in force.
   `StatefulSet` under `infrastructure/gitops/envs/` — and drops exactly the
   two assertions this record contradicts, naming this record in the comment.
 - **Everything ADR 0024 called out as unfinished is still unfinished.**
-  Nothing scrapes a Cloud Run service; `execution_nodes` is non-empty in
-  `dev` alone; the centre-to-node path is unwired. A new delivery path
-  delivers the same three services to the same runtime.
+  Nothing scrapes a Cloud Run service; the centre-to-node path is unwired. A
+  new delivery path delivers the same three services to the same runtime.
+
+  *Corrected 2026-09-05:* this bullet said "`execution_nodes` is non-empty in
+  `dev` alone", which was never true and is the wrong direction of error for a
+  record to carry. `grep -n execution_nodes infrastructure/environments/*/terraform.tfvars`
+  returns `execution_nodes = {}` in all four; ADR 0035 authorises a node in
+  `dev` and nobody has supplied the two values a person must supply — a boot
+  image and the node's capital allocation. No execution node exists anywhere.
 
 ## What must never change
 
@@ -365,19 +375,79 @@ still in force.
 - Every secret a workload reads is a file, except where ADR 0031 says
   otherwise for a vendored image.
 
-## Nothing is applied by this record
+## What is applied, and what is not
 
-No cluster exists, no controller runs, no `RunService` has been applied and
-no service has been released from state. The implementing agents produce
-the Terraform, the manifests, the workflow changes and the tests; `infra.yml`'s
-`plan` is dispatched, and a person reads it before `up`. The first plan
-proposes a cluster per environment and releases three services from state;
-the first `up` runs the bootstrap; the first Argo CD sync of `dev` is the
-first evidence that Config Connector acquired a service rather than
-replacing it — and that evidence is a revision count that did not move,
-recorded in `docs/ops/missing-infrastructure-register.md` when it exists.
-Until then every sentence above about what Argo CD or Kargo does is a
-sentence about a configuration.
+**This section was headed "Nothing is applied by this record" and opened "No
+cluster exists, no controller runs, no `RunService` has been applied and no
+service has been released from state." Three of those four clauses stopped
+being true on 2026-09-05.** Rewritten by the architecture sweep the same day.
+The old heading and its opening sentence are quoted above rather than silently
+replaced, so that a reader who has seen this record before can tell it was
+superseded rather than misremembered. Every claim below is read off the `infra.yml` run logs as reported
+to [the missing-infrastructure register](../ops/missing-infrastructure-register.md),
+sections "Applied by ADR 0040's record" and "Runs 36 and 37"; nothing in
+`algorik-dev` was observed from here.
+
+**Applied, in `dev` only.**
+
+- **The foundation of decision 1 exists.** Run 34
+  (2026-09-05, commit `e1711fb`, terminal status *failure*) created 82 of the
+  83 resources its plan named; state went from 163 to 234. Every identity,
+  key, grant, trust zone and bucket of `modules/gitops-control-plane` exists
+  in `algorik-dev` except the cluster, which the API refused twice.
+- **The services were released from state without being destroyed**, which is
+  decision 5's `removed {}` half. Run 34's six Cloud Run objects left state
+  undestroyed, as intended.
+- **The cluster object exists, and is tainted.** Run 37 (commit `3848a89`,
+  *failure* after 38 minutes) created the fleet-registrar custom role, its
+  binding and `google_container_cluster.control_plane`; state went 234 → 237.
+  `qip-dev-control-plane` exists in `us-east4` with its etcd key, its peering
+  and one Autopilot node — but the create's wait failed with "only 0 nodes out
+  of 1 have registered", because the node's egress to the private endpoint at
+  `10.0.36.2` was refused by the management zone's own default deny. The
+  provider recorded the object before the wait failed, so Terraform holds it
+  tainted, and run 38's `plan` (*success*) printed
+  `Plan: 3 to add, 0 to change, 1 to destroy.` with the cluster marked
+  `is tainted, so must be replaced`.
+- **Both of decision 1's earlier refusals are closed.** Runs 34 and 35 were
+  refused on `addons {"config-connector"} are not supported for Autopilot
+  clusters` and on `gkehub.memberships.create` denied; the amendment inside
+  decision 1 (the vendored operator) and one narrow custom role answered them,
+  and run 37 proved both by creating the cluster and registering the fleet
+  membership.
+
+**Not applied, and each of these is the difference between this record and a
+delivery path that works.**
+
+- **No controller runs.** No bootstrap step has executed: run 37 failed before
+  it, so Config Connector's operator, Argo CD, Kargo and cert-manager are
+  vendored manifests and nothing more. Neither GitHub App credential has been
+  projected into a namespace.
+- **No `RunService` has been applied and nothing has been reconciled.**
+  Decision 4's manifests exist under `infrastructure/gitops/envs/`; no cluster
+  has read one. Config Connector acquiring a service rather than replacing it
+  — the evidence this record asks for, a revision count that did not move —
+  has not been observed and cannot be until a cluster is `RUNNING`.
+- **No promotion has happened.** Decision 6's Kargo objects and decision 7's
+  Argo CD `Application` have never been evaluated. Decision 8 *is* applied in
+  the pipeline: `deploy.yml`'s `deploy` job no longer runs
+  `gcloud run services update`, `prove-serving.py` or the `images.tfvars`
+  write, and says so in a comment naming this record. So the old rollout is
+  gone and the new one does not run yet — the window this record's cost
+  section called "a second source of what is running" is, for now, the whole
+  of what exists.
+- **Nothing outside `dev`.** No cluster, no resource, no plan in `test`,
+  `stage` or `prod`.
+
+**The next step is a person's, and is not an agent's.** The taint must be
+cleared, and under ADR 0040 decision 1 an agent does not dispatch `up` on a
+plan that destroys a cluster. The narrowest path — confirm nothing on the
+cluster is worth keeping, delete it by name, confirm the fleet membership went
+with it, re-`plan`, re-`up` — is written out step by step in the register, with
+the reason `infra.yml` deliberately gains no `untaint` action.
+
+Every sentence elsewhere in this record about what Argo CD or Kargo *does*
+remains a sentence about a configuration.
 
 ## What would make this wrong
 

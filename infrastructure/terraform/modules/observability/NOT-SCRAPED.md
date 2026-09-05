@@ -17,8 +17,33 @@ that receiver, as `prometheus.googleapis.com/qip_edge_*/gauge` and
 `/counter` descriptors, which is what the PromQL conditions here query.
 
 **No node exists.** `execution_nodes` is empty in every environment's tfvars,
-so nothing has been scraped and the three edge policies cannot be created.
+so nothing has been scraped and the two edge policies cannot be created.
 The receiver is declared; ingestion is not a fact.
+
+Two, not three — this file said three until someone counted. Exactly two
+policies in `main.tf` query a `qip_edge_*` series, and
+`grep -n 'query *= *"[^"]*qip_edge' main.tf` returns
+`edge_halted` and `edge_reconciliation_break` and nothing else;
+`central_reconciliation_break` reads the centre's own counter and is one of
+the five below. Three edge plus five central is eight, and
+`grep -c '^resource "google_monitoring_alert_policy"' main.tf` says seven.
+
+The receiver labels each sample `cell: <node_id>` and `region: <region>`
+from the template's `static_configs`, which is what
+`max by (cell, source) (qip_edge_halted)` groups on, so the halt policy's
+query resolves against what this receiver produces. Note that
+`CellMetrics::new` already puts `cell` and `region` in the exposition
+(`qip-edge/src/telemetry.rs:170-171`) from `QIP_CELL_ID` and
+`QIP_CELL_REGION`, which `startup.sh.tftpl:165-166` sets to the same
+`${node_id}` and `${region}` the receiver uses. The values therefore agree;
+the labels still collide at scrape time, and a Prometheus receiver at the
+default `honor_labels: false` keeps the target's copy and renames the
+exposed one to `exported_cell` and `exported_region`. The alert is
+unaffected — `cell` survives carrying the right value — but the target
+labels are redundant with the exposition and the `exported_*` pair is
+duplicate cardinality nobody asked for. Dropping the two `labels:` lines
+from the receiver would be the smaller configuration; that is a change to
+`modules/execution-node`, not to this module, and has not been made.
 
 ## The Cloud Run services: a collector is declared, and no digest is pinned
 
@@ -52,19 +77,55 @@ and writes to Cloud Monitoring. What is now in the Terraform:
 
 What is not:
 
-- **No digest is pinned.** `metrics_collector_image_digest` is null in every
-  environment. The reason is the one the Envoy proxy had to satisfy first:
+- **No digest is pinned, and the adoption is REFUSED rather than pending.**
+  `metrics_collector_image_digest` is null in every environment
+  (`environments/dev/terraform.tfvars:142` is the only mention and it is
+  commented out). The gate is the one the Envoy proxy had to satisfy first:
   Binary Authorization admits only what the platform's attestor signed, so
-  the sidecar has to be mirrored by digest through
+  the sidecar must be mirrored by digest through
   `infrastructure/egress/vendored-images.txt` and `vendor.yml` before any
-  revision carrying it can be admitted. A candidate now sits in that file —
-  `cloud-run-gmp-sidecar` at the digest tag `1.9.2` resolved to, confirmed
-  against the manifest bytes it names — but it is **commented out**, so
-  `vendor.yml` parses past it, no copy exists in any environment's registry,
-  and nothing is attested. Resolving bytes is not reviewing them: the review
-  is the commit that uncomments the line. Attaching an unattested image would
-  produce a revision Binary Authorization refuses, which reads as a broken
-  deploy rather than as a missing collector.
+  revision carrying it can be admitted.
+
+  This file used to say the candidate line was merely "commented out" and
+  that "the review is the commit that uncomments the line". That is no
+  longer the state and has not been for some time. The review happened.
+  `vendor.yml` run 11 mirrored `cloud-run-gmp-sidecar` 1.9.2 and Trivy —
+  the same gate the platform's own images pass — failed it on
+  `CVE-2026-56854`, an unfixed CRITICAL in `golang.org/x/crypto` v0.54.0,
+  fixed upstream in 0.55.0. `vendored-images.txt:78-100` carries the finding.
+  The line stays commented **for a reason**, and "resolved but nobody
+  looked" and "looked at and refused" are different states to hand the next
+  person.
+
+  Re-checked on 2026-09-05, and the position has not improved — it has got
+  slightly worse:
+
+  - The newest published version is still 1.9.2. The registry's own tag list
+    (`curl -sS https://us-docker.pkg.dev/v2/cloud-ops-agents-artifacts/cloud-run-gmp-sidecar/cloud-run-gmp-sidecar/tags/list`,
+    plain semver tags only) returns `1.0.0 1.1.0 1.1.1 1.2.0 1.3.0 1.4.0
+    1.6.0 1.7.0 1.8.0 1.9.1 1.9.2` and nothing above it. There is no 1.9.3
+    or 1.10.0 to move to.
+  - The bytes have not been rebuilt. `docker-content-digest` for tag 1.9.2 is
+    still `sha256:ff1fc68871118f1032a3ce17e2b0abd703292e883989d220244330ebdf522fd1`,
+    identical to the digest the commented line names and identical to what
+    run 11's Trivy scanned. Same digest means the same scan result; nothing
+    needs re-scanning to know it still fails.
+  - Two further advisories have landed against the same dependency since the
+    refusal was written, both in `golang.org/x/crypto/ssh`, both fixed in
+    0.56.0 and both published 2026-09-02
+    (`curl -sS https://vuln.go.dev/ID/GO-2026-6354.json`, and `-6355`):
+    `CVE-2026-78662` and `CVE-2026-56855`, denial of service on a deadlocked
+    channel. The image pins v0.54.0, so it is now behind three advisories
+    rather than one.
+
+  The temptation to wave it through is the same one `vendored-images.txt`
+  already names and refuses: the findings are all in `x/crypto/ssh` and a
+  metrics collector opens no SSH server, so they are very likely
+  unreachable. That is how a scanner exception gets written, and an
+  exception outlives the release that needed it. The fix is Google's to
+  ship. Attaching an unattested image anyway would produce a revision Binary
+  Authorization refuses, which reads as a broken deploy rather than as a
+  missing collector.
 - **The document does not yet land where the collector reads.** The sidecar
   reads exactly one path, `/etc/rungmp/config.yaml` — the only `/etc/rungmp*`
   literal in its entrypoint binary, and its `Cmd` names
@@ -83,9 +144,25 @@ What is not:
   fixed name costs one bucket-scoped `storage.objects.delete` because an
   overwrite needs it. That change is to `modules/cloudrun`, not to this
   module, and has not been made.
-- **Nothing has been applied.** ADR 0024 records that no plan has been
-  produced on any environment; a declared sidecar is a statement about a
-  configuration.
+- **The sidecar has never been applied, though this module has.** This entry
+  used to read "Nothing has been applied. ADR 0024 records that no plan has
+  been produced on any environment." That sentence has outlived its truth in
+  the same way `infrastructure/CLAUDE.md`'s did — row 10 of
+  `docs/ops/missing-infrastructure-register.md` records that one being
+  rewritten for exactly this reason — and ADR 0024's closing paragraph is
+  itself listed as stale in that register. `dev` has been applied by
+  `infra.yml`'s `up`, dispatched by a person, and `module.observability` is
+  instantiated unconditionally at `terraform/main.tf:400`, so it was in that
+  apply.
+
+  What it produced is the useful part: with `workload_metrics_exist` false,
+  `count = 0` on all seven policies, so the apply created no alert policy at
+  all. The gate has therefore actually run rather than merely being
+  declared. What has never been applied is a *sidecar* — no environment
+  pins a collector digest, so no revision has ever carried one.
+
+  Recorded, not observed by me: I read this from the tree and the register,
+  not from a plan or an apply log.
 - **Nothing has been observed.** No `prometheus.googleapis.com/qip_*`
   descriptor exists in any project.
 
@@ -98,8 +175,14 @@ emitted, scrapable, collector declared, not scraped.
 
 - `modules/cloudrun` publishing the collector's document as `config.yaml` at
   the root of its bucket, which is the one path the sidecar reads.
-- A `cloud-run-gmp-sidecar` digest reviewed — the candidate line in the
-  vendored-images list uncommented — mirrored and attested by `vendor.yml` as
+- **Google publishing a `cloud-run-gmp-sidecar` above 1.9.2 built on
+  `golang.org/x/crypto` >= 0.56.0.** This is the blocker, it is upstream, and
+  nothing in this repository can clear it. Re-run the tag-list command in the
+  refusal entry above when observability is next picked up; a release
+  carrying the fixed dependency makes the rest a one-line change. Do not
+  clear it with a scanner exception.
+- Then that digest reviewed and the candidate line in the vendored-images
+  list uncommented, mirrored and attested by `vendor.yml` as
   `vendor/cloud-run-gmp-sidecar`, and recorded as
   `metrics_collector_image_digest` in an environment's tfvars.
 - A plan read and applied by a person, and both brains' revisions admitted

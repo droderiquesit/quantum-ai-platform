@@ -881,6 +881,87 @@ fn the_execution_nodes_are_one_module_rather_than_nine_copies() {
 }
 
 #[test]
+fn adr_0035_authorises_one_shadow_node_in_dev_and_none_anywhere_else() {
+    // ADR 0035 is both the authorisation and the limit: "exactly one execution
+    // node, in `us-east4`, in shadow mode, in the `dev` environment. Not seven.
+    // Not one per region. One." — and "if `execution_nodes` becomes non-empty
+    // in prod on this record", that is named as what would make the decision
+    // wrong. Nothing structural held that until this test: `execution_nodes`
+    // is a map with an empty default, so an entry in `prod/terraform.tfvars`
+    // plans and applies exactly as readily as one in `dev`, and the only thing
+    // standing against it was a sentence in an ADR.
+    //
+    // The other half of the ADR — shadow mode — is already structural, because
+    // `main.tf` passes `shadow_mode = true` as a literal rather than from the
+    // map. That is asserted in
+    // `an_execution_node_may_reach_its_venues_and_the_central_plane_and_nothing_else`
+    // and is not repeated here.
+
+    // Premise first, on the parser rather than on the files: `map_keys`
+    // returning nothing is indistinguishable from a map with no entries, so a
+    // renamed variable or a reformatted tfvars would make every assertion
+    // below vacuously true. Prove it finds an entry in a block of the shape
+    // this test reads before believing it when it finds none.
+    let fixture = "execution_nodes = {\n  \"newyork-1\" = {\n    region = \"us-east4\"\n  }\n}\n";
+    assert_eq!(
+        map_keys(fixture, "execution_nodes"),
+        vec!["newyork-1".to_string()],
+        "the map parser does not find a node in a well-formed entry, so the emptiness it reports \
+         below would mean nothing"
+    );
+
+    for environment in ["dev", "test", "stage", "prod"] {
+        let tfvars = without_comments(&read(&format!(
+            "infrastructure/environments/{environment}/terraform.tfvars"
+        )));
+        assert!(
+            tfvars.contains("execution_nodes = {"),
+            "{environment} declares no execution_nodes map, so this test is reading nothing"
+        );
+
+        let nodes = map_keys(&tfvars, "execution_nodes");
+        if environment == "dev" {
+            // Dev is the one environment that may hold a node, and it may hold
+            // one. Two nodes deployed a week apart with nothing learned in
+            // between is the seven-node plan taken slowly, which the ADR
+            // refuses by name.
+            assert!(
+                nodes.len() <= 1,
+                "dev declares {} execution nodes {nodes:?}. ADR 0035 authorises one, as a probe; \
+                 a second before the first has taught anything needs its own decision",
+                nodes.len()
+            );
+            // Region is the other half of the authorisation. Read from the
+            // node's own block rather than from the file, so `region =
+            // \"us-east4\"` at the top level cannot satisfy it.
+            for node in &nodes {
+                let block = tfvars
+                    .split(&format!("\"{node}\" = {{"))
+                    .nth(1)
+                    .and_then(|rest| rest.split("\n  }").next())
+                    .unwrap_or_default();
+                assert!(
+                    block
+                        .lines()
+                        .any(|line| collapsed(line) == "region = \"us-east4\""),
+                    "the dev node {node} is not in us-east4. ADR 0035 authorises one region, \
+                     chosen for its distance to the NY/NJ venues; another region is a different \
+                     decision"
+                );
+            }
+        } else {
+            assert!(
+                nodes.is_empty(),
+                "{environment} declares execution nodes {nodes:?}. ADR 0035 authorises dev and \
+                 nothing else — \"it authorises dev, and nothing else\" — and for prod names a \
+                 non-empty map as what would make the decision wrong. Adding one here needs a \
+                 new ADR, not a tfvars edit"
+            );
+        }
+    }
+}
+
+#[test]
 fn the_console_egress_cidr_validation_refuses_a_range_smaller_than_a_26_rather_than_only_its_syntax()
  {
     // The variable's validation used to check only that the value parsed as
