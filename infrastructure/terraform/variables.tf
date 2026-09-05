@@ -310,18 +310,32 @@ variable "egress_allowed_upstreams" {
     The hosts the egress proxy may dial, checked at plan time against the
     hosts `infrastructure/egress/envoy.yaml` actually dials. The two must be
     the same set, so widening the proxy is an edit to the bootstrap and an
-    edit here, reviewed together. The default is the six hosts the adapters
+    edit here, reviewed together. The default is the seven hosts the adapters
     name and the bootstrap declares; an environment that needs fewer narrows
     the bootstrap, not this list.
 
-    Five of the six are Google's or IBM's — infrastructure this platform runs
-    on. `api.frankfurter.dev` is the first that is neither: a market-data
+    Five of the seven are Google's or IBM's — infrastructure this platform
+    runs on. `api.frankfurter.dev` is the first that is neither: a market-data
     vendor, reached on one path by one connector whose licensing posture is
     evaluated in `qip-data-finder`'s catalogue before the feed opens. It is
     listed here rather than folded in silently because it is the entry that
     changes what this list *is* — no longer only the platform's own
     dependencies — and the acceptance suite fails if this set and the
     bootstrap disagree in either direction.
+
+    `router.huggingface.co` is the first that is a model vendor (ADR 0037):
+    Hugging Face Inference Providers' router, reached on one path and one
+    method — `POST /v1/chat/completions` — by `HuggingFaceModel` in
+    `qip-reasoning-engine`, which only the deep brain constructs. What
+    crosses it is the REASON stage's evidence blocks for the instruments
+    under review, never a credential in the URL and never anything from
+    risk, execution, capital or the edge; what comes back is narrative that
+    `NumericGuard` refuses to read a number from. It is listed while nothing
+    sets the three `QIP_LANGUAGE_MODEL_*` variables or mounts `QIP_HF_TOKEN`
+    on any environment, so the route exists and is dark; the terms of the
+    providers a chosen model resolves to are read before any environment
+    turns it on, and `HuggingFaceModel::UPSTREAM_HOST`, this entry and the
+    bootstrap's cluster are held to one value by the acceptance suite.
   EOT
 
   type = list(string)
@@ -332,6 +346,7 @@ variable "egress_allowed_upstreams" {
     "quantum.cloud.ibm.com",
     "api.quantum.ibm.com",
     "api.frankfurter.dev",
+    "router.huggingface.co",
   ]
 }
 

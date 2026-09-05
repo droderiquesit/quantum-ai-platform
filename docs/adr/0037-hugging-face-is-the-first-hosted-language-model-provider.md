@@ -138,3 +138,23 @@ brain's manifest from root variables; apply the egress change through
 `infra.yml` with the plan read. Until then `HuggingFaceModel::is_available`
 answers `false` and every reasoning run narrates through templates, which is
 the state today.
+
+No trust-zone egress purpose is added for the cognition zone either, and
+that is a decision rather than an omission. `modules/trust-zones` models
+what leaves the VPC by firewall rule — `sanctioned_egress_purposes` names
+`optimisation` for IBM and `ingestion-discovery` for information sources,
+and the catalogue records that cognition "may hold no external-egress entry
+at all". The deep brain reaches the router the way it reaches Vertex and
+Cloud Storage: through the loopback Envoy sidecar on the same Cloud Run
+instance, which has no VPC address a zone rule could name, and the sidecar's
+own upstream dial leaves through the service's egress path, not through a
+zone firewall (`modules/trust-zones/NOT-ENFORCED-HERE.md` records that this
+is the enforcement gap for every proxied destination, IBM included). A
+`cognition = ["language-model"]` purpose would therefore be a rule binding
+nothing while reading as the control that admits the vendor — the failure
+`.claude/rules/domains/observability.md` names for an alert policy nothing
+emits. The control that binds is the bootstrap's single `POST
+/v1/chat/completions` route on a loopback listener, the allowlist parity the
+acceptance suite holds, and `catalogue.tf`'s plan-time refusal to give the
+fast brain a proxy. If the runtime ever routes sidecar egress through a
+zone firewall, the purpose is added then, with the plan that proves it fires.

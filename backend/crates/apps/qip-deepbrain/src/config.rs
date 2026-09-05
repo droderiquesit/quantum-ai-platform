@@ -19,6 +19,7 @@
 use qip_core::Duration;
 use qip_core::error::{Error, Result};
 use qip_kernel::EventLogDestination;
+use qip_reasoning_engine::providers::huggingface::{HF_TOKEN_VARIABLE, HuggingFaceToken};
 use qip_storage::settings::StorageSettings;
 use std::collections::BTreeMap;
 
@@ -95,6 +96,50 @@ pub const EVENT_LOG_VARIABLE: &str = "QIP_DEEPBRAIN_EVENT_LOG";
 /// explicitly.
 pub const DEFAULT_EVENT_LOG_FILE: &str = "deepbrain-events.jsonl";
 
+/// Which hosted language-model provider this node installs ahead of the
+/// deterministic model (ADR 0037, decision 4). Unset means no hosted model
+/// and every reasoning run narrates through templates, which is the state of
+/// every deployment today. The one accepted value is [`HUGGING_FACE_PROVIDER`];
+/// any other is refused by name rather than read as "none", because a
+/// provider misspelled is a deployment that believes it is calling a model
+/// and is not.
+pub const LANGUAGE_MODEL_PROVIDER_VARIABLE: &str = "QIP_LANGUAGE_MODEL_PROVIDER";
+
+/// The one provider this build can construct.
+pub const HUGGING_FACE_PROVIDER: &str = "huggingface";
+
+/// The model identifier as the router names it. Required when the provider
+/// is set: there is no default model that is not a guess about price and
+/// terms nobody read.
+pub const LANGUAGE_MODEL_VARIABLE: &str = "QIP_LANGUAGE_MODEL";
+
+/// `http://127.0.0.1:<port>` of the egress proxy's `huggingface` listener.
+/// Required when the provider is set, and refused unless it is loopback: the
+/// proxy is the only outbound path (ADR 0024), the transport has no TLS, and
+/// a base URL naming anything else is a bearer token sent in clear text to
+/// wherever it points.
+pub const LANGUAGE_MODEL_BASE_URL_VARIABLE: &str = "QIP_LANGUAGE_MODEL_BASE_URL";
+
+/// A hosted language model this node was told to install.
+///
+/// Carried on the configuration rather than assembled in `main`, so the
+/// decision "which model narrates" is asserted by a test against the
+/// variables rather than watched on a running process. The token is here
+/// too, in a type that redacts in `Debug`; this struct therefore derives
+/// neither `Serialize` nor `Deserialize`, and cannot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostedLanguageModel {
+    /// The model identifier as the router names it.
+    pub model: String,
+    /// The loopback listener, validated to be one.
+    pub base_url: String,
+    /// The credential, when the deployment supplied one. `None` is the
+    /// built-dark state: the adapter is installed, reports itself
+    /// unavailable naming the variable, and the chain falls through to the
+    /// deterministic model.
+    pub token: Option<HuggingFaceToken>,
+}
+
 /// Everything the node needs to run, resolved.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeepBrainConfig {
@@ -134,6 +179,10 @@ pub struct DeepBrainConfig {
     /// `QIP_DEEPBRAIN_REPLAY_PATH`, which `main` refuses beside it. See
     /// `qip_market_ingestion::tape` for why this is not the replay.
     pub tape_path: Option<String>,
+    /// The hosted language model to install first in the fallback chain, when
+    /// `QIP_LANGUAGE_MODEL_PROVIDER` names one. `None` is the deterministic
+    /// model alone.
+    pub language_model: Option<HostedLanguageModel>,
 }
 
 impl Default for DeepBrainConfig {
@@ -149,6 +198,7 @@ impl Default for DeepBrainConfig {
             event_log: EventLogDestination::InMemory,
             shutdown_budget: DEFAULT_SHUTDOWN_BUDGET,
             tape_path: None,
+            language_model: None,
         }
     }
 }
@@ -213,6 +263,8 @@ impl DeepBrainConfig {
 
         let event_log = event_log_destination(vars, &storage)?;
 
+        let language_model = hosted_language_model(vars)?;
+
         Ok(Self {
             health_address,
             cycle_interval,
@@ -224,6 +276,7 @@ impl DeepBrainConfig {
             event_log,
             shutdown_budget,
             tape_path: text(vars, "QIP_DEEPBRAIN_TAPE_PATH"),
+            language_model,
         })
     }
 
@@ -295,6 +348,85 @@ fn event_log_destination(
         ));
     }
     Ok(EventLogDestination::InMemory)
+}
+
+/// The hosted language model the variables describe, or `None` when the
+/// provider is unset.
+///
+/// Every refusal is a configuration fault, prefixed so `main` exits with the
+/// configuration code. The shape is deliberately all-or-nothing once the
+/// provider is named: a model with no listener, or a listener with no model,
+/// is a deployment half-configured, and a process that started on half of it
+/// would narrate through templates while its manifest said otherwise.
+fn hosted_language_model(vars: &BTreeMap<String, String>) -> Result<Option<HostedLanguageModel>> {
+    let Some(provider) = text(vars, LANGUAGE_MODEL_PROVIDER_VARIABLE) else {
+        // Unset is the deterministic model alone. A model or a listener named
+        // without a provider is refused, not ignored: a deployment that set
+        // two of three variables did not mean "no hosted model".
+        for variable in [LANGUAGE_MODEL_VARIABLE, LANGUAGE_MODEL_BASE_URL_VARIABLE] {
+            if text(vars, variable).is_some() {
+                return Err(Error::invalid(format!(
+                    "configuration: {variable} is set and {LANGUAGE_MODEL_PROVIDER_VARIABLE} \
+                     is not. Set the provider to `{HUGGING_FACE_PROVIDER}` to install the hosted \
+                     model, or unset {variable} to narrate through the deterministic model"
+                )));
+            }
+        }
+        return Ok(None);
+    };
+    if provider != HUGGING_FACE_PROVIDER {
+        return Err(Error::invalid(format!(
+            "configuration: {LANGUAGE_MODEL_PROVIDER_VARIABLE} is `{provider}`, which this build \
+             cannot construct. The one provider is `{HUGGING_FACE_PROVIDER}` (ADR 0037); unset \
+             the variable to narrate through the deterministic model"
+        )));
+    }
+    let model = text(vars, LANGUAGE_MODEL_VARIABLE).ok_or_else(|| {
+        Error::invalid(format!(
+            "configuration: {LANGUAGE_MODEL_PROVIDER_VARIABLE} is `{HUGGING_FACE_PROVIDER}` and \
+             {LANGUAGE_MODEL_VARIABLE} is not set. Name the model as the router's catalogue \
+             spells it; there is no default that is not a guess about price and terms"
+        ))
+    })?;
+    let base_url = text(vars, LANGUAGE_MODEL_BASE_URL_VARIABLE).ok_or_else(|| {
+        Error::invalid(format!(
+            "configuration: {LANGUAGE_MODEL_PROVIDER_VARIABLE} is `{HUGGING_FACE_PROVIDER}` and \
+             {LANGUAGE_MODEL_BASE_URL_VARIABLE} is not set. Point it at the egress proxy's \
+             `huggingface` listener, http://127.0.0.1:<port>; the proxy is the only path out"
+        ))
+    })?;
+    if !(base_url.starts_with("http://127.0.0.1:") || base_url.starts_with("http://localhost:")) {
+        return Err(Error::invalid(format!(
+            "configuration: {LANGUAGE_MODEL_BASE_URL_VARIABLE} is {base_url}. It must be \
+             http://127.0.0.1:<port> or http://localhost:<port>, the egress proxy's \
+             `huggingface` listener beside this process. The proxy is the only path to \
+             router.huggingface.co: this transport has no TLS, and a base URL naming anything \
+             else is a bearer token sent in clear text to wherever it points (ADR 0024)"
+        )));
+    }
+    // Through `qip_core::secret`, so the deployment may mount the credential
+    // as a file rather than set it: a credential in the environment is in
+    // `/proc/<pid>/environ`, in every child process and in every crash dump.
+    // The file variable's name is composed from `FILE_SUFFIX` rather than
+    // written out, because a `"QIP_…"` literal here is exactly what
+    // `manifest_wiring`'s walk counts as a variable this binary reads.
+    let token = qip_core::secret::resolve_from(
+        HF_TOKEN_VARIABLE,
+        text(vars, HF_TOKEN_VARIABLE),
+        text(
+            vars,
+            &format!("{HF_TOKEN_VARIABLE}{}", qip_core::secret::FILE_SUFFIX),
+        ),
+    )
+    .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?
+    .map(HuggingFaceToken::new)
+    .transpose()
+    .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    Ok(Some(HostedLanguageModel {
+        model,
+        base_url,
+        token,
+    }))
 }
 
 /// A non-empty value, trimmed. Empty is treated as unset: a variable set to the
@@ -523,6 +655,172 @@ mod tests {
         assert!(
             durable.durability_note().is_none(),
             "a node whose log and archive both persist was warned that they disagree"
+        );
+    }
+
+    /// Shaped like a token and not one.
+    const TEST_TOKEN: &str = "hf_not_a_real_token_for_this_test";
+
+    fn hosted(pairs: &[(&str, &str)]) -> Vec<(&'static str, &'static str)> {
+        let mut all = vec![
+            (LANGUAGE_MODEL_PROVIDER_VARIABLE, HUGGING_FACE_PROVIDER),
+            (LANGUAGE_MODEL_VARIABLE, "example-org/example-model"),
+            (LANGUAGE_MODEL_BASE_URL_VARIABLE, "http://127.0.0.1:9106"),
+            (HF_TOKEN_VARIABLE, TEST_TOKEN),
+        ];
+        for (name, value) in pairs {
+            all.retain(|(existing, _)| existing != name);
+            if !value.is_empty() {
+                // Leaked deliberately: test-only, a handful of short strings.
+                all.push((
+                    Box::leak((*name).to_string().into_boxed_str()),
+                    Box::leak((*value).to_string().into_boxed_str()),
+                ));
+            }
+        }
+        all
+    }
+
+    #[test]
+    fn with_no_provider_variable_no_hosted_language_model_is_configured() {
+        // The state of every deployment today, and the default this node must
+        // keep: ADR 0037 is built dark. The failure this prevents is a
+        // default provider appearing, so an unconfigured node reaches for a
+        // credential it was never given.
+        let config = DeepBrainConfig::parse(&vars(&[])).expect("defaults are valid");
+        assert!(config.language_model.is_none());
+    }
+
+    #[test]
+    fn the_hugging_face_provider_with_model_listener_and_token_configures_the_hosted_model() {
+        let config = DeepBrainConfig::parse(&vars(&hosted(&[]))).expect("fully configured");
+        assert!(
+            !format!("{config:?}").contains(TEST_TOKEN),
+            "the configuration's Debug output carries the credential"
+        );
+        let model = config
+            .language_model
+            .expect("the provider was named, so a hosted model is configured");
+        assert_eq!(model.model, "example-org/example-model");
+        assert_eq!(model.base_url, "http://127.0.0.1:9106");
+        assert!(model.token.is_some(), "the token was set and not resolved");
+    }
+
+    #[test]
+    fn the_token_may_arrive_through_the_file_indirection_and_not_through_both_at_once() {
+        // The Secret Manager mount projects a file (ADR 0024); a root that read
+        // only the environment would report a mounted credential absent.
+        let dir =
+            std::env::temp_dir().join(format!("qip-deepbrain-hf-token-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let path = dir.join("token");
+        std::fs::write(&path, format!("{TEST_TOKEN}\n")).expect("the token file is written");
+        let file_variable = format!("{HF_TOKEN_VARIABLE}{}", qip_core::secret::FILE_SUFFIX);
+        let path_text = path.to_string_lossy().to_string();
+
+        let config = DeepBrainConfig::parse(&vars(&hosted(&[
+            (HF_TOKEN_VARIABLE, ""),
+            (&file_variable, &path_text),
+        ])))
+        .expect("a token mounted as a file resolves");
+        let model = config.language_model.expect("configured");
+        assert_eq!(
+            model.token,
+            Some(HuggingFaceToken::new(TEST_TOKEN).expect("well formed")),
+            "the file's contents were not the token, or its trailing newline was kept"
+        );
+
+        let refusal = DeepBrainConfig::parse(&vars(&hosted(&[(&file_variable, &path_text)])))
+            .expect_err("both spellings set at once is an ambiguity, not a choice");
+        assert!(
+            refusal.message().starts_with("configuration:")
+                && refusal.message().contains("both set"),
+            "{}",
+            refusal.message()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_model_listener_or_token_is_refused_or_reported_by_name() {
+        // The failure this prevents: a half-configured provider starting on
+        // the half it has, narrating through templates while its manifest
+        // says a model is installed. The model and the listener are refusals;
+        // the token's absence is the built-dark state and is reported by the
+        // adapter, not refused here (see `language.rs`).
+        for missing in [LANGUAGE_MODEL_VARIABLE, LANGUAGE_MODEL_BASE_URL_VARIABLE] {
+            let refusal = DeepBrainConfig::parse(&vars(&hosted(&[(missing, "")])))
+                .err()
+                .unwrap_or_else(|| panic!("a provider without {missing} was admitted"));
+            assert!(
+                refusal.message().starts_with("configuration:")
+                    && refusal.message().contains(missing),
+                "the refusal does not name {missing}: {}",
+                refusal.message()
+            );
+        }
+        let dark = DeepBrainConfig::parse(&vars(&hosted(&[(HF_TOKEN_VARIABLE, "")])))
+            .expect("a provider without a credential is the built-dark state");
+        assert!(dark.language_model.expect("configured").token.is_none());
+    }
+
+    #[test]
+    fn a_base_url_that_is_not_loopback_is_refused_and_the_refusal_names_the_proxy() {
+        // The failure this prevents: the adapter pointed at the vendor, or at
+        // any address off this instance, so a bearer token leaves in clear
+        // text. The proxy is the only path (ADR 0024).
+        for bad in [
+            "http://router.huggingface.co/",
+            "http://10.0.0.5:9106",
+            "https://127.0.0.1:9106",
+            "http://127.0.0.1",
+        ] {
+            let refusal =
+                DeepBrainConfig::parse(&vars(&hosted(&[(LANGUAGE_MODEL_BASE_URL_VARIABLE, bad)])))
+                    .err()
+                    .unwrap_or_else(|| panic!("{bad} was admitted as a listener"));
+            assert!(
+                refusal.message().starts_with("configuration:")
+                    && refusal.message().contains("proxy")
+                    && refusal.message().contains(LANGUAGE_MODEL_BASE_URL_VARIABLE),
+                "the refusal of {bad} does not name the proxy or the variable: {}",
+                refusal.message()
+            );
+        }
+        // And the two loopback spellings are admitted, or the gate refuses
+        // everything and proves nothing.
+        for good in ["http://127.0.0.1:9106", "http://localhost:9106"] {
+            DeepBrainConfig::parse(&vars(&hosted(&[(LANGUAGE_MODEL_BASE_URL_VARIABLE, good)])))
+                .unwrap_or_else(|error| panic!("{good} was refused: {}", error.message()));
+        }
+    }
+
+    #[test]
+    fn an_unknown_provider_is_refused_by_name_rather_than_read_as_none() {
+        // The failure this prevents: a misspelled provider silently meaning
+        // "no hosted model", so a deployment believes it is calling one.
+        let refusal = DeepBrainConfig::parse(&vars(&hosted(&[(
+            LANGUAGE_MODEL_PROVIDER_VARIABLE,
+            "openai",
+        )])))
+        .expect_err("`openai` is not a provider this build constructs");
+        assert!(
+            refusal.message().starts_with("configuration:")
+                && refusal.message().contains("`openai`")
+                && refusal.message().contains(HUGGING_FACE_PROVIDER),
+            "the refusal does not name the value or the one accepted one: {}",
+            refusal.message()
+        );
+        // A model named with no provider is the same half-configuration.
+        let refusal = DeepBrainConfig::parse(&vars(&[(
+            LANGUAGE_MODEL_VARIABLE,
+            "example-org/example-model",
+        )]))
+        .expect_err("a model without a provider was admitted");
+        assert!(
+            refusal.message().contains(LANGUAGE_MODEL_PROVIDER_VARIABLE),
+            "{}",
+            refusal.message()
         );
     }
 

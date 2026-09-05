@@ -990,7 +990,7 @@ const NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET: &str = "The drain cannot \
      the public internet, which is https. So a URL naming it is refused at \
      start-up with EX_CONFIG, and a URL naming anything else names something \
      that does not exist: the egress proxy's allowlist \
-     (`infrastructure/egress/envoy.yaml`, six hosts) does not carry the \
+     (`infrastructure/egress/envoy.yaml`, seven hosts) does not carry the \
      service's own run.app address, and `qip-fastbrain` has no proxy at all \
      because `catalogue.tf` refuses it one at plan time (ADR 0008: nothing on \
      the hot path may consult a model, and port 9102 is that route). \
@@ -1002,7 +1002,46 @@ const NO_COLLECTOR_IS_VENDORED_OR_APPLIED_YET: &str = "The drain cannot \
      names, or a TLS hop this process may use; both are infrastructure work \
      with their own evidence, not a value added here as a side effect.";
 
+/// The hosted language model, built dark (ADR 0037).
+const NO_ENVIRONMENT_NAMES_A_MODEL_UNTIL_ITS_TERMS_ARE_READ: &str = "ADR 0037 \
+     accepts the Hugging Face adapter for the platform lane and applies none \
+     of it: \"no environment sets it until the providers' terms are read and \
+     the secret exists\". The deep brain reads the provider, the model and the \
+     loopback listener, and resolves QIP_HF_TOKEN through `qip_core::secret` \
+     with the `_FILE` indirection; with the provider unset the FallbackChain \
+     holds the deterministic model alone, which is what every deployed \
+     reasoning run narrates through today, and the banner says so. Setting the \
+     three on the deep brain is a person's act in the order the ADR gives -- \
+     read the terms of the providers the chosen model resolves to, create the \
+     secret in Secret Manager and mount it as a file (ADR 0024), then set the \
+     variables from root variables so an absent value still means templates \
+     -- and the egress listener already exists, dark, so that the first of \
+     those acts is reading terms rather than widening a proxy. The fast brain \
+     and the API read none of the four, and \
+     `only_the_deep_brain_reads_the_language_model_variables` refuses them \
+     there.";
+
 const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
+    (
+        "qip-deepbrain",
+        "QIP_LANGUAGE_MODEL_PROVIDER",
+        NO_ENVIRONMENT_NAMES_A_MODEL_UNTIL_ITS_TERMS_ARE_READ,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_LANGUAGE_MODEL",
+        NO_ENVIRONMENT_NAMES_A_MODEL_UNTIL_ITS_TERMS_ARE_READ,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_LANGUAGE_MODEL_BASE_URL",
+        NO_ENVIRONMENT_NAMES_A_MODEL_UNTIL_ITS_TERMS_ARE_READ,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_HF_TOKEN",
+        NO_ENVIRONMENT_NAMES_A_MODEL_UNTIL_ITS_TERMS_ARE_READ,
+    ),
     (
         "qip-api",
         "QIP_MESH_CELLS",
@@ -1386,6 +1425,50 @@ fn every_variable_a_deployed_binary_reads_is_set_by_the_deployment_or_argued_to_
          catalogue arm, so that rule is never exercised and could have \
          stopped matching"
     );
+}
+
+/// The variables that select a hosted language model (ADR 0037, decision 4).
+const LANGUAGE_MODEL_VARIABLES: [&str; 4] = [
+    "QIP_LANGUAGE_MODEL_PROVIDER",
+    "QIP_LANGUAGE_MODEL",
+    "QIP_LANGUAGE_MODEL_BASE_URL",
+    "QIP_HF_TOKEN",
+];
+
+#[test]
+fn only_the_deep_brain_reads_the_language_model_variables() {
+    // ADR 0008 keeps every model off the fast path and ADR 0032 gives the
+    // fast brain no proxy to reach one through; the API serves what the
+    // brains recorded. The failure this prevents is the quiet one: a
+    // convenience refactor moving the provider read into a shared settings
+    // type, after which the fast brain would construct an adapter it can
+    // reach nothing with — or, if a proxy ever appeared beside it, could.
+    // Refused here by name, on the source walk the rest of this file trusts.
+    let constants = variables_by_constant();
+
+    // Premise: the deep brain reads all four, or the walk has stopped seeing
+    // them and the refusals below would hold vacuously.
+    let deep = variables_read_by("qip-deepbrain", &constants).all();
+    for variable in LANGUAGE_MODEL_VARIABLES {
+        assert!(
+            deep.contains(variable),
+            "qip-deepbrain no longer reads {variable}; either ADR 0037's platform lane was \
+             removed, or the walk stopped resolving it and this test guards nothing"
+        );
+    }
+
+    for binary in ["qip-fastbrain", "qip-api"] {
+        let read = variables_read_by(binary, &constants).all();
+        for variable in LANGUAGE_MODEL_VARIABLES {
+            assert!(
+                !read.contains(variable),
+                "{binary} reads {variable}. Only the deep brain may construct a hosted \
+                 language model (ADR 0037): nothing on the fast path consults a model (ADR \
+                 0008) and the fast brain has no egress proxy by design (ADR 0032); the API \
+                 serves what the brains recorded."
+            );
+        }
+    }
 }
 
 #[test]

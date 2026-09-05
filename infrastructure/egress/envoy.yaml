@@ -111,6 +111,14 @@
 #     connector transport never follows a redirect, so the old cluster was a
 #     path to a refusal, and the manifest, this cluster and the Terraform
 #     allowlist moved together (ADR 0034).
+#   * `router.huggingface.co` — named by `HuggingFaceModel::UPSTREAM_HOST` in
+#     `backend/crates/services/qip-reasoning-engine/src/providers/huggingface.rs`,
+#     the hosted language-model adapter ADR 0037 decides on and only the deep
+#     brain constructs. The first destination here that is a model vendor.
+#     Reached through `QIP_LANGUAGE_MODEL_BASE_URL` on the `huggingface`
+#     listener, path `/v1/chat/completions`, method POST, and nothing else on
+#     the router's surface. Dark until an environment sets the variables and
+#     mounts the secret; none does.
 #
 # ## What is deliberately absent, which matters more than what is present
 #
@@ -476,9 +484,76 @@ static_resources:
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
 
+    # --- Hugging Face Inference Providers, the router ---------------------
+    #
+    # The first model-vendor path this platform has had (ADR 0037), and the
+    # first listener here whose requests carry a credential: `HuggingFaceModel`
+    # sends `Authorization: Bearer` with the token the deep brain resolved
+    # through `qip_core::secret`. The proxy sees it in clear text — that is
+    # what terminating TLS means — which is why this listener binds loopback
+    # like every other, why the proxy logs no header, and why the adapter
+    # scrubs the token out of any response body it quotes into an error.
+    #
+    # One route, one exact path, one method. The adapter builds exactly one
+    # request, `POST /v1/chat/completions` (`CHAT_COMPLETIONS_PATH`), and the
+    # matcher is `path` rather than `prefix` so that nothing under it is
+    # reachable either. There is deliberately no catch-all: the router also
+    # serves `/v1/models`, the per-provider endpoints and the Hub's own API
+    # under this host, and none of them is a thing a deployed process was
+    # reviewed to reach — the catalogue is read by a person, with the
+    # gateway's `--probe`, before an environment names a model.
+    #
+    # The `:method` matcher admits POST alone. A GET to this port is not this
+    # adapter — it never issues one — and it gets a 404 before a socket is
+    # opened upstream. The deliberate absence: no GET, no other path, no
+    # second cluster. A completion is the whole of what this listener is for.
+    #
+    # 60s, IBM's figure rather than the Google listeners' 30s: a hosted model
+    # answering a long structured request takes tens of seconds, the
+    # adapter's own default deadline is the same 60s, and a route timeout
+    # shorter than the adapter's would report a timeout for an answer the
+    # router was still writing — a billed call recorded as a failure. The
+    # reasoning stage's per-request deadline is the tighter bound and it is
+    # carried in the request, not here.
+    - name: huggingface
+      address:
+        socket_address: { address: 127.0.0.1, port_value: 9106 }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: huggingface
+                access_log:
+                  - name: envoy.access_loggers.stdout
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                      log_format:
+                        text_format_source:
+                          inline_string: "egress %UPSTREAM_CLUSTER% %RESPONSE_CODE% %RESPONSE_FLAGS% %DURATION%ms %BYTES_RECEIVED%/%BYTES_SENT%\n"
+                route_config:
+                  name: huggingface
+                  virtual_hosts:
+                    - name: huggingface
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            path: "/v1/chat/completions"
+                            headers:
+                              - name: ":method"
+                                string_match: { exact: POST }
+                          route:
+                            cluster: router_huggingface_co
+                            host_rewrite_literal: router.huggingface.co
+                            timeout: 60s
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
   # --- the destinations ---------------------------------------------------
   #
-  # Six clusters, six hosts, and nothing reachable that is not one of
+  # Seven clusters, seven hosts, and nothing reachable that is not one of
   # them. Each carries its own `UpstreamTlsContext`: without one Envoy
   # speaks plaintext to port 443 and every request fails, which is the safe
   # direction for a missing block to fail in.
@@ -642,3 +717,28 @@ static_resources:
               match_typed_subject_alt_names:
                 - san_type: DNS
                   matcher: { exact: api.frankfurter.dev }
+
+    - name: router_huggingface_co
+      type: LOGICAL_DNS
+      dns_lookup_family: V4_ONLY
+      connect_timeout: 5s
+      load_assignment:
+        cluster_name: router_huggingface_co
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: router.huggingface.co, port_value: 443 }
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+          sni: router.huggingface.co
+          common_tls_context:
+            tls_params:
+              tls_minimum_protocol_version: TLSv1_2
+            validation_context:
+              trusted_ca: { filename: /etc/ssl/certs/ca-certificates.crt }
+              match_typed_subject_alt_names:
+                - san_type: DNS
+                  matcher: { exact: router.huggingface.co }

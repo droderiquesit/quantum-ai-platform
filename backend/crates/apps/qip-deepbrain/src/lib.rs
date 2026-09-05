@@ -39,6 +39,7 @@
 pub mod config;
 pub mod evolution;
 pub mod health;
+pub mod language;
 pub mod learning;
 pub mod node;
 pub mod openobserve;

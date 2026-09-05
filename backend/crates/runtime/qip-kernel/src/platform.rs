@@ -43,7 +43,7 @@ use crate::cycle::{CycleReport, Stage, StageOutcome};
 use qip_agents::memory::ResearchMemory;
 use qip_agents::runtime::{Reading, Upstream};
 use qip_agents::{Budget, RunStatus};
-use qip_ai::language::DeterministicModel;
+use qip_ai::language::{DeterministicModel, LanguageModel};
 use qip_ai::retrieval::SearchIndex;
 use qip_capital::reservation::ReservationLedger;
 use qip_capital::{AllocationLimits, CapitalAllocator, DrawdownSchedule};
@@ -1242,6 +1242,34 @@ impl Platform {
         universe: Universe,
         limits: LimitSet,
     ) -> Result<Self> {
+        Self::with_language_model(
+            config,
+            context,
+            telemetry,
+            universe,
+            limits,
+            Arc::new(DeterministicModel::new()),
+        )
+    }
+
+    /// Assemble a platform whose organisation narrates through the given
+    /// language model.
+    ///
+    /// The seam ADR 0037 needs: the deep brain — and only the deep brain —
+    /// hands in a `FallbackChain` with a hosted adapter ahead of the
+    /// deterministic model, so a provider outage degrades to templates rather
+    /// than stopping reasoning. Every other root takes [`Self::new`], which is
+    /// this with the deterministic model alone. The model is not on
+    /// `PlatformConfig` because that is a serialisable record of how the
+    /// platform was assembled, and a credential-bearing adapter must not be.
+    pub fn with_language_model(
+        config: PlatformConfig,
+        context: Context,
+        telemetry: Telemetry,
+        universe: Universe,
+        limits: LimitSet,
+        language_model: Arc<dyn LanguageModel>,
+    ) -> Result<Self> {
         let now = context.now();
 
         // Opened here, before anything else is built, for the same reason the
@@ -1370,7 +1398,7 @@ impl Platform {
             now,
             now,
             config.seed,
-            Some(Arc::new(DeterministicModel::new())),
+            Some(language_model),
             config.licensed_datasets.clone(),
             config.quantum_enabled,
         )?;

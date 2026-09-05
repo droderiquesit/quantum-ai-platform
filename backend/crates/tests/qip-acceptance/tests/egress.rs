@@ -80,7 +80,7 @@ const CA_BUNDLE: &str = "/etc/ssl/certs/ca-certificates.crt";
 ///
 /// Each entry names where it came from, because "why is this host here" is the
 /// question a reviewer of the *next* entry will need answered by example.
-const ALLOWED_UPSTREAMS: [(&str, &str); 6] = [
+const ALLOWED_UPSTREAMS: [(&str, &str); 7] = [
     (
         "storage.googleapis.com",
         "qip_storage::gcp::storage — its own requirement string names the host, \
@@ -113,7 +113,27 @@ const ALLOWED_UPSTREAMS: [(&str, &str); 6] = [
          bridge opens by name; licensing class `public`, evaluated in \
          qip-data-finder/src/admission.rs before the source can open",
     ),
+    (
+        "router.huggingface.co",
+        "HuggingFaceModel::UPSTREAM_HOST in \
+         crates/services/qip-reasoning-engine/src/providers/huggingface.rs, the \
+         hosted language-model adapter ADR 0037 decides on; constructed by the \
+         deep brain alone, reached on POST /v1/chat/completions and nothing \
+         else, and dark until an environment sets the variables and mounts the \
+         secret, which none does",
+    ),
 ];
+
+/// The hosted language-model listener (ADR 0037). Restated rather than read
+/// from the adapter, for the same reason as `ALLOWED_UPSTREAMS`; the test that
+/// holds the adapter's own constant, the bootstrap and the root variable to
+/// one value is
+/// `the_hugging_face_host_is_one_value_in_the_adapter_the_bootstrap_and_the_allowlist`.
+const HUGGING_FACE_LISTENER: &str = "huggingface";
+const HUGGING_FACE_HOST: &str = "router.huggingface.co";
+const HUGGING_FACE_CLUSTER: &str = "router_huggingface_co";
+const HUGGING_FACE_ADAPTER: &str =
+    "backend/crates/services/qip-reasoning-engine/src/providers/huggingface.rs";
 
 /// The shipped manifest the market-data listener is derived from.
 ///
@@ -284,8 +304,8 @@ fn listener_ports() -> Vec<(String, String)> {
     let listeners = entries_of(&listeners_block(&bootstrap));
     assert_eq!(
         listeners.len(),
-        6,
-        "{:?} listeners were read; there are five destination listeners and \
+        7,
+        "{:?} listeners were read; there are six destination listeners and \
          the health listener, and a listener this check cannot see is a port \
          nothing below constrains",
         listeners.iter().map(|(name, _)| name).collect::<Vec<_>>()
@@ -490,11 +510,12 @@ fn the_egress_proxy_dials_only_the_vendor_hosts_the_adapters_named() {
     let bootstrap = bootstrap();
 
     // Premise. Every address in this file is written inside a flow mapping;
-    // seven binds and six upstreams is thirteen, and fewer than twelve means
-    // the socket addresses have moved and this check is looking at nothing.
+    // eight binds and seven upstreams is fifteen, and fewer than fourteen
+    // means the socket addresses have moved and this check is looking at
+    // nothing.
     let addresses = values_of(&bootstrap, "address");
     assert!(
-        addresses.len() >= 12,
+        addresses.len() >= 14,
         "only {addresses:?} were read out of the bootstrap; the socket_address \
          blocks have been reshaped and this check is filtering an empty list"
     );
@@ -915,6 +936,180 @@ fn the_frankfurter_host_is_one_value_in_the_manifest_the_bootstrap_and_the_allow
 }
 
 #[test]
+fn the_hugging_face_host_is_one_value_in_the_adapter_the_bootstrap_and_the_allowlist() {
+    // ADR 0037 adds the first model vendor to this bootstrap and ADR 0034
+    // requires the adapter's constant, the Envoy cluster and the Terraform
+    // allowlist to move in one commit. The failure this prevents is the
+    // Frankfurter one, one vendor later: a host changed in two places and not
+    // the third, failing as "does not dial" with nothing naming which of the
+    // three disagreed. The adapter's constant is the one value; every place
+    // that differs is reported by name. And because this is the first
+    // listener whose requests carry a credential, the route is held to one
+    // exact path and one method: a second route on this port is a second
+    // thing the bearer token is sent to.
+    use qip_reasoning_engine::providers::huggingface::{CHAT_COMPLETIONS_PATH, HuggingFaceModel};
+    let host = HuggingFaceModel::UPSTREAM_HOST;
+
+    // Premise: the constant is a bare hostname. A URL or a path here would
+    // never equal an Envoy `address:` and every mismatch below would fire
+    // for the wrong reason. And the adapter really does build the path this
+    // listener admits, or the route describes a request nobody makes.
+    assert!(
+        host.contains('.') && !host.contains('/') && !host.contains(':'),
+        "UPSTREAM_HOST is {host:?}, which is not a bare hostname"
+    );
+    assert_eq!(
+        host, HUGGING_FACE_HOST,
+        "this file's copy of the host has drifted"
+    );
+    assert!(
+        CHAT_COMPLETIONS_PATH.starts_with('/') && CHAT_COMPLETIONS_PATH.len() > 1,
+        "CHAT_COMPLETIONS_PATH is {CHAT_COMPLETIONS_PATH:?}; a bare `/` cannot \
+         distinguish a narrow route from a catch-all"
+    );
+    let adapter = read(HUGGING_FACE_ADAPTER);
+    assert!(
+        adapter.contains("Method::Post"),
+        "{HUGGING_FACE_ADAPTER} no longer issues Method::Post, so the route's method \
+         matcher describes a request nobody makes"
+    );
+    for method in [
+        "Method::Get",
+        "Method::Put",
+        "Method::Delete",
+        "Method::Head",
+    ] {
+        assert!(
+            !adapter.contains(method),
+            "{HUGGING_FACE_ADAPTER} issues {method}; the adapter has gained a request the \
+             listener was not reviewed to carry"
+        );
+    }
+
+    let bootstrap = bootstrap();
+    let clusters = entries_of(&clusters_block(&bootstrap));
+    let (_, cluster) = clusters
+        .iter()
+        .find(|(name, _)| name == HUGGING_FACE_CLUSTER)
+        .unwrap_or_else(|| panic!("no `{HUGGING_FACE_CLUSTER}` cluster is declared"));
+    let listeners = entries_of(&listeners_block(&bootstrap));
+    let (_, listener) = listeners
+        .iter()
+        .find(|(name, _)| name == HUGGING_FACE_LISTENER)
+        .unwrap_or_else(|| {
+            panic!(
+                "no `{HUGGING_FACE_LISTENER}` listener in the bootstrap, but {host} is on \
+                 the allowlist. An upstream declared with no listener in front of it is a \
+                 host the proxy may dial and no reviewed route reaches."
+            )
+        });
+
+    // The root variable's default: exactly one entry names the vendor.
+    let declared: Vec<String> = read(ROOT_VARIABLES)
+        .split("variable \"egress_allowed_upstreams\" {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}").next())
+        .expect("the root declares egress_allowed_upstreams")
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix('"'))
+        .filter_map(|rest| rest.split('"').next())
+        .filter(|entry| entry.contains("huggingface"))
+        .map(str::to_string)
+        .collect();
+    assert_eq!(
+        declared.len(),
+        1,
+        "{ROOT_VARIABLES} allows {declared:?}; exactly one Hugging Face host is the vendor"
+    );
+
+    let claims: [(&str, Vec<String>); 5] = [
+        ("the Envoy cluster's address", values_of(cluster, "address")),
+        ("the Envoy cluster's SNI", values_of(cluster, "sni")),
+        (
+            "the Envoy cluster's certificate name",
+            values_of(cluster, "exact"),
+        ),
+        (
+            "the huggingface listener's rewritten authority",
+            values_of(listener, "host_rewrite_literal"),
+        ),
+        ("the Terraform allowlist entry", declared),
+    ];
+    let disagreeing: Vec<String> = claims
+        .iter()
+        .filter(|(_, found)| found.as_slice() != [host.to_string()])
+        .map(|(place, found)| format!("{place} says {found:?}"))
+        .collect();
+    assert!(
+        disagreeing.is_empty(),
+        "HuggingFaceModel::UPSTREAM_HOST is {host:?} and {} disagree(s): {}. ADR 0034: the \
+         adapter, the bootstrap and the allowlist move in one commit",
+        disagreeing.len(),
+        disagreeing.join("; ")
+    );
+
+    // The listener: loopback, one port, one cluster, one exact path, POST
+    // and only POST. `path` rather than `prefix`, because a prefix admits
+    // everything under it and the router serves more than one thing under
+    // `/v1/`.
+    assert_eq!(
+        values_of(listener, "address"),
+        vec![LOOPBACK.to_string()],
+        "the {HUGGING_FACE_LISTENER} listener does not bind {LOOPBACK} alone"
+    );
+    assert_eq!(values_of(listener, "port_value").len(), 1);
+    assert_eq!(
+        values_of(listener, "cluster"),
+        vec![HUGGING_FACE_CLUSTER.to_string()],
+        "the {HUGGING_FACE_LISTENER} listener routes to more than one cluster, or to another"
+    );
+    assert_eq!(
+        values_of(listener, "path"),
+        vec![CHAT_COMPLETIONS_PATH.to_string()],
+        "the {HUGGING_FACE_LISTENER} listener's routes do not match exactly the one path \
+         the adapter builds"
+    );
+    assert_eq!(
+        key_count(listener, "prefix"),
+        0,
+        "the {HUGGING_FACE_LISTENER} listener matches a prefix; the rest of the router's \
+         surface under it is then reachable through a port reviewed for one call"
+    );
+    assert!(
+        !without_comments(listener).contains("regex"),
+        "the {HUGGING_FACE_LISTENER} listener matches with a regex"
+    );
+    assert_eq!(
+        values_of(listener, "exact"),
+        vec!["POST".to_string()],
+        "the {HUGGING_FACE_LISTENER} listener no longer restricts the method to POST alone"
+    );
+    // The converse: no other listener reaches the vendor.
+    for (name, body) in &listeners {
+        if name == HUGGING_FACE_LISTENER {
+            continue;
+        }
+        assert!(
+            !values_of(body, "cluster").contains(&HUGGING_FACE_CLUSTER.to_string())
+                && !values_of(body, "host_rewrite_literal").contains(&host.to_string()),
+            "the {name} listener reaches {host}; the vendor is reachable from one reviewed \
+             port or from anywhere a route was added without one"
+        );
+    }
+    // The cluster's certificate name is matched exactly and against the
+    // system trust store — a loose matcher on a proxy carrying a bearer
+    // token means a DNS answer is enough to redirect the credential.
+    for loose in ["suffix", "contains", "safe_regex", "ignore_case"] {
+        assert_eq!(
+            key_count(cluster, loose),
+            0,
+            "{HUGGING_FACE_CLUSTER}'s certificate matcher carries `{loose}`"
+        );
+    }
+    assert_eq!(values_of(cluster, "filename"), vec![CA_BUNDLE.to_string()]);
+}
+
+#[test]
 fn the_proxy_rewrites_the_authority_to_a_host_on_the_same_allowlist() {
     // The clients send an origin-form request line with `host:` naming
     // loopback, so every request has to have its authority rewritten before it
@@ -1269,8 +1464,8 @@ fn no_workload_is_configured_with_an_address_that_leaves_the_instance_except_thr
         .collect();
     assert_eq!(
         ports.len(),
-        5,
-        "five destination listeners were expected, found {ports:?}"
+        6,
+        "six destination listeners were expected, found {ports:?}"
     );
 
     let mut checked = 0usize;

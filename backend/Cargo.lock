@@ -288,6 +288,7 @@ dependencies = [
  "qip-numerics",
  "qip-observability",
  "qip-quant",
+ "qip-reasoning-engine",
  "qip-risk",
  "qip-risk-engine",
  "qip-simulation-engine",
@@ -678,9 +679,12 @@ name = "qip-reasoning-engine"
 version = "0.1.0"
 dependencies = [
  "qip-agents",
+ "qip-ai",
  "qip-core",
+ "qip-transport",
  "qip-world-model",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

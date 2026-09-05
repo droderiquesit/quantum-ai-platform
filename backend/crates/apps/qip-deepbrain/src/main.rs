@@ -183,12 +183,20 @@ fn run() -> Result<()> {
     // platform exists — see `load_universe` for why an unset path is a
     // refusal and not an empty universe.
     let catalogue = load_universe(&config.storage, started)?;
-    let mut platform = Platform::new(
+    // The language model the organisation narrates through (ADR 0037): the
+    // hosted adapter first when the configuration names one, and the
+    // deterministic model in every case. Assembled here, in the one root
+    // permitted to, and handed to the kernel rather than reached for inside
+    // it, so the kernel's own constructor stays the deterministic one every
+    // other root and every test uses.
+    let language_model = qip_deepbrain::language::assemble(&config)?;
+    let mut platform = Platform::with_language_model(
         platform_config,
         context,
         telemetry,
         catalogue.universe,
         LimitSet::conservative_default(),
+        language_model.chain.clone(),
     )?;
 
     // The trust root, before anything is served: install the operator's
@@ -249,6 +257,9 @@ fn run() -> Result<()> {
     banner(
         provenance, &config, &cleared, &platform, &ceiling, bound, &archive, inherited,
     );
+    // Which model is active, by name, and never the credential: the adapter's
+    // token redacts in Debug and `describe` prints only what was configured.
+    println!("  language model:   {}", language_model.describe());
     println!(
         "  universe:         {}; sector and country buckets are fed from it. Note ADR 0027: under the \
          conservative default the first desk order into an empty book is refused by \
