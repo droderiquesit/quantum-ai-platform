@@ -51,6 +51,18 @@
 //! allocator's own per-venue limit. Two systems each holding a budget is two
 //! systems each believing they own the same dollar.
 //!
+//! # The control around movement, without the movement (§37, §38.4)
+//!
+//! [`destination`], [`corridor`] and [`gate`] are the deterministic half of
+//! the blueprint's treasury design, built as ADR 0021 permits it and no
+//! further: an allowlist of destinations with who approved each and when, a
+//! corridor lifecycle whose transition table refuses every edge not on it, and
+//! a seven-check veto-only [`gate::TransferGate`] that returns a
+//! [`gate::Approved`] carrying no way to execute. There is no transfer engine behind the gate,
+//! no signing, no withdrawal and no call out of the process. That is not a
+//! stub awaiting an engine — a gate that refuses is the control, and the
+//! control is the half worth having.
+//!
 //! # Determinism
 //!
 //! Nothing here reads a wall clock or draws a random number. Every entry point
@@ -134,12 +146,17 @@
 //! # }
 //! ```
 
+pub mod corridor;
+pub mod custody;
+pub mod destination;
 pub mod evaluate;
 pub mod forecast;
+pub mod gate;
 pub mod location;
 pub mod plan;
 pub mod settlement;
 pub mod transfer;
+pub mod wallet;
 
 pub use evaluate::{LaneOutcome, PlanScore, RealisedDemand, evaluate};
 pub use forecast::{DemandForecast, DemandForecaster, DemandKind, DemandObservation, Interval};
