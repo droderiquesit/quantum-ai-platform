@@ -550,3 +550,129 @@ fn classification_never_returns_the_resting_rung_because_no_instrument_property_
         }
     }
 }
+
+// --- horizons in days --------------------------------------------------------
+//
+// The risk domain states its liquidity controls in days — `MinLiquidity` and
+// `MaxDaysToLiquidate` both do — and the ladder's horizons are categorical.
+// One rule translates, in both directions, so a book sitting exactly on a
+// horizon cannot be inside it by one function and outside it by the other.
+
+#[test]
+fn every_horizons_floor_in_days_rises_with_the_horizon() {
+    // The property that makes a floor safe to read into a ceiling limit: it
+    // never says an exit is faster than the horizon admits. A pair that went
+    // the other way would let a deeper rung report a shorter exit, and
+    // `MaxDaysToLiquidate` would pass the holding it exists to catch.
+    let horizons = [
+        LiquidationHorizon::Immediate,
+        LiquidationHorizon::Seconds,
+        LiquidationHorizon::SameDay,
+        LiquidationHorizon::Days,
+        LiquidationHorizon::Months,
+        LiquidationHorizon::Years,
+    ];
+    // The premise: the list is the whole enum, in ladder order.
+    assert_eq!(horizons.len(), 6);
+    for window in horizons.windows(2) {
+        assert!(
+            window[0].least_days() <= window[1].least_days(),
+            "{} floors at {} days but the deeper {} floors at {}",
+            window[0].as_str(),
+            window[0].least_days(),
+            window[1].as_str(),
+            window[1].least_days()
+        );
+    }
+    // And it is not constant, which a monotonicity assertion alone permits.
+    assert!(
+        LiquidationHorizon::Years.least_days() > LiquidationHorizon::Immediate.least_days(),
+        "a floor that never moves would let every rung answer every limit"
+    );
+}
+
+#[test]
+fn the_deepest_horizon_within_a_day_count_is_the_one_whose_floor_still_clears_it() {
+    // The mapping the kernel's liquidity floor turns a limit's `days` into.
+    // Named cases rather than a loop, because the boundaries are the whole
+    // question: a limit at five days must reach the `Days` rungs and stop
+    // short of `Months`.
+    assert_eq!(
+        LiquidationHorizon::deepest_within(5.0),
+        Some(LiquidationHorizon::Days),
+        "a five-day floor reaches everything that exits in days"
+    );
+    assert_eq!(
+        LiquidationHorizon::deepest_within(1.0),
+        Some(LiquidationHorizon::SameDay),
+        "one day reaches the same-day rung and no further"
+    );
+    assert_eq!(
+        LiquidationHorizon::deepest_within(0.0),
+        Some(LiquidationHorizon::Seconds),
+        "zero days is still seconds; `Seconds` and `Immediate` are the same floor and \
+         `reachable_within(Seconds)` already counts the immediate rungs"
+    );
+    assert_eq!(
+        LiquidationHorizon::deepest_within(29.0),
+        Some(LiquidationHorizon::Days),
+        "twenty-nine days does not reach a rung that floors at a month"
+    );
+    assert_eq!(
+        LiquidationHorizon::deepest_within(30.0),
+        Some(LiquidationHorizon::Months),
+        "thirty days is exactly the month floor, and the boundary is inclusive"
+    );
+    assert_eq!(
+        LiquidationHorizon::deepest_within(365.0),
+        Some(LiquidationHorizon::Years),
+        "a year reaches everything"
+    );
+}
+
+#[test]
+fn a_horizon_that_is_not_a_number_of_days_is_refused_rather_than_floored() {
+    // A limit configured with a nonsense horizon must read as unevaluated, not
+    // as one every book passed. Flooring at `Immediate` would have been the
+    // clamping the platform forbids, and it would have produced a real
+    // fraction from a horizon nobody stated.
+    //
+    // Infinity is refused with the rest. It would map to `Years` and read as
+    // a horizon that reaches the whole book, which is the one answer a limit
+    // set by a broken calculation must not silently get.
+    for days in [-1.0, f64::NAN, f64::NEG_INFINITY, f64::INFINITY] {
+        assert_eq!(
+            LiquidationHorizon::deepest_within(days),
+            None,
+            "a horizon of {days} days was given a rung"
+        );
+    }
+    // The premise the four cases above rest on: a real horizon does get one,
+    // so `None` is a judgement about the input and not the function's only
+    // answer.
+    assert_eq!(
+        LiquidationHorizon::deepest_within(5.0),
+        Some(LiquidationHorizon::Days)
+    );
+}
+
+#[test]
+fn the_two_horizon_functions_agree_on_every_rungs_own_floor() {
+    // The property that keeps one rule rather than two: taking a rung's floor
+    // and asking which horizon that many days reaches must not land shallower
+    // than the rung itself, or a holding would be excluded from the very
+    // horizon its rung defines.
+    for rung in Rung::ALL {
+        let horizon = rung.horizon();
+        let round_trip = LiquidationHorizon::deepest_within(horizon.least_days())
+            .unwrap_or_else(|| panic!("{} floors at a real number of days", rung.as_str()));
+        assert!(
+            horizon <= round_trip,
+            "{} sits on horizon {} but its own floor of {} days reaches only {}",
+            rung.as_str(),
+            horizon.as_str(),
+            horizon.least_days(),
+            round_trip.as_str()
+        );
+    }
+}
